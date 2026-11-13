@@ -1,0 +1,8 @@
+{
+  "error": "slow_down",
+  "error_description": "AADSTS70016: OAuth 2.0 device flow error. Polling too frequently.",
+  "error_codes": [],
+  "timestamp": "2026-11-13 10:00:00Z",
+  "trace_id": "00000000-0000-0000-0000-000000000000",
+  "correlation_id": "00000000-0000-0000-0000-000000000000"
+}

@@ -1,0 +1,6 @@
+{
+  "user_code": "A1B2C3D4",
+  "device_code": "FAKE-DEVICE-CODE-0000",
+  "verification_uri": "https://www.microsoft.com/link",
+  "expires_in": 900
+}

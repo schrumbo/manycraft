@@ -1,0 +1,7 @@
+{
+  "username": "0e9e3a6c-6a1f-4b2b-9d57-2b1ac6f3c1d4",
+  "roles": [],
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ4dWlkIjoiMjUzNTQyODY3NDM4MTkyMCIsImFnZyI6IkFkdWx0Iiwic3ViIjoiMGU5ZTNhNmMtNmExZi00YjJiLTlkNTctMmIxYWM2ZjNjMWQ0IiwiYXV0aCI6IlhCT1giLCJucyI6ImRlZmF1bHQiLCJyb2xlcyI6W10sImlzcyI6ImF1dGhlbnRpY2F0aW9uIiwicGxhdGZvcm0iOiJVTktOT1dOIiwiZXhwIjoxNzAwMDg2NDAwLCJpYXQiOjE3MDAwMDAwMDB9.c2lnbmF0dXJl",
+  "token_type": "Bearer",
+  "expires_in": 86400
+}

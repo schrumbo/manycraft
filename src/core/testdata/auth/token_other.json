@@ -1,0 +1,8 @@
+{
+  "error": "server_error",
+  "error_description": "AADSTS50000: There was an error issuing a token.",
+  "error_codes": [],
+  "timestamp": "2026-11-13 10:00:00Z",
+  "trace_id": "00000000-0000-0000-0000-000000000000",
+  "correlation_id": "00000000-0000-0000-0000-000000000000"
+}
