@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, TileLarger, TileSmaller, NewBatch, AddAccount]);
+actions!(manycraft, [ShowGrid, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, TileLarger, TileSmaller, NewBatch, AddAccount, Reload]);
 
 /// Brings this instance's game window into the manager's place.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]

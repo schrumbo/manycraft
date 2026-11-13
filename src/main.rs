@@ -41,6 +41,8 @@ fn main() {
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
         ui::model::init(cx);
         ui::state::init(cx);
+        ui::accounts::init(cx);
+        ui::batch_sheet::init(cx);
         ui::main_window::open(cx);
         ui::drive::init(cx);
     });
