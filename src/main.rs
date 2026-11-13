@@ -39,6 +39,8 @@ fn main() {
     gpui_kit::application().with_assets(Assets).run(|cx: &mut App| {
         gpui_kit::init(cx);
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
+        ui::model::init(cx);
+        ui::state::init(cx);
         ui::main_window::open(cx);
         ui::drive::init(cx);
     });
