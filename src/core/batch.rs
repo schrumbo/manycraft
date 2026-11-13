@@ -103,7 +103,7 @@ pub fn save(batch: &Batch) -> Result<()> {
     save_in(&batches_dir(), batch)
 }
 
-/// Deletes the batch's settings and shared files. Instance folders are kept.
+/// Deletes the batch's folder including its shared mods and config. Use `fleet::delete_batch` to keep those.
 pub fn delete(batch: &Batch) -> Result<()> {
     let dir = batch.dir();
     if dir.exists() {

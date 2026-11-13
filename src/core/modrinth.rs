@@ -13,6 +13,8 @@ use super::{install, net};
 const API: &str = "https://api.modrinth.com/v2";
 const LOADER: &str = "fabric";
 const DEFAULTS: [&str; 5] = ["fabric-api", "lithium", "ferrite-core", "modernfix", "krypton"];
+/// Modrinth project id of Fabric API, which the companion mod needs in every batch.
+pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
 const SEARCH_LIMIT: u32 = 20;
 const USAGE: &str = "usage: manycraft mods search <query> [--version <version>]\n       manycraft mods resolve <slug>... [--version <version>]";
@@ -358,7 +360,7 @@ fn sync_into(agent: &ureq::Agent, mods: &[ModRef], dir: &Path) -> Result<usize> 
         let Some(name) = entry.file_name().to_str().map(str::to_lowercase) else {
             continue;
         };
-        if name.ends_with(".jar") && !keep.contains(&name) && entry.file_type()?.is_file() {
+        if name.ends_with(".jar") && !keep.contains(&name) && name != super::fleet::COMPANION_FILE && entry.file_type()?.is_file() {
             std::fs::remove_file(entry.path()).with_context(|| format!("cannot delete {}", entry.path().display()))?;
         }
     }
@@ -390,8 +392,13 @@ pub fn default_mods(game_version: &str) -> Result<Defaults> {
 
 /// Makes the batch's mod folder hold exactly its mods: downloads missing or changed files (SHA-1 checked),
 /// then deletes `.jar` files directly in the folder that are not in the list. Returns how many were downloaded.
+/// Fabric API is added for the sync when the batch does not list it, since the companion mod depends on it.
 pub fn sync_mods(batch: &Batch) -> Result<usize> {
-    sync_into(&net::agent(None)?, &batch.mods, &batch.mods_dir())
+    let mut mods = batch.mods.clone();
+    if !mods.iter().any(|m| m.project_id == FABRIC_API) {
+        mods.push(resolve(FABRIC_API, &batch.game_version).context("the companion mod needs Fabric API, which could not be found")?);
+    }
+    sync_into(&net::agent(None)?, &mods, &batch.mods_dir())
 }
 
 /// Mods of the batch that have a newer file for the batch's game version.

@@ -2,11 +2,11 @@
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -393,20 +393,17 @@ fn extra_arguments(batch: &Batch, account: &Account, game_dir: &Path, ipc_addres
     Ok(Extra { jvm, game })
 }
 
-fn spawn(spec: &LaunchSpec, extra_game: &[String], token: &str) -> Result<Child> {
-    let logs = spec.game_dir.join("logs");
-    fs::create_dir_all(&logs).with_context(|| format!("cannot create {}", logs.display()))?;
-    let log_path = logs.join("manycraft-launch.log");
-    let log = File::create(&log_path).with_context(|| format!("cannot write {}", log_path.display()))?;
-    let log_err = log.try_clone().context("cannot write the launch log")?;
-    let mut command = Command::new(&spec.installed.java);
-    command.args(spec.arguments()?.as_slice()).args(extra_game).current_dir(&spec.game_dir).env(TOKEN_VAR, token);
-    command.stdin(Stdio::null()).stdout(log).stderr(log_err);
-    command.spawn().with_context(|| format!("cannot start {}", spec.installed.java.display()))
+fn sync_mods(batch: &Batch) -> Result<()> {
+    super::modrinth::sync_mods(batch)?;
+    Ok(())
 }
 
-fn sync_mods(_batch: &Batch) -> Result<()> {
-    Ok(())
+/// Deletes `batch` but keeps its shared mods, configs and options template next to its game folders.
+pub fn delete_batch(target: &Batch) -> Result<PathBuf> {
+    let keep = paths::instances_dir().join(&target.id);
+    keep_shared(&[(target.mods_dir(), "batch-mods"), (target.config_dir(), "batch-config"), (target.options_template(), "batch-options.txt")], &keep)?;
+    batch::delete(target)?;
+    Ok(keep)
 }
 
 /// Key of the instance of `account` in `batch`, used for IPC and the fleet.
@@ -660,8 +657,10 @@ fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, in
         memory_mb: batch.memory_mb,
         server: batch.server.clone(),
         extra_jvm: extra.jvm,
+        extra_game: extra.game,
+        env: launch::SecretEnv(vec![(TOKEN_VAR.to_owned(), token.to_owned())]),
     };
-    spawn(&spec, &extra.game, token)
+    launch::spawn(&spec)
 }
 
 fn require_companion_for_proxy(account: &Account, mods: &Path) -> Result<()> {
@@ -764,6 +763,11 @@ fn create(name: &str, args: &[&str]) -> Result<i32> {
     if let Some(memory) = flags.get("--memory") {
         new.memory_mb = parse_memory(memory)?;
     }
+    let defaults = super::modrinth::default_mods(&new.game_version)?;
+    for note in &defaults.notes {
+        println!("{note}");
+    }
+    new.mods = defaults.mods;
     batch::save(&new)?;
     println!("Batch {} ({}) for Minecraft {}", new.name, new.id, new.game_version);
     Ok(0)
@@ -807,9 +811,7 @@ fn set_member(batch: &mut Batch, account: &Account, add: bool) -> Result<()> {
 fn delete(who: &str) -> Result<i32> {
     let mut batches = batch::load_all()?;
     let target = find_batch(&mut batches, who)?;
-    let keep = paths::instances_dir().join(&target.id);
-    keep_shared(&[(target.mods_dir(), "batch-mods"), (target.config_dir(), "batch-config"), (target.options_template(), "batch-options.txt")], &keep)?;
-    batch::delete(target)?;
+    let keep = delete_batch(target)?;
     println!("Deleted batch {}; its mods, configs and game folders are kept in {}", target.name, keep.display());
     Ok(0)
 }
@@ -857,7 +859,11 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
     };
     let names: HashMap<String, String> = accounts.iter().map(|a| (instance_key(&target, a.id), a.name.clone())).collect();
     let mut live = Vec::new();
-    for (id, outcome) in fleet.start_batch(&target, &accounts, flags.get("--companion").map(Path::new), &report)? {
+    let companion = match flags.get("--companion") {
+        Some(path) => PathBuf::from(path),
+        None => super::companion::jar()?,
+    };
+    for (id, outcome) in fleet.start_batch(&target, &accounts, Some(&companion), &report)? {
         let name = accounts.iter().find(|a| a.id == id).map_or("?", |a| a.name.as_str());
         match outcome {
             Ok(key) => {
@@ -900,6 +906,7 @@ fn print_event(names: &HashMap<String, String>, event: &ipc::Event) {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::process::{Command, Stdio};
 
     use super::*;
 

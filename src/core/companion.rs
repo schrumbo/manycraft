@@ -6,12 +6,11 @@ use anyhow::Result;
 
 use super::{net, paths};
 
-const FILE: &str = "manycraft-companion.jar";
 const JAR: &[u8] = include_bytes!(env!("MANYCRAFT_COMPANION_JAR"));
 
 /// Path of the companion mod jar on disk, written from the built-in copy when missing or different.
 pub fn jar() -> Result<PathBuf> {
-    let path = paths::data_dir().join("companion").join(FILE);
+    let path = paths::data_dir().join("companion").join(super::fleet::COMPANION_FILE);
     let current = path.is_file() && net::file_sha1(&path).is_ok_and(|sha| sha == sha1());
     if !current {
         net::write_atomic(&path, JAR)?;

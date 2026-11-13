@@ -50,6 +50,18 @@ pub struct LaunchSpec {
     pub memory_mb: u32,
     pub server: Option<String>,
     pub extra_jvm: Vec<String>,
+    pub extra_game: Vec<String>,
+    pub env: SecretEnv,
+}
+
+/// Environment variables for the game process. Debug output shows only the names.
+#[derive(Clone, Default)]
+pub struct SecretEnv(pub Vec<(String, String)>);
+
+impl fmt::Debug for SecretEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.iter().map(|(k, _)| k)).finish()
+    }
 }
 
 /// The finished argument list. Debug output hides the access token.
@@ -145,7 +157,7 @@ impl LaunchSpec {
     /// The Java process, run from the game folder. Its arguments contain the access token: never print it.
     fn command(&self) -> Result<Command> {
         let mut command = Command::new(&self.installed.java);
-        command.args(self.arguments()?.as_slice()).current_dir(&self.game_dir);
+        command.args(self.arguments()?.as_slice()).args(&self.extra_game).envs(self.env.0.iter().map(|(k, v)| (k, v))).current_dir(&self.game_dir);
         Ok(command)
     }
 }
@@ -244,6 +256,8 @@ fn run(args: &[String]) -> Result<i32> {
         memory_mb: 4096,
         server: options.server,
         extra_jvm: Vec::new(),
+        extra_game: Vec::new(),
+        env: SecretEnv::default(),
     };
     let mut child = spawn(&spec)?;
     println!("started {} in {} (log: logs/manycraft-launch.log)", spec.installed.id, game_dir.display());
@@ -292,7 +306,19 @@ mod tests {
             memory_mb: 3072,
             server: server.map(str::to_owned),
             extra_jvm: vec!["-Dextra=1".into()],
+            extra_game: vec!["--extra".into()],
+            env: SecretEnv(vec![("MANYCRAFT_TOKEN".into(), TOKEN.into())]),
         }
+    }
+
+    #[test]
+    fn env_and_extra_game_reach_the_command_and_debug_hides_env_values() {
+        let spec = spec(None, None);
+        let command = spec.command().unwrap();
+        assert!(command.get_args().any(|a| a == "--extra"));
+        assert!(command.get_envs().any(|(k, v)| k == "MANYCRAFT_TOKEN" && v.is_some_and(|v| v == TOKEN)));
+        let debug = format!("{spec:?}");
+        assert!(debug.contains("MANYCRAFT_TOKEN") && !debug.contains(TOKEN));
     }
 
     fn session() -> Session {
