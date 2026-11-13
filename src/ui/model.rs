@@ -23,17 +23,18 @@ pub enum Phase {
     Dead { server: Option<String>, reason: String },
     Crashed { code: Option<i32> },
     LoginNeeded,
+    Failed { reason: String },
 }
 
 impl Phase {
     /// Whether the user has work here: dropped off the server after auto-reconnect gave up, crashed, or must sign in.
     pub fn needs_attention(&self) -> bool {
-        matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::LoginNeeded)
+        matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
-        !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::LoginNeeded)
+        !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 }
 
@@ -49,6 +50,7 @@ pub struct Instance {
     pub unread_whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
     pub preview_seq: u32,
+    pub stopping: bool,
 }
 
 /// One line of the merged chat.
@@ -69,6 +71,10 @@ pub struct Model {
     pub chat: Vec<ChatLine>,
     pub playing: Option<String>,
     pub error: Option<String>,
+    /// Batches whose game is being installed, with the percent done.
+    pub preparing: HashMap<String, u8>,
+    /// Changes whenever an instance changes place in the sort order, so views know when to sort again.
+    pub order_seq: u64,
 }
 
 impl Model {
@@ -125,7 +131,7 @@ mod tests {
     use super::*;
 
     fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Instance {
-        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0 }
+        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
     }
 
     #[test]

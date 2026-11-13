@@ -63,6 +63,48 @@ pub mod iconsize {
     pub const HERO: f32 = 40.;
 }
 
+/// The instance grid and its tiles.
+pub mod tile {
+    /// Smallest width a tile gets in each size.
+    pub const SMALL: f32 = 168.;
+    pub const MEDIUM: f32 = 240.;
+    pub const LARGE: f32 = 340.;
+    /// Smallest tile width "Einpassen" goes down to before it scrolls after all.
+    pub const FIT_MIN: f32 = 96.;
+    /// Height of the strip under the preview.
+    pub const STRIP: f32 = 44.;
+    /// Height of the strip on small tiles, where only the name and status fit.
+    pub const STRIP_SMALL: f32 = 38.;
+    /// Width of the attention and focus ring.
+    pub const RING: f32 = 2.;
+    /// How bright the preview stays behind an account that needs work.
+    pub const DIMMED: f32 = 0.7;
+    /// The account's initial on a tile without a preview.
+    pub const INITIAL: f32 = 28.;
+    /// The skin head in the strip.
+    pub const HEAD: f32 = 22.;
+    /// Unread whispers badge.
+    pub const BADGE: f32 = 18.;
+    /// The initial on a small tile.
+    pub const INITIAL_SMALL: f32 = 21.;
+}
+
+/// The sidebar and toolbar around the grid.
+pub mod shell {
+    pub const SIDEBAR: f32 = 220.;
+    pub const TOOLBAR: f32 = 48.;
+    pub const ROW: f32 = 28.;
+    pub const SEARCH: f32 = 180.;
+    /// The attention dot in a sidebar row.
+    pub const DOT: f32 = 6.;
+    /// The attention count in a sidebar row.
+    pub const BADGE: f32 = 19.;
+    /// Below this content width the toolbar shows its buttons as icons.
+    pub const COMPACT: f32 = 860.;
+    /// Below this window width the sidebar floats over the grid instead of beside it.
+    pub const NARROW: f32 = 880.;
+}
+
 /// Opacities that tint states.
 pub mod tint {
     /// A control that waits for something.
@@ -75,6 +117,12 @@ pub mod tint {
     pub const RING: f32 = 0.8;
     /// The wash behind an account that needs work.
     pub const ATTENTION: f32 = 0.12;
+    /// The shade over a preview that shows its actions.
+    pub const SCRIM: f32 = 0.28;
+    /// Controls floating over a preview.
+    pub const FLOATING: f32 = 0.92;
+    /// An outline in a status color.
+    pub const OUTLINE: f32 = 0.5;
 }
 
 /// The ring the keyboard focus draws around a control.
@@ -142,6 +190,8 @@ pub struct Theme {
     /// An account that needs work. Never the accent, so it stands out from selection and actions.
     pub attention: Hsla,
     pub attention_text: Hsla,
+    /// Text on a solid attention fill.
+    pub on_attention: Hsla,
     pub success: Hsla,
     pub success_text: Hsla,
     pub danger: Hsla,
@@ -185,6 +235,7 @@ impl Theme {
             on_accent: c(0xFFFFFF),
             attention: if dark { c(0xFF9F0A) } else { c(0xFF9500) },
             attention_text: if dark { c(0xFFB340) } else { c(0x824800) },
+            on_attention: c(0x1C1C1E),
             success: if dark { c(0x30D158) } else { c(0x34C759) },
             success_text: if dark { c(0x30D158) } else { c(0x1E7A34) },
             danger: if dark { c(0xFF453A) } else { c(0xFF3B30) },
