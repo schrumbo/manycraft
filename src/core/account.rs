@@ -217,6 +217,15 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_file_is_an_error_not_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(FILE)).unwrap();
+        assert!(load_from(dir.path()).is_err());
+        assert!(save_to(dir.path(), &[account(1, "Alpha", None)]).is_err());
+        assert!(dir.path().join(FILE).is_dir());
+    }
+
+    #[test]
     fn wrong_shape_counts_as_corrupt() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), br#"{"accounts":[]}"#).unwrap();
@@ -288,6 +297,21 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
         assert!(text.contains(r#""kind": "offline""#) && text.contains(r#""kind": "microsoft""#), "{text}");
         assert_eq!(load_from(dir.path()).unwrap(), accounts);
+    }
+
+    #[test]
+    fn token_round_trip_in_the_system_keychain() {
+        let id = Uuid::new_v4();
+        if store_token(id, "first").is_err() {
+            return;
+        }
+        assert_eq!(read_token(id).unwrap().as_deref(), Some("first"));
+        let long = "x".repeat(2000);
+        store_token(id, &long).unwrap();
+        assert_eq!(read_token(id).unwrap(), Some(long));
+        delete_token(id).unwrap();
+        assert_eq!(read_token(id).unwrap(), None);
+        delete_token(id).unwrap();
     }
 
     #[test]
