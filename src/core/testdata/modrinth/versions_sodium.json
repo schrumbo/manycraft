@@ -1,0 +1,366 @@
+[
+ {
+  "id": "CT6qQx01",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.5-neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-12T01:12:30.162066Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "bf3860fda533ae409116f3303c139cd91cb77fa3"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/CT6qQx01/sodium-neoforge-0.9.3-beta.5%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.3-beta.5+mc26.3.jar",
+    "primary": true,
+    "size": 1211839
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "v7Lw0h1m",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.5-fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-12T01:12:30.154674Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "33ea0f572a6afa3ba71bb17fe3ef44358c8293f9"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/v7Lw0h1m/sodium-fabric-0.9.3-beta.5%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.3-beta.5+mc26.3.jar",
+    "primary": true,
+    "size": 1914521
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "zqgcaQxE",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.4-neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-08T03:54:24.510506Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "bd7fce5ed4b458e8e586c74757ae6505a25fcd34"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/zqgcaQxE/sodium-neoforge-0.9.3-beta.4%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.3-beta.4+mc26.3.jar",
+    "primary": true,
+    "size": 1210614
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "2MZWfUts",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.4-fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-08T03:54:24.496862Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "4c14da0cc83490269c3759b64329adba112c9a01"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/2MZWfUts/sodium-fabric-0.9.3-beta.4%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.3-beta.4+mc26.3.jar",
+    "primary": true,
+    "size": 1913034
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "aFVpk3tG",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.3-fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-07T02:07:28.269034Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "1dc84ee484a14dec042fb771843c28ea48cac508"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/aFVpk3tG/sodium-fabric-0.9.3-beta.3%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.3-beta.3+mc26.3.jar",
+    "primary": true,
+    "size": 1913009
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "Sx1xfT5Y",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.3-neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-07T02:07:28.204186Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "830d9bb77abbb93aab9bb9c3ceb6db6304284ff6"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/Sx1xfT5Y/sodium-neoforge-0.9.3-beta.3%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.3-beta.3+mc26.3.jar",
+    "primary": true,
+    "size": 1210060
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "RlRgB5qP",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.2-fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-07T01:34:13.438886Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "88a38753d30b291165aee0665838753d2a32c689"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/RlRgB5qP/sodium-fabric-0.9.3-beta.2%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.3-beta.2+mc26.3.jar",
+    "primary": true,
+    "size": 1912995
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "V4VWv3Mk",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.2-neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-07T01:34:13.436565Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "12fb51ebcf2eb0606a823e7d91f76a3d22ee01ee"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/V4VWv3Mk/sodium-neoforge-0.9.3-beta.2%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.3-beta.2+mc26.3.jar",
+    "primary": true,
+    "size": 1210041
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "g6ju16VJ",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.1-fabric",
+  "version_type": "beta",
+  "date_published": "2026-10-15T17:51:44.107526Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "1e6aec741b4134258ba1d7d458bae96a2e8e187e"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/g6ju16VJ/sodium-fabric-0.9.3-beta.1%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.3-beta.1+mc26.3.jar",
+    "primary": true,
+    "size": 1912496
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "SS023RVV",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-beta.1-neoforge",
+  "version_type": "beta",
+  "date_published": "2026-10-15T17:51:44.019537Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "c9412897122afb33007f6c0d6ee1b2248a9ebcf7"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/SS023RVV/sodium-neoforge-0.9.3-beta.1%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.3-beta.1+mc26.3.jar",
+    "primary": true,
+    "size": 1209577
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "NM9w06Kr",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-alpha.1-neoforge",
+  "version_type": "alpha",
+  "date_published": "2026-09-20T21:27:09.277251Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "522d0ef6b556ab37a9e0615db5307368df0c530c"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/NM9w06Kr/sodium-neoforge-0.9.3-alpha.1%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.3-alpha.1+mc26.3.jar",
+    "primary": true,
+    "size": 1211416
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "v4PSXean",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.3-alpha.1-fabric",
+  "version_type": "alpha",
+  "date_published": "2026-09-20T21:27:07.494280Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "5d88caf6f3e182cd39d0fb0d2e7200c5e613f287"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/v4PSXean/sodium-fabric-0.9.3-alpha.1%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.3-alpha.1+mc26.3.jar",
+    "primary": true,
+    "size": 1911459
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "VHtnT9Q4",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.2-neoforge",
+  "version_type": "release",
+  "date_published": "2026-09-15T16:04:10.867760Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "9015607e5ae2c5b9692ebf05113f9caca6ec41bf"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/VHtnT9Q4/sodium-neoforge-0.9.2%2Bmc26.3.jar",
+    "filename": "sodium-neoforge-0.9.2+mc26.3.jar",
+    "primary": true,
+    "size": 1208169
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "bAZQdGpg",
+  "project_id": "AANobbMI",
+  "version_number": "mc26.3-0.9.2-fabric",
+  "version_type": "release",
+  "date_published": "2026-09-15T15:57:23.369305Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "9acfe851e36f4fb27d7c5baa224e8bd4e0334283"
+    },
+    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/bAZQdGpg/sodium-fabric-0.9.2%2Bmc26.3.jar",
+    "filename": "sodium-fabric-0.9.2+mc26.3.jar",
+    "primary": true,
+    "size": 1908068
+   }
+  ],
+  "dependencies": []
+ }
+]
