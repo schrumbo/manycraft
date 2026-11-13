@@ -2,10 +2,25 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
+def nettyVersion = '4.2.16.Final'
+
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	implementation "io.netty:netty-codec-socks:${nettyVersion}"
+	implementation "io.netty:netty-handler-proxy:${nettyVersion}"
+	include("io.netty:netty-codec-socks:${nettyVersion}") { transitive = false }
+	include("io.netty:netty-handler-proxy:${nettyVersion}") { transitive = false }
+
+	testImplementation platform('org.junit:junit-bom:5.11.4')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+	useJUnitPlatform()
 }
 
 processResources {
@@ -24,4 +39,17 @@ tasks.withType(JavaCompile).configureEach {
 java {
 	sourceCompatibility = JavaVersion.VERSION_25
 	targetCompatibility = JavaVersion.VERSION_25
+}
+
+tasks.matching { it.name == 'runClient' }.configureEach { task ->
+	['ipc', 'instance', 'preview', 'proxy', 'hidden'].each { key ->
+		def value = project.findProperty("manycraft.${key}")
+		if (value != null) {
+			task.systemProperty "manycraft.${key}", value.toString()
+		}
+	}
+	def token = project.findProperty('manycraft.token')
+	if (token != null) {
+		task.environment 'MANYCRAFT_TOKEN', token.toString()
+	}
 }
