@@ -4,6 +4,8 @@ pub fn run(args: &[String]) -> Option<i32> {
     let run: fn(&[String]) -> i32 = match cmd.as_str() {
         "login" => super::auth::cli,
         "launch" => super::launch::cli,
+        "batch" => super::fleet::cli,
+        "mods" => super::modrinth::cli,
         _ => return None,
     };
     attach_console();

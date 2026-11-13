@@ -182,13 +182,17 @@ struct Options {
 
 fn parse(args: &[String]) -> Option<Options> {
     let mut options = Options { version: None, name: "Dev".to_owned(), account: None, server: None };
+    let mut named = false;
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let value = it.next()?.clone();
         match flag.as_str() {
             "--version" => options.version = Some(value),
-            "--name" => options.name = value,
-            "--account" => options.account = Some(value),
+            "--name" if options.account.is_none() && !named => {
+                options.name = value;
+                named = true;
+            }
+            "--account" if !named => options.account = Some(value),
             "--server" => options.server = Some(value),
             _ => return None,
         }
@@ -201,14 +205,21 @@ fn run(args: &[String]) -> Result<i32> {
         eprintln!("{USAGE}");
         return Ok(2);
     };
-    let (session, offline_name) = match &options.account {
-        None => (None, options.name),
+    let (session, offline_name, id) = match &options.account {
+        None => {
+            account::validate_offline_name(&options.name)?;
+            let id = account::offline_uuid(&options.name);
+            (None, options.name, id)
+        }
         Some(who) => {
             let accounts = account::load()?;
             let found = auth::find_account(&accounts, who)?;
             match found.kind {
-                AccountKind::Offline => (None, found.name.clone()),
-                AccountKind::Microsoft => (Some(Session::from(auth::session_for(found)?)), found.name.clone()),
+                AccountKind::Offline => {
+                    account::validate_offline_name(&found.name)?;
+                    (None, found.name.clone(), found.id)
+                }
+                AccountKind::Microsoft => (Some(Session::from(auth::session_for(found)?)), found.name.clone(), found.id),
             }
         }
     };
@@ -224,7 +235,7 @@ fn run(args: &[String]) -> Result<i32> {
     };
     let installed = install::install(&version, None, &report)?;
     println!("Minecraft {} with Fabric {}: downloaded {} files", installed.game_version, installed.loader_version, installed.downloaded);
-    let game_dir = paths::instances_dir().join(format!("dev-{offline_name}"));
+    let game_dir = paths::instances_dir().join(format!("dev-{}", id.simple()));
     let spec = LaunchSpec {
         installed,
         game_dir: game_dir.clone(),
