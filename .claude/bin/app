@@ -1,0 +1,11 @@
+#!/bin/bash
+TOOL="$(cd "$(dirname "$0")/../tools" && pwd)/drive.py"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    TOOL=$(cygpath -w "$TOOL")
+    p=$$
+    while [ -r "/proc/$p/ppid" ] && q=$(cat "/proc/$p/ppid") && [ "$q" != 1 ] && [ -r "/proc/$q/winpid" ]; do p=$q; done
+    APP_FROM_PID=$(cat "/proc/$p/winpid" 2>/dev/null) && export APP_FROM_PID
+    ;;
+esac
+exec python3 -I "$TOOL" "$@"
