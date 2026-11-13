@@ -8,7 +8,7 @@ use sha1::{Digest, Sha1};
 const ATTEMPTS: u32 = 3;
 const MAX_JSON: u64 = 64 << 20;
 const MAX_FILE: u64 = 1 << 30;
-const RENAME_ATTEMPTS: u32 = 5;
+const RENAME_ATTEMPTS: u32 = 12;
 
 /// HTTP agent, routed through `proxy` when given (`socks5://user:pass@host:port`, `http://host:port`),
 /// otherwise through the proxy from the environment, if any.
