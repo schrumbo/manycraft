@@ -17,7 +17,7 @@ final class BackgroundController {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 
 	record Profile(int fps, int renderDistance, int previewIntervalMs, int previewWidth) {
-		static final Profile DEFAULT = new Profile(1, 2, 3000, 320);
+		static final Profile DEFAULT = new Profile(3, 2, 3000, 320);
 
 		Profile merge(Protocol.Incoming.Profile update) {
 			return new Profile(
