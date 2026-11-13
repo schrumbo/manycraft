@@ -1,0 +1,312 @@
+//! A pretend fleet for driven runs: instances from the fixture accounts in a realistic mix of phases, with generated previews,
+//! so agents can test the grid without starting Minecraft or touching the keychain.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use super::model::Phase;
+use super::state::{Backend, Update, render_image};
+use crate::core::account::Account;
+use crate::core::batch::Batch;
+use crate::core::fleet;
+use crate::core::ipc::{ChatKind, Event, FromMod, StateKind, ToMod};
+
+const PREVIEW_W: u32 = 192;
+const PREVIEW_H: u32 = 108;
+const PREVIEW_EVERY: Duration = Duration::from_secs(3);
+const TICK: Duration = Duration::from_millis(250);
+const STAGGER: Duration = Duration::from_millis(400);
+const SERVER: &str = "play.example.net";
+
+enum Cmd {
+    Known(Vec<(String, String)>),
+    Start(Batch, Vec<Account>, Arc<AtomicBool>),
+    Stop(Vec<String>),
+    Send(String, ToMod),
+}
+
+/// The fake fleet: a thread that answers commands with plausible updates.
+pub struct Fake {
+    tx: mpsc::Sender<Cmd>,
+}
+
+impl Fake {
+    pub fn new(out: async_channel::Sender<Update>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let _ = std::thread::Builder::new().name("fake-fleet".into()).spawn(move || Sim::new(out, visible).run(&rx));
+        Self { tx }
+    }
+}
+
+impl Backend for Fake {
+    fn start(&self, batch: Batch, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
+        let _ = self.tx.send(Cmd::Start(batch, accounts, cancel));
+    }
+
+    fn stop(&self, keys: Vec<String>) {
+        let _ = self.tx.send(Cmd::Stop(keys));
+    }
+
+    fn send(&self, key: &str, message: ToMod) {
+        let _ = self.tx.send(Cmd::Send(key.to_owned(), message));
+    }
+
+    fn read_preview(&self, _key: String, _path: PathBuf) {}
+
+    fn quit(&self) {}
+
+    fn known(&self, instances: Vec<(String, String)>) {
+        let _ = self.tx.send(Cmd::Known(instances));
+    }
+}
+
+struct Running {
+    seq: u32,
+    next_preview: Instant,
+}
+
+struct Sim {
+    out: async_channel::Sender<Update>,
+    visible: Arc<Mutex<HashSet<String>>>,
+    names: HashMap<String, String>,
+    seeded: bool,
+    running: HashMap<String, Running>,
+    queue: Vec<(Instant, Option<Arc<AtomicBool>>, Update)>,
+    reconnects: u64,
+}
+
+fn hash(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+fn state(instance: &str, kind: StateKind, reason: Option<&str>) -> Update {
+    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned) } })
+}
+
+fn connected(instance: &str) -> Update {
+    Update::Ipc(Event::Connected { instance: instance.to_owned(), pid: 0, mod_version: "fake".into() })
+}
+
+impl Sim {
+    fn new(out: async_channel::Sender<Update>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
+        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0 }
+    }
+
+    fn run(mut self, rx: &mpsc::Receiver<Cmd>) {
+        loop {
+            match rx.recv_timeout(TICK) {
+                Ok(cmd) => self.command(cmd),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            while let Ok(cmd) = rx.try_recv() {
+                self.command(cmd);
+            }
+            if !self.tick() {
+                return;
+            }
+        }
+    }
+
+    fn at(&mut self, delay: Duration, cancel: Option<&Arc<AtomicBool>>, update: Update) {
+        self.queue.push((Instant::now() + delay, cancel.cloned(), update));
+    }
+
+    fn launch(&mut self, key: &str, after: Duration, cancel: Option<&Arc<AtomicBool>>) {
+        self.at(after, cancel, Update::Launched { key: key.to_owned() });
+        self.at(after + Duration::from_millis(1500), cancel, connected(key));
+        self.at(after + Duration::from_millis(2500), cancel, state(key, StateKind::Connecting, None));
+        self.at(after + Duration::from_millis(3500), cancel, state(key, StateKind::Playing, None));
+    }
+
+    fn command(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Known(list) => {
+                self.names = list.into_iter().collect();
+                if !self.seeded {
+                    self.seeded = true;
+                    self.seed();
+                }
+            }
+            Cmd::Start(batch, accounts, cancel) => {
+                let total = accounts.len();
+                for (n, account) in accounts.iter().enumerate() {
+                    let key = fleet::instance_key(&batch, account.id);
+                    let after = STAGGER * n as u32;
+                    self.launch(&key, after, Some(&cancel));
+                    self.at(after, Some(&cancel), Update::Progress { batch: batch.id.clone(), done: n + 1, total });
+                }
+            }
+            Cmd::Stop(keys) => {
+                for key in keys {
+                    self.queue.retain(|(_, _, u)| !touches(u, &key));
+                    self.at(Duration::from_millis(300), None, Update::Exited { key, code: Some(0) });
+                }
+            }
+            Cmd::Send(key, message) => self.message(&key, message),
+        }
+    }
+
+    fn message(&mut self, key: &str, message: ToMod) {
+        match message {
+            ToMod::Reconnect => {
+                self.reconnects += 1;
+                self.at(Duration::from_millis(500), None, state(key, StateKind::Connecting, None));
+                if self.reconnects.is_multiple_of(4) {
+                    self.at(Duration::from_secs(2), None, state(key, StateKind::Disconnected, Some("Zeitüberschreitung")));
+                } else {
+                    self.at(Duration::from_secs(2), None, state(key, StateKind::Playing, None));
+                }
+            }
+            ToMod::Show { .. } | ToMod::Hide => {
+                let visible = matches!(message, ToMod::Show { .. });
+                self.at(Duration::ZERO, None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Window { visible, focused: visible } }));
+            }
+            ToMod::ChatSend { text } => {
+                let from = self.names.get(key).cloned();
+                self.at(Duration::from_millis(100), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind: ChatKind::Player, from, text } }));
+            }
+            ToMod::Quit => self.at(Duration::from_millis(300), None, Update::Exited { key: key.to_owned(), code: Some(0) }),
+            ToMod::Profile { .. } | ToMod::Hotkeys { .. } => {}
+        }
+    }
+
+    fn seed(&mut self) {
+        let mut keys: Vec<String> = self.names.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            let kind = hash(&key) % 40;
+            let seed = |phase: Phase, attempts: u32| Update::Seed { key: key.clone(), phase, attempts };
+            match kind {
+                0..=27 => {
+                    self.at(Duration::ZERO, None, connected(&key));
+                    self.at(Duration::ZERO, None, state(&key, StateKind::Playing, None));
+                }
+                28 | 29 => {
+                    self.at(Duration::ZERO, None, connected(&key));
+                    self.at(Duration::ZERO, None, state(&key, StateKind::Menu, None));
+                }
+                30..=32 => {
+                    self.at(Duration::ZERO, None, seed(Phase::Starting { done: 12, total: 50 }, 0));
+                    let after = Duration::from_millis(4000 + hash(&key) % 12_000);
+                    self.launch(&key, after, None);
+                }
+                33 | 34 => {
+                    self.at(Duration::ZERO, None, connected(&key));
+                    self.at(Duration::ZERO, None, seed(Phase::Disconnected { server: Some(SERVER.into()), reason: "Zeitüberschreitung".into() }, 3));
+                }
+                35 => self.at(Duration::ZERO, None, seed(Phase::LoginNeeded, 0)),
+                36 => self.at(Duration::ZERO, None, seed(Phase::Crashed { code: Some(1) }, 0)),
+                _ => {}
+            }
+            if kind <= 27 && hash(&key).is_multiple_of(7) {
+                let from = Some("Notch".to_owned());
+                self.at(Duration::ZERO, None, Update::Ipc(Event::Message { instance: key.clone(), message: FromMod::Chat { kind: ChatKind::Whisper, from, text: "hi".into() } }));
+            }
+        }
+    }
+
+    fn tick(&mut self) -> bool {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut i = 0;
+        while i < self.queue.len() {
+            if self.queue[i].0 <= now {
+                due.push(self.queue.swap_remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        due.sort_by_key(|(at, _, _)| *at);
+        for (_, cancel, update) in due {
+            if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                continue;
+            }
+            match &update {
+                Update::Ipc(Event::Connected { instance, .. }) => {
+                    self.running.insert(instance.clone(), Running { seq: 0, next_preview: now });
+                }
+                Update::Exited { key, .. } => {
+                    self.running.remove(key);
+                }
+                _ => {}
+            }
+            if self.out.send_blocking(update).is_err() {
+                return false;
+            }
+        }
+        let visible = self.visible.lock().map(|v| v.clone()).unwrap_or_default();
+        for (key, run) in &mut self.running {
+            if !visible.contains(key) || run.next_preview > now {
+                continue;
+            }
+            run.seq += 2;
+            run.next_preview = now + PREVIEW_EVERY + Duration::from_millis(hash(key) % 1500);
+            let Some(image) = render_image(PREVIEW_W, PREVIEW_H, frame(hash(key), run.seq)) else { continue };
+            if self.out.send_blocking(Update::Preview { key: key.clone(), seq: run.seq, image }).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn touches(update: &Update, key: &str) -> bool {
+    match update {
+        Update::Launched { key: k } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } => k == key,
+        Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
+        Update::Preparing { .. } | Update::Progress { .. } => false,
+    }
+}
+
+fn frame(seed: u64, seq: u32) -> Vec<u8> {
+    let (w, h) = (PREVIEW_W as usize, PREVIEW_H as usize);
+    let sky = [(80 + seed % 60) as u8, (140 + (seed >> 8) % 60) as u8, (200 + (seed >> 16) % 50) as u8];
+    let ground = [(70 + (seed >> 24) % 40) as u8, (110 + (seed >> 32) % 50) as u8, (40 + (seed >> 40) % 30) as u8];
+    let horizon = h * 3 / 5 + (seed % 8) as usize;
+    let sun = (seed as usize / 7 + seq as usize * 9) % (w + 24);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let px = if (x + 24).abs_diff(sun + 12) < 8 && y.abs_diff(18) < 8 {
+                [250, 230, 140]
+            } else if y < horizon {
+                let shade = (y * 40 / horizon) as u8;
+                [sky[0].saturating_sub(shade), sky[1].saturating_sub(shade), sky[2].saturating_sub(shade / 2)]
+            } else {
+                let block = ((x / 12 + y / 12) % 2) as u8 * 12;
+                [ground[0].saturating_add(block), ground[1].saturating_add(block), ground[2]]
+            };
+            let at = (y * w + x) * 4;
+            out[at..at + 4].copy_from_slice(&[px[0], px[1], px[2], 255]);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_have_the_preview_size_and_move() {
+        let a = frame(42, 2);
+        assert_eq!(a.len(), (PREVIEW_W * PREVIEW_H * 4) as usize);
+        assert_ne!(a, frame(42, 4));
+    }
+
+    #[test]
+    fn stop_drops_pending_updates_of_that_instance() {
+        let (out, rx) = async_channel::unbounded();
+        let mut sim = Sim::new(out, Arc::default());
+        sim.launch("a", Duration::from_secs(60), None);
+        sim.launch("b", Duration::from_secs(60), None);
+        sim.command(Cmd::Stop(vec!["a".into()]));
+        assert!(sim.queue.iter().all(|(_, _, u)| !touches(u, "a") || matches!(u, Update::Exited { .. })));
+        assert!(sim.queue.iter().any(|(_, _, u)| touches(u, "b")));
+        drop(rx);
+    }
+}

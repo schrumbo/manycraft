@@ -406,6 +406,11 @@ pub fn delete_batch(target: &Batch) -> Result<PathBuf> {
     Ok(keep)
 }
 
+/// Where the companion mod of `account` in `batch` writes its preview frames.
+pub fn preview_path(batch: &Batch, account: Uuid) -> PathBuf {
+    batch.instance_dir(account).join(PREVIEW_FILE)
+}
+
 /// Key of the instance of `account` in `batch`, used for IPC and the fleet.
 pub fn instance_key(batch: &Batch, account: Uuid) -> String {
     format!("{}-{}", batch.id, account.simple())
@@ -478,6 +483,14 @@ impl RunningInstance {
     }
 }
 
+/// A batch readied by `Fleet::prepare_launch`: mods synced, server found, game installed.
+pub struct Prepared {
+    batch: Batch,
+    installed: Installed,
+    server_addrs: Vec<SocketAddr>,
+    companion_jar: Option<PathBuf>,
+}
+
 /// Outcome of starting one account: its instance key, or why it did not start.
 pub type Started = (Uuid, Result<String>);
 
@@ -499,21 +512,41 @@ impl Fleet {
 
     /// Installs the batch's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
-    pub fn start_batch(&mut self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
+    pub fn start_batch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
+        let prepared = self.prepare_launch(batch, companion_jar, progress)?;
+        let ipc_address = self.ipc.address();
+        let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
+            Ok(Box::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?))
+        };
+        Ok(self.start_all(batch, accounts, &prepared.server_addrs, &SystemClock, launch))
+    }
+
+    /// Syncs the batch's mods, finds its server and installs its game, once before `start_one` launches its accounts.
+    pub fn prepare_launch(&self, batch: &Batch, companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         sync_mods(batch)?;
         let server_addrs = match batch.server.as_deref() {
             Some(s) => resolve_all(s).with_context(|| format!("cannot find the server {s}"))?,
             None => Vec::new(),
         };
         let installed = install::install(&batch.game_version, batch.loader_version.as_deref(), progress)?;
-        let ipc_address = self.ipc.address();
-        let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(launch_one(batch, account, companion_jar, &installed, &ipc_address, key, token)?))
-        };
-        Ok(self.start_all(batch, accounts, &server_addrs, &SystemClock, launch))
+        Ok(Prepared { batch: batch.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
     }
 
-    fn start_all(&mut self, batch: &Batch, accounts: &[Account], server_addrs: &[SocketAddr], clock: &dyn Clock, mut launch: impl FnMut(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Vec<Started> {
+    /// Prepares and starts `account` in the prepared batch right away and returns its instance key.
+    /// Refuses an instance that already runs and an account that is already on the same server in another batch.
+    pub fn start_one(&self, prepared: &Prepared, account: &Account) -> Result<String> {
+        let ipc_address = self.ipc.address();
+        self.launch_checked(&prepared.batch, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
+            Ok(Box::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?))
+        })
+    }
+
+    /// Sends `message` to the companion mod of the instance `key`. Fails when it is not connected.
+    pub fn send(&self, key: &str, message: &ipc::ToMod) -> Result<()> {
+        self.ipc.send(key, message)
+    }
+
+    fn start_all(&self, batch: &Batch, accounts: &[Account], server_addrs: &[SocketAddr], clock: &dyn Clock, mut launch: impl FnMut(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Vec<Started> {
         let mut last: Option<Instant> = None;
         let mut outcomes = Vec::with_capacity(accounts.len());
         for account in accounts {
@@ -527,16 +560,22 @@ impl Fleet {
                 }
                 let started = clock.now();
                 last = Some(started);
-                let token = self.ipc.register(&key);
-                let child = launch(account, &key, &token).inspect_err(|_| self.ipc.unregister(&key))?;
-                let pid = child.id();
-                let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None };
-                self.insert(key.clone(), instance);
-                Ok(key.clone())
+                self.launch_checked(batch, account, server_addrs, started, &mut launch)
             });
             outcomes.push((account.id, result));
         }
         outcomes
+    }
+
+    fn launch_checked(&self, batch: &Batch, account: &Account, server_addrs: &[SocketAddr], started: Instant, launch: impl FnOnce(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Result<String> {
+        let key = instance_key(batch, account.id);
+        self.check_free(&key, account, server_addrs)?;
+        let token = self.ipc.register(&key);
+        let child = launch(account, &key, &token).inspect_err(|_| self.ipc.unregister(&key))?;
+        let pid = child.id();
+        let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None };
+        self.insert(key.clone(), instance);
+        Ok(key)
     }
 
     fn check_free(&self, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
@@ -619,7 +658,8 @@ impl Fleet {
         self.stop_all(&keys);
     }
 
-    fn stop_all(&self, keys: &[String]) {
+    /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds.
+    pub fn stop_all(&self, keys: &[String]) {
         let asked: Vec<&String> = keys.iter().filter(|k| self.is_running(k) && self.ipc.send(k, &ipc::ToMod::Quit).is_ok()).collect();
         let deadline = Instant::now() + QUIT_GRACE;
         while asked.iter().any(|k| self.is_running(k)) && Instant::now() < deadline {
@@ -1209,7 +1249,7 @@ mod tests {
 
     #[test]
     fn the_same_account_cannot_join_the_same_server_twice() {
-        let (mut fleet, _events) = Fleet::new().unwrap();
+        let (fleet, _events) = Fleet::new().unwrap();
         let clock = FakeClock::new();
         let exits = RefCell::default();
         let tokens = RefCell::default();
@@ -1263,7 +1303,7 @@ mod tests {
 
     #[test]
     fn a_failed_launch_is_reported_and_unregistered() {
-        let (mut fleet, _events) = Fleet::new().unwrap();
+        let (fleet, _events) = Fleet::new().unwrap();
         let batch = Batch::new("A", "26.3");
         let alts = accounts(&["AltOne"]);
         let outcomes = fleet.start_all(&batch, &alts, &[], &FakeClock::new(), |_: &Account, _: &str, _: &str| Err(anyhow!("no java")));
@@ -1361,7 +1401,7 @@ mod tests {
 
     #[test]
     fn the_reaper_runs_only_while_instances_live() {
-        let (mut fleet, _events) = Fleet::new().unwrap();
+        let (fleet, _events) = Fleet::new().unwrap();
         let exits = RefCell::default();
         let tokens = RefCell::default();
         let batch = Batch::new("A", "26.3");
@@ -1381,7 +1421,7 @@ mod tests {
     #[test]
     fn stop_asks_a_connected_instance_to_quit_first() {
         use std::io::{BufRead, BufReader, Write};
-        let (mut fleet, events) = Fleet::new().unwrap();
+        let (fleet, events) = Fleet::new().unwrap();
         let exits = RefCell::default();
         let tokens = RefCell::default();
         let batch = Batch::new("A", "26.3");
@@ -1404,6 +1444,56 @@ mod tests {
         client.join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(fleet.exit_code(&key), Some(Some(0)));
+    }
+
+    #[test]
+    fn send_reaches_a_connected_mod_and_fails_otherwise() {
+        use std::io::{BufRead, BufReader, Write};
+        let (fleet, events) = Fleet::new().unwrap();
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let batch = Batch::new("A", "26.3");
+        let alts = accounts(&["AltOne"]);
+        let key = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), launcher(&exits, &tokens)).unwrap();
+        assert!(fleet.send(&key, &ipc::ToMod::Hide).is_err());
+        let mut stream = std::net::TcpStream::connect(fleet.ipc.address()).unwrap();
+        let hello = serde_json::json!({"t": "hello", "instance": key, "token": tokens.borrow()[0], "pid": 1, "mod_version": "0"});
+        stream.write_all(format!("{hello}
+").as_bytes()).unwrap();
+        assert!(matches!(events.recv_timeout(Duration::from_secs(3)).unwrap(), ipc::Event::Connected { .. }));
+        fleet.send(&key, &ipc::ToMod::Reconnect).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        assert_eq!(line, "{\"t\":\"reconnect\"}
+");
+    }
+
+    #[test]
+    fn a_single_start_refuses_a_running_instance_and_a_taken_server() {
+        let (fleet, _events) = Fleet::new().unwrap();
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let alts = accounts(&["AltOne"]);
+        let (a, b) = (Batch::new("A", "26.3"), Batch::new("B", "26.3"));
+        let server = [addr("10.0.0.1:25565")];
+        let key = fleet.launch_checked(&a, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap();
+        assert_eq!(key, instance_key(&a, alts[0].id));
+        assert!(format!("{:#}", fleet.launch_checked(&a, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap_err()).contains("already running"));
+        assert!(format!("{:#}", fleet.launch_checked(&b, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap_err()).contains("already on the server"));
+        assert_eq!(tokens.borrow().len(), 1);
+        assert!(fleet.is_running(&key));
+    }
+
+    #[test]
+    fn the_fleet_is_shared_across_threads_and_previews_land_where_the_mod_writes() {
+        fn shared<T: Send + Sync>() {}
+        shared::<Fleet>();
+        shared::<Prepared>();
+        let batch = Batch::new("A", "26.3");
+        let alt = Account::offline("AltOne").unwrap();
+        let dir = batch.instance_dir(alt.id);
+        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k").unwrap();
+        assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch, alt.id).display())));
     }
 
     #[test]

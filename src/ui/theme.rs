@@ -63,6 +63,40 @@ pub mod iconsize {
     pub const HERO: f32 = 40.;
 }
 
+/// The instance grid and its tiles.
+pub mod tile {
+    /// Smallest width a tile gets in each size.
+    pub const SMALL: f32 = 168.;
+    pub const MEDIUM: f32 = 240.;
+    pub const LARGE: f32 = 340.;
+    /// Smallest tile width "Einpassen" goes down to before it scrolls after all.
+    pub const FIT_MIN: f32 = 96.;
+    /// Height of the strip under the preview.
+    pub const STRIP: f32 = 44.;
+    /// Height of the strip on small tiles, where only the name and status fit.
+    pub const STRIP_SMALL: f32 = 38.;
+    /// Width of the attention and focus ring.
+    pub const RING: f32 = 2.;
+    /// How bright the preview stays behind an account that needs work.
+    pub const DIMMED: f32 = 0.7;
+    /// The account's initial on a tile without a preview.
+    pub const INITIAL: f32 = 28.;
+    /// The skin head in the strip.
+    pub const HEAD: f32 = 22.;
+    /// Unread whispers badge.
+    pub const BADGE: f32 = 18.;
+}
+
+/// The sidebar and toolbar around the grid.
+pub mod shell {
+    pub const SIDEBAR: f32 = 220.;
+    pub const TOOLBAR: f32 = 48.;
+    pub const ROW: f32 = 28.;
+    pub const SEARCH: f32 = 180.;
+    /// The attention dot in a sidebar row.
+    pub const DOT: f32 = 6.;
+}
+
 /// Opacities that tint states.
 pub mod tint {
     /// A control that waits for something.

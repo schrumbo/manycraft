@@ -36,7 +36,9 @@ fn main() {
     }
     core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
     ui::theme::start_with(ui::theme::Choice::parse(&std::env::var("MANYCRAFT_THEME").unwrap_or_default()));
-    gpui_kit::application().with_assets(Assets).run(|cx: &mut App| {
+    let app = gpui_kit::application().with_assets(Assets);
+    app.on_reopen(ui::state::show_grid);
+    app.run(|cx: &mut App| {
         gpui_kit::init(cx);
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
         ui::model::init(cx);

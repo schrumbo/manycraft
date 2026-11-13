@@ -3785,6 +3785,7 @@ dependencies = [
  "dirs 6.0.0",
  "gpui-kit",
  "hickory-resolver",
+ "image",
  "junction",
  "keyring",
  "libc",
