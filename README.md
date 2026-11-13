@@ -27,7 +27,7 @@ Manycraft runs on Windows, macOS and Linux and supports Fabric.
 
 ## Build from source
 
-Requires a current stable [Rust](https://rustup.rs) toolchain and, for the mod, JDK 25.
+Requires a current stable [Rust](https://rustup.rs) toolchain and JDK 25: the companion mod is built and embedded into the app during `cargo build`.
 
 ```sh
 git clone https://github.com/schrumbo/manycraft.git
@@ -35,7 +35,7 @@ cd manycraft
 cargo run
 ```
 
-Build the companion mod with `./gradlew build` inside `mod/`.
+To skip the Gradle step, point `MANYCRAFT_COMPANION_JAR` at a prebuilt companion jar.
 
 On Debian or Ubuntu, install the system libraries first:
 

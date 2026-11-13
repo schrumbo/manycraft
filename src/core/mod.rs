@@ -4,6 +4,8 @@ pub mod auth;
 pub mod batch;
 pub mod cli;
 #[allow(dead_code)]
+pub mod companion;
+#[allow(dead_code)]
 pub mod drive;
 pub mod fleet;
 pub mod i18n;
