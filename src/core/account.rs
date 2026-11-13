@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use md5::Digest;
 use uuid::Uuid;
 
 use super::{net, paths};
@@ -45,7 +46,7 @@ impl Account {
 
 /// The UUID a vanilla server in offline mode gives the player `name`: UUID v3 of `OfflinePlayer:<name>`.
 pub fn offline_uuid(name: &str) -> Uuid {
-    let mut bytes = md5(format!("OfflinePlayer:{name}").as_bytes());
+    let mut bytes: [u8; 16] = md5::Md5::digest(format!("OfflinePlayer:{name}").as_bytes()).into();
     bytes[6] = bytes[6] & 0x0f | 0x30;
     bytes[8] = bytes[8] & 0x3f | 0x80;
     Uuid::from_bytes(bytes)
@@ -97,46 +98,6 @@ pub fn delete_token(id: Uuid) -> Result<()> {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e).context("cannot remove the sign-in from the system keychain"),
     }
-}
-
-fn md5(data: &[u8]) -> [u8; 16] {
-    const SHIFTS: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-    let mut state = [0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
-    let mut message = data.to_vec();
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend(((data.len() as u64) * 8).to_le_bytes());
-    for chunk in message.chunks_exact(64) {
-        let mut words = [0u32; 16];
-        for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(4)) {
-            *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        }
-        let [mut a, mut b, mut c, mut d] = state;
-        for i in 0..64 {
-            let (mix, index) = match i / 16 {
-                0 => ((b & c) | (!b & d), i),
-                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-                2 => (b ^ c ^ d, (3 * i + 5) % 16),
-                _ => (c ^ (b | !d), (7 * i) % 16),
-            };
-            let constant = ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32;
-            let sum = mix.wrapping_add(a).wrapping_add(constant).wrapping_add(words[index]);
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(sum.rotate_left(SHIFTS[i / 16 * 4 + i % 4]));
-        }
-        for (slot, value) in state.iter_mut().zip([a, b, c, d]) {
-            *slot = slot.wrapping_add(value);
-        }
-    }
-    let mut out = [0; 16];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(state) {
-        chunk.copy_from_slice(&word.to_le_bytes());
-    }
-    out
 }
 
 fn entry(id: Uuid) -> Result<keyring::Entry> {
@@ -247,19 +208,7 @@ mod tests {
         assert_eq!(accounts, vec![account(1, "New", Some("http://p:1")), account(2, "Two", None), account(3, "Three", None)]);
     }
 
-    fn hex(bytes: [u8; 16]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
 
-    #[test]
-    fn md5_matches_rfc_1321_vectors() {
-        assert_eq!(hex(md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(hex(md5(b"abc")), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(hex(md5(b"message digest")), "f96b697d7cb7938d525a2f31aaf161d0");
-        assert_eq!(hex(md5(b"The quick brown fox jumps over the lazy dog")), "9e107d9d372bb6826bd81d3542a419d6");
-        let long = "1234567890".repeat(8);
-        assert_eq!(hex(md5(long.as_bytes())), "57edf4a22be3c955ac49da2e2107b67a");
-    }
 
     #[test]
     fn offline_uuid_matches_vanilla() {

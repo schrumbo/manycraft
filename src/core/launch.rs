@@ -76,7 +76,7 @@ impl LaunchSpec {
         let installed = &self.installed;
         let (name, uuid, token, xuid, user_type) = match &self.session {
             Some(s) => (s.name.clone(), s.uuid.clone(), s.access_token.clone(), s.xuid.clone(), "msa"),
-            None => (self.offline_name.clone(), offline_uuid(&self.offline_name), "0".to_owned(), "0".to_owned(), "legacy"),
+            None => (self.offline_name.clone(), crate::core::account::offline_uuid(&self.offline_name).to_string(), "0".to_owned(), "0".to_owned(), "legacy"),
         };
         let classpath = installed.classpath.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(CLASSPATH_SEPARATOR);
         let version_type = installed.profile.kind.clone().unwrap_or_else(|| "release".to_owned());
@@ -142,48 +142,6 @@ impl LaunchSpec {
     }
 }
 
-fn offline_uuid(name: &str) -> String {
-    let mut bytes = md5(format!("OfflinePlayer:{name}").as_bytes());
-    bytes[6] = (bytes[6] & 0x0f) | 0x30;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(bytes).to_string()
-}
-
-fn md5(input: &[u8]) -> [u8; 16] {
-    const SHIFTS: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-    let k: Vec<u32> = (0..64).map(|i| ((f64::from(i + 1).sin().abs()) * 4_294_967_296.0) as u32).collect();
-    let mut state: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
-    let mut data = input.to_vec();
-    data.push(0x80);
-    while data.len() % 64 != 56 {
-        data.push(0);
-    }
-    data.extend(((input.len() as u64) * 8).to_le_bytes());
-    for block in data.chunks_exact(64) {
-        let words: Vec<u32> = block.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
-        let [mut a, mut b, mut c, mut d] = state;
-        for i in 0..64 {
-            let (f, g) = match i / 16 {
-                0 => ((b & c) | (!b & d), i),
-                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-                2 => (b ^ c ^ d, (3 * i + 5) % 16),
-                _ => (c ^ (b | !d), (7 * i) % 16),
-            };
-            let rotated = a.wrapping_add(f).wrapping_add(k[i]).wrapping_add(words[g]).rotate_left(SHIFTS[(i / 16) * 4 + i % 4]);
-            (a, d, c) = (d, c, b);
-            b = b.wrapping_add(rotated);
-        }
-        for (s, v) in state.iter_mut().zip([a, b, c, d]) {
-            *s = s.wrapping_add(v);
-        }
-    }
-    let mut out = [0u8; 16];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(state) {
-        chunk.copy_from_slice(&word.to_le_bytes());
-    }
-    out
-}
-
 /// Starts the game with output going to `logs/manycraft-launch.log` in the game folder.
 pub fn spawn(spec: &LaunchSpec) -> Result<Child> {
     let logs = spec.game_dir.join("logs");
@@ -239,7 +197,7 @@ fn run(args: &[String]) -> Result<i32> {
     };
     let report = |p: install::Progress| {
         let step = (p.total / 10).max(1);
-        if p.total > 0 && (p.done == 0 || p.done == p.total || (p.total >= 100 && p.done % step == 0)) {
+        if p.total > 0 && (p.done == 0 || p.done == p.total || (p.total >= 100 && p.done.is_multiple_of(step))) {
             println!("{}: {}/{}", p.stage.label(), p.done, p.total);
         }
     };
@@ -385,23 +343,11 @@ mod tests {
     fn offline_session_uses_the_name_and_a_stable_uuid() {
         let args = spec(None, None).arguments().unwrap();
         assert_eq!(after(args.as_slice(), "--username"), "Dev");
-        assert_eq!(after(args.as_slice(), "--uuid"), offline_uuid("Dev"));
-        assert_ne!(offline_uuid("Dev"), offline_uuid("Other"));
-        assert_eq!(offline_uuid("Dev").len(), 36);
-    }
+        assert_eq!(after(args.as_slice(), "--uuid"), crate::core::account::offline_uuid("Dev").to_string());
+        assert_ne!(crate::core::account::offline_uuid("Dev"), crate::core::account::offline_uuid("Other"));
+            }
 
-    #[test]
-    fn offline_uuid_is_the_vanilla_one() {
-        assert_eq!(offline_uuid("Notch"), "b50ad385-829d-3141-a216-7e7d7539ba7f");
-    }
 
-    #[test]
-    fn md5_matches_known_digests() {
-        let hex = |d: [u8; 16]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        assert_eq!(hex(md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(hex(md5(b"abc")), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(hex(md5(&[b'a'; 200])), "887f30b43b2867f4a9accceee7d16e6c");
-    }
 
     #[test]
     fn token_is_absent_from_debug_output() {
