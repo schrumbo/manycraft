@@ -3,7 +3,10 @@ pub mod auth;
 #[allow(dead_code)]
 pub mod batch;
 pub mod cli;
+#[allow(dead_code)]
+pub mod drive;
 pub mod fleet;
+pub mod i18n;
 pub mod install;
 #[allow(dead_code)]
 pub mod ipc;
