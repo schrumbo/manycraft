@@ -6,6 +6,7 @@
 	"description": "Connects this instance to the Manycraft window.",
 	"license": "AGPL-3.0-only",
 	"environment": "client",
+	"mixins": ["manycraft.mixins.json"],
 	"entrypoints": {
 		"client": ["io.github.schrumbo.manycraft.ManycraftClient"]
 	},

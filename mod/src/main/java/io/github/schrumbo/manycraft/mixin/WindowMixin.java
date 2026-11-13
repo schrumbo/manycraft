@@ -1,0 +1,19 @@
+package io.github.schrumbo.manycraft.mixin;
+
+import io.github.schrumbo.manycraft.CompanionHooks;
+import com.mojang.blaze3d.platform.Window;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.ModifyArg;
+
+@Mixin(Window.class)
+abstract class WindowMixin {
+	@ModifyArg(
+		method = "createWindow",
+		at = @At(value = "INVOKE", target = "Lcom/mojang/renderpearl/api/device/GpuBackend;createWindow(Ljava/lang/String;IIJ)J"),
+		index = 3
+	)
+	private long manycraft$startHidden(long flags) {
+		return CompanionHooks.startHidden() ? flags | 8L : flags;
+	}
+}

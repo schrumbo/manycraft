@@ -1,0 +1,21 @@
+{
+	"required": true,
+	"package": "io.github.schrumbo.manycraft.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"ConnectScreenMixin",
+		"ConnectionInitializerMixin",
+		"DeathScreenAccessor",
+		"DisconnectedScreenAccessor",
+		"FramerateLimitTrackerMixin",
+		"KeyboardHandlerMixin",
+		"MinecraftMixin",
+		"OptionsAccessor",
+		"OptionsMixin",
+		"ServerStatusPingerMixin",
+		"WindowMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
