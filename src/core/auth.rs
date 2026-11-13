@@ -324,7 +324,8 @@ fn login_offline(name: &str) -> Result<()> {
     account::save(&accounts)
 }
 
-fn find_account<'a>(accounts: &'a [Account], who: &str) -> Result<&'a Account> {
+/// The saved account named `who` (case-insensitive) or with that id in any spelling.
+pub fn find_account<'a>(accounts: &'a [Account], who: &str) -> Result<&'a Account> {
     let id = Uuid::parse_str(who).ok();
     let mut matches = accounts.iter().filter(|a| id == Some(a.id) || a.name.eq_ignore_ascii_case(who));
     let account = matches.next().with_context(|| format!("no saved account {who}"))?;

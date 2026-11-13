@@ -64,6 +64,7 @@ def write_config(folder, port):
         "level-type": "minecraft\\:flat",
         "generate-structures": "false",
         "spawn-monsters": "false",
+        "white-list": "false",
     }
     (folder / "server.properties").write_text("".join(f"{k}={v}\n" for k, v in props.items()))
 

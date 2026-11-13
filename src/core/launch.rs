@@ -9,13 +9,15 @@ use std::process::{Child, Command, Stdio};
 use anyhow::{Context, Result};
 
 use super::install::meta::{Env, expand, substitute};
+use super::account::{self, AccountKind};
+use super::auth;
 use super::install::{self, Installed};
 use super::paths;
 
 const LAUNCHER_NAME: &str = "Manycraft";
 const CLASSPATH_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
 const REDACTED: &str = "<redacted>";
-const USAGE: &str = "usage: manycraft launch [--version <version>] [--name <name>] [--server <host:port>]";
+const USAGE: &str = "usage: manycraft launch [--version <version>] [--account <name or id> | --name <offline name>] [--server <host:port>]";
 
 /// A signed-in account's session. Its token is never printed.
 #[derive(Clone)]
@@ -24,6 +26,12 @@ pub struct Session {
     pub uuid: String,
     pub access_token: String,
     pub xuid: String,
+}
+
+impl From<auth::Session> for Session {
+    fn from(s: auth::Session) -> Self {
+        Session { name: s.name, uuid: s.uuid.to_string(), access_token: s.access_token, xuid: s.xuid }
+    }
 }
 
 impl fmt::Debug for Session {
@@ -168,17 +176,19 @@ pub fn cli(args: &[String]) -> i32 {
 struct Options {
     version: Option<String>,
     name: String,
+    account: Option<String>,
     server: Option<String>,
 }
 
 fn parse(args: &[String]) -> Option<Options> {
-    let mut options = Options { version: None, name: "Dev".to_owned(), server: None };
+    let mut options = Options { version: None, name: "Dev".to_owned(), account: None, server: None };
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let value = it.next()?.clone();
         match flag.as_str() {
             "--version" => options.version = Some(value),
             "--name" => options.name = value,
+            "--account" => options.account = Some(value),
             "--server" => options.server = Some(value),
             _ => return None,
         }
@@ -190,6 +200,17 @@ fn run(args: &[String]) -> Result<i32> {
     let Some(options) = parse(args) else {
         eprintln!("{USAGE}");
         return Ok(2);
+    };
+    let (session, offline_name) = match &options.account {
+        None => (None, options.name),
+        Some(who) => {
+            let accounts = account::load()?;
+            let found = auth::find_account(&accounts, who)?;
+            match found.kind {
+                AccountKind::Offline => (None, found.name.clone()),
+                AccountKind::Microsoft => (Some(Session::from(auth::session_for(found)?)), found.name.clone()),
+            }
+        }
     };
     let version = match options.version {
         Some(v) => v,
@@ -203,12 +224,12 @@ fn run(args: &[String]) -> Result<i32> {
     };
     let installed = install::install(&version, None, &report)?;
     println!("Minecraft {} with Fabric {}: downloaded {} files", installed.game_version, installed.loader_version, installed.downloaded);
-    let game_dir = paths::instances_dir().join("dev");
+    let game_dir = paths::instances_dir().join(format!("dev-{offline_name}"));
     let spec = LaunchSpec {
         installed,
         game_dir: game_dir.clone(),
-        session: None,
-        offline_name: options.name,
+        session,
+        offline_name,
         memory_mb: 4096,
         server: options.server,
         extra_jvm: Vec::new(),
