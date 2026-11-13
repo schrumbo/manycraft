@@ -18,7 +18,7 @@ remove() {
   rm -rf "$wt" 2>/dev/null
   git -C "$ROOT" worktree prune
   [ -d "$wt" ] && { echo "could not delete $wt; a process still holds it" >&2; exit 1; }
-  git -C "$ROOT" branch -D "herd/$name"
+  git -C "$ROOT" branch -d "herd/$name"
   rm -rf "$ROOT/target/herd-$name"
 }
 
