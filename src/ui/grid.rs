@@ -8,15 +8,15 @@ use std::time::Instant;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditBatch, Play};
+use super::actions::{EditBatch, Play, StartAll, StartBatch};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow, TileSize};
 use super::model::{self, Instance, Model};
-use super::motion::{SLOW, Soft};
-use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint};
+use super::motion::SLOW;
+use super::theme::{Theme, control, font, iconsize, shell, space, tile};
 use super::tile::{Geometry, TileData};
-use super::widgets::{KeyNav, icon, primary_button};
-use crate::core::i18n::tr;
+use super::widgets::{icon, primary_button};
+use crate::core::i18n::{tr, trf};
 
 /// Keyboard selection, sort order and scroll position of the grid.
 pub struct Grid {
@@ -36,7 +36,7 @@ pub struct Grid {
 impl Grid {
     pub fn new(cx: &mut App) -> Self {
         Self {
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_index(0).tab_stop(true),
             selected: None,
             order: Vec::new(),
             seq: u64::MAX,
@@ -50,12 +50,21 @@ impl Grid {
         }
     }
 
+    /// Scrolls back to the first row, for a new filter, search or page.
+    pub fn reset_scroll(&mut self) {
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+    }
+
     fn sort(&mut self, m: &Model) -> bool {
-        let known: HashSet<&str> = self.order.iter().map(String::as_str).collect();
-        let fresh: Vec<String> = m.sorted(None).into_iter().filter(|i| !known.contains(i.key.as_str())).map(|i| i.key.clone()).collect();
-        self.order.retain(|k| m.instances.contains_key(k));
         if self.seq == m.order_seq || self.hovered {
-            self.order.extend(fresh);
+            if self.order.len() != m.instances.len() || self.order.iter().any(|k| !m.instances.contains_key(k)) {
+                let known: HashSet<&str> = self.order.iter().map(String::as_str).collect();
+                let mut fresh: Vec<&Instance> = m.instances.values().filter(|i| !known.contains(i.key.as_str())).collect();
+                fresh.sort_by_cached_key(|i| i.name.to_lowercase());
+                let fresh: Vec<String> = fresh.into_iter().map(|i| i.key.clone()).collect();
+                self.order.retain(|k| m.instances.contains_key(k));
+                self.order.extend(fresh);
+            }
             return false;
         }
         self.seq = m.order_seq;
@@ -138,7 +147,11 @@ fn move_selection(this: &mut MainWindow, keys: &[String], delta: isize, cx: &mut
     cx.notify();
 }
 
-fn empty(id: &'static str, title: String, text: String, button: Option<(String, &'static str, Box<dyn Action>)>, t: &Theme) -> AnyElement {
+fn action(id: &'static str, label: String, icon_name: &str, action: Box<dyn Action>, t: &Theme) -> AnyElement {
+    primary_button(id, label, icon_name, false, t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)).into_any_element()
+}
+
+fn empty(id: &'static str, symbol: &str, title: String, text: String, button: Option<AnyElement>, t: &Theme) -> AnyElement {
     div()
         .id(id)
         .size_full()
@@ -148,12 +161,10 @@ fn empty(id: &'static str, title: String, text: String, button: Option<(String, 
         .justify_center()
         .gap(px(space::S))
         .px(px(space::XL))
-        .child(icon("layout-grid", iconsize::HERO, t.tertiary))
+        .child(icon(symbol, iconsize::HERO, t.tertiary))
         .child(div().id(SharedString::from(format!("{id}-title"))).mark("heading", title.clone()).mt(px(space::S)).text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
         .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text))
-        .when_some(button, |d, (label, icon_name, action)| {
-            d.child(div().mt(px(space::S)).child(primary_button(SharedString::from(format!("{id}-button")), label, icon_name, false, t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))))
-        })
+        .when_some(button, |d, button| d.child(div().mt(px(space::S)).child(button)))
         .into_any_element()
 }
 
@@ -163,7 +174,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let model = model::get(cx);
     let m = model.read(cx);
     let resorted = this.grid.sort(m);
-    let keys: Vec<String> = this.grid.order.iter().filter(|k| m.instances.get(*k).is_some_and(|i| matches(i, batch, this.filter, &this.query))).cloned().collect();
+    let held: HashSet<&str> = if this.grid.hovered { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
+    let keys: Vec<String> = this.grid.order.iter().filter(|k| held.contains(k.as_str()) || m.instances.get(*k).is_some_and(|i| matches(i, batch, this.filter, &this.query))).cloned().collect();
+    drop(held);
     if resorted && !cx.reduce_motion() {
         let before: HashMap<&str, usize> = this.grid.shown.iter().enumerate().map(|(n, k)| (k.as_str(), n)).collect();
         this.grid.moves = keys.iter().enumerate().filter_map(|(n, k)| before.get(k.as_str()).filter(|old| **old != n).map(|old| (k.clone(), *old))).collect();
@@ -172,50 +185,44 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     this.grid.shown = keys.clone();
     if keys.is_empty() {
         let in_scope = m.instances.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
-        return if in_scope {
-            let reset = cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.filter = Filter::All;
-                this.search.update(cx, |s, cx| s.set_value("", window, cx));
-                this.query.clear();
-                cx.notify();
-            });
-            let label = tr("Filter zurücksetzen");
-            div()
-                .size_full()
-                .relative()
-                .child(empty("no-match", tr("Keine Treffer"), tr("Kein Account passt zu Filter und Suche."), None, &t))
-                .child(div().absolute().bottom(px(space::XXL)).w_full().flex().justify_center().child(
-                    div()
-                        .id("reset-filter")
-                        .mark("button", label.clone())
-                        .h(px(control::M))
-                        .px(px(space::M))
-                        .rounded(px(radius::INNER))
-                        .flex()
-                        .items_center()
-                        .text_size(px(font::BODY))
-                        .text_color(t.accent_text)
-                        .cursor_pointer()
-                        .key_nav()
-                        .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-                        .child(label)
-                        .on_click(reset),
-                ))
-                .into_any_element()
-        } else {
-            let edit = batch.map(|b| (tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())) as Box<dyn Action>));
-            empty("no-accounts", tr("Keine Accounts in diesem Batch"), tr("Füge dem Batch Accounts hinzu, um sie hier zu starten."), edit, &t)
+        super::state::set_visible(HashSet::new(), cx);
+        if !in_scope {
+            let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
+            return empty("no-accounts", "users", tr("Keine Accounts in diesem Batch"), tr("Füge dem Batch Accounts hinzu, um sie hier zu starten."), edit, &t);
+        }
+        if !this.query.is_empty() {
+            let clear = primary_button("clear-search", tr("Suche löschen"), "x", false, &t)
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                    this.query.clear();
+                    cx.notify();
+                }))
+                .into_any_element();
+            return empty("no-match", "search", tr("Keine Treffer"), trf("Kein Account passt zu „%@“.", &[&this.query]), Some(clear), &t);
+        }
+        return match this.filter {
+            Filter::Attention => empty("all-good", "circle-check", tr("Alles in Ordnung"), tr("Kein Account braucht dich gerade."), None, &t),
+            Filter::Stopped => empty("none-stopped", "circle-check", tr("Alles läuft"), tr("Kein Account ist gestoppt."), None, &t),
+            Filter::Running | Filter::All => {
+                let start: Box<dyn Action> = match batch {
+                    Some(b) => Box::new(StartBatch(b.to_owned())),
+                    None => Box::new(StartAll),
+                };
+                let label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
+                empty("none-running", "play", tr("Nichts läuft"), tr("Starte die Accounts, um sie hier zu sehen."), Some(action("start-empty", label, "play", start, &t)), &t)
+            }
         };
     }
     let area = this.grid.area.get();
     let pad = space::L;
-    let (width, height) = if area.width > px(0.) { (f32::from(area.width) - pad * 2., f32::from(area.height) - pad * 2.) } else { (f32::from(window.viewport_size().width) - pad * 2., 600.) };
+    let (width, height) = if area.width > px(0.) { (f32::from(area.width) - pad * 2., f32::from(area.height) - pad * 2.) } else { (f32::from(window.viewport_size().width) - pad * 2., f32::from(window.viewport_size().height) - pad * 2. - shell::TOOLBAR) };
     let (columns, tile_w) = layout(this.size, keys.len(), width.max(tile::FIT_MIN), height.max(1.));
     this.grid.columns = columns;
     let geometry = Geometry::new(tile_w);
     let row_h = geometry.height() + space::M;
     let rows = keys.len().div_ceil(columns);
-    let tiles: Rc<Vec<TileData>> = Rc::new(keys.iter().filter_map(|k| m.instances.get(k)).map(|i| data(i, m, &this.grid.selected)).collect());
+    let shown: Rc<Vec<String>> = Rc::new(keys.clone());
+    let selected = this.grid.selected.clone();
     let progress = this.grid.moved_at.map(|at| (at.elapsed().as_secs_f32() / SLOW.as_secs_f32()).min(1.));
     if progress.is_some_and(|p| p >= 1.) {
         this.grid.moved_at = None;
@@ -228,17 +235,25 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let focused = this.grid.focus.is_focused(window);
     let view = cx.entity().downgrade();
     let list = uniform_list("instance-rows", rows, move |range, _, cx| {
-        let t = Theme::get(cx);
+        let measuring = range.start == 0 && range.end == 1 && rows > 1;
+        let model = model::get(cx);
+        let rows_data: Vec<Vec<(usize, TileData)>> = {
+            let m = model.read(cx);
+            range
+                .map(|row| {
+                    let from = row * columns;
+                    shown[from..(from + columns).min(shown.len())].iter().enumerate().filter_map(|(c, k)| m.instances.get(k).map(|i| (from + c, data(i, m, &selected)))).collect()
+                })
+                .collect()
+        };
         let mut visible = HashSet::new();
-        let rows: Vec<AnyElement> = range
-            .map(|row| {
-                let from = row * columns;
-                let cells: Vec<AnyElement> = tiles[from..(from + columns).min(tiles.len())]
-                    .iter()
-                    .enumerate()
-                    .map(|(c, d)| {
+        let rows: Vec<AnyElement> = rows_data
+            .into_iter()
+            .map(|cells| {
+                let cells: Vec<AnyElement> = cells
+                    .into_iter()
+                    .map(|(index, d)| {
                         visible.insert(d.key.clone());
-                        let index = from + c;
                         let offset = match (moves.get(&d.key), ease) {
                             (Some(old), Some(e)) => {
                                 let dx = (old % columns) as f32 - (index % columns) as f32;
@@ -247,18 +262,20 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                             }
                             _ => (0., 0.),
                         };
-                        super::tile::render(d, &geometry, offset, focused, view.clone(), &t)
+                        super::tile::view(d, geometry, offset, focused, view.clone(), cx)
                     })
                     .collect();
                 div().h(px(row_h)).flex().gap(px(space::M)).children(cells).into_any_element()
             })
             .collect();
-        super::state::set_visible(visible, cx);
+        if !measuring {
+            super::state::set_visible(visible, cx);
+        }
         rows
     })
     .track_scroll(&this.grid.scroll)
     .px(px(pad))
-    .pt(px(pad))
+    .py(px(pad))
     .size_full();
     let measure = {
         let area = Rc::clone(&this.grid.area);
@@ -290,13 +307,18 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         }))
         .on_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| {
             let columns = this.grid.columns.max(1) as isize;
+            let page = columns * (f32::from(this.grid.area.get().height) / row_h).floor().max(1.) as isize;
             let delta = match e.keystroke.key.as_str() {
                 "left" => -1,
                 "right" => 1,
                 "up" => -columns,
                 "down" => columns,
+                "pageup" => -page,
+                "pagedown" => page,
+                "home" => isize::MIN / 2,
+                "end" => isize::MAX / 2,
                 "enter" => {
-                    if let Some(key) = this.grid.selected.clone() {
+                    if let Some(key) = this.grid.selected.clone().filter(|k| nav_keys.contains(k)) {
                         if can_play.get(&key).copied().unwrap_or(false) {
                             window.dispatch_action(Box::new(Play(key)), cx);
                         } else {

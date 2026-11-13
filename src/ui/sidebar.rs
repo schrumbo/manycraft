@@ -37,7 +37,7 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
         .flex_none()
         .items_center()
         .gap(px(space::S))
-        .when(selected, |d| d.bg(t.accent.opacity(tint::ATTENTION)))
+        .bg(if selected { t.accent.opacity(tint::ATTENTION) } else { t.window })
         .cursor_pointer()
         .key_nav()
         .soft(t.ink.opacity(tint::HOVER), radius::INNER)
@@ -46,12 +46,12 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
         .when(r.attention > 0, |d| {
             d.child(
                 div()
-                    .h(px(font::CAPTION + space::XS * 2.))
-                    .min_w(px(font::CAPTION + space::XS * 2.))
+                    .h(px(shell::BADGE))
+                    .min_w(px(shell::BADGE))
                     .px(px(space::XS))
                     .rounded(px(radius::FULL))
                     .bg(t.attention)
-                    .text_color(Hsla::black())
+                    .text_color(t.on_attention)
                     .text_size(px(font::CAPTION2))
                     .font_weight(FontWeight::BOLD)
                     .flex()
@@ -83,7 +83,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         attention: m.attention_count(None),
         hint: None,
     };
-    let batches: Vec<(Row, String)> = m
+    let batches: Vec<(Row, String, usize, usize)> = m
         .batches
         .iter()
         .map(|b| {
@@ -91,17 +91,18 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_running()).count();
             let attention = m.attention_count(Some(&b.id));
             let hint = trf("%lld von %lld laufen", &[&running, &total]);
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{running}/{total}")), attention, hint: Some(hint) }, b.id.clone())
+            let stopped = total - running;
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{running}/{total}")), attention, hint: Some(hint) }, b.id.clone(), running, stopped)
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, hint: None };
     let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, hint: None };
     let mut batch_rows = Vec::new();
-    for (r, id) in batches {
+    for (r, id, running, stopped) in batches {
         let (start, stop, edit) = (id.clone(), id.clone(), id);
         let element = row(this, r, &t, cx).context_menu(move |menu, _, _| {
-            menu.menu(tr("Starten"), Box::new(StartBatch(start.clone())))
-                .menu(tr("Stoppen"), Box::new(StopBatch(stop.clone())))
+            menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(start.clone())), stopped == 0)
+                .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(stop.clone())), running == 0)
                 .separator()
                 .menu(tr("Batch bearbeiten"), Box::new(EditBatch(edit.clone())))
         });

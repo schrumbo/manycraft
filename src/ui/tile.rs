@@ -1,5 +1,6 @@
 //! One instance in the grid: its preview, name and status, with the action that fits its phase.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::component::menu::ContextMenuExt;
@@ -31,8 +32,90 @@ pub struct TileData {
     pub playing: bool,
 }
 
+impl TileData {
+    fn same(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.name == other.name
+            && self.phase == other.phase
+            && self.status == other.status
+            && self.stopping == other.stopping
+            && self.whispers == other.whispers
+            && self.selected == other.selected
+            && self.playing == other.playing
+            && match (&self.preview, &other.preview) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// One tile as its own view, so a change to one instance redraws only its tile.
+pub struct TileView {
+    data: TileData,
+    geometry: Geometry,
+    offset: (f32, f32),
+    focused: bool,
+    main: WeakEntity<MainWindow>,
+}
+
+impl Render for TileView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::get(cx);
+        render(&self.data, &self.geometry, self.offset, self.focused, self.main.clone(), &t)
+    }
+}
+
+/// The tile views by instance key.
+#[derive(Default)]
+pub struct TileViews(HashMap<String, Entity<TileView>>);
+
+impl Global for TileViews {}
+
+/// The cached view of the tile for `data`; it redraws only when something it shows changed.
+pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: bool, main: WeakEntity<MainWindow>, cx: &mut App) -> AnyElement {
+    let style = StyleRefinement::default().w(px(geometry.width)).h(px(geometry.height())).flex_none();
+    let existing = cx.default_global::<TileViews>().0.get(&data.key).cloned();
+    let entity = match existing {
+        Some(entity) => {
+            entity.update(cx, |v, cx| {
+                if !v.data.same(&data) || v.geometry != geometry || v.offset != offset || v.focused != focused {
+                    *v = TileView { data, geometry, offset, focused, main };
+                    cx.notify();
+                }
+            });
+            entity
+        }
+        None => {
+            let key = data.key.clone();
+            let entity = cx.new(|_| TileView { data, geometry, offset, focused, main });
+            cx.global_mut::<TileViews>().0.insert(key, entity.clone());
+            entity
+        }
+    };
+    entity.cached(style).into_any_element()
+}
+
+/// Shows new previews in the tiles that are drawn, without redrawing anything else.
+pub fn show_previews(previews: Vec<(String, Arc<RenderImage>)>, cx: &mut App) {
+    for (key, image) in previews {
+        let Some(entity) = cx.try_global::<TileViews>().and_then(|v| v.0.get(&key).cloned()) else { continue };
+        entity.update(cx, |v, cx| {
+            v.data.preview = Some(image);
+            cx.notify();
+        });
+    }
+}
+
+/// Forgets the views of instances that are gone.
+pub fn forget_except(keep: &dyn Fn(&str) -> bool, cx: &mut App) {
+    if cx.has_global::<TileViews>() {
+        cx.global_mut::<TileViews>().0.retain(|k, _| keep(k));
+    }
+}
+
 /// Sizes of a tile of one width.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Geometry {
     pub width: f32,
     pub preview: f32,
@@ -160,7 +243,7 @@ fn round_button(id: String, icon_name: &'static str, hint: String, action: Box<d
         .mark("button", hint.clone())
         .size(px(control::S))
         .rounded(px(radius::FULL))
-        .bg(with_alpha(t.material, 0.92))
+        .bg(with_alpha(t.material, tint::FLOATING))
         .flex()
         .flex_none()
         .items_center()
@@ -184,12 +267,12 @@ fn preview(d: &TileData, g: &Geometry, group: &SharedString, t: &Theme) -> AnyEl
                 .items_center()
                 .justify_center()
                 .bg(t.raised)
-                .child(div().text_size(px(if g.small { tile::INITIAL * 0.75 } else { tile::INITIAL })).font_weight(FontWeight::SEMIBOLD).text_color(t.tertiary).child(initial))
+                .child(div().text_size(px(if g.small { tile::INITIAL_SMALL } else { tile::INITIAL })).font_weight(FontWeight::SEMIBOLD).text_color(t.tertiary).child(initial))
                 .into_any_element()
         }
     };
     let running = d.phase.is_running() && !d.stopping;
-    let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn);
+    let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || g.small);
     let stop_or_start: Option<(&'static str, String, Box<dyn Action>)> = if running && main != Some(Primary::Start) {
         Some(("square", tr("Stoppen"), Box::new(Stop(d.key.clone()))))
     } else {
@@ -202,7 +285,7 @@ fn preview(d: &TileData, g: &Geometry, group: &SharedString, t: &Theme) -> AnyEl
         .items_center()
         .justify_center()
         .gap(px(space::S))
-        .bg(black().opacity(0.28))
+        .bg(black().opacity(tint::SCRIM))
         .opacity(if d.selected { 1. } else { 0. })
         .group_hover(group.clone(), |s| s.opacity(1.))
         .when_some(main, |row, p| row.child(pill(format!("primary-{}", d.key), p, d, t)))
@@ -227,7 +310,7 @@ fn preview(d: &TileData, g: &Geometry, group: &SharedString, t: &Theme) -> AnyEl
             .items_center()
             .justify_center()
             .gap(px(space::XXS))
-            .child(icon("message-square", iconsize::XS * 0.8, t.on_accent))
+            .child(icon("message-square", iconsize::XS, t.on_accent))
             .child(n.to_string())
             .tooltip(tip(if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) }))
     });
@@ -251,7 +334,7 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
             .px(px(space::S))
             .rounded(px(radius::INNER))
             .border_1()
-            .border_color(with_alpha(t.danger, 0.5))
+            .border_color(with_alpha(t.danger, tint::OUTLINE))
             .text_color(t.danger_text)
             .text_size(px(font::CALLOUT))
             .font_weight(FontWeight::MEDIUM)
@@ -286,7 +369,17 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
                         .min_w_0()
                         .when_some(tone, |s, (_, text, name)| s.child(icon(name, iconsize::XS, text)))
                         .when(running_dot, |s| s.child(div().size(px(shell::DOT)).flex_none().rounded(px(radius::FULL)).bg(t.success)))
-                        .child(div().id(SharedString::from(format!("status-{}", d.key))).mark("status", d.status.clone()).min_w_0().truncate().text_size(px(font::CAPTION)).text_color(status_color).child(d.status.clone())),
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("status-{}", d.key)))
+                                .mark("status", d.status.clone())
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(font::CAPTION))
+                                .text_color(status_color)
+                                .child(d.status.clone())
+                                .when(g.small, |s| s.tooltip(tip(d.status.clone()))),
+                        ),
                 ),
         )
         .children(sign_in)
@@ -297,14 +390,15 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
 pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
     let group: SharedString = format!("tile-{}", d.key).into();
     let tone = tone(d, t);
-    let ring = match (tone, d.selected && grid_focused, d.playing) {
-        (_, true, _) => Some(t.accent),
-        (Some((ring, _, _)), _, _) => Some(ring),
-        (None, _, true) => Some(with_alpha(t.accent, 0.6)),
+    let edge = match (tone, d.playing) {
+        (Some((ring, _, _)), _) => Some(ring),
+        (None, true) => Some(with_alpha(t.accent, tint::OUTLINE)),
         _ => None,
     };
+    let focus = (d.selected && grid_focused).then_some(t.accent);
     let (key, name) = (d.key.clone(), d.name.clone());
     let select = view.clone();
+    let (pick, pick_key) = (view.clone(), d.key.clone());
     let menu_key = d.key.clone();
     let menu_batch = d.batch_id.clone();
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
@@ -326,11 +420,20 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         .bg(t.content)
         .border_1()
         .border_color(t.separator)
-        .when_some(ring, |s, color| s.border_color(color).shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::RING - 1.), inset: false }]))
+        .when_some(edge, |s, color| s.border_color(color))
+        .when_some(edge.filter(|_| focus.is_none()), |s, color| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::RING - 1.), inset: false }]))
+        .when_some(focus, |s, color| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::RING + 1.), inset: false }]))
         .cursor_pointer()
         .soft(t.ink.opacity(tint::HOVER), radius::CARD)
         .child(preview(d, g, &group, t))
         .child(strip(d, g, t))
+        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            let _ = pick.update(cx, |this, cx| {
+                this.grid.selected = Some(pick_key.clone());
+                window.focus(&this.grid.focus, cx);
+                cx.notify();
+            });
+        })
         .on_click(move |e, window, cx| {
             let _ = select.update(cx, |this, cx| {
                 this.grid.selected = Some(key.clone());

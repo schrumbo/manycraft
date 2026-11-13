@@ -7,7 +7,7 @@ use super::drive::Mark;
 use super::grid::Grid;
 use super::model;
 use super::native::{self, Rect};
-use super::theme::{self, Theme, control, font, iconsize, shell, space};
+use super::theme::{self, Theme, control, font, iconsize, shell, space, tint};
 use super::widgets::{icon, primary_button};
 use crate::core::i18n::tr;
 
@@ -65,6 +65,7 @@ pub struct MainWindow {
     pub(super) filter: Filter,
     pub(super) size: TileSize,
     pub(super) sidebar: bool,
+    overlay: bool,
     pub(super) search: Entity<InputState>,
     pub(super) query: String,
     pub(super) grid: Grid,
@@ -83,6 +84,7 @@ impl MainWindow {
                 let value = s.read(cx).value().to_string();
                 let _ = me.update(cx, |this, cx| {
                     this.query = value;
+                    this.grid.reset_scroll();
                     cx.notify();
                 });
             }
@@ -107,6 +109,7 @@ impl MainWindow {
             filter: Filter::All,
             size: TileSize::Medium,
             sidebar: true,
+            overlay: false,
             search,
             query: String::new(),
             grid: Grid::new(cx),
@@ -117,14 +120,27 @@ impl MainWindow {
 
     /// Shows `page`; switching between grids keeps the filter but drops the keyboard selection.
     pub(super) fn go(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlay = false;
         if self.page != page {
             self.page = page;
             self.grid.selected = None;
+            self.grid.reset_scroll();
         }
         if matches!(self.page, Page::Grid(_)) {
             window.focus(&self.grid.focus, cx);
         }
         cx.notify();
+    }
+
+    /// Whether the window is too narrow to keep the sidebar beside the grid.
+    pub(super) fn narrow(window: &Window) -> bool {
+        window.viewport_size().width < px(shell::NARROW)
+    }
+
+    /// Width left for the page next to the sidebar.
+    pub(super) fn content_width(&self, window: &Window) -> f32 {
+        let width = f32::from(window.viewport_size().width);
+        if self.sidebar && !Self::narrow(window) { width - shell::SIDEBAR } else { width }
     }
 
     fn update_title(&mut self, window: &mut Window, cx: &App) {
@@ -180,17 +196,24 @@ impl MainWindow {
 
     fn page_placeholder(&self, name: &str, title: String, text: String, t: &Theme) -> AnyElement {
         div()
-            .id(SharedString::from(format!("page-{name}")))
             .size_full()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(space::M))
-            .px(px(space::XL))
-            .child(icon(if name == "chat" { "messages-square" } else { "users" }, iconsize::HERO, t.tertiary))
-            .child(div().text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
-            .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text))
+            .child(super::toolbar::bar(self, title.clone(), t))
+            .child(
+                div()
+                    .id(SharedString::from(format!("page-{name}")))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(space::M))
+                    .px(px(space::XL))
+                    .child(icon(if name == "chat" { "messages-square" } else { "users" }, iconsize::HERO, t.tertiary))
+                    .child(div().text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
+                    .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text)),
+            )
             .into_any_element()
     }
 }
@@ -203,7 +226,10 @@ impl Render for MainWindow {
         }
         self.update_title(window, cx);
         let t = Theme::get(cx);
-        let narrow = window.viewport_size().width < px(shell::SIDEBAR * 4.);
+        let narrow = Self::narrow(window);
+        if !matches!(self.page, Page::Grid(_)) {
+            super::state::set_visible(Default::default(), cx);
+        }
         let content = match self.page.clone() {
             Page::Accounts => self.page_placeholder("accounts", tr("Accounts"), tr("Die Account-Verwaltung erscheint hier."), &t),
             Page::Chat => self.page_placeholder("chat", tr("Chat"), tr("Der gemeinsame Chat aller Instanzen erscheint hier."), &t),
@@ -223,16 +249,22 @@ impl Render for MainWindow {
             .id("main")
             .key_context("MainWindow")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
-                this.sidebar = !this.sidebar;
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+                if Self::narrow(window) {
+                    this.overlay = !this.overlay;
+                } else {
+                    this.sidebar = !this.sidebar;
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &TileLarger, _, cx| {
                 this.size = this.size.larger();
+                this.grid.reset_scroll();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &TileSmaller, _, cx| {
                 this.size = this.size.smaller();
+                this.grid.reset_scroll();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
@@ -256,7 +288,21 @@ impl Render for MainWindow {
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE))
             .when(show_sidebar, |d| d.child(super::sidebar::render(self, window, cx)))
-            .child(div().flex_1().min_w_0().h_full().bg(t.window).child(content));
+            .child(div().flex_1().min_w_0().h_full().bg(t.window).child(content))
+            .when(narrow && self.overlay, |d| {
+                d.child(
+                    div()
+                        .id("sidebar-scrim")
+                        .absolute()
+                        .inset_0()
+                        .bg(black().opacity(tint::SCRIM))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.overlay = false;
+                            cx.notify();
+                        })),
+                )
+                .child(div().absolute().top_0().left_0().h_full().shadow_lg().child(super::sidebar::render(self, window, cx)))
+            });
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, &t)
     }

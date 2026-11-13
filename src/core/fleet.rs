@@ -498,7 +498,9 @@ pub type Started = (Uuid, Result<String>);
 pub struct Fleet {
     ipc: ipc::Server,
     running: Arc<Mutex<HashMap<String, RunningInstance>>>,
+    reserved: Mutex<HashMap<String, (Uuid, Vec<SocketAddr>)>>,
     reaping: Arc<AtomicBool>,
+    closing: AtomicBool,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -507,7 +509,7 @@ impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
         let (ipc, events) = ipc::Server::start()?;
-        Ok((Fleet { ipc, running: Arc::default(), reaping: Arc::default(), stagger: DEFAULT_STAGGER }, events))
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
     }
 
     /// Installs the batch's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
@@ -522,8 +524,12 @@ impl Fleet {
     }
 
     /// Syncs the batch's mods, finds its server and installs its game, once before `start_one` launches its accounts.
+    /// Leaves the mods alone while instances of the batch run, since they hold the jars open.
     pub fn prepare_launch(&self, batch: &Batch, companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
-        sync_mods(batch)?;
+        let batch_runs = lock(&self.running).values_mut().any(|r| r.batch == batch.id && r.poll());
+        if !batch_runs {
+            sync_mods(batch)?;
+        }
         let server_addrs = match batch.server.as_deref() {
             Some(s) => resolve_all(s).with_context(|| format!("cannot find the server {s}"))?,
             None => Vec::new(),
@@ -567,11 +573,19 @@ impl Fleet {
         outcomes
     }
 
+    /// Refuses every start from now on, so quitting can stop what runs without new instances appearing.
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+    }
+
     fn launch_checked(&self, batch: &Batch, account: &Account, server_addrs: &[SocketAddr], started: Instant, launch: impl FnOnce(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Result<String> {
         let key = instance_key(batch, account.id);
-        self.check_free(&key, account, server_addrs)?;
+        self.reserve(&key, account, server_addrs)?;
         let token = self.ipc.register(&key);
-        let child = launch(account, &key, &token).inspect_err(|_| self.ipc.unregister(&key))?;
+        let child = launch(account, &key, &token).inspect_err(|_| {
+            self.ipc.unregister(&key);
+            lock(&self.reserved).remove(&key);
+        })?;
         let pid = child.id();
         let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None };
         self.insert(key.clone(), instance);
@@ -580,19 +594,24 @@ impl Fleet {
 
     fn check_free(&self, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
         let mut running = lock(&self.running);
-        if running.get_mut(key).is_some_and(RunningInstance::poll) {
-            bail!("{} is already running in this batch", account.name);
+        free(&mut running, &lock(&self.reserved), key, account, server_addrs)
+    }
+
+    fn reserve(&self, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
+        if self.closing.load(Ordering::SeqCst) {
+            bail!("Manycraft is quitting");
         }
-        let clash = running.values_mut().filter(|r| r.account == account.id && r.server_addrs.iter().any(|a| server_addrs.contains(a))).find_map(|r| r.poll().then_some(r.server_addr));
-        if let Some(addr) = clash {
-            let addr = addr.map_or_else(String::new, |a| a.to_string());
-            bail!("{} is already on the server {addr} in another batch", account.name);
-        }
+        let mut running = lock(&self.running);
+        let mut reserved = lock(&self.reserved);
+        free(&mut running, &reserved, key, account, server_addrs)?;
+        running.remove(key);
+        reserved.insert(key.to_owned(), (account.id, server_addrs.to_vec()));
         Ok(())
     }
 
     fn insert(&self, key: String, instance: RunningInstance) {
         let mut running = lock(&self.running);
+        lock(&self.reserved).remove(&key);
         running.insert(key, instance);
         if !self.reaping.swap(true, Ordering::SeqCst) && self.spawn_reaper().is_err() {
             self.reaping.store(false, Ordering::SeqCst);
@@ -676,6 +695,21 @@ impl Fleet {
             self.ipc.unregister(key);
         }
     }
+}
+
+fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<String, (Uuid, Vec<SocketAddr>)>, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
+    if reserved.contains_key(key) || running.get_mut(key).is_some_and(RunningInstance::poll) {
+        bail!("{} is already running in this batch", account.name);
+    }
+    if reserved.values().any(|(id, addrs)| *id == account.id && addrs.iter().any(|a| server_addrs.contains(a))) {
+        bail!("{} is already on this server in another batch", account.name);
+    }
+    let clash = running.values_mut().filter(|r| r.account == account.id && r.server_addrs.iter().any(|a| server_addrs.contains(a))).find_map(|r| r.poll().then_some(r.server_addr));
+    if let Some(addr) = clash {
+        let addr = addr.map_or_else(String::new, |a| a.to_string());
+        bail!("{} is already on the server {addr} in another batch", account.name);
+    }
+    Ok(())
 }
 
 fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
@@ -1482,6 +1516,74 @@ mod tests {
         assert!(format!("{:#}", fleet.launch_checked(&b, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap_err()).contains("already on the server"));
         assert_eq!(tokens.borrow().len(), 1);
         assert!(fleet.is_running(&key));
+    }
+
+    fn live(pid: u32) -> Box<dyn Process> {
+        Box::new(FakeProcess { pid, exit: Arc::new(Mutex::new(None)) })
+    }
+
+    #[test]
+    fn two_starts_at_once_launch_an_instance_only_once() {
+        let (fleet, _events) = Fleet::new().unwrap();
+        let alts = accounts(&["AltOne"]);
+        let (a, b) = (Batch::new("A", "26.3"), Batch::new("B", "26.3"));
+        let server = [addr("10.0.0.1:25565")];
+        let launches = std::sync::atomic::AtomicUsize::new(0);
+        let slow = |_: &Account, _: &str, _: &str| {
+            launches.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(live(1))
+        };
+        std::thread::scope(|s| {
+            let first = s.spawn(|| fleet.launch_checked(&a, &alts[0], &server, Instant::now(), slow));
+            std::thread::sleep(Duration::from_millis(100));
+            let same = fleet.launch_checked(&a, &alts[0], &server, Instant::now(), |_, _, _| Ok(live(2)));
+            let other = fleet.launch_checked(&b, &alts[0], &server, Instant::now(), |_, _, _| Ok(live(3)));
+            assert!(format!("{:#}", same.unwrap_err()).contains("already running"));
+            assert!(format!("{:#}", other.unwrap_err()).contains("already on"));
+            assert!(first.join().unwrap().is_ok());
+        });
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+        assert_eq!(fleet.running_keys().len(), 1);
+    }
+
+    #[test]
+    fn a_restarted_instance_keeps_its_new_token_while_the_reaper_runs() {
+        use std::io::Write;
+        let (fleet, events) = Fleet::new().unwrap();
+        let alts = accounts(&["AltOne", "AltTwo"]);
+        let batch = Batch::new("A", "26.3");
+        fleet.launch_checked(&batch, &alts[1], &[], Instant::now(), |_, _, _| Ok(live(2))).unwrap();
+        let exit = Arc::new(Mutex::new(None));
+        let dying = Arc::clone(&exit);
+        let key = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), move |_, _, _| Ok(Box::new(FakeProcess { pid: 1, exit: dying }) as Box<dyn Process>)).unwrap();
+        *lock(&exit) = Some(Some(1));
+        let token = Mutex::new(String::new());
+        fleet
+            .launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, t| {
+                *lock(&token) = t.to_owned();
+                std::thread::sleep(REAP_INTERVAL * 3);
+                Ok(live(3))
+            })
+            .unwrap();
+        std::thread::sleep(REAP_INTERVAL * 2);
+        let mut stream = std::net::TcpStream::connect(fleet.ipc.address()).unwrap();
+        let hello = serde_json::json!({"t": "hello", "instance": key, "token": *lock(&token), "pid": 3, "mod_version": "0"});
+        stream.write_all(format!("{hello}\n").as_bytes()).unwrap();
+        assert!(matches!(events.recv_timeout(Duration::from_secs(3)).unwrap(), ipc::Event::Connected { .. }));
+    }
+
+    #[test]
+    fn a_closing_fleet_starts_nothing_and_a_failed_launch_frees_its_slot() {
+        let (fleet, _events) = Fleet::new().unwrap();
+        let alts = accounts(&["AltOne"]);
+        let batch = Batch::new("A", "26.3");
+        assert!(fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| bail!("no java")).is_err());
+        assert!(fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| Ok(live(1))).is_ok());
+        fleet.stop_all(&fleet.running_keys());
+        fleet.close();
+        let refused = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| Ok(live(2)));
+        assert!(format!("{:#}", refused.unwrap_err()).contains("quitting"));
     }
 
     #[test]

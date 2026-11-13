@@ -3,7 +3,6 @@
   "Account hinzufügen": "Add account",
   "Füge einen Account hinzu, um Minecraft-Instanzen in einem Fenster zu starten.": "Add an account to run Minecraft instances in one window.",
   "Keine Treffer": "No matches",
-  "Kein Account passt zu Filter und Suche.": "No account matches the filter and search.",
   "Filter zurücksetzen": "Reset filter",
   "Batch bearbeiten": "Edit batch",
   "Keine Accounts in diesem Batch": "No accounts in this batch",
@@ -53,7 +52,6 @@
   "Kleine Kacheln": "Small tiles",
   "Mittlere Kacheln": "Medium tiles",
   "Große Kacheln": "Large tiles",
-  "Einpassen: alle Kacheln ohne Scrollen": "Fit: all tiles without scrolling",
   "Alle starten": "Start all",
   "Alle stoppen": "Stop all",
   "Seitenleiste ausblenden": "Hide sidebar",
@@ -68,5 +66,15 @@
   "%lld Accounts müssen sich anmelden": "%lld accounts need to sign in",
   "%lld Account braucht dich": "%lld account needs you",
   "%lld Accounts brauchen dich": "%lld accounts need you",
-  "Startet %lld/%lld": "Starting %lld/%lld"
+  "Suche löschen": "Clear search",
+  "Alles in Ordnung": "All good",
+  "Kein Account braucht dich gerade.": "No account needs you right now.",
+  "Alles läuft": "Everything is running",
+  "Kein Account ist gestoppt.": "No account is stopped.",
+  "Nichts läuft": "Nothing is running",
+  "Starte die Accounts, um sie hier zu sehen.": "Start the accounts to see them here.",
+  "Kein Account passt zu „%@“.": "No account matches “%@”.",
+  "Wartet · %lld/%lld gestartet": "Waiting · %lld/%lld started",
+  "Einpassen: so groß, dass möglichst alle Kacheln sichtbar sind": "Fit: as large as possible while showing every tile",
+  "Alle laufen schon": "All are running already"
 }

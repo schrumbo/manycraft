@@ -61,6 +61,7 @@ struct Real {
     fleet: Arc<Fleet>,
     out: async_channel::Sender<Update>,
     watch: Arc<Mutex<HashSet<String>>>,
+    withdrawn: Arc<Mutex<HashSet<String>>>,
     sends: mpsc::Sender<(String, ToMod)>,
     previews: mpsc::Sender<(String, PathBuf)>,
 }
@@ -115,13 +116,19 @@ impl Real {
                 }
             }
         })?;
-        Ok(Self { fleet, out, watch, sends, previews })
+        Ok(Self { fleet, out, watch, withdrawn: Arc::default(), sends, previews })
     }
 }
 
 impl Backend for Real {
     fn start(&self, batch: Batch, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
-        let (fleet, out, watch) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch));
+        let (fleet, out, watch, withdrawn) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.withdrawn));
+        {
+            let mut withdrawn = lock(&withdrawn);
+            for account in &accounts {
+                withdrawn.remove(&fleet::instance_key(&batch, account.id));
+            }
+        }
         let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
             let fail_all = |reason: String| {
                 for account in &accounts {
@@ -157,9 +164,15 @@ impl Backend for Real {
                 if cancel.load(Ordering::SeqCst) {
                     return;
                 }
+                if lock(&withdrawn).contains(&fleet::instance_key(&batch, account.id)) {
+                    continue;
+                }
                 let update = match fleet.start_one(&prepared, account) {
                     Ok(key) => {
                         lock(&watch).insert(key.clone());
+                        if lock(&withdrawn).contains(&key) {
+                            fleet.stop_all(std::slice::from_ref(&key));
+                        }
                         Update::Launched { key }
                     }
                     Err(e) => Update::Failed { key: fleet::instance_key(&batch, account.id), login: needs_sign_in(&e), reason: format!("{e:#}") },
@@ -171,6 +184,7 @@ impl Backend for Real {
     }
 
     fn stop(&self, keys: Vec<String>) {
+        lock(&self.withdrawn).extend(keys.iter().cloned());
         let fleet = Arc::clone(&self.fleet);
         let _ = std::thread::Builder::new().name("fleet-stop".into()).spawn(move || fleet.stop_all(&keys));
     }
@@ -184,7 +198,14 @@ impl Backend for Real {
     }
 
     fn quit(&self) {
-        self.fleet.stop_all(&self.fleet.running_keys());
+        self.fleet.close();
+        for _ in 0..3 {
+            let keys = self.fleet.running_keys();
+            if keys.is_empty() {
+                return;
+            }
+            self.fleet.stop_all(&keys);
+        }
     }
 }
 
@@ -226,7 +247,7 @@ impl Alert {
 
 struct Runtime {
     backend: Arc<dyn Backend>,
-    cancel: HashMap<String, Arc<AtomicBool>>,
+    cancel: HashMap<String, Vec<Arc<AtomicBool>>>,
     visible: HashSet<String>,
     shared_visible: Arc<Mutex<HashSet<String>>>,
     stale: HashMap<String, Instant>,
@@ -320,6 +341,9 @@ pub fn init(cx: &mut App) {
     });
     cx.on_app_quit(|cx| {
         if let Some(rt) = cx.try_global::<Runtime>() {
+            for cancel in rt.cancel.values().flatten() {
+                cancel.store(true, Ordering::SeqCst);
+            }
             rt.backend.quit();
         }
         async {}
@@ -342,6 +366,7 @@ pub fn reload(cx: &mut App) {
         let (accounts, batches) = task.await;
         cx.update(|cx| {
             let model = model::get(cx);
+            let mut retired = Vec::new();
             model.update(cx, |m, cx| {
                 match (accounts, batches) {
                     (Ok(accounts), Ok(batches)) => {
@@ -351,9 +376,14 @@ pub fn reload(cx: &mut App) {
                     }
                     (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),
                 }
-                rebuild(m);
+                retired = rebuild(m);
                 cx.notify();
             });
+            for image in retired {
+                cx.drop_image(image, None);
+            }
+            let present: HashSet<String> = model.read(cx).instances.keys().cloned().collect();
+            super::tile::forget_except(&|k| present.contains(k), cx);
             let known: Vec<(String, String)> = model.read(cx).instances.values().map(|i| (i.key.clone(), i.name.clone())).collect();
             if let Some(rt) = cx.try_global::<Runtime>() {
                 rt.backend.known(known);
@@ -363,7 +393,7 @@ pub fn reload(cx: &mut App) {
     .detach();
 }
 
-fn rebuild(m: &mut Model) {
+fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
     let mut keep: HashSet<String> = HashSet::new();
     for batch in &m.batches {
         for id in &batch.accounts {
@@ -385,8 +415,16 @@ fn rebuild(m: &mut Model) {
             instance.name = account.name.clone();
         }
     }
-    m.instances.retain(|k, i| keep.contains(k) || i.phase.is_running());
+    let mut retired = Vec::new();
+    m.instances.retain(|k, i| {
+        let stays = keep.contains(k) || i.phase.is_running();
+        if !stays && let Some(image) = i.preview.take() {
+            retired.push(image);
+        }
+        stays
+    });
     m.order_seq += 1;
+    retired
 }
 
 fn update_model(cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)) {
@@ -441,9 +479,9 @@ fn launch(batch_id: &str, only: Option<&[String]>, cx: &mut App) {
     }
     let cancel = Arc::new(AtomicBool::new(false));
     update_model(cx, |m, rt, _| {
-        if let Some(old) = rt.cancel.insert(batch.id.clone(), Arc::clone(&cancel)) {
-            old.store(true, Ordering::SeqCst);
-        }
+        let runs = rt.cancel.entry(batch.id.clone()).or_default();
+        runs.retain(|c| Arc::strong_count(c) > 1);
+        runs.push(Arc::clone(&cancel));
         let total = accounts.len();
         for account in &accounts {
             if let Some(i) = m.instances.get_mut(&fleet::instance_key(&batch, account.id)) {
@@ -470,7 +508,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
                     i.phase = Phase::Stopped;
                     running.push(key.clone());
                 }
-                ref p if p.is_running() => {
+                ref p if p.is_running() || rt.pids.contains_key(key) => {
                     i.stopping = true;
                     running.push(key.clone());
                 }
@@ -488,10 +526,12 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
 }
 
 fn stop_batch(batch: &str, cx: &mut App) {
-    if let Some(rt) = cx.try_global::<Runtime>()
-        && let Some(cancel) = rt.cancel.get(batch)
+    if cx.has_global::<Runtime>()
+        && let Some(runs) = cx.global_mut::<Runtime>().cancel.remove(batch)
     {
-        cancel.store(true, Ordering::SeqCst);
+        for cancel in runs {
+            cancel.store(true, Ordering::SeqCst);
+        }
     }
     let keys: Vec<String> = model::get(cx).read(cx).instances.values().filter(|i| i.batch_id == batch).map(|i| i.key.clone()).collect();
     stop_keys(keys, cx);
@@ -643,6 +683,9 @@ fn preview_path(m: &Model, key: &str) -> Option<PathBuf> {
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
+    if updates.iter().all(|u| matches!(u, Update::Preview { .. })) {
+        return apply_previews(updates, cx);
+    }
     let mut fresh: Vec<(String, String, Alert)> = Vec::new();
     let mut later: Vec<(String, Duration, u64)> = Vec::new();
     let mut hotkeys: Vec<HotkeyAction> = Vec::new();
@@ -656,6 +699,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
             };
             let before = key.as_ref().and_then(|k| m.instances.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
+            let seeded = matches!(update, Update::Seed { .. });
             apply(m, rt, update, &mut later, &mut hotkeys, &mut exited_playing, &mut retired);
             let Some(key) = key else { continue };
             let Some(i) = m.instances.get(&key) else { continue };
@@ -663,7 +707,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             if before.is_some_and(|b| b.0 != after.0) {
                 m.order_seq += 1;
             }
-            if after.1 && before.is_some_and(|b| !b.1) {
+            if after.1 && !seeded && before.is_some_and(|b| !b.1) {
                 fresh.push((i.batch_id.clone(), i.name.clone(), Alert::of(&i.phase)));
             }
         }
@@ -685,6 +729,31 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     }
 }
 
+fn apply_previews(updates: Vec<Update>, cx: &mut App) {
+    let model = model::get(cx);
+    let mut shown = Vec::new();
+    let mut retired = Vec::new();
+    model.update(cx, |m, _| {
+        for update in updates {
+            let Update::Preview { key, seq, image } = update else { continue };
+            match m.instances.get_mut(&key) {
+                Some(i) if i.phase.is_running() => {
+                    if let Some(old) = i.preview.replace(Arc::clone(&image)) {
+                        retired.push(old);
+                    }
+                    i.preview_seq = seq;
+                    shown.push((key, image));
+                }
+                _ => retired.push(image),
+            }
+        }
+    });
+    super::tile::show_previews(shown, cx);
+    for image in retired {
+        cx.drop_image(image, None);
+    }
+}
+
 fn rank(phase: &Phase) -> u8 {
     if phase.needs_attention() {
         0
@@ -703,15 +772,20 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, later: &mut Vec<(Strin
         Update::Progress { batch, done, total } => {
             m.preparing.remove(&batch);
             for i in m.instances.values_mut().filter(|i| i.batch_id == batch) {
-                if let Phase::Starting { .. } = i.phase {
+                if let Phase::Starting { total: queued, .. } = i.phase
+                    && queued > 0
+                {
                     i.phase = Phase::Starting { done, total };
                 }
             }
-            if done == total {
-                rt.cancel.remove(&batch);
+        }
+        Update::Launched { key } => {
+            if let Some(i) = m.instances.get_mut(&key)
+                && let Phase::Starting { .. } = i.phase
+            {
+                i.phase = Phase::Starting { done: 0, total: 0 };
             }
         }
-        Update::Launched { .. } => {}
         Update::Failed { key, reason, login } => {
             if let Some(i) = m.instances.get_mut(&key) {
                 m.preparing.remove(&i.batch_id);
@@ -753,16 +827,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, later: &mut Vec<(Strin
                 i.phase = Phase::Menu;
             }
         }
-        Update::Ipc(Event::Disconnected { instance }) => {
-            if let Some(i) = m.instances.get_mut(&instance)
-                && i.phase.is_running()
-            {
-                i.phase = if i.stopping { Phase::Stopped } else { Phase::Crashed { code: None } };
-                if m.playing.as_deref() == Some(instance.as_str()) {
-                    *exited_playing = true;
-                }
-            }
-        }
+        Update::Ipc(Event::Disconnected { .. }) => {}
         Update::Ipc(Event::Message { instance, message }) => on_message(m, rt, instance, message, later, hotkeys),
     }
 }
@@ -772,7 +837,7 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, la
     match message {
         FromMod::State { kind, server, reason } => {
             let Some(i) = m.instances.get_mut(&key) else { return };
-            if i.stopping {
+            if i.stopping || i.phase == Phase::Stopped {
                 return;
             }
             let server_text = server.clone().unwrap_or_default();
@@ -886,8 +951,8 @@ fn flush_alert(batch_id: &str, cx: &mut App) {
     let (names, kinds, batch_name) = {
         let m = model.read(cx);
         let open: Vec<&(String, Alert)> = list.iter().filter(|(name, _)| m.instances.values().any(|i| i.batch_id == batch_id && i.name == *name && i.phase.needs_attention())).collect();
-        let mut names: Vec<String> = open.iter().map(|(n, _)| n.clone()).collect();
-        names.dedup();
+        let mut seen = HashSet::new();
+        let names: Vec<String> = open.iter().filter(|(n, _)| seen.insert(n.clone())).map(|(n, _)| n.clone()).collect();
         let kinds: HashSet<Alert> = open.iter().map(|(_, k)| *k).collect();
         (names, kinds, m.batch(batch_id).map(|b| b.name.clone()).unwrap_or_default())
     };
@@ -936,7 +1001,7 @@ pub fn status(i: &Instance, preparing: Option<u8>) -> String {
     match &i.phase {
         Phase::Stopped => tr("Gestoppt"),
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
-        Phase::Starting { done, total } if *total > 1 => trf("Startet %lld/%lld", &[done, total]),
+        Phase::Starting { done, total } if *total > 1 => trf("Wartet · %lld/%lld gestartet", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Menu => tr("Im Hauptmenü"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &BACKOFF.len()]),
@@ -948,8 +1013,7 @@ pub fn status(i: &Instance, preparing: Option<u8>) -> String {
         Phase::Disconnected { reason, .. } if reason.is_empty() => tr("Getrennt"),
         Phase::Disconnected { reason, .. } => trf("Getrennt · %@", &[reason]),
         Phase::Dead { .. } => tr("Gestorben"),
-        Phase::Crashed { code: Some(code) } => trf("Abgestürzt · Code %lld", &[code]),
-        Phase::Crashed { code: None } => tr("Abgestürzt"),
+        Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
     }
@@ -967,10 +1031,11 @@ mod tests {
     fn status_lines_name_the_phase() {
         crate::core::i18n::init("de");
         assert_eq!(status(&instance(Phase::Stopped), None), "Gestoppt");
-        assert_eq!(status(&instance(Phase::Starting { done: 12, total: 50 }), None), "Startet 12/50");
+        assert_eq!(status(&instance(Phase::Starting { done: 12, total: 50 }), None), "Wartet · 12/50 gestartet");
+        assert_eq!(status(&instance(Phase::Starting { done: 0, total: 0 }), None), "Startet…");
         assert_eq!(status(&instance(Phase::Starting { done: 1, total: 4 }), Some(45)), "Lädt Minecraft · 45 %");
         assert_eq!(status(&instance(Phase::Playing { server: "mc.example".into(), since: Instant::now() }), None), "Auf mc.example");
-        assert_eq!(status(&instance(Phase::Crashed { code: Some(1) }), None), "Abgestürzt · Code 1");
+        assert_eq!(status(&instance(Phase::Crashed { code: Some(1) }), None), "Abgestürzt");
         let mut again = instance(Phase::Connecting { server: "s".into() });
         again.reconnect_attempts = 2;
         assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 3");

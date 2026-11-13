@@ -85,6 +85,8 @@ pub mod tile {
     pub const HEAD: f32 = 22.;
     /// Unread whispers badge.
     pub const BADGE: f32 = 18.;
+    /// The initial on a small tile.
+    pub const INITIAL_SMALL: f32 = 21.;
 }
 
 /// The sidebar and toolbar around the grid.
@@ -95,6 +97,12 @@ pub mod shell {
     pub const SEARCH: f32 = 180.;
     /// The attention dot in a sidebar row.
     pub const DOT: f32 = 6.;
+    /// The attention count in a sidebar row.
+    pub const BADGE: f32 = 19.;
+    /// Below this content width the toolbar shows its buttons as icons.
+    pub const COMPACT: f32 = 860.;
+    /// Below this window width the sidebar floats over the grid instead of beside it.
+    pub const NARROW: f32 = 880.;
 }
 
 /// Opacities that tint states.
@@ -109,6 +117,12 @@ pub mod tint {
     pub const RING: f32 = 0.8;
     /// The wash behind an account that needs work.
     pub const ATTENTION: f32 = 0.12;
+    /// The shade over a preview that shows its actions.
+    pub const SCRIM: f32 = 0.28;
+    /// Controls floating over a preview.
+    pub const FLOATING: f32 = 0.92;
+    /// An outline in a status color.
+    pub const OUTLINE: f32 = 0.5;
 }
 
 /// The ring the keyboard focus draws around a control.
@@ -176,6 +190,8 @@ pub struct Theme {
     /// An account that needs work. Never the accent, so it stands out from selection and actions.
     pub attention: Hsla,
     pub attention_text: Hsla,
+    /// Text on a solid attention fill.
+    pub on_attention: Hsla,
     pub success: Hsla,
     pub success_text: Hsla,
     pub danger: Hsla,
@@ -219,6 +235,7 @@ impl Theme {
             on_accent: c(0xFFFFFF),
             attention: if dark { c(0xFF9F0A) } else { c(0xFF9500) },
             attention_text: if dark { c(0xFFB340) } else { c(0x824800) },
+            on_attention: c(0x1C1C1E),
             success: if dark { c(0x30D158) } else { c(0x34C759) },
             success_text: if dark { c(0x30D158) } else { c(0x1E7A34) },
             danger: if dark { c(0xFF453A) } else { c(0xFF3B30) },
