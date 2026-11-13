@@ -1,0 +1,161 @@
+[
+ {
+  "id": "2BP6jqRA",
+  "project_id": "gvQqBUqZ",
+  "version_number": "mc26.3-0.26.3-neoforge",
+  "version_type": "release",
+  "date_published": "2026-10-28T22:31:14.530840Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "d9707f95f1062367639e976785cf5f41c34e365c"
+    },
+    "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/2BP6jqRA/lithium-neoforge-0.26.3%2Bmc26.3.jar",
+    "filename": "lithium-neoforge-0.26.3+mc26.3.jar",
+    "primary": true,
+    "size": 908506
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "fWv5bnZk",
+  "project_id": "gvQqBUqZ",
+  "version_number": "mc26.3-0.26.3-fabric",
+  "version_type": "release",
+  "date_published": "2026-10-28T22:31:14.497352Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "2d3afe9d43bb2549e23479d8d93e644ff366bebf"
+    },
+    "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/fWv5bnZk/lithium-fabric-0.26.3%2Bmc26.3.jar",
+    "filename": "lithium-fabric-0.26.3+mc26.3.jar",
+    "primary": true,
+    "size": 919892
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "1rb9wI5K",
+  "project_id": "gvQqBUqZ",
+  "version_number": "mc26.3-0.26.2-neoforge",
+  "version_type": "release",
+  "date_published": "2026-09-28T03:43:35.615649Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "1d11e085f74dda6fb797dfc4296cf4086fddfdcb"
+    },
+    "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/1rb9wI5K/lithium-neoforge-0.26.2%2Bmc26.3.jar",
+    "filename": "lithium-neoforge-0.26.2+mc26.3.jar",
+    "primary": true,
+    "size": 903255
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "xS0Q8LSi",
+  "project_id": "gvQqBUqZ",
+  "version_number": "mc26.3-0.26.2-fabric",
+  "version_type": "release",
+  "date_published": "2026-09-28T03:43:35.593224Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "dd5a4ec2c68d7601d8bce9076f789c55a5f8bef3"
+    },
+    "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/xS0Q8LSi/lithium-fabric-0.26.2%2Bmc26.3.jar",
+    "filename": "lithium-fabric-0.26.2+mc26.3.jar",
+    "primary": true,
+    "size": 914543
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "WXHRsMRl",
+  "project_id": "gvQqBUqZ",
+  "version_number": "mc26.3-0.26.1-fabric",
+  "version_type": "release",
+  "date_published": "2026-09-16T14:39:40.495837Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "91e91c955650afaf98e4acebee060a58ac99ade5"
+    },
+    "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/WXHRsMRl/lithium-fabric-0.26.1%2Bmc26.3.jar",
+    "filename": "lithium-fabric-0.26.1+mc26.3.jar",
+    "primary": true,
+    "size": 915429
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "efIED0FC",
+  "project_id": "gvQqBUqZ",
+  "version_number": "mc26.3-0.26.1-neoforge",
+  "version_type": "release",
+  "date_published": "2026-09-16T14:39:40.492614Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "5ba04eef3fde45de80ff4ce10d057f10c2cfe01f"
+    },
+    "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/efIED0FC/lithium-neoforge-0.26.1%2Bmc26.3.jar",
+    "filename": "lithium-neoforge-0.26.1+mc26.3.jar",
+    "primary": true,
+    "size": 904073
+   }
+  ],
+  "dependencies": []
+ }
+]

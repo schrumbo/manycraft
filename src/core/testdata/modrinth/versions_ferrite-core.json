@@ -1,0 +1,62 @@
+[
+ {
+  "id": "d5ddUdiB",
+  "project_id": "uXXizFIs",
+  "version_number": "9.0.0-fabric",
+  "version_type": "release",
+  "date_published": "2026-03-24T18:31:50.491773Z",
+  "game_versions": [
+   "26.1",
+   "26.1.1",
+   "26.1.2",
+   "26.2",
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "eac76ff0f3753422c61b2c44487d0d195d88d4bc"
+    },
+    "url": "https://cdn.modrinth.com/data/uXXizFIs/versions/d5ddUdiB/ferritecore-9.0.0-fabric.jar",
+    "filename": "ferritecore-9.0.0-fabric.jar",
+    "primary": true,
+    "size": 72677
+   }
+  ],
+  "dependencies": []
+ },
+ {
+  "id": "LtVvw4uS",
+  "project_id": "uXXizFIs",
+  "version_number": "9.0.0-neoforge",
+  "version_type": "release",
+  "date_published": "2026-03-24T18:31:50.324216Z",
+  "game_versions": [
+   "26.1",
+   "26.1.1",
+   "26.1.2",
+   "26.2",
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "b8bfb14ba6ce7068aae08c3a132ca40bda6bd143"
+    },
+    "url": "https://cdn.modrinth.com/data/uXXizFIs/versions/LtVvw4uS/ferritecore-9.0.0-neoforge.jar",
+    "filename": "ferritecore-9.0.0-neoforge.jar",
+    "primary": true,
+    "size": 71947
+   }
+  ],
+  "dependencies": []
+ }
+]

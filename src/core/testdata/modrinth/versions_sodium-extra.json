@@ -1,0 +1,614 @@
+[
+ {
+  "id": "7KisD3HH",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.4+fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-12T19:59:50.707906Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "7d8d5c0aa4ca4750c6eafdea3471c138b2a9a1f0"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/7KisD3HH/sodium-extra-fabric-0.9.6-beta.4%2Bmc26.3.jar",
+    "filename": "sodium-extra-fabric-0.9.6-beta.4+mc26.3.jar",
+    "primary": true,
+    "size": 483065
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   }
+  ]
+ },
+ {
+  "id": "RoNJ4Y7T",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.4+neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-12T19:59:43.566334Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "1b330400730d288e33e2b537d180dde8dec668ec"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/RoNJ4Y7T/sodium-extra-neoforge-0.9.6-beta.4%2Bmc26.3.jar",
+    "filename": "sodium-extra-neoforge-0.9.6-beta.4+mc26.3.jar",
+    "primary": true,
+    "size": 483356
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "FNQGqNhl",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.3+fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-08T13:47:36.721647Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "272ee2d0c23133b9c4183a609e88c1892d326c42"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/FNQGqNhl/sodium-extra-fabric-0.9.6-beta.3%2Bmc26.3.jar",
+    "filename": "sodium-extra-fabric-0.9.6-beta.3+mc26.3.jar",
+    "primary": true,
+    "size": 481981
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "m4FKq84U",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.3+neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-08T13:47:24.594181Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "b048869dd6d7ed34a67425ae895b088ada783a31"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/m4FKq84U/sodium-extra-neoforge-0.9.6-beta.3%2Bmc26.3.jar",
+    "filename": "sodium-extra-neoforge-0.9.6-beta.3+mc26.3.jar",
+    "primary": true,
+    "size": 482270
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "d2cvejhx",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.2+fabric",
+  "version_type": "beta",
+  "date_published": "2026-11-08T03:24:43.270786Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "39c380ba71723d9d4303fd1a4c7354aa39f8268e"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/d2cvejhx/sodium-extra-fabric-0.9.6-beta.2%2Bmc26.3.jar",
+    "filename": "sodium-extra-fabric-0.9.6-beta.2+mc26.3.jar",
+    "primary": true,
+    "size": 481980
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   }
+  ]
+ },
+ {
+  "id": "SZNxGvgM",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.2+neoforge",
+  "version_type": "beta",
+  "date_published": "2026-11-08T03:24:36.709250Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "93a07b76b164330ea14c782385ce80d4a14205ca"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/SZNxGvgM/sodium-extra-neoforge-0.9.6-beta.2%2Bmc26.3.jar",
+    "filename": "sodium-extra-neoforge-0.9.6-beta.2+mc26.3.jar",
+    "primary": true,
+    "size": 482272
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   }
+  ]
+ },
+ {
+  "id": "SachDQow",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.1+fabric",
+  "version_type": "beta",
+  "date_published": "2026-10-25T17:08:17.520061Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "71c63d9af92ce960bf8fefb55b1ba31f89307bde"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/SachDQow/sodium-extra-fabric-0.9.6-beta.1%2Bmc26.3.jar",
+    "filename": "sodium-extra-fabric-0.9.6-beta.1+mc26.3.jar",
+    "primary": true,
+    "size": 481978
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "3oE8DNSM",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.6-beta.1+neoforge",
+  "version_type": "beta",
+  "date_published": "2026-10-25T17:08:10.681465Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "91688266b78d8a59c1f3995ffdf3cccd1d9ffb86"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/3oE8DNSM/sodium-extra-neoforge-0.9.6-beta.1%2Bmc26.3.jar",
+    "filename": "sodium-extra-neoforge-0.9.6-beta.1+mc26.3.jar",
+    "primary": true,
+    "size": 482269
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "fs5l9Q1U",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.5+fabric",
+  "version_type": "release",
+  "date_published": "2026-10-25T16:42:30.301846Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "f0201a1b67f3405de7152fec484228db45dcbece"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/fs5l9Q1U/sodium-extra-fabric-0.9.5%2Bmc26.3.jar",
+    "filename": "sodium-extra-fabric-0.9.5+mc26.3.jar",
+    "primary": true,
+    "size": 481973
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "vRdoXdo9",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.5+neoforge",
+  "version_type": "release",
+  "date_published": "2026-10-25T16:42:23.145951Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "f3515e1fee03a85b7118d8e60a67bb478287fb9c"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/vRdoXdo9/sodium-extra-neoforge-0.9.5%2Bmc26.3.jar",
+    "filename": "sodium-extra-neoforge-0.9.5+mc26.3.jar",
+    "primary": true,
+    "size": 482264
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "te2y9qZn",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.4+fabric",
+  "version_type": "release",
+  "date_published": "2026-09-16T02:48:18.058397Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "fabric"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "ff2056f222b751fe161123e71e55afd5b2f41da4"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/te2y9qZn/sodium-extra-fabric-0.9.4%2Bmc26.3.jar",
+    "filename": "sodium-extra-fabric-0.9.4+mc26.3.jar",
+    "primary": true,
+    "size": 465553
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   }
+  ]
+ },
+ {
+  "id": "sbwUWMDW",
+  "project_id": "PtjYWJkn",
+  "version_number": "mc26.3-0.9.4+neoforge",
+  "version_type": "release",
+  "date_published": "2026-09-16T02:48:12.683081Z",
+  "game_versions": [
+   "26.3"
+  ],
+  "loaders": [
+   "neoforge"
+  ],
+  "status": "listed",
+  "files": [
+   {
+    "hashes": {
+     "sha1": "b1656fde5f448a8f3d2e6761292c9c0fe25338dc"
+    },
+    "url": "https://cdn.modrinth.com/data/PtjYWJkn/versions/sbwUWMDW/sodium-extra-neoforge-0.9.4%2Bmc26.3.jar",
+    "filename": "sodium-extra-neoforge-0.9.4+mc26.3.jar",
+    "primary": true,
+    "size": 465843
+   }
+  ],
+  "dependencies": [
+   {
+    "version_id": null,
+    "project_id": "Bh37bMuy",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "EE4vxUHj",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "YL57xq9U",
+    "file_name": null,
+    "dependency_type": "optional"
+   },
+   {
+    "version_id": null,
+    "project_id": "AANobbMI",
+    "file_name": null,
+    "dependency_type": "required"
+   }
+  ]
+ }
+]
