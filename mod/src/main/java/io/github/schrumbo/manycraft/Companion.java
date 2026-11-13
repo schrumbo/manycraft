@@ -20,10 +20,10 @@ final class Companion {
 
 	record Hotkeys(KeyChord next, KeyChord prev, KeyChord nextAttention, KeyChord grid) {
 		static final Hotkeys DEFAULT = new Hotkeys(
-			KeyChord.parse("ctrl+tab"),
-			KeyChord.parse("ctrl+shift+tab"),
-			KeyChord.parse("ctrl+space"),
-			KeyChord.parse("ctrl+g")
+			KeyChord.parse("ctrl+alt+right"),
+			KeyChord.parse("ctrl+alt+left"),
+			KeyChord.parse("ctrl+alt+down"),
+			KeyChord.parse("ctrl+alt+g")
 		);
 	}
 
