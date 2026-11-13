@@ -1,6 +1,6 @@
 # Workflow
 
-Standing instruction from the owner: use the agents below without being asked.
+Standing instruction from the owner: use the agents below without being asked, and work autonomously up to 1.0. Taste, scope and product questions go to an agent on model `fable`, which answers in the owner's interest; only what needs the owner's hands or accounts goes to the owner, collected in milestone reports.
 
 - Any change beyond a few lines follows the `ship` skill. Questions, reading and one-line fixes do not.
 - Commit at stable points yourself: stage by name, terse message, no co-author. Run `.claude/bin/sync` before each commit.
