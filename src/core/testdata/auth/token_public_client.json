@@ -1,0 +1,8 @@
+{
+  "error": "invalid_client",
+  "error_description": "AADSTS70002: The provided client is not supported for this feature. The client application must be marked as 'mobile.'",
+  "error_codes": [],
+  "timestamp": "2026-11-13 10:00:00Z",
+  "trace_id": "00000000-0000-0000-0000-000000000000",
+  "correlation_id": "00000000-0000-0000-0000-000000000000"
+}

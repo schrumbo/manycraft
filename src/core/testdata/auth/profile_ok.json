@@ -1,0 +1,13 @@
+{
+  "id": "0e9e3a6c6a1f4b2b9d572b1ac6f3c1d4",
+  "name": "TestPlayer",
+  "skins": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "state": "ACTIVE",
+      "url": "http://textures.minecraft.net/texture/abc",
+      "variant": "CLASSIC"
+    }
+  ],
+  "capes": []
+}

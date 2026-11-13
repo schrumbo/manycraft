@@ -1,0 +1,7 @@
+{
+  "path": "/authentication/login_with_xbox",
+  "errorType": "UnauthorizedOperationException",
+  "error": "UnauthorizedOperationException",
+  "errorMessage": "Unauthorized",
+  "developerMessage": "Unauthorized"
+}
