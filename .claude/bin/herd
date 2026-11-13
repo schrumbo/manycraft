@@ -11,8 +11,14 @@ remove() {
   name="$1"
   wt="$ROOT/.claude/worktrees/$name"
   hc kill "$name" >/dev/null 2>&1
-  git -C "$ROOT" worktree remove "$wt" || exit 1
-  git -C "$ROOT" branch -d "herd/$name"
+  for _ in 1 2 3 4 5 6; do
+    git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null && break
+    sleep 2
+  done
+  rm -rf "$wt" 2>/dev/null
+  git -C "$ROOT" worktree prune
+  [ -d "$wt" ] && { echo "could not delete $wt; a process still holds it" >&2; exit 1; }
+  git -C "$ROOT" branch -D "herd/$name"
   rm -rf "$ROOT/target/herd-$name"
 }
 
