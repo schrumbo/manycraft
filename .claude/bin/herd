@@ -1,0 +1,92 @@
+#!/bin/bash
+set -u
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/AppData/Local/Microsoft/WinGet/Links:$HOME/AppData/Local/Programs/herdr-core:$PATH"
+ROOT=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift
+
+helpers() { git -C "$ROOT" worktree list | grep -c ' \[herd/'; }
+
+remove() {
+  name="$1"
+  wt="$ROOT/.claude/worktrees/$name"
+  hc kill "$name" >/dev/null 2>&1
+  git -C "$ROOT" worktree remove "$wt" || exit 1
+  git -C "$ROOT" branch -d "herd/$name"
+  rm -rf "$ROOT/target/herd-$name"
+}
+
+case "$cmd" in
+  new)
+    name="${1:?name}"; shift
+    model=sonnet
+    if [ "${1:-}" = "--model" ]; then model="$2"; shift 2; fi
+    task="${1:?task}"
+    [ "$(helpers)" -ge "${HERD_MAX:-4}" ] && { echo "already $(helpers) helpers; land or remove one first (HERD_MAX=${HERD_MAX:-4})" >&2; exit 1; }
+    wt="$ROOT/.claude/worktrees/$name"
+    git -C "$ROOT" worktree add -q -b "herd/$name" "$wt" HEAD || exit 1
+    grep -qx '/.cargo/' "$ROOT/.git/info/exclude" || echo '/.cargo/' >> "$ROOT/.git/info/exclude"
+    mkdir -p "$wt/.cargo"
+    wrapper=$(command -v sccache || echo sccache); command -v cygpath >/dev/null && wrapper=$(cygpath -m "$wrapper")
+    printf '[build]\nrustc-wrapper = "%s"\nbuild-dir = "%s/target/herd-%s"\n' "$wrapper" "$ROOT" "$name" > "$wt/.cargo/config.toml"
+    printf '{\n  "enabledPlugins": { "rust-analyzer-lsp@claude-plugins-official": false }\n}\n' > "$wt/.claude/settings.local.json"
+    reach="${HC_TERMINAL_ID:-}"
+    prompt="You work alone in the git worktree $wt on branch herd/$name. Only touch this worktree. Follow the ship skill. Commit only on branch herd/$name at stable points, no co-author; never push, merge or touch main. Do not start other hc agents. Builds take a machine-wide lock, so cargo may wait for another helper's build; that is normal, do not cancel it. Task: $task"
+    [ -n "$reach" ] && prompt="$prompt Report the result or any blocker with: hc send $reach \"<text>\""
+    hc run --bg --json --name "$name" --cwd "$wt" --label herd=1 -- claude --model "$model" --permission-mode "${HERD_MODE:-auto}" "$prompt" | jq -c '{address, name}'
+    for _ in $(seq 1 30); do
+      screen=$(hc read --lines 30 "$name" 2>/dev/null)
+      case "$screen" in
+        *"trust this folder"*) hc keys "$name" down enter >/dev/null; break ;;
+        *"$name"*"Task:"*) break ;;
+      esac
+      perl -e 'select(undef,undef,undef,0.5)'
+    done
+    ;;
+  ls)
+    git -C "$ROOT" worktree list | grep 'herd/' || echo "no helpers"
+    ;;
+  status)
+    for wt in $(git -C "$ROOT" worktree list --porcelain | awk '/^worktree /{w=$2} /^branch refs\/heads\/herd\//{print w}'); do
+      name=$(basename "$wt")
+      ahead=$(git -C "$ROOT" rev-list --count "main..herd/$name")
+      dirty=$(git -C "$wt" status --porcelain | grep -vc '^??')
+      last=$(hc read --lines 40 "$name" 2>/dev/null | grep -vE '^\s*$|─|^❯|auto mode|Update available|Tip:|\[hc\]' | tail -1 | sed 's/^ *//' | cut -c1-110)
+      printf '%-10s %2s commits  %2s uncommitted  %s\n' "$name" "$ahead" "$dirty" "${last:-(not running)}"
+    done
+    [ "$(helpers)" = 0 ] && echo "no helpers"
+    command -v powershell.exe >/dev/null && echo "free RAM $(powershell.exe -NoProfile -c '[math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB,1)' | tr -d '\r') GB"
+    ;;
+  land)
+    name="${1:?name}"
+    branch="herd/$name"
+    wt="$ROOT/.claude/worktrees/$name"
+    cd "$ROOT" || exit 1
+    "$ROOT/.claude/bin/sync" | tail -1
+    [ "$(git rev-list --count "main..$branch")" -gt 0 ] || { echo "$branch has nothing to land" >&2; exit 1; }
+    [ -z "$(git -C "$wt" status --porcelain | grep -v '^??')" ] || { echo "$name has uncommitted changes:" >&2; git -C "$wt" status --short >&2; exit 1; }
+    if [ -s "$ROOT/.git/info/personal" ]; then
+      hits=$(git diff "main...$branch" | grep -nE "^\+.*($(paste -sd'|' "$ROOT/.git/info/personal"))")
+      [ -n "$hits" ] && { echo "personal data in the diff:" >&2; echo "$hits" | head -5 >&2; exit 1; }
+    else
+      echo "warning: no .git/info/personal (one pattern per line), personal data not checked" >&2
+    fi
+    hits=$(git diff "main...$branch" -- src | grep -nE '^\+\s*//[^/!]')
+    [ -n "$hits" ] && { echo "code comments in the diff:" >&2; echo "$hits" | head -5 >&2; exit 1; }
+    git diff --quiet && git diff --cached --quiet || { echo "main has uncommitted changes; commit them first" >&2; exit 1; }
+    git merge --no-ff --no-commit "$branch" >/dev/null 2>&1
+    conflicts=$(git diff --name-only --diff-filter=U)
+    [ -n "$conflicts" ] && { echo "conflicts, resolve them, then commit and herd rm $name:" >&2; echo "$conflicts" >&2; exit 1; }
+    git commit -q -m "Merge $branch: $(git log -1 --format=%s "$branch")"
+    [ -f "$ROOT/.git/MERGE_HEAD" ] && { echo "the commit was refused (gate above); fix, then commit and herd rm $name" >&2; exit 1; }
+    git log --oneline -1
+    remove "$name"
+    "$ROOT/.claude/bin/sync" | tail -1
+    ;;
+  rm)
+    remove "${1:?name}"
+    ;;
+  *)
+    echo "herd new <name> [--model m] <task> | herd ls | herd status | herd land <name> | herd rm <name>"
+    ;;
+esac

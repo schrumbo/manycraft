@@ -1,0 +1,7 @@
+/target
+.DS_Store
+.claude/settings.local.json
+.claude/worktrees/
+mod/.gradle/
+mod/build/
+mod/run/
