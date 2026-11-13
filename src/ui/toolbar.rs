@@ -35,7 +35,8 @@ pub fn bar(this: &MainWindow, title: String, t: &Theme) -> AnyElement {
 }
 
 fn toggle(this: &MainWindow, t: &Theme) -> Stateful<Div> {
-    let hint = format!("{} · {}", if this.sidebar { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, shortcut("B"));
+    let shown = if this.narrow_now { this.overlay } else { this.sidebar };
+    let hint = format!("{} · {}", if shown { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, shortcut("B"));
     icon_button("toggle-sidebar", "panel-left", hint, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx))
 }
 
@@ -221,7 +222,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(div().flex_1().min_w(px(space::S)))
         .when(!compact, |d| d.child(size))
         .child(search)
-        .child(action_button("stop-scope", stop_label, "square", false, running == 0, compact, stop, &t).tooltip(tip(if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) })))
-        .child(action_button("start-scope", start_label, "play", true, startable == 0, compact, start, &t).tooltip(tip(if startable == 0 { tr("Alle laufen schon") } else { trf("%lld gestoppte starten", &[&startable]) })))
+        .child(action_button("stop-scope", stop_label.clone(), "square", false, running == 0, compact, stop, &t).tooltip(tip(format!("{stop_label} · {}", if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) }))))
+        .child(action_button("start-scope", start_label.clone(), "play", true, startable == 0, compact, start, &t).tooltip(tip(format!("{start_label} · {}", if startable == 0 { tr("Alle laufen schon") } else { trf("%lld gestoppte starten", &[&startable]) }))))
         .into_any_element()
 }

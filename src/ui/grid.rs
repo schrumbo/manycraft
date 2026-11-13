@@ -31,11 +31,13 @@ pub struct Grid {
     moves: HashMap<String, usize>,
     moved_at: Option<Instant>,
     columns: usize,
+    scope: Option<(Option<String>, Filter, String)>,
 }
 
 impl Grid {
     pub fn new(cx: &mut App) -> Self {
         Self {
+            scope: None,
             focus: cx.focus_handle().tab_index(0).tab_stop(true),
             selected: None,
             order: Vec::new(),
@@ -139,6 +141,7 @@ fn move_selection(this: &mut MainWindow, keys: &[String], delta: isize, cx: &mut
     }
     let at = this.grid.selected.as_ref().and_then(|s| keys.iter().position(|k| k == s));
     let next = match at {
+        None if delta >= isize::MAX / 4 => keys.len() - 1,
         None => 0,
         Some(at) => (at as isize + delta).clamp(0, keys.len() as isize - 1) as usize,
     };
@@ -174,7 +177,10 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let model = model::get(cx);
     let m = model.read(cx);
     let resorted = this.grid.sort(m);
-    let held: HashSet<&str> = if this.grid.hovered { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
+    let scope = (batch.map(str::to_owned), this.filter, this.query.clone());
+    let same_scope = this.grid.scope.as_ref() == Some(&scope);
+    this.grid.scope = Some(scope);
+    let held: HashSet<&str> = if this.grid.hovered && same_scope { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
     let keys: Vec<String> = this.grid.order.iter().filter(|k| held.contains(k.as_str()) || m.instances.get(*k).is_some_and(|i| matches(i, batch, this.filter, &this.query))).cloned().collect();
     drop(held);
     if resorted && !cx.reduce_motion() {
@@ -195,6 +201,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.search.update(cx, |s, cx| s.set_value("", window, cx));
                     this.query.clear();
+                    this.grid.reset_scroll();
                     cx.notify();
                 }))
                 .into_any_element();
@@ -232,10 +239,15 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     }
     let ease = progress.filter(|p| *p < 1.).map(|p| 1. - (1. - p).powi(3));
     let moves = Rc::new(this.grid.moves.clone());
+    let (scroll, viewport) = (this.grid.scroll.clone(), Rc::clone(&this.grid.area));
     let focused = this.grid.focus.is_focused(window);
     let view = cx.entity().downgrade();
     let list = uniform_list("instance-rows", rows, move |range, _, cx| {
-        let measuring = range.start == 0 && range.end == 1 && rows > 1;
+        let top = -f32::from(scroll.0.borrow().base_handle.offset().y);
+        let height = f32::from(viewport.get().height).max(row_h);
+        let first = (top / row_h).floor().max(0.) as usize;
+        let last = ((top + height) / row_h).ceil() as usize;
+        let visible: HashSet<String> = shown.iter().skip(first * columns).take(last.saturating_sub(first) * columns).cloned().collect();
         let model = model::get(cx);
         let rows_data: Vec<Vec<(usize, TileData)>> = {
             let m = model.read(cx);
@@ -246,14 +258,12 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 })
                 .collect()
         };
-        let mut visible = HashSet::new();
         let rows: Vec<AnyElement> = rows_data
             .into_iter()
             .map(|cells| {
                 let cells: Vec<AnyElement> = cells
                     .into_iter()
                     .map(|(index, d)| {
-                        visible.insert(d.key.clone());
                         let offset = match (moves.get(&d.key), ease) {
                             (Some(old), Some(e)) => {
                                 let dx = (old % columns) as f32 - (index % columns) as f32;
@@ -268,9 +278,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 div().h(px(row_h)).flex().gap(px(space::M)).children(cells).into_any_element()
             })
             .collect();
-        if !measuring {
-            super::state::set_visible(visible, cx);
-        }
+        super::state::set_visible(visible, cx);
         rows
     })
     .track_scroll(&this.grid.scroll)

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,7 @@ const EXIT_POLL: Duration = Duration::from_millis(500);
 const STAGGER_STEP: Duration = Duration::from_millis(100);
 const KEPT_CHAT: usize = 5000;
 const ALERT_NAMES: usize = 4;
+const QUIT_WAIT: Duration = Duration::from_secs(5);
 
 /// What the fleet reports back to the UI thread.
 pub enum Update {
@@ -61,7 +62,8 @@ struct Real {
     fleet: Arc<Fleet>,
     out: async_channel::Sender<Update>,
     watch: Arc<Mutex<HashSet<String>>>,
-    withdrawn: Arc<Mutex<HashSet<String>>>,
+    owners: Arc<Mutex<HashMap<String, u64>>>,
+    runs: AtomicU64,
     sends: mpsc::Sender<(String, ToMod)>,
     previews: mpsc::Sender<(String, PathBuf)>,
 }
@@ -116,23 +118,28 @@ impl Real {
                 }
             }
         })?;
-        Ok(Self { fleet, out, watch, withdrawn: Arc::default(), sends, previews })
+        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews })
     }
 }
 
 impl Backend for Real {
     fn start(&self, batch: Batch, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
-        let (fleet, out, watch, withdrawn) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.withdrawn));
+        let (fleet, out, watch, owners) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.owners));
+        let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
         {
-            let mut withdrawn = lock(&withdrawn);
+            let mut owners = lock(&owners);
             for account in &accounts {
-                withdrawn.remove(&fleet::instance_key(&batch, account.id));
+                owners.insert(fleet::instance_key(&batch, account.id), run);
             }
         }
         let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
+            let mine = |key: &str| lock(&owners).get(key) == Some(&run);
             let fail_all = |reason: String| {
                 for account in &accounts {
-                    let _ = out.send_blocking(Update::Failed { key: fleet::instance_key(&batch, account.id), reason: reason.clone(), login: false });
+                    let key = fleet::instance_key(&batch, account.id);
+                    if mine(&key) {
+                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false });
+                    }
                 }
             };
             let jar = match companion::jar() {
@@ -164,27 +171,38 @@ impl Backend for Real {
                 if cancel.load(Ordering::SeqCst) {
                     return;
                 }
-                if lock(&withdrawn).contains(&fleet::instance_key(&batch, account.id)) {
+                let key = fleet::instance_key(&batch, account.id);
+                if !mine(&key) {
+                    let _ = out.send_blocking(Update::Progress { batch: batch.id.clone(), done: i + 1, total });
                     continue;
                 }
                 let update = match fleet.start_one(&prepared, account) {
                     Ok(key) => {
                         lock(&watch).insert(key.clone());
-                        if lock(&withdrawn).contains(&key) {
+                        if !lock(&owners).contains_key(&key) {
                             fleet.stop_all(std::slice::from_ref(&key));
                         }
-                        Update::Launched { key }
+                        Some(Update::Launched { key })
                     }
-                    Err(e) => Update::Failed { key: fleet::instance_key(&batch, account.id), login: needs_sign_in(&e), reason: format!("{e:#}") },
+                    Err(_) if fleet.is_running(&key) => Some(Update::Launched { key }),
+                    Err(_) if !mine(&key) => None,
+                    Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), reason: format!("{e:#}") }),
                 };
-                let _ = out.send_blocking(update);
+                if let Some(update) = update {
+                    let _ = out.send_blocking(update);
+                }
                 let _ = out.send_blocking(Update::Progress { batch: batch.id.clone(), done: i + 1, total });
             }
         });
     }
 
     fn stop(&self, keys: Vec<String>) {
-        lock(&self.withdrawn).extend(keys.iter().cloned());
+        {
+            let mut owners = lock(&self.owners);
+            for key in &keys {
+                owners.remove(key);
+            }
+        }
         let fleet = Arc::clone(&self.fleet);
         let _ = std::thread::Builder::new().name("fleet-stop".into()).spawn(move || fleet.stop_all(&keys));
     }
@@ -199,6 +217,10 @@ impl Backend for Real {
 
     fn quit(&self) {
         self.fleet.close();
+        let until = Instant::now() + QUIT_WAIT;
+        while self.fleet.launching() && Instant::now() < until {
+            std::thread::sleep(STAGGER_STEP);
+        }
         for _ in 0..3 {
             let keys = self.fleet.running_keys();
             if keys.is_empty() {
@@ -781,7 +803,8 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, later: &mut Vec<(Strin
         }
         Update::Launched { key } => {
             if let Some(i) = m.instances.get_mut(&key)
-                && let Phase::Starting { .. } = i.phase
+                && matches!(i.phase, Phase::Starting { .. } | Phase::Failed { .. })
+                && !i.stopping
             {
                 i.phase = Phase::Starting { done: 0, total: 0 };
             }

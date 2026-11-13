@@ -88,7 +88,10 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: boo
         }
         None => {
             let key = data.key.clone();
-            let entity = cx.new(|_| TileView { data, geometry, offset, focused, main });
+            let entity = cx.new(|cx: &mut Context<TileView>| {
+                cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
+                TileView { data, geometry, offset, focused, main }
+            });
             cx.global_mut::<TileViews>().0.insert(key, entity.clone());
             entity
         }
@@ -360,7 +363,7 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .child(div().text_size(px(if g.small { font::CALLOUT } else { font::BODY })).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).truncate().child(d.name.clone()))
+                .child(div().text_size(px(if g.small { font::CALLOUT } else { font::BODY })).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).truncate().id(SharedString::from(format!("name-{}", d.key))).child(d.name.clone()).when(g.small, |n| n.tooltip(tip(d.name.clone()))))
                 .child(
                     div()
                         .flex()

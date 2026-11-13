@@ -65,7 +65,8 @@ pub struct MainWindow {
     pub(super) filter: Filter,
     pub(super) size: TileSize,
     pub(super) sidebar: bool,
-    overlay: bool,
+    pub(super) overlay: bool,
+    pub(super) narrow_now: bool,
     pub(super) search: Entity<InputState>,
     pub(super) query: String,
     pub(super) grid: Grid,
@@ -110,6 +111,7 @@ impl MainWindow {
             size: TileSize::Medium,
             sidebar: true,
             overlay: false,
+            narrow_now: false,
             search,
             query: String::new(),
             grid: Grid::new(cx),
@@ -221,6 +223,7 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         super::perf::frame_start();
+        self.narrow_now = Self::narrow(window);
         if !std::mem::replace(&mut self.focused_once, true) && window.focused(cx).is_none() {
             window.focus(&self.grid.focus, cx);
         }
@@ -249,6 +252,20 @@ impl Render for MainWindow {
             .id("main")
             .key_context("MainWindow")
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if !this.overlay {
+                    return;
+                }
+                match e.keystroke.key.as_str() {
+                    "escape" => {
+                        this.overlay = false;
+                        cx.notify();
+                        cx.stop_propagation();
+                    }
+                    "left" | "right" | "up" | "down" | "enter" | "home" | "end" | "pageup" | "pagedown" => cx.stop_propagation(),
+                    _ => {}
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 if Self::narrow(window) {
                     this.overlay = !this.overlay;
@@ -277,6 +294,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
                 this.search.update(cx, |s, cx| s.set_value("", window, cx));
                 this.query.clear();
+                this.grid.reset_scroll();
                 window.focus(&this.grid.focus, cx);
                 cx.notify();
             }))
@@ -301,7 +319,22 @@ impl Render for MainWindow {
                             cx.notify();
                         })),
                 )
-                .child(div().absolute().top_0().left_0().h_full().shadow_lg().child(super::sidebar::render(self, window, cx)))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .h_full()
+                        .shadow_lg()
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.overlay = false;
+                                cx.notify();
+                            }),
+                        )
+                        .child(super::sidebar::render(self, window, cx)),
+                )
             });
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, &t)
@@ -398,6 +431,7 @@ pub fn select_batch(batch: &str, cx: &mut App) {
         if let Ok(view) = view.downcast::<MainWindow>() {
             view.update(cx, |this, cx| {
                 this.filter = Filter::Attention;
+                this.grid.reset_scroll();
                 this.go(Page::Grid(Some(batch)), window, cx);
             });
         }

@@ -526,8 +526,7 @@ impl Fleet {
     /// Syncs the batch's mods, finds its server and installs its game, once before `start_one` launches its accounts.
     /// Leaves the mods alone while instances of the batch run, since they hold the jars open.
     pub fn prepare_launch(&self, batch: &Batch, companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
-        let batch_runs = lock(&self.running).values_mut().any(|r| r.batch == batch.id && r.poll());
-        if !batch_runs {
+        if !self.batch_runs(&batch.id) {
             sync_mods(batch)?;
         }
         let server_addrs = match batch.server.as_deref() {
@@ -545,6 +544,10 @@ impl Fleet {
         self.launch_checked(&prepared.batch, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
             Ok(Box::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?))
         })
+    }
+
+    fn batch_runs(&self, batch_id: &str) -> bool {
+        lock(&self.running).values_mut().any(|r| r.batch == batch_id && r.poll())
     }
 
     /// Sends `message` to the companion mod of the instance `key`. Fails when it is not connected.
@@ -586,6 +589,14 @@ impl Fleet {
             self.ipc.unregister(&key);
             lock(&self.reserved).remove(&key);
         })?;
+        if self.closing.load(Ordering::SeqCst) {
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            self.ipc.unregister(&key);
+            lock(&self.reserved).remove(&key);
+            bail!("Manycraft is quitting");
+        }
         let pid = child.id();
         let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None };
         self.insert(key.clone(), instance);
@@ -645,6 +656,12 @@ impl Fleet {
     }
 
     /// Whether the instance `key` is running right now.
+    /// Whether a start is between its checks and its running instance.
+    pub fn launching(&self) -> bool {
+        !lock(&self.reserved).is_empty()
+    }
+
+    /// Whether the instance `key` runs.
     pub fn is_running(&self, key: &str) -> bool {
         lock(&self.running).get_mut(key).is_some_and(RunningInstance::poll)
     }
@@ -1581,9 +1598,38 @@ mod tests {
         assert!(fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| bail!("no java")).is_err());
         assert!(fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| Ok(live(1))).is_ok());
         fleet.stop_all(&fleet.running_keys());
-        fleet.close();
+        let exit = Arc::new(Mutex::new(None));
+        let late = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| {
+            fleet.close();
+            Ok(Box::new(FakeProcess { pid: 3, exit: Arc::clone(&exit) }) as Box<dyn Process>)
+        });
+        assert!(format!("{:#}", late.unwrap_err()).contains("quitting"));
+        assert!(exit.lock().unwrap().is_some());
+        assert!(!fleet.launching());
+        assert!(fleet.running_keys().is_empty());
         let refused = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| Ok(live(2)));
         assert!(format!("{:#}", refused.unwrap_err()).contains("quitting"));
+    }
+
+    #[test]
+    fn a_reservation_blocks_only_its_account_on_its_server_and_mods_wait_for_the_batch() {
+        let (fleet, _events) = Fleet::new().unwrap();
+        let alts = accounts(&["AltOne", "AltTwo"]);
+        let (a, b) = (Batch::new("A", "26.3"), Batch::new("B", "26.3"));
+        let (x, y) = ([addr("10.0.0.1:25565")], [addr("10.0.0.2:25565")]);
+        let reserved = HashMap::from([(instance_key(&a, alts[0].id), (alts[0].id, x.to_vec()))]);
+        let mut running = HashMap::new();
+        assert!(free(&mut running, &reserved, &instance_key(&b, alts[0].id), &alts[0], &y).is_ok());
+        assert!(free(&mut running, &reserved, &instance_key(&b, alts[1].id), &alts[1], &x).is_ok());
+        assert!(format!("{:#}", free(&mut running, &reserved, &instance_key(&b, alts[0].id), &alts[0], &x).unwrap_err()).contains("this server in another batch"));
+        assert!(!fleet.batch_runs(&a.id));
+        let exit = Arc::new(Mutex::new(None));
+        let key = fleet.launch_checked(&a, &alts[0], &x, Instant::now(), |_, _, _| Ok(Box::new(FakeProcess { pid: 1, exit: Arc::clone(&exit) }) as Box<dyn Process>)).unwrap();
+        assert!(fleet.batch_runs(&a.id));
+        assert!(!fleet.batch_runs(&b.id));
+        *exit.lock().unwrap() = Some(Some(0));
+        assert!(!fleet.batch_runs(&a.id));
+        assert!(fleet.running_keys().iter().all(|k| *k != key) || !fleet.batch_runs(&a.id));
     }
 
     #[test]
