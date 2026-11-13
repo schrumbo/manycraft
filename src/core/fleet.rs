@@ -643,9 +643,7 @@ impl Fleet {
 
 fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
     let game_dir = prepare(batch, account, companion_jar)?;
-    if account.proxy.is_some() && !batch.mods_dir().join(COMPANION_FILE).is_file() {
-        bail!("{} has a proxy, but the companion mod is missing, so the game would connect without the proxy", account.name);
-    }
+    require_companion_for_proxy(account, &batch.mods_dir())?;
     let extra = extra_arguments(batch, account, &game_dir, ipc_address, key)?;
     let session = match account.kind {
         AccountKind::Offline => {
@@ -664,6 +662,13 @@ fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, in
         extra_jvm: extra.jvm,
     };
     spawn(&spec, &extra.game, token)
+}
+
+fn require_companion_for_proxy(account: &Account, mods: &Path) -> Result<()> {
+    if account.proxy.is_some() && !mods.join(COMPANION_FILE).is_file() {
+        bail!("{} has a proxy, but the companion mod is missing, so the game would connect without the proxy", account.name);
+    }
+    Ok(())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -757,11 +762,15 @@ fn create(name: &str, args: &[&str]) -> Result<i32> {
         new.server = Some((*server).to_owned());
     }
     if let Some(memory) = flags.get("--memory") {
-        new.memory_mb = memory.parse().ok().filter(|m| *m >= MIN_MEMORY_MB).with_context(|| format!("memory is a number of MB, at least {MIN_MEMORY_MB}"))?;
+        new.memory_mb = parse_memory(memory)?;
     }
     batch::save(&new)?;
     println!("Batch {} ({}) for Minecraft {}", new.name, new.id, new.game_version);
     Ok(0)
+}
+
+fn parse_memory(text: &str) -> Result<u32> {
+    text.parse().ok().filter(|m| *m >= MIN_MEMORY_MB).with_context(|| format!("memory is a number of MB, at least {MIN_MEMORY_MB}"))
 }
 
 fn list() -> Result<i32> {
@@ -779,16 +788,20 @@ fn edit(who: &str, account_name: &str, add: bool) -> Result<i32> {
     let target = find_batch(&mut batches, who)?;
     let accounts = account::load()?;
     let account = auth::find_account(&accounts, account_name)?;
-    let present = target.accounts.contains(&account.id);
-    match (add, present) {
-        (true, true) => bail!("{} is in {} already", account.name, target.name),
-        (false, false) => bail!("{} is not in {}", account.name, target.name),
-        (true, false) => target.accounts.push(account.id),
-        (false, true) => target.accounts.retain(|id| *id != account.id),
-    }
+    set_member(target, account, add)?;
     batch::save(target)?;
     println!("{} {} {}", if add { "Added" } else { "Removed" }, account.name, if add { format!("to {}", target.name) } else { format!("from {}", target.name) });
     Ok(0)
+}
+
+fn set_member(batch: &mut Batch, account: &Account, add: bool) -> Result<()> {
+    match (add, batch.accounts.contains(&account.id)) {
+        (true, true) => bail!("{} is in {} already", account.name, batch.name),
+        (false, false) => bail!("{} is not in {}", account.name, batch.name),
+        (true, false) => batch.accounts.push(account.id),
+        (false, true) => batch.accounts.retain(|id| *id != account.id),
+    }
+    Ok(())
 }
 
 fn delete(who: &str) -> Result<i32> {
@@ -908,6 +921,10 @@ mod tests {
         prepare_in(&d.inst, &d.mods, &d.config, &d.template, jar)
     }
 
+    fn same(a: &Path, b: &Path) -> bool {
+        fs::canonicalize(a).unwrap() == fs::canonicalize(b).unwrap()
+    }
+
     #[test]
     fn links_point_into_the_batch_and_are_reused() {
         let d = dirs();
@@ -931,8 +948,8 @@ mod tests {
         prep(&d, None).unwrap();
         assert_eq!(fs::read(d.inst.join("mods.old-2").join("mine.jar")).unwrap(), b"keep");
         assert_eq!(fs::read(d.inst.join("config.old-1")).unwrap(), b"a file");
-        assert!(points_to(&d.inst.join("mods"), &d.mods));
-        assert!(points_to(&d.inst.join("config"), &d.config));
+        assert!(same(&d.inst.join("mods"), &d.mods));
+        assert!(same(&d.inst.join("config"), &d.config));
         prep(&d, None).unwrap();
         assert!(!d.inst.join("mods.old-3").exists());
         assert!(!d.inst.join("config.old-2").exists());
@@ -946,7 +963,9 @@ mod tests {
         fs::write(other.join("old.jar"), b"old").unwrap();
         fs::create_dir_all(&d.inst).unwrap();
         create_link(&other, &d.inst.join("mods")).unwrap();
+        assert!(!points_to(&d.inst.join("mods"), &d.mods));
         prep(&d, None).unwrap();
+        assert!(same(&d.inst.join("mods"), &d.mods));
         assert!(points_to(&d.inst.join("mods"), &d.mods));
         assert_eq!(fs::read(other.join("old.jar")).unwrap(), b"old");
         assert!(!d.inst.join("mods.old-1").exists());
@@ -961,7 +980,7 @@ mod tests {
         create_link(&gone, &d.inst.join("mods")).unwrap();
         fs::remove_dir(&gone).unwrap();
         prep(&d, None).unwrap();
-        assert!(points_to(&d.inst.join("mods"), &d.mods));
+        assert!(same(&d.inst.join("mods"), &d.mods));
     }
 
     #[test]
@@ -978,6 +997,13 @@ mod tests {
         fs::write(d.inst.join(OPTIONS_FILE), "soundCategory_master:1.0\n").unwrap();
         prep(&d, None).unwrap();
         assert!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap().contains("soundCategory_master:0.0"));
+    }
+
+    #[test]
+    fn an_unreadable_template_is_an_error() {
+        let d = dirs();
+        fs::create_dir_all(&d.template).unwrap();
+        assert!(prep(&d, None).is_err());
     }
 
     #[test]
@@ -1004,6 +1030,9 @@ mod tests {
         prep(&d, Some(&jar)).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"v2");
         assert!(prep(&d, Some(&jar.with_file_name("missing.jar"))).is_err());
+        let not_a_folder = jar.with_file_name("not-a-folder");
+        fs::write(&not_a_folder, b"").unwrap();
+        assert!(install_companion(&jar, &not_a_folder).is_err());
     }
 
     #[derive(Default)]
@@ -1101,7 +1130,7 @@ mod tests {
         let after_first = resolver.lookup.calls.get();
         resolver.resolve("PLAIN.org", t0 + Duration::from_secs(59)).unwrap();
         assert_eq!(resolver.lookup.calls.get(), after_first);
-        resolver.resolve("plain.org", t0 + Duration::from_secs(61)).unwrap();
+        resolver.resolve("plain.org", t0 + Duration::from_secs(60)).unwrap();
         assert!(resolver.lookup.calls.get() > after_first);
     }
 
@@ -1296,6 +1325,81 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_needs_the_companion_mod() {
+        let d = dirs();
+        fs::create_dir_all(&d.mods).unwrap();
+        let mut alt = Account::offline("AltOne").unwrap();
+        assert!(require_companion_for_proxy(&alt, &d.mods).is_ok());
+        alt.proxy = Some("socks5://h:1".into());
+        assert!(format!("{:#}", require_companion_for_proxy(&alt, &d.mods).unwrap_err()).contains("companion mod is missing"));
+        fs::write(d.mods.join(COMPANION_FILE), b"jar").unwrap();
+        assert!(require_companion_for_proxy(&alt, &d.mods).is_ok());
+    }
+
+    #[test]
+    fn child_processes_report_exit_and_can_be_killed() {
+        let (quick, long): ((&str, &[&str]), (&str, &[&str])) =
+            if cfg!(windows) { (("cmd", &["/C", "exit 7"]), ("ping", &["-n", "30", "127.0.0.1"])) } else { (("sh", &["-c", "exit 7"]), ("sleep", &["30"])) };
+        let mut done = Command::new(quick.0).args(quick.1).stdout(Stdio::null()).spawn().unwrap();
+        assert_eq!(Process::wait(&mut done).unwrap(), Some(7));
+        assert_eq!(Process::try_wait(&mut done).unwrap(), Some(Some(7)));
+        let mut running = Command::new(long.0).args(long.1).stdout(Stdio::null()).spawn().unwrap();
+        assert_eq!(Process::id(&running), running.id());
+        assert_eq!(Process::try_wait(&mut running).unwrap(), None);
+        Process::kill(&mut running).unwrap();
+        let code = Process::wait(&mut running).unwrap();
+        assert_ne!(code, Some(0));
+        assert!(Process::try_wait(&mut running).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_reaper_runs_only_while_instances_live() {
+        let (mut fleet, _events) = Fleet::new().unwrap();
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let batch = Batch::new("A", "26.3");
+        let alts = accounts(&["AltOne"]);
+        let key = fleet.start_all(&batch, &alts, &[], &SystemClock, launcher(&exits, &tokens)).remove(0).1.unwrap();
+        std::thread::sleep(REAP_INTERVAL * 2);
+        assert!(fleet.reaping.load(Ordering::SeqCst));
+        lock(&exits.borrow()[&alts[0].id]).replace(Some(5));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while fleet.reaping.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!fleet.reaping.load(Ordering::SeqCst));
+        assert_eq!(lock(&fleet.running)[&key].exit, Some(Some(5)));
+    }
+
+    #[test]
+    fn stop_asks_a_connected_instance_to_quit_first() {
+        use std::io::{BufRead, BufReader, Write};
+        let (mut fleet, events) = Fleet::new().unwrap();
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let batch = Batch::new("A", "26.3");
+        let alts = accounts(&["AltOne"]);
+        let key = fleet.start_all(&batch, &alts, &[], &SystemClock, launcher(&exits, &tokens)).remove(0).1.unwrap();
+        let exit = Arc::clone(&exits.borrow()[&alts[0].id]);
+        let mut stream = std::net::TcpStream::connect(fleet.ipc.address()).unwrap();
+        let hello = serde_json::json!({"t": "hello", "instance": key, "token": tokens.borrow()[0], "pid": 1, "mod_version": "0"});
+        stream.write_all(format!("{hello}\n").as_bytes()).unwrap();
+        assert!(matches!(events.recv_timeout(Duration::from_secs(3)).unwrap(), ipc::Event::Connected { .. }));
+        let client = std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            if line.contains("quit") {
+                lock(&exit).replace(Some(0));
+            }
+        });
+        let started = Instant::now();
+        fleet.stop(&key).unwrap();
+        client.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(fleet.exit_code(&key), Some(Some(0)));
+    }
+
+    #[test]
     fn deleting_a_batch_keeps_its_shared_folders() {
         let d = dirs();
         prep(&d, None).unwrap();
@@ -1321,6 +1425,20 @@ mod tests {
         assert!(flags(&["--version", "1", "--version", "2"], &["--version"]).is_none());
         let mut batches = vec![Batch::new("Test", "26.3"), Batch::new("Other", "26.3")];
         assert_eq!(find_batch(&mut batches, "test").unwrap().name, "Test");
+        let id = batches[1].id.clone();
+        assert_eq!(find_batch(&mut batches, &id).unwrap().name, "Other");
         assert!(find_batch(&mut batches, "none").is_err());
+        batches.push(Batch::new("TEST", "26.3"));
+        assert!(format!("{:#}", find_batch(&mut batches, "test").unwrap_err()).contains("several"));
+        assert_eq!(parse_memory("512").unwrap(), 512);
+        assert!(parse_memory("511").is_err() && parse_memory("x").is_err());
+        let alt = Account::offline("AltOne").unwrap();
+        let b = &mut batches[0];
+        set_member(b, &alt, true).unwrap();
+        assert!(set_member(b, &alt, true).is_err());
+        assert_eq!(b.accounts, [alt.id]);
+        set_member(b, &alt, false).unwrap();
+        assert!(set_member(b, &alt, false).is_err());
+        assert!(b.accounts.is_empty());
     }
 }
