@@ -1,6 +1,7 @@
 /// Runs a developer subcommand when the first argument names one, returning the exit code.
 pub fn run(args: &[String]) -> Option<i32> {
     let (cmd, rest) = args.split_first()?;
+    #[cfg(any(windows, target_os = "macos"))]
     if cmd == super::webauth::SUBCOMMAND {
         return Some(super::signin_window::cli(rest));
     }

@@ -107,9 +107,9 @@ impl std::error::Error for WindowClosed {}
 
 static NO_WINDOW: AtomicBool = AtomicBool::new(false);
 
-/// Whether a sign-in through `proxy` asked for `via` starts in the sign-in window rather than the browser.
+/// Whether a sign-in through `proxy` asked for `via` starts in the sign-in window rather than the browser. Linux always uses the browser.
 pub fn uses_window(proxy: Option<&str>, via: Via) -> bool {
-    via == Via::Window && proxy.is_none() && !NO_WINDOW.load(Ordering::SeqCst)
+    cfg!(any(windows, target_os = "macos")) && via == Via::Window && proxy.is_none() && !NO_WINDOW.load(Ordering::SeqCst)
 }
 
 enum Next {

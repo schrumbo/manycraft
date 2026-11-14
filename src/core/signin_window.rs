@@ -95,15 +95,7 @@ fn show(request: &Request) -> Result<()> {
             _ => {}
         })
         .with_new_window_req_handler(|_, _| NewWindowResponse::Deny);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let webview = {
-        use tao::platform::unix::WindowExtUnix;
-        use wry::WebViewBuilderExtUnix;
-        builder.build_gtk(window.default_vbox().context("the sign-in window has no content area")?)
-    };
-    #[cfg(any(windows, target_os = "macos"))]
-    let webview = builder.build(&window);
-    let webview = webview.context("cannot show the Microsoft page; the system web view may be missing")?;
+    let webview = builder.build(&window).context("cannot show the Microsoft page; the system web view may be missing")?;
     window.set_visible(true);
     window.set_focus();
     say(&Reply::Ready);

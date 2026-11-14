@@ -33,6 +33,7 @@ pub mod scrub;
 pub mod skins;
 #[allow(dead_code)]
 pub mod settings;
+#[cfg(any(windows, target_os = "macos"))]
 pub mod signin_window;
 pub mod skin;
 pub mod still;

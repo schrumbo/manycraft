@@ -45,6 +45,7 @@ pub fn link_with_code(verification_uri: &str, user_code: &str) -> String {
 }
 
 /// How the sign-in ended at the redirect page.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 #[derive(PartialEq, Eq)]
 pub enum Redirect {
     Code(String),
@@ -61,6 +62,7 @@ impl fmt::Debug for Redirect {
 }
 
 /// What a navigation to `address` means: `None` for any page but the redirect page, else the code or the error it carries.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn redirect(address: &str) -> Option<Redirect> {
     let parsed = url::Url::parse(address).ok()?;
     let expected = url::Url::parse(REDIRECT).ok()?;
@@ -115,6 +117,7 @@ impl fmt::Debug for Reply {
 
 impl Reply {
     /// The reply as one protocol line, without the line break.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub fn line(&self) -> String {
         let one = |s: &str| s.replace(['\r', '\n'], " ");
         match self {
@@ -144,6 +147,7 @@ impl Reply {
     }
 
     /// Converts a redirect into the reply that carries it.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub fn from_redirect(redirect: Redirect) -> Self {
         match redirect {
             Redirect::Code(code) => Self::Code(code),

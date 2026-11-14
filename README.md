@@ -33,7 +33,7 @@ Download the latest build from [GitHub Releases](https://github.com/schrumbo/man
 |---|---|---|
 | Windows | `Manycraft-Setup-<version>-windows-x64.exe` | NSIS installer |
 | macOS | `Manycraft-<version>-macos-universal.dmg` | Ad-hoc signed: right-click the app, choose Open the first time |
-| Linux | `.deb` or `Manycraft-<version>-linux-x86_64.AppImage` | `chmod +x` the AppImage, then run it. Needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`) to start; the `.deb` installs it, the AppImage does not bundle it, so install it from your distribution |
+| Linux | `.deb` or `Manycraft-<version>-linux-x86_64.AppImage` | `chmod +x` the AppImage, then run it |
 
 Java is downloaded automatically. Add an account, create a batch, press Start.
 
