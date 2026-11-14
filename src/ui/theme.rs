@@ -202,7 +202,7 @@ pub mod wardrobe {
     /// Image pixels per point, so the pixel art stays sharp on high-density screens.
     pub const DENSITY: f32 = 2.;
     /// Width of a cape choice.
-    pub const CHOICE: f32 = 72.;
+    pub const CHOICE: f32 = 88.;
     /// Width of the column with the preview.
     pub const COLUMN: f32 = 200.;
     /// Height of the body while the profile loads or failed, so the sheet keeps its size.

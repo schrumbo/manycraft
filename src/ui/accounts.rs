@@ -1325,7 +1325,9 @@ impl AccountsPage {
                 .gap(px(space::XXS))
                 .when(account.kind == AccountKind::Microsoft, |d| {
                     let target = id.to_string();
+                    let skin = target.clone();
                     d.child(sheet::icon_button(SharedString::from(format!("again-{key}")), "log-in", tr("Erneut anmelden"), t.secondary, t).on_click(move |_, window, cx| window.dispatch_action(Box::new(SignInAgain(target.clone())), cx)))
+                        .child(sheet::icon_button(SharedString::from(format!("skin-{key}")), "shirt", tr("Skin ändern"), t.secondary, t).on_click(move |_, window, cx| window.dispatch_action(Box::new(ChangeSkin(skin.clone())), cx)))
                 })
                 .child({
                     let a = account.clone();

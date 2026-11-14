@@ -630,6 +630,7 @@ impl SkinSheet {
                 .cursor_pointer()
                 .key_nav()
                 .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
+                .tooltip(tip(label.clone()))
                 .on_click(cx.listener(move |s, _, _, cx| s.set_cape(pick.clone(), cx)))
                 .flex()
                 .flex_col()
