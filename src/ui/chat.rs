@@ -590,7 +590,7 @@ impl Render for ChatPage {
     }
 }
 
-fn segment(id: &'static str, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
+pub(super) fn segment(id: &'static str, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
     div()
         .id(id)
         .mark("segment", label.clone())

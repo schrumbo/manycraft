@@ -44,6 +44,11 @@ pub fn fenced(what: &str, target: impl std::fmt::Display) -> bool {
     on()
 }
 
+/// Whether a driven instance may read the real Modrinth (`MANYCRAFT_DRIVE_LIVE` is set). It only reads; downloads and writes stay fenced.
+pub fn live() -> bool {
+    on() && std::env::var_os("MANYCRAFT_DRIVE_LIVE").is_some()
+}
+
 /// Whether driven windows open far outside every screen, so the owner never sees or touches them.
 pub fn away() -> bool {
     on() && std::env::var_os("MANYCRAFT_DRIVE_AWAY").is_some()
