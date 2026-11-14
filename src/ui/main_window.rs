@@ -212,7 +212,7 @@ impl MainWindow {
                     .justify_center()
                     .gap(px(space::M))
                     .px(px(space::XL))
-                    .child(icon(if name == "chat" { "messages-square" } else { "users" }, iconsize::HERO, t.tertiary))
+                    .child(icon("messages-square", iconsize::HERO, t.tertiary))
                     .child(div().text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
                     .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text)),
             )
@@ -234,7 +234,7 @@ impl Render for MainWindow {
             super::state::set_visible(Default::default(), cx);
         }
         let content = match self.page.clone() {
-            Page::Accounts => self.page_placeholder("accounts", tr("Accounts"), tr("Die Account-Verwaltung erscheint hier."), &t),
+            Page::Accounts => super::accounts::page(window, cx).into_any_element(),
             Page::Chat => self.page_placeholder("chat", tr("Chat"), tr("Der gemeinsame Chat aller Instanzen erscheint hier."), &t),
             Page::Grid(batch) => match self.onboarding(cx) {
                 Some(empty) => empty,

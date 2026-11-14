@@ -83,6 +83,8 @@ struct Latest {
 #[derive(Deserialize)]
 struct ManifestVersion {
     id: String,
+    #[serde(rename = "type", default)]
+    kind: String,
     url: String,
     sha1: String,
 }
@@ -97,6 +99,16 @@ struct Plan {
 pub fn latest_release() -> Result<String> {
     let manifest: Manifest = net::get_json(&net::agent(None)?, MANIFEST_URL)?;
     Ok(manifest.latest.release)
+}
+
+/// Release versions Mojang lists, newest first.
+pub fn releases() -> Result<Vec<String>> {
+    let manifest: Manifest = net::get_json(&net::agent(None)?, MANIFEST_URL)?;
+    Ok(release_ids(manifest))
+}
+
+fn release_ids(manifest: Manifest) -> Vec<String> {
+    manifest.versions.into_iter().filter(|v| v.kind == "release").map(|v| v.id).collect()
 }
 
 /// Installs `game_version` with Fabric (`loader_version`, or the newest stable loader) into the shared folders.
@@ -267,6 +279,19 @@ mod tests {
         assert!(local_plan(dir.path(), "26.3", None).is_err());
         write_version(dir.path(), "fabric-loader-0.20.1-26.3", 1);
         assert!(local_plan(dir.path(), "26.4", None).is_err());
+    }
+
+    #[test]
+    fn releases_keep_only_release_ids_in_manifest_order() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"latest":{"release":"26.3"},"versions":[
+                {"id":"26.4-snapshot-1","type":"snapshot","url":"u","sha1":"s"},
+                {"id":"26.3","type":"release","url":"u","sha1":"s"},
+                {"id":"b1.7.3","type":"old_beta","url":"u","sha1":"s"},
+                {"id":"26.2","type":"release","url":"u","sha1":"s"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(release_ids(manifest), ["26.3", "26.2"]);
     }
 
     #[test]
