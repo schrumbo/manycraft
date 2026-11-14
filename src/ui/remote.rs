@@ -183,7 +183,7 @@ fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &Atomic
         let mut accounts = account::load()?;
         let existing = expected.and_then(|id| accounts.iter().find(|a| a.id == id).cloned());
         let n = accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).count() + 1;
-        let mut account = existing.unwrap_or(Account { id: Uuid::new_v4(), name: canned_name(n), kind: AccountKind::Microsoft, proxy: None });
+        let mut account = existing.unwrap_or(Account { id: Uuid::new_v4(), name: canned_name(n), kind: AccountKind::Microsoft, proxy: None, color: None });
         if proxy.is_some() && expected.is_none() {
             account.proxy.clone_from(&proxy);
         }

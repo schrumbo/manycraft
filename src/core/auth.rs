@@ -419,8 +419,8 @@ pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expect
 }
 
 fn signed_in(accounts: &[Account], id: Uuid, name: &str, proxy: Option<&str>) -> Account {
-    let kept = accounts.iter().find(|a| a.id == id).and_then(|a| a.proxy.clone());
-    Account { id, name: name.to_owned(), kind: AccountKind::Microsoft, proxy: proxy.map(str::to_owned).or(kept) }
+    let old = accounts.iter().find(|a| a.id == id);
+    Account { id, name: name.to_owned(), kind: AccountKind::Microsoft, proxy: proxy.map(str::to_owned).or_else(|| old.and_then(|a| a.proxy.clone())), color: old.and_then(|a| a.color) }
 }
 
 /// A sign-in again that signed in a different Microsoft account, named here, than the one it was for.
@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn offline_accounts_need_no_refresh_and_unsaved_microsoft_ones_do_not_pass() {
         assert!(super::refresh_account(&Account::offline("Alt").unwrap()).is_ok());
-        let unsaved = Account { id: Uuid::from_u128(0xdead_beef), name: "Nobody".into(), kind: AccountKind::Microsoft, proxy: None };
+        let unsaved = Account { id: Uuid::from_u128(0xdead_beef), name: "Nobody".into(), kind: AccountKind::Microsoft, proxy: None, color: None };
         assert!(super::refresh_account(&unsaved).is_err());
     }
 
@@ -1173,8 +1173,8 @@ mod tests {
     fn signing_in_again_keeps_the_proxy_unless_a_new_one_is_given() {
         let (me, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let saved = [
-            Account { id: other, name: "Other".into(), kind: AccountKind::Microsoft, proxy: Some("socks5://other:1".into()) },
-            Account { id: me, name: "Old".into(), kind: AccountKind::Microsoft, proxy: Some("socks5://mine:1".into()) },
+            Account { id: other, name: "Other".into(), kind: AccountKind::Microsoft, proxy: Some("socks5://other:1".into()), color: None },
+            Account { id: me, name: "Old".into(), kind: AccountKind::Microsoft, proxy: Some("socks5://mine:1".into()), color: None },
         ];
         let again = signed_in(&saved, me, "New", None);
         assert_eq!((again.name.as_str(), again.proxy.as_deref()), ("New", Some("socks5://mine:1")));

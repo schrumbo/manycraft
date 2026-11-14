@@ -34,13 +34,31 @@ pub struct Account {
     /// Proxy for login and game connection, e.g. `socks5://user:pass@host:1080`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    /// Index into [`COLORS`]; `None` for accounts saved before colours existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u8>,
 }
 
+/// Account colours as `0xRRGGBB`, chosen away from the accent, attention and danger colours.
+#[allow(dead_code)]
+pub const COLORS: [u32; 8] = [0x9B7BFF, 0xFF6FB5, 0x9BD84E, 0x3DDC97, 0xE8D9B5, 0x5B6CFF, 0xC97B4A, 0xC9D1D9];
+
+#[allow(dead_code)]
 impl Account {
+    /// The account's colour index, falling back to one derived from its id.
+    pub fn color(&self) -> u8 {
+        self.color.map_or_else(|| (self.id.as_bytes().iter().map(|b| u32::from(*b)).sum::<u32>() % COLORS.len() as u32) as u8, |c| c % COLORS.len() as u8)
+    }
+
+    /// The account's colour as `0xRRGGBB`.
+    pub fn rgb(&self) -> u32 {
+        COLORS[usize::from(self.color())]
+    }
+
     /// An offline account for `name`, validated like vanilla (3 to 16 letters, digits or `_`).
     pub fn offline(name: &str) -> Result<Self> {
         validate_offline_name(name)?;
-        Ok(Self { id: offline_uuid(name), name: name.to_owned(), kind: AccountKind::Offline, proxy: None })
+        Ok(Self { id: offline_uuid(name), name: name.to_owned(), kind: AccountKind::Offline, proxy: None, color: None })
     }
 }
 
@@ -140,7 +158,7 @@ mod tests {
     use super::*;
 
     fn account(n: u128, name: &str, proxy: Option<&str>) -> Account {
-        Account { id: Uuid::from_u128(n), name: name.into(), kind: AccountKind::Microsoft, proxy: proxy.map(Into::into) }
+        Account { id: Uuid::from_u128(n), name: name.into(), kind: AccountKind::Microsoft, proxy: proxy.map(Into::into), color: None }
     }
 
     #[test]

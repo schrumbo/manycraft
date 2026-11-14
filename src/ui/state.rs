@@ -1762,7 +1762,7 @@ mod tests {
         batch.join_commands = join.iter().map(|s| (*s).to_owned()).collect();
         let key = fleet::instance_key(&batch, id);
         let mut m = Model::default();
-        m.accounts.push(Account { id, name: "AltOne".into(), kind, proxy: None });
+        m.accounts.push(Account { id, name: "AltOne".into(), kind, proxy: None, color: None });
         m.instances.insert(key.clone(), Instance { key: key.clone(), batch_id: batch.id.clone(), account_id: id, name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false });
         m.batches.push(batch);
         (m, runtime(), key)

@@ -274,7 +274,7 @@ mod tests {
     use super::*;
 
     fn microsoft(n: u128) -> Account {
-        Account { id: Uuid::from_u128(n), name: format!("P{n}"), kind: AccountKind::Microsoft, proxy: None }
+        Account { id: Uuid::from_u128(n), name: format!("P{n}"), kind: AccountKind::Microsoft, proxy: None, color: None }
     }
 
     fn skin_png(face: [u8; 4], hat: [u8; 4]) -> Vec<u8> {

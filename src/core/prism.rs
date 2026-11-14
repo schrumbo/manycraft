@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn offline_accounts_are_added_microsoft_ones_need_a_sign_in_and_names_are_unique() {
-        let mut saved = vec![Account::offline("Existing").unwrap(), Account { id: uuid::Uuid::from_u128(5), name: "Signed".into(), kind: AccountKind::Microsoft, proxy: None }];
+        let mut saved = vec![Account::offline("Existing").unwrap(), Account { id: uuid::Uuid::from_u128(5), name: "Signed".into(), kind: AccountKind::Microsoft, proxy: None, color: None }];
         let prism = [
             prism_account("Steve", AccountKind::Offline),
             prism_account("Notch", AccountKind::Microsoft),
