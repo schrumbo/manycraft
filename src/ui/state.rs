@@ -13,6 +13,7 @@ use super::model::{self, ChatLine, Instance, Model, Phase, rank};
 use super::native;
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError};
+use crate::core::awake;
 use crate::core::batch::{self, Batch};
 use crate::core::fit;
 use crate::core::fleet::{self, Fleet};
@@ -427,6 +428,7 @@ pub fn init(cx: &mut App) {
         });
     }
     reload(cx);
+    cx.observe(&model::get(cx), |_, cx| keep_awake(cx)).detach();
     cx.spawn(async move |cx| {
         while let Ok(first) = updates.recv().await {
             let mut batch = vec![first];
@@ -500,6 +502,7 @@ pub fn init(cx: &mut App) {
         });
     });
     cx.on_app_quit(|cx| {
+        awake::set(false);
         if let Some(rt) = cx.try_global::<Runtime>() {
             for cancel in rt.cancel.values().flatten() {
                 cancel.store(true, Ordering::SeqCst);
@@ -1620,6 +1623,12 @@ fn tint(m: &Model, key: &str, pid: u32) {
     if let Some(account) = m.instances.get(key).and_then(|i| m.accounts.iter().find(|a| a.id == i.account_id)) {
         crate::core::game_window::tint(pid, account);
     }
+}
+
+/// Keeps the computer awake while a game runs or waits to start again, as far as the settings allow.
+pub fn keep_awake(cx: &App) {
+    let busy = model::get(cx).read(cx).instances.values().any(|i| i.phase.is_active());
+    awake::set(awake::wanted(settings::active().prevent_sleep, busy));
 }
 
 /// Tells every connected game its identity, badge and background level again, after batches, accounts or settings changed.

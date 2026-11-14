@@ -1,5 +1,6 @@
 pub mod account;
 pub mod auth;
+pub mod awake;
 #[allow(dead_code)]
 pub mod batch;
 pub mod browser;

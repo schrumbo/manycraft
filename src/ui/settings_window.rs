@@ -96,11 +96,15 @@ impl SettingsView {
         let before = settings::active().clone();
         let mut next = before.clone();
         edit(&mut next);
-        let badge_changed = next.game_badge != settings::active().game_badge;
+        let badge_changed = next.game_badge != before.game_badge;
+        let sleep_changed = next.prevent_sleep != before.prevent_sleep;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         settings::set(next);
         if badge_changed {
             super::state::tell_games(cx);
+        }
+        if sleep_changed {
+            super::state::keep_awake(cx);
         }
         if recheck {
             super::updates::check(false, cx);
@@ -272,7 +276,10 @@ impl Render for SettingsView {
         let updates_group = group(tr("Updates"), rows, super::updates::trouble_line(&updates), &t);
         let general = group(
             tr("Im Spiel"),
-            vec![self.toggle("set-game-badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |st, on| st.game_badge = on, &t, cx)],
+            vec![
+                self.toggle("set-prevent-sleep", tr("Ruhezustand verhindern, solange Spiele laufen"), tr("Der Bildschirm darf trotzdem ausgehen."), s.prevent_sleep, |st, on| st.prevent_sleep = on, &t, cx),
+                self.toggle("set-game-badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |st, on| st.game_badge = on, &t, cx),
+            ],
             None,
             &t,
         );
