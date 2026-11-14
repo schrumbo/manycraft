@@ -389,7 +389,13 @@ pub fn init(cx: &mut App) {
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
         let text = format!("{e:#}");
-        cx.global_mut::<Runtime>().notice = Some(if text.contains("damaged") { tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.bak).") } else { text });
+        cx.global_mut::<Runtime>().notice = Some(if text.contains("a copy is in") {
+            tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.bak).")
+        } else if text.contains("it was left untouched") {
+            tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; die Datei bleibt unverändert, bis du etwas änderst.")
+        } else {
+            text
+        });
     }
     reload(cx);
     cx.spawn(async move |cx| {
