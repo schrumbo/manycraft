@@ -9,33 +9,13 @@ use gpui_kit::*;
 
 use super::actions::{StartAll, StartBatch, StopAll, StopBatch, ToggleSidebar};
 use super::drive::Mark;
-use super::main_window::{Filter, MainWindow, TileFit, TileLarge, TileMedium, TileSize, TileSmall};
+use super::main_window::{Filter, FilterAll, FilterAttention, FilterRunning, FilterStopped, MainWindow, TileFit, TileLarge, TileMedium, TileSize, TileSmall};
+use super::palette::{hint, menu_row, shortcut};
 use super::model;
 use super::motion::Soft;
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
-
-fn shortcut(key: &str) -> String {
-    if cfg!(target_os = "macos") { format!("⌘{key}") } else { format!("{}+{key}", tr("Strg")) }
-}
-
-/// A toolbar with only the sidebar toggle and `title`, for pages without grid controls.
-pub fn bar(this: &MainWindow, title: String, t: &Theme) -> AnyElement {
-    div()
-        .h(px(shell::TOOLBAR))
-        .flex_none()
-        .pl(px(lead()))
-        .pr(px(tile::INSET))
-        .flex()
-        .items_center()
-        .gap(px(space::S))
-        .border_b_1()
-        .border_color(t.separator)
-        .child(toggle(this, t))
-        .child(div().min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
-        .into_any_element()
-}
 
 /// The toolbar's leading padding that puts the sidebar symbol on the grid's edge.
 fn lead() -> f32 {
@@ -46,9 +26,9 @@ fn tabular() -> FontFeatures {
     FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
-fn toggle(this: &MainWindow, t: &Theme) -> Stateful<Div> {
+fn toggle(this: &MainWindow, t: &Theme, cx: &App) -> Stateful<Div> {
     let shown = if this.narrow_now { this.overlay } else { this.sidebar };
-    let hint = format!("{} · {}", if shown { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, shortcut("B"));
+    let hint = hint(if shown { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, &ToggleSidebar, cx);
     icon_button("toggle-sidebar", "panel-left", hint, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx))
 }
 
@@ -146,17 +126,21 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let model = model::get(cx);
     let m = model.read(cx);
     let title = batch.and_then(|b| m.batch(b)).map(|b| b.name.clone()).unwrap_or_else(|| tr("Alle"));
+    let title_w = title.chars().count() as f32 * font::TITLE3;
     let scope: Vec<_> = m.instances.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
     let running = scope.iter().filter(|i| i.phase.is_active() && !i.stopping).count();
     let startable = scope.iter().filter(|i| !i.phase.is_active()).count();
     let attention = m.attention_count(batch);
-    let count = |f: Filter| scope.iter().filter(|i| super::grid::matches(i, None, f, "")).count();
+    let count = |f: Filter| scope.iter().filter(|i| super::grid::matches(i, None, f)).count();
     let (start, stop): (Box<dyn Action>, Box<dyn Action>) = match batch {
         Some(b) => (Box::new(StartBatch(b.to_owned())), Box::new(StopBatch(b.to_owned()))),
         None => (Box::new(StartAll), Box::new(StopAll)),
     };
     let compact = this.content_width(window) < shell::COMPACT;
     let filters = [(Filter::All, tr("Alle")), (Filter::Attention, tr("Brauchen dich")), (Filter::Running, tr("Läuft")), (Filter::Stopped, tr("Gestoppt"))];
+    let picked_label = filters.iter().find(|(f, _)| *f == this.filter).map(|(_, l)| l.clone()).unwrap_or_default();
+    let picked_count = count(this.filter);
+    let counts: Vec<(Filter, String, usize)> = filters.iter().map(|(f, label)| (*f, label.clone(), count(*f))).collect();
     let filter_segments = filters
         .iter()
         .map(|(f, label)| Segment {
@@ -168,16 +152,61 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         })
         .collect();
     let picks = [Filter::All, Filter::Attention, Filter::Running, Filter::Stopped];
-    let filter = segmented(
-        "filter",
-        filter_segments,
-        move |n, this, _, _| {
-            this.filter = picks[n];
-            this.grid.reset_scroll();
-        },
-        &t,
-        cx,
-    );
+    let filter = if compact {
+        let current = this.filter;
+        let grid_focus = this.grid.focus.clone();
+        Button::new("filter")
+            .ghost()
+            .focus_ring(super::theme::rings(cx))
+            .small()
+            .h(px(control::M))
+            .px(px(space::S))
+            .gap(px(space::XS))
+            .child(div().text_size(px(font::CALLOUT)).font_weight(FontWeight::MEDIUM).text_color(t.primary).child(picked_label))
+            .child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(if this.filter == Filter::Attention && attention > 0 { t.attention_text } else { t.secondary }).child(picked_count.to_string()))
+            .when(attention > 0 && this.filter != Filter::Attention, |b| {
+                b.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(t.attention_text).child(trf("%lld brauchen dich", &[&attention])))
+            })
+            .child(icon("chevron-down", iconsize::XS, t.tertiary))
+            .tooltip(tr("Filter"))
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.action_context(grid_focus.clone());
+                for (f, label, n) in counts.clone() {
+                    let action: Box<dyn Action> = match f {
+                        Filter::All => Box::new(FilterAll),
+                        Filter::Attention => Box::new(FilterAttention),
+                        Filter::Running => Box::new(FilterRunning),
+                        Filter::Stopped => Box::new(FilterStopped),
+                    };
+                    let loud = f == Filter::Attention && n > 0;
+                    menu = menu.menu_element_with_check(current == f, action, move |_, cx| {
+                        let t = Theme::get(cx);
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::L))
+                            .child(div().flex_1().child(label.clone()))
+                            .child(div().flex_none().font_features(tabular()).when(loud, |d| d.font_weight(FontWeight::SEMIBOLD)).text_color(if loud { t.attention_text } else { t.tertiary }).child(n.to_string()))
+                            .into_any_element()
+                    });
+                }
+                menu
+            })
+            .into_any_element()
+    } else {
+        segmented(
+            "filter",
+            filter_segments,
+            move |n, this, _, _| {
+                this.filter = picks[n];
+                this.grid.reset_scroll();
+            },
+            &t,
+            cx,
+        )
+        .into_any_element()
+    };
     let current = this.size;
     let grid_focus = this.focus.clone();
     let size = Button::new("tile-size")
@@ -190,19 +219,27 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(icon("layout-grid", iconsize::M, t.secondary))
         .child(icon("chevron-down", iconsize::XS, t.tertiary))
         .tooltip(tr("Kachelgröße"))
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+            let row = |label: &str, action: &dyn Action| menu_row(tr(label), shortcut(action, cx), false);
+            let (small, medium, large, fit) = (row("Klein", &TileSmall), row("Mittel", &TileMedium), row("Groß", &TileLarge), row("Einpassen", &TileFit));
             menu.action_context(grid_focus.clone())
                 .label(tr("Kachelgröße"))
-                .menu_with_check(tr("Klein"), current == TileSize::Small, Box::new(TileSmall))
-                .menu_with_check(tr("Mittel"), current == TileSize::Medium, Box::new(TileMedium))
-                .menu_with_check(tr("Groß"), current == TileSize::Large, Box::new(TileLarge))
+                .menu_element_with_check(current == TileSize::Small, Box::new(TileSmall), small)
+                .menu_element_with_check(current == TileSize::Medium, Box::new(TileMedium), medium)
+                .menu_element_with_check(current == TileSize::Large, Box::new(TileLarge), large)
                 .separator()
-                .menu_with_check(tr("Einpassen"), current == TileSize::Fit, Box::new(TileFit))
+                .menu_element_with_check(current == TileSize::Fit, Box::new(TileFit), fit)
         });
+    let roomy = this.content_width(window) >= shell::SEARCH_ROOM;
+    if this.search_roomy != roomy {
+        this.search_roomy = roomy;
+        let hint = if roomy { tr("Name, Batch, Server, Status") } else { tr("Suchen") };
+        this.search.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
+    }
     let search = div()
         .key_context("Toolbar")
-        .w(px(if compact { shell::SEARCH * 0.75 } else { shell::SEARCH }))
-        .min_w(px(shell::SEARCH / 2.))
+        .when(roomy, |d| d.w(px(shell::SEARCH)).flex_none())
+        .when(!roomy, |d| d.w(px(shell::SEARCH * 0.75)).min_w(px(shell::SEARCH / 2.)))
         .child(Input::new(&this.search).small().cleanable(true).prefix(icon("search", iconsize::S, t.tertiary)));
     let start_label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
     let stop_label = if batch.is_some() { tr("Stoppen") } else { tr("Alle stoppen") };
@@ -216,12 +253,12 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .gap(px(space::S))
         .border_b_1()
         .border_color(t.separator)
-        .child(toggle(this, &t))
+        .child(toggle(this, &t, cx))
         .child(
             div()
                 .id("toolbar-title")
                 .mark("heading", title.clone())
-                .min_w_0()
+                .min_w(px(shell::TITLE.min(title_w)))
                 .truncate()
                 .text_size(px(font::TITLE3))
                 .font_weight(FontWeight::SEMIBOLD)

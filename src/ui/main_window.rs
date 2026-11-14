@@ -2,7 +2,10 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{AddAccount, NewBatch, OpenChat, TileLarger, TileSmaller, ToggleSidebar};
+use super::actions::{
+    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected, TileLarger, TileSmaller,
+    ToggleSidebar,
+};
 use super::drive::Mark;
 use super::grid::Grid;
 use super::model;
@@ -10,9 +13,12 @@ use super::motion::Soft;
 use super::native::{self, Rect};
 use super::theme::{self, Theme, control, font, iconsize, shell, space, tint};
 use super::widgets::{KeyNav, icon, primary_button};
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 
-actions!(main_window, [FocusSearch, ClearSearch, TileSmall, TileMedium, TileLarge, TileFit]);
+actions!(main_window, [FocusSearch, ClearSearch, TileSmall, TileMedium, TileLarge, TileFit, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
+
+/// What the memory line under the toolbar was worked out for: the scope and its accounts as count and memory per batch.
+type FitScope = (Option<String>, Vec<(u32, u32)>);
 
 /// What the window shows next to the sidebar.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +77,11 @@ pub struct MainWindow {
     pub(super) search: Entity<InputState>,
     pub(super) query: String,
     pub(super) grid: Grid,
+    pub(super) palette: Option<super::palette::Palette>,
+    fit: Option<(FitScope, Option<String>)>,
+    /// Prism Launcher instances that can become a batch, and accounts Prism lists, as found at startup.
+    pub(super) prism: (usize, usize),
+    pub(super) search_roomy: bool,
     title_count: Option<usize>,
     last_playing: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -79,7 +90,7 @@ pub struct MainWindow {
 impl MainWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = model::get(cx);
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Suchen")));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Name, Batch, Server, Status")));
         let me = cx.entity().downgrade();
         let app: &mut App = cx;
         let typed = app.subscribe(&search, move |s, e: &InputEvent, cx| {
@@ -111,6 +122,7 @@ impl MainWindow {
             }),
             typed,
         ];
+        Self::look_for_prism(cx);
         Self {
             focus: cx.focus_handle(),
             focused_once: false,
@@ -123,10 +135,29 @@ impl MainWindow {
             search,
             query: String::new(),
             grid: Grid::new(cx),
+            palette: None,
+            fit: None,
+            prism: (0, 0),
+            search_roomy: true,
             title_count: None,
             last_playing: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn look_for_prism(cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async {
+            let instances = super::remote::prism_instances().map_or(0, |l| l.iter().filter(|i| i.unsupported.is_none()).count());
+            (instances, super::remote::prism_accounts().map_or(0, |l| l.len()))
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.prism = found;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Shows `page`; switching between grids keeps the filter but drops the keyboard selection.
@@ -134,13 +165,88 @@ impl MainWindow {
         self.overlay = false;
         if self.page != page {
             self.page = page;
-            self.grid.selected = None;
+            self.grid.forget();
             self.grid.reset_scroll();
         }
         if matches!(self.page, Page::Grid(_)) {
             window.focus(&self.grid.focus, cx);
         }
         cx.notify();
+    }
+
+    /// Hands the keyboard to the page: the grid when it shows, the window otherwise.
+    pub(super) fn focus_page(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.page, Page::Grid(_)) {
+            window.focus(&self.grid.focus, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
+    }
+
+    fn set_filter(&mut self, filter: Filter, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter = filter;
+        self.grid.reset_scroll();
+        self.go(Page::Grid(match &self.page {
+            Page::Grid(batch) => batch.clone(),
+            _ => None,
+        }), window, cx);
+    }
+
+    /// Runs a selection action on the selected tiles, or on the cursor's tile; passes it on when there is none.
+    fn on_chosen(&mut self, make: fn(Vec<String>) -> Box<dyn Action>, window: &mut Window, cx: &mut Context<Self>) {
+        let keys = if matches!(self.page, Page::Grid(_)) { self.grid.chosen() } else { Vec::new() };
+        if keys.is_empty() {
+            cx.propagate();
+            return;
+        }
+        window.dispatch_action(make(keys), cx);
+    }
+
+    /// The quiet memory line for `batch` while nothing in it runs: worked out off the UI thread once per scope, `None` when everything fits.
+    fn fit_line(&mut self, batch: Option<&str>, cx: &mut Context<Self>) -> Option<String> {
+        let m = model::get(cx).read(cx);
+        let scope: Vec<_> = m.instances.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
+        if scope.is_empty() || scope.iter().any(|i| i.phase.is_active()) {
+            self.fit = None;
+            return None;
+        }
+        let mut per: Vec<(u32, u32)> = m.batches.iter().filter_map(|b| {
+            let n = scope.iter().filter(|i| i.batch_id == b.id).count();
+            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory_mb))
+        }).collect();
+        per.sort_unstable();
+        let key: FitScope = (batch.map(str::to_owned), per.clone());
+        if let Some((done, line)) = &self.fit
+            && *done == key
+        {
+            return line.clone();
+        }
+        self.fit = Some((key.clone(), None));
+        cx.spawn(async move |this, cx| {
+            let count: u32 = per.iter().map(|(n, _)| n).sum();
+            let total: u64 = per.iter().map(|(n, mb)| u64::from(*n) * u64::from(*mb)).sum();
+            let each = per.first().map(|(_, mb)| *mb).unwrap_or(0);
+            let uniform = per.iter().all(|(_, mb)| *mb == each);
+            let fit = cx.background_executor().spawn(async move { crate::core::fit::fit(1, u32::try_from(total).unwrap_or(u32::MAX)) }).await;
+            let line = fit.filter(|f| !f.fits()).map(|f| {
+                if uniform {
+                    model::fit_line(count, each, &f)
+                } else {
+                    let label = |mb: u64| super::forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX));
+                    trf("%lld Accounts brauchen %@, dein PC hat %@ frei", &[&count, &label(f.needed_mb), &label(f.free_mb)])
+                }
+            });
+            let _ = this.update(cx, |this, cx| {
+                if let Some((done, slot)) = this.fit.as_mut()
+                    && *done == key
+                {
+                    *slot = line;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        None
     }
 
     fn set_size(&mut self, size: TileSize, window: &mut Window, cx: &mut Context<Self>) {
@@ -175,13 +281,14 @@ impl MainWindow {
         let t = Theme::get(cx);
         let m = model::get(cx);
         let m = m.read(cx);
-        let (title, text, id, label, action): (String, String, &str, String, Box<dyn Action>) = if m.accounts.is_empty() {
+        let (title, text, id, label, action, prism): (String, String, &str, String, Box<dyn Action>, Option<(String, Box<dyn Action>)>) = if m.accounts.is_empty() {
             (
                 tr("Noch keine Accounts"),
                 tr("Füge einen Account hinzu, um Minecraft-Instanzen in einem Fenster zu starten."),
                 "add-account",
                 tr("Account hinzufügen"),
                 Box::new(AddAccount),
+                (self.prism.1 > 0).then(|| (tr("Oder Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts) as Box<dyn Action>)),
             )
         } else if m.batches.is_empty() {
             (
@@ -190,6 +297,7 @@ impl MainWindow {
                 "new-batch",
                 tr("Batch erstellen"),
                 Box::new(NewBatch),
+                (self.prism.0 > 0).then(|| (tr("Oder aus einer Prism-Instanz übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
             )
         } else {
             return None;
@@ -208,6 +316,10 @@ impl MainWindow {
                 .child(div().id("empty-title").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
                 .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text))
                 .child(div().mt(px(space::S)).child(primary_button(id, label, "plus", false, &t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))))
+                .children(prism.map(|(label, action)| {
+                    super::sheet::button("empty-prism", label, Some("download"), super::sheet::Look::Plain, false, false, &t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+                }))
+                .child(div().mt(px(space::S)).max_w(px(control::READING)).text_size(px(font::CAPTION)).text_color(t.tertiary).text_center().child(tr("Prüfe die Regeln deines Servers, bevor du mehrere Accounts nutzt.")))
                 .into_any_element(),
         )
     }
@@ -232,17 +344,23 @@ impl Render for MainWindow {
             Page::Chat => super::chat::page(window, cx).into_any_element(),
             Page::Grid(batch) => match self.onboarding(cx) {
                 Some(empty) => empty,
-                None => div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .child(super::toolbar::render(self, batch.as_deref(), window, cx))
-                    .children(model::get(cx).read(cx).error.clone().map(|e| notice(e, &t, cx)))
-                    .child(div().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)))
-                    .into_any_element(),
+                None => {
+                    let error = model::get(cx).read(cx).error.clone();
+                    let fit = self.fit_line(batch.as_deref(), cx).filter(|_| error.is_none());
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(super::toolbar::render(self, batch.as_deref(), window, cx))
+                        .children(error.map(|e| notice(e, &t, cx)))
+                        .children(fit.map(|line| fit_note(line, &t)))
+                        .child(div().relative().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)).children(super::grid::selection_bar(self, window, cx)))
+                        .into_any_element()
+                }
             },
         };
         let show_sidebar = self.sidebar && !narrow;
+        let palette = super::palette::render(self, window, cx);
         let root = div()
             .id("main")
             .key_context("MainWindow")
@@ -250,7 +368,7 @@ impl Render for MainWindow {
             .capture_any_mouse_down(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_any_mouse_up(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
-                if !this.overlay {
+                if !this.overlay || this.palette.is_some() {
                     return;
                 }
                 match e.keystroke.key.as_str() {
@@ -299,6 +417,46 @@ impl Render for MainWindow {
                 window.focus(&this.grid.focus, cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_action(cx.listener(|this, _: &ImportPrismAccounts, window, cx| {
+                this.go(Page::Accounts, window, cx);
+                super::accounts::import_prism(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowAll, window, cx| this.go(Page::Grid(None), window, cx)))
+            .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.go(Page::Accounts, window, cx)))
+            .on_action(cx.listener(|this, a: &ShowBatch, window, cx| this.go(Page::Grid(Some(a.0.clone())), window, cx)))
+            .on_action(cx.listener(|this, _: &FilterAll, window, cx| this.set_filter(Filter::All, window, cx)))
+            .on_action(cx.listener(|this, _: &FilterAttention, window, cx| this.set_filter(Filter::Attention, window, cx)))
+            .on_action(cx.listener(|this, _: &FilterRunning, window, cx| this.set_filter(Filter::Running, window, cx)))
+            .on_action(cx.listener(|this, _: &FilterStopped, window, cx| this.set_filter(Filter::Stopped, window, cx)))
+            .on_action(cx.listener(|this, _: &SelectAll, window, cx| {
+                if !matches!(this.page, Page::Grid(_)) {
+                    cx.propagate();
+                    return;
+                }
+                this.grid.select_all();
+                window.focus(&this.grid.focus, cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+                if this.grid.clear_selection() {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StartSelected, window, cx| this.on_chosen(|k| Box::new(StartMany(k)), window, cx)))
+            .on_action(cx.listener(|this, _: &StopSelected, window, cx| this.on_chosen(|k| Box::new(StopMany(k)), window, cx)))
+            .on_action(cx.listener(|this, _: &RestartSelected, window, cx| this.on_chosen(|k| Box::new(RestartMany(k)), window, cx)))
+            .on_action(cx.listener(|this, _: &ReconnectSelected, window, cx| this.on_chosen(|k| Box::new(ReconnectMany(k)), window, cx)))
+            .on_action(cx.listener(|this, _: &MessageSelected, window, cx| {
+                if this.grid.picks.set.len() > 1 {
+                    super::grid::open_message(this, window, cx);
+                } else {
+                    window.dispatch_action(Box::new(OpenChat), cx);
+                }
+            }))
+            .relative()
             .size_full()
             .flex()
             .bg(t.window)
@@ -336,7 +494,8 @@ impl Render for MainWindow {
                         )
                         .child(super::sidebar::render(self, window, cx)),
                 )
-            });
+            })
+            .children(palette);
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, &t)
     }
@@ -366,6 +525,21 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("0"), TileFit, Some("MainWindow")),
         KeyBinding::new(k("f"), FocusSearch, Some("MainWindow")),
         KeyBinding::new(k("shift-c"), OpenChat, Some("MainWindow")),
+        KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
+        KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
+        KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
+        KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
+        KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
+        KeyBinding::new("ctrl-alt-down", NextAttention, Some("MainWindow")),
+        KeyBinding::new(k("a"), SelectAll, Some("InstanceGrid")),
+        KeyBinding::new("escape", ClearSelection, Some("InstanceGrid")),
+        KeyBinding::new("tab", super::palette::PaletteNext, Some("Palette")),
+        KeyBinding::new("shift-tab", super::palette::PalettePrevious, Some("Palette")),
+        KeyBinding::new(k("r"), StartSelected, Some("InstanceGrid")),
+        KeyBinding::new(k("."), StopSelected, Some("InstanceGrid")),
+        KeyBinding::new(k("shift-r"), RestartSelected, Some("InstanceGrid")),
+        KeyBinding::new(k("j"), ReconnectSelected, Some("InstanceGrid")),
+        KeyBinding::new(k("enter"), MessageSelected, Some("InstanceGrid")),
         KeyBinding::new("escape", ClearSearch, Some("Toolbar")),
     ]);
 }
@@ -444,6 +618,26 @@ pub fn select_batch(batch: &str, cx: &mut App) {
             });
         }
     });
+}
+
+/// A quiet line under the toolbar that says the accounts in view need more memory than is free; it goes once one runs.
+fn fit_note(text: String, t: &Theme) -> AnyElement {
+    div()
+        .id("fit-note")
+        .mark("notice", text.clone())
+        .h(px(shell::NOTICE))
+        .flex_none()
+        .pl(px(theme::tile::INSET))
+        .pr(px(space::S))
+        .flex()
+        .items_center()
+        .gap(px(space::S))
+        .border_b_1()
+        .border_color(t.separator)
+        .child(icon("info", iconsize::S, t.secondary))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(text.clone()))
+        .tooltip(super::widgets::tip(text))
+        .into_any_element()
 }
 
 /// A quiet line under the toolbar for a problem the app could not handle on its own, with a way to dismiss it.

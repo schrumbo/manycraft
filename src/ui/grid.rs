@@ -5,18 +5,20 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
+use gpui_kit::component::Sizable;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditBatch, Play, StartAll, StartBatch, Stop, StopBatch};
+use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopBatch, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow, TileSize};
 use super::model::{self, Instance, Model, Phase};
-use super::motion::SLOW;
-use super::theme::{Theme, control, font, iconsize, radius, space, tile};
+use super::motion::{SLOW, Soft};
+use super::theme::{Theme, control, font, iconsize, radius, selection, shell, space, tile, tint, with_alpha};
 use super::tile::{Geometry, TileData};
-use super::widgets::{icon, primary_button};
+use super::widgets::{KeyNav, icon, primary_button, tip};
 use crate::core::i18n::{tr, trf};
 
 /// One line of the grid: a batch heading, or a row of the shown tiles `from..to`.
@@ -37,10 +39,63 @@ enum Move {
     Last,
 }
 
-/// Keyboard selection, sort order and scroll position of the grid.
+/// The message field of the selection bar.
+pub struct Message {
+    pub input: Entity<InputState>,
+    _typed: Subscription,
+}
+
+/// The tiles selected together, never just one, and the tile a range starts from.
+#[derive(Default)]
+pub struct Picks {
+    pub set: HashSet<String>,
+    anchor: Option<String>,
+}
+
+impl Picks {
+    /// Applies a click on `key` among `shown` with the cursor on `cursor`: alone, toggled with `toggle`, or with `range` from the anchor; returns where the cursor goes.
+    fn click(&mut self, shown: &[String], cursor: Option<&String>, key: &str, range: bool, toggle: bool) -> String {
+        if range {
+            let anchor = self.anchor.clone().filter(|a| shown.contains(a)).or_else(|| cursor.filter(|c| shown.contains(c)).cloned()).unwrap_or_else(|| key.to_owned());
+            let at = |k: &str| shown.iter().position(|s| s == k);
+            self.set = match (at(&anchor), at(key)) {
+                (Some(a), Some(b)) => shown[a.min(b)..=a.max(b)].iter().cloned().collect(),
+                _ => HashSet::new(),
+            };
+            self.anchor = Some(anchor);
+        } else if toggle {
+            if self.set.is_empty() {
+                self.set = cursor.filter(|k| shown.contains(k)).cloned().into_iter().collect();
+            }
+            if !self.set.remove(key) {
+                self.set.insert(key.to_owned());
+            }
+            self.anchor = Some(key.to_owned());
+        } else {
+            self.set.clear();
+            self.anchor = Some(key.to_owned());
+        }
+        self.settle().unwrap_or_else(|| key.to_owned())
+    }
+
+    /// Turns a selection of one into just the cursor; returns that tile.
+    fn settle(&mut self) -> Option<String> {
+        if self.set.len() == 1 { self.set.drain().next() } else { None }
+    }
+}
+
+/// The tiles the selection actions act on: the selected ones in grid order, or the cursor's tile when none are.
+fn chosen(shown: &[String], set: &HashSet<String>, cursor: Option<&String>) -> Vec<String> {
+    if set.is_empty() { cursor.filter(|k| shown.contains(k)).cloned().into_iter().collect() } else { shown.iter().filter(|k| set.contains(*k)).cloned().collect() }
+}
+
+/// Keyboard cursor, selection, sort order and scroll position of the grid.
 pub struct Grid {
     pub focus: FocusHandle,
+    /// The tile under the keyboard cursor.
     pub selected: Option<String>,
+    pub picks: Picks,
+    pub message: Option<Message>,
     order: Vec<String>,
     seq: u64,
     hovered: bool,
@@ -69,6 +124,8 @@ impl Grid {
             scope: None,
             focus: cx.focus_handle().tab_index(0).tab_stop(true),
             selected: None,
+            picks: Picks::default(),
+            message: None,
             order: Vec::new(),
             seq: u64::MAX,
             hovered: false,
@@ -101,6 +158,47 @@ impl Grid {
     pub fn reveal(&mut self, key: String) {
         self.selected = Some(key);
         self.reveal = true;
+    }
+
+    /// The tiles the selection actions act on: the selected ones in grid order, or the cursor's tile when none are.
+    pub fn chosen(&self) -> Vec<String> {
+        chosen(&self.shown, &self.picks.set, self.selected.as_ref())
+    }
+
+    /// Selects `key` as a click does: alone, toggled in or out with `toggle`, or with `range` from the anchor to it.
+    pub fn click(&mut self, key: &str, range: bool, toggle: bool) {
+        self.selected = Some(self.picks.click(&self.shown, self.selected.as_ref(), key, range, toggle));
+        self.settle();
+    }
+
+    /// Selects every tile shown.
+    pub fn select_all(&mut self) {
+        self.picks.set = self.shown.iter().cloned().collect();
+        self.settle();
+    }
+
+    /// Drops the selection and the cursor; false when there was neither.
+    pub fn clear_selection(&mut self) -> bool {
+        self.message = None;
+        let picked = !std::mem::take(&mut self.picks.set).is_empty();
+        self.picks.anchor = None;
+        self.selected.take().is_some() || picked
+    }
+
+    /// Forgets cursor and selection, for another page.
+    pub fn forget(&mut self) {
+        self.selected = None;
+        self.picks = Picks::default();
+        self.message = None;
+    }
+
+    fn settle(&mut self) {
+        if let Some(one) = self.picks.settle() {
+            self.selected = Some(one);
+        }
+        if self.picks.set.len() < 2 {
+            self.message = None;
+        }
     }
 
     fn sort(&mut self, m: &Model) -> bool {
@@ -173,8 +271,8 @@ impl Grid {
     }
 }
 
-/// Whether `i` shows under `filter` and matches the search `query`.
-pub fn matches(i: &Instance, batch: Option<&str>, filter: Filter, query: &str) -> bool {
+/// Whether `i` belongs to `batch`, any when `None`, and shows under `filter`.
+pub fn matches(i: &Instance, batch: Option<&str>, filter: Filter) -> bool {
     batch.is_none_or(|b| i.batch_id == b)
         && match filter {
             Filter::All => true,
@@ -182,7 +280,40 @@ pub fn matches(i: &Instance, batch: Option<&str>, filter: Filter, query: &str) -
             Filter::Running => i.phase.is_active() && !i.phase.needs_attention(),
             Filter::Stopped => !i.phase.is_active() && !i.phase.needs_attention(),
         }
-        && (query.is_empty() || i.name.to_lowercase().contains(&query.to_lowercase()))
+}
+
+/// The search words of `query`, lowercase.
+pub fn words(query: &str) -> Vec<String> {
+    query.to_lowercase().split_whitespace().map(str::to_owned).collect()
+}
+
+/// Whether each of the search `words` occurs in the account name, batch, server or status of `i`.
+pub fn found(i: &Instance, m: &Model, words: &[String]) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+    let batch = m.batch(&i.batch_id);
+    let server = i.phase.server().or_else(|| batch.and_then(|b| b.server.as_deref())).unwrap_or_default();
+    let mut text = [i.name.as_str(), batch.map(|b| b.name.as_str()).unwrap_or_default(), server, &super::state::status(i, None)].join(" ");
+    if let Some(ban) = super::state::stopped_ban(i, m) {
+        text.push(' ');
+        text.push_str(&ban);
+    }
+    let state = if i.phase.needs_attention() {
+        "braucht dich"
+    } else if i.phase.is_active() {
+        "läuft"
+    } else {
+        "gestoppt"
+    };
+    text.push(' ');
+    text.push_str(&tr(state));
+    if matches!(i.phase, Phase::Playing { .. }) {
+        text.push(' ');
+        text.push_str(&tr("spielt"));
+    }
+    let text = text.to_lowercase();
+    words.iter().all(|w| text.contains(w.as_str()))
 }
 
 /// Columns, tile width and the space between tiles.
@@ -251,27 +382,29 @@ fn line(i: &Instance, preparing: Option<u8>, terse: bool) -> String {
     }
 }
 
-fn data(i: &Instance, m: &Model, selected: &Option<String>, terse: bool) -> TileData {
+fn data(i: &Instance, m: &Model, selected: &Option<String>, picked: &HashSet<String>, terse: bool) -> TileData {
     let preparing = m.preparing.get(&i.batch_id).copied();
+    let ban = super::state::stopped_ban(i, m);
     TileData {
         key: i.key.clone(),
         name: i.name.clone(),
         account_id: i.account_id,
         batch_id: i.batch_id.clone(),
         phase: i.phase.clone(),
-        status: line(i, preparing, terse),
-        detail: super::state::status(i, preparing),
+        status: ban.clone().unwrap_or_else(|| line(i, preparing, terse)),
+        detail: ban.unwrap_or_else(|| super::state::status(i, preparing)),
         stopping: i.stopping,
         whispers: i.unread_whispers,
         preview: i.preview.clone(),
         live: i.live,
         face: m.faces.get(&i.account_id).cloned(),
         selected: selected.as_deref() == Some(i.key.as_str()),
+        picked: picked.contains(&i.key),
         playing: m.playing.as_deref() == Some(i.key.as_str()),
     }
 }
 
-fn move_selection(this: &mut MainWindow, step: Move, cx: &mut Context<MainWindow>) {
+fn move_selection(this: &mut MainWindow, step: Move, extend: bool, cx: &mut Context<MainWindow>) {
     let g = &mut this.grid;
     let last = match g.shown.len() {
         0 => return,
@@ -292,7 +425,8 @@ fn move_selection(this: &mut MainWindow, step: Move, cx: &mut Context<MainWindow
             from + column.min(end - from - 1)
         }
     };
-    g.selected = Some(g.shown[next].clone());
+    let key = g.shown[next].clone();
+    g.click(&key, extend, false);
     if let Some(row) = g.row_at(next) {
         g.reveal_row(row);
     }
@@ -382,13 +516,21 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let same_scope = this.grid.scope.as_ref() == Some(&scope);
     this.grid.scope = Some(scope);
     let held: HashSet<&str> = if this.grid.hovered && same_scope { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
-    let mut keys: Vec<String> = this.grid.order.iter().filter(|k| held.contains(k.as_str()) || m.instances.get(*k).is_some_and(|i| matches(i, batch, this.filter, &this.query))).cloned().collect();
+    let words = words(&this.query);
+    let mut keys: Vec<String> = this.grid.order.iter().filter(|k| held.contains(k.as_str()) || m.instances.get(*k).is_some_and(|i| matches(i, batch, this.filter) && found(i, m, &words))).cloned().collect();
     drop(held);
     let batch_of = |k: &String| m.instances.get(k).map(|i| i.batch_id.clone()).unwrap_or_default();
     let headed = batch.is_none() && keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1;
     if headed {
         let rank: HashMap<&str, usize> = m.batches.iter().enumerate().map(|(n, b)| (b.id.as_str(), n)).collect();
         keys.sort_by_key(|k| m.instances.get(k).and_then(|i| rank.get(i.batch_id.as_str()).copied()).unwrap_or(usize::MAX));
+    }
+    if !this.grid.picks.set.is_empty() {
+        let shown: HashSet<&str> = keys.iter().map(String::as_str).collect();
+        if this.grid.picks.set.iter().any(|k| !shown.contains(k.as_str())) {
+            this.grid.picks.set.retain(|k| shown.contains(k.as_str()));
+            this.grid.settle();
+        }
     }
     if keys.is_empty() {
         this.grid.shown.clear();
@@ -485,7 +627,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     {
         this.grid.reveal_row(row);
     }
-    let selected = this.grid.selected.clone();
+    let selected = if this.grid.focus.is_focused(window) { this.grid.selected.clone() } else { None };
+    let picked = Rc::new(this.grid.picks.set.clone());
+    let bar = if this.grid.picks.set.len() >= 2 { selection::BAR + selection::BOTTOM } else { 0. };
     let progress = this.grid.moved_at.map(|at| (at.elapsed().as_secs_f32() / SLOW.as_secs_f32()).min(1.));
     if progress.is_some_and(|p| p >= 1.) {
         this.grid.moved_at = None;
@@ -548,7 +692,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             Some(Item::Row { from, to }) => {
                 let cells: Vec<TileData> = {
                     let m = model.read(cx);
-                    list_shown[from..to].iter().filter_map(|k| m.instances.get(k).map(|i| data(i, m, &selected, geometry.dense))).collect()
+                    list_shown[from..to].iter().filter_map(|k| m.instances.get(k).map(|i| data(i, m, &selected, &picked, geometry.dense))).collect()
                 };
                 let cells: Vec<AnyElement> = cells
                     .into_iter()
@@ -566,7 +710,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         }
     })
     .pt(px(inset))
-    .pb(px((inset - gap).max(0.)))
+    .pb(px((inset - gap).max(0.) + bar))
     .size_full();
     let measure = {
         let area = Rc::clone(&this.grid.area);
@@ -625,12 +769,10 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                     return;
                 }
                 "space" | "delete" => {
-                    if let Some(key) = this.grid.selected.clone().filter(|k| this.grid.shown.contains(k)) {
-                        if e.keystroke.key == "delete" || e.keystroke.modifiers.shift {
-                            window.dispatch_action(Box::new(Stop(key)), cx);
-                        } else {
-                            super::tile::primary_action(&key, window, cx);
-                        }
+                    if e.keystroke.key == "delete" || e.keystroke.modifiers.shift {
+                        window.dispatch_action(Box::new(StopSelected), cx);
+                    } else if let Some(key) = this.grid.selected.clone().filter(|k| this.grid.shown.contains(k)) {
+                        super::tile::primary_action(&key, window, cx);
                     }
                     cx.stop_propagation();
                     return;
@@ -638,7 +780,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 _ => return,
             };
             cx.stop_propagation();
-            move_selection(this, step, cx);
+            move_selection(this, step, e.keystroke.modifiers.shift, cx);
         }))
         .child(measure)
         .child(list)
@@ -646,9 +788,215 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .into_any_element()
 }
 
+/// How many of `keys` each selection action would act on: start, stop, restart, reconnect, message.
+fn able(keys: &[String], m: &Model) -> [usize; 5] {
+    let mut n = [0; 5];
+    for i in keys.iter().filter_map(|k| m.instances.get(k)) {
+        let running = i.phase.is_running();
+        n[0] += usize::from(!running && !i.stopping && i.phase != Phase::LoginNeeded);
+        n[1] += usize::from(i.phase.is_active() && !i.stopping);
+        n[2] += usize::from(!i.stopping && i.phase != Phase::LoginNeeded);
+        n[3] += usize::from(running && !i.stopping && !matches!(i.phase, Phase::Starting { .. }));
+        n[4] += usize::from(i.phase.on_server());
+    }
+    n
+}
+
+/// What the selection actions offer for `keys`: label, icon, the action, and how many of them it acts on.
+pub fn offers(keys: &[String], m: &Model) -> [(String, &'static str, Box<dyn Action>, usize); 5] {
+    let n = able(keys, m);
+    [
+        (tr("Starten"), "play", Box::new(StartSelected), n[0]),
+        (tr("Stoppen"), "square", Box::new(StopSelected), n[1]),
+        (tr("Neu starten"), "rotate-cw", Box::new(RestartSelected), n[2]),
+        (tr("Neu verbinden"), "refresh-cw", Box::new(ReconnectSelected), n[3]),
+        (tr("Nachricht senden…"), "message-square", Box::new(MessageSelected), n[4]),
+    ]
+}
+
+/// Opens the message field of the selection bar.
+pub fn open_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if this.grid.picks.set.len() < 2 {
+        return;
+    }
+    if let Some(msg) = &this.grid.message {
+        msg.input.update(cx, |s, cx| s.focus(window, cx));
+        return;
+    }
+    let on = on_server(this, cx).len();
+    if on == 0 {
+        return;
+    }
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(trf("Nachricht an %lld Accounts…", &[&on])));
+    let typed = cx.subscribe_in(&input, window, |this: &mut MainWindow, _: &Entity<InputState>, e: &InputEvent, window, cx| {
+        if matches!(e, InputEvent::PressEnter { .. }) {
+            send_message(this, window, cx);
+        } else if matches!(e, InputEvent::Change) {
+            cx.notify();
+        }
+    });
+    input.update(cx, |s, cx| s.focus(window, cx));
+    this.grid.message = Some(Message { input, _typed: typed });
+    cx.notify();
+}
+
+fn on_server(this: &MainWindow, cx: &App) -> Vec<String> {
+    let m = model::get(cx).read(cx);
+    this.grid.chosen().into_iter().filter(|k| m.instances.get(k).is_some_and(|i| i.phase.on_server())).collect()
+}
+
+/// Sends what the user typed in the message field to the selected accounts that are on a server, and keeps the field open for the next one.
+fn send_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(input) = this.grid.message.as_ref().map(|m| m.input.clone()) else { return };
+    let text = input.read(cx).value().trim().to_owned();
+    let keys = on_server(this, cx);
+    if text.is_empty() || keys.is_empty() {
+        return;
+    }
+    let sent = keys.len();
+    window.dispatch_action(Box::new(SendChatMany { keys, text }), cx);
+    input.update(cx, |s, cx| {
+        s.set_value("", window, cx);
+        s.set_placeholder(trf("An %lld Accounts gesendet · noch eine Nachricht…", &[&sent]), window, cx);
+        s.focus(window, cx);
+    });
+    cx.notify();
+}
+
+/// Closes the message field and hands the keyboard back to the grid.
+pub fn close_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if this.grid.message.take().is_some() {
+        window.focus(&this.grid.focus, cx);
+        cx.notify();
+    }
+}
+
+fn round(id: &'static str, label: String, symbol: &'static str, t: &Theme) -> Stateful<Div> {
+    still(id, label, symbol, t).cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::FULL)
+}
+
+fn still(id: &'static str, label: String, symbol: &'static str, t: &Theme) -> Stateful<Div> {
+    div()
+        .id(id)
+        .mark("button", label)
+        .size(px(control::M))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::FULL))
+        .child(icon(symbol, iconsize::S, t.secondary))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bar_button(id: &'static str, label: String, icon_name: &'static str, action: Box<dyn Action>, hint: String, enabled: bool, compact: bool, t: &Theme) -> AnyElement {
+    let shown = (!compact).then(|| label.clone());
+    let button = div()
+        .id(id)
+        .mark("button", label)
+        .h(px(control::M))
+        .when(compact, |d| d.w(px(control::M)).justify_center())
+        .when(!compact, |d| d.px(px(space::S)))
+        .rounded(px(radius::FULL))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(space::XS))
+        .text_size(px(font::CALLOUT))
+        .font_weight(FontWeight::MEDIUM)
+        .tooltip(tip(hint));
+    if !enabled {
+        return button.opacity(tint::DISABLED).child(icon(icon_name, iconsize::S, t.primary)).children(shown).into_any_element();
+    }
+    button
+        .cursor_pointer()
+        .key_nav()
+        .soft(t.ink.opacity(tint::HOVER), radius::FULL)
+        .child(icon(icon_name, iconsize::S, t.primary))
+        .children(shown)
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+        .into_any_element()
+}
+
+/// The floating bar over a selection of several tiles: how many, what can happen to them, and a field to message them.
+pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let count = this.grid.picks.set.len();
+    if count < 2 {
+        return None;
+    }
+    let compact = this.content_width(window) < shell::COMPACT;
+    let t = Theme::get(cx);
+    let keys = this.grid.chosen();
+    let offers = offers(&keys, model::get(cx).read(cx));
+    let total = keys.len();
+    let mut capsule = div()
+        .id("selection-bar")
+        .mark("selection", trf("%lld ausgewählt", &[&count]))
+        .h(px(selection::BAR))
+        .max_w_full()
+        .pl(px(space::M))
+        .pr(px(space::XS))
+        .flex()
+        .items_center()
+        .gap(px(space::XS))
+        .rounded(px(radius::FULL))
+        .bg(with_alpha(t.material, tint::FLOATING))
+        .border_1()
+        .border_color(t.separator)
+        .shadow(vec![
+            BoxShadow { color: white().opacity(tint::RIM), offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true },
+            BoxShadow { color: black().opacity(tint::FLOAT_SHADOW), offset: point(px(0.), px(selection::SHADOW_Y)), blur_radius: px(selection::SHADOW_BLUR), spread_radius: px(0.), inset: false },
+        ])
+        .occlude()
+        .child(div().flex_none().pr(px(space::S)).text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).child(trf("%lld ausgewählt", &[&count])));
+    match &this.grid.message {
+        Some(msg) => {
+            let close = tr("Nachricht schließen");
+            let esc = Keystroke::parse("escape").map(|k| super::palette::label(&k)).unwrap_or_default();
+            capsule = capsule
+                .child(
+                    div()
+                        .w(px(selection::FIELD))
+                        .min_w_0()
+                        .flex_shrink(1.)
+                        .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                            if e.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                close_message(this, window, cx);
+                            }
+                        }))
+                        .child(Input::new(&msg.input).small()),
+                )
+                .child({
+                    let send = tr("Senden");
+                    let enter = Keystroke::parse("enter").map(|k| super::palette::label(&k)).unwrap_or_default();
+                    let hint = format!("{send} · {enter}");
+                    if msg.input.read(cx).value().trim().is_empty() {
+                        still("selection-send", send, "send", &t).opacity(tint::DISABLED).tooltip(tip(hint))
+                    } else {
+                        round("selection-send", send, "send", &t).tooltip(tip(hint)).on_click(cx.listener(|this, _: &ClickEvent, window, cx| send_message(this, window, cx)))
+                    }
+                })
+                .child(round("selection-message-close", close.clone(), "x", &t).tooltip(tip(format!("{close} · {esc}"))).on_click(cx.listener(|this, _: &ClickEvent, window, cx| close_message(this, window, cx))));
+        }
+        None => {
+            let ids = ["selection-start", "selection-stop", "selection-restart", "selection-reconnect", "selection-message"];
+            for ((label, icon_name, action, n), id) in offers.into_iter().zip(ids) {
+                let hint = super::palette::hint(trf("%@: %lld von %lld", &[&label, &n, &total]), action.as_ref(), cx);
+                capsule = capsule.child(bar_button(id, label, icon_name, action, hint, n > 0, compact, &t));
+            }
+            let clear = tr("Auswahl aufheben");
+            capsule = capsule
+                .child(div().w(px(1.)).h(px(control::S)).mx(px(space::XXS)).bg(t.separator))
+                .child(round("selection-clear", clear.clone(), "x", &t).tooltip(tip(super::palette::hint(clear, &ClearSelection, cx))).on_click(|_, window, cx| window.dispatch_action(Box::new(ClearSelection), cx)));
+        }
+    }
+    Some(div().absolute().left_0().right_0().bottom(px(selection::BOTTOM)).px(px(space::L)).flex().justify_center().child(capsule).into_any_element())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Filter, Instance, Layout, Phase, TileSize, layout, line, matches, tile};
+    use super::{Filter, Instance, Layout, Model, Phase, Picks, TileSize, chosen, found, layout, line, matches, tile, words};
     use crate::ui::tile::Geometry;
 
     #[test]
@@ -683,12 +1031,46 @@ mod tests {
         let lost = mk(Phase::Disconnected { server: None, reason: String::new() });
         let menu = mk(Phase::Menu);
         let off = mk(Phase::Stopped);
-        assert!(matches(&lost, None, Filter::Attention, "") && !matches(&lost, None, Filter::Running, ""));
-        assert!(matches(&menu, None, Filter::Running, "") && !matches(&menu, None, Filter::Stopped, ""));
-        assert!(matches(&off, Some("b"), Filter::Stopped, "alt") && !matches(&off, Some("c"), Filter::All, ""));
-        assert!(!matches(&off, None, Filter::All, "two"));
+        assert!(matches(&lost, None, Filter::Attention) && !matches(&lost, None, Filter::Running));
+        assert!(matches(&menu, None, Filter::Running) && !matches(&menu, None, Filter::Stopped));
+        assert!(matches(&off, Some("b"), Filter::Stopped) && !matches(&off, Some("c"), Filter::All));
         let again = mk(Phase::Restarting { attempt: 1, of: 3 });
-        assert!(matches(&again, None, Filter::Running, "") && !matches(&again, None, Filter::Stopped, ""));
+        assert!(matches(&again, None, Filter::Running) && !matches(&again, None, Filter::Stopped));
+    }
+
+    #[test]
+    fn search_matches_name_server_and_status_words() {
+        crate::core::i18n::init("de");
+        let m = Model::default();
+        let lost = mk(Phase::Disconnected { server: Some("play.example.net".into()), reason: "Zeitüberschreitung".into() });
+        assert!(found(&lost, &m, &words("alt")));
+        assert!(found(&lost, &m, &words("GETRENNT example")));
+        assert!(found(&lost, &m, &words("braucht")));
+        assert!(!found(&lost, &m, &words("alt gesperrt")));
+        assert!(!found(&mk(Phase::Stopped), &m, &words("two")));
+        assert!(found(&mk(Phase::Banned { server: None, reason: "griefing".into() }), &m, &words("gesperrt")));
+        assert!(found(&mk(Phase::Stopped), &m, &words("gestoppt")));
+        assert!(found(&mk(Phase::Playing { server: "s".into(), since: std::time::Instant::now() }), &m, &words("spielt läuft")));
+    }
+
+    #[test]
+    fn clicks_select_one_toggle_or_a_range() {
+        let shown: Vec<String> = ["a", "b", "c", "d", "e"].map(str::to_owned).to_vec();
+        let pick = |p: &Picks, cursor: &String| chosen(&shown, &p.set, Some(cursor));
+        let mut p = Picks::default();
+        let mut cursor = p.click(&shown, None, "b", false, false);
+        assert!(p.set.is_empty() && pick(&p, &cursor) == ["b"]);
+        cursor = p.click(&shown, Some(&cursor), "d", true, false);
+        assert_eq!(pick(&p, &cursor), ["b", "c", "d"]);
+        cursor = p.click(&shown, Some(&cursor), "a", true, false);
+        assert_eq!(pick(&p, &cursor), ["a", "b"], "a range keeps its anchor");
+        cursor = p.click(&shown, Some(&cursor), "e", false, true);
+        assert_eq!(pick(&p, &cursor), ["a", "b", "e"]);
+        cursor = p.click(&shown, Some(&cursor), "a", false, true);
+        cursor = p.click(&shown, Some(&cursor), "b", false, true);
+        assert!(p.set.is_empty() && pick(&p, &cursor) == ["e"], "one left is just the cursor");
+        cursor = p.click(&shown, Some(&cursor), "c", false, true);
+        assert_eq!(pick(&p, &cursor), ["c", "e"], "a toggle starts from the cursor's tile");
     }
 
     #[test]

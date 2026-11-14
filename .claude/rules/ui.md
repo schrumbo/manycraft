@@ -13,6 +13,7 @@ Every interactive element needs all of these, or a stated reason:
 - Keyboard: the action reachable without a mouse, with palette entry and shortcut.
 - Pointer: `.cursor_pointer()`. Icon-only controls get a tooltip.
 - States: disabled, loading, empty, error and selected are designed, not defaulted, in light and dark.
+- One ring per tile, priority selection > hover > attention.
 
 Values come from `ui/theme.rs` (spacing, radius, font, colors), motion from `ui/motion.rs`. New values go into a token, not inline. Text goes through `tr()`.
 

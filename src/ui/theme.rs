@@ -101,6 +101,8 @@ pub mod tile {
     pub const BADGE: f32 = 18.;
     /// Height of a batch heading in the grid of all batches.
     pub const HEADING: f32 = 40.;
+    /// Smallest tile width whose strip still carries a labelled sign-in button.
+    pub const SIGN_IN: f32 = 280.;
     /// Blur of the soft shadow under a tile in the light appearance.
     pub const SHADOW_BLUR: f32 = 3.;
     /// Height of the fade at the bottom of a still, so the strip below stays apart from it.
@@ -118,15 +120,53 @@ pub mod shell {
     /// Height of the quiet notice line under the toolbar.
     pub const NOTICE: f32 = 32.;
     pub const ROW: f32 = 28.;
-    pub const SEARCH: f32 = 180.;
+    pub const SEARCH: f32 = 240.;
+    /// Content width from which the search field keeps its full width and full placeholder.
+    pub const SEARCH_ROOM: f32 = 1040.;
     /// The attention dot in a sidebar row.
     pub const DOT: f32 = 6.;
     /// The attention count in a sidebar row.
     pub const BADGE: f32 = 19.;
-    /// Below this content width the toolbar shows its buttons as icons.
+    /// Below this content width the toolbar shows its buttons as icons and its filter as a pop-up button.
     pub const COMPACT: f32 = 860.;
+    /// Width the toolbar title keeps before anything else shrinks.
+    pub const TITLE: f32 = 96.;
     /// Below this window width the sidebar floats over the grid instead of beside it.
     pub const NARROW: f32 = 880.;
+}
+
+/// The command palette.
+pub mod palette {
+    pub const WIDTH: f32 = 560.;
+    /// Distance from the top of the window.
+    pub const TOP: f32 = 72.;
+    /// Height of the search field row.
+    pub const FIELD: f32 = 44.;
+    /// Height of one entry or group heading.
+    pub const ROW: f32 = 32.;
+    /// How many rows show before the list scrolls.
+    pub const ROWS: f32 = 9.5;
+    /// Share of a row an entry's name may take before its detail.
+    pub const LABEL: f32 = 0.6;
+    /// Height of the line that says nothing matches.
+    pub const EMPTY: f32 = 48.;
+    /// Width of the shortcut column, so shortcuts line up on the right.
+    pub const KEYS: f32 = 96.;
+}
+
+/// Several selected tiles and the bar that acts on them.
+pub mod selection {
+    /// Height of the floating bar.
+    pub const BAR: f32 = 44.;
+    /// Space between the bar and the bottom of the grid.
+    pub const BOTTOM: f32 = 16.;
+    /// The check mark on a selected tile.
+    pub const CHECK: f32 = 20.;
+    /// Width of the message field in the bar.
+    pub const FIELD: f32 = 300.;
+    /// Blur and drop of the bar's shadow, a little deeper than a menu's.
+    pub const SHADOW_BLUR: f32 = 24.;
+    pub const SHADOW_Y: f32 = 8.;
 }
 
 /// The Chat page.
@@ -175,6 +215,10 @@ pub mod tint {
     pub const FLOATING: f32 = 0.92;
     /// An outline in a status color.
     pub const OUTLINE: f32 = 0.5;
+    /// The light edge along the top of a floating bar.
+    pub const RIM: f32 = 0.12;
+    /// The shadow under a floating bar.
+    pub const FLOAT_SHADOW: f32 = 0.24;
 }
 
 /// The ring the keyboard focus draws around a control.

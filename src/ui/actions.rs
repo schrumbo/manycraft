@@ -4,7 +4,12 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, TileLarger, TileSmaller, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat]);
+actions!(manycraft, [ShowGrid, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, TileLarger, TileSmaller, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, NewBatchFromPrism]);
+
+/// Opens the sign-in sheet for these Microsoft accounts one after another.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct SignInEach(pub Vec<String>);
 
 /// Brings this instance's game window into the manager's place.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -64,5 +69,38 @@ pub struct Broadcast {
 #[action(namespace = manycraft)]
 pub struct SendChat {
     pub key: String,
+    pub text: String,
+}
+
+/// Shows the grid of one batch.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ShowBatch(pub String);
+
+/// Starts these instances, staggered within each batch.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct StartMany(pub Vec<String>);
+
+/// Stops these instances.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct StopMany(pub Vec<String>);
+
+/// Stops the running ones of these instances and starts them again once they exited; starts the others.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct RestartMany(pub Vec<String>);
+
+/// Joins the last server again on each of these instances that runs.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ReconnectMany(pub Vec<String>);
+
+/// Sends one chat line or command to each of these instances that is on a server.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct SendChatMany {
+    pub keys: Vec<String>,
     pub text: String,
 }

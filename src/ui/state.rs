@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, Reload, Respawn, SendChat, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
+use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, ChatLine, Instance, Model, Phase, rank};
 use super::native::{self, Rect};
 use crate::core::account::{self, Account, AccountKind};
@@ -344,6 +344,9 @@ struct Runtime {
     refreshed: bool,
     alerts: HashMap<String, Vec<(String, Alert)>>,
     pids: HashMap<String, u32>,
+    restarts: HashMap<String, u64>,
+    restart_ready: HashMap<u64, Vec<String>>,
+    restart_groups: u64,
     rect: Option<Rect>,
     badge: usize,
     notice: Option<String>,
@@ -388,6 +391,9 @@ pub fn init(cx: &mut App) {
         refreshed: false,
         alerts: HashMap::new(),
         pids: HashMap::new(),
+        restarts: HashMap::new(),
+        restart_ready: HashMap::new(),
+        restart_groups: 0,
         rect: None,
         badge: 0,
         notice: None,
@@ -458,6 +464,25 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenChat, cx| cx.defer(super::chat::open));
     cx.on_action(|a: &Broadcast, cx| broadcast(&a.batch, &a.text, cx));
     cx.on_action(|a: &SendChat, cx| send_chat(&a.key, &a.text, cx));
+    cx.on_action(|a: &StartMany, cx| {
+        let keys = signed_in(&a.0, cx);
+        start_keys(&keys, cx);
+    });
+    cx.on_action(|a: &StopMany, cx| stop_keys(a.0.clone(), cx));
+    cx.on_action(|a: &RestartMany, cx| {
+        let keys = signed_in(&a.0, cx);
+        restart_keys(&keys, cx);
+    });
+    cx.on_action(|a: &ReconnectMany, cx| {
+        for key in &a.0 {
+            reconnect(key, cx);
+        }
+    });
+    cx.on_action(|a: &SendChatMany, cx| {
+        for key in &a.keys {
+            send_chat(key, &a.text, cx);
+        }
+    });
     cx.on_system_notification_response(|response, cx| {
         let batch = response.tag.strip_prefix("attention-").map(str::to_owned);
         let whisper = response.tag.as_ref() == WHISPER_TAG;
@@ -699,10 +724,31 @@ fn warn_if_too_big(count: u32, memory_mb: u32, cx: &mut App) {
     .detach();
 }
 
+/// `keys` without the accounts that need to sign in again, which a bulk start would only fail.
+fn signed_in(keys: &[String], cx: &App) -> Vec<String> {
+    let m = model::get(cx).read(cx);
+    keys.iter().filter(|k| m.instances.get(*k).is_some_and(|i| i.phase != Phase::LoginNeeded)).cloned().collect()
+}
+
+/// The keys of restart `group` once none of them is still on its way down, so they start again together.
+fn restart_done(rt: &mut Runtime, group: u64) -> Option<Vec<String>> {
+    if rt.restarts.values().any(|g| *g == group) { None } else { rt.restart_ready.remove(&group).filter(|keys| !keys.is_empty()) }
+}
+
+/// Takes `key` out of any restart, so it is not started again; returns the others of its group once none of them is still on its way down.
+fn drop_restart(rt: &mut Runtime, key: &str) -> Vec<String> {
+    for waiting in rt.restart_ready.values_mut() {
+        waiting.retain(|k| k != key);
+    }
+    rt.restarts.remove(key).and_then(|group| restart_done(rt, group)).unwrap_or_default()
+}
+
 fn stop_keys(keys: Vec<String>, cx: &mut App) {
     let mut running = Vec::new();
+    let mut ready = Vec::new();
     update_model(cx, |m, rt, _| {
         for key in &keys {
+            ready.extend(drop_restart(rt, key));
             rt.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.crash_restarts.remove(key);
@@ -723,11 +769,37 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
         }
         m.order_seq += 1;
     });
+    ready.retain(|k| !keys.contains(k));
     if !running.is_empty()
         && let Some(backend) = backend(cx)
     {
         backend.stop(running);
     }
+    if !ready.is_empty() {
+        start_keys(&ready, cx);
+    }
+}
+
+fn restart_keys(keys: &[String], cx: &mut App) {
+    let running: Vec<String> = {
+        let pids: HashSet<&String> = cx.try_global::<Runtime>().map(|rt| rt.pids.keys().collect()).unwrap_or_default();
+        let m = model::get(cx).read(cx);
+        keys.iter().filter(|k| pids.contains(k) || m.instances.get(*k).is_some_and(|i| i.phase.is_running())).cloned().collect()
+    };
+    stop_keys(running.clone(), cx);
+    let mut start: Vec<String> = keys.iter().filter(|k| !running.contains(k)).cloned().collect();
+    update_model(cx, |m, rt, _| {
+        rt.restart_groups += 1;
+        let group = rt.restart_groups;
+        for key in running {
+            if m.instances.get(&key).is_some_and(|i| i.stopping) {
+                rt.restarts.insert(key, group);
+            } else {
+                start.push(key);
+            }
+        }
+    });
+    start_keys(&start, cx);
 }
 
 fn stop_batch(batch: &str, cx: &mut App) {
@@ -920,6 +992,7 @@ enum Deferred {
     Reconnect { key: String, delay: Duration, generation: u64 },
     Restart { key: String, delay: Duration, generation: u64 },
     Join { key: String, generation: u64, lines: Vec<String>, delay: Duration },
+    Start { keys: Vec<String> },
 }
 
 #[derive(Default)]
@@ -984,6 +1057,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             Deferred::Reconnect { key, delay, generation } => schedule_reconnect(key, delay, generation, cx),
             Deferred::Restart { key, delay, generation } => schedule_restart(key, delay, generation, cx),
             Deferred::Join { key, generation, lines, delay } => schedule_join(key, generation, lines, delay, cx),
+            Deferred::Start { keys } => start_keys(&keys, cx),
         }
     }
     for (batch, name, kind) in fresh {
@@ -1151,10 +1225,17 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     rt.pids.remove(&key);
     rt.joined.remove(&key);
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
-    let Some(i) = m.instances.get_mut(&key) else { return };
+    let Some(i) = m.instances.get_mut(&key) else {
+        let keys = drop_restart(rt, &key);
+        if !keys.is_empty() {
+            fx.later.push(Deferred::Start { keys });
+        }
+        return;
+    };
     *rt.joins.entry(key.clone()).or_default() += 1;
     let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
+    let restart = if i.stopping { rt.restarts.remove(&key) } else { None };
     i.stopping = false;
     if i.live
         && let Some(image) = &i.preview
@@ -1173,6 +1254,12 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     if !crashed {
         if !matches!(i.phase, Phase::LoginNeeded | Phase::Restarting { .. }) {
             i.phase = Phase::Stopped;
+        }
+        if let Some(group) = restart {
+            rt.restart_ready.entry(group).or_default().push(key);
+            if let Some(keys) = restart_done(rt, group) {
+                fx.later.push(Deferred::Start { keys });
+            }
         }
         return;
     }
@@ -1540,6 +1627,15 @@ fn refresh_badge(cx: &mut App) {
     native::set_badge(count);
 }
 
+/// The ban that is still the latest event of a stopped instance, as its status line, so a stop does not hide it.
+pub fn stopped_ban(i: &Instance, m: &Model) -> Option<String> {
+    if i.phase != Phase::Stopped || i.stopping {
+        return None;
+    }
+    let last = m.history.get(&i.key)?.back()?;
+    (last.kind == Kind::Banned).then(|| format!("{} · {}", tr("Gestoppt"), model::banned_status(&last.reason)))
+}
+
 /// The phase of an instance as one line of German for its tile.
 pub fn status(i: &Instance, preparing: Option<u8>) -> String {
     if i.stopping {
@@ -1649,6 +1745,9 @@ mod tests {
             refreshed: false,
             alerts: HashMap::new(),
             pids: HashMap::new(),
+            restarts: HashMap::new(),
+            restart_ready: HashMap::new(),
+            restart_groups: 0,
             rect: None,
             badge: 0,
             notice: None,
@@ -1891,6 +1990,58 @@ mod tests {
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
         assert_eq!(m.instances[&key].phase, Phase::Stopped);
         assert!(fx.later.is_empty() && m.history.is_empty());
+    }
+
+    #[test]
+    fn a_requested_restart_starts_again_only_after_a_stop_exit() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        rt.restarts.insert(key.clone(), 1);
+        rt.restarts.insert("other".into(), 1);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
+        assert!(fx.later.is_empty() && rt.restarts.contains_key(&key), "an exit the user did not ask for is no restart");
+        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.instances.get_mut(&key).unwrap().stopping = true;
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        assert!(fx.later.is_empty(), "the group waits for its other account");
+        rt.restarts.remove("other");
+        assert_eq!(super::restart_done(&mut rt, 1), Some(vec![key.clone()]), "the group starts together once the last one is down");
+        assert!(rt.restarts.is_empty() && rt.restart_ready.is_empty());
+    }
+
+    #[test]
+    fn a_stopped_account_leaves_its_restart_group_and_the_rest_still_starts() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        rt.restarts.insert("a".into(), 1);
+        rt.restarts.insert("b".into(), 1);
+        rt.restart_ready.insert(1, vec!["c".into()]);
+        rt.restarts.remove("a");
+        rt.restart_ready.get_mut(&1).unwrap().push("a".into());
+        assert!(super::drop_restart(&mut rt, "a").is_empty(), "b is still going down");
+        assert_eq!(super::drop_restart(&mut rt, "b"), vec!["c".to_string()], "a user stop never starts a, and c goes on once b is down");
+        rt.restarts.insert("gone".into(), 2);
+        rt.restart_ready.insert(2, vec![key.clone()]);
+        m.instances.clear();
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Exited { key: "gone".into(), code: Some(0) }, &mut fx);
+        assert!(matches!(fx.later.as_slice(), [Deferred::Start { keys }] if *keys == [key]), "a removed instance does not hold up its group");
+    }
+
+    #[test]
+    fn a_stopped_banned_account_keeps_its_ban_in_the_status() {
+        crate::core::i18n::init("de");
+        let (_, _, mut m) = dropped(DisconnectCause::Banned);
+        let key = m.instances.keys().next().unwrap().clone();
+        let mut rt = runtime();
+        let mut fx = Effects::default();
+        m.instances.get_mut(&key).unwrap().stopping = true;
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
+        let i = &m.instances[&key];
+        assert_eq!(i.phase, Phase::Stopped);
+        assert_eq!(super::stopped_ban(i, &m).as_deref(), Some("Gestoppt · Gesperrt · why"));
+        crate::core::history::push(m.history.get_mut(&key).unwrap(), crate::core::history::Entry::now(Kind::Connected, None, ""));
+        assert!(super::stopped_ban(&m.instances[&key], &m).is_none());
     }
 
     #[test]

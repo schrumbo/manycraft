@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, EditBatch, NewBatch, Reload};
+use super::actions::{AddAccount, EditBatch, NewBatch, NewBatchFromPrism, Reload};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::motion::Soft;
@@ -48,6 +48,28 @@ const DEFAULT_TITLES: [(&str, &str); 5] = [("fabric-api", "Fabric API"), ("lithi
 /// Registers the batch sheet actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &NewBatch, cx| open(None, cx));
+    cx.on_action(|_: &NewBatchFromPrism, cx| {
+        let task = cx.background_executor().spawn(async { remote::prism_instances() });
+        cx.spawn(async move |cx| {
+            let list = task.await.unwrap_or_default();
+            cx.update(|cx| {
+                sheet::in_window(cx, move |window, cx| {
+                    if sheet::busy(window, cx) {
+                        return;
+                    }
+                    let view = cx.new(|cx| BatchSheet::new(None, window, cx));
+                    sheet::show(view.clone(), sheet::WIDE, window, cx);
+                    if !list.is_empty() {
+                        view.update(cx, |s, cx| {
+                            s.prism_list = list;
+                            s.open_prism(true, window, cx);
+                        });
+                    }
+                })
+            })
+        })
+        .detach();
+    });
     cx.on_action(|action: &EditBatch, cx| {
         let batch = super::model::get(cx).read(cx).batch(&action.0).cloned();
         if let Some(batch) = batch {
@@ -867,7 +889,7 @@ impl BatchSheet {
         } else {
             sheet::note(Some(tr("Pro Account.")), None, t)
         };
-        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(line))
+        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(line.min_h(px(font::CAPTION * font::LINE * 2.))))
     }
 
     fn refresh_rows(&mut self, cx: &App) {

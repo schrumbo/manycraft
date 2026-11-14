@@ -8,12 +8,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, Play, Reconnect, Respawn, SignInAgain, Start, Stop};
+use super::actions::{EditBatch, Play, Reconnect, ReconnectMany, Respawn, RestartMany, SignInAgain, Start, StartMany, Stop, StopMany};
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
 use super::motion::Soft;
-use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint, with_alpha};
+use super::theme::{Theme, control, font, iconsize, radius, selection, space, tile, tint, with_alpha};
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
 
@@ -36,6 +36,8 @@ pub struct TileData {
     /// The account's skin face, shown when there is no preview.
     pub face: Option<Arc<RenderImage>>,
     pub selected: bool,
+    /// Whether the tile is part of a selection of several.
+    pub picked: bool,
     pub playing: bool,
 }
 
@@ -49,6 +51,7 @@ impl TileData {
             && self.stopping == other.stopping
             && self.whispers == other.whispers
             && self.selected == other.selected
+            && self.picked == other.picked
             && self.playing == other.playing
             && self.live == other.live
             && same_image(&self.preview, &other.preview)
@@ -184,11 +187,13 @@ pub struct Geometry {
     pub small: bool,
     pub dense: bool,
     pub tiny: bool,
+    /// Whether the strip has room for a labelled sign-in button.
+    pub roomy: bool,
 }
 
 impl Geometry {
     pub fn new(width: f32) -> Self {
-        Self { width, preview: (width * 9. / 16.).round(), strip: Self::strip_for(width), small: width < tile::MEDIUM, dense: width < tile::DENSE, tiny: width < tile::TINY }
+        Self { width, preview: (width * 9. / 16.).round(), strip: Self::strip_for(width), small: width < tile::MEDIUM, dense: width < tile::DENSE, tiny: width < tile::TINY, roomy: width >= tile::SIGN_IN }
     }
 
     /// Height of the strip under a preview of `width`.
@@ -393,7 +398,7 @@ fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement 
         None => icon("user", iconsize::L, with_alpha(t.secondary, tint::FACE)).into_any_element(),
     });
     let active = d.phase.is_active() && !d.stopping;
-    let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || g.small);
+    let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || !g.roomy);
     let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
     let actions = (controls && (main.is_some() || stop.is_some())).then(|| {
         let shade = linear_gradient(180., linear_color_stop(black().opacity(0.), 0.), linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 1.));
@@ -465,7 +470,7 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
             .tooltip(tip(format!("{} · {}", d.name, d.detail)))
             .into_any_element();
     }
-    let sign_in = (d.phase == Phase::LoginNeeded && !g.small).then(|| {
+    let sign_in = (d.phase == Phase::LoginNeeded && g.roomy).then(|| {
         let label = tr("Anmelden");
         div()
             .id(SharedString::from(format!("sign-in-{}", d.key)))
@@ -527,8 +532,13 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         (None, true) => Some(with_alpha(t.accent, tint::OUTLINE)),
         _ => None,
     };
-    let focus = (d.selected && grid_focused).then_some(t.accent);
-    let ring = focus.map(|c| (c, tile::RING + 1.)).or(edge.map(|c| (c, tile::RING)));
+    let ring = if d.selected && grid_focused {
+        Some((t.accent, tile::RING + 1.))
+    } else if d.selected || d.picked {
+        Some((t.accent, tile::RING))
+    } else {
+        edge.map(|c| (c, tile::RING))
+    };
     let mut shadows: Vec<BoxShadow> = ring.into_iter().map(|(color, spread)| BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset: false }).collect();
     if !t.dark {
         shadows.push(BoxShadow { color: black().opacity(tint::CARD_SHADOW), offset: point(px(0.), px(1.)), blur_radius: px(tile::SHADOW_BLUR), spread_radius: px(0.), inset: false });
@@ -537,6 +547,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
     let (key, name) = (d.key.clone(), d.name.clone());
     let select = view.clone();
     let (pick, pick_key) = (view.clone(), d.key.clone());
+    let menu_view = view.clone();
     let menu_key = d.key.clone();
     let menu_batch = d.batch_id.clone();
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
@@ -562,25 +573,67 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         .child(preview(d, g, hovered || (d.selected && grid_focused), t))
         .on_hover(hover)
         .child(strip(d, g, t))
+        .when(d.picked, |s| {
+            s.child(
+                div()
+                    .absolute()
+                    .top(px(space::S))
+                    .left(px(space::S))
+                    .id(SharedString::from(format!("picked-{}", d.key)))
+                    .mark("selection", tr("Ausgewählt"))
+                    .size(px(selection::CHECK))
+                    .rounded(px(radius::FULL))
+                    .bg(t.accent)
+                    .border_2()
+                    .border_color(t.on_accent)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("check", iconsize::XS, t.on_accent)),
+            )
+        })
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
             let _ = pick.update(cx, |this, cx| {
-                this.grid.selected = Some(pick_key.clone());
+                if this.grid.picks.set.contains(&pick_key) {
+                    this.grid.selected = Some(pick_key.clone());
+                } else {
+                    this.grid.click(&pick_key, false, false);
+                }
                 window.focus(&this.grid.focus, cx);
                 cx.notify();
             });
         })
         .on_click(move |e, window, cx| {
+            let m = e.modifiers();
+            let toggle = if cfg!(target_os = "macos") { m.platform } else { m.control };
             let _ = select.update(cx, |this, cx| {
-                this.grid.selected = Some(key.clone());
+                this.grid.click(&key, m.shift, toggle);
                 window.focus(&this.grid.focus, cx);
                 cx.notify();
             });
-            if e.click_count() == 2 && can_play {
+            if e.click_count() == 2 && can_play && !m.shift && !toggle {
                 window.dispatch_action(Box::new(Play(key.clone())), cx);
             }
         });
     let (account, login) = (d.account_id, d.phase == Phase::LoginNeeded);
-    tile.context_menu(move |menu, _, _| {
+    tile.context_menu(move |menu, _, cx| {
+        let chosen = menu_view.upgrade().map(|v| v.read(cx).grid.chosen()).unwrap_or_default();
+        if chosen.len() > 1 && chosen.contains(&menu_key) {
+            let offers = super::grid::offers(&chosen, model::get(cx).read(cx));
+            let mut menu = menu.label(trf("%lld ausgewählt", &[&chosen.len()]));
+            for (n, (label, _, shown, count)) in offers.into_iter().enumerate() {
+                let keys = super::palette::shortcut(shown.as_ref(), cx);
+                let action: Box<dyn Action> = match n {
+                    0 => Box::new(StartMany(chosen.clone())),
+                    1 => Box::new(StopMany(chosen.clone())),
+                    2 => Box::new(RestartMany(chosen.clone())),
+                    3 => Box::new(ReconnectMany(chosen.clone())),
+                    _ => shown,
+                };
+                menu = menu.menu_element_with_disabled(action, count == 0, super::palette::menu_row(label, keys, count == 0));
+            }
+            return menu;
+        }
         let menu = if can_play { menu.menu(tr("Spielen"), Box::new(Play(menu_key.clone()))) } else { menu };
         let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
         let menu = menu.menu_with_disabled(tr("Neu verbinden"), Box::new(Reconnect(menu_key.clone())), !reconnectable);
@@ -591,6 +644,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         } else {
             menu.menu(tr("Starten"), Box::new(Start(menu_key.clone())))
         };
+        let menu = menu.menu_with_disabled(tr("Neu starten"), Box::new(RestartMany(vec![menu_key.clone()])), stopping || login);
         menu.separator().menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone())))
     })
     .into_any_element()
