@@ -112,6 +112,10 @@ pub fn check_png(bytes: &[u8]) -> Result<RgbaImage, SkinError> {
     if bytes.len() as u64 > MAX_PNG {
         return Err(SkinError::TooLarge);
     }
+    match image::ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png).into_dimensions().map_err(|_| SkinError::NotPng)? {
+        (64, 64 | 32) => {}
+        (w, h) => return Err(SkinError::WrongSize(w, h)),
+    }
     let image = image::load_from_memory_with_format(bytes, ImageFormat::Png).map_err(|_| SkinError::NotPng)?.into_rgba8();
     match image.dimensions() {
         (64, 64 | 32) => Ok(image),
@@ -221,17 +225,19 @@ impl Services {
         Ok(Self { agent: net::agent(proxy)?, base: SERVICES.into(), textures: TEXTURES.into(), token })
     }
 
-    fn send(&self, call: Call, request: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Wardrobe> {
+    fn send(&self, call: Call, request: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Vec<u8>> {
         let mut res = request.context("cannot reach Minecraft services")?;
         let status = res.status().as_u16();
         let body = res.body_mut().with_config().limit(MAX_BODY).read_to_vec().context("cannot read the answer from Minecraft services")?;
         if !(200..300).contains(&status) {
             return Err(failure(call, status).into());
         }
-        if matches!(call, Call::Read) {
-            return wardrobe(&body);
-        }
-        wardrobe(&body).or_else(|_| self.wardrobe())
+        Ok(body)
+    }
+
+    fn changed(&self, call: Call, request: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Option<Wardrobe>> {
+        let body = self.send(call, request)?;
+        Ok(wardrobe(&body).or_else(|_| self.wardrobe()).ok())
     }
 
     fn bearer(&self) -> String {
@@ -241,26 +247,26 @@ impl Services {
     /// What the account wears now.
     pub fn wardrobe(&self) -> Result<Wardrobe> {
         let url = format!("{}/minecraft/profile", self.base);
-        self.send(Call::Read, self.agent.get(&url).header("Authorization", self.bearer()).config().http_status_as_error(false).build().call())
+        wardrobe(&self.send(Call::Read, self.agent.get(&url).header("Authorization", self.bearer()).config().http_status_as_error(false).build().call())?)
     }
 
-    /// Uploads `png` as the account's skin for `model`.
-    pub fn upload(&self, png: &[u8], model: Model) -> Result<Wardrobe> {
+    /// Uploads `png` as the account's skin for `model`; the wardrobe afterwards when Minecraft services told it.
+    pub fn upload(&self, png: &[u8], model: Model) -> Result<Option<Wardrobe>> {
         let boundary = format!("manycraft-{}", Uuid::new_v4().simple());
         let body = multipart(&boundary, model, png);
         let url = format!("{}/minecraft/profile/skins", self.base);
         let request = self.agent.post(&url).header("Authorization", self.bearer()).header("Content-Type", format!("multipart/form-data; boundary={boundary}")).config().http_status_as_error(false).build();
-        self.send(Call::Skin, request.send(&body[..]))
+        self.changed(Call::Skin, request.send(&body[..]))
     }
 
-    /// Wears the cape `id`, or none.
-    pub fn wear_cape(&self, id: Option<&str>) -> Result<Wardrobe> {
+    /// Wears the cape `id`, or none; the wardrobe afterwards when Minecraft services told it.
+    pub fn wear_cape(&self, id: Option<&str>) -> Result<Option<Wardrobe>> {
         let url = format!("{}/minecraft/profile/capes/active", self.base);
         let request = match id {
             Some(id) => self.agent.put(&url).header("Authorization", self.bearer()).config().http_status_as_error(false).build().send_json(serde_json::json!({ "capeId": id })),
             None => self.agent.delete(&url).header("Authorization", self.bearer()).config().http_status_as_error(false).build().call(),
         };
-        self.send(Call::Cape, request)
+        self.changed(Call::Cape, request)
     }
 
     /// Loads a skin or cape texture, only from Mojang's texture host.
@@ -289,7 +295,7 @@ pub fn apply(services: &Services, skin: Option<(&[u8], Model)>, cape: Option<Opt
     if let Some((png, model)) = skin {
         match services.upload(png, model) {
             Ok(w) => {
-                done.wardrobe = Some(w);
+                done.wardrobe = w;
                 done.skin_done = true;
             }
             Err(e) => {
@@ -300,7 +306,7 @@ pub fn apply(services: &Services, skin: Option<(&[u8], Model)>, cape: Option<Opt
     }
     if let Some(cape) = cape {
         match services.wear_cape(cape) {
-            Ok(w) => done.wardrobe = Some(w),
+            Ok(w) => done.wardrobe = w.or(done.wardrobe),
             Err(e) => done.error = Some(e),
         }
     }
@@ -384,6 +390,14 @@ pub fn cape_front(cape: &RgbaImage) -> Option<RgbaImage> {
         return None;
     }
     Some(RgbaImage::from_fn(CAPE_W, CAPE_H, |x, y| base_opaque(cape, (1 + x) * scale, (1 + y) * scale)))
+}
+
+/// Hangs `cape`, as [`cape_front`] shows it, on the back view of a skin.
+pub fn hang_cape(back: &mut RgbaImage, cape: &RgbaImage) {
+    let left = (VIEW_W - CAPE_W) / 2;
+    for (x, y, p) in cape.enumerate_pixels() {
+        back.put_pixel(left + x, 8 + y, *p);
+    }
 }
 
 /// `image` blown up `scale` times without smoothing.
@@ -617,7 +631,7 @@ mod tests {
     fn uploading_posts_multipart_with_the_bearer_token() {
         let (base, seen) = serve(vec![("POST /minecraft/profile/skins", vec![(200, json(PROFILE))])]);
         let png = skin(64, 64);
-        let w = services(&base).upload(&png, Model::Slim).unwrap();
+        let w = services(&base).upload(&png, Model::Slim).unwrap().unwrap();
         assert_eq!(w.model, Model::Slim);
         let seen = seen.lock().unwrap();
         let req = &seen[0];
@@ -630,16 +644,45 @@ mod tests {
     #[test]
     fn an_empty_answer_reads_the_profile_again() {
         let (base, seen) = serve(vec![("DELETE /minecraft/profile/capes/active", vec![(204, Vec::new())]), ("GET /minecraft/profile", vec![(200, json(NO_CAPE))])]);
-        let w = services(&base).wear_cape(None).unwrap();
+        let w = services(&base).wear_cape(None).unwrap().unwrap();
         assert_eq!(w.cape(), None);
         let seen = seen.lock().unwrap();
         assert_eq!(seen.iter().map(|s| s.method.as_str()).collect::<Vec<_>>(), ["DELETE", "GET"]);
     }
 
     #[test]
+    fn a_change_that_went_through_counts_even_when_the_profile_cannot_be_read() {
+        let (base, _) = serve(vec![("POST /minecraft/profile/skins", vec![(200, Vec::new())]), ("GET /minecraft/profile", vec![(429, json("{}"))])]);
+        let s = services(&base);
+        let png = skin(64, 64);
+        let done = apply(&s, Some((&png, Model::Classic)), None);
+        assert!(done.skin_done && done.wardrobe.is_none() && done.error.is_none());
+    }
+
+    #[test]
+    fn a_huge_picture_is_refused_before_it_is_decoded() {
+        let mut lying = skin(64, 64);
+        lying[16..24].copy_from_slice(&[0, 0, 0x27, 0x10, 0, 0, 0x27, 0x10]);
+        let crc = !lying[12..29].iter().fold(!0u32, |c, &b| (0..8).fold(c ^ u32::from(b), |c, _| if c & 1 == 1 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 }));
+        lying[29..33].copy_from_slice(&crc.to_be_bytes());
+        assert_eq!(check_png(&lying), Err(SkinError::WrongSize(10000, 10000)));
+    }
+
+    #[test]
+    fn a_cape_hangs_centred_below_the_neck() {
+        let mut back = RgbaImage::new(VIEW_W, VIEW_H);
+        hang_cape(&mut back, &RgbaImage::from_pixel(CAPE_W, CAPE_H, Rgba([7, 7, 7, 255])));
+        assert_eq!(back.get_pixel(3, 8).0, [7, 7, 7, 255]);
+        assert_eq!(back.get_pixel(12, 23).0, [7, 7, 7, 255]);
+        assert_eq!(back.get_pixel(2, 8)[3], 0);
+        assert_eq!(back.get_pixel(3, 7)[3], 0);
+        assert_eq!(back.get_pixel(3, 24)[3], 0);
+    }
+
+    #[test]
     fn wearing_a_cape_puts_its_id() {
         let (base, seen) = serve(vec![("PUT /minecraft/profile/capes/active", vec![(200, json(PROFILE))])]);
-        let w = services(&base).wear_cape(Some("c2")).unwrap();
+        let w = services(&base).wear_cape(Some("c2")).unwrap().unwrap();
         assert_eq!(w.cape(), Some("c2"));
         let body: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0].body).unwrap();
         assert_eq!(body, serde_json::json!({ "capeId": "c2" }));

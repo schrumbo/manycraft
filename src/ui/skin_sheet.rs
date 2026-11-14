@@ -103,7 +103,11 @@ fn load(account: &Account) -> Result<Closet> {
     Ok(Closet { services: Some(Arc::new(services)), wardrobe, skin, capes, recent })
 }
 
-fn put_on(account: &Account, services: Option<Arc<Services>>, new: Option<Worn>, old: Option<(RgbaImage, Model)>, cape: Option<Option<String>>) -> Outcome {
+fn put_on(account: &Account, services: Option<Arc<Services>>, new: Option<Worn>, old: Option<(RgbaImage, Model)>, lost: Option<(String, Model)>, cape: Option<Option<String>>) -> Outcome {
+    let old = old.or_else(|| {
+        let (url, model) = lost?;
+        Some((services.as_ref()?.texture(&url).ok().and_then(usable)?, model))
+    });
     let skin = new.as_ref().map(|w| (w.png.as_slice(), w.model));
     let cape_ref = cape.as_ref().map(|c| c.as_deref());
     let applied = match services {
@@ -247,6 +251,7 @@ struct Ready {
     wardrobe: Wardrobe,
     skin: Option<RgbaImage>,
     capes: Vec<(Cape, Option<Arc<RenderImage>>)>,
+    cloaks: Vec<(String, RgbaImage)>,
 }
 
 enum Load {
@@ -324,19 +329,20 @@ impl SkinSheet {
     fn loaded(&mut self, loaded: Result<Closet>, cx: &mut Context<Self>) {
         match loaded {
             Ok(closet) => {
+                let cloaks: Vec<(String, RgbaImage)> = closet.capes.iter().filter_map(|(id, image)| Some((id.clone(), change::cape_front(image)?))).collect();
                 let capes = closet
                     .wardrobe
                     .capes
                     .iter()
                     .map(|c| {
-                        let shown = closet.capes.iter().find(|(id, _)| *id == c.id).and_then(|(_, image)| change::cape_front(image)).and_then(|front| picture(&front, wardrobe::CAPE));
+                        let shown = cloaks.iter().find(|(id, _)| *id == c.id).and_then(|(_, front)| picture(front, wardrobe::CAPE));
                         (c.clone(), self.keep(shown))
                     })
                     .collect();
                 self.model = closet.wardrobe.model;
                 self.cape = closet.wardrobe.cape().map(str::to_owned);
                 self.set_recent(closet.recent);
-                self.load = Load::Ready(Ready { services: closet.services, wardrobe: closet.wardrobe, skin: closet.skin, capes });
+                self.load = Load::Ready(Ready { services: closet.services, wardrobe: closet.wardrobe, skin: closet.skin, capes, cloaks });
                 self.redraw(cx);
             }
             Err(e) => self.load = Load::Failed(problem(&e), signs_in_again(&e)),
@@ -364,7 +370,14 @@ impl SkinSheet {
     }
 
     fn redraw(&mut self, cx: &mut Context<Self>) {
-        let views = self.shown_skin().map(|s| change::front_and_back(s, self.model));
+        let cloak = self.ready().zip(self.cape.as_deref()).and_then(|(r, id)| r.cloaks.iter().find(|(c, _)| c == id)).map(|(_, front)| front);
+        let views = self.shown_skin().map(|s| {
+            let (front, mut back) = change::front_and_back(s, self.model);
+            if let Some(cloak) = cloak {
+                change::hang_cape(&mut back, cloak);
+            }
+            (front, back)
+        });
         let new = views.and_then(|(front, back)| Some((picture(&front, wardrobe::PREVIEW)?, picture(&back, wardrobe::PREVIEW)?)));
         if let Some((front, back)) = std::mem::replace(&mut self.views, new) {
             self.images.retain(|i| !Arc::ptr_eq(i, &front) && !Arc::ptr_eq(i, &back));
@@ -465,7 +478,19 @@ impl SkinSheet {
         }
         self.cape = cape;
         self.error = None;
-        cx.notify();
+        self.redraw(cx);
+    }
+
+    fn clear_pick(&mut self, cx: &mut Context<Self>) {
+        if self.applying {
+            return;
+        }
+        let Some(model) = self.ready().map(|r| r.wardrobe.model) else { return };
+        self.pick = None;
+        self.pick_problem = None;
+        self.model = model;
+        self.error = None;
+        self.redraw(cx);
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
@@ -483,13 +508,14 @@ impl SkinSheet {
         } else {
             None
         };
+        let lost = (self.pick.is_some() && old.is_none()).then(|| ready.wardrobe.skin_url.clone().map(|url| (url, ready.wardrobe.model))).flatten();
         let old = if self.pick.is_some() { old } else { None };
         let cape = self.cape_changes().then(|| self.cape.clone());
         self.applying = true;
         self.error = None;
         cx.notify();
         let account = self.account.clone();
-        let task = cx.background_executor().spawn(async move { put_on(&account, services, new, old, cape) });
+        let task = cx.background_executor().spawn(async move { put_on(&account, services, new, old, lost, cape) });
         cx.spawn(async move |this, cx| {
             let outcome = task.await;
             let _ = this.update(cx, |s, cx| s.applied(outcome, cx));
@@ -580,7 +606,9 @@ impl SkinSheet {
             .flex_col()
             .gap(px(space::XS))
             .child(sheet::label(tr("Skin"), t))
-            .child(div().flex().items_center().gap(px(space::S)).child(file).children(chosen.map(|c| div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(c))))
+            .child(div().flex().items_center().gap(px(space::S)).child(file).children(chosen.map(|c| div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(c))).when(self.pick.is_some() && !busy, |d| {
+                d.child(sheet::icon_button("skin-clear", "x", tr("Bisherigen Skin behalten"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.clear_pick(cx))))
+            }))
             .child(sheet::note(hint, self.pick_problem.clone(), t))
             .child(div().pt(px(space::XS)).child(sheet::label(tr("Modell"), t)))
             .child(div().flex().child(model))
@@ -592,6 +620,7 @@ impl SkinSheet {
         }
         let chosen = self.pick.as_ref().and_then(|p| p.recent);
         let (w, h) = (change::VIEW_W as f32 * wardrobe::RECENT, change::VIEW_H as f32 * wardrobe::RECENT);
+        let busy = self.applying;
         let items = self.recent.iter().enumerate().map(|(n, (_, thumb))| {
             let selected = chosen == Some(n);
             div()
@@ -599,16 +628,19 @@ impl SkinSheet {
                 .mark("option", trf("Zuletzt verwendet %lld", &[&(n + 1)]))
                 .p(px(space::XS))
                 .rounded(px(radius::CONTROL))
-                .border_2()
+                .border(px(wardrobe::PICK))
                 .border_color(if selected { t.accent } else { transparent_black() })
-                .cursor_pointer()
-                .key_nav()
-                .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
-                .tooltip(tip(tr("Diesen Skin wieder nehmen")))
-                .on_click(cx.listener(move |s, _, _, cx| s.use_recent(n, cx)))
+                .bg(t.raised)
+                .when(!busy, |d| {
+                    d.cursor_pointer()
+                        .key_nav()
+                        .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
+                        .tooltip(tip(tr("Diesen Skin wieder nehmen")))
+                        .on_click(cx.listener(move |s, _, _, cx| s.use_recent(n, cx)))
+                })
                 .child(img(ImageSource::Render(Arc::clone(thumb))).w(px(w)).h(px(h)).object_fit(ObjectFit::Fill))
         });
-        Some(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Zuletzt verwendet"), t)).child(div().flex().flex_wrap().gap(px(space::XS)).children(items)))
+        Some(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Zuletzt verwendet"), t)).child(div().flex().flex_wrap().gap(px(space::XS)).when(busy, |d| d.opacity(tint::DISABLED)).children(items)))
     }
 
     fn render_capes(&self, ready: &Ready, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -617,6 +649,7 @@ impl SkinSheet {
             return section.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Dieses Konto hat keine Umhänge.")));
         }
         let (w, h) = (change::CAPE_W as f32 * wardrobe::CAPE, change::CAPE_H as f32 * wardrobe::CAPE);
+        let busy = self.applying;
         let choice = |id: SharedString, label: String, selected: bool, look: AnyElement, pick: Option<String>| {
             div()
                 .id(id)
@@ -624,14 +657,11 @@ impl SkinSheet {
                 .w(px(wardrobe::CHOICE))
                 .p(px(space::S))
                 .rounded(px(radius::CONTROL))
-                .border_2()
+                .border(px(wardrobe::PICK))
                 .border_color(if selected { t.accent } else { transparent_black() })
                 .bg(t.raised)
-                .cursor_pointer()
-                .key_nav()
-                .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
                 .tooltip(tip(label.clone()))
-                .on_click(cx.listener(move |s, _, _, cx| s.set_cape(pick.clone(), cx)))
+                .when(!busy, |d| d.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, _, cx| s.set_cape(pick.clone(), cx))))
                 .flex()
                 .flex_col()
                 .items_center()
@@ -648,7 +678,7 @@ impl SkinSheet {
             let label = if cape.alias.is_empty() { tr("Umhang") } else { cape.alias.clone() };
             choice(SharedString::from(format!("cape-{}", cape.id)), label, self.cape.as_deref() == Some(cape.id.as_str()), look, Some(cape.id.clone()))
         });
-        section.child(div().flex().flex_wrap().gap(px(space::S)).child(none).children(capes))
+        section.child(div().flex().flex_wrap().gap(px(space::S)).when(busy, |d| d.opacity(tint::DISABLED)).child(none).children(capes))
     }
 
     fn render_body(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -696,7 +726,11 @@ impl Render for SkinSheet {
                 &t,
             ))
         });
-        let cancel = sheet::button("skin-cancel", tr("Abbrechen"), None, Look::Secondary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed)));
+        let cancel = sheet::button("skin-cancel", tr("Abbrechen"), None, Look::Secondary, self.applying, false, &t).on_click(cx.listener(|s, _, _, cx| {
+            if !s.applying {
+                cx.emit(Dismissed);
+            }
+        }));
         let main = match &self.load {
             Load::Failed(_, true) => sheet::button("skin-sign-in", tr("Erneut anmelden"), Some("log-in"), Look::Primary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.sign_in_again(window, cx))),
             Load::Failed(_, false) => sheet::button("skin-retry", tr("Erneut versuchen"), None, Look::Primary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.reload(cx))),

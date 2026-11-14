@@ -203,6 +203,8 @@ pub mod wardrobe {
     pub const DENSITY: f32 = 2.;
     /// Width of a cape choice.
     pub const CHOICE: f32 = 88.;
+    /// Border width that marks the chosen skin or cape.
+    pub const PICK: f32 = 2.;
     /// Width of the column with the preview.
     pub const COLUMN: f32 = 200.;
     /// Height of the body while the profile loads or failed, so the sheet keeps its size.
