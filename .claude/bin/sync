@@ -10,7 +10,7 @@ import platform
 import subprocess
 import sys
 
-MACHINES = {"Darwin": "Mac (ssh mac)", "Windows": "Windows PC pimmel (ssh windows)"}
+MACHINES = {"Darwin": "Mac (ssh mac)", "Windows": "Windows PC (ssh windows)"}
 
 
 def git(*args, timeout=60):
