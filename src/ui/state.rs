@@ -312,6 +312,7 @@ struct Runtime {
     joins: HashMap<String, u64>,
     crash_restarts: HashMap<String, u32>,
     started: HashMap<String, Instant>,
+    joined: HashSet<String>,
     history: Option<history::Writer>,
     refreshed: bool,
     alerts: HashMap<String, Vec<(String, Alert)>>,
@@ -352,6 +353,7 @@ pub fn init(cx: &mut App) {
         joins: HashMap::new(),
         crash_restarts: HashMap::new(),
         started: HashMap::new(),
+        joined: HashSet::new(),
         history: history::Writer::start().ok(),
         refreshed: false,
         alerts: HashMap::new(),
@@ -610,6 +612,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
             rt.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.crash_restarts.remove(key);
+            rt.joined.remove(key);
             let Some(i) = m.instances.get_mut(key) else { continue };
             match i.phase {
                 Phase::Starting { .. } if !rt.pids.contains_key(key) => {
@@ -982,7 +985,6 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         },
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
             rt.pids.insert(instance.clone(), pid);
-            rt.started.insert(instance.clone(), Instant::now());
             if let Some(i) = m.instances.get_mut(&instance)
                 && matches!(i.phase, Phase::Starting { .. })
             {
@@ -996,10 +998,11 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
 
 fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code: Option<i32>) {
     rt.pids.remove(&key);
+    rt.joined.remove(&key);
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
     let Some(i) = m.instances.get_mut(&key) else { return };
     *rt.joins.entry(key.clone()).or_default() += 1;
-    let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded));
+    let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     i.stopping = false;
     if let Some(old) = i.preview.take() {
         fx.retired.push(old);
@@ -1008,7 +1011,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
         fx.exited_playing = true;
     }
     if !crashed {
-        if i.phase != Phase::LoginNeeded {
+        if !matches!(i.phase, Phase::LoginNeeded | Phase::Restarting { .. }) {
             i.phase = Phase::Stopped;
         }
         return;
@@ -1020,7 +1023,9 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     }
     let tried = rt.crash_restarts.get(&key).copied().unwrap_or(0);
     let reason = code.map_or_else(|| tr("Ohne Exit-Code beendet"), |c| trf("Exit-Code %lld", &[&c]));
+    let banned = matches!(i.phase, Phase::Banned { .. });
     match reconnect::restart(tried, policy, reconnect::unit()) {
+        Decision::Retry(_) if banned => i.phase = Phase::Crashed { code },
         Decision::Retry(delay) => {
             rt.crash_restarts.insert(key.clone(), tried + 1);
             let generation = rt.reconnects.entry(key.clone()).or_default();
@@ -1061,7 +1066,8 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
             if let Phase::Playing { since, .. } = i.phase {
                 Phase::Playing { server: server_text, since }
             } else {
-                if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() {
+                rt.started.entry(key.clone()).or_insert_with(Instant::now);
+                if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() && rt.joined.insert(key.clone()) {
                     event = Some((Kind::Connected, server.clone(), String::new()));
                     if let Some((lines, delay)) = join {
                         let generation = *rt.joins.entry(key.clone()).or_default();
@@ -1073,6 +1079,7 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
         }
         StateKind::Dead => Phase::Dead { server, reason: reason_text },
         StateKind::Disconnected => {
+            rt.joined.remove(&key);
             if let Phase::Playing { since, .. } = i.phase
                 && since.elapsed() >= STABLE
             {
@@ -1102,7 +1109,16 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
                 Reaction::Banned => Phase::Banned { server, reason: reason_text },
                 Reaction::SignInAgain => {
                     fx.stop.push(key.clone());
-                    Phase::LoginNeeded
+                    let crash = &settings::active().crash_restart;
+                    let tried = rt.crash_restarts.get(&key).copied().unwrap_or(0);
+                    match reconnect::restart(tried, crash, 0.0) {
+                        Decision::Retry(_) => {
+                            rt.crash_restarts.insert(key.clone(), tried + 1);
+                            fx.later.push(Deferred::Restart { key: key.clone(), delay: Duration::from_secs(5), generation: *generation });
+                            Phase::Restarting { attempt: tried + 1, of: crash.max_attempts }
+                        }
+                        Decision::Stop => Phase::LoginNeeded,
+                    }
                 }
             }
         }
@@ -1378,6 +1394,7 @@ mod tests {
             joins: HashMap::new(),
             crash_restarts: HashMap::new(),
             started: HashMap::new(),
+            joined: HashSet::new(),
             history: None,
             refreshed: false,
             alerts: HashMap::new(),
@@ -1456,14 +1473,66 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_sign_in_stops_the_game_and_asks_for_a_new_one() {
-        let (phase, fx, _) = dropped(DisconnectCause::Auth);
-        assert_eq!(phase, Phase::LoginNeeded);
-        assert_eq!(fx.stop.len(), 1);
+    fn a_rejected_sign_in_restarts_to_refresh_then_asks_for_a_new_one() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=3 {
+            let mut fx = Effects::default();
+            send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert_eq!(fx.stop.len(), 1);
+            assert!(matches!(fx.later.pop(), Some(Deferred::Restart { .. })));
+            apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut Effects::default());
+            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+        assert!(fx.later.is_empty());
         let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
         assert!(matches!(m.instances[&key].phase, Phase::Disconnected { .. }) && fx.stop.is_empty());
+    }
+
+    #[test]
+    fn the_same_account_signed_in_elsewhere_is_left_alone() {
+        let (phase, fx, _) = dropped(DisconnectCause::Duplicate);
+        assert!(matches!(phase, Phase::Disconnected { .. }) && fx.later.is_empty());
+    }
+
+    #[test]
+    fn a_banned_instance_that_dies_stays_crashed_and_does_not_rejoin() {
+        let (mut m, mut rt, key) = setup(Phase::Banned { server: None, reason: "x".into() }, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Crashed { code: Some(1) });
+        assert!(fx.later.is_empty());
+    }
+
+    #[test]
+    fn a_server_switch_does_not_send_the_join_commands_again() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &["/login pw"]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.len(), 1);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Connecting, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.len(), 1);
+        assert_eq!(m.history[&key].len(), 1);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.iter().filter(|d| matches!(d, Deferred::Join { .. })).count(), 2);
+    }
+
+    #[test]
+    fn stability_counts_from_the_first_join_not_from_the_start() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 1, mod_version: String::new() }), &mut Effects::default());
+        assert!(!rt.started.contains_key(&key));
+        send_state(&mut m, &mut rt, &mut Effects::default(), &key, StateKind::Playing, None);
+        assert!(rt.started.contains_key(&key));
     }
 
     #[test]

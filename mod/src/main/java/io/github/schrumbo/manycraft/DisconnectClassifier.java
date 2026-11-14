@@ -7,11 +7,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 
 final class DisconnectClassifier {
-	private static final Pattern BANNED = Pattern.compile("(?<![a-z])(banned|blacklisted|ban)(?![a-z])");
+	private static final Pattern BANNED = Pattern.compile("(?<![a-z])((temp|ip)?banned|blacklisted|(temp|ip)?ban)(?![a-z])|gebannt|verbannt|gesperrt|bannt");
 	private static final List<String> WHITELIST = List.of("whitelist", "white-list", "white list");
 	private static final List<String> FULL = List.of("server is full", "server full", "is full");
 	private static final List<String> AUTH = List.of("failed to verify username", "invalid session", "failed to log in", "login failed", "session expired", "public key");
-	private static final List<String> KICKED = List.of("kicked", "idle", "afk", "flying", "another location", "already online", "already connected", "spam");
+	private static final List<String> KICKED = List.of("kicked", "idle", "afk", "flying", "spam");
+	private static final List<String> DUPLICATE = List.of("another location", "already online", "already connected", "already logged in", "logged in from");
 	private static final List<String> DOWN = List.of("connection refused", "timed out", "timeout", "connection lost", "connection closed", "connection reset", "server closed", "shutting down", "restarting", "restart", "stopping", "no route", "unknown host", "unresolved", "unreachable", "end of stream", "authentication servers are down");
 
 	private DisconnectClassifier() {}
@@ -27,6 +28,11 @@ final class DisconnectClassifier {
 			String bucket = byKey(key);
 			if (bucket != null) {
 				return bucket;
+			}
+		}
+		for (String key : keys) {
+			if (key.startsWith("disconnect.loginFailed")) {
+				return "auth";
 			}
 		}
 		return byText(text == null ? "" : text.toLowerCase(Locale.ROOT));
@@ -59,11 +65,15 @@ final class DisconnectClassifier {
 		if (key.equals("multiplayer.disconnect.authservers_down") || key.equals("disconnect.loginFailedInfo.serversUnavailable")) {
 			return "server_down";
 		}
-		if (key.startsWith("disconnect.loginFailed") || key.equals("multiplayer.disconnect.unverified_username") || key.contains("public_key")) {
+		if (key.equals("disconnect.loginFailedInfo.userBanned")) {
+			return "banned";
+		}
+		if (key.startsWith("disconnect.loginFailedInfo.") || key.equals("multiplayer.disconnect.unverified_username") || key.contains("public_key")) {
 			return "auth";
 		}
 		return switch (key) {
-			case "multiplayer.disconnect.kicked", "multiplayer.disconnect.idling", "multiplayer.disconnect.flying", "multiplayer.disconnect.duplicate_login", "multiplayer.disconnect.name_taken", "disconnect.kicked" -> "kicked";
+			case "multiplayer.disconnect.kicked", "multiplayer.disconnect.idling", "multiplayer.disconnect.flying", "disconnect.kicked" -> "kicked";
+			case "multiplayer.disconnect.duplicate_login", "multiplayer.disconnect.name_taken" -> "duplicate";
 			case "multiplayer.disconnect.server_shutdown", "multiplayer.disconnect.slow_login", "disconnect.timeout", "disconnect.lost", "disconnect.closed", "disconnect.endOfStream" -> "server_down";
 			default -> null;
 		};
@@ -81,6 +91,9 @@ final class DisconnectClassifier {
 		}
 		if (containsAny(text, AUTH)) {
 			return "auth";
+		}
+		if (containsAny(text, DUPLICATE)) {
+			return "duplicate";
 		}
 		if (containsAny(text, KICKED)) {
 			return "kicked";

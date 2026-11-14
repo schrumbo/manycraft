@@ -43,6 +43,7 @@ pub enum DisconnectCause {
     Kicked,
     ServerDown,
     Auth,
+    Duplicate,
     #[serde(other)]
     Unknown,
 }

@@ -35,12 +35,12 @@ pub fn wait(schedule: &[u64], attempt: u32, jitter_percent: u32, unit: f64) -> D
 }
 
 /// How to answer a disconnect for `cause` after `attempt` earlier tries.
-/// Banned stops with no retry ever; a missing whitelist entry stops; a rejected sign-in asks for a new one; a full server or a kick waits longer.
+/// Banned stops with no retry ever; a missing whitelist entry or the same account signed in elsewhere stops; a rejected sign-in asks for a new one; a full server or a kick waits longer.
 pub fn react(cause: DisconnectCause, attempt: u32, policy: &Reconnect, unit: f64) -> Reaction {
     match cause {
         DisconnectCause::Banned => return Reaction::Banned,
         DisconnectCause::Auth => return Reaction::SignInAgain,
-        DisconnectCause::Whitelist => return Reaction::NotAllowed,
+        DisconnectCause::Whitelist | DisconnectCause::Duplicate => return Reaction::NotAllowed,
         DisconnectCause::ServerFull | DisconnectCause::Kicked | DisconnectCause::ServerDown | DisconnectCause::Unknown => {}
     }
     if !policy.enabled || attempt >= policy.max_attempts {
@@ -92,6 +92,7 @@ mod tests {
         assert_eq!(react(DisconnectCause::Banned, 0, &p, 0.5), Reaction::Banned);
         assert_eq!(react(DisconnectCause::Auth, 0, &p, 0.5), Reaction::SignInAgain);
         assert_eq!(react(DisconnectCause::Whitelist, 0, &p, 0.5), Reaction::NotAllowed);
+        assert_eq!(react(DisconnectCause::Duplicate, 0, &p, 0.5), Reaction::NotAllowed);
     }
 
     #[test]

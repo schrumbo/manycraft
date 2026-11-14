@@ -22,7 +22,7 @@ class DisconnectClassifierTest {
 		assertEquals("server_full", keyed("multiplayer.disconnect.server_full"));
 		assertEquals("kicked", keyed("multiplayer.disconnect.kicked"));
 		assertEquals("kicked", keyed("multiplayer.disconnect.idling"));
-		assertEquals("kicked", keyed("multiplayer.disconnect.duplicate_login"));
+		assertEquals("duplicate", keyed("multiplayer.disconnect.duplicate_login"));
 		assertEquals("server_down", keyed("multiplayer.disconnect.server_shutdown"));
 		assertEquals("server_down", keyed("disconnect.timeout"));
 		assertEquals("server_down", keyed("disconnect.lost"));
@@ -34,6 +34,15 @@ class DisconnectClassifierTest {
 	}
 
 	@Test
+	void wrappedLoginFailuresUseTheNestedKey() {
+		String wrapper = "disconnect.loginFailedInfo";
+		assertEquals("server_down", DisconnectClassifier.classify(List.of(wrapper, "disconnect.loginFailedInfo.serversUnavailable"), ""));
+		assertEquals("banned", DisconnectClassifier.classify(List.of(wrapper, "disconnect.loginFailedInfo.userBanned"), ""));
+		assertEquals("auth", DisconnectClassifier.classify(List.of(wrapper, "disconnect.loginFailedInfo.invalidSession"), ""));
+		assertEquals("auth", DisconnectClassifier.classify(List.of(wrapper), ""));
+	}
+
+	@Test
 	void keysWinOverText() {
 		assertEquals("kicked", DisconnectClassifier.classify(List.of("multiplayer.disconnect.kicked"), "Banned for flying"));
 	}
@@ -42,6 +51,10 @@ class DisconnectClassifierTest {
 	void customTextIsMatched() {
 		assertEquals("banned", texted("You are permanently banned from this server!"));
 		assertEquals("banned", texted("Your account is blacklisted"));
+		assertEquals("banned", texted("Du wurdest vom Netzwerk gebannt"));
+		assertEquals("banned", texted("Du bist gesperrt"));
+		assertEquals("banned", texted("You have been tempbanned for 3 days"));
+		assertEquals("duplicate", texted("You logged in from another location"));
 		assertEquals("whitelist", texted("You are not white-listed on this server!"));
 		assertEquals("server_full", texted("The server is full"));
 		assertEquals("kicked", texted("Kicked for being idle"));
