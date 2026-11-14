@@ -198,11 +198,17 @@ impl Geometry {
         self.width < tile::WORDLESS
     }
 
-    /// How a picture of `aspect` (width over height) fills the tile: it keeps its full height and loses its sides, unless the tile is
-    /// wider than the picture or narrower than `tile::CROP_MIN`, where it shows whole with bars.
-    pub fn fit(&self, aspect: f32) -> ObjectFit {
-        let shape = self.width / self.height.max(1.);
-        if shape < aspect && shape >= tile::CROP_MIN { ObjectFit::Cover } else { ObjectFit::Contain }
+    /// Where a picture of `aspect` (width over height) lies so that it covers the tile: left, top, width and height. A tile narrower
+    /// than the picture loses both sides evenly; a wider one loses the top, keeping the bottom with hotbar, hearts and chat.
+    pub fn cover(&self, aspect: f32) -> (f32, f32, f32, f32) {
+        let aspect = aspect.max(f32::EPSILON);
+        if self.width / self.height.max(1.) < aspect {
+            let width = self.height * aspect;
+            ((self.width - width) / 2., 0., width, self.height)
+        } else {
+            let height = self.width / aspect;
+            (0., self.height - height, self.width, height)
+        }
     }
 }
 
@@ -370,7 +376,8 @@ fn aspect(image: &RenderImage) -> f32 {
 
 fn picture(d: &TileData, g: &Geometry, t: &Theme) -> Option<AnyElement> {
     let image = d.preview.as_ref()?;
-    let shown = img(ImageSource::Render(Arc::clone(image))).absolute().inset_0().size_full().object_fit(g.fit(aspect(image)));
+    let (left, top, width, height) = g.cover(aspect(image));
+    let shown = img(ImageSource::Render(Arc::clone(image))).absolute().left(px(left)).top(px(top)).w(px(width)).h(px(height)).object_fit(ObjectFit::Fill);
     Some(if d.live { shown.when(tone(d, t).is_some(), |i| i.opacity(tile::DIMMED)).into_any_element() } else { shown.grayscale(true).opacity(tint::STILL).into_any_element() })
 }
 
@@ -595,7 +602,7 @@ pub fn accounts_of(keys: &[String], cx: &App) -> (Vec<String>, Option<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Geometry, ObjectFit, Phase, Primary, primary, tile};
+    use super::{Geometry, Phase, Primary, primary, tile};
 
     #[test]
     fn the_main_button_follows_the_phase() {
@@ -612,13 +619,12 @@ mod tests {
     }
 
     #[test]
-    fn previews_keep_their_full_height_and_crop_only_the_sides() {
-        let picture = tile::ASPECT;
-        assert!(matches!(Geometry::new(320., 180.).fit(picture), ObjectFit::Contain), "a 16:9 tile shows the whole picture");
-        assert!(matches!(Geometry::new(300., 200.).fit(picture), ObjectFit::Cover), "a narrower tile loses the sides, keeps the height");
-        assert!(matches!(Geometry::new(600., 200.).fit(picture), ObjectFit::Contain), "a wider tile never crops top or bottom");
-        assert!(matches!(Geometry::new(200., 300.).fit(picture), ObjectFit::Contain), "a tall tile letterboxes");
-        assert!(matches!(Geometry::new(tile::CROP_MIN * 100., 100.).fit(picture), ObjectFit::Cover));
+    fn previews_cover_the_tile_cropping_the_sides_evenly_or_the_top() {
+        let picture = 16. / 9.;
+        assert_eq!(Geometry::new(320., 180.).cover(picture), (0., 0., 320., 180.), "a 16:9 tile shows the whole picture");
+        assert_eq!(Geometry::new(160., 180.).cover(picture), (-80., 0., 320., 180.), "a narrower tile loses both sides evenly");
+        assert_eq!(Geometry::new(640., 180.).cover(picture), (0., -180., 640., 360.), "a wider tile loses the top, keeps the bottom");
+        assert_eq!(Geometry::new(100., 300.).cover(picture).1, 0., "a tall tile keeps its full height");
         assert!(Geometry::new(tile::MIN_W, tile::MIN_H).wordless() && !Geometry::new(tile::WORDLESS, tile::MIN_H).wordless());
     }
 

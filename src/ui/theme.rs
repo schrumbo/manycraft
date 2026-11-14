@@ -70,8 +70,6 @@ pub mod tile {
     pub const MIN_H: f32 = 108.;
     /// The shape tiles stay near, and the shape of a game's picture.
     pub const ASPECT: f32 = 16. / 9.;
-    /// The narrowest tile, as width over height, whose preview still crops at the sides; narrower ones letterbox.
-    pub const CROP_MIN: f32 = 4. / 3.;
     /// The line of window colour between tiles.
     pub const HAIRLINE: f32 = 1.;
     /// Below this width the overlay drops the status word and keeps the dot.

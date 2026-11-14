@@ -353,10 +353,10 @@ pub fn found(i: &Instance, m: &Model, words: &[String]) -> bool {
     words.iter().all(|w| text.contains(w.as_str()))
 }
 
-/// Columns and tile height of the mosaic, and whether it scrolls.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Columns per section and tile height of the mosaic, and whether it scrolls.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
-    pub columns: usize,
+    pub columns: Vec<usize>,
     pub height: f32,
     pub scrolls: bool,
 }
@@ -368,34 +368,21 @@ pub fn tile_width(count: usize, width: f32) -> f32 {
 }
 
 /// The mosaic for sections of `sections` tiles each in a `width` × `height` area; `headed` sections carry a heading.
-/// Tiles fill the area at the columns that keep them nearest 16:9, the last row of a section stretching across;
-/// when even that makes tiles smaller than the smallest tile, the columns stop growing and the grid scrolls.
+/// A section of n tiles takes ceil(√n) columns and the tiles fill the area, the last row of a section stretching across.
+/// When that makes tiles lower than the smallest tile, sections take more columns, up to as many as fit at the smallest width;
+/// when even that is not enough, the grid scrolls.
 pub fn layout(sections: &[usize], width: f32, height: f32, headed: bool) -> Layout {
-    let most = sections.iter().copied().max().unwrap_or(0).max(1);
     let room = height - if headed { sections.len() as f32 * tile::HEADING } else { 0. };
-    let off = |w: f32, h: f32| (w / h / tile::ASPECT).ln().abs();
-    let fit = (1..=most)
-        .filter_map(|columns| {
-            let rows = sections.iter().map(|n| n.div_ceil(columns)).sum::<usize>().max(1);
-            let h = room / rows as f32 - tile::HAIRLINE;
-            let w = tile_width(columns, width);
-            if h < tile::MIN_H || w < tile::MIN_W {
-                return None;
-            }
-            let (mut sum, mut count) = (0., 0);
-            for &n in sections {
-                let last = if n % columns == 0 { columns.min(n) } else { n % columns };
-                sum += off(w, h) * (n - last) as f32 + off(tile_width(last, width), h) * last as f32;
-                count += n;
-            }
-            Some((sum / count.max(1) as f32, Layout { columns, height: h, scrolls: false }))
+    let fits = (((width + tile::HAIRLINE) / (tile::MIN_W + tile::HAIRLINE)).floor() as usize).max(1);
+    let columns = |least: usize| -> Vec<usize> { sections.iter().map(|&n| ((n as f32).sqrt().ceil() as usize).max(least).min(n).min(fits).max(1)).collect() };
+    (1..=fits)
+        .find_map(|least| {
+            let columns = columns(least);
+            let rows = sections.iter().zip(&columns).map(|(n, c)| n.div_ceil(*c)).sum::<usize>().max(1);
+            let height = room / rows as f32 - tile::HAIRLINE;
+            (height >= tile::MIN_H).then_some(Layout { columns, height, scrolls: false })
         })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, l)| l);
-    fit.unwrap_or_else(|| {
-        let fits = (((width + tile::HAIRLINE) / (tile::MIN_W + tile::HAIRLINE)).floor() as usize).max(1);
-        Layout { columns: fits.min(most), height: (tile_width(fits, width) / tile::ASPECT).max(tile::MIN_H), scrolls: true }
-    })
+        .unwrap_or_else(|| Layout { columns: columns(fits), height: (tile_width(fits, width) / tile::ASPECT).max(tile::MIN_H), scrolls: true })
 }
 
 /// The status of `i` in a word for its tile; the full line is in its tooltip.
@@ -655,8 +642,8 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         }
         let mut at = *from;
         while at < *to {
-            items.push(Item::Row { from: at, to: (at + columns).min(*to) });
-            at += columns;
+            items.push(Item::Row { from: at, to: (at + columns[n]).min(*to) });
+            at += columns[n];
         }
     }
     let mut tops = Vec::with_capacity(items.len());
@@ -1052,21 +1039,27 @@ pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<Ma
 mod tests {
     use super::{Filter, Instance, Model, Order, Phase, Picks, arrange, chosen, column_at, found, layout, matches, tile, tile_width, word, words};
 
-    fn rows(sections: &[usize], columns: usize) -> usize {
-        sections.iter().map(|n| n.div_ceil(columns)).sum()
+    fn rows(sections: &[usize], columns: &[usize]) -> usize {
+        sections.iter().zip(columns).map(|(n, c)| n.div_ceil(*c)).sum()
     }
 
     #[test]
-    fn few_tiles_fill_a_wide_area_and_the_last_row_stretches() {
-        let (w, h) = (1920., 1000.);
-        let two = layout(&[2], w, h, false);
-        assert_eq!((two.columns, two.scrolls), (2, false), "2 = 50/50 side by side");
-        assert_eq!(tile_width(2, w), (w - tile::HAIRLINE) / 2.);
-        assert_eq!(layout(&[3], w, h, false).columns, 2, "3 = 2 on top, 1 full width below");
-        assert_eq!(layout(&[4], w, h, false).columns, 2, "4 = 2x2");
-        assert_eq!(layout(&[5], w, h, false).columns, 3, "5 = 3 + 2");
-        assert_eq!(layout(&[1], w, h, false).columns, 1);
-        assert_eq!(tile_width(1, w), w, "a lone last row spans the whole width");
+    fn columns_follow_the_square_root_whatever_the_window_shape() {
+        for (w, h) in [(1060., 718.), (1920., 1000.), (2400., 700.)] {
+            for (n, columns) in [(1, 1), (2, 2), (3, 2), (4, 2), (5, 3), (6, 3), (7, 3), (9, 3)] {
+                let l = layout(&[n], w, h, false);
+                assert_eq!((l.columns, l.scrolls), (vec![columns], false), "{n} tiles in {w}x{h}");
+            }
+        }
+        assert_eq!(layout(&[16], 1920., 1000., false).columns, [4]);
+        assert_eq!(layout(&[10], 1920., 1000., false).columns, [4]);
+    }
+
+    #[test]
+    fn the_last_row_stretches_across() {
+        let w = 1060.;
+        assert_eq!(tile_width(2, w), (w - tile::HAIRLINE) / 2., "2 = 50/50");
+        assert_eq!(tile_width(1, w), w, "the third of 3 spans the whole width");
         assert_eq!(tile_width(3, w) * 3. + tile::HAIRLINE * 2., w);
     }
 
@@ -1076,10 +1069,18 @@ mod tests {
             let l = layout(&sections, width, height, headed);
             assert!(!l.scrolls, "{sections:?}");
             let headings = if headed { sections.len() as f32 * tile::HEADING } else { 0. };
-            let used = headings + rows(&sections, l.columns) as f32 * (l.height + tile::HAIRLINE);
+            let used = headings + rows(&sections, &l.columns) as f32 * (l.height + tile::HAIRLINE);
             assert!((used - height).abs() < 0.01, "{sections:?} uses {used} of {height}");
-            assert!(l.height >= tile::MIN_H && tile_width(l.columns, width) >= tile::MIN_W);
+            assert!(l.height >= tile::MIN_H && l.columns.iter().all(|c| tile_width(*c, width) >= tile::MIN_W));
         }
+        assert_eq!(layout(&[6, 3, 1], 1280., 752., true).columns, [3, 2, 1], "each section takes its own columns");
+    }
+
+    #[test]
+    fn low_tiles_take_more_columns_before_the_grid_scrolls() {
+        let l = layout(&[9], 1060., 300., false);
+        assert_eq!((l.columns.clone(), l.scrolls), (vec![5], false), "3 rows would be too low, 2 rows of 5 fit");
+        assert!(l.height >= tile::MIN_H);
     }
 
     #[test]
@@ -1087,14 +1088,13 @@ mod tests {
         for n in [50, 200, 1000] {
             let l = layout(&[n], 1060., 718., false);
             assert!(l.scrolls, "{n}");
-            assert_eq!(l.columns, 5, "as many columns as fit at the smallest width");
-            assert!(tile_width(l.columns, 1060.) >= tile::MIN_W && l.height >= tile::MIN_H);
-            assert!((tile_width(l.columns, 1060.) / l.height - tile::ASPECT).abs() < 0.01, "scrolling tiles are 16:9");
+            assert_eq!(l.columns, [5], "as many columns as fit at the smallest width");
+            assert!(tile_width(5, 1060.) >= tile::MIN_W && l.height >= tile::MIN_H);
+            assert!((tile_width(5, 1060.) / l.height - tile::ASPECT).abs() < 0.01, "scrolling tiles are 16:9");
         }
         let narrow = layout(&[20], 150., 400., false);
-        assert_eq!((narrow.columns, narrow.scrolls), (1, true));
+        assert_eq!((narrow.columns.clone(), narrow.scrolls), (vec![1], true));
         assert!(narrow.height >= tile::MIN_H);
-        assert_eq!(layout(&[3, 3], 2000., 300., true).columns, 3, "never more columns than the largest section");
         let small = layout(&[2; 5], 1060., 718., true);
         assert!(small.scrolls && small.height < 120., "small sections scroll at the smallest tile height, not as huge tiles: {small:?}");
     }
