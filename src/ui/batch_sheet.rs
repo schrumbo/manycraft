@@ -3,12 +3,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
 
 use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::component::{IndexPath, WindowExt};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Undo};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
@@ -18,6 +17,7 @@ use uuid::Uuid;
 use super::actions::{AddAccount, EditBatch, NewBatch, NewBatchFromPrism, Reload};
 use super::drive::Mark;
 use super::forms::{self, Problem};
+use super::mod_browser::Browser;
 use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
@@ -26,7 +26,7 @@ use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment};
 use crate::core::account::{Account, AccountKind};
 use crate::core::batch::{Background, Batch, ModRef};
 use crate::core::i18n::{tr, trf};
-use crate::core::modrinth::{Hit, Update};
+use crate::core::modrinth::Update;
 use crate::core::prism::Instance;
 use crate::core::skins;
 
@@ -40,7 +40,6 @@ struct PickRows {
     rows: Rc<Vec<PickRow>>,
 }
 
-const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const FILTER_FROM: usize = 12;
 const CHROME_HEIGHT: f32 = 150.;
 const DEFAULT_TITLES: [(&str, &str); 5] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton")];
@@ -88,23 +87,23 @@ fn open(batch: Option<Batch>, cx: &mut App) {
     });
 }
 
-enum Load<T> {
+pub(super) enum Load<T> {
     Loading,
     Ready(T),
     Failed(Problem),
 }
 
-struct BatchSheet {
-    original: Option<Batch>,
+pub(super) struct BatchSheet {
+    pub(super) original: Option<Batch>,
     name: Entity<InputState>,
     server: Entity<InputState>,
     filter: Entity<InputState>,
-    query: Entity<InputState>,
+    pub(super) browser: Browser,
     versions: Load<()>,
     version_list: Vec<String>,
     version_select: Entity<SelectState<SearchableVec<String>>>,
     pending_versions: bool,
-    version: String,
+    pub(super) version: String,
     memory: u32,
     memory_touched: bool,
     background: Background,
@@ -113,17 +112,12 @@ struct BatchSheet {
     total_ram: u64,
     free_ram: Option<u64>,
     accounts: HashSet<Uuid>,
-    mods: Vec<ModRef>,
-    mods_touched: bool,
+    pub(super) mods: Vec<ModRef>,
+    pub(super) mods_touched: bool,
     mods_busy: Option<String>,
     mods_error: Option<Problem>,
     notes: Vec<String>,
-    searching: bool,
-    results: Option<Load<Vec<Hit>>>,
-    results_for: String,
-    search_gen: u64,
-    adding: HashSet<String>,
-    add_error: Option<Problem>,
+    pub(super) searching: bool,
     prism_list: Vec<Instance>,
     prism_filter: Entity<InputState>,
     prism_sel: usize,
@@ -132,29 +126,29 @@ struct BatchSheet {
     pick_rows: Option<PickRows>,
     rows_dirty: bool,
     skin_gen: u64,
-    body_scroll: ScrollHandle,
+    pub(super) body_scroll: ScrollHandle,
     account_scroll: UniformListScrollHandle,
     mods_scroll: ScrollHandle,
     local_scroll: ScrollHandle,
-    saved_scroll: Option<Point<Pixels>>,
+    pub(super) saved_scroll: Option<Point<Pixels>>,
     list_max: f32,
     prism_choice: Option<Instance>,
     prism_picking: bool,
     imported: Option<Batch>,
-    updates: Option<Load<Vec<Update>>>,
+    pub(super) updates: Option<Load<Vec<Update>>>,
     updates_gen: u64,
-    updating: HashSet<String>,
-    applied: HashSet<String>,
+    pub(super) updating: HashSet<String>,
+    pub(super) applied: HashSet<String>,
     update_error: Option<Problem>,
     updates_note: Option<String>,
-    saving: bool,
+    pub(super) saving: bool,
     save_error: Option<Problem>,
     details: HashSet<&'static str>,
     tried: bool,
     focus_next: bool,
     focus_done: bool,
     refocus: bool,
-    root: FocusHandle,
+    pub(super) root: FocusHandle,
     done_focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -182,7 +176,7 @@ impl BatchSheet {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. Farm")).default_value(name_value));
         let server = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. play.example.net")).default_value(server_value));
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Accounts filtern")));
-        let query = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Mods suchen, z. B. Sodium")));
+        let (browser, browser_sub) = Browser::new(window, cx);
         let prism_filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Instanzen filtern")));
         let changed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
             if matches!(e, InputEvent::Change) {
@@ -194,11 +188,7 @@ impl BatchSheet {
             cx.subscribe(&name, changed),
             cx.subscribe(&server, changed),
             cx.subscribe(&filter, changed),
-            cx.subscribe(&query, |s: &mut Self, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
-                    s.schedule_search(cx);
-                }
-            }),
+            browser_sub,
             cx.observe(&super::model::get(cx), |s: &mut Self, _, cx| {
                 s.rows_dirty = true;
                 cx.notify();
@@ -232,7 +222,7 @@ impl BatchSheet {
             name,
             server,
             filter,
-            query,
+            browser,
             versions: Load::Loading,
             version_list: initial,
             version_select,
@@ -250,11 +240,6 @@ impl BatchSheet {
             mods_error: None,
             notes: Vec::new(),
             searching: false,
-            results: None,
-            results_for: String::new(),
-            search_gen: 0,
-            adding: HashSet::new(),
-            add_error: None,
             prism_list: Vec::new(),
             prism_filter,
             prism_sel: 0,
@@ -321,7 +306,7 @@ impl BatchSheet {
         cx.notify();
     }
 
-    fn problem(&self, key: &'static str, icon_name: &str, color: Hsla, problem: &Problem, cx: &mut Context<Self>, t: &Theme) -> Div {
+    pub(super) fn problem(&self, key: &'static str, icon_name: &str, color: Hsla, problem: &Problem, cx: &mut Context<Self>, t: &Theme) -> Div {
         sheet::problem(key, icon_name, color, problem, self.details.contains(key), cx.listener(move |s, _, _, cx| s.toggle(key, cx)), t)
     }
 
@@ -445,7 +430,7 @@ impl BatchSheet {
         .detach();
     }
 
-    fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
         let Some(Load::Ready(list)) = &self.updates else { return };
         let Some(id) = self.original.as_ref().map(|b| b.id.clone()) else { return };
         let selection: Vec<Update> = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
@@ -523,7 +508,7 @@ impl BatchSheet {
     }
 
     fn change_version(&mut self, version: String, cx: &mut Context<Self>) {
-        if version == self.version || self.mods_busy.is_some() {
+        if version == self.version || self.mods_busy.is_some() || !self.browser.adding.is_empty() {
             self.pending_versions = version != self.version;
             return;
         }
@@ -569,105 +554,9 @@ impl BatchSheet {
         .detach();
     }
 
-    fn schedule_search(&mut self, cx: &mut Context<Self>) {
-        self.search_gen += 1;
-        let generation = self.search_gen;
-        let query = self.query.read(cx).value().trim().to_string();
-        if query.is_empty() {
-            self.results = None;
-            cx.notify();
-            return;
-        }
-        let version = self.version.clone();
-        let searched = query.clone();
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SEARCH_DELAY).await;
-            let current = this.update(cx, |s, cx| {
-                let current = s.search_gen == generation;
-                if current && !matches!(s.results, Some(Load::Ready(_))) {
-                    s.results = Some(Load::Loading);
-                    cx.notify();
-                }
-                current
-            });
-            if !matches!(current, Ok(true)) {
-                return;
-            }
-            let result = cx.background_executor().spawn(async move { remote::search(&query, &version) }).await;
-            let _ = this.update(cx, |s, cx| {
-                if s.search_gen != generation {
-                    return;
-                }
-                s.results_for = searched;
-                s.results = Some(match result {
-                    Ok(hits) => Load::Ready(hits),
-                    Err(e) => Load::Failed(forms::explain_as(tr("Die Suche hat nicht geklappt."), &e)),
-                });
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn add_mod(&mut self, hit: &Hit, cx: &mut Context<Self>) {
-        if self.adding.contains(&hit.project_id) || self.mods.iter().any(|m| m.project_id == hit.project_id) {
-            return;
-        }
-        self.adding.insert(hit.project_id.clone());
-        self.add_error = None;
-        cx.notify();
-        let (id, title, version) = (hit.project_id.clone(), hit.title.clone(), self.version.clone());
-        let ids = vec![id.clone()];
-        let task = cx.background_executor().spawn(async move { remote::resolve(&ids, &version) });
-        let version = self.version.clone();
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |s, cx| {
-                s.adding.remove(&id);
-                if s.version != version {
-                    return;
-                }
-                match result {
-                    Ok(found) => {
-                        s.mods_touched = true;
-                        for m in found {
-                            if !s.mods.iter().any(|have| have.project_id == m.project_id) {
-                                s.mods.push(m);
-                            }
-                        }
-                    }
-                    Err(e) => s.add_error = Some(forms::explain_as(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), &e)),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn remove_mod(&mut self, project_id: &str, cx: &mut Context<Self>) {
         self.mods.retain(|m| m.project_id != project_id);
         self.mods_touched = true;
-        cx.notify();
-    }
-
-    fn top_hit(&self, cx: &App) -> Option<Hit> {
-        let Some(Load::Ready(hits)) = &self.results else { return None };
-        let hit = hits.first()?;
-        let fresh = self.results_for == self.query.read(cx).value().trim();
-        (fresh && !self.adding.contains(&hit.project_id) && !self.mods.iter().any(|m| m.project_id == hit.project_id)).then(|| hit.clone())
-    }
-
-    fn open_search(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if open && !self.searching {
-            self.saved_scroll = Some(self.body_scroll.offset());
-        }
-        self.searching = open;
-        self.add_error = None;
-        if open {
-            self.query.update(cx, |q, cx| q.take_focus(window, cx));
-        } else {
-            window.focus(&self.root, cx);
-        }
         cx.notify();
     }
 
@@ -681,7 +570,7 @@ impl BatchSheet {
     fn save(&mut self, cx: &mut Context<Self>) {
         self.tried = true;
         let (name, server, version) = self.problems(cx);
-        if self.saving || name.is_some() || server.is_some() || version.is_some() || self.mods_busy.is_some() || !self.updating.is_empty() {
+        if self.saving || name.is_some() || server.is_some() || version.is_some() || self.mods_busy.is_some() || !self.updating.is_empty() || !self.browser.adding.is_empty() {
             cx.notify();
             return;
         }
@@ -787,13 +676,7 @@ impl BatchSheet {
         if self.imported.is_some() {
             cx.emit(Dismissed);
         } else if self.searching {
-            if let Some(hit) = self.top_hit(cx) {
-                self.add_mod(&hit, cx);
-                self.query.update(cx, |q, cx| {
-                    let end = q.value().len();
-                    q.set_selected_range(0..end, cx);
-                });
-            }
+            self.browse_enter(window, cx);
         } else {
             self.save(cx);
         }
@@ -811,7 +694,7 @@ impl BatchSheet {
                 .child(div().flex_1().min_w_0().child(self.problem("versions-error", "circle-alert", t.danger_text, why, cx, t)))
                 .child(sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)))),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
-            _ => div().child(Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some())),
+            _ => div().child(Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some() || !self.browser.adding.is_empty())),
         };
         let mut body = div().flex().flex_col().gap(px(space::M));
         if running {
@@ -1275,78 +1158,6 @@ impl BatchSheet {
         col
     }
 
-    fn render_search(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let field = Input::new(&self.query).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true);
-        let top = self.top_hit(cx);
-        let hint = match &top {
-            Some(hit) => div().h(px(font::CAPTION * font::LINE)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Enter fügt „%@“ hinzu.", &[&hit.title])),
-            None => div().h(px(font::CAPTION * font::LINE)),
-        };
-        let col = div().flex().flex_col().gap(px(space::XS)).child(field).child(hint);
-        let query = self.query.read(cx).value().trim().to_string();
-        let content = match &self.results {
-            None => div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Suche nach Fabric-Mods auf Modrinth, die es für %@ gibt.", &[&self.version])),
-            Some(Load::Loading) => div().py(px(space::L)).child(sheet::waiting(tr("Suche läuft …"), t)),
-            Some(Load::Failed(why)) => div()
-                .py(px(space::S))
-                .flex()
-                .items_center()
-                .gap(px(space::S))
-                .child(div().flex_1().min_w_0().child(self.problem("search-error", "wifi-off", t.danger_text, why, cx, t)))
-                .child(sheet::button("search-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.schedule_search(cx)))),
-            Some(Load::Ready(hits)) if hits.is_empty() => div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Keine Mods zu „%@“ für %@. Versuche einen anderen Suchbegriff.", &[&query, &self.version])),
-            Some(Load::Ready(hits)) => {
-                let mut list = div().id("results").flex_1().min_h_0().flex().flex_col().gap(px(space::XXS)).overflow_y_scroll();
-                for (at, hit) in hits.clone().into_iter().enumerate() {
-                    let added = self.mods.iter().any(|m| m.project_id == hit.project_id);
-                    let adding = self.adding.contains(&hit.project_id);
-                    let trailing = if added {
-                        sheet::status("check", t.success_text, tr("Hinzugefügt"))
-                    } else if adding {
-                        sheet::waiting(tr("Wird hinzugefügt …"), t)
-                    } else {
-                        div().flex().items_center().gap(px(space::XXS)).text_size(px(font::CALLOUT)).text_color(t.accent_text).child(icon("plus", iconsize::S, t.accent_text)).child(tr("Hinzufügen"))
-                    };
-                    let row = div()
-                        .id(SharedString::from(format!("hit-{}", hit.project_id)))
-                        .mark("result", hit.title.clone())
-                        .flex()
-                        .items_center()
-                        .gap(px(space::M))
-                        .px(px(space::M))
-                        .py(px(space::S))
-                        .rounded(px(radius::CONTROL))
-                        .when(at == 0 && top.is_some(), |d| d.bg(t.ink.opacity(tint::HOVER)));
-                    let (title, description, downloads) = (hit.title.clone(), hit.description.clone(), hit.downloads);
-                    let row = if added || adding { row } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| {
-                        s.add_mod(&hit, cx);
-                        s.query.update(cx, |q, cx| q.take_focus(window, cx));
-                    })) };
-                    list = list.child(
-                        row.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(space::XXS))
-                                .child(div().flex().items_baseline().gap(px(space::S)).child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).child(title)).child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(forms::downloads_label(downloads))))
-                                .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).line_clamp(2).child(description)),
-                        )
-                        .child(div().flex_none().child(trailing)),
-                    );
-                }
-                div().flex_1().min_h_0().flex().flex_col().child(list)
-            }
-        };
-        let region = div().h(px(RESULTS_MAX)).flex().flex_col().gap(px(space::S)).overflow_hidden();
-        let region = match &self.add_error {
-            Some(e) => region.child(self.problem("add-error", "circle-alert", t.danger_text, e, cx, t)),
-            None => region,
-        };
-        col.child(region.child(content))
-    }
-
     fn apply_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.searching && !self.prism_picking && self.imported.is_none() && let Some(offset) = self.saved_scroll.take() {
             self.body_scroll.set_offset(offset);
@@ -1355,7 +1166,11 @@ impl BatchSheet {
             window.focus(&self.done_focus, cx);
         }
         if std::mem::take(&mut self.refocus) {
-            window.focus(&self.root, cx);
+            if self.searching {
+                self.browse_focus(window, cx);
+            } else {
+                window.focus(&self.root, cx);
+            }
         }
         if window.focused(cx).is_none() {
             window.focus(&self.root, cx);
@@ -1382,8 +1197,8 @@ impl BatchSheet {
 }
 
 const VERSION_WIDTH: f32 = 168.;
-const MEMORY_VALUE_WIDTH: f32 = 64.;
 const RESULTS_MAX: f32 = 340.;
+const MEMORY_VALUE_WIDTH: f32 = 64.;
 const LIST_MIN: f32 = 96.;
 const LIST_SHARE: f32 = 0.5;
 
@@ -1471,7 +1286,7 @@ impl Render for BatchSheet {
             } else {
                 Vec::new()
             };
-            let blocked = self.mods_busy.is_some() || !self.updating.is_empty();
+            let blocked = self.mods_busy.is_some() || !self.updating.is_empty() || !self.browser.adding.is_empty();
             let (name_problem, server_problem, version_problem) = self.problems(cx);
             let invalid = name_problem.is_some() || server_problem.is_some() || version_problem.is_some();
             let mut trailing = Vec::new();
@@ -1486,7 +1301,12 @@ impl Render for BatchSheet {
         div()
             .id("batch-sheet")
             .track_focus(&self.root)
-            .capture_key_down(move |e: &KeyDownEvent, _, cx| {
+            .capture_key_down(move |e: &KeyDownEvent, window, cx| {
+                let handled = me.update(cx, |s, cx| s.browse_key(e.keystroke.key.as_str(), e.keystroke.modifiers, window, cx));
+                if handled.unwrap_or(false) {
+                    cx.stop_propagation();
+                    return;
+                }
                 let delta = match e.keystroke.key.as_str() {
                     "up" => -1,
                     "down" => 1,
@@ -1510,12 +1330,17 @@ impl Render for BatchSheet {
             .flex()
             .flex_col()
             .text_color(t.primary)
+            .capture_action(cx.listener(|s, _: &Undo, _, cx| {
+                if s.browse_undo_key(cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|s, _: &Confirm, window, cx| s.confirm(window, cx)))
             .on_action(cx.listener(|s, _: &Cancel, window, cx| {
                 if s.prism_picking {
                     s.open_prism(false, window, cx);
                 } else if s.searching {
-                    s.open_search(false, window, cx);
+                    s.browse_cancel(window, cx);
                 } else if s.closable() {
                     cx.propagate();
                 }

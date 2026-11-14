@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
-use crate::core::modrinth::{self, Defaults, Hit, Update};
+use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{drive, fleet, install};
 
@@ -21,6 +21,8 @@ use super::forms::{self, Plain, Problem};
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CANNED_DELAY: Duration = Duration::from_millis(450);
+const CANNED_SEARCH_DELAY: Duration = Duration::from_millis(300);
+const CANNED_PAGE: usize = 6;
 
 static SAVING: Mutex<()> = Mutex::new(());
 
@@ -315,31 +317,39 @@ pub fn versions() -> Result<Vec<String>> {
     install::releases()
 }
 
-/// Fabric mods on Modrinth matching `query` for `game_version`.
-pub fn search(query: &str, game_version: &str) -> Result<Vec<Hit>> {
-    if drive::fenced("modrinth search", query) {
-        std::thread::sleep(CANNED_DELAY);
+/// One page of Modrinth mods matching `query` (the most downloaded ones when it is empty) from result `offset` on.
+/// Unless `all`, only Fabric mods with a version for `game_version`.
+pub fn search_page(query: &str, game_version: &str, sort: Sort, all: bool, offset: usize) -> Result<Page> {
+    if drive::fenced("modrinth search", query) && !drive::live() {
+        std::thread::sleep(CANNED_SEARCH_DELAY);
         if query.contains("offline") {
             bail!("failed to lookup address");
         }
         let q = query.to_lowercase();
-        return Ok(canned_hits().into_iter().filter(|h| h.title.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q)).collect());
+        let mut hits: Vec<Hit> = canned_hits(game_version).into_iter().filter(|h| h.title.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q)).filter(|h| all || h.support(game_version) == Support::Fits).collect();
+        if sort == Sort::Downloads {
+            hits.sort_by_key(|h| std::cmp::Reverse(h.downloads));
+        } else {
+            hits.sort_by_key(|h| !h.title.to_lowercase().starts_with(&q));
+        }
+        let total = hits.len();
+        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total });
     }
-    modrinth::search(query, game_version)
+    modrinth::search_page(query, game_version, sort, all, offset)
 }
 
 /// `project_ids` resolved for `game_version`, with their required dependencies.
 pub fn resolve(project_ids: &[String], game_version: &str) -> Result<Vec<ModRef>> {
-    if drive::fenced("modrinth resolve", project_ids.join(",")) {
+    if drive::fenced("modrinth resolve", project_ids.join(",")) && !drive::live() {
         std::thread::sleep(CANNED_DELAY);
-        let hits = canned_hits();
+        let hits = canned_hits(game_version);
         let mut out: Vec<ModRef> = Vec::new();
         for id in project_ids {
             let hit = hits.iter().find(|h| &h.project_id == id || &h.slug == id).with_context(|| format!("{id} has no version for {game_version}"))?;
+            out.push(canned_ref(&hit.slug, &hit.title, game_version));
             if hit.slug == "iris" {
                 out.push(canned_ref("sodium", "Sodium", game_version));
             }
-            out.push(canned_ref(&hit.slug, &hit.title, game_version));
         }
         let mut seen = std::collections::HashSet::new();
         out.retain(|m| seen.insert(m.project_id.clone()));
@@ -350,7 +360,7 @@ pub fn resolve(project_ids: &[String], game_version: &str) -> Result<Vec<ModRef>
 
 /// The mods every new batch starts with, and why any is missing for `game_version`.
 pub fn defaults(game_version: &str) -> Result<Defaults> {
-    if drive::fenced("modrinth defaults", game_version) {
+    if drive::fenced("modrinth defaults", game_version) && !drive::live() {
         std::thread::sleep(CANNED_DELAY);
         let mut mods = vec![canned_ref("fabric-api", "Fabric API", game_version), canned_ref("lithium", "Lithium", game_version), canned_ref("ferrite-core", "FerriteCore", game_version), canned_ref("modernfix", "ModernFix", game_version)];
         let mut notes = Vec::new();
@@ -561,20 +571,40 @@ fn canned_update(m: &ModRef) -> Update {
     Update { current: m.clone(), latest }
 }
 
-fn canned_hits() -> Vec<Hit> {
-    let hit = |slug: &str, title: &str, description: &str, downloads: u64| Hit { title: title.into(), slug: slug.into(), project_id: format!("id-{slug}"), description: description.into(), downloads, icon_url: None };
+fn canned_hits(game_version: &str) -> Vec<Hit> {
+    let hit = |slug: &str, title: &str, author: &str, description: &str, downloads: u64, support: Support| {
+        let (versions, loader) = match support {
+            Support::Fits => (game_version, "fabric"),
+            Support::OtherVersion => ("1.16.5", "fabric"),
+            Support::OtherLoader => (game_version, "forge"),
+        };
+        Hit {
+            title: title.into(),
+            slug: slug.into(),
+            project_id: format!("id-{slug}"),
+            description: description.into(),
+            downloads,
+            icon_url: None,
+            author: author.into(),
+            versions: vec![versions.into()],
+            categories: vec![loader.into(), "optimization".into()],
+        }
+    };
     vec![
-        hit("sodium", "Sodium", "A modern rendering engine for Minecraft which greatly improves frame rates and stutter", 61_200_000),
-        hit("iris", "Iris Shaders", "A modern shader pack loader for Minecraft intended to be compatible with existing OptiFine shader packs", 48_000_000),
-        hit("lithium", "Lithium", "No-compromises game logic optimization mod", 35_500_000),
-        hit("modmenu", "Mod Menu", "Adds a mod menu to view the list of mods you have installed", 72_300_000),
-        hit("ferrite-core", "FerriteCore", "Memory usage optimizations", 40_100_000),
-        hit("modernfix", "ModernFix", "All-in-one mod that improves performance, reduces memory usage, and fixes many bugs", 20_400_000),
-        hit("krypton", "Krypton", "A mod to optimize the Minecraft networking stack", 9_800_000),
-        hit("fabric-api", "Fabric API", "Lightweight and modular API providing common hooks and intercompatibility measures", 120_000_000),
-        hit("xaeros-minimap", "Xaero's Minimap", "Displays the map of the area around you", 30_200_000),
-        hit("appleskin", "AppleSkin", "Food-related HUD improvements", 25_600_000),
-        hit("tiny-tweak", "Tiny Tweak", "A very small mod", 940),
+        hit("sodium", "Sodium", "jellysquid3", "A modern rendering engine for Minecraft which greatly improves frame rates and stutter", 61_200_000, Support::Fits),
+        hit("iris", "Iris Shaders", "coderbot", "A modern shader pack loader for Minecraft intended to be compatible with existing OptiFine shader packs", 48_000_000, Support::Fits),
+        hit("lithium", "Lithium", "jellysquid3", "No-compromises game logic optimization mod", 35_500_000, Support::Fits),
+        hit("modmenu", "Mod Menu", "Prospector", "Adds a mod menu to view the list of mods you have installed", 72_300_000, Support::Fits),
+        hit("ferrite-core", "FerriteCore", "malte0811", "Memory usage optimizations", 40_100_000, Support::Fits),
+        hit("modernfix", "ModernFix", "embeddedt", "All-in-one mod that improves performance, reduces memory usage, and fixes many bugs", 20_400_000, Support::Fits),
+        hit("krypton", "Krypton", "astei", "A mod to optimize the Minecraft networking stack", 9_800_000, Support::Fits),
+        hit("fabric-api", "Fabric API", "modmuss50", "Lightweight and modular API providing common hooks and intercompatibility measures", 120_000_000, Support::Fits),
+        hit("xaeros-minimap", "Xaero's Minimap", "xaero96", "Displays the map of the area around you", 30_200_000, Support::Fits),
+        hit("xaeros-world-map", "Xaero's World Map", "xaero96", "Adds a fullscreen world map you can browse", 22_900_000, Support::OtherVersion),
+        hit("appleskin", "AppleSkin", "squeek502", "Food-related HUD improvements", 25_600_000, Support::Fits),
+        hit("sodium-legacy", "Sodium Legacy", "someone", "An old Sodium build kept for older versions", 410_000, Support::OtherVersion),
+        hit("optifine-bridge", "OptiFine Bridge", "someone", "Shaders and zoom for Forge", 2_100_000, Support::OtherLoader),
+        hit("tiny-tweak", "Tiny Tweak", "nobody", "A very small mod", 940, Support::Fits),
     ]
 }
 

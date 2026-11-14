@@ -215,24 +215,20 @@ pub fn memory_step(mb: u32, steps: i32, max: u32) -> u32 {
     value as u32
 }
 
-/// Downloads as a short count: `950`, `12.400`, `1,2 Mio.`.
-pub fn downloads_label(n: u64) -> String {
-    let de = crate::core::i18n::lang() == crate::core::i18n::Lang::De;
-    if n >= 1_000_000 {
-        let tenths = (n + 50_000) / 100_000;
-        let number = if tenths % 10 == 0 { format!("{}", tenths / 10) } else { format!("{}.{}", tenths / 10, tenths % 10) };
-        let number = if de { number.replace('.', ",") } else { number };
-        return trf("%@ Mio. Downloads", &[&number]);
+/// Downloads as a compact count: `950`, `1,2 Tsd.`, `12 Tsd.`, `1,2 Mio.` (English: `1.2K`, `12K`, `1.2M`).
+pub fn downloads_short(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
     }
-    let digits = n.to_string();
-    let mut grouped = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            grouped.push(if de { '.' } else { ',' });
-        }
-        grouped.push(c);
-    }
-    trf("%@ Downloads", &[&grouped])
+    let (unit, key) = if n >= 999_500 { (1_000_000, "%@ Mio.") } else { (1000, "%@ Tsd.") };
+    let number = if n >= 10 * unit {
+        ((n + unit / 2) / unit).to_string()
+    } else {
+        let tenths = (n * 10 + unit / 2) / unit;
+        if tenths % 10 == 0 { (tenths / 10).to_string() } else { format!("{}.{}", tenths / 10, tenths % 10) }
+    };
+    let number = if crate::core::i18n::lang() == crate::core::i18n::Lang::De { number.replace('.', ",") } else { number };
+    trf(key, &[&number])
 }
 
 /// Physical memory of this machine in MB, or 16 GB when the system does not say.
@@ -370,10 +366,16 @@ mod tests {
         crate::core::i18n::init("de");
         assert_eq!(memory_label(1024), "1 GB");
         assert_eq!(memory_label(2560), "2,5 GB");
-        assert_eq!(downloads_label(950), "950 Downloads");
-        assert_eq!(downloads_label(12_400), "12.400 Downloads");
-        assert_eq!(downloads_label(1_250_000), "1,3 Mio. Downloads");
-        assert_eq!(downloads_label(3_000_000), "3 Mio. Downloads");
+        assert_eq!(downloads_short(950), "950");
+        assert_eq!(downloads_short(1_250), "1,3 Tsd.");
+        assert_eq!(downloads_short(12_400), "12 Tsd.");
+        assert_eq!(downloads_short(12_450), "12 Tsd.");
+        assert_eq!(downloads_short(12_500), "13 Tsd.");
+        assert_eq!(downloads_short(999_450), "999 Tsd.");
+        assert_eq!(downloads_short(999_700), "1 Mio.");
+        assert_eq!(downloads_short(1_250_000), "1,3 Mio.");
+        assert_eq!(downloads_short(61_240_000), "61 Mio.");
+        assert_eq!(downloads_short(3_000_000), "3 Mio.");
     }
 
     #[test]

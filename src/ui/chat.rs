@@ -427,7 +427,7 @@ impl ChatPage {
                 let reset = sheet::button("chat-reset-filter", tr("Filter zurücksetzen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, window, cx| s.set_batch(None, window, cx))).into_any_element();
                 return self.empty("chat-no-match", "search", tr("Keine Treffer"), tr("In diesem Batch gibt es noch keine Chatzeilen."), Some(reset), t).into_any_element();
             }
-            return self.empty("chat-empty", "messages-square", tr("Noch keine Chatzeilen"), tr("Sobald eine Instanz läuft, erscheint ihr Chat hier."), None, t).into_any_element();
+            return self.empty("chat-empty", "messages-square", tr("Noch redet keiner"), tr("Sobald eine Instanz läuft, erscheint ihr Chat hier."), None, t).into_any_element();
         }
         let rows = Rc::clone(&self.shown);
         let model = model::get(cx);

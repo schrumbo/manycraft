@@ -9,6 +9,7 @@ pub mod fake;
 pub mod forms;
 pub mod grid;
 pub mod main_window;
+pub mod mod_browser;
 #[allow(dead_code)]
 pub mod model;
 #[allow(dead_code)]

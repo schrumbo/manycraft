@@ -307,8 +307,8 @@ impl MainWindow {
         let m = m.read(cx);
         let (title, text, id, label, action, prism): (String, String, &str, String, Box<dyn Action>, Option<(String, Box<dyn Action>)>) = if m.accounts.is_empty() {
             (
-                tr("Noch keine Accounts"),
-                tr("Füge einen Account hinzu, um Minecraft-Instanzen in einem Fenster zu starten."),
+                tr("Hier ist es noch still"),
+                tr("Füg einen Account hinzu und starte Minecraft in einem Fenster."),
                 "add-account",
                 tr("Account hinzufügen"),
                 Box::new(AddAccount),
@@ -316,8 +316,8 @@ impl MainWindow {
             )
         } else if m.batches.is_empty() {
             (
-                tr("Noch keine Batches"),
-                tr("Ein Batch legt Version, Server und Mods fest und startet deine Accounts gemeinsam."),
+                tr("Fehlt noch: ein Batch"),
+                tr("Ein Batch legt Version, Server und Mods fest und schickt deine Accounts gemeinsam los."),
                 "new-batch",
                 tr("Batch erstellen"),
                 Box::new(NewBatch),
