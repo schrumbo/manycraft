@@ -164,6 +164,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             .gap(px(space::XS))
             .child(div().text_size(px(font::CALLOUT)).font_weight(FontWeight::MEDIUM).text_color(t.primary).child(picked_label))
             .child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(if this.filter == Filter::Attention && attention > 0 { t.attention_text } else { t.secondary }).child(picked_count.to_string()))
+            .when(attention > 0 && this.filter != Filter::Attention, |b| {
+                b.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(t.attention_text).child(trf("%lld brauchen dich", &[&attention])))
+            })
             .child(icon("chevron-down", iconsize::XS, t.tertiary))
             .tooltip(tr("Filter"))
             .dropdown_menu(move |menu, _, _| {
@@ -175,7 +178,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                         Filter::Running => Box::new(FilterRunning),
                         Filter::Stopped => Box::new(FilterStopped),
                     };
-                    menu = menu.menu_element_with_check(current == f, action, menu_row(label, Some(n.to_string())));
+                    menu = menu.menu_element_with_check(current == f, action, menu_row(label, Some(n.to_string()), false));
                 }
                 menu
             })
@@ -206,7 +209,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(icon("chevron-down", iconsize::XS, t.tertiary))
         .tooltip(tr("Kachelgröße"))
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
-            let row = |label: &str, action: &dyn Action| menu_row(tr(label), shortcut(action, cx));
+            let row = |label: &str, action: &dyn Action| menu_row(tr(label), shortcut(action, cx), false);
             let (small, medium, large, fit) = (row("Klein", &TileSmall), row("Mittel", &TileMedium), row("Groß", &TileLarge), row("Einpassen", &TileFit));
             menu.action_context(grid_focus.clone())
                 .label(tr("Kachelgröße"))

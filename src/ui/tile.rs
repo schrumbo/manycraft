@@ -534,7 +534,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
     };
     let ring = if d.selected && grid_focused {
         Some((t.accent, tile::RING + 1.))
-    } else if d.picked {
+    } else if d.selected || d.picked {
         Some((t.accent, tile::RING))
     } else {
         edge.map(|c| (c, tile::RING))
@@ -579,6 +579,8 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
                     .absolute()
                     .top(px(space::S))
                     .left(px(space::S))
+                    .id(SharedString::from(format!("picked-{}", d.key)))
+                    .mark("selection", tr("Ausgewählt"))
                     .size(px(selection::CHECK))
                     .rounded(px(radius::FULL))
                     .bg(t.accent)
@@ -628,7 +630,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
                     3 => Box::new(ReconnectMany(chosen.clone())),
                     _ => shown,
                 };
-                menu = menu.menu_element_with_disabled(action, count == 0, super::palette::menu_row(label, keys));
+                menu = menu.menu_element_with_disabled(action, count == 0, super::palette::menu_row(label, keys, count == 0));
             }
             return menu;
         }

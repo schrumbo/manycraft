@@ -16,7 +16,7 @@ use super::drive::Mark;
 use super::main_window::{Filter, MainWindow, TileSize};
 use super::model::{self, Instance, Model, Phase};
 use super::motion::{SLOW, Soft};
-use super::theme::{Theme, control, font, iconsize, radius, selection, space, tile, tint, with_alpha};
+use super::theme::{Theme, control, font, iconsize, radius, selection, shell, space, tile, tint, with_alpha};
 use super::tile::{Geometry, TileData};
 use super::widgets::{KeyNav, icon, primary_button, tip};
 use crate::core::i18n::{tr, trf};
@@ -56,7 +56,7 @@ impl Picks {
     /// Applies a click on `key` among `shown` with the cursor on `cursor`: alone, toggled with `toggle`, or with `range` from the anchor; returns where the cursor goes.
     fn click(&mut self, shown: &[String], cursor: Option<&String>, key: &str, range: bool, toggle: bool) -> String {
         if range {
-            let anchor = self.anchor.clone().or_else(|| cursor.cloned()).unwrap_or_else(|| key.to_owned());
+            let anchor = self.anchor.clone().filter(|a| shown.contains(a)).or_else(|| cursor.filter(|c| shown.contains(c)).cloned()).unwrap_or_else(|| key.to_owned());
             let at = |k: &str| shown.iter().position(|s| s == k);
             self.set = match (at(&anchor), at(key)) {
                 (Some(a), Some(b)) => shown[a.min(b)..=a.max(b)].iter().cloned().collect(),
@@ -177,10 +177,12 @@ impl Grid {
         self.settle();
     }
 
-    /// Drops a selection of several tiles; false when there was none.
+    /// Drops the selection and the cursor; false when there was neither.
     pub fn clear_selection(&mut self) -> bool {
         self.message = None;
-        !std::mem::take(&mut self.picks.set).is_empty()
+        let picked = !std::mem::take(&mut self.picks.set).is_empty();
+        self.picks.anchor = None;
+        self.selected.take().is_some() || picked
     }
 
     /// Forgets cursor and selection, for another page.
@@ -523,9 +525,12 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         let rank: HashMap<&str, usize> = m.batches.iter().enumerate().map(|(n, b)| (b.id.as_str(), n)).collect();
         keys.sort_by_key(|k| m.instances.get(k).and_then(|i| rank.get(i.batch_id.as_str()).copied()).unwrap_or(usize::MAX));
     }
-    if !same_scope || this.grid.picks.set.iter().any(|k| !m.instances.contains_key(k)) {
-        this.grid.picks.set.retain(|k| keys.contains(k));
-        this.grid.settle();
+    if !this.grid.picks.set.is_empty() {
+        let shown: HashSet<&str> = keys.iter().map(String::as_str).collect();
+        if this.grid.picks.set.iter().any(|k| !shown.contains(k.as_str())) {
+            this.grid.picks.set.retain(|k| shown.contains(k.as_str()));
+            this.grid.settle();
+        }
     }
     if keys.is_empty() {
         this.grid.shown.clear();
@@ -622,7 +627,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     {
         this.grid.reveal_row(row);
     }
-    let selected = this.grid.selected.clone();
+    let selected = if this.grid.focus.is_focused(window) { this.grid.selected.clone() } else { None };
     let picked = Rc::new(this.grid.picks.set.clone());
     let bar = if this.grid.picks.set.len() >= 2 { selection::BAR + selection::BOTTOM } else { 0. };
     let progress = this.grid.moved_at.map(|at| (at.elapsed().as_secs_f32() / SLOW.as_secs_f32()).min(1.));
@@ -789,7 +794,7 @@ fn able(keys: &[String], m: &Model) -> [usize; 5] {
     for i in keys.iter().filter_map(|k| m.instances.get(k)) {
         let running = i.phase.is_running();
         n[0] += usize::from(!running && !i.stopping && i.phase != Phase::LoginNeeded);
-        n[1] += usize::from(running && !i.stopping);
+        n[1] += usize::from(i.phase.is_active() && !i.stopping);
         n[2] += usize::from(!i.stopping && i.phase != Phase::LoginNeeded);
         n[3] += usize::from(running && !i.stopping && !matches!(i.phase, Phase::Starting { .. }));
         n[4] += usize::from(i.phase.on_server());
@@ -818,36 +823,43 @@ pub fn open_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context
         msg.input.update(cx, |s, cx| s.focus(window, cx));
         return;
     }
-    let on = {
-        let m = model::get(cx).read(cx);
-        this.grid.chosen().iter().filter(|k| m.instances.get(*k).is_some_and(|i| i.phase.on_server())).count()
-    };
-    let input = cx.new(|cx| InputState::new(window, cx).placeholder(trf("Nachricht an %lld Accounts auf einem Server…", &[&on])));
-    let typed = cx.subscribe_in(&input, window, |this: &mut MainWindow, input: &Entity<InputState>, e: &InputEvent, window, cx| {
-        if !matches!(e, InputEvent::PressEnter { .. }) {
-            return;
+    let on = on_server(this, cx).len();
+    if on == 0 {
+        return;
+    }
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(trf("Nachricht an %lld Accounts…", &[&on])));
+    let typed = cx.subscribe_in(&input, window, |this: &mut MainWindow, _: &Entity<InputState>, e: &InputEvent, window, cx| {
+        if matches!(e, InputEvent::PressEnter { .. }) {
+            send_message(this, window, cx);
+        } else if matches!(e, InputEvent::Change) {
+            cx.notify();
         }
-        let text = input.read(cx).value().trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
-        let keys: Vec<String> = {
-            let m = model::get(cx).read(cx);
-            this.grid.chosen().into_iter().filter(|k| m.instances.get(k).is_some_and(|i| i.phase.on_server())).collect()
-        };
-        if keys.is_empty() {
-            return;
-        }
-        let sent = keys.len();
-        window.dispatch_action(Box::new(SendChatMany { keys, text }), cx);
-        input.update(cx, |s, cx| {
-            s.set_value("", window, cx);
-            s.set_placeholder(trf("An %lld gesendet · noch eine Nachricht…", &[&sent]), window, cx);
-        });
-        cx.notify();
     });
     input.update(cx, |s, cx| s.focus(window, cx));
     this.grid.message = Some(Message { input, _typed: typed });
+    cx.notify();
+}
+
+fn on_server(this: &MainWindow, cx: &App) -> Vec<String> {
+    let m = model::get(cx).read(cx);
+    this.grid.chosen().into_iter().filter(|k| m.instances.get(k).is_some_and(|i| i.phase.on_server())).collect()
+}
+
+/// Sends what the user typed in the message field to the selected accounts that are on a server, and keeps the field open for the next one.
+fn send_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(input) = this.grid.message.as_ref().map(|m| m.input.clone()) else { return };
+    let text = input.read(cx).value().trim().to_owned();
+    let keys = on_server(this, cx);
+    if text.is_empty() || keys.is_empty() {
+        return;
+    }
+    let sent = keys.len();
+    window.dispatch_action(Box::new(SendChatMany { keys, text }), cx);
+    input.update(cx, |s, cx| {
+        s.set_value("", window, cx);
+        s.set_placeholder(trf("An %lld Accounts gesendet · noch eine Nachricht…", &[&sent]), window, cx);
+        s.focus(window, cx);
+    });
     cx.notify();
 }
 
@@ -859,7 +871,11 @@ pub fn close_message(this: &mut MainWindow, window: &mut Window, cx: &mut Contex
     }
 }
 
-fn round(id: &'static str, label: String, t: &Theme) -> Stateful<Div> {
+fn round(id: &'static str, label: String, symbol: &'static str, t: &Theme) -> Stateful<Div> {
+    still(id, label, symbol, t).cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::FULL)
+}
+
+fn still(id: &'static str, label: String, symbol: &'static str, t: &Theme) -> Stateful<Div> {
     div()
         .id(id)
         .mark("button", label)
@@ -869,18 +885,18 @@ fn round(id: &'static str, label: String, t: &Theme) -> Stateful<Div> {
         .items_center()
         .justify_center()
         .rounded(px(radius::FULL))
-        .cursor_pointer()
-        .key_nav()
-        .soft(t.ink.opacity(tint::HOVER), radius::FULL)
-        .child(icon("x", iconsize::S, t.secondary))
+        .child(icon(symbol, iconsize::S, t.secondary))
 }
 
-fn bar_button(id: &'static str, label: String, icon_name: &'static str, action: Box<dyn Action>, hint: String, enabled: bool, t: &Theme) -> AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn bar_button(id: &'static str, label: String, icon_name: &'static str, action: Box<dyn Action>, hint: String, enabled: bool, compact: bool, t: &Theme) -> AnyElement {
+    let shown = (!compact).then(|| label.clone());
     let button = div()
         .id(id)
-        .mark("button", label.clone())
+        .mark("button", label)
         .h(px(control::M))
-        .px(px(space::S))
+        .when(compact, |d| d.w(px(control::M)).justify_center())
+        .when(!compact, |d| d.px(px(space::S)))
         .rounded(px(radius::FULL))
         .flex()
         .flex_none()
@@ -890,24 +906,25 @@ fn bar_button(id: &'static str, label: String, icon_name: &'static str, action: 
         .font_weight(FontWeight::MEDIUM)
         .tooltip(tip(hint));
     if !enabled {
-        return button.opacity(tint::DISABLED).child(icon(icon_name, iconsize::S, t.primary)).child(label).into_any_element();
+        return button.opacity(tint::DISABLED).child(icon(icon_name, iconsize::S, t.primary)).children(shown).into_any_element();
     }
     button
         .cursor_pointer()
         .key_nav()
         .soft(t.ink.opacity(tint::HOVER), radius::FULL)
         .child(icon(icon_name, iconsize::S, t.primary))
-        .child(label)
+        .children(shown)
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
         .into_any_element()
 }
 
 /// The floating bar over a selection of several tiles: how many, what can happen to them, and a field to message them.
-pub fn selection_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let count = this.grid.picks.set.len();
     if count < 2 {
         return None;
     }
+    let compact = this.content_width(window) < shell::COMPACT;
     let t = Theme::get(cx);
     let keys = this.grid.chosen();
     let offers = offers(&keys, model::get(cx).read(cx));
@@ -947,18 +964,28 @@ pub fn selection_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> Opt
                         }))
                         .child(Input::new(&msg.input).small()),
                 )
-                .child(round("selection-message-close", close.clone(), &t).tooltip(tip(format!("{close} · {esc}"))).on_click(cx.listener(|this, _: &ClickEvent, window, cx| close_message(this, window, cx))));
+                .child({
+                    let send = tr("Senden");
+                    let enter = Keystroke::parse("enter").map(|k| super::palette::label(&k)).unwrap_or_default();
+                    let hint = format!("{send} · {enter}");
+                    if msg.input.read(cx).value().trim().is_empty() {
+                        still("selection-send", send, "send", &t).opacity(tint::DISABLED).tooltip(tip(hint))
+                    } else {
+                        round("selection-send", send, "send", &t).tooltip(tip(hint)).on_click(cx.listener(|this, _: &ClickEvent, window, cx| send_message(this, window, cx)))
+                    }
+                })
+                .child(round("selection-message-close", close.clone(), "x", &t).tooltip(tip(format!("{close} · {esc}"))).on_click(cx.listener(|this, _: &ClickEvent, window, cx| close_message(this, window, cx))));
         }
         None => {
             let ids = ["selection-start", "selection-stop", "selection-restart", "selection-reconnect", "selection-message"];
             for ((label, icon_name, action, n), id) in offers.into_iter().zip(ids) {
                 let hint = super::palette::hint(trf("%@: %lld von %lld", &[&label, &n, &total]), action.as_ref(), cx);
-                capsule = capsule.child(bar_button(id, label, icon_name, action, hint, n > 0, &t));
+                capsule = capsule.child(bar_button(id, label, icon_name, action, hint, n > 0, compact, &t));
             }
             let clear = tr("Auswahl aufheben");
             capsule = capsule
                 .child(div().w(px(1.)).h(px(control::S)).mx(px(space::XXS)).bg(t.separator))
-                .child(round("selection-clear", clear.clone(), &t).tooltip(tip(super::palette::hint(clear, &ClearSelection, cx))).on_click(|_, window, cx| window.dispatch_action(Box::new(ClearSelection), cx)));
+                .child(round("selection-clear", clear.clone(), "x", &t).tooltip(tip(super::palette::hint(clear, &ClearSelection, cx))).on_click(|_, window, cx| window.dispatch_action(Box::new(ClearSelection), cx)));
         }
     }
     Some(div().absolute().left_0().right_0().bottom(px(selection::BOTTOM)).px(px(space::L)).flex().justify_center().child(capsule).into_any_element())

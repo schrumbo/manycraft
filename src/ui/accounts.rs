@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain};
+use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain, SignInEach};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::motion::Soft;
@@ -34,6 +34,10 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &AddMicrosoft, cx| {
         sheet::in_window(cx, |window, cx| open_add(None, true, Vec::new(), window, cx));
+    });
+    cx.on_action(|action: &SignInEach, cx| {
+        let names = action.0.clone();
+        sheet::in_window(cx, move |window, cx| open_add(None, true, names, window, cx));
     });
     cx.on_action(|action: &SignInAgain, cx| {
         let Ok(id) = Uuid::parse_str(&action.0) else { return };
@@ -67,6 +71,22 @@ pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let view = cx.new(|cx| AccountsPage::new(window, cx));
     cx.set_global(Page(view.clone()));
     view
+}
+
+/// Shows the accounts page's Prism import, as its button does.
+pub fn import_prism(window: &mut Window, cx: &mut App) {
+    page(window, cx);
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |s, cx| s.import_prism(cx));
+    }
+}
+
+/// The Microsoft accounts from the last Prism import that still have to sign in.
+pub fn waiting(cx: &App) -> Vec<String> {
+    let Some(page) = cx.try_global::<Page>() else { return Vec::new() };
+    let Some(done) = page.0.read(cx).prism_done.as_ref() else { return Vec::new() };
+    let m = super::model::get(cx).read(cx);
+    done.needs_sign_in.iter().filter(|n| !m.accounts.iter().any(|a| a.name.eq_ignore_ascii_case(n))).cloned().collect()
 }
 
 struct Page(Entity<AccountsPage>);

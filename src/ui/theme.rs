@@ -120,7 +120,7 @@ pub mod shell {
     /// Height of the quiet notice line under the toolbar.
     pub const NOTICE: f32 = 32.;
     pub const ROW: f32 = 28.;
-    pub const SEARCH: f32 = 180.;
+    pub const SEARCH: f32 = 240.;
     /// The attention dot in a sidebar row.
     pub const DOT: f32 = 6.;
     /// The attention count in a sidebar row.
@@ -144,6 +144,10 @@ pub mod palette {
     pub const ROW: f32 = 32.;
     /// How many rows show before the list scrolls.
     pub const ROWS: f32 = 9.5;
+    /// Share of a row an entry's name may take before its detail.
+    pub const LABEL: f32 = 0.6;
+    /// Height of the line that says nothing matches.
+    pub const EMPTY: f32 = 48.;
 }
 
 /// Several selected tiles and the bar that acts on them.

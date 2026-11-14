@@ -8,15 +8,17 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, ClearSelection, EditBatch, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, ClearSelection, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, TileLarger, TileSmaller, ToggleSidebar,
 };
 use super::drive::Mark;
-use super::main_window::{FocusSearch, MainWindow, TileFit, TileLarge, TileMedium, TileSmall};
+use super::main_window::{FocusSearch, MainWindow, Page, TileFit, TileLarge, TileMedium, TileSmall};
 use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
 use super::widgets::icon;
+
+actions!(palette, [PaletteNext, PalettePrevious]);
 use crate::core::i18n::{tr, trf};
 
 /// Where an entry belongs.
@@ -97,6 +99,7 @@ pub fn toggle(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
         close(this, window, cx);
         return;
     }
+    this.overlay = false;
     let entries = Rc::new(entries(this, cx));
     let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Befehl, Batch oder Account suchen")));
     let me = cx.entity().downgrade();
@@ -162,18 +165,26 @@ fn word_score(word: &str, text: &str) -> Option<i32> {
         let base = if at == 0 { 100 } else if starts_word { 80 } else { 50 };
         return Some(base - (at.min(40) as i32) / 4);
     }
-    let mut rest = text.chars();
-    let mut gaps = 0;
-    for c in word.chars() {
-        loop {
-            match rest.next() {
-                Some(t) if t == c => break,
-                Some(_) => gaps += 1,
-                None => return None,
+    let chars: Vec<char> = text.chars().collect();
+    let first = word.chars().next()?;
+    let limit = word.chars().count() * 2;
+    (0..chars.len())
+        .filter(|&at| chars[at] == first && (at == 0 || !chars[at - 1].is_alphanumeric()))
+        .filter_map(|at| {
+            let mut rest = chars[at + 1..].iter();
+            let mut gaps = 0;
+            for c in word.chars().skip(1) {
+                loop {
+                    match rest.next() {
+                        Some(t) if *t == c => break,
+                        Some(_) => gaps += 1,
+                        None => return None,
+                    }
+                }
             }
-        }
-    }
-    Some((30 - gaps).max(1))
+            (gaps <= limit).then(|| (30 - gaps as i32).max(1))
+        })
+        .max()
 }
 
 /// A keystroke as the platform writes it, with German key names: ⌃⌥⇧⌘K on the Mac, Strg+Alt+Umschalt+K elsewhere.
@@ -195,6 +206,10 @@ pub fn label(k: &Keystroke) -> String {
         "pagedown" => tr("Bild ab"),
         "home" => tr("Pos1"),
         "end" => tr("Ende"),
+        "." if !mac => tr("Punkt"),
+        "," if !mac => tr("Komma"),
+        "+" if !mac => tr("Plus"),
+        "-" if !mac => tr("Minus"),
         other => other.to_uppercase(),
     };
     if mac {
@@ -228,11 +243,26 @@ pub fn hint(text: String, action: &dyn Action, cx: &App) -> String {
     }
 }
 
-/// A menu row with its shortcut on the right in the app's own key names, for menus whose built-in key labels are English.
-pub fn menu_row(text: String, keys: Option<String>) -> impl Fn(&mut Window, &mut App) -> AnyElement + 'static {
+fn step(this: &mut MainWindow, by: isize, cx: &mut Context<MainWindow>) {
+    if let Some(p) = this.palette.as_mut() {
+        p.step(by);
+        cx.notify();
+    }
+}
+
+/// A menu row with its shortcut on the right in the app's own key names, for menus whose built-in key labels are English; a `disabled` row is dimmed.
+pub fn menu_row(text: String, keys: Option<String>, disabled: bool) -> impl Fn(&mut Window, &mut App) -> AnyElement + 'static {
     move |_, cx| {
         let t = Theme::get(cx);
-        div().flex_1().flex().items_center().gap(px(space::L)).child(div().flex_1().child(text.clone())).children(keys.clone().map(|k| div().flex_none().text_color(t.tertiary).child(k))).into_any_element()
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .gap(px(space::L))
+            .when(disabled, |d| d.text_color(t.tertiary))
+            .child(div().flex_1().child(text.clone()))
+            .children(keys.clone().map(|k| div().flex_none().text_color(t.tertiary).child(k)))
+            .into_any_element()
     }
 }
 
@@ -244,44 +274,62 @@ fn entry(group: Group, icon: &'static str, label: String, detail: Option<String>
 fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     let m = model::get(cx).read(cx);
     let mut out = Vec::new();
-    let chosen = this.grid.chosen();
+    let grid = matches!(this.page, Page::Grid(_));
+    let chosen = if grid { this.grid.chosen() } else { Vec::new() };
     if !chosen.is_empty() {
         let detail = match chosen.as_slice() {
             [one] => m.instances.get(one).map(|i| i.name.clone()),
             many => Some(trf("%lld Accounts", &[&many.len()])),
         };
-        for (icon, label, action) in [
-            ("play", tr("Ausgewählte starten"), Box::new(StartSelected) as Box<dyn Action>),
-            ("square", tr("Ausgewählte stoppen"), Box::new(StopSelected)),
-            ("rotate-cw", tr("Ausgewählte neu starten"), Box::new(RestartSelected)),
-            ("refresh-cw", tr("Ausgewählte neu verbinden"), Box::new(ReconnectSelected)),
-            ("message-square", tr("Nachricht an Ausgewählte…"), Box::new(MessageSelected)),
-            ("x", tr("Auswahl aufheben"), Box::new(ClearSelection)),
+        let n = super::grid::offers(&chosen, m).map(|o| o.3);
+        let several = chosen.len() > 1;
+        for (icon, label, action, able) in [
+            ("play", tr("Ausgewählte starten"), Box::new(StartSelected) as Box<dyn Action>, n[0] > 0),
+            ("square", tr("Ausgewählte stoppen"), Box::new(StopSelected), n[1] > 0),
+            ("rotate-cw", tr("Ausgewählte neu starten"), Box::new(RestartSelected), n[2] > 0),
+            ("refresh-cw", tr("Ausgewählte neu verbinden"), Box::new(ReconnectSelected), n[3] > 0),
+            ("message-square", tr("Nachricht senden…"), Box::new(MessageSelected), several && n[4] > 0),
+            ("x", tr("Auswahl aufheben"), Box::new(ClearSelection), true),
         ] {
-            out.push(entry(Group::Selection, icon, label, detail.clone(), action, cx));
+            if able {
+                out.push(entry(Group::Selection, icon, label, detail.clone(), action, cx));
+            }
         }
     }
-    for (icon, label, action) in [
-        ("play", tr("Alle starten"), Box::new(StartAll) as Box<dyn Action>),
-        ("square", tr("Alle stoppen"), Box::new(StopAll)),
-        ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount)),
-        ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft)),
-        ("plus", tr("Neuer Batch"), Box::new(NewBatch)),
-        ("search", tr("Suchen"), Box::new(FocusSearch)),
-        ("square-check", tr("Alles auswählen"), Box::new(SelectAll)),
-        ("gamepad-2", tr("Nächste Instanz spielen"), Box::new(NextInstance)),
-        ("gamepad-2", tr("Vorherige Instanz spielen"), Box::new(PreviousInstance)),
-        ("triangle-alert", tr("Nächste, die dich braucht"), Box::new(NextAttention)),
-        ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar)),
-        ("zoom-in", tr("Kacheln größer"), Box::new(TileLarger)),
-        ("zoom-out", tr("Kacheln kleiner"), Box::new(TileSmaller)),
-        ("layout-grid", tr("Kachelgröße: Klein"), Box::new(TileSmall)),
-        ("layout-grid", tr("Kachelgröße: Mittel"), Box::new(TileMedium)),
-        ("layout-grid", tr("Kachelgröße: Groß"), Box::new(TileLarge)),
-        ("layout-grid", tr("Kachelgröße: Einpassen"), Box::new(TileFit)),
-        ("settings", tr("Einstellungen"), Box::new(OpenSettings)),
+    let stopped = m.instances.values().any(|i| !i.phase.is_active());
+    let active = m.instances.values().any(|i| i.phase.is_active() && !i.stopping);
+    let playable = m.instances.values().any(|i| super::tile::playable(&i.phase));
+    let attention = m.attention_count(None) > 0;
+    for (icon, label, action, able) in [
+        ("play", tr("Alle starten"), Box::new(StartAll) as Box<dyn Action>, stopped),
+        ("square", tr("Alle stoppen"), Box::new(StopAll), active),
+        ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount), true),
+        ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
+        ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
+        ("search", tr("Suchen"), Box::new(FocusSearch), true),
+        ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.instances.is_empty()),
+        ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
+        ("gamepad-2", tr("Vorherigen Account spielen"), Box::new(PreviousInstance), playable),
+        ("triangle-alert", tr("Nächsten, der dich braucht"), Box::new(NextAttention), attention),
+        ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
+        ("zoom-in", tr("Kacheln größer"), Box::new(TileLarger), true),
+        ("zoom-out", tr("Kacheln kleiner"), Box::new(TileSmaller), true),
+        ("layout-grid", tr("Kachelgröße: Klein"), Box::new(TileSmall), true),
+        ("layout-grid", tr("Kachelgröße: Mittel"), Box::new(TileMedium), true),
+        ("layout-grid", tr("Kachelgröße: Groß"), Box::new(TileLarge), true),
+        ("layout-grid", tr("Kachelgröße: Einpassen"), Box::new(TileFit), true),
+        ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
+        ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
+        ("download", tr("Aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
     ] {
-        out.push(entry(Group::Commands, icon, label, None, action, cx));
+        if able {
+            out.push(entry(Group::Commands, icon, label, None, action, cx));
+        }
+    }
+    let waiting = super::accounts::waiting(cx);
+    if waiting.len() > 1 {
+        let detail = trf("%lld Accounts", &[&waiting.len()]);
+        out.push(entry(Group::Commands, "log-in", tr("Alle nacheinander anmelden"), Some(detail), Box::new(SignInEach(waiting)), cx));
     }
     for (icon, label, action) in [("layout-grid", tr("Alle"), Box::new(ShowAll) as Box<dyn Action>), ("users", tr("Accounts"), Box::new(ShowAccounts)), ("messages-square", tr("Chat"), Box::new(OpenChat))] {
         out.push(entry(Group::Pages, icon, label, None, action, cx));
@@ -347,7 +395,7 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                                 .when(on, |d| d.bg(t.accent.opacity(tint::ATTENTION)))
                                 .soft(t.ink.opacity(tint::HOVER), radius::INNER)
                                 .child(icon(e.icon, iconsize::M, if on { t.accent_text } else { t.secondary }))
-                                .child(div().flex_none().max_w(relative(0.6)).truncate().text_size(px(font::BODY)).text_color(if on { t.accent_text } else { t.primary }).child(e.label.clone()))
+                                .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if on { t.accent_text } else { t.primary }).child(e.label.clone()))
                                 .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).children(e.detail.clone()))
                                 .children(e.keys.clone().map(|k| div().flex_none().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(k)))
                                 .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
@@ -374,7 +422,7 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
     .track_scroll(&p.scroll)
     .size_full();
     let body = if count == 0 {
-        div().h(px(palette::ROW * 1.5)).flex().items_center().justify_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Keine Treffer")).into_any_element()
+        div().h(px(palette::EMPTY)).flex().items_center().justify_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Keine Treffer")).into_any_element()
     } else {
         div().h(px(visible * palette::ROW + space::XS * 2.)).py(px(space::XS)).child(list).into_any_element()
     };
@@ -390,6 +438,8 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                     .id("palette")
                     .mark("palette", tr("Befehle"))
                     .key_context("Palette")
+                    .on_action(cx.listener(|this, _: &PaletteNext, _, cx| step(this, 1, cx)))
+                    .on_action(cx.listener(|this, _: &PalettePrevious, _, cx| step(this, -1, cx)))
                     .absolute()
                     .top(px(palette::TOP))
                     .left(px(left))
@@ -419,10 +469,7 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                             _ => return,
                         };
                         cx.stop_propagation();
-                        if let Some(p) = this.palette.as_mut() {
-                            p.step(by);
-                            cx.notify();
-                        }
+                        step(this, by, cx);
                     }))
                     .child(div().h(px(palette::FIELD)).px(px(space::M)).flex().items_center().gap(px(space::S)).child(icon("search", iconsize::M, t.tertiary)).child(div().flex_1().min_w_0().text_size(px(font::TITLE3)).child(Input::new(&p.input).appearance(false))))
                     .child(div().h(px(1.)).bg(t.separator))
@@ -441,9 +488,11 @@ mod tests {
     fn words_match_in_any_order_and_word_starts_win() {
         assert!(score("start", "Alle starten", "").is_some());
         assert!(score("alt sta", "AltOne — Starten", "Farm · Gestoppt").is_some());
+        assert!(score("nvb", "Neu verbinden", "").is_some());
         assert!(score("xyz", "Alle starten", "").is_none());
         assert!(score("farm", "AltOne — Starten", "Farm · Gestoppt").is_some());
-        assert!(score("ast", "Alle starten", "").is_some(), "letters in order match");
+        assert!(score("alst", "Alle starten", "").is_some(), "letters in order from a word start match");
+        assert!(score("seite", "Test bearbeiten", "").is_none(), "scattered letters do not");
         assert!(score("st", "Stoppen", "") > score("st", "Ausgewählte stoppen", ""));
         assert!(score("stop", "Alle stoppen", "") > score("stop", "Batch", "Alle stoppen"), "the label weighs more than the detail");
     }

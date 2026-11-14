@@ -3,7 +3,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected, TileLarger, TileSmaller,
+    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected, TileLarger, TileSmaller,
     ToggleSidebar,
 };
 use super::drive::Mark;
@@ -79,6 +79,8 @@ pub struct MainWindow {
     pub(super) grid: Grid,
     pub(super) palette: Option<super::palette::Palette>,
     fit: Option<(FitScope, Option<String>)>,
+    /// Prism Launcher instances that can become a batch, and accounts Prism lists, as found at startup.
+    pub(super) prism: (usize, usize),
     title_count: Option<usize>,
     last_playing: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -119,6 +121,7 @@ impl MainWindow {
             }),
             typed,
         ];
+        Self::look_for_prism(cx);
         Self {
             focus: cx.focus_handle(),
             focused_once: false,
@@ -133,10 +136,26 @@ impl MainWindow {
             grid: Grid::new(cx),
             palette: None,
             fit: None,
+            prism: (0, 0),
             title_count: None,
             last_playing: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn look_for_prism(cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async {
+            let instances = super::remote::prism_instances().map_or(0, |l| l.iter().filter(|i| i.unsupported.is_none()).count());
+            (instances, super::remote::prism_accounts().map_or(0, |l| l.len()))
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.prism = found;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Shows `page`; switching between grids keeps the filter but drops the keyboard selection.
@@ -260,13 +279,14 @@ impl MainWindow {
         let t = Theme::get(cx);
         let m = model::get(cx);
         let m = m.read(cx);
-        let (title, text, id, label, action): (String, String, &str, String, Box<dyn Action>) = if m.accounts.is_empty() {
+        let (title, text, id, label, action, prism): (String, String, &str, String, Box<dyn Action>, Option<(String, Box<dyn Action>)>) = if m.accounts.is_empty() {
             (
                 tr("Noch keine Accounts"),
                 tr("Füge einen Account hinzu, um Minecraft-Instanzen in einem Fenster zu starten."),
                 "add-account",
                 tr("Account hinzufügen"),
                 Box::new(AddAccount),
+                (self.prism.1 > 0).then(|| (tr("Oder Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts) as Box<dyn Action>)),
             )
         } else if m.batches.is_empty() {
             (
@@ -275,6 +295,7 @@ impl MainWindow {
                 "new-batch",
                 tr("Batch erstellen"),
                 Box::new(NewBatch),
+                (self.prism.0 > 0).then(|| (tr("Oder aus einer Prism-Instanz übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
             )
         } else {
             return None;
@@ -293,6 +314,9 @@ impl MainWindow {
                 .child(div().id("empty-title").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
                 .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text))
                 .child(div().mt(px(space::S)).child(primary_button(id, label, "plus", false, &t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))))
+                .children(prism.map(|(label, action)| {
+                    super::sheet::button("empty-prism", label, Some("download"), super::sheet::Look::Plain, false, false, &t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+                }))
                 .child(div().mt(px(space::S)).max_w(px(control::READING)).text_size(px(font::CAPTION)).text_color(t.tertiary).text_center().child(tr("Prüfe die Regeln deines Servers, bevor du mehrere Accounts nutzt.")))
                 .into_any_element(),
         )
@@ -328,7 +352,7 @@ impl Render for MainWindow {
                         .child(super::toolbar::render(self, batch.as_deref(), window, cx))
                         .children(error.map(|e| notice(e, &t, cx)))
                         .children(fit.map(|line| fit_note(line, &t)))
-                        .child(div().relative().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)).children(super::grid::selection_bar(self, cx)))
+                        .child(div().relative().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)).children(super::grid::selection_bar(self, window, cx)))
                         .into_any_element()
                 }
             },
@@ -342,7 +366,7 @@ impl Render for MainWindow {
             .capture_any_mouse_down(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_any_mouse_up(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
-                if !this.overlay {
+                if !this.overlay || this.palette.is_some() {
                     return;
                 }
                 match e.keystroke.key.as_str() {
@@ -392,6 +416,10 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_action(cx.listener(|this, _: &ImportPrismAccounts, window, cx| {
+                this.go(Page::Accounts, window, cx);
+                super::accounts::import_prism(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ShowAll, window, cx| this.go(Page::Grid(None), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.go(Page::Accounts, window, cx)))
             .on_action(cx.listener(|this, a: &ShowBatch, window, cx| this.go(Page::Grid(Some(a.0.clone())), window, cx)))
@@ -503,6 +531,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-down", NextAttention, Some("MainWindow")),
         KeyBinding::new(k("a"), SelectAll, Some("InstanceGrid")),
         KeyBinding::new("escape", ClearSelection, Some("InstanceGrid")),
+        KeyBinding::new("tab", super::palette::PaletteNext, Some("Palette")),
+        KeyBinding::new("shift-tab", super::palette::PalettePrevious, Some("Palette")),
         KeyBinding::new(k("r"), StartSelected, Some("InstanceGrid")),
         KeyBinding::new(k("."), StopSelected, Some("InstanceGrid")),
         KeyBinding::new(k("shift-r"), RestartSelected, Some("InstanceGrid")),
