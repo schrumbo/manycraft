@@ -66,7 +66,9 @@ class ProtocolTest {
 	@Test
 	void parsesShowAndHide() {
 		var show = assertInstanceOf(Protocol.Incoming.Show.class, Protocol.parse("{\"t\":\"show\",\"x\":10,\"y\":-20,\"w\":800,\"h\":600}").orElseThrow());
-		assertEquals(new Protocol.Incoming.Show(10, -20, 800, 600), show);
+		assertEquals(new Protocol.Incoming.Show(10, -20, 800, 600, null), show);
+		var full = Protocol.parse("{\"t\":\"show\",\"x\":0,\"y\":0,\"w\":800,\"h\":600,\"mode\":\"fullscreen\"}").orElseThrow();
+		assertEquals(new Protocol.Incoming.Show(0, 0, 800, 600, "fullscreen"), full);
 		assertInstanceOf(Protocol.Incoming.Hide.class, Protocol.parse("{\"t\":\"hide\"}").orElseThrow());
 	}
 

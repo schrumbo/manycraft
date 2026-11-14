@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, ChatLine, Instance, Model, Phase, rank};
-use super::native::{self, Rect};
+use super::native;
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError};
 use crate::core::batch::{self, Batch};
@@ -18,7 +18,9 @@ use crate::core::fit;
 use crate::core::fleet::{self, Fleet};
 use crate::core::history::{self, Kind};
 use crate::core::i18n::{tr, trf};
+use crate::core::game_window;
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, HotkeyAction, StateKind, ToMod};
+use crate::core::place::{self, Insets, Place, Rect};
 use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::settings;
@@ -347,13 +349,23 @@ struct Runtime {
     restarts: HashMap<String, u64>,
     restart_ready: HashMap<u64, Vec<String>>,
     restart_groups: u64,
-    rect: Option<Rect>,
+    place: Option<Place>,
+    insets: HashMap<String, Insets>,
+    unplaced: HashSet<String>,
+    spread: Option<Rect>,
     badge: usize,
     notice: Option<String>,
     whispers: Vec<Whisper>,
+    reveal: Option<Reveal>,
 }
 
-impl Global for Runtime {}
+
+/// What a game that was asked to show covers once it appears.
+struct Reveal {
+    key: String,
+    hide: Vec<String>,
+    manager: bool,
+}impl Global for Runtime {}
 
 /// Loads saved data into the model, starts the fleet and registers the action handlers.
 pub fn init(cx: &mut App) {
@@ -394,7 +406,11 @@ pub fn init(cx: &mut App) {
         restarts: HashMap::new(),
         restart_ready: HashMap::new(),
         restart_groups: 0,
-        rect: None,
+        place: None,
+        insets: HashMap::new(),
+        unplaced: HashSet::new(),
+        spread: None,
+        reveal: None,
         badge: 0,
         notice: None,
         whispers: Vec::new(),
@@ -908,56 +924,162 @@ pub fn play(key: &str, cx: &mut App) {
         return;
     }
     let shown = model.read(cx).playing.is_some();
-    let rect = if shown { cx.try_global::<Runtime>().and_then(|rt| rt.rect) } else { super::main_window::game_rect(cx) };
-    let Some(rect) = rect else { return };
-    swap_to(key, rect, cx);
-    if !shown {
-        super::main_window::hide(cx);
-    }
+    let place = if shown { follow_shown(cx) } else { manager_place(cx) };
+    let Some(place) = place else { return };
+    swap_to(key, place, cx);
+    spread(cx);
 }
 
-fn swap_to(key: &str, rect: Rect, cx: &mut App) {
+fn swap_to(key: &str, place: Place, cx: &mut App) {
     let key = key.to_owned();
-    let mut previous = None;
+    let mut skipped = None;
+    let mut client = place.frame;
     update_model(cx, |m, rt, _| {
-        rt.rect = Some(rect);
-        previous = m.playing.replace(key.clone()).filter(|p| *p != key);
+        rt.place = Some(place);
+        let before = m.playing.replace(key.clone());
+        let mut reveal = match rt.reveal.take() {
+            Some(r) if r.key != key => {
+                skipped = Some(r.key);
+                Reveal { key: key.clone(), hide: r.hide, manager: r.manager }
+            }
+            Some(r) => r,
+            None => Reveal { key: key.clone(), manager: before.is_none(), hide: before.into_iter().collect() },
+        };
+        reveal.hide.retain(|k| *k != key);
+        rt.reveal = Some(reveal);
         if let Some(i) = m.instances.get_mut(&key) {
             i.unread_whispers = 0;
         }
         if let Some(pid) = rt.pids.get(&key) {
             native::allow_foreground(*pid);
+            if let Some(seen) = game_window::seen(*pid).filter(|s| s.mode.is_normal() && !drive::on()) {
+                rt.insets.insert(key.clone(), seen.insets);
+            }
         }
+        client = place::client_in(place.frame, rt.insets.get(&key).copied().unwrap_or_default());
     });
     drive::note(format!("play {key}"));
     if let Some(backend) = backend(cx) {
-        backend.send(&key, ToMod::Show { x: rect.x, y: rect.y, w: rect.w, h: rect.h });
-        if let Some(previous) = previous {
-            backend.send(&previous, ToMod::Hide);
+        backend.send(&key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
+        if let Some(skipped) = skipped {
+            backend.send(&skipped, ToMod::Hide);
         }
+    }
+}
+
+/// Hides what the game that is now shown covers: the manager and the games shown before it. Waiting for the game keeps the screen from flashing while it resizes on its first show.
+fn reveal(reveal: Reveal, cx: &mut App) {
+    let playing = model::get(cx).read(cx).playing.clone();
+    if let Some(backend) = backend(cx) {
+        for key in reveal.hide.iter().filter(|k| playing.as_ref() != Some(*k)) {
+            backend.send(key, ToMod::Hide);
+        }
+    }
+    if reveal.manager && playing.is_some() {
+        super::main_window::hide(cx);
     }
 }
 
 /// Hides the game that is played and brings the manager back in its place.
 pub fn show_grid(cx: &mut App) {
+    let place = follow_shown(cx);
     let mut previous = None;
-    let mut rect = None;
+    let mut pending = Vec::new();
     update_model(cx, |m, rt, _| {
         previous = m.playing.take();
-        rect = rt.rect;
+        pending = rt.reveal.take().map(|r| r.hide).unwrap_or_default();
     });
+    if let Some(backend) = backend(cx) {
+        for key in pending.iter().filter(|k| previous.as_ref() != Some(*k)) {
+            backend.send(key, ToMod::Hide);
+        }
+    }
     if let Some(previous) = &previous {
         drive::note(format!("grid {previous}"));
         if let Some(backend) = backend(cx) {
             backend.send(previous, ToMod::Hide);
         }
     }
-    super::main_window::show(rect, cx);
+    super::main_window::show(place, cx);
+    spread(cx);
+}
+
+/// The place where the manager window is now, kept on a live monitor; the last place while it is minimized.
+fn manager_place(cx: &mut App) -> Option<Place> {
+    let before = cx.try_global::<Runtime>().and_then(|rt| rt.place);
+    let works = game_window::work_areas();
+    let place = match super::main_window::place(cx) {
+        Some((frame, mode)) => place::follow(before, frame, mode, &works),
+        None => before?,
+    };
+    Some(Place { frame: place::clamp(place.frame, &works), ..place })
+}
+
+/// The place after the game that is shown, wherever the player moved, resized, maximized or fullscreened it.
+fn follow_shown(cx: &mut App) -> Option<Place> {
+    let playing = model::get(cx).read(cx).playing.clone();
+    let works = game_window::work_areas();
+    if !cx.has_global::<Runtime>() {
+        return None;
+    }
+    let rt = cx.global_mut::<Runtime>();
+    let pid = playing.as_ref().and_then(|k| rt.pids.get(k)).filter(|_| !drive::on());
+    if let Some(seen) = pid.and_then(|pid| game_window::seen(*pid)).filter(|s| s.visible) {
+        if let Some(key) = playing.filter(|_| seen.mode.is_normal()) {
+            rt.insets.insert(key, seen.insets);
+        }
+        rt.place = Some(place::follow(rt.place, seen.frame, seen.mode, &works));
+    }
+    if let Some(p) = &mut rt.place {
+        p.frame = place::clamp(p.frame, &works);
+    }
+    rt.place
+}
+
+/// Moves the hidden games to the place once per change, so that a swap only shows and hides.
+fn spread(cx: &mut App) {
+    if drive::on() {
+        return;
+    }
+    let playing = model::get(cx).read(cx).playing.clone();
+    if !cx.has_global::<Runtime>() {
+        return;
+    }
+    let rt = cx.global_mut::<Runtime>();
+    let Some(place) = rt.place.filter(|p| rt.spread != Some(p.frame)) else { return };
+    rt.spread = Some(place.frame);
+    for (key, pid) in &rt.pids {
+        if playing.as_ref() != Some(key) {
+            game_window::place_hidden(*pid, place.frame);
+        }
+    }
+}
+
+/// Puts a game that came up hidden at the place as soon as its window exists, so that showing it later does not resize it.
+fn place_new(key: &str, cx: &mut App) {
+    let Some(pid) = cx.try_global::<Runtime>().and_then(|rt| rt.pids.get(key).copied()) else { return };
+    let Some(seen) = game_window::seen(pid).filter(|_| !drive::on()) else { return };
+    let place = match cx.global::<Runtime>().place {
+        Some(place) => Some(place),
+        None => manager_place(cx),
+    };
+    let playing = model::get(cx).read(cx).playing.clone();
+    let rt = cx.global_mut::<Runtime>();
+    rt.unplaced.remove(key);
+    if seen.mode.is_normal() {
+        rt.insets.insert(key.to_owned(), seen.insets);
+    }
+    if let Some(place) = place.filter(|_| playing.as_deref() != Some(key)) {
+        game_window::place_hidden(pid, place.frame);
+    }
 }
 
 fn step(action: HotkeyAction, cx: &mut App) {
     if action == HotkeyAction::Grid {
-        return show_grid(cx);
+        if model::get(cx).read(cx).playing.is_some() {
+            show_grid(cx);
+        }
+        return;
     }
     let model = model::get(cx);
     let target = {
@@ -1025,6 +1147,9 @@ struct Effects {
     stills: Vec<(String, Arc<RenderImage>, bool)>,
     check_proxy: Vec<(String, String)>,
     whispers: Vec<Whisper>,
+    placed: Vec<String>,
+    game_focused: bool,
+    revealed: Option<Reveal>,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -1084,6 +1209,15 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     }
     for whisper in fx.whispers {
         queue_whisper(whisper, cx);
+    }
+    for key in fx.placed {
+        place_new(&key, cx);
+    }
+    if let Some(r) = fx.revealed {
+        reveal(r, cx);
+    }
+    if fx.game_focused {
+        super::main_window::hide(cx);
     }
     if fx.exited_playing {
         show_grid(cx);
@@ -1220,6 +1354,9 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
             model::set_hint(&instance, |h| h.link_lost = false);
             rt.pids.insert(instance.clone(), pid);
+            if cfg!(target_os = "windows") && !drive::on() {
+                rt.unplaced.insert(instance.clone());
+            }
             for message in game_identity(m, &instance) {
                 rt.backend.send(&instance, message);
             }
@@ -1246,6 +1383,8 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
 fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code: Option<i32>) {
     model::set_hint(&key, |h| *h = model::Hint::default());
     rt.pids.remove(&key);
+    rt.unplaced.remove(&key);
+    rt.insets.remove(&key);
     rt.joined.remove(&key);
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
     let Some(i) = m.instances.get_mut(&key) else {
@@ -1411,6 +1550,9 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
 
 fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx: &mut Effects) {
     let playing = m.playing.as_deref() == Some(key.as_str());
+    if rt.unplaced.contains(&key) {
+        fx.placed.push(key.clone());
+    }
     match message {
         FromMod::State { kind, server, reason, cause } => on_state(m, rt, fx, key, kind, server, reason, cause),
         FromMod::Chat { kind, from, text } => {
@@ -1447,13 +1589,19 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             }
         }
         FromMod::Hotkey { action } => {
-            if playing || action == HotkeyAction::Grid {
+            if playing || rt.reveal.as_ref().is_some_and(|r| r.hide.contains(&key)) {
                 fx.hotkeys.push(action);
+            } else if action == HotkeyAction::Grid {
+                rt.backend.send(&key, ToMod::Hide);
             }
         }
-        FromMod::Window { visible: true, .. } => {
+        FromMod::Window { visible: true, focused } => {
             if let Some(pid) = rt.pids.get(&key) {
                 tint(m, &key, *pid);
+            }
+            fx.game_focused |= playing && focused;
+            if rt.reveal.as_ref().is_some_and(|r| r.key == key) {
+                fx.revealed = rt.reveal.take();
             }
         }
         FromMod::Window { .. } | FromMod::Hello { .. } => {}
@@ -1732,7 +1880,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, Instance, Instant, Kind, Model, Phase, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
+    use super::{model, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Reveal, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
         Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -1769,6 +1917,56 @@ mod tests {
         assert!(!needs_sign_in(&anyhow::anyhow!("no java")));
     }
 
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<(String, ToMod)>>);
+
+    impl Backend for Recorder {
+        fn start(&self, _: Batch, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn stop(&self, _: Vec<String>) {}
+        fn send(&self, key: &str, message: ToMod) {
+            self.0.lock().unwrap().push((key.to_owned(), message));
+        }
+        fn read_preview(&self, _: String, _: PathBuf) {}
+        fn quit(&self) {}
+    }
+
+    #[test]
+    fn closing_a_game_that_is_not_played_hides_only_it() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let recorder = Arc::new(Recorder::default());
+        rt.backend = recorder.clone();
+        m.playing = Some("other".into());
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key.clone(), message: FromMod::Hotkey { action: HotkeyAction::Grid } }), &mut fx);
+        assert!(fx.hotkeys.is_empty());
+        assert_eq!(*recorder.0.lock().unwrap(), [(key, ToMod::Hide)]);
+        assert_eq!(m.playing.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn the_shown_game_reveals_once() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some(key.clone());
+        rt.reveal = Some(Reveal { key: key.clone(), hide: vec!["before".into()], manager: true });
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: "before".into(), message: FromMod::Window { visible: true, focused: false } }), &mut fx);
+        assert!(fx.revealed.is_none() && rt.reveal.is_some());
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key.clone(), message: FromMod::Window { visible: true, focused: false } }), &mut fx);
+        let shown = fx.revealed.expect("no reveal");
+        assert_eq!((shown.key, shown.hide, shown.manager), (key, vec!["before".to_owned()], true));
+        assert!(rt.reveal.is_none());
+    }
+
+    #[test]
+    fn hotkeys_from_the_game_still_covering_count() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some("next".into());
+        rt.reveal = Some(Reveal { key: "next".into(), hide: vec![key.clone()], manager: false });
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key, message: FromMod::Hotkey { action: HotkeyAction::Grid } }), &mut fx);
+        assert_eq!(fx.hotkeys, [HotkeyAction::Grid]);
+    }
+
     struct Quiet;
 
     impl Backend for Quiet {
@@ -1799,7 +1997,11 @@ mod tests {
             restarts: HashMap::new(),
             restart_ready: HashMap::new(),
             restart_groups: 0,
-            rect: None,
+            place: None,
+            insets: HashMap::new(),
+            unplaced: HashSet::new(),
+            spread: None,
+            reveal: None,
             badge: 0,
             notice: None,
             whispers: Vec::new(),

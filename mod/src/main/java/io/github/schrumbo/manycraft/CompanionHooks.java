@@ -1,6 +1,7 @@
 package io.github.schrumbo.manycraft;
 
 import io.netty.channel.Channel;
+import net.minecraft.client.Options;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.renderer.GameRenderer;
 
@@ -49,6 +50,15 @@ public final class CompanionHooks {
 	public static boolean blocksSave() {
 		Companion c = Companion.get();
 		return c != null && c.blocksSave();
+	}
+
+	public static void saveOptions(Options options, Runnable save) {
+		GameWindow.saving(options, save);
+	}
+
+	public static boolean closeToGrid() {
+		Companion c = Companion.get();
+		return c != null && c.closeToGrid();
 	}
 
 	public static boolean onKey(int action, int keycode, int modifiers) {

@@ -9,7 +9,7 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, AddMicrosoft, CheckForUpdates, ClearSelection, DismissNews, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
-    StartSelected, StopAll, StopBatch, StopSelected, ToggleSidebar, UndoRemoveAccount,
+    StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -318,6 +318,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("gamepad-2", tr("Vorherigen Account spielen"), Box::new(PreviousInstance), playable),
         ("triangle-alert", tr("Nächsten, der dich braucht"), Box::new(NextAttention), attention),
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
+        ("maximize", tr("Vollbild ein- oder ausschalten"), Box::new(ToggleFullscreen), true),
         ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),

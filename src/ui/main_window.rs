@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
@@ -5,16 +7,17 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
-    ToggleSidebar,
+    ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
 use super::grid::Grid;
 use super::model;
 use super::motion::Soft;
-use super::native::{self, Rect};
+use super::native;
 use super::theme::{self, Theme, chat, control, font, iconsize, selection, shell, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button};
 use crate::core::i18n::{tr, trf};
+use crate::core::place::{Mode, Place, Rect};
 
 actions!(main_window, [FocusSearch, ClearSearch, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
 
@@ -396,6 +399,7 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|this, _: &ImportPrismAccounts, window, cx| {
                 this.go(Page::Accounts, window, cx);
                 super::accounts::import_prism(window, cx);
@@ -416,9 +420,11 @@ impl Render for MainWindow {
                 window.focus(&this.grid.focus, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+            .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
                 if this.grid.clear_selection() {
                     cx.notify();
+                } else if window.is_fullscreen() {
+                    window.toggle_fullscreen();
                 } else {
                     cx.propagate();
                 }
@@ -490,8 +496,11 @@ fn driven_size() -> Option<(f32, f32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
+const FULLSCREEN_SETTLES: Duration = Duration::from_millis(150);
+
 fn bind_keys(cx: &mut App) {
     let m = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+    let fullscreen = if cfg!(target_os = "macos") { "ctrl-cmd-f" } else { "f11" };
     let k = |key: &str| -> &'static str { Box::leak(format!("{m}-{key}").into_boxed_str()) };
     cx.bind_keys([
         KeyBinding::new(k("b"), ToggleSidebar, Some("MainWindow")),
@@ -501,6 +510,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
+        KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-down", NextAttention, Some("MainWindow")),
@@ -551,9 +561,9 @@ pub fn is_active(cx: &App) -> bool {
     cx.active_window().is_some_and(|w| handle(cx) == Some(w))
 }
 
-/// Where the main window is, in the coordinates a game window uses.
-pub fn game_rect(cx: &mut App) -> Option<Rect> {
-    handle(cx)?.update(cx, |_, window, _| native::rect_of(window)).ok()
+/// Where the main window is and whether it is maximized or fullscreen; nothing while it is minimized.
+pub fn place(cx: &mut App) -> Option<(Rect, Mode)> {
+    handle(cx)?.update(cx, |_, window, _| native::place_of(window)).ok().flatten()
 }
 
 /// Gets the main window out of the way of the game that takes its place. A driven window stays, so agents keep seeing it.
@@ -566,14 +576,31 @@ pub fn hide(cx: &mut App) {
     }
 }
 
-/// Brings the main window back where the game was.
-pub fn show(_rect: Option<Rect>, cx: &mut App) {
+/// Brings the main window back at `place`, where the game was.
+pub fn show(place: Option<Place>, cx: &mut App) {
     if crate::core::drive::fenced("show", "main window") {
         return;
     }
-    if let Some(h) = handle(cx) {
-        let _ = h.update(cx, |_, window, cx| native::show(window, cx));
-    }
+    let Some(h) = handle(cx) else { return };
+    let _ = h.update(cx, |_, window, cx| {
+        let fullscreen = window.is_fullscreen();
+        native::show(window, place.filter(|_| !fullscreen), cx);
+        let Some(place) = place else { return };
+        if (place.mode == Mode::Fullscreen) != fullscreen {
+            window.toggle_fullscreen();
+        }
+        if fullscreen && place.mode != Mode::Fullscreen {
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(FULLSCREEN_SETTLES).await;
+                let _ = h.update(cx, |_, window, cx| {
+                    if model::get(cx).read(cx).playing.is_none() {
+                        native::put(window, place);
+                    }
+                });
+            })
+            .detach();
+        }
+    });
 }
 
 /// Shows the grid of `batch`, filtered to what needs attention, as a notification click asks.

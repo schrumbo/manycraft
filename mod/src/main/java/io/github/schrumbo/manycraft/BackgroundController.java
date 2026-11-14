@@ -145,22 +145,18 @@ final class BackgroundController {
 	}
 
 	void hide() {
+		GameWindow.cancel();
 		mode.enter();
 		SDLVideo.SDL_HideWindow(mc.getWindow().handle());
 		visible = false;
 		reportWindow();
 	}
 
-	void show(int x, int y, int w, int h) {
+	void show(int x, int y, int w, int h, String windowMode) {
 		mode.exit();
-		long handle = mc.getWindow().handle();
-		SDLVideo.SDL_SetWindowSize(handle, Math.max(w, 320), Math.max(h, 240));
-		SDLVideo.SDL_SetWindowPosition(handle, x, y);
-		SDLVideo.SDL_ShowWindow(handle);
-		SDLVideo.SDL_RaiseWindow(handle);
-		visible = true;
 		mc.getFramerateLimitTracker().onInputReceived();
-		reportWindow();
+		visible = true;
+		GameWindow.show(mc, x, y, w, h, windowMode, this::reportWindow);
 	}
 
 	void startHidden() {
@@ -170,7 +166,8 @@ final class BackgroundController {
 	}
 
 	String windowLine() {
-		return Protocol.window(visible, visible && mc.getWindow().isFocused());
+		boolean shown = visible && !GameWindow.revealing();
+		return Protocol.window(shown, shown && mc.getWindow().isFocused());
 	}
 
 	void tick() {

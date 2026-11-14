@@ -25,6 +25,7 @@ pub mod modicons;
 pub mod modrinth;
 pub mod net;
 pub mod paths;
+pub mod place;
 pub mod prism;
 pub mod proxy;
 pub mod reconnect;
