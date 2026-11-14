@@ -106,4 +106,29 @@ class BackgroundModeTest {
 		mode.exit();
 		assertEquals(new Opts(8, 0.3), fake.live);
 	}
+
+	@Test
+	void adoptUpdatesThePlayersValuesAndKeepsTheBackgroundInForce() {
+		SaveGuard guard = new SaveGuard();
+		Fake fake = new Fake(guard);
+		BackgroundMode<Opts> mode = new BackgroundMode<>(fake, guard);
+		mode.enter();
+		fake.live = new Opts(24, 0.0);
+		mode.adopt((saved, live) -> new Opts(live.rd(), saved.volume()));
+		assertEquals(new Opts(2, 0.0), fake.live);
+		assertTrue(guard.blocksSave());
+		mode.exit();
+		assertEquals(new Opts(24, 0.8), fake.live);
+	}
+
+	@Test
+	void adoptWhileShownLeavesTheLiveValues() {
+		SaveGuard guard = new SaveGuard();
+		Fake fake = new Fake(guard);
+		BackgroundMode<Opts> mode = new BackgroundMode<>(fake, guard);
+		fake.live = new Opts(24, 0.5);
+		mode.adopt((saved, live) -> new Opts(1, 1.0));
+		assertEquals(new Opts(24, 0.5), fake.live);
+		assertTrue(fake.guardAtWrite.isEmpty());
+	}
 }

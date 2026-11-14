@@ -913,7 +913,14 @@ impl BatchSheet {
                     .max_h(px(self.list_max)),
             )
         };
-        div().flex().flex_col().gap(px(space::XS)).child(header).when(total > FILTER_FROM, |d| d.child(Input::new(&self.filter))).child(list)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(header)
+            .when(total > FILTER_FROM, |d| d.child(Input::new(&self.filter)))
+            .child(list)
+            .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Einstellungen, Ressourcenpakete und Serverliste gelten für alle Spiele dieses Batches.")))
     }
 
     fn pick_row(&mut self, id: Uuid, name: String, kind: String, head: Option<PathBuf>, color: u8, cx: &mut Context<Self>) -> Stateful<Div> {

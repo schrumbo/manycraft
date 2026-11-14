@@ -426,6 +426,7 @@
   "Nicht gespeichert.": "Not saved.",
   "Nicht gelöscht.": "Not deleted.",
   "Diese Dateien bleiben unverändert im Batch und werden nicht aktualisiert.": "These files stay unchanged in the batch and are not updated.",
+  "Einstellungen, Ressourcenpakete und Serverliste gelten für alle Spiele dieses Batches.": "Settings, resource packs and the server list apply to every game in this batch.",
   "Mods und Einstellungen werden aus der Instanz kopiert; Prism bleibt unverändert. Beim Erstellen wird geprüft, welche Mods auf Modrinth liegen. Die übrigen bleiben als eigene Dateien im Batch.": "Mods and settings are copied from the instance; Prism stays unchanged. On creation, Manycraft checks which mods are on Modrinth. The rest stay as own files in the batch.",
   "Aktualisiert": "Updated",
   "Läuft ohne Fabric. Nur Fabric-Instanzen gehen.": "Runs without Fabric. Only Fabric instances work.",

@@ -6,6 +6,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 final class Protocol {
@@ -33,6 +35,10 @@ final class Protocol {
 		record Badge(boolean visible) implements Incoming {}
 
 		record Level(BackgroundLevel level, BackgroundLevel.Custom custom) implements Incoming {}
+
+		record Options(Map<String, String> values) implements Incoming {}
+
+		record Servers() implements Incoming {}
 	}
 
 	private Protocol() {}
@@ -84,6 +90,18 @@ final class Protocol {
 		return GSON.toJson(o);
 	}
 
+	static String options(Map<String, String> values) {
+		JsonObject o = message("options");
+		JsonObject v = new JsonObject();
+		values.forEach(v::addProperty);
+		o.add("values", v);
+		return GSON.toJson(o);
+	}
+
+	static String servers() {
+		return GSON.toJson(message("servers"));
+	}
+
 	static Optional<Incoming> parse(String line) {
 		try {
 			JsonElement root = JsonParser.parseString(line);
@@ -107,6 +125,8 @@ final class Protocol {
 				case "identity" -> string(o, "name") == null || string(o, "batch") == null ? null : new Incoming.Identity(string(o, "name"), string(o, "batch"), requireInt(o, "rgb") & 0xFFFFFF, string(o, "icon"));
 				case "badge" -> bool(o, "visible") == null ? null : new Incoming.Badge(bool(o, "visible"));
 				case "level" -> BackgroundLevel.parse(string(o, "level")).map(l -> new Incoming.Level(l, BackgroundLevel.Custom.of(integer(o, "fps"), integer(o, "render_distance")))).orElse(null);
+				case "options" -> strings(o, "values") == null ? null : new Incoming.Options(strings(o, "values"));
+				case "servers" -> new Incoming.Servers();
 				default -> null;
 			});
 		} catch (RuntimeException e) {
@@ -123,6 +143,20 @@ final class Protocol {
 	private static String string(JsonObject o, String key) {
 		JsonElement e = o.get(key);
 		return e != null && e.isJsonPrimitive() ? e.getAsString() : null;
+	}
+
+	private static Map<String, String> strings(JsonObject o, String key) {
+		JsonElement e = o.get(key);
+		if (e == null || !e.isJsonObject()) {
+			return null;
+		}
+		Map<String, String> values = new LinkedHashMap<>();
+		for (Map.Entry<String, JsonElement> entry : e.getAsJsonObject().entrySet()) {
+			if (entry.getValue().isJsonPrimitive()) {
+				values.put(entry.getKey(), entry.getValue().getAsString());
+			}
+		}
+		return values;
 	}
 
 	private static Boolean bool(JsonObject o, String key) {

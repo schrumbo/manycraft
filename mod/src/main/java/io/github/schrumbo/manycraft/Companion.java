@@ -4,6 +4,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
@@ -36,6 +37,7 @@ final class Companion {
 	private final ChatBridge chat;
 	private final PreviewService preview;
 	private final GameIdentity identity = new GameIdentity();
+	private final OptionSync options = new OptionSync();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 
@@ -70,6 +72,21 @@ final class Companion {
 
 	int hiddenFramerate() {
 		return background.hiddenFramerate();
+	}
+
+	void saveOptions(Options gameOptions, Runnable save) {
+		if (guard.blocksSave()) {
+			save.run();
+			return;
+		}
+		var changed = options.save(gameOptions, save);
+		if (!changed.isEmpty()) {
+			send(Protocol.options(changed));
+		}
+	}
+
+	void serversSaved() {
+		send(Protocol.servers());
 	}
 
 	String title() {
@@ -189,6 +206,14 @@ final class Companion {
 		}
 		if (message instanceof Protocol.Incoming.Badge b) {
 			identity.showBadge(b.visible());
+			return;
+		}
+		if (message instanceof Protocol.Incoming.Options shared) {
+			options.apply(mc, shared.values(), background);
+			return;
+		}
+		if (message instanceof Protocol.Incoming.Servers) {
+			options.serversChanged(mc);
 			return;
 		}
 		BackgroundController bg = background;

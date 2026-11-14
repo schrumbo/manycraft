@@ -1604,7 +1604,7 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
                 fx.revealed = rt.reveal.take();
             }
         }
-        FromMod::Window { .. } | FromMod::Hello { .. } => {}
+        FromMod::Window { .. } | FromMod::Hello { .. } | FromMod::Options { .. } | FromMod::Servers => {}
     }
 }
 

@@ -164,7 +164,8 @@ impl Batch {
         }
     }
 
-    /// Folder holding `batch.json`, the shared `mods/` and `config/` and the `options.txt` template.
+    /// Folder holding `batch.json`, the shared `mods/`, `config/`, `resourcepacks/` and `shaderpacks/`, and the
+    /// `options.txt` and `servers.dat` templates.
     pub fn dir(&self) -> PathBuf {
         batches_dir().join(&self.id)
     }
@@ -179,9 +180,24 @@ impl Batch {
         self.dir().join("config")
     }
 
-    /// Game options every instance starts from.
+    /// Shared resource pack folder every instance of the batch links to.
+    pub fn resourcepacks_dir(&self) -> PathBuf {
+        self.dir().join("resourcepacks")
+    }
+
+    /// Shared shader pack folder every instance of the batch links to.
+    pub fn shaderpacks_dir(&self) -> PathBuf {
+        self.dir().join("shaderpacks")
+    }
+
+    /// Game options every instance starts from; a game that saves its options updates the keys it changed.
     pub fn options_template(&self) -> PathBuf {
         self.dir().join("options.txt")
+    }
+
+    /// Server list every instance starts from; a game that saves its list replaces it.
+    pub fn servers_template(&self) -> PathBuf {
+        self.dir().join("servers.dat")
     }
 
     /// The join commands as they are sent: trimmed, without empty lines or lines longer than a chat message, at most 20.

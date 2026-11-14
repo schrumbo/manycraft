@@ -19,7 +19,7 @@ abstract class OptionsMixin {
 	}
 
 	@WrapMethod(method = "save")
-	private void manycraft$keepFullscreen(Operation<Void> original) {
+	private void manycraft$save(Operation<Void> original) {
 		CompanionHooks.saveOptions((Options) (Object) this, () -> original.call());
 	}
 }

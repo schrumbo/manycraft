@@ -1,6 +1,7 @@
 package io.github.schrumbo.manycraft;
 
 import io.github.schrumbo.manycraft.mixin.OptionsAccessor;
+import java.util.Set;
 import java.util.function.Consumer;
 import net.minecraft.client.CloudStatus;
 import net.minecraft.client.Minecraft;
@@ -41,6 +42,17 @@ final class BackgroundController {
 				case FULL -> new Values(renderDistance, simulationDistance, particles, clouds, 0.0, framerateLimit);
 				case CUSTOM -> new Values(Math.min(renderDistance, hiddenRenderDistance), hiddenSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, Math.min(framerateLimit, hiddenFramerateLimit));
 			};
+		}
+
+		Values adopt(Set<String> keys, Values live) {
+			return new Values(
+				keys.contains("renderDistance") ? live.renderDistance : renderDistance,
+				keys.contains("simulationDistance") ? live.simulationDistance : simulationDistance,
+				keys.contains("particles") ? live.particles : particles,
+				keys.contains("renderClouds") ? live.clouds : clouds,
+				keys.contains("soundCategory_" + SoundSource.MASTER.getName()) ? live.masterVolume : masterVolume,
+				keys.contains("maxFps") ? live.framerateLimit : framerateLimit
+			);
 		}
 	}
 
@@ -135,6 +147,11 @@ final class BackgroundController {
 
 	boolean blocksSave() {
 		return guard.blocksSave();
+	}
+
+	void applyUser(Set<String> keys, Runnable apply) {
+		apply.run();
+		mode.adopt((saved, live) -> saved.adopt(keys, live));
 	}
 
 	void applyProfile(Protocol.Incoming.Profile update) {
