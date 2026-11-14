@@ -724,6 +724,10 @@ impl BatchSheet {
         } else if self.searching {
             if let Some(hit) = self.top_hit(cx) {
                 self.add_mod(&hit, cx);
+                self.query.update(cx, |q, cx| {
+                    let end = q.value().len();
+                    q.set_selected_range(0..end, cx);
+                });
             }
         } else {
             self.save(cx);
@@ -1021,14 +1025,11 @@ impl BatchSheet {
             Some(Load::Ready(list)) => list.iter().filter(|u| !self.applied.contains(&u.current.project_id)).count(),
             _ => 0,
         };
-        let mut header = div().flex().items_center().gap(px(space::S)).child(div().flex_1().child(sheet::label(if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") }, t)));
+        let mut header = div().flex().items_center().gap(px(space::S)).min_h(px(control::M)).child(div().flex_1().child(sheet::label(if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") }, t)));
         if count > 1 {
             header = header.child(sheet::button("updates-all", tr("Alle aktualisieren"), Some("refresh-cw"), Look::Secondary, self.saving, busy, t).on_click(cx.listener(|s, _, _, cx| s.apply_updates(None, cx))));
         }
         col = col.child(header);
-        if let Some(note) = &self.updates_note {
-            col = col.child(sheet::status("circle-check", t.success_text, note.clone()));
-        }
         if let Some(e) = &self.update_error {
             col = col.child(self.problem("update-error", "circle-alert", t.danger_text, e, cx, t));
         }
@@ -1046,9 +1047,8 @@ impl BatchSheet {
                 );
             }
             Some(Load::Ready(list)) if list.is_empty() => {
-                if self.updates_note.is_none() {
-                    col = col.child(sheet::status("circle-check", t.success_text, tr("Alle Mods sind aktuell.")));
-                }
+                let line = self.updates_note.clone().unwrap_or_else(|| tr("Alle Mods sind aktuell."));
+                col = col.child(sheet::status("circle-check", t.success_text, line));
             }
             Some(Load::Ready(list)) => {
                 let mut rows = div().flex().flex_col().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
@@ -1086,6 +1086,9 @@ impl BatchSheet {
                     );
                 }
                 col = col.child(rows);
+                if let Some(note) = &self.updates_note {
+                    col = col.child(sheet::status("circle-check", t.success_text, note.clone()));
+                }
                 if running {
                     col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Gilt beim nächsten Start.")));
                 }

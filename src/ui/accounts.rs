@@ -538,9 +538,7 @@ impl AddAccountSheet {
                     SignInError::Other(p) => p.detail.clone(),
                     _ => None,
                 };
-                if self.queue.len() > 1 && self.again.is_none() {
-                    leading.push(sheet::button("skip", tr("Überspringen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.skip(cx))).into_any_element());
-                }
+                let skip = (self.queue.len() > 1 && self.again.is_none()).then(|| div().flex().child(sheet::button("skip", tr("Überspringen"), None, Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.skip(cx)))));
                 if offline {
                     trailing.push(sheet::button("to-offline", tr("Offline-Konto hinzufügen"), None, Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))).into_any_element());
                 } else {
@@ -561,7 +559,8 @@ impl AddAccountSheet {
                             .gap(px(space::XS))
                             .child(div().id("sign-in-error").mark("error", title.clone()).text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
                             .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(detail))
-                            .children(technical.map(|d| sheet::details("sign-in-technical", d, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t))),
+                            .children(technical.map(|d| sheet::details("sign-in-technical", d, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t)))
+                            .children(skip),
                     )
             }
         };
@@ -619,6 +618,8 @@ impl Render for AddAccountSheet {
             .on_action(cx.listener(|s, _: &Cancel, _, cx| {
                 if matches!(s.step, Step::Choose) || s.again.is_some() {
                     cx.propagate();
+                } else if matches!(s.step, Step::Microsoft(Ms::Added(_))) {
+                    s.finish(cx);
                 } else {
                     s.back(cx);
                 }
