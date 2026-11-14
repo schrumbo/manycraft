@@ -48,11 +48,6 @@ impl Account {
         self.color.map_or_else(|| (self.id.as_bytes().iter().map(|b| u32::from(*b)).sum::<u32>() % COLORS.len() as u32) as u8, |c| c % COLORS.len() as u8)
     }
 
-    /// The account's colour as `0xRRGGBB`.
-    pub fn rgb(&self) -> u32 {
-        COLORS[usize::from(self.color())]
-    }
-
     /// An offline account for `name`, validated like vanilla (3 to 16 letters, digits or `_`).
     pub fn offline(name: &str) -> Result<Self> {
         validate_offline_name(name)?;
@@ -99,7 +94,10 @@ pub fn least_used(accounts: &[Account]) -> u8 {
 /// Adds `account`, or replaces the saved account with the same id in place; a new account without a colour gets the least used one. Returns the account as saved.
 pub fn upsert(accounts: &mut Vec<Account>, mut account: Account) -> Account {
     match accounts.iter_mut().find(|a| a.id == account.id) {
-        Some(slot) => *slot = account.clone(),
+        Some(slot) => {
+            account.color = account.color.or(slot.color);
+            *slot = account.clone();
+        }
         None => {
             account.color = account.color.or_else(|| Some(least_used(accounts)));
             accounts.push(account.clone());
@@ -284,6 +282,14 @@ mod tests {
     }
 
     #[test]
+    fn replacing_without_a_colour_keeps_the_saved_one() {
+        let mut accounts = vec![Account { color: Some(5), ..account(1, "Old", None) }];
+        assert_eq!(upsert(&mut accounts, account(1, "New", None)).color, Some(5));
+        assert_eq!(upsert(&mut accounts, Account { color: Some(2), ..account(1, "New", None) }).color, Some(2));
+        assert_eq!(accounts[0].color, Some(2));
+    }
+
+    #[test]
     fn new_accounts_get_the_least_used_colour_and_keep_it() {
         let mut accounts = Vec::new();
         for n in 0..COLORS.len() as u128 {
@@ -315,11 +321,10 @@ mod tests {
     }
 
     #[test]
-    fn colours_wrap_and_map_to_rgb() {
+    fn colours_wrap() {
         let mut a = account(1, "A", None);
         a.color = Some(9);
         assert_eq!(a.color(), 1);
-        assert_eq!(a.rgb(), COLORS[1]);
     }
 
 

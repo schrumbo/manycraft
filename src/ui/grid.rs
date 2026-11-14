@@ -98,7 +98,7 @@ struct Order {
 
 impl Order {
     /// Follows `m`. Without a state change since the last sort, or while `hovered`, it only drops instances that are gone and adds new ones
-    /// at the end; the instance being played keeps its place. True when the order changed.
+    /// at the end. True when the order changed.
     fn update(&mut self, m: &Model, hovered: bool) -> bool {
         if self.seq == Some(m.order_seq) || hovered {
             if self.keys.len() != m.instances.len() || self.keys.iter().any(|k| !m.instances.contains_key(k)) {
@@ -112,21 +112,33 @@ impl Order {
             return false;
         }
         self.seq = Some(m.order_seq);
-        let sorted = arrange(m.sorted(None).into_iter().map(|i| i.key.clone()).collect(), &self.keys, m.playing.as_deref());
+        let sorted: Vec<String> = m.sorted(None).into_iter().map(|i| i.key.clone()).collect();
         let changed = sorted != self.keys;
         self.keys = sorted;
         changed
     }
+
+    /// Moves `key` so that filtering the order again puts it where it is in `shown`, next to a neighbour of the same `group`.
+    fn follow(&mut self, shown: &[String], key: &str, group: impl Fn(&str) -> Option<String>) {
+        let (Some(at), Some(from)) = (shown.iter().position(|k| k == key), self.keys.iter().position(|k| k == key)) else { return };
+        let mine = group(key);
+        let moved = self.keys.remove(from);
+        let before = at.checked_sub(1).map(|p| shown[p].as_str()).filter(|k| group(k) == mine).and_then(|p| self.keys.iter().position(|k| k == p)).map(|i| i + 1);
+        let after = shown.get(at + 1).map(String::as_str).filter(|k| group(k) == mine).and_then(|n| self.keys.iter().position(|k| k == n));
+        self.keys.insert(before.or(after).unwrap_or(from).min(self.keys.len()), moved);
+    }
 }
 
-/// `sorted` with `pinned` moved back to where it was in `old`.
-fn arrange(mut sorted: Vec<String>, old: &[String], pinned: Option<&str>) -> Vec<String> {
-    if let Some(pinned) = pinned
-        && let Some(was) = old.iter().position(|k| k == pinned)
+/// `sorted` with `pinned` moved back to its place in `old`, kept among the keys of its `group`.
+fn arrange(mut sorted: Vec<String>, old: &[String], pinned: &str, group: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    if let Some(was) = old.iter().position(|k| k == pinned)
         && let Some(now) = sorted.iter().position(|k| k == pinned)
     {
         let key = sorted.remove(now);
-        sorted.insert(was.min(sorted.len()), key);
+        let mine = group(&key);
+        let low = sorted.iter().position(|k| group(k) == mine).unwrap_or(now);
+        let high = sorted.iter().rposition(|k| group(k) == mine).map_or(low, |i| i + 1);
+        sorted.insert(was.clamp(low.min(high), high).min(sorted.len()), key);
     }
     sorted
 }
@@ -338,7 +350,7 @@ pub fn found(i: &Instance, m: &Model, words: &[String]) -> bool {
     words.iter().all(|w| text.contains(w.as_str()))
 }
 
-//// Columns and tile height of the mosaic, and whether it scrolls.
+/// Columns and tile height of the mosaic, and whether it scrolls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
     pub columns: usize,
@@ -378,8 +390,8 @@ pub fn layout(sections: &[usize], width: f32, height: f32, headed: bool) -> Layo
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, l)| l);
     fit.unwrap_or_else(|| {
-        let columns = (((width + tile::HAIRLINE) / (tile::MIN_W + tile::HAIRLINE)).floor() as usize).clamp(1, most);
-        Layout { columns, height: (tile_width(columns, width) / tile::ASPECT).max(tile::MIN_H), scrolls: true }
+        let fits = (((width + tile::HAIRLINE) / (tile::MIN_W + tile::HAIRLINE)).floor() as usize).max(1);
+        Layout { columns: fits.min(most), height: (tile_width(fits, width) / tile::ASPECT).max(tile::MIN_H), scrolls: true }
     })
 }
 
@@ -455,10 +467,10 @@ fn move_selection(this: &mut MainWindow, step: Move, extend: bool, cx: &mut Cont
         (Some(a), Move::Forward) => (a + 1).min(last),
         (Some(a), Move::Up(n) | Move::Down(n)) => {
             let Some(row) = g.row_at(a) else { return };
-            let column = a - g.rows[row].1;
+            let (_, start, stop) = g.rows[row];
             let to = if matches!(step, Move::Up(_)) { row.saturating_sub(n) } else { (row + n).min(g.rows.len() - 1) };
             let (_, from, end) = g.rows[to];
-            from + column.min(end - from - 1)
+            from + column_below(a - start, stop - start, end - from)
         }
     };
     let key = g.shown[next].clone();
@@ -467,6 +479,11 @@ fn move_selection(this: &mut MainWindow, step: Move, extend: bool, cx: &mut Cont
         g.reveal_row(row);
     }
     cx.notify();
+}
+
+/// The column in a row of `to` tiles under the centre of column `column` in a row of `from` tiles.
+fn column_below(column: usize, from: usize, to: usize) -> usize {
+    (((column as f32 + 0.5) * to as f32 / from.max(1) as f32) as usize).min(to.saturating_sub(1))
 }
 
 fn action(id: &'static str, label: String, icon_name: &str, action: Box<dyn Action>, t: &Theme) -> AnyElement {
@@ -562,6 +579,11 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         let rank: HashMap<&str, usize> = m.batches.iter().enumerate().map(|(n, b)| (b.id.as_str(), n)).collect();
         keys.sort_by_key(|k| m.instances.get(k).and_then(|i| rank.get(i.batch_id.as_str()).copied()).unwrap_or(usize::MAX));
     }
+    if resorted && same_scope && let Some(playing) = m.playing.as_deref() {
+        let group = |k: &str| headed.then(|| batch_of(&k.to_owned()));
+        keys = arrange(std::mem::take(&mut keys), &this.grid.shown, playing, group);
+        this.grid.order.follow(&keys, playing, group);
+    }
     if !this.grid.picks.set.is_empty() {
         let shown: HashSet<&str> = keys.iter().map(String::as_str).collect();
         if this.grid.picks.set.iter().any(|k| !shown.contains(k.as_str())) {
@@ -615,8 +637,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let (width, height) = if area.width > px(0.) { (f32::from(area.width), f32::from(area.height)) } else { (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height) - shell::TOOLBAR) };
     let width = width.max(1.);
     let counts: Vec<usize> = sections.iter().map(|(_, from, to)| to - from).collect();
-    let bar = if this.grid.picks.set.len() >= 2 { selection::BAR + selection::BOTTOM } else { 0. };
-    let Layout { columns, height: tile_h, .. } = layout(&counts, width, (height - bar).max(1.), headed);
+    let Layout { columns, height: tile_h, .. } = layout(&counts, width, height.max(1.), headed);
     let row_h = tile_h + tile::HAIRLINE;
     let mut items = Vec::new();
     for (n, (_, from, to)) in sections.iter().enumerate() {
@@ -658,6 +679,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     this.grid.row_h = row_h;
     this.grid.tops = tops.clone();
     this.grid.headed = headed;
+    let bar = if this.grid.picks.set.len() >= 2 { selection::BAR + selection::BOTTOM } else { 0. };
     this.grid.padding = bar;
     if std::mem::take(&mut this.grid.reveal)
         && let Some(row) = this.grid.selected.as_ref().and_then(|s| keys.iter().position(|k| k == s)).and_then(|at| this.grid.row_at(at))
@@ -1019,7 +1041,7 @@ pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<Ma
 
 #[cfg(test)]
 mod tests {
-    use super::{Filter, Instance, Model, Order, Phase, Picks, arrange, chosen, found, layout, matches, tile, tile_width, word, words};
+    use super::{Filter, Instance, Model, Order, Phase, Picks, arrange, chosen, column_below, found, layout, matches, tile, tile_width, word, words};
 
     fn rows(sections: &[usize], columns: usize) -> usize {
         sections.iter().map(|n| n.div_ceil(columns)).sum()
@@ -1064,6 +1086,8 @@ mod tests {
         assert_eq!((narrow.columns, narrow.scrolls), (1, true));
         assert!(narrow.height >= tile::MIN_H);
         assert_eq!(layout(&[3, 3], 2000., 300., true).columns, 3, "never more columns than the largest section");
+        let small = layout(&[2; 5], 1060., 718., true);
+        assert!(small.scrolls && small.height < 120., "small sections scroll at the smallest tile height, not as huge tiles: {small:?}");
     }
 
     fn mk(phase: Phase) -> Instance {
@@ -1105,18 +1129,27 @@ mod tests {
     }
 
     #[test]
-    fn the_instance_being_played_keeps_its_place() {
-        let mut m = fleet(&[("a", playing()), ("b", playing()), ("c", playing())]);
-        let mut order = Order::default();
-        order.update(&m, false);
-        m.playing = Some("b".into());
-        m.instances.get_mut("c").unwrap().phase = lost();
-        m.order_seq += 1;
-        order.update(&m, false);
-        assert_eq!(order.keys, ["c", "b", "a"], "b stays second while c moves up past it");
+    fn the_instance_being_played_keeps_its_place_on_screen() {
         let k = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(arrange(k(&["x", "y", "z"]), &k(&["z", "x", "y"]), Some("z")), ["z", "x", "y"]);
-        assert_eq!(arrange(k(&["x", "y"]), &k(&["x", "y", "z"]), Some("z")), ["x", "y"], "a pinned key that is gone changes nothing");
+        let flat = |_: &str| None;
+        assert_eq!(arrange(k(&["c", "a", "b"]), &k(&["a", "b", "c"]), "b", flat), ["c", "b", "a"], "b stays second while c moves up past it");
+        assert_eq!(arrange(k(&["x", "y"]), &k(&["x", "y", "z"]), "z", flat), ["x", "y"], "a pinned key that is gone changes nothing");
+        let batch = |key: &str| Some(key[..1].to_owned());
+        assert_eq!(arrange(k(&["a1", "a2", "b2", "b1"]), &k(&["b1", "b2", "a1", "a2"]), "b1", batch), ["a1", "a2", "b1", "b2"], "it never leaves its batch's section");
+        let mut order = Order { keys: k(&["x1", "b3", "b1", "x2", "b2"]), seq: None };
+        let shown = k(&["b3", "b2", "b1"]);
+        order.follow(&shown, "b2", flat);
+        let again: Vec<&String> = order.keys.iter().filter(|key| key.starts_with('b')).collect();
+        assert_eq!(again, ["b3", "b2", "b1"], "filtering the order again keeps the pinned place");
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_under_the_tile_centre() {
+        assert_eq!(column_below(2, 3, 2), 1);
+        assert_eq!(column_below(1, 2, 3), 2);
+        assert_eq!(column_below(0, 3, 2), 0);
+        assert_eq!(column_below(1, 3, 3), 1);
+        assert_eq!(column_below(4, 5, 1), 0);
     }
 
     #[test]

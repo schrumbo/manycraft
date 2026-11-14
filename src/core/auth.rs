@@ -439,6 +439,9 @@ fn login_offline(name: &str) -> Result<()> {
     let account = Account::offline(name)?;
     let mut accounts = account::load()?;
     println!("Offline account {} ({})", account.name, account.id);
+    if accounts.iter().any(|a| a.id == account.id) {
+        return Ok(());
+    }
     account::upsert(&mut accounts, account);
     account::save(&accounts)
 }

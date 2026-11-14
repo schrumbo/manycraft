@@ -161,7 +161,6 @@ pub mod selection {
     /// Space between the bar and the bottom of the grid.
     pub const BOTTOM: f32 = 16.;
     /// The check mark on a selected tile.
-    pub const CHECK: f32 = 20.;
     /// Width of the message field in the bar.
     pub const FIELD: f32 = 300.;
     /// Blur and drop of the bar's shadow, a little deeper than a menu's.
