@@ -109,17 +109,17 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn toggle(&self, id: &'static str, label: String, hint: String, on: bool, apply: impl Fn(&mut Settings, bool) + Clone + 'static, t: &Theme, cx: &mut Context<Self>) -> Div {
+    fn toggle(&self, id: &'static str, label: String, hint: String, on: bool, apply: impl Fn(&mut Settings, bool) + Clone + 'static, t: &Theme, cx: &mut Context<Self>) -> Row {
         let flip = apply.clone();
         let control = Switch::new(id).checked(on).accessibility_label(label.clone()).on_click(cx.listener(move |s, on: &bool, _, cx| {
             let on = *on;
             s.change(|st| apply(st, on), cx);
         }));
         let press = cx.listener(move |s, _: &ClickEvent, _, cx| s.change(|st| flip(st, !on), cx));
-        row_with(label, Some(hint), control, Some((SharedString::from(format!("{id}-label")), Box::new(press))), t)
+        Row { press: Some((SharedString::from(format!("{id}-row")), Box::new(press))), ..row(label, Some(hint), control, t) }
     }
 
-    fn attempts(&self, id: &'static str, label: String, value: u32, enabled: bool, apply: impl Fn(&mut Settings, u32) + Clone + 'static, t: &Theme, cx: &mut Context<Self>) -> Div {
+    fn attempts(&self, id: &'static str, label: String, value: u32, enabled: bool, apply: impl Fn(&mut Settings, u32) + Clone + 'static, t: &Theme, cx: &mut Context<Self>) -> Row {
         let (less, more) = (apply.clone(), apply);
         let can_less = enabled && value > *ATTEMPTS.start();
         let can_more = enabled && value < *ATTEMPTS.end();
@@ -148,41 +148,42 @@ fn step_button(id: SharedString, name: &str, label: String, enabled: bool, t: &T
 
 type Press = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-fn row(label: String, hint: Option<String>, control: impl IntoElement, t: &Theme) -> Div {
-    row_with(label, hint, control, None, t)
+struct Row {
+    text: Div,
+    control: AnyElement,
+    press: Option<(SharedString, Press)>,
 }
 
-fn row_with(label: String, hint: Option<String>, control: impl IntoElement, press: Option<(SharedString, Press)>, t: &Theme) -> Div {
-    let lines = (div().text_size(px(font::BODY)).text_color(t.primary).child(label), hint.map(|h| div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(h)));
-    let text = match press {
-        Some((id, press)) => div()
-            .id(id)
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .cursor_pointer()
-            .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-            .on_click(press)
-            .child(lines.0)
-            .children(lines.1)
-            .into_any_element(),
-        None => div().flex_1().min_w_0().flex().flex_col().child(lines.0).children(lines.1).into_any_element(),
-    };
-    div()
-        .flex()
-        .items_center()
-        .gap(px(space::L))
-        .px(px(space::L))
-        .py(px(space::M))
-        .min_h(px(control::L + space::M))
-        .child(text)
-        .child(div().flex_none().child(control))
+fn row(label: String, hint: Option<String>, control: impl IntoElement, t: &Theme) -> Row {
+    let text = div().flex_1().min_w_0().flex().flex_col().child(div().text_size(px(font::BODY)).text_color(t.primary).child(label)).children(hint.map(|h| div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(h)));
+    Row { text, control: control.into_any_element(), press: None }
 }
 
-fn group(title: String, rows: Vec<Div>, footer: Option<String>, t: &Theme) -> Div {
+fn group(title: String, rows: Vec<Row>, footer: Option<String>, t: &Theme) -> Div {
     let last = rows.len().saturating_sub(1);
-    let rows = rows.into_iter().enumerate().map(|(i, r)| if i < last { r.border_b_1().border_color(t.separator) } else { r });
+    let inner = radius::CARD - 1.;
+    let rows = rows.into_iter().enumerate().map(|(i, r)| {
+        let (top, bottom) = (if i == 0 { inner } else { 0. }, if i == last { inner } else { 0. });
+        let control = match &r.press {
+            Some((id, _)) => div().id(SharedString::from(format!("{id}-control"))).flex_none().on_click(|_, _, cx| cx.stop_propagation()).child(r.control).into_any_element(),
+            None => div().flex_none().child(r.control).into_any_element(),
+        };
+        let press = r.press.map(|(id, press)| {
+            div().id(id).absolute().inset_0().cursor_pointer().soft_corners(t.ink.opacity(tint::HOVER), Corners { top_left: top, top_right: top, bottom_right: bottom, bottom_left: bottom }).on_click(press)
+        });
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(space::L))
+            .px(px(space::L))
+            .py(px(space::M))
+            .min_h(px(control::L + space::M))
+            .when(i < last, |d| d.border_b_1().border_color(t.separator))
+            .children(press)
+            .child(r.text)
+            .child(control)
+    });
     div()
         .flex()
         .flex_col()

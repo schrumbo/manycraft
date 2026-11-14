@@ -16,7 +16,7 @@ use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint};
-use super::widgets::{KeyNav, TakeFocus, icon, segment};
+use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 use crate::core::modicons;
@@ -609,25 +609,14 @@ impl BatchSheet {
         };
         let sorting = (!query.is_empty()).then(|| {
             let sort = self.browser.sort;
-            div()
-                .id("mods-sort")
-                .p(px(space::XXS))
-                .rounded(px(radius::CONTROL))
-                .bg(t.raised)
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(space::XXS))
-                .child(segment("sort-relevance", tr("Relevanz"), sort == Sort::Relevance, t).on_click(cx.listener(|s, _, window, cx| {
-                    s.browser.sort = Sort::Relevance;
-                    s.browse_refresh(false, cx);
+            let pick = cx.listener(|s, n: &usize, window, cx| {
+                s.browser.sort = if *n == 0 { Sort::Relevance } else { Sort::Downloads };
+                s.browse_refresh(false, cx);
+                if !window.last_input_was_keyboard() {
                     s.browse_focus(window, cx);
-                })))
-                .child(segment("sort-downloads", tr("Downloads"), sort == Sort::Downloads, t).on_click(cx.listener(|s, _, window, cx| {
-                    s.browser.sort = Sort::Downloads;
-                    s.browse_refresh(false, cx);
-                    s.browse_focus(window, cx);
-                })))
+                }
+            });
+            segmented("mods-sort", [segment("sort-relevance", tr("Relevanz"), sort == Sort::Relevance, t), segment("sort-downloads", tr("Downloads"), sort == Sort::Downloads, t)], move |n, window, cx| pick(&n, window, cx), t)
         });
         let all = self.browser.all;
         let toggle = |s: &mut Self, window: &mut Window, cx: &mut Context<Self>| {

@@ -14,7 +14,7 @@ use super::palette::{hint, menu_row, shortcut};
 use super::model;
 use super::motion::Soft;
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
-use super::widgets::{KeyNav, icon, tip};
+use super::widgets::{self, KeyNav, icon, segment_frame, tip};
 use crate::core::i18n::{tr, trf};
 
 /// The leading padding of a page's top bar that puts the sidebar symbol on the grid's edge.
@@ -64,35 +64,20 @@ struct Segment {
 }
 
 fn segmented(id: &'static str, segments: Vec<Segment>, on_pick: impl Fn(usize, &mut MainWindow, &mut Window, &mut Context<MainWindow>) + 'static, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let on_pick = std::rc::Rc::new(on_pick);
-    let items = segments.into_iter().enumerate().map(|(n, s)| {
-        let pick = std::rc::Rc::clone(&on_pick);
+    let items = segments.into_iter().map(|s| {
         let count = if s.loud { t.attention_text } else if s.selected { t.secondary } else { t.tertiary };
         let counted = s.count > 0 || s.id != "filter-attention";
-        div()
-            .id(SharedString::from(s.id))
-            .mark("segment", s.label.clone())
-            .h(px(control::S))
-            .px(px(space::S))
-            .rounded(px(radius::INNER))
-            .flex()
-            .flex_none()
-            .items_center()
+        segment_frame(SharedString::from(s.id), s.label.clone(), s.selected, t)
             .gap(px(space::XS))
-            .text_size(px(font::CALLOUT))
-            .when(s.selected, |d| d.bg(t.content).shadow_xs().font_weight(FontWeight::MEDIUM).text_color(t.primary))
-            .when(!s.selected, |d| d.bg(t.raised).text_color(t.secondary))
-            .cursor_pointer()
-            .key_nav()
-            .soft(t.ink.opacity(if s.selected { 0. } else { tint::HOVER }), radius::INNER)
+            .when(s.selected, |d| d.font_weight(FontWeight::MEDIUM))
             .child(s.label)
             .when(counted, |d| d.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(count).child(s.count.to_string())))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                pick(n, this, window, cx);
-                cx.notify();
-            }))
     });
-    div().id(id).p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).children(items)
+    let pick = cx.listener(move |this, n: &usize, window, cx| {
+        on_pick(*n, this, window, cx);
+        cx.notify();
+    });
+    widgets::segmented(id, items, move |n, window, cx| pick(&n, window, cx), t)
 }
 
 fn action_button(id: &'static str, label: String, name: &'static str, prominent: bool, disabled: bool, compact: bool, action: Box<dyn Action>, t: &Theme) -> Stateful<Div> {

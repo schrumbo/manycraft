@@ -4,20 +4,31 @@ use gpui_kit::*;
 
 use super::drive::Mark;
 use super::motion::Soft;
-use super::theme::{Theme, control, font, iconsize, radius, ring, space, tint};
+use super::theme::{Theme, control, edge, font, iconsize, radius, ring, space, tint};
 
 /// Makes a clickable element reachable with Tab; Enter and Space then click it, and a ring shows where the focus is.
+/// Call it after the element's fill: a control without one gets its ring inside, since a ring outside would fill it.
 pub trait KeyNav {
     fn key_nav(self) -> Self;
 }
 
 impl KeyNav for Stateful<Div> {
-    fn key_nav(self) -> Self {
+    fn key_nav(mut self) -> Self {
         let color = ring::color();
-        super::drive::marked(self, "clickable").tab_index(0).focus_visible(move |s| {
-            s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(ring::WIDTH), inset: false }])
-        })
+        let filled = self.style().background.as_ref().and_then(Fill::color).is_some_and(|c| !c.is_transparent());
+        let (spread, inset) = if filled { (ring::WIDTH, false) } else { (ring::INSET, true) };
+        super::drive::marked(self, "clickable")
+            .tab_index(0)
+            .focus_visible(move |s| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset }]))
     }
+}
+
+/// The edge that keeps a small badge readable over a bright preview: a ring in the window colour and a soft shadow.
+pub fn badge_edge(t: &Theme) -> Vec<BoxShadow> {
+    vec![
+        BoxShadow { color: black().opacity(tint::BADGE_SHADOW), offset: point(px(0.), px(0.)), blur_radius: px(edge::BLUR), spread_radius: px(0.), inset: false },
+        BoxShadow { color: t.window, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(edge::RING), inset: false },
+    ]
 }
 
 /// Focuses a text field without starting its caret blink while the window is inactive, where nothing would stop it.
@@ -60,11 +71,11 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
 }
 
-/// One choice of a segmented control; the selected one is raised.
-pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
+/// The frame of one segment, raised when selected, with hover and keyboard focus; add its content and wrap it in [`segmented`].
+pub fn segment_frame(id: impl Into<ElementId>, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
     div()
         .id(id)
-        .mark("segment", label.clone())
+        .mark("segment", label)
         .h(px(control::S))
         .px(px(space::S))
         .rounded(px(radius::INNER))
@@ -72,12 +83,16 @@ pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Them
         .flex_none()
         .items_center()
         .text_size(px(font::CALLOUT))
-        .when(selected, |d| d.bg(t.content).shadow_xs().text_color(t.primary))
+        .when(selected, |d| d.bg(t.segment).shadow_xs().text_color(t.primary))
         .when(!selected, |d| d.bg(t.raised).text_color(t.secondary))
         .cursor_pointer()
         .key_nav()
-        .soft(t.ink.opacity(if selected { 0. } else { tint::HOVER }), radius::INNER)
-        .child(
+        .soft(if selected { transparent_black() } else { t.segment.opacity(tint::SEGMENT_HOVER) }, radius::INNER)
+}
+
+/// One choice of a segmented control with a plain label; the selected one is raised.
+pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
+    segment_frame(id, label.clone(), selected, t).child(
             div()
                 .flex()
                 .flex_col()
@@ -85,6 +100,34 @@ pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Them
                 .child(div().when(selected, |d| d.font_weight(FontWeight::MEDIUM)).child(label.clone()))
                 .child(div().h_0().overflow_hidden().font_weight(FontWeight::MEDIUM).text_color(transparent_black()).child(label)),
         )
+}
+
+/// A segmented control: a click on a segment or Left and Right on a focused one picks it, `on_pick` gets its index.
+pub fn segmented(id: impl Into<ElementId>, segments: impl IntoIterator<Item = Stateful<Div>>, on_pick: impl Fn(usize, &mut Window, &mut App) + 'static, t: &Theme) -> Stateful<Div> {
+    let on_pick = std::rc::Rc::new(on_pick);
+    let segments: Vec<Stateful<Div>> = segments.into_iter().collect();
+    let last = segments.len().saturating_sub(1);
+    let items = segments.into_iter().enumerate().map(|(n, s)| {
+        let (click, key) = (on_pick.clone(), on_pick.clone());
+        s.on_click(move |_, window, cx| click(n, window, cx)).on_key_down(move |e: &KeyDownEvent, window, cx| {
+            if e.keystroke.modifiers.modified() {
+                return;
+            }
+            let to = match e.keystroke.key.as_str() {
+                "left" if n > 0 => n - 1,
+                "right" if n < last => n + 1,
+                "left" | "right" => n,
+                _ => return,
+            };
+            cx.stop_propagation();
+            if to == n {
+                return;
+            }
+            key(to, window, cx);
+            if to < n { window.focus_prev(cx) } else { window.focus_next(cx) }
+        })
+    });
+    div().id(id).p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).children(items)
 }
 
 /// Tooltip builder for `.tooltip(...)`.
