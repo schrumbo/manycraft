@@ -763,7 +763,7 @@ impl BatchSheet {
         let step = |icon_name: &'static str, label: String, up: bool, cx: &mut Context<Self>| {
             let id = SharedString::from(format!("background-{id}-{}", if up { "more" } else { "less" }));
             if busy || forms::ladder_step(value, up, steps) == value {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().opacity(tint::DISABLED).cursor_not_allowed().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)).opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 if s.saving || s.mods_busy.is_some() {
@@ -829,7 +829,7 @@ impl BatchSheet {
         }
         let step = |id: &'static str, icon_name: &'static str, label: String, limit: bool, delta: i32, cx: &mut Context<Self>| {
             if limit {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().opacity(tint::DISABLED).cursor_not_allowed().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)).opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
