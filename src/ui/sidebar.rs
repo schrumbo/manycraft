@@ -38,7 +38,7 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
         .flex_none()
         .items_center()
         .gap(px(space::S))
-        .bg(if selected { t.accent.opacity(tint::ATTENTION) } else { t.window })
+        .bg(if selected { t.highlight.opacity(tint::SELECTED) } else { t.window })
         .cursor_pointer()
         .key_nav()
         .soft(t.ink.opacity(tint::HOVER), radius::INNER)
@@ -110,7 +110,12 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active()).count();
             let attention = m.attention_count(Some(&b.id));
             let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
-            let hint = trf("%lld von %lld laufen", &[&fine, &total]);
+            let hint = match (total, running) {
+                (0, _) => tr("Noch keiner da."),
+                (1, 0) => tr("Schläft noch."),
+                (_, 0) => trf("Alle %lld schlummern.", &[&total]),
+                _ => trf("%lld von %lld laufen", &[&fine, &total]),
+            };
             let stopped = total - running;
             (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{fine}/{total}")), attention, unread: 0, hint: Some(hint) }, b.id.clone(), running, stopped)
         })

@@ -208,6 +208,8 @@ pub mod tint {
     pub const RING: f32 = 0.8;
     /// The wash behind an account that needs work.
     pub const ATTENTION: f32 = 0.12;
+    /// The aqua fill behind a selected row.
+    pub const SELECTED: f32 = 0.22;
     /// The shade behind the floating sidebar.
     pub const SCRIM: f32 = 0.28;
     /// The bottom of the shade under a hovered preview's actions.
@@ -239,7 +241,7 @@ pub mod ring {
     /// Width of the ring outside the control.
     pub const WIDTH: f32 = 3.;
 
-    static ACCENT: RwLock<Hsla> = RwLock::new(Hsla { h: 0.49, s: 0.83, l: 0.26, a: 1. });
+    static ACCENT: RwLock<Hsla> = RwLock::new(Hsla { h: 0.57, s: 1., l: 0.31, a: 1. });
 
     /// Remembers the accent of the theme now drawn, so `color` follows it.
     pub fn set(accent: Hsla) {
@@ -294,6 +296,8 @@ pub struct Theme {
     pub accent_text: Hsla,
     /// Text and icons on a solid accent fill.
     pub on_accent: Hsla,
+    /// The aqua behind selected rows and chips; text on it stays `primary`.
+    pub highlight: Hsla,
     /// An account that needs work. Never the accent, so it stands out from selection and actions.
     pub attention: Hsla,
     pub attention_text: Hsla,
@@ -330,28 +334,29 @@ impl Theme {
         let ink = if dark { white() } else { black() };
         Self {
             dark,
-            window: if dark { c(0x1E1E1E) } else { c(0xF2F2F7) },
-            content: if dark { c(0x2C2C2E) } else { c(0xFFFFFF) },
-            raised: if dark { c(0x3A3A3C) } else { c(0xE8E8ED) },
-            well: if dark { c(0x242426) } else { c(0xECECF1) },
-            primary: ink.opacity(0.88),
-            secondary: ink.opacity(0.62),
-            tertiary: ink.opacity(if dark { 0.47 } else { 0.56 }),
-            separator: ink.opacity(if dark { 0.14 } else { 0.12 }),
-            accent: if dark { c(0x0E7C77) } else { c(0x0B7A75) },
-            accent_text: if dark { c(0x4FD1C5) } else { c(0x0A6560) },
-            on_accent: c(0xFFFFFF),
-            attention: if dark { c(0xFF9F0A) } else { c(0xFF9500) },
-            attention_text: if dark { c(0xFFB340) } else { c(0x824800) },
-            on_attention: c(0x1C1C1E),
-            success: if dark { c(0x30D158) } else { c(0x34C759) },
-            success_text: if dark { c(0x30D158) } else { c(0x1E7A34) },
-            danger: if dark { c(0xFF453A) } else { c(0xFF3B30) },
-            danger_text: if dark { c(0xFF6961) } else { c(0xC4271D) },
-            on_danger: c(0xFFFFFF),
+            window: if dark { c(0x0E1B2C) } else { c(0xF3F9FC) },
+            content: if dark { c(0x14263D) } else { c(0xFFFFFF) },
+            raised: if dark { c(0x1B365D) } else { c(0xE4F0F7) },
+            well: if dark { c(0x0A1624) } else { c(0xEAF3F8) },
+            primary: if dark { c(0xE8F1F8) } else { c(0x0E1B2C) },
+            secondary: if dark { c(0x9DB4CA) } else { c(0x455D75) },
+            tertiary: if dark { c(0x7D95AE) } else { c(0x586F85) },
+            separator: if dark { c(0x9DB4CA).opacity(0.18) } else { c(0x0E1B2C).opacity(0.12) },
+            accent: if dark { c(0x60C1E5) } else { c(0x005A9C) },
+            accent_text: if dark { c(0xA0E0EF) } else { c(0x005A9C) },
+            on_accent: if dark { c(0x0E1B2C) } else { c(0xFFFFFF) },
+            highlight: c(0x60C1E5),
+            attention: if dark { c(0xFFB020) } else { c(0xC77800) },
+            attention_text: if dark { c(0xFFB020) } else { c(0x8A5200) },
+            on_attention: c(0x0E1B2C),
+            success: if dark { c(0x5FD068) } else { c(0x2E8B3E) },
+            success_text: if dark { c(0x5FD068) } else { c(0x1E7434) },
+            danger: if dark { c(0xFF6F61) } else { c(0xD6382B) },
+            danger_text: if dark { c(0xFF8A7E) } else { c(0xB72A1F) },
+            on_danger: if dark { c(0x0E1B2C) } else { c(0xFFFFFF) },
             ink,
             shade: black().opacity(tint::SHADE),
-            material: if dark { c(0x3A3A3C) } else { c(0xFBFBFD) },
+            material: if dark { c(0x1B365D) } else { c(0xFFFFFF) },
         }
     }
 
@@ -523,14 +528,14 @@ pub fn apply(t: Theme, window: Option<&mut Window>, cx: &mut App) {
     k.accent_foreground = t.primary;
     k.popover = t.material;
     k.popover_foreground = t.primary;
-    k.selection = t.accent.opacity(0.3);
+    k.selection = t.highlight.opacity(0.3);
     k.caret = t.accent;
     k.link = t.accent_text;
     k.link_hover = t.accent_text.opacity(0.85);
     k.link_active = t.accent_text.opacity(0.7);
     k.switch = t.ink.opacity(if dark { 0.22 } else { 0.15 });
     k.switch_thumb = white();
-    k.list_active = t.accent.opacity(0.15);
+    k.list_active = t.highlight.opacity(0.22);
     k.list_hover = t.ink.opacity(0.06);
     k.tab_bar = t.raised;
     k.tab_active = t.content;
@@ -568,6 +573,11 @@ mod tests {
         Rgba { r: mix(t.r, b.r), g: mix(t.g, b.g), b: mix(t.b, b.b), a: 1. }
     }
 
+    fn selected(t: &Theme, under: Hsla) -> Hsla {
+        let r = over(with_alpha(t.highlight, tint::SELECTED), under);
+        Hsla::from(r)
+    }
+
     fn contrast(text: Hsla, background: Hsla) -> f32 {
         let (a, b) = (luminance(over(text, background)), luminance(Rgba::from(background)));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
@@ -586,12 +596,28 @@ mod tests {
                 ("tertiary on well", contrast(t.tertiary, t.well), 3.),
                 ("secondary on well", contrast(t.secondary, t.well), 4.5),
                 ("on accent", contrast(t.on_accent, t.accent), 4.5),
-                ("on danger", contrast(t.on_danger, t.danger), 3.),
-                ("accent text on window", contrast(t.accent_text, t.window), 4.5),
+                                ("accent text on window", contrast(t.accent_text, t.window), 4.5),
                 ("attention text on window", contrast(t.attention_text, t.window), 4.5),
                 ("success text on window", contrast(t.success_text, t.window), 4.5),
                 ("danger text on window", contrast(t.danger_text, t.window), 4.5),
                 ("accent on window", contrast(t.accent, t.window), 3.),
+                ("primary on raised", contrast(t.primary, t.raised), 4.5),
+                ("secondary on raised", contrast(t.secondary, t.raised), 4.5),
+                ("tertiary on raised", contrast(t.tertiary, t.raised), 3.),
+                ("tertiary on content", contrast(t.tertiary, t.content), 3.),
+                ("accent text on content", contrast(t.accent_text, t.content), 4.5),
+                ("accent text on raised", contrast(t.accent_text, t.raised), 4.5),
+                ("accent on content", contrast(t.accent, t.content), 3.),
+                ("on attention", contrast(t.on_attention, t.attention), 4.5),
+                ("attention on window", contrast(t.attention, t.window), 3.),
+                ("attention text on content", contrast(t.attention_text, t.content), 4.5),
+                ("success on window", contrast(t.success, t.window), 3.),
+                ("success text on content", contrast(t.success_text, t.content), 4.5),
+                ("danger on window", contrast(t.danger, t.window), 3.),
+                ("danger text on content", contrast(t.danger_text, t.content), 4.5),
+                ("on danger", contrast(t.on_danger, t.danger), 4.5),
+                ("primary on selected", contrast(t.primary, selected(&t, t.window)), 4.5),
+                ("secondary on selected", contrast(t.secondary, selected(&t, t.window)), 4.5),
             ];
             for (name, ratio, least) in checks {
                 assert!(ratio >= least, "{name} ({}): {ratio:.2} < {least}", if dark { "dark" } else { "light" });

@@ -393,7 +393,7 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                                 .items_center()
                                 .gap(px(space::S))
                                 .cursor_pointer()
-                                .when(on, |d| d.bg(t.accent.opacity(tint::ATTENTION)))
+                                .when(on, |d| d.bg(t.highlight.opacity(tint::SELECTED)))
                                 .soft(t.ink.opacity(tint::HOVER), radius::INNER)
                                 .child(icon(e.icon, iconsize::M, if on { t.accent_text } else { t.secondary }))
                                 .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if on { t.accent_text } else { t.primary }).child(e.label.clone()))
