@@ -8,6 +8,7 @@ import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.client.renderer.GameRenderer;
@@ -87,6 +88,10 @@ final class Companion {
 
 	void serversSaved() {
 		send(Protocol.servers());
+	}
+
+	void multiplayerOpened(JoinMultiplayerScreen screen) {
+		options.multiplayerOpened(screen);
 	}
 
 	String title() {

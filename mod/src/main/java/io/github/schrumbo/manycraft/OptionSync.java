@@ -2,12 +2,13 @@ package io.github.schrumbo.manycraft;
 
 import io.github.schrumbo.manycraft.mixin.JoinMultiplayerScreenAccessor;
 import io.github.schrumbo.manycraft.mixin.OptionsAccessor;
+import io.github.schrumbo.manycraft.mixin.ServerListAccessor;
 import java.io.File;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import net.minecraft.SharedConstants;
@@ -15,6 +16,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.PreferredGraphicsApi;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.client.multiplayer.ServerList;
 import net.minecraft.server.packs.repository.PackRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +26,7 @@ final class OptionSync {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final String PART_FILE = "manycraft-options.part";
 	private boolean applying;
+	private WeakReference<JoinMultiplayerScreen> multiplayer = new WeakReference<>(null);
 
 	Map<String, String> save(Options options, Runnable save) {
 		if (applying) {
@@ -36,17 +40,12 @@ final class OptionSync {
 	}
 
 	void apply(Minecraft mc, Map<String, String> values, BackgroundController background) {
-		Map<String, String> changes = new LinkedHashMap<>();
-		values.forEach((key, value) -> {
-			if (OptionsFile.valid(key, value)) {
-				changes.put(key, value);
-			}
-		});
+		Options options = mc.options;
+		File file = options.getFile();
+		Map<String, String> changes = OptionsFile.pending(OptionsFile.read(file.toPath()), values);
 		if (changes.isEmpty()) {
 			return;
 		}
-		Options options = mc.options;
-		File file = options.getFile();
 		try {
 			OptionsFile.apply(file.toPath(), changes);
 		} catch (IOException e) {
@@ -69,10 +68,28 @@ final class OptionSync {
 		}
 	}
 
+	void multiplayerOpened(JoinMultiplayerScreen screen) {
+		multiplayer = new WeakReference<>(screen);
+	}
+
 	void serversChanged(Minecraft mc) {
-		if (mc.gui.screen() instanceof JoinMultiplayerScreen screen) {
-			((JoinMultiplayerScreenAccessor) screen).manycraft$refreshServerList();
+		if (!(multiplayer.get() instanceof JoinMultiplayerScreenAccessor screen) || screen.manycraft$servers() == null || screen.manycraft$list() == null) {
+			return;
 		}
+		ServerList fresh = new ServerList(mc);
+		fresh.load();
+		ServerList servers = screen.manycraft$servers();
+		ServerListAccessor current = (ServerListAccessor) servers;
+		ServerListAccessor loaded = (ServerListAccessor) fresh;
+		List<ServerData> live = current.manycraft$entries();
+		List<ServerData> merged = OptionsFile.reconcile(live, loaded.manycraft$entries(), data -> data.ip, ServerData::copyFrom);
+		live.clear();
+		live.addAll(merged);
+		List<ServerData> hidden = current.manycraft$hidden();
+		List<ServerData> mergedHidden = OptionsFile.reconcile(hidden, loaded.manycraft$hidden(), data -> data.ip, ServerData::copyFrom);
+		hidden.clear();
+		hidden.addAll(mergedHidden);
+		screen.manycraft$list().updateOnlineServers(servers);
 	}
 
 	private void load(Options options, File file, Map<String, String> changes) {

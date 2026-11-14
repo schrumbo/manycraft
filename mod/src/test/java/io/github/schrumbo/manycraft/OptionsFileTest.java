@@ -31,8 +31,33 @@ class OptionsFileTest {
 	void changedHoldsOnlyWhatTheSaveChanged() {
 		var before = OptionsFile.parse(List.of("version:4000", "guiScale:2", "key_key.jump:key.keyboard.space", "resourcePacks:[\"vanilla\"]"));
 		var after = OptionsFile.parse(List.of("version:4000", "guiScale:3", "key_key.jump:key.keyboard.space", "resourcePacks:[\"vanilla\",\"file/x.zip\"]", "fov:0.5"));
-		assertEquals(map("guiScale", "3", "resourcePacks", "[\"vanilla\",\"file/x.zip\"]", "fov", "0.5"), OptionsFile.changed(before, after));
+		assertEquals(map("guiScale", "3", "resourcePacks", "[\"vanilla\",\"file/x.zip\"]"), OptionsFile.changed(before, after));
 		assertTrue(OptionsFile.changed(after, after).isEmpty());
+	}
+
+	@Test
+	void aFreshGameSavingItsDefaultsChangesNothing() {
+		assertTrue(OptionsFile.changed(Map.of(), OptionsFile.parse(List.of("guiScale:0", "renderDistance:12", "resourcePacks:[\"vanilla\"]"))).isEmpty());
+	}
+
+	@Test
+	void valuesTheGameAlreadyHasAreNotAppliedAgain() {
+		var current = map("guiScale", "3", "renderDistance", "12");
+		assertEquals(map("renderDistance", "16"), OptionsFile.pending(current, map("guiScale", "3", "renderDistance", "16", "bad:key", "1")));
+		assertTrue(OptionsFile.pending(current, current).isEmpty());
+	}
+
+	@Test
+	void aReloadedServerListKeepsTheEntriesTheGameIsEditing() {
+		var editing = new String[] {"Farm", "farm.example"};
+		var gone = new String[] {"Old", "old.example"};
+		var renamed = new String[] {"Farm 2", "farm.example"};
+		var added = new String[] {"New", "new.example"};
+		var merged = OptionsFile.reconcile(List.of(editing, gone), List.of(renamed, added), e -> e[1], (kept, fresh) -> kept[0] = fresh[0]);
+		assertEquals(2, merged.size());
+		assertTrue(merged.get(0) == editing);
+		assertEquals("Farm 2", editing[0]);
+		assertTrue(merged.get(1) == added);
 	}
 
 	@Test

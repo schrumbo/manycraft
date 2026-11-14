@@ -86,12 +86,12 @@ fn split_key(key: &str) -> Option<(&str, &str)> {
     (plain(batch) && plain(account)).then_some((batch, account))
 }
 
-fn others<'a>(peers: &impl Peers, key: &str, batch: &str) -> Vec<String> {
-    peers.connected().into_iter().filter(|k| k != key && split_key(k).is_some_and(|(b, _)| b == batch)).collect()
+fn in_batch(peers: &impl Peers, batch: &str) -> Vec<String> {
+    peers.connected().into_iter().filter(|k| split_key(k).is_some_and(|(b, _)| b == batch)).collect()
 }
 
 fn options_saved(roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap<String, String>) -> Result<()> {
-    let Some((batch, account)) = split_key(key) else { return Ok(()) };
+    let Some((batch, _)) = split_key(key) else { return Ok(()) };
     let changes = {
         let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
         let template = roots.batch(batch).join(OPTIONS_FILE);
@@ -103,7 +103,7 @@ fn options_saved(roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap
                 let changes = changed(Some(&text), values);
                 (text, changes)
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (shared_lines(&fs::read_to_string(roots.instance(batch, account).join(OPTIONS_FILE)).unwrap_or_default()), changed(None, values)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (String::new(), changed(None, values)),
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
         };
         if changes.is_empty() {
@@ -113,8 +113,8 @@ fn options_saved(roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap
         changes
     };
     let message = ToMod::Options { values: changes };
-    for other in others(peers, key, batch) {
-        peers.send(&other, &message);
+    for game in in_batch(peers, batch) {
+        peers.send(&game, &message);
     }
     Ok(())
 }
@@ -123,7 +123,7 @@ fn servers_saved(roots: &Roots, peers: &impl Peers, key: &str) -> Result<()> {
     let Some((batch, account)) = split_key(key) else { return Ok(()) };
     let source = roots.instance(batch, account).join(SERVERS_FILE);
     let bytes = fs::read(&source).with_context(|| format!("cannot read {}", source.display()))?;
-    let targets = others(peers, key, batch);
+    let targets: Vec<String> = in_batch(peers, batch).into_iter().filter(|k| k != key).collect();
     {
         let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
         if !roots.batch(batch).is_dir() {
@@ -147,8 +147,7 @@ fn key(line: &str) -> Option<&str> {
 }
 
 fn shared_lines(text: &str) -> String {
-    text.lines().filter(|l| key(l).is_none_or(|k| !PER_INSTANCE_KEYS.contains(&k))).map(|l| format!("{l}
-")).collect()
+    text.lines().filter(|l| key(l).is_none_or(|k| !PER_INSTANCE_KEYS.contains(&k))).map(|l| format!("{l}\n")).collect()
 }
 
 fn valid(key: &str, value: &str) -> bool {
@@ -185,12 +184,25 @@ fn apply(text: &str, changes: &BTreeMap<String, String>) -> String {
     text
 }
 
+/// Without a batch options `template`, the newest `options.txt` among `dir` and `siblings`, without the keys every
+/// game keeps for itself, becomes it, so that a new game starts from the batch's settings rather than spreading its
+/// defaults. Every other `options.txt` that differs is first kept next to itself as `options.txt.old-N`.
+pub(super) fn adopt_options(template: &Path, dir: &Path, siblings: &[PathBuf]) -> Result<()> {
+    let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
+    if fs::symlink_metadata(template).is_ok() {
+        return Ok(());
+    }
+    let Some(bytes) = adopt(dir, siblings, OPTIONS_FILE)? else { return Ok(()) };
+    net::write_atomic(template, shared_lines(&String::from_utf8_lossy(&bytes)).as_bytes())
+}
+
 /// Copies the batch server list `template` into the game folder `dir`. Without a template, the newest list among
 /// `dir` and `siblings` becomes it, and every other list that differs is first kept next to itself as `servers.dat.old-N`.
 pub(super) fn copy_servers(template: &Path, dir: &Path, siblings: &[PathBuf]) -> Result<()> {
     let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
-    if fs::symlink_metadata(template).is_err() && !adopt_servers(template, dir, siblings)? {
-        return Ok(());
+    if fs::symlink_metadata(template).is_err() {
+        let Some(bytes) = adopt(dir, siblings, SERVERS_FILE)? else { return Ok(()) };
+        net::write_atomic(template, &bytes)?;
     }
     let bytes = fs::read(template).with_context(|| format!("cannot read {}", template.display()))?;
     let dest = dir.join(SERVERS_FILE);
@@ -200,18 +212,17 @@ pub(super) fn copy_servers(template: &Path, dir: &Path, siblings: &[PathBuf]) ->
     net::write_atomic(&dest, &bytes)
 }
 
-fn adopt_servers(template: &Path, dir: &Path, siblings: &[PathBuf]) -> Result<bool> {
-    let lists: Vec<PathBuf> = siblings.iter().map(PathBuf::as_path).chain([dir]).map(|d| d.join(SERVERS_FILE)).filter(|p| p.is_file()).collect();
-    let Some(newest) = lists.iter().max_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok()) else { return Ok(false) };
+fn adopt(dir: &Path, siblings: &[PathBuf], name: &str) -> Result<Option<Vec<u8>>> {
+    let files: Vec<PathBuf> = siblings.iter().map(PathBuf::as_path).chain([dir]).map(|d| d.join(name)).filter(|p| p.is_file()).collect();
+    let Some(newest) = files.iter().max_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok()) else { return Ok(None) };
     let bytes = fs::read(newest).with_context(|| format!("cannot read {}", newest.display()))?;
-    for list in &lists {
-        if fs::read(list).is_ok_and(|b| b != bytes) {
-            let free = (1..).map(|n| list.with_file_name(format!("{SERVERS_FILE}.old-{n}"))).find(|p| fs::symlink_metadata(p).is_err()).context("no free name")?;
-            fs::copy(list, &free).with_context(|| format!("cannot copy {} to {}", list.display(), free.display()))?;
+    for file in &files {
+        if fs::read(file).is_ok_and(|b| b != bytes) {
+            let free = (1..).map(|n| file.with_file_name(format!("{name}.old-{n}"))).find(|p| fs::symlink_metadata(p).is_err()).context("no free name")?;
+            fs::copy(file, &free).with_context(|| format!("cannot copy {} to {}", file.display(), free.display()))?;
         }
     }
-    net::write_atomic(template, &bytes)?;
-    Ok(true)
+    Ok(Some(bytes))
 }
 
 #[cfg(test)]
@@ -287,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn a_save_updates_the_template_and_reaches_only_the_other_games_of_the_batch() {
+    fn a_save_updates_the_template_and_reaches_every_game_of_the_batch() {
         let w = world();
         fs::write(w.roots.batch("b1").join(OPTIONS_FILE), "renderDistance:12\nguiScale:2\nfullscreen:false\n").unwrap();
         let p = peers();
@@ -295,7 +306,7 @@ mod tests {
         assert_eq!(template(&w), "renderDistance:16\nguiScale:2\nfullscreen:false\n");
         let sent = p.sent.borrow();
         let expect = ToMod::Options { values: map(&[("renderDistance", "16")]) };
-        assert_eq!(*sent, vec![(B.to_owned(), expect.clone()), (C.to_owned(), expect)]);
+        assert_eq!(*sent, vec![(A.to_owned(), expect.clone()), (B.to_owned(), expect.clone()), (C.to_owned(), expect)]);
     }
 
     #[test]
@@ -304,23 +315,23 @@ mod tests {
         fs::write(w.roots.batch("b1").join(OPTIONS_FILE), "guiScale:2\n").unwrap();
         let p = peers();
         options_saved(&w.roots, &p, A, &map(&[("guiScale", "4")])).unwrap();
-        assert_eq!(p.sent.borrow().len(), 2);
+        assert_eq!(p.sent.borrow().len(), 3);
         options_saved(&w.roots, &p, B, &map(&[("guiScale", "4")])).unwrap();
         options_saved(&w.roots, &p, C, &map(&[("guiScale", "4"), ("fullscreen", "true")])).unwrap();
-        assert_eq!(p.sent.borrow().len(), 2);
+        assert_eq!(p.sent.borrow().len(), 3);
         assert_eq!(template(&w), "guiScale:4\n");
     }
 
     #[test]
-    fn a_missing_template_starts_from_the_saving_game() {
+    fn a_missing_template_holds_only_what_was_changed() {
         let w = world();
         fs::write(w.roots.instance("b1", "a1").join(OPTIONS_FILE), "version:4000\nguiScale:3\nfullscreen:true\nfov:0.5\n").unwrap();
         let p = peers();
         options_saved(&w.roots, &p, A, &map(&[("guiScale", "3"), ("fullscreen", "true")])).unwrap();
-        assert_eq!(template(&w), "version:4000\nguiScale:3\nfov:0.5\n");
-        assert_eq!(p.sent.borrow().len(), 2);
+        assert_eq!(template(&w), "guiScale:3\n");
+        assert_eq!(p.sent.borrow().len(), 3);
         options_saved(&w.roots, &p, B, &map(&[("guiScale", "4")])).unwrap();
-        assert_eq!(template(&w), "version:4000\nguiScale:4\nfov:0.5\n");
+        assert_eq!(template(&w), "guiScale:4\n");
     }
 
     #[test]
@@ -405,5 +416,25 @@ mod tests {
         copy_servers(&template, &w.roots.instance("b1", "a1"), &[]).unwrap();
         assert!(!template.exists());
         assert!(!w.roots.instance("b1", "a1").join(SERVERS_FILE).exists());
+    }
+
+    #[test]
+    fn the_newest_options_become_the_missing_template_once() {
+        let w = world();
+        let dir = |a: &str| w.roots.instance("b1", a);
+        let template = w.roots.batch("b1").join(OPTIONS_FILE);
+        adopt_options(&template, &dir("a1"), &[dir("a2")]).unwrap();
+        assert!(!template.exists());
+        fs::write(dir("a2").join(OPTIONS_FILE), "guiScale:3\nfullscreen:true\nlastServer:x\n").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        fs::File::options().write(true).open(dir("a2").join(OPTIONS_FILE)).unwrap().set_modified(later).unwrap();
+        fs::write(dir("a3").join(OPTIONS_FILE), "guiScale:1\n").unwrap();
+        adopt_options(&template, &dir("a1"), &[dir("a2"), dir("a3")]).unwrap();
+        assert_eq!(fs::read_to_string(&template).unwrap(), "guiScale:3\n");
+        assert_eq!(fs::read_to_string(dir("a3").join("options.txt.old-1")).unwrap(), "guiScale:1\n");
+        assert!(!dir("a2").join("options.txt.old-1").exists());
+        fs::write(dir("a3").join(OPTIONS_FILE), "guiScale:9\n").unwrap();
+        adopt_options(&template, &dir("a3"), &[dir("a2")]).unwrap();
+        assert_eq!(fs::read_to_string(&template).unwrap(), "guiScale:3\n");
     }
 }

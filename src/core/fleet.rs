@@ -95,6 +95,7 @@ fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, sibling
     if let Some(jar) = companion_jar {
         install_companion(jar, &shared.mods)?;
     }
+    sync::adopt_options(&shared.options, dir, siblings)?;
     copy_options(&shared.options, &dir.join(OPTIONS_FILE))?;
     sync::copy_servers(&shared.servers, dir, siblings)
 }

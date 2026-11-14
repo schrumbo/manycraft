@@ -920,7 +920,7 @@ impl BatchSheet {
             .child(header)
             .when(total > FILTER_FROM, |d| d.child(Input::new(&self.filter)))
             .child(list)
-            .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Einstellungen, Ressourcenpakete und Serverliste gelten für alle Spiele dieses Batches.")))
+            .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieses Batches mit.")))
     }
 
     fn pick_row(&mut self, id: Uuid, name: String, kind: String, head: Option<PathBuf>, color: u8, cx: &mut Context<Self>) -> Stateful<Div> {

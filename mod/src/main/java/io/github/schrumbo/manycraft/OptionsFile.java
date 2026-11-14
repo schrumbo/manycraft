@@ -8,11 +8,14 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 final class OptionsFile {
 	private OptionsFile() {}
@@ -39,11 +42,44 @@ final class OptionsFile {
 	static Map<String, String> changed(Map<String, String> before, Map<String, String> after) {
 		Map<String, String> changed = new LinkedHashMap<>();
 		after.forEach((key, value) -> {
-			if (!Objects.equals(before.get(key), value)) {
+			if (before.containsKey(key) && !Objects.equals(before.get(key), value)) {
 				changed.put(key, value);
 			}
 		});
 		return changed;
+	}
+
+	static Map<String, String> pending(Map<String, String> current, Map<String, String> values) {
+		Map<String, String> pending = new LinkedHashMap<>();
+		values.forEach((key, value) -> {
+			if (valid(key, value) && !value.equals(current.get(key))) {
+				pending.put(key, value);
+			}
+		});
+		return pending;
+	}
+
+	static <T> List<T> reconcile(List<T> live, List<T> fresh, Function<T, String> key, BiConsumer<T, T> update) {
+		List<T> pool = new ArrayList<>(live);
+		List<T> out = new ArrayList<>(fresh.size());
+		for (T entry : fresh) {
+			T kept = null;
+			for (Iterator<T> it = pool.iterator(); it.hasNext();) {
+				T candidate = it.next();
+				if (Objects.equals(key.apply(candidate), key.apply(entry))) {
+					kept = candidate;
+					it.remove();
+					break;
+				}
+			}
+			if (kept == null) {
+				out.add(entry);
+			} else {
+				update.accept(kept, entry);
+				out.add(kept);
+			}
+		}
+		return out;
 	}
 
 	static String merge(List<String> lines, Map<String, String> changes) {

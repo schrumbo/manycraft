@@ -2,6 +2,7 @@ package io.github.schrumbo.manycraft;
 
 import io.netty.channel.Channel;
 import net.minecraft.client.Options;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.renderer.GameRenderer;
 
@@ -59,6 +60,13 @@ public final class CompanionHooks {
 			windowed.run();
 		} else {
 			c.saveOptions(options, windowed);
+		}
+	}
+
+	public static void multiplayerOpened(JoinMultiplayerScreen screen) {
+		Companion c = Companion.get();
+		if (c != null) {
+			c.multiplayerOpened(screen);
 		}
 	}
 
