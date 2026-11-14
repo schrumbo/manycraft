@@ -828,10 +828,17 @@ fn set_color(a: &SetColor, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| {
-            if let Err(e) = result
-                && cx.has_global::<Runtime>()
-            {
-                cx.global_mut::<Runtime>().notice = Some(format!("{e:#}"));
+            if let Err(e) = result {
+                eprintln!("color: {e:#}");
+                let text = tr("Die Farbe wurde nicht gesichert. Versuch es noch einmal.");
+                if cx.has_global::<Runtime>() {
+                    cx.global_mut::<Runtime>().notice = Some(text);
+                } else {
+                    model::get(cx).update(cx, |m, cx| {
+                        m.error = Some(text);
+                        cx.notify();
+                    });
+                }
             }
             reload(cx);
         });

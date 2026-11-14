@@ -480,7 +480,6 @@
   "Proxy-Fehler": "Proxy error",
   "Kein Kontakt": "No contact",
   "Startet neu…": "Restarting…",
-  "Anmelden nötig": "Sign-in needed",
   "Fehlgeschlagen": "Failed",
   "Farbe": "Color",
   "Farbe: %@": "Color: %@",
@@ -497,8 +496,10 @@
   "Zu „%@“ passt keiner.": "Nobody matches “%@”.",
   "Alles ruhig.": "All quiet.",
   "Gerade braucht dich keiner.": "Nobody needs you right now.",
-  "Alle sind wach.": "Everyone’s awake.",
-  "Keiner ist gestoppt.": "Nobody is stopped.",
   "Alle schlummern.": "Everyone’s napping.",
-  "Starte sie, dann siehst du sie hier.": "Start them and they show up here."
+  "Starte sie, dann siehst du sie hier.": "Start them and they show up here.",
+  "Nichts gestoppt.": "Nothing stopped.",
+  "Alle laufen oder brauchen dich.": "Everyone is running or needs you.",
+  "Gerade läuft keiner.": "Nobody is running right now.",
+  "Die Farbe wurde nicht gesichert. Versuch es noch einmal.": "The color was not saved. Try again."
 }

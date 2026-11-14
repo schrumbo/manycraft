@@ -427,7 +427,7 @@ fn word(i: &Instance, preparing: Option<u8>, banned: bool) -> String {
         Phase::Dead { .. } => tr("Gestorben"),
         Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::Banned { .. } => tr("Gesperrt"),
-        Phase::LoginNeeded => tr("Anmelden nötig"),
+        Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
     }
 }
@@ -599,6 +599,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         }
     }
     if keys.is_empty() {
+        let resting = m.attention_count(batch) == 0;
         this.grid.shown.clear();
         this.grid.rows.clear();
         let in_scope = m.instances.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
@@ -621,14 +622,15 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         }
         return match this.filter {
             Filter::Attention => empty("all-good", "circle-check", tr("Alles ruhig."), tr("Gerade braucht dich keiner."), None, &t),
-            Filter::Stopped => empty("none-stopped", "circle-check", tr("Alle sind wach."), tr("Keiner ist gestoppt."), None, &t),
+            Filter::Stopped => empty("none-stopped", "circle-check", tr("Nichts gestoppt."), tr("Alle laufen oder brauchen dich."), None, &t),
             Filter::Running | Filter::All => {
                 let start: Box<dyn Action> = match batch {
                     Some(b) => Box::new(StartBatch(b.to_owned())),
                     None => Box::new(StartAll),
                 };
                 let label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
-                empty("none-running", "play", tr("Alle schlummern."), tr("Starte sie, dann siehst du sie hier."), Some(action("start-empty", label, "play", start, &t)), &t)
+                let title = if resting { tr("Alle schlummern.") } else { tr("Gerade läuft keiner.") };
+                empty("none-running", "play", title, tr("Starte sie, dann siehst du sie hier."), Some(action("start-empty", label, "play", start, &t)), &t)
             }
         };
     }
@@ -1175,7 +1177,7 @@ mod tests {
         assert_eq!(word(&again, None, false), "Versuch 2/5");
         assert_eq!(word(&mk(Phase::Starting { done: 12, total: 50 }), None, false), "Wartet 12/50");
         assert_eq!(word(&mk(Phase::Stopped), None, true), "Gesperrt", "a stop after a ban says so");
-        assert_eq!(word(&mk(Phase::LoginNeeded), None, false), "Anmelden nötig");
+        assert_eq!(word(&mk(Phase::LoginNeeded), None, false), "Anmeldung nötig");
     }
     #[test]
     fn filters_split_attention_running_and_stopped() {
