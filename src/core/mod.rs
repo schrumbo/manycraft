@@ -26,6 +26,7 @@ pub mod prism;
 pub mod proxy;
 pub mod reconnect;
 pub mod scrub;
+pub mod skins;
 #[allow(dead_code)]
 pub mod settings;
 pub mod store;

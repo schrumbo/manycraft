@@ -1,6 +1,6 @@
 //! Accounts: the list with proxies and the sheet to add a Microsoft or offline account.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain};
 use super::drive::Mark;
-use super::forms;
+use super::forms::{self, Problem};
 use super::motion::Soft;
 use super::remote::{self, SignIn, SignInError};
 use super::sheet::{self, Dismissed, Look};
@@ -23,32 +23,34 @@ use crate::core::account::{Account, AccountKind};
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
 use crate::core::prism::AccountImport;
+use crate::core::skins;
 
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
 /// Registers the account actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &AddAccount, cx| {
-        sheet::in_window(cx, |window, cx| open_add(None, false, window, cx));
+        sheet::in_window(cx, |window, cx| open_add(None, false, Vec::new(), window, cx));
     });
     cx.on_action(|_: &AddMicrosoft, cx| {
-        sheet::in_window(cx, |window, cx| open_add(None, true, window, cx));
+        sheet::in_window(cx, |window, cx| open_add(None, true, Vec::new(), window, cx));
     });
     cx.on_action(|action: &SignInAgain, cx| {
         let Ok(id) = Uuid::parse_str(&action.0) else { return };
         let account = super::model::get(cx).read(cx).account(id).cloned();
         if let Some(account) = account.filter(|a| a.kind == AccountKind::Microsoft) {
-            sheet::in_window(cx, move |window, cx| open_add(Some(account), false, window, cx));
+            sheet::in_window(cx, move |window, cx| open_add(Some(account), false, Vec::new(), window, cx));
         }
     });
 }
 
-fn open_add(again: Option<Account>, microsoft: bool, window: &mut Window, cx: &mut App) {
+/// Opens the add-account sheet. `queue` names Microsoft accounts to sign in one after another, e.g. the ones Prism listed.
+fn open_add(again: Option<Account>, microsoft: bool, queue: Vec<String>, window: &mut Window, cx: &mut App) {
     if sheet::busy(window, cx) {
         return;
     }
     let view = cx.new(|cx| {
-        let mut sheet = AddAccountSheet::new(again, window, cx);
+        let mut sheet = AddAccountSheet::new(again, queue, window, cx);
         if microsoft && matches!(sheet.step, Step::Choose) {
             sheet.start_microsoft(cx);
         }
@@ -71,25 +73,25 @@ struct Page(Entity<AccountsPage>);
 
 impl Global for Page {}
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Check {
     Idle,
     Running,
     Passed,
-    Failed(String),
+    Failed(Problem),
 }
 
-fn check_line(check: &Check, t: &Theme) -> Option<Div> {
+fn check_line(check: &Check, open: bool, toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, t: &Theme) -> Option<Div> {
     match check {
         Check::Idle => None,
         Check::Running => Some(sheet::waiting(tr("Proxy wird geprüft …"), t)),
         Check::Passed => Some(sheet::status("circle-check", t.success_text, tr("Der Proxy erreicht das Internet."))),
-        Check::Failed(why) => Some(sheet::status("circle-alert", t.danger_text, trf("Kein Internet über diesen Proxy: %@. Prüfe Adresse, Port und Zugangsdaten.", &[why]))),
+        Check::Failed(why) => Some(sheet::problem("proxy-check", "circle-alert", t.danger_text, why, open, toggle, t)),
     }
 }
 
 fn start_check<V: 'static>(proxy: String, cx: &mut Context<V>, apply: impl Fn(&mut V, Check) + 'static) {
-    let task = cx.background_executor().spawn(async move { remote::test_proxy(&proxy).map_err(|e| short_error(&e)) });
+    let task = cx.background_executor().spawn(async move { remote::test_proxy(&proxy).map_err(|e| proxy_failure(&e)) });
     cx.spawn(async move |this, cx| {
         let result = task.await;
         let _ = this.update(cx, |v, cx| {
@@ -100,8 +102,8 @@ fn start_check<V: 'static>(proxy: String, cx: &mut Context<V>, apply: impl Fn(&m
     .detach();
 }
 
-fn short_error(e: &anyhow::Error) -> String {
-    e.root_cause().to_string()
+fn proxy_failure(e: &anyhow::Error) -> Problem {
+    Problem { text: tr("Über diesen Proxy kommt kein Internet. Prüfe Adresse, Port und Zugangsdaten."), detail: forms::explain(e).detail }
 }
 
 fn input_value(input: &Entity<InputState>, cx: &App) -> String {
@@ -118,6 +120,7 @@ enum Ms {
     Requesting,
     Code { user_code: String, uri: String, expires_in: u64 },
     Finishing,
+    Added(String),
     Failed(SignInError),
 }
 
@@ -129,7 +132,10 @@ struct AddAccountSheet {
     advanced: bool,
     check: Check,
     saving: bool,
-    save_error: Option<String>,
+    save_error: Option<Problem>,
+    details: bool,
+    queue: Vec<String>,
+    added: Vec<String>,
     copied: bool,
     cancel: Arc<AtomicBool>,
     first: FocusHandle,
@@ -149,7 +155,7 @@ impl Drop for AddAccountSheet {
 }
 
 impl AddAccountSheet {
-    fn new(again: Option<Account>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(again: Option<Account>, queue: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. Steve")));
         let proxy = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. socks5://host:1080")));
         let subs = vec![
@@ -175,6 +181,9 @@ impl AddAccountSheet {
             check: Check::Idle,
             saving: false,
             save_error: None,
+            details: false,
+            queue,
+            added: Vec::new(),
             copied: false,
             cancel: Arc::new(AtomicBool::new(false)),
             first: cx.focus_handle().tab_index(0).tab_stop(true),
@@ -205,7 +214,20 @@ impl AddAccountSheet {
     fn go(&mut self, step: Step, cx: &mut Context<Self>) {
         self.step = step;
         self.focus_next = true;
+        self.details = false;
         cx.notify();
+    }
+
+    fn finish(&mut self, cx: &mut Context<Self>) {
+        self.cancel.store(true, Ordering::SeqCst);
+        cx.emit(Dismissed);
+    }
+
+    fn skip(&mut self, cx: &mut Context<Self>) {
+        if !self.queue.is_empty() {
+            self.queue.remove(0);
+        }
+        self.start_microsoft(cx);
     }
 
     fn start_microsoft(&mut self, cx: &mut Context<Self>) {
@@ -227,7 +249,7 @@ impl AddAccountSheet {
                 if cancel.load(Ordering::SeqCst) {
                     return;
                 }
-                let done = matches!(step, SignIn::Done);
+                let done = matches!(step, SignIn::Done(_));
                 let _ = this.update(cx, |s, cx| s.advance(step, cx));
                 if done {
                     return;
@@ -241,9 +263,14 @@ impl AddAccountSheet {
             SignIn::Code { user_code, uri, expires_in } => self.go(Step::Microsoft(Ms::Code { user_code, uri, expires_in }), cx),
             SignIn::Approved => self.go(Step::Microsoft(Ms::Finishing), cx),
             SignIn::Failed(e) => self.go(Step::Microsoft(Ms::Failed(e)), cx),
-            SignIn::Done => {
+            SignIn::Done(name) => {
                 cx.dispatch_action(&Reload);
-                cx.emit(Dismissed);
+                if self.again.is_some() {
+                    return self.finish(cx);
+                }
+                self.queue.retain(|n| !n.eq_ignore_ascii_case(&name));
+                self.added.push(name.clone());
+                self.go(Step::Microsoft(Ms::Added(name)), cx);
             }
         }
     }
@@ -297,10 +324,11 @@ impl AddAccountSheet {
                 match result {
                     Ok(_) => {
                         cx.dispatch_action(&Reload);
-                        cx.emit(Dismissed);
+                        s.finish(cx);
                     }
                     Err(e) => {
-                        s.save_error = Some(e.to_string());
+                        s.save_error = Some(forms::explain(&e));
+                        s.details = false;
                         cx.notify();
                     }
                 }
@@ -343,7 +371,7 @@ impl AddAccountSheet {
                 let first = self.first.clone();
                 window.on_next_frame(move |window, cx| window.focus(&first, cx));
             }
-            Step::Microsoft(Ms::Code { .. } | Ms::Failed(_)) => window.focus(&self.main, cx),
+            Step::Microsoft(Ms::Code { .. } | Ms::Added(_) | Ms::Failed(_)) => window.focus(&self.main, cx),
             Step::Microsoft(_) => {}
         }
     }
@@ -413,9 +441,9 @@ impl AddAccountSheet {
             .child(sheet::label(tr("Proxy"), t))
             .child(proxy_row)
             .child(sheet::note(Some(tr("Gilt für Anmeldung und Spiel. Leer lassen für keinen Proxy.")), problem, t))
-            .children(check_line(&self.check, t));
+            .children(check_line(&self.check, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t));
         let body = div().flex().flex_col().gap(px(space::S)).child(microsoft).child(offline).child(div().pt(px(space::S)).child(disclosure)).when(open, |d| d.child(proxy_field));
-        let cancel = sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed)));
+        let cancel = sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx)));
         (body, Vec::new(), vec![cancel.into_any_element()])
     }
 
@@ -423,20 +451,29 @@ impl AddAccountSheet {
         let name = input_value(&self.name, cx);
         let accounts = super::model::get(cx).read(cx).accounts.clone();
         let problem = forms::offline_name_problem(&name, &accounts);
-        let shown = self.save_error.clone().or(problem.clone().filter(|_| !name.is_empty()));
+        let shown = problem.clone().filter(|_| !name.is_empty() && self.save_error.is_none());
         let mut body = div().flex().flex_col().gap(px(space::M)).child(sheet::field(tr("Name"), Input::new(&self.name), Some(tr("3 bis 16 Zeichen: Buchstaben, Ziffern und _")), shown, t));
+        if let Some(why) = &self.save_error {
+            body = body.child(sheet::problem("add-offline-error", "circle-alert", t.danger_text, why, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t));
+        }
         if let Some(proxy) = self.chosen_proxy(cx) {
             body = body.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Proxy: %@", &[&forms::proxy_display(&proxy)])));
         }
         let back = sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx)));
-        let cancel = sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed)));
+        let cancel = sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx)));
         let add = sheet::button("add-offline", tr("Hinzufügen"), None, Look::Primary, problem.is_some(), self.saving, t).on_click(cx.listener(|s, _, _, cx| s.add_offline(cx)));
         (body, vec![back.into_any_element()], vec![cancel.into_any_element(), add.into_any_element()])
     }
 
+    fn toggle_details(&mut self, cx: &mut Context<Self>) {
+        self.details = !self.details;
+        cx.notify();
+    }
+
     fn render_microsoft(&mut self, cx: &mut Context<Self>, t: &Theme) -> (Div, Vec<AnyElement>, Vec<AnyElement>) {
-        let mut trailing = vec![sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element()];
-        let leading = if self.again.is_none() { vec![sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx))).into_any_element()] } else { Vec::new() };
+        let added = matches!(self.step, Step::Microsoft(Ms::Added(_)));
+        let mut trailing = vec![sheet::button("cancel", if added { tr("Fertig") } else { tr("Abbrechen") }, None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx))).into_any_element()];
+        let mut leading = if self.again.is_none() && !added { vec![sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx))).into_any_element()] } else { Vec::new() };
         let Step::Microsoft(ms) = &self.step else { return (div(), leading, trailing) };
         let body = match ms {
             Ms::Requesting => div().py(px(space::L)).child(sheet::waiting(tr("Code wird angefordert …"), t)),
@@ -457,18 +494,53 @@ impl AddAccountSheet {
                     .child(div().font_family(Theme::mono_family()).text_size(px(font::LARGE_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(user_code.clone()))
                     .child(div().absolute().right(px(space::S)).top_0().bottom_0().flex().items_center().child(copy));
                 let minutes = (expires_in / 60).max(1);
+                let instruction = match self.queue.first() {
+                    Some(name) => trf("Öffne die Microsoft-Seite, gib diesen Code ein und melde dich mit dem Konto „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
+                    None => tr("Öffne die Microsoft-Seite und gib diesen Code ein. Danach geht es hier von selbst weiter."),
+                };
                 trailing.push(sheet::button("open-page", tr("Seite öffnen"), Some("external-link"), Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.open_page(cx))).into_any_element());
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(space::M))
-                    .child(div().text_size(px(font::BODY)).text_color(t.primary).child(tr("Öffne die Microsoft-Seite und gib diesen Code ein. Danach geht es hier von selbst weiter.")))
+                    .child(div().text_size(px(font::BODY)).text_color(t.primary).child(instruction))
                     .child(code_box)
                     .child(if self.copied { sheet::status("check", t.success_text, tr("Code kopiert. Auf der Seite einfügen.")) } else { sheet::waiting(tr("Warte auf deine Anmeldung im Browser …"), t) })
                     .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der Code gilt %lld Minuten.", &[&minutes])))
             }
+            Ms::Added(name) => {
+                let next = self.queue.first().cloned();
+                let more = match &next {
+                    Some(next) => sheet::button("sign-in-more", trf("Weiter mit %@", &[next]), Some("arrow-right"), Look::Primary, false, false, t),
+                    None => sheet::button("sign-in-more", tr("Noch einen"), Some("plus"), Look::Primary, false, false, t),
+                };
+                trailing.push(more.track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx))).into_any_element());
+                let before: Vec<&String> = self.added.iter().filter(|n| *n != name).collect();
+                let mut col = div().flex().flex_col().gap(px(space::S)).py(px(space::S)).child(div().id("signed-in").mark("status", name.clone()).child(sheet::status("circle-check", t.success_text, trf("Angemeldet als %@.", &[name]))));
+                if !before.is_empty() {
+                    col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Schon hinzugefügt: %@", &[&before.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")])));
+                }
+                match next {
+                    Some(next) => {
+                        let rest = self.queue.len();
+                        col = col.child(div().text_size(px(font::BODY)).text_color(t.primary).child(if rest == 1 { trf("Als Nächstes: %@. Das ist der letzte Prism-Account.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }));
+                    }
+                    None => col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."))),
+                }
+                if self.again.is_none() && let Some(proxy) = self.chosen_proxy(cx) {
+                    col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der nächste Account nutzt wieder den Proxy %@.", &[&forms::proxy_display(&proxy)])));
+                }
+                col
+            }
             Ms::Failed(e) => {
                 let (title, detail, retry, offline) = failure_text(e, self.again.as_ref());
+                let technical = match e {
+                    SignInError::Other(p) => p.detail.clone(),
+                    _ => None,
+                };
+                if self.queue.len() > 1 && self.again.is_none() {
+                    leading.push(sheet::button("skip", tr("Überspringen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.skip(cx))).into_any_element());
+                }
                 if offline {
                     trailing.push(sheet::button("to-offline", tr("Offline-Konto hinzufügen"), None, Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))).into_any_element());
                 } else {
@@ -480,7 +552,17 @@ impl AddAccountSheet {
                     .gap(px(space::M))
                     .py(px(space::S))
                     .child(icon(icon_name, iconsize::L, t.danger_text))
-                    .child(div().flex_1().min_w_0().flex().flex_col().gap(px(space::XS)).child(div().id("sign-in-error").mark("error", title.clone()).text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(detail)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(space::XS))
+                            .child(div().id("sign-in-error").mark("error", title.clone()).text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
+                            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(detail))
+                            .children(technical.map(|d| sheet::details("sign-in-technical", d, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t))),
+                    )
             }
         };
         (body, leading, trailing)
@@ -506,7 +588,7 @@ fn failure_text(e: &SignInError, again: Option<&Account>) -> (String, String, St
             false,
         ),
         SignInError::Network => (tr("Keine Verbindung zu Microsoft."), tr("Prüfe die Internetverbindung und den Proxy, dann versuche es erneut."), retry, false),
-        SignInError::Other(detail) => (tr("Die Anmeldung hat nicht geklappt."), detail.clone(), retry, false),
+        SignInError::Other(why) => (tr("Die Anmeldung hat nicht geklappt."), why.text.clone(), retry, false),
     }
 }
 
@@ -516,7 +598,8 @@ impl Render for AddAccountSheet {
         let t = Theme::get(cx);
         let (title, subtitle) = match (&self.step, &self.again) {
             (Step::Microsoft(_), Some(a)) => (tr("Erneut anmelden"), Some(a.name.clone())),
-            (Step::Microsoft(_), None) => (tr("Mit Microsoft anmelden"), None),
+            (Step::Microsoft(Ms::Added(_)), None) => (tr("Account hinzugefügt"), None),
+            (Step::Microsoft(_), None) => (tr("Mit Microsoft anmelden"), self.queue.first().map(|n| trf("Für das Prism-Konto „%@“", &[n]))),
             (Step::Offline, _) => (tr("Offline-Konto"), Some(tr("Ohne Anmeldung, nur mit Namen. Für Server ohne Online-Mode."))),
             (Step::Choose, _) => (tr("Account hinzufügen"), None),
         };
@@ -555,13 +638,24 @@ struct Editing {
 }
 
 struct AccountsPage {
+    list: ListState,
+    accounts: Vec<Account>,
+    usage: HashMap<Uuid, Vec<String>>,
+    shown: Vec<usize>,
+    stale: bool,
+    header_key: String,
+    edit_key: String,
+    edited: Option<Uuid>,
+    heads_for: Vec<Uuid>,
     editing: Option<Editing>,
     removing: Option<Uuid>,
-    error: Option<String>,
+    error: Option<Problem>,
+    details: HashSet<&'static str>,
     prism_found: bool,
     prism_busy: bool,
     prism_done: Option<AccountImport>,
     filter: Entity<InputState>,
+    root: FocusHandle,
     _model: Subscription,
     _filter: Subscription,
 }
@@ -569,16 +663,139 @@ struct AccountsPage {
 impl AccountsPage {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = super::model::get(cx);
-        let _model = cx.observe(&model, |_, _, cx| cx.notify());
+        let _model = cx.observe(&model, |s, _, cx| {
+            s.stale = true;
+            cx.notify();
+        });
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Accounts filtern")));
-        let _filter = cx.subscribe(&filter, |_, _, e: &InputEvent, cx| {
+        let _filter = cx.subscribe(&filter, |s, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
+                s.stale = true;
                 cx.notify();
             }
         });
-        let mut page = Self { editing: None, removing: None, error: None, prism_found: false, prism_busy: false, prism_done: None, filter, _model, _filter };
+        let mut page = Self {
+            list: ListState::new(1, ListAlignment::Top, px(OVERDRAW)),
+            accounts: Vec::new(),
+            usage: HashMap::new(),
+            shown: Vec::new(),
+            stale: true,
+            header_key: String::new(),
+            edit_key: String::new(),
+            edited: None,
+            heads_for: Vec::new(),
+            editing: None,
+            removing: None,
+            error: None,
+            details: HashSet::new(),
+            prism_found: false,
+            prism_busy: false,
+            prism_done: None,
+            filter,
+            root: cx.focus_handle(),
+            _model,
+            _filter,
+        };
         page.look_for_prism(cx);
         page
+    }
+
+    fn toggle(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if !self.details.remove(key) {
+            self.details.insert(key);
+        }
+        cx.notify();
+    }
+
+    fn fail(&mut self, problem: Problem) {
+        self.error = Some(problem);
+        self.details.remove("error");
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.stale) {
+            return;
+        }
+        let model = super::model::get(cx);
+        let (accounts, usage) = {
+            let m = model.read(cx);
+            let mut usage: HashMap<Uuid, Vec<String>> = HashMap::new();
+            for b in &m.batches {
+                for id in &b.accounts {
+                    usage.entry(*id).or_default().push(b.name.clone());
+                }
+            }
+            (m.accounts.clone(), usage)
+        };
+        let query = if accounts.len() > FILTER_FROM { input_value(&self.filter, cx).to_lowercase() } else { String::new() };
+        let shown: Vec<usize> = accounts.iter().enumerate().filter(|(_, a)| query.is_empty() || a.name.to_lowercase().contains(&query)).map(|(i, _)| i).collect();
+        let old: Vec<Uuid> = self.shown.iter().filter_map(|i| self.accounts.get(*i)).map(|a| a.id).collect();
+        let new: Vec<Uuid> = shown.iter().map(|i| accounts[*i].id).collect();
+        self.accounts = accounts;
+        self.usage = usage;
+        self.shown = shown;
+        self.sync_rows(&old, &new);
+        if self.editing.as_ref().is_some_and(|e| !self.accounts.iter().any(|a| a.id == e.id)) {
+            self.editing = None;
+        }
+        self.load_heads(cx);
+    }
+
+    fn sync_rows(&self, old: &[Uuid], new: &[Uuid]) {
+        if old.is_empty() || new.is_empty() {
+            self.list.reset(1 + new.len().max(1));
+            return;
+        }
+        let front = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        let back = old[front..].iter().rev().zip(new[front..].iter().rev()).take_while(|(a, b)| a == b).count();
+        if front == old.len() && front == new.len() {
+            return;
+        }
+        self.list.splice(1 + front..1 + old.len() - back, new.len() - front - back);
+    }
+
+    fn touch(&self, id: Uuid) {
+        if let Some(at) = self.shown.iter().position(|i| self.accounts[*i].id == id) {
+            self.list.splice(1 + at..2 + at, 1);
+        }
+    }
+
+    fn sync_heights(&mut self, cx: &App) {
+        let header = format!(
+            "{:?}",
+            (
+                self.error.clone(),
+                self.details.contains("error"),
+                self.prism_done.as_ref().map(|d| (d.added.len(), d.needs_sign_in.len(), d.skipped.len())),
+                self.accounts.len(),
+                self.prism_found,
+            )
+        );
+        if header != self.header_key {
+            self.header_key = header;
+            self.list.splice(0..1, 1);
+        }
+        let edit = self.editing.as_ref().map(|e| (e.id, e.check.clone(), forms::proxy_problem(&input_value(&e.input, cx)).is_some(), self.details.contains("check")));
+        let key = format!("{edit:?}");
+        if key != self.edit_key {
+            self.edit_key = key;
+            if let Some(old) = self.edited {
+                self.touch(old);
+            }
+            self.edited = edit.map(|e| e.0);
+            if let Some(new) = self.edited {
+                self.touch(new);
+            }
+        }
+    }
+
+    fn load_heads(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<Uuid> = self.accounts.iter().map(|a| a.id).collect();
+        if ids == self.heads_for {
+            return;
+        }
+        self.heads_for = ids;
+        sheet::warm_heads(self.accounts.clone(), cx);
     }
 
     fn look_for_prism(&mut self, cx: &mut Context<Self>) {
@@ -610,7 +827,7 @@ impl AccountsPage {
                         s.prism_done = Some(done);
                         cx.dispatch_action(&Reload);
                     }
-                    Err(e) => s.error = Some(trf("Aus Prism nicht übernommen: %@", &[&e])),
+                    Err(e) => s.fail(forms::explain_as(tr("Aus Prism nicht übernommen."), &e)),
                 }
                 cx.notify();
             });
@@ -630,7 +847,7 @@ impl AccountsPage {
             .skipped
             .iter()
             .filter(|(_, why)| why != "already added")
-            .map(|(name, why)| trf("„%@“ übersprungen: %@", &[name, &forms::offline_name_problem(name, &[]).unwrap_or_else(|| why.clone())]))
+            .map(|(name, _)| trf("„%@“ übersprungen: %@", &[name, &forms::offline_name_problem(name, &[]).unwrap_or_else(|| tr("Der Name ist ungültig."))]))
             .collect();
         let added = done.added.len();
         let summary = match (added, waiting.len()) {
@@ -657,14 +874,22 @@ impl AccountsPage {
                     .items_start()
                     .gap(px(space::S))
                     .child(div().flex_1().min_w_0().child(sheet::status(if added > 0 { "circle-check" } else { "info" }, if added > 0 { t.success_text } else { t.secondary }, summary)))
-                    .child(sheet::icon_button("prism-dismiss", "x", tr("Ausblenden"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| {
+                    .child(sheet::icon_button("prism-dismiss", "x", tr("Ausblenden"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| {
                         s.prism_done = None;
+                        window.focus(&s.root, cx);
                         cx.notify();
                     }))),
             );
         if !waiting.is_empty() {
-            card = card.child(sheet::note(Some(tr("Diese Microsoft-Accounts brauchen eine neue Anmeldung. Anmeldungen aus Prism werden nicht übernommen.")), None, t));
-            for name in waiting {
+            let names: Vec<String> = waiting.iter().map(|n| (*n).clone()).collect();
+            let all = names.clone();
+            let intro = div().flex().items_start().gap(px(space::S)).child(div().flex_1().min_w_0().child(sheet::note(Some(tr("Diese Microsoft-Accounts brauchen eine neue Anmeldung. Anmeldungen aus Prism werden nicht übernommen.")), None, t))).when(names.len() > 1, |d| {
+                d.child(sheet::button("prism-signin-all", tr("Alle nacheinander anmelden"), Some("log-in"), Look::Secondary, false, false, t).on_click(move |_, window, cx| open_add(None, true, all.clone(), window, cx)))
+            });
+            card = card.child(intro);
+            for (at, name) in names.iter().enumerate() {
+                let mut order = names.clone();
+                order.rotate_left(at);
                 card = card.child(
                     div()
                         .id(SharedString::from(format!("prism-wait-{name}")))
@@ -674,7 +899,7 @@ impl AccountsPage {
                         .gap(px(space::M))
                         .child(icon("key-round", iconsize::S, t.secondary))
                         .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(name.clone()))
-                        .child(sheet::button(SharedString::from(format!("prism-signin-{name}")), tr("Anmelden"), Some("log-in"), Look::Secondary, false, false, t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddMicrosoft), cx))),
+                        .child(sheet::button(SharedString::from(format!("prism-signin-{name}")), tr("Anmelden"), Some("log-in"), Look::Secondary, false, false, t).on_click(move |_, window, cx| open_add(None, true, order.clone(), window, cx))),
                 );
             }
         }
@@ -702,6 +927,7 @@ impl AccountsPage {
         });
         let focus = input.clone();
         window.on_next_frame(move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
+        self.details.remove("check");
         self.editing = Some(Editing { id: account.id, input, check: Check::Idle, saving: false, _sub: sub });
         cx.notify();
     }
@@ -731,7 +957,7 @@ impl AccountsPage {
                         if let Some(edit) = s.editing.as_mut().filter(|e| e.id == id) {
                             edit.saving = false;
                         }
-                        s.error = Some(trf("Der Proxy wurde nicht gespeichert: %@", &[&e]));
+                        s.fail(forms::explain_as(tr("Der Proxy wurde nicht gespeichert."), &e));
                     }
                 }
                 cx.notify();
@@ -747,6 +973,7 @@ impl AccountsPage {
             return;
         }
         edit.check = Check::Running;
+        self.details.remove("check");
         cx.notify();
         start_check(value, cx, |s: &mut Self, c| {
             if let Some(edit) = s.editing.as_mut() {
@@ -783,13 +1010,29 @@ impl AccountsPage {
             let _ = this.update(cx, |s, cx| {
                 s.removing = None;
                 if let Err(e) = result {
-                    s.error = Some(trf("Der Account wurde nicht vollständig entfernt: %@", &[&e]));
+                    s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig entfernt."), &e));
                 }
                 cx.dispatch_action(&Reload);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn avatar(account: &Account, t: &Theme) -> AnyElement {
+        match skins::head(account) {
+            Some(path) => img(path).size(px(control::M)).flex_none().rounded(px(radius::SMALL)).into_any_element(),
+            None => div()
+                .size(px(control::M))
+                .flex_none()
+                .rounded(px(radius::FULL))
+                .bg(t.raised)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(if account.kind == AccountKind::Microsoft { "key-round" } else { "user" }, iconsize::S, t.secondary))
+                .into_any_element(),
+        }
     }
 
     fn row(&mut self, account: &Account, batches: &[String], last: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -842,17 +1085,7 @@ impl AccountsPage {
             .px(px(space::L))
             .py(px(space::S))
             .min_h(px(control::L + space::M))
-            .child(
-                div()
-                    .size(px(control::M))
-                    .flex_none()
-                    .rounded(px(radius::FULL))
-                    .bg(t.raised)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon(if account.kind == AccountKind::Microsoft { "key-round" } else { "user" }, iconsize::S, t.secondary)),
-            )
+            .child(Self::avatar(account, t))
             .child(
                 div()
                     .flex_1()
@@ -909,98 +1142,117 @@ impl AccountsPage {
                         .child(sheet::button("proxy-row-save", tr("Sichern"), None, Look::Primary, blocked, saving, t).on_click(cx.listener(|s, _, _, cx| s.save_proxy(cx)))),
                 )
                 .child(sheet::note(Some(tr("Gilt für Anmeldung und Spiel. Leer lassen für keinen Proxy.")), problem, t))
-                .children(check_line(&check, t));
+                .children(check_line(&check, self.details.contains("check"), cx.listener(|s, _, _, cx| s.toggle("check", cx)), t));
             row = row.child(editor);
         }
         row
     }
-}
 
-impl Render for AccountsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = Theme::get(cx);
-        let model = super::model::get(cx);
-        let (accounts, usage) = {
-            let m = model.read(cx);
-            let mut usage: HashMap<Uuid, Vec<String>> = HashMap::new();
-            for b in &m.batches {
-                for id in &b.accounts {
-                    usage.entry(*id).or_default().push(b.name.clone());
-                }
-            }
-            (m.accounts.clone(), usage)
-        };
-        if self.editing.as_ref().is_some_and(|e| !accounts.iter().any(|a| a.id == e.id)) {
-            self.editing = None;
-        }
-        let root = div().id("accounts-page").size_full().overflow_y_scroll().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY));
-        let add = primary_button("accounts-add", tr("Account hinzufügen"), "plus", false, &t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddAccount), cx));
-        if accounts.is_empty() {
-            let title = tr("Noch keine Accounts");
-            return root.flex().items_center().justify_center().px(px(space::XL)).child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(space::M))
-                    .child(icon("users", iconsize::HERO, t.tertiary))
-                    .child(div().id("accounts-empty").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).child(title))
-                    .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Online-Mode.")))
-                    .child(div().mt(px(space::S)).flex().items_center().gap(px(space::S)).child(add).when(self.prism_found, |d| d.child(self.prism_button(cx, &t))))
-                    .children(self.prism_result(&accounts, cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c))),
-            );
-        }
-        let count = accounts.len();
-        let none: Vec<String> = Vec::new();
-        let many = count > FILTER_FROM;
-        let query = if many { input_value(&self.filter, cx).to_lowercase() } else { String::new() };
-        let shown: Vec<&Account> = accounts.iter().filter(|a| query.is_empty() || a.name.to_lowercase().contains(&query)).collect();
-        let mut list = div().flex().flex_col().rounded(px(radius::CARD)).bg(t.content).border_1().border_color(t.separator).overflow_hidden();
-        for (i, account) in shown.iter().enumerate() {
-            let batches = usage.get(&account.id).unwrap_or(&none);
-            list = list.child(self.row(account, batches, i + 1 == shown.len(), cx, &t));
-        }
-        if shown.is_empty() {
-            list = list.child(div().px(px(space::L)).py(px(space::M)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Kein Account passt zu „%@“.", &[&query])));
-        }
+    fn header(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
+        let count = self.accounts.len();
+        let count_label = if count == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&count]) };
+        let add = primary_button("accounts-add", tr("Account hinzufügen"), "plus", false, t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddAccount), cx));
         let error = self.error.clone().map(|e| {
             div()
                 .flex()
                 .items_start()
                 .gap(px(space::S))
-                .child(div().flex_1().min_w_0().child(sheet::notice("circle-alert", t.danger, t.danger_text, e)))
-                .child(sheet::icon_button("dismiss-error", "x", tr("Ausblenden"), t.secondary, &t).on_click(cx.listener(|s, _, _, cx| {
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_start()
+                        .gap(px(space::S))
+                        .px(px(space::M))
+                        .py(px(space::S))
+                        .rounded(px(radius::CONTROL))
+                        .bg(with_alpha(t.danger, tint::ATTENTION))
+                        .child(div().flex_1().min_w_0().child(sheet::problem("accounts-error", "circle-alert", t.danger_text, &e, self.details.contains("error"), cx.listener(|s, _, _, cx| s.toggle("error", cx)), t))),
+                )
+                .child(sheet::icon_button("dismiss-error", "x", tr("Ausblenden"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| {
                     s.error = None;
+                    window.focus(&s.root, cx);
                     cx.notify();
                 })))
         });
-        let count_label = if count == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&count]) };
-        root.child(
-            div()
-                .mx_auto()
-                .w_full()
-                .max_w(px(PAGE_MAX))
-                .px(px(space::XL))
-                .py(px(space::XL))
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::L))
+            .pb(px(space::L))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::M))
+                    .child(div().flex_1().flex().items_baseline().gap(px(space::S)).child(div().id("accounts-title").mark("heading", tr("Accounts")).text_size(px(font::TITLE)).font_weight(FontWeight::BOLD).child(tr("Accounts"))).child(div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(count_label)))
+                    .when(self.prism_found, |d| d.child(self.prism_button(cx, t)))
+                    .child(add),
+            )
+            .children(error)
+            .children(self.prism_result(&self.accounts, cx, t))
+            .when(count > FILTER_FROM, |d| d.child(Input::new(&self.filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true)))
+    }
+
+    fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::get(cx);
+        if ix == 0 {
+            let header = self.header(cx, &t);
+            return framed(header, true, self.shown.is_empty()).into_any_element();
+        }
+        let card = div().bg(t.content).border_x_1().border_color(t.separator).overflow_hidden();
+        let Some(at) = self.shown.get(ix - 1).copied() else {
+            let query = input_value(&self.filter, cx);
+            let none = card.border_y_1().rounded(px(radius::CARD)).child(div().px(px(space::L)).py(px(space::M)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Kein Account passt zu „%@“.", &[&query])));
+            return framed(none, false, true).into_any_element();
+        };
+        let account = self.accounts[at].clone();
+        let batches = self.usage.get(&account.id).cloned().unwrap_or_default();
+        let (first, last) = (ix == 1, ix == self.shown.len());
+        let content = self.row(&account, &batches, last, cx, &t);
+        let card = card.when(first, |d| d.border_t_1().rounded_t(px(radius::CARD))).when(last, |d| d.border_b_1().rounded_b(px(radius::CARD))).child(content);
+        framed(card, false, last).into_any_element()
+    }
+}
+
+fn framed(child: impl IntoElement, top: bool, bottom: bool) -> Div {
+    div().w_full().flex().justify_center().child(div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).when(top, |d| d.pt(px(space::XL))).when(bottom, |d| d.pb(px(space::XL))).child(child))
+}
+
+impl Render for AccountsPage {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::get(cx);
+        self.refresh(cx);
+        let root = div().id("accounts-page").size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
+        if self.accounts.is_empty() {
+            let add = primary_button("accounts-add", tr("Account hinzufügen"), "plus", false, &t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddAccount), cx));
+            let title = tr("Noch keine Accounts");
+            return root
+                .overflow_y_scroll()
                 .flex()
-                .flex_col()
-                .gap(px(space::L))
+                .items_center()
+                .justify_center()
+                .px(px(space::XL))
                 .child(
                     div()
                         .flex()
+                        .flex_col()
                         .items_center()
                         .gap(px(space::M))
-                        .child(div().flex_1().flex().items_baseline().gap(px(space::S)).child(div().id("accounts-title").mark("heading", tr("Accounts")).text_size(px(font::TITLE)).font_weight(FontWeight::BOLD).child(tr("Accounts"))).child(div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(count_label)))
-                        .when(self.prism_found, |d| d.child(self.prism_button(cx, &t)))
-                        .child(add),
+                        .child(icon("users", iconsize::HERO, t.tertiary))
+                        .child(div().id("accounts-empty").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).child(title))
+                        .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Online-Mode.")))
+                        .child(div().mt(px(space::S)).flex().items_center().gap(px(space::S)).child(add).when(self.prism_found, |d| d.child(self.prism_button(cx, &t))))
+                        .children(self.prism_result(&self.accounts, cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c))),
                 )
-                .children(error)
-                .children(self.prism_result(&accounts, cx, &t))
-                .when(many, |d| d.child(Input::new(&self.filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true)))
-                .child(list),
-        )
+                .into_any_element();
+        }
+        self.sync_heights(cx);
+        root.child(list(self.list.clone(), cx.processor(|s, ix: usize, _, cx| s.item(ix, cx))).size_full()).into_any_element()
     }
 }
 
 const PAGE_MAX: f32 = 760.;
 const FILTER_FROM: usize = 12;
+const OVERDRAW: f32 = 480.;

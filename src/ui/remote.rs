@@ -16,6 +16,8 @@ use crate::core::modrinth::{self, Defaults, Hit, Update};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{drive, fleet, install};
 
+use super::forms::{self, Plain, Problem};
+
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CANNED_DELAY: Duration = Duration::from_millis(450);
@@ -26,11 +28,29 @@ fn saving() -> MutexGuard<'static, ()> {
     SAVING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn is_stale(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.to_string().contains("changed by another Manycraft"))
+}
+
+/// Runs a load-modify-save under the saving lock. When another window saved in between, `op` runs once more from a fresh load.
+fn saved<T>(mut op: impl FnMut() -> Result<T>) -> Result<T> {
+    let _saving = saving();
+    match op() {
+        Err(e) if is_stale(&e) => op(),
+        done => done,
+    }
+}
+
+fn gone(what: String) -> anyhow::Error {
+    Plain(what).into()
+}
+
 /// Steps of a Microsoft sign-in as the sheet shows them.
 pub enum SignIn {
     Code { user_code: String, uri: String, expires_in: u64 },
     Approved,
-    Done,
+    /// Signed in; carries the account name as Minecraft knows it.
+    Done(String),
     Failed(SignInError),
 }
 
@@ -43,7 +63,7 @@ pub enum SignInError {
     NotOwned,
     WrongAccount(String),
     Network,
-    Other(String),
+    Other(Problem),
 }
 
 /// Runs a device-code sign-in through `proxy` and sends each step to `tx`. Once `cancel` is set nothing more is
@@ -61,7 +81,7 @@ pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: Arc<Atomic
         let flow = auth::Flow::new(proxy.as_deref())?;
         let code = flow.start()?;
         send(SignIn::Code { user_code: code.user_code.clone(), uri: code.verification_uri.clone(), expires_in: code.expires_in });
-        let tokens = flow.poll(&code)?;
+        let tokens = flow.poll_cancellable(&code, &cancel)?;
         if cancel.load(Ordering::SeqCst) {
             bail!("cancelled");
         }
@@ -74,8 +94,13 @@ pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: Arc<Atomic
         })
     };
     match run() {
-        Ok(_) => send(SignIn::Done),
-        Err(e) => send(SignIn::Failed(classify(&e))),
+        Ok(account) => send(SignIn::Done(account.name)),
+        Err(e) => {
+            if cancel.load(Ordering::SeqCst) {
+                drive::note("sign-in stopped".into());
+            }
+            send(SignIn::Failed(classify(&e)));
+        }
     }
 }
 
@@ -86,7 +111,7 @@ fn classify(e: &anyhow::Error) -> SignInError {
             AuthError::Declined => SignInError::Declined,
             AuthError::InvalidClientId | AuthError::AppNotApproved => SignInError::NoClientId,
             AuthError::GameNotOwned => SignInError::NotOwned,
-            other => SignInError::Other(auth_text(other)),
+            other => SignInError::Other(Problem::plain(auth_text(other))),
         };
     }
     if let Some(WrongAccount(name)) = e.downcast_ref::<WrongAccount>() {
@@ -95,10 +120,10 @@ fn classify(e: &anyhow::Error) -> SignInError {
     if is_network(e) {
         return SignInError::Network;
     }
-    SignInError::Other(format!("{e:#}"))
+    SignInError::Other(forms::explain(e))
 }
 
-fn is_network(e: &anyhow::Error) -> bool {
+pub(super) fn is_network(e: &anyhow::Error) -> bool {
     e.chain().any(|c| match c.downcast_ref::<ureq::Error>() {
         Some(ureq::Error::StatusCode(code)) => *code >= 500 || *code == 429,
         Some(_) => true,
@@ -122,7 +147,7 @@ fn auth_text(e: &AuthError) -> String {
 fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &AtomicBool, send: impl Fn(SignIn)) {
     let outcome = drive::dir().and_then(|d| std::fs::read_to_string(d.join("auth")).ok()).unwrap_or_default().trim().to_string();
     drive::note(format!("sign-in canned {}", if outcome.is_empty() { "ok" } else { &outcome }));
-    std::thread::sleep(CANNED_DELAY);
+    auth::sleep_unless(cancel, CANNED_DELAY);
     let failure = match outcome.as_str() {
         "noclient" => Some(SignInError::NoClientId),
         "network" => Some(SignInError::Network),
@@ -132,8 +157,9 @@ fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &Atomic
         return send(SignIn::Failed(f));
     }
     send(SignIn::Code { user_code: "DRV4-2K9Q".into(), uri: "https://www.microsoft.com/link".into(), expires_in: 900 });
-    std::thread::sleep(Duration::from_millis(if outcome == "wait" { 600_000 } else { 2500 }));
+    auth::sleep_unless(cancel, Duration::from_millis(if outcome == "wait" { 600_000 } else { 2500 }));
     if cancel.load(Ordering::SeqCst) {
+        drive::note("sign-in stopped".into());
         return;
     }
     let failure = match outcome.as_str() {
@@ -141,77 +167,85 @@ fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &Atomic
         "declined" => Some(SignInError::Declined),
         "notowned" => Some(SignInError::NotOwned),
         "wrong" if expected.is_some() => Some(SignInError::WrongAccount("JemandAnders".into())),
-        "other" => Some(SignInError::Other(auth_text(&AuthError::ChildAccount))),
+        "other" => Some(SignInError::Other(Problem::plain(auth_text(&AuthError::ChildAccount)))),
+        "technical" => Some(SignInError::Other(forms::explain(&anyhow::anyhow!("error sending request for url (https://login.live.com/oauth20_token.srf): connection reset")))),
         _ => None,
     };
     if let Some(f) = failure {
         return send(SignIn::Failed(f));
     }
     send(SignIn::Approved);
-    std::thread::sleep(CANNED_DELAY);
-    let saved = (|| -> Result<Account> {
-        let _saving = saving();
+    auth::sleep_unless(cancel, CANNED_DELAY);
+    let stored = saved(|| {
         if cancel.load(Ordering::SeqCst) {
             bail!("sign-in was cancelled");
         }
         let mut accounts = account::load()?;
         let existing = expected.and_then(|id| accounts.iter().find(|a| a.id == id).cloned());
         let n = accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).count() + 1;
-        let mut account = existing.unwrap_or(Account { id: Uuid::new_v4(), name: format!("Spieler{n}"), kind: AccountKind::Microsoft, proxy: None });
+        let mut account = existing.unwrap_or(Account { id: Uuid::new_v4(), name: canned_name(n), kind: AccountKind::Microsoft, proxy: None });
         if proxy.is_some() && expected.is_none() {
-            account.proxy = proxy;
+            account.proxy.clone_from(&proxy);
         }
         account::upsert(&mut accounts, account.clone());
         account::save(&accounts)?;
         Ok(account)
-    })();
-    match saved {
-        Ok(_) if !cancel.load(Ordering::SeqCst) => send(SignIn::Done),
+    });
+    match stored {
+        Ok(account) if !cancel.load(Ordering::SeqCst) => send(SignIn::Done(account.name)),
         Ok(_) => {}
-        Err(e) => send(SignIn::Failed(SignInError::Other(format!("{e:#}")))),
+        Err(e) => send(SignIn::Failed(SignInError::Other(forms::explain(&e)))),
     }
+}
+
+fn canned_name(n: usize) -> String {
+    let named = drive::dir().and_then(|d| std::fs::read_to_string(d.join("names")).ok()).unwrap_or_default();
+    named.split_whitespace().nth(n - 1).map_or_else(|| format!("Spieler{n}"), str::to_owned)
 }
 
 /// Adds an offline account, refusing a name that is invalid or already saved.
 pub fn add_offline(name: &str, proxy: Option<String>) -> Result<Account> {
-    let _saving = saving();
-    let mut accounts = account::load()?;
-    if let Some(problem) = super::forms::offline_name_problem(name, &accounts) {
-        bail!(problem);
-    }
-    let mut account = Account::offline(name)?;
-    account.proxy = proxy;
-    account::upsert(&mut accounts, account.clone());
-    account::save(&accounts)?;
-    Ok(account)
+    saved(|| {
+        let mut accounts = account::load()?;
+        if let Some(problem) = forms::offline_name_problem(name, &accounts) {
+            return Err(gone(problem));
+        }
+        let mut account = Account::offline(name)?;
+        account.proxy.clone_from(&proxy);
+        account::upsert(&mut accounts, account.clone());
+        account::save(&accounts)?;
+        Ok(account)
+    })
 }
 
 /// Replaces the proxy of account `id`; `None` removes it.
 pub fn set_proxy(id: Uuid, proxy: Option<String>) -> Result<()> {
-    let _saving = saving();
-    let mut accounts = account::load()?;
-    let account = accounts.iter_mut().find(|a| a.id == id).context("this account no longer exists")?;
-    account.proxy = proxy;
-    account::save(&accounts)
+    saved(|| {
+        let mut accounts = account::load()?;
+        let account = accounts.iter_mut().find(|a| a.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Account gibt es nicht mehr.")))?;
+        account.proxy.clone_from(&proxy);
+        account::save(&accounts)
+    })
 }
 
 /// Removes account `id` from every batch, then from the saved accounts, then its sign-in from the keychain.
 pub fn remove_account(id: Uuid) -> Result<()> {
-    let _saving = saving();
-    let mut accounts = account::load()?;
-    for mut b in batch::load_all()? {
-        if b.accounts.contains(&id) {
-            b.accounts.retain(|a| *a != id);
-            batch::save(&b)?;
+    saved(|| {
+        let mut accounts = account::load()?;
+        for mut b in batch::load_all()? {
+            if b.accounts.contains(&id) {
+                b.accounts.retain(|a| *a != id);
+                batch::save(&b)?;
+            }
         }
-    }
-    let Some(at) = accounts.iter().position(|a| a.id == id) else { return Ok(()) };
-    let removed = accounts.remove(at);
-    account::save(&accounts)?;
-    if removed.kind == AccountKind::Microsoft && !drive::fenced("keychain delete", id) {
-        account::delete_token(id)?;
-    }
-    Ok(())
+        let Some(at) = accounts.iter().position(|a| a.id == id) else { return Ok(()) };
+        let removed = accounts.remove(at);
+        account::save(&accounts)?;
+        if removed.kind == AccountKind::Microsoft && !drive::fenced("keychain delete", id) {
+            account::delete_token(id)?;
+        }
+        Ok(())
+    })
 }
 
 /// Checks that `proxy` reaches the internet: any HTTP answer through it counts.
@@ -305,6 +339,7 @@ pub fn move_mods(mods: &[ModRef], game_version: &str) -> Result<(Vec<ModRef>, Ve
 }
 
 /// What the batch sheet changes; everything else on a batch stays as saved.
+#[derive(Clone)]
 pub struct BatchEdit {
     pub name: String,
     pub game_version: String,
@@ -318,14 +353,15 @@ pub struct BatchEdit {
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`.
 /// Accounts that no longer exist are left out.
 pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<()> {
-    let _saving = saving();
-    let mut b = match id {
-        Some(id) => batch::load_all()?.into_iter().find(|b| b.id == id).with_context(|| crate::core::i18n::tr("Diesen Batch gibt es nicht mehr."))?,
-        None => Batch::new(&edit.name, &edit.game_version),
-    };
-    let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
-    apply(&mut b, edit, &known);
-    batch::save(&b)
+    saved(|| {
+        let mut b = match id {
+            Some(id) => batch::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?,
+            None => Batch::new(&edit.name, &edit.game_version),
+        };
+        let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
+        apply(&mut b, edit.clone(), &known);
+        batch::save(&b)
+    })
 }
 
 fn apply(b: &mut Batch, edit: BatchEdit, known: &HashSet<Uuid>) {
@@ -344,8 +380,7 @@ fn apply(b: &mut Batch, edit: BatchEdit, known: &HashSet<Uuid>) {
 
 /// Deletes a batch and keeps its shared files next to its game folders.
 pub fn delete_batch(b: &Batch) -> Result<()> {
-    let _saving = saving();
-    fleet::delete_batch(b).map(|_| ())
+    saved(|| fleet::delete_batch(b).map(|_| ()))
 }
 
 /// The Prism Launcher instances on this machine, Fabric ones first.
@@ -362,27 +397,28 @@ pub fn prism_instances() -> Result<Vec<Instance>> {
 /// Imports `instance` as a new batch and applies the name, server, memory and accounts of `edit`; its version and mods stay the instance's.
 /// A batch that was imported but could not be completed is removed again.
 pub fn import_prism(instance: &Instance, edit: BatchEdit) -> Result<Batch> {
-    let _saving = saving();
-    let mut b = if drive::fenced("prism import", &instance.id) {
-        std::thread::sleep(CANNED_DELAY);
-        canned_import(instance, &edit.name)?
-    } else {
-        prism::import_instance(instance, &edit.name)?
-    };
-    let finish = |b: &mut Batch| -> Result<()> {
-        let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
-        b.server = edit.server.clone();
-        if let Some(mb) = edit.memory_mb {
-            b.memory_mb = mb;
+    saved(|| {
+        let mut b = if drive::fenced("prism import", &instance.id) {
+            std::thread::sleep(CANNED_DELAY);
+            canned_import(instance, &edit.name)?
+        } else {
+            prism::import_instance(instance, &edit.name).map_err(|e| if format!("{e:#}").contains("exists already") { gone(crate::core::i18n::trf("Es gibt schon einen Batch „%@“. Wähle einen anderen Namen.", &[&edit.name])) } else { e })?
+        };
+        let finish = |b: &mut Batch| -> Result<()> {
+            let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
+            b.server.clone_from(&edit.server);
+            if let Some(mb) = edit.memory_mb {
+                b.memory_mb = mb;
+            }
+            b.accounts = edit.accounts.iter().copied().filter(|id| known.contains(id)).collect();
+            batch::save(b)
+        };
+        if let Err(e) = finish(&mut b) {
+            let _ = batch::delete(&b);
+            return Err(e);
         }
-        b.accounts = edit.accounts.iter().copied().filter(|id| known.contains(id)).collect();
-        batch::save(b)
-    };
-    if let Err(e) = finish(&mut b) {
-        let _ = batch::delete(&b);
-        return Err(e);
-    }
-    Ok(b)
+        Ok(b)
+    })
 }
 
 /// Newer files for the mods of the saved batch `batch`.
@@ -397,14 +433,15 @@ pub fn mod_updates(batch: &Batch) -> Result<Vec<Update>> {
 /// Applies `selection` to the saved batch `id` as it is on disk now and returns it. While the batch `running`
 /// only its list changes; the files follow at the next start.
 pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<Batch> {
-    let _saving = saving();
-    let mut b = batch::load_all()?.into_iter().find(|b| b.id == id).with_context(|| crate::core::i18n::tr("Diesen Batch gibt es nicht mehr."))?;
-    if running || drive::fenced("modrinth apply", selection.len()) {
-        modrinth::update_mods_later(&mut b, selection)?;
-    } else {
-        modrinth::update_mods(&mut b, selection)?;
-    }
-    Ok(b)
+    saved(|| {
+        let mut b = batch::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?;
+        if running || drive::fenced("modrinth apply", selection.len()) {
+            modrinth::update_mods_later(&mut b, selection)?;
+        } else {
+            modrinth::update_mods(&mut b, selection)?;
+        }
+        Ok(b)
+    })
 }
 
 /// The accounts Prism Launcher lists, names and kinds only.
@@ -417,17 +454,18 @@ pub fn prism_accounts() -> Result<Vec<PrismAccount>> {
 
 /// Saves Prism's offline accounts; Microsoft ones come back as names that must sign in.
 pub fn import_prism_accounts() -> Result<AccountImport> {
-    let _saving = saving();
-    if !drive::fenced("prism accounts import", "canned") {
-        return prism::import_accounts();
-    }
-    std::thread::sleep(CANNED_DELAY);
-    let mut saved = account::load()?;
-    let done = prism::import_accounts_into(&mut saved, &canned_prism_accounts());
-    if !done.added.is_empty() {
-        account::save(&saved)?;
-    }
-    Ok(done)
+    saved(|| {
+        if !drive::fenced("prism accounts import", "canned") {
+            return prism::import_accounts();
+        }
+        std::thread::sleep(CANNED_DELAY);
+        let mut known = account::load()?;
+        let done = prism::import_accounts_into(&mut known, &canned_prism_accounts());
+        if !done.added.is_empty() {
+            account::save(&known)?;
+        }
+        Ok(done)
+    })
 }
 
 fn canned_prism_accounts() -> Vec<PrismAccount> {
@@ -460,7 +498,7 @@ fn canned_import(instance: &Instance, name: &str) -> Result<Batch> {
         bail!("{} cannot be imported: {reason}", instance.name);
     }
     if batch::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
-        bail!("a batch named {name} exists already");
+        return Err(gone(crate::core::i18n::trf("Es gibt schon einen Batch „%@“. Wähle einen anderen Namen.", &[&name])));
     }
     let game = instance.game_version.clone().context("no Minecraft version")?;
     let mut b = Batch::new(name, &game);
@@ -535,7 +573,37 @@ mod tests {
         let io: anyhow::Error = anyhow::Error::from(std::io::Error::other("reset")).context("cannot reach Microsoft");
         assert_eq!(classify(&io), SignInError::Network);
         assert!(matches!(classify(&AuthError::ChildAccount.into()), SignInError::Other(_)));
-        assert!(matches!(classify(&anyhow::anyhow!("keychain locked")), SignInError::Other(m) if m.contains("keychain")));
+        let keychain = classify(&anyhow::anyhow!("system keychain is not available"));
+        assert!(matches!(&keychain, SignInError::Other(p) if p.detail.as_deref().is_some_and(|d| d.contains("keychain")) && !p.text.contains("keychain")), "{keychain:?}");
+    }
+
+    #[test]
+    fn a_save_that_met_another_window_runs_again_from_a_fresh_load() {
+        let stale = || anyhow::anyhow!("accounts.json was changed by another Manycraft since it was read; reload and try again");
+        let mut calls = 0;
+        let done = saved(|| {
+            calls += 1;
+            if calls == 1 { Err(stale()) } else { Ok(calls) }
+        });
+        assert_eq!(done.unwrap(), 2);
+        let mut calls = 0;
+        assert!(
+            saved::<()>(|| {
+                calls += 1;
+                Err(stale())
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 2);
+        let mut calls = 0;
+        assert!(
+            saved::<()>(|| {
+                calls += 1;
+                bail!("disk full")
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 1);
     }
 
     #[test]

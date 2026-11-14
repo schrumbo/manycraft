@@ -8,6 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::drive::Mark;
+use super::forms::Problem;
 use super::motion::Soft;
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
 use super::widgets::{KeyNav, icon, tip};
@@ -221,4 +222,44 @@ pub fn notice(icon_name: &str, color: Hsla, text_color: Hsla, text: impl Into<Sh
         .text_color(text_color)
         .child(div().pt(px(space::XXS)).child(icon(icon_name, iconsize::S, text_color)))
         .child(div().min_w_0().child(text.into()))
+}
+
+/// A failure in the content: its plain text with an icon, and a quiet Details control for the technical cause.
+/// Keep `open` and the toggle in the owner so the disclosure survives a redraw.
+pub fn problem(id: impl Into<SharedString>, icon_name: &str, color: Hsla, problem: &Problem, open: bool, toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, t: &Theme) -> Div {
+    let line = status(icon_name, color, problem.text.clone());
+    match problem.detail.clone() {
+        Some(detail) => div().min_w_0().flex().flex_col().child(line).child(details(id, detail, open, toggle, t)),
+        None => div().min_w_0().child(line),
+    }
+}
+
+/// The Details control and, when open, the technical cause under it.
+pub fn details(id: impl Into<SharedString>, detail: String, open: bool, toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, t: &Theme) -> Div {
+    let id = id.into();
+    let label = if open { tr("Details ausblenden") } else { tr("Details") };
+    let more = button(format!("{id}-details"), label, Some(if open { "chevron-down" } else { "chevron-right" }), Look::Plain, false, false, t).on_click(toggle);
+    div()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(space::XXS))
+        .child(div().flex().child(more))
+        .when(open, |d| d.child(div().id(SharedString::from(format!("{id}-detail"))).px(px(space::S)).py(px(space::XS)).rounded(px(radius::SMALL)).bg(t.raised).font_family(Theme::mono_family()).text_size(px(font::CAPTION)).text_color(t.secondary).child(detail)))
+}
+
+const HEAD_BATCH: usize = 8;
+
+/// Fetches missing skin heads off the UI thread in small chunks and redraws `V` as they arrive.
+pub fn warm_heads<V: 'static>(accounts: Vec<crate::core::account::Account>, cx: &mut Context<V>) {
+    cx.spawn(async move |this, cx| {
+        for chunk in accounts.chunks(HEAD_BATCH) {
+            let chunk = chunk.to_vec();
+            let changed = cx.background_executor().spawn(async move { crate::core::skins::prepare(&chunk) }).await;
+            if changed && this.update(cx, |_, cx| cx.notify()).is_err() {
+                return;
+            }
+        }
+    })
+    .detach();
 }

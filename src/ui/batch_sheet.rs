@@ -1,6 +1,7 @@
 //! The sheet to create or edit a batch: version, server, mods, memory and accounts.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::base::actions::{Cancel, Confirm};
@@ -15,7 +16,7 @@ use uuid::Uuid;
 
 use super::actions::{AddAccount, EditBatch, NewBatch, Reload};
 use super::drive::Mark;
-use super::forms;
+use super::forms::{self, Problem};
 use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
@@ -26,6 +27,7 @@ use crate::core::batch::{Batch, ModRef};
 use crate::core::i18n::{tr, trf};
 use crate::core::modrinth::{Hit, Update};
 use crate::core::prism::Instance;
+use crate::core::skins;
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const FILTER_FROM: usize = 12;
@@ -56,7 +58,7 @@ fn open(batch: Option<Batch>, cx: &mut App) {
 enum Load<T> {
     Loading,
     Ready(T),
-    Failed(String),
+    Failed(Problem),
 }
 
 struct BatchSheet {
@@ -80,27 +82,37 @@ struct BatchSheet {
     mods: Vec<ModRef>,
     mods_touched: bool,
     mods_busy: Option<String>,
-    mods_error: Option<String>,
+    mods_error: Option<Problem>,
     notes: Vec<String>,
     searching: bool,
     results: Option<Load<Vec<Hit>>>,
+    results_for: String,
     search_gen: u64,
     adding: HashSet<String>,
-    add_error: Option<String>,
+    add_error: Option<Problem>,
     prism_list: Vec<Instance>,
+    prism_filter: Entity<InputState>,
+    prism_sel: usize,
+    prism_scroll: ScrollHandle,
+    name_auto: String,
     prism_choice: Option<Instance>,
     prism_picking: bool,
     imported: Option<Batch>,
     updates: Option<Load<Vec<Update>>>,
     updates_gen: u64,
     updating: HashSet<String>,
-    update_error: Option<String>,
+    applied: HashSet<String>,
+    update_error: Option<Problem>,
     updates_note: Option<String>,
     saving: bool,
-    save_error: Option<String>,
+    save_error: Option<Problem>,
+    details: HashSet<&'static str>,
     tried: bool,
     focus_next: bool,
+    focus_done: bool,
+    refocus: bool,
     root: FocusHandle,
+    done_focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -123,10 +135,12 @@ impl BatchSheet {
         let initial: Vec<String> = if version.is_empty() { Vec::new() } else { vec![version.clone()] };
         let selected = (!initial.is_empty()).then(|| IndexPath::new(0));
         let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(initial.clone()), selected, window, cx).searchable(true));
+        let name_auto = if original.is_none() { name_value.clone() } else { String::new() };
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. Farm")).default_value(name_value));
         let server = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. play.example.net")).default_value(server_value));
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Accounts filtern")));
         let query = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Mods suchen, z. B. Sodium")));
+        let prism_filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Instanzen filtern")));
         let changed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
             if matches!(e, InputEvent::Change) {
                 s.save_error = None;
@@ -140,6 +154,12 @@ impl BatchSheet {
             cx.subscribe(&query, |s: &mut Self, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
                     s.schedule_search(cx);
+                }
+            }),
+            cx.subscribe(&prism_filter, |s: &mut Self, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    s.prism_sel = s.first_supported(cx);
+                    cx.notify();
                 }
             }),
             cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<String>>, _, cx| {
@@ -182,26 +202,38 @@ impl BatchSheet {
             notes: Vec::new(),
             searching: false,
             results: None,
+            results_for: String::new(),
             search_gen: 0,
             adding: HashSet::new(),
             add_error: None,
             prism_list: Vec::new(),
+            prism_filter,
+            prism_sel: 0,
+            prism_scroll: ScrollHandle::new(),
+            name_auto,
             prism_choice: None,
             prism_picking: false,
             imported: None,
             updates: None,
             updates_gen: 0,
             updating: HashSet::new(),
+            applied: HashSet::new(),
             update_error: None,
             updates_note: None,
             saving: false,
             save_error: None,
+            details: HashSet::new(),
             tried: false,
             focus_next: true,
+            focus_done: false,
+            refocus: false,
             root: cx.focus_handle(),
+            done_focus: cx.focus_handle(),
             _subs: subs,
         };
         sheet.load_versions(cx);
+        let everyone = super::model::get(cx).read(cx).accounts.clone();
+        sheet::warm_heads(everyone, cx);
         if editing {
             sheet.load_updates(cx);
         } else {
@@ -224,13 +256,63 @@ impl BatchSheet {
         .detach();
     }
 
+    fn toggle(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if !self.details.remove(key) {
+            self.details.insert(key);
+        }
+        cx.notify();
+    }
+
+    fn problem(&self, key: &'static str, icon_name: &str, color: Hsla, problem: &Problem, cx: &mut Context<Self>, t: &Theme) -> Div {
+        sheet::problem(key, icon_name, color, problem, self.details.contains(key), cx.listener(move |s, _, _, cx| s.toggle(key, cx)), t)
+    }
+
     fn open_prism(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.prism_picking = open;
         self.focus_next = !open;
         if open {
-            window.focus(&self.root, cx);
+            self.prism_sel = self.first_supported(cx);
+            if self.prism_list.len() > PRISM_FILTER_FROM {
+                self.prism_filter.update(cx, |q, cx| q.focus(window, cx));
+            } else {
+                window.focus(&self.root, cx);
+            }
         }
         cx.notify();
+    }
+
+    fn prism_shown(&self, cx: &App) -> Vec<Instance> {
+        let query = if self.prism_list.len() > PRISM_FILTER_FROM { self.prism_filter.read(cx).value().trim().to_lowercase() } else { String::new() };
+        self.prism_list.iter().filter(|i| query.is_empty() || i.name.to_lowercase().contains(&query)).cloned().collect()
+    }
+
+    fn first_supported(&self, cx: &App) -> usize {
+        self.prism_shown(cx).iter().position(|i| i.unsupported.is_none()).unwrap_or(0)
+    }
+
+    fn step_prism(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let shown = self.prism_shown(cx);
+        let mut at = self.prism_sel.min(shown.len().saturating_sub(1)) as i32;
+        loop {
+            let next = at + delta;
+            if next < 0 || next >= shown.len() as i32 {
+                return;
+            }
+            at = next;
+            if shown[at as usize].unsupported.is_none() {
+                break;
+            }
+        }
+        self.prism_sel = at as usize;
+        self.prism_scroll.scroll_to_item(self.prism_sel);
+        cx.notify();
+    }
+
+    fn choose_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = self.prism_shown(cx);
+        if let Some(instance) = shown.get(self.prism_sel.min(shown.len().saturating_sub(1))).cloned() {
+            self.choose_prism(instance, window, cx);
+        }
     }
 
     fn closable(&self) -> bool {
@@ -245,7 +327,11 @@ impl BatchSheet {
         let taken: Vec<String> = super::model::get(cx).read(cx).batches.iter().map(|b| b.name.clone()).collect();
         let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
         let name = forms::unique_name(&instance.name, &taken);
-        self.name.update(cx, |s, cx| s.set_value(name, window, cx));
+        let typed = self.name.read(cx).value().trim().to_string();
+        if typed.is_empty() || typed == self.name_auto {
+            self.name.update(cx, |s, cx| s.set_value(name.clone(), window, cx));
+            self.name_auto = name;
+        }
         if !self.version_list.contains(&game) {
             self.version_list.insert(0, game.clone());
         }
@@ -277,6 +363,7 @@ impl BatchSheet {
             return;
         };
         self.updates = Some(Load::Loading);
+        self.applied.clear();
         self.updates_gen += 1;
         let generation = self.updates_gen;
         cx.notify();
@@ -289,7 +376,7 @@ impl BatchSheet {
                 }
                 s.updates = Some(match result {
                     Ok(list) => Load::Ready(list),
-                    Err(e) => Load::Failed(e.root_cause().to_string()),
+                    Err(e) => Load::Failed(forms::explain_as(tr("Updates nicht geladen."), &e)),
                 });
                 cx.notify();
             });
@@ -300,7 +387,7 @@ impl BatchSheet {
     fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
         let Some(Load::Ready(list)) = &self.updates else { return };
         let Some(id) = self.original.as_ref().map(|b| b.id.clone()) else { return };
-        let selection: Vec<Update> = list.iter().filter(|u| only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
+        let selection: Vec<Update> = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
         if selection.is_empty() || !self.updating.is_empty() || self.saving {
             return;
         }
@@ -322,14 +409,16 @@ impl BatchSheet {
                                 *slot = u.latest.clone();
                             }
                         }
-                        if let Some(Load::Ready(list)) = &mut s.updates {
-                            list.retain(|u| !selection.contains(u));
-                        }
+                        s.applied.extend(selection.iter().map(|u| u.current.project_id.clone()));
+                        s.refocus = true;
                         s.updates_note = Some(if running { trf("%lld Updates vorgemerkt. Sie gelten beim nächsten Start.", &[&selection.len()]) } else if selection.len() == 1 { tr("1 Mod aktualisiert.") } else { trf("%lld Mods aktualisiert.", &[&selection.len()]) });
                         s.original = Some(batch);
                         cx.dispatch_action(&Reload);
                     }
-                    Err(e) => s.update_error = Some(trf("Nicht aktualisiert: %@", &[&e.root_cause()])),
+                    Err(e) => {
+                        s.update_error = Some(forms::explain_as(tr("Nicht aktualisiert."), &e));
+                        s.refocus = true;
+                    }
                 }
                 cx.notify();
             });
@@ -363,8 +452,8 @@ impl BatchSheet {
                             s.change_version(newest, cx);
                         }
                     }
-                    Ok(_) => s.versions = Load::Failed(tr("Mojang hat keine Versionen geliefert.")),
-                    Err(e) => s.versions = Load::Failed(e.root_cause().to_string()),
+                    Ok(_) => s.versions = Load::Failed(Problem::plain(tr("Mojang hat keine Versionen geliefert. Versuche es später noch einmal."))),
+                    Err(e) => s.versions = Load::Failed(forms::explain_as(tr("Versionen nicht geladen."), &e)),
                 }
                 cx.notify();
             });
@@ -405,10 +494,10 @@ impl BatchSheet {
                     }
                     Err(e) if previous.is_empty() => {
                         s.mods.clear();
-                        s.mods_error = Some(trf("Mods nicht geladen: %@", &[&e.root_cause()]));
+                        s.mods_error = Some(forms::explain_as(tr("Mods nicht geladen."), &e));
                     }
                     Err(e) => {
-                        s.mods_error = Some(trf("Mods für %@ nicht geladen, die Version bleibt %@: %@", &[&version, &previous, &e.root_cause()]));
+                        s.mods_error = Some(forms::explain_as(trf("Mods für %@ nicht geladen, die Version bleibt %@.", &[&version, &previous]), &e));
                         s.version = previous;
                         s.pending_versions = true;
                     }
@@ -429,6 +518,7 @@ impl BatchSheet {
             return;
         }
         let version = self.version.clone();
+        let searched = query.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DELAY).await;
             let current = this.update(cx, |s, cx| {
@@ -447,9 +537,10 @@ impl BatchSheet {
                 if s.search_gen != generation {
                     return;
                 }
+                s.results_for = searched;
                 s.results = Some(match result {
                     Ok(hits) => Load::Ready(hits),
-                    Err(e) => Load::Failed(e.root_cause().to_string()),
+                    Err(e) => Load::Failed(forms::explain_as(tr("Die Suche hat nicht geklappt."), &e)),
                 });
                 cx.notify();
             });
@@ -484,7 +575,7 @@ impl BatchSheet {
                             }
                         }
                     }
-                    Err(e) => s.add_error = Some(trf("„%@“ ließ sich nicht hinzufügen: %@", &[&title, &e.root_cause()])),
+                    Err(e) => s.add_error = Some(forms::explain_as(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), &e)),
                 }
                 cx.notify();
             });
@@ -496,6 +587,13 @@ impl BatchSheet {
         self.mods.retain(|m| m.project_id != project_id);
         self.mods_touched = true;
         cx.notify();
+    }
+
+    fn top_hit(&self, cx: &App) -> Option<Hit> {
+        let Some(Load::Ready(hits)) = &self.results else { return None };
+        let hit = hits.first()?;
+        let fresh = self.results_for == self.query.read(cx).value().trim();
+        (fresh && !self.adding.contains(&hit.project_id) && !self.mods.iter().any(|m| m.project_id == hit.project_id)).then(|| hit.clone())
     }
 
     fn open_search(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -548,9 +646,10 @@ impl BatchSheet {
                                 cx.emit(Dismissed);
                             } else {
                                 s.imported = Some(batch);
+                                s.focus_done = true;
                             }
                         }
-                        Err(e) => s.save_error = Some(trf("Nicht übernommen: %@", &[&e.root_cause()])),
+                        Err(e) => s.save_error = Some(forms::explain_as(tr("Nicht übernommen."), &e)),
                     }
                     cx.notify();
                 });
@@ -568,7 +667,7 @@ impl BatchSheet {
                         cx.dispatch_action(&Reload);
                         cx.emit(Dismissed);
                     }
-                    Err(e) => s.save_error = Some(trf("Nicht gespeichert: %@", &[&e])),
+                    Err(e) => s.save_error = Some(forms::explain_as(tr("Nicht gespeichert."), &e)),
                 }
                 cx.notify();
             });
@@ -600,7 +699,7 @@ impl BatchSheet {
                                     cx.dispatch_action(&Reload);
                                     cx.emit(Dismissed);
                                 }
-                                Err(e) => s.save_error = Some(trf("Nicht gelöscht: %@", &[&e])),
+                                Err(e) => s.save_error = Some(forms::explain_as(tr("Nicht gelöscht."), &e)),
                             }
                             cx.notify();
                         });
@@ -612,13 +711,21 @@ impl BatchSheet {
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prism_picking && !self.searching {
+            self.choose_selected(window, cx);
+            return;
+        }
         if !sheet::typing(window) {
             cx.propagate();
             return;
         }
         if self.imported.is_some() {
             cx.emit(Dismissed);
-        } else if !self.searching && !self.prism_picking {
+        } else if self.searching {
+            if let Some(hit) = self.top_hit(cx) {
+                self.add_mod(&hit, cx);
+            }
+        } else {
             self.save(cx);
         }
     }
@@ -632,7 +739,7 @@ impl BatchSheet {
                 .flex()
                 .items_center()
                 .gap(px(space::S))
-                .child(div().flex_1().min_w_0().child(sheet::status("circle-alert", t.danger_text, trf("Versionen nicht geladen: %@", &[why]))))
+                .child(div().flex_1().min_w_0().child(self.problem("versions-error", "circle-alert", t.danger_text, why, cx, t)))
                 .child(sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)))),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
             _ => div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some())),
@@ -665,10 +772,12 @@ impl BatchSheet {
         let total = u64::from(self.memory) * count as u64;
         let total_label = forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX));
         let over = total > self.total_ram;
-        let tight = self.free_ram.map(|free| crate::core::fit::fit_in(u32::try_from(count).unwrap_or(u32::MAX), self.memory, crate::core::fit::Memory { total_mb: self.total_ram, free_mb: free })).filter(|f| !f.fits());
+        let measured = self.free_ram.map(|free| crate::core::fit::fit_in(u32::try_from(count).unwrap_or(u32::MAX), self.memory, crate::core::fit::Memory { total_mb: self.total_ram, free_mb: free }));
+        let snug = measured.as_ref().filter(|f| f.fits() && f.needed_mb * 100 > f.free_mb * SNUG_PERCENT).cloned();
+        let tight = measured.filter(|f| !f.fits());
         let at_min = self.memory <= forms::MEMORY_MIN;
         let at_max = self.memory >= self.memory_max;
-        let open = self.advanced || over || tight.is_some();
+        let open = self.advanced || over || tight.is_some() || snug.is_some();
         let label = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(self.memory)]) };
         let disclosure = div()
             .id("batch-advanced")
@@ -716,6 +825,8 @@ impl BatchSheet {
             sheet::note(None, Some(trf("%lld Accounts brauchen zusammen bis zu %@, mehr als dieser Rechner hat (%@).", &[&count, &total_label, &forms::memory_label(u32::try_from(self.total_ram).unwrap_or(u32::MAX))])), t)
         } else if let Some(fit) = tight {
             sheet::note(None, Some(super::model::fit_line(u32::try_from(count).unwrap_or(u32::MAX), self.memory, &fit)), t)
+        } else if let Some(fit) = snug {
+            sheet::note(Some(trf("%@. Das passt, wird aber knapp.", &[&super::model::fit_line(u32::try_from(count).unwrap_or(u32::MAX), self.memory, &fit)])), None, t)
         } else if count > 1 {
             sheet::note(Some(trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &total_label])), None, t)
         } else {
@@ -751,10 +862,10 @@ impl BatchSheet {
         let list = if shown.is_empty() {
             frame.py(px(space::XS)).child(div().px(px(space::M)).py(px(space::S)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Kein Account passt zu „%@“.", &[&filter])))
         } else {
-            let rows: Vec<(Uuid, String, String)> = shown.iter().map(|a| (a.id, a.name.clone(), if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") })).collect();
+            let rows: Vec<(Uuid, String, String, Option<PathBuf>)> = shown.iter().map(|a| (a.id, a.name.clone(), if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") }, skins::head(a))).collect();
             let count = rows.len();
             frame.child(
-                uniform_list("account-list", count, cx.processor(move |s, range: std::ops::Range<usize>, _, cx| rows[range].iter().map(|(id, name, kind)| s.pick_row(*id, name.clone(), kind.clone(), cx)).collect::<Vec<_>>()))
+                uniform_list("account-list", count, cx.processor(move |s, range: std::ops::Range<usize>, _, cx| rows[range].iter().map(|(id, name, kind, head)| s.pick_row(*id, name.clone(), kind.clone(), head.clone(), cx)).collect::<Vec<_>>()))
                     .with_sizing_behavior(ListSizingBehavior::Infer)
                     .px(px(space::XS))
                     .py(px(space::XS))
@@ -764,7 +875,7 @@ impl BatchSheet {
         div().flex().flex_col().gap(px(space::XS)).child(header).when(accounts.len() > FILTER_FROM, |d| d.child(Input::new(&self.filter))).child(list)
     }
 
-    fn pick_row(&mut self, id: Uuid, name: String, kind: String, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn pick_row(&mut self, id: Uuid, name: String, kind: String, head: Option<PathBuf>, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = Theme::get(cx);
         let checked = self.accounts.contains(&id);
         let toggle = move |s: &mut Self, cx: &mut Context<Self>| {
@@ -775,6 +886,7 @@ impl BatchSheet {
         };
         div()
             .id(SharedString::from(format!("pick-row-{}", id.simple())))
+            .mark("row", name.clone())
             .w_full()
             .px(px(space::S))
             .py(px(space::XS))
@@ -783,13 +895,18 @@ impl BatchSheet {
             .gap(px(space::S))
             .rounded(px(radius::SMALL))
             .cursor_pointer()
+            .key_nav()
             .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
             .on_click(cx.listener(move |s, _, _, cx| toggle(s, cx)))
-            .child(Checkbox::new(SharedString::from(format!("pick-{}", id.simple()))).checked(checked).label(name).on_click(cx.listener(move |s, _: &bool, _, cx| {
+            .child(Checkbox::new(SharedString::from(format!("pick-{}", id.simple()))).checked(checked).on_click(cx.listener(move |s, _: &bool, _, cx| {
                 toggle(s, cx);
                 cx.stop_propagation();
             })))
-            .child(div().flex_1())
+            .child(match head {
+                Some(path) => img(path).size(px(iconsize::L)).flex_none().rounded(px(radius::SMALL)).into_any_element(),
+                None => div().size(px(iconsize::L)).flex_none().rounded(px(radius::SMALL)).bg(t.raised).into_any_element(),
+            })
+            .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name))
             .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(kind))
     }
 
@@ -806,7 +923,7 @@ impl BatchSheet {
             return col.child(div().h(px(control::L)).flex().items_center().child(sheet::waiting(text, t)));
         }
         if let Some(e) = &self.mods_error {
-            col = col.child(sheet::status("circle-alert", t.danger_text, trf("Mods nicht geladen: %@", &[e])));
+            col = col.child(self.problem("mods-error", "circle-alert", t.danger_text, e, cx, t));
         }
         if self.mods.is_empty() {
             col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Keine Mods. Der Batch startet mit Fabric allein.")));
@@ -830,6 +947,12 @@ impl BatchSheet {
         }
         for n in &self.notes {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(n.clone()));
+        }
+        if let Some(own) = self.original.as_ref().filter(|b| !b.local_mods.is_empty()) {
+            col = col
+                .child(div().pt(px(space::S)).child(sheet::label(trf("Eigene Dateien (%lld)", &[&own.local_mods.len()]), t)))
+                .child(local_files("local-files", &own.local_mods, t))
+                .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Diese Dateien bleiben unverändert im Batch und werden nicht aktualisiert.")));
         }
         if let Some(updates) = self.render_updates(cx, t) {
             col = col.child(updates);
@@ -880,7 +1003,7 @@ impl BatchSheet {
             .flex_col()
             .gap(px(space::XS))
             .child(sheet::label(trf("Mods (%lld)", &[&instance.mods]), t))
-            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Mods, Config und Einstellungen werden aus der Instanz kopiert; Prism bleibt unverändert. Beim Erstellen wird geprüft, welche Mods auf Modrinth liegen. Die übrigen bleiben als eigene Dateien im Batch.")))
+            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Mods und Einstellungen werden aus der Instanz kopiert; Prism bleibt unverändert. Beim Erstellen wird geprüft, welche Mods auf Modrinth liegen. Die übrigen bleiben als eigene Dateien im Batch.")))
     }
 
     fn render_updates(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
@@ -895,7 +1018,7 @@ impl BatchSheet {
         }
         let busy = !self.updating.is_empty();
         let count = match &self.updates {
-            Some(Load::Ready(list)) => list.len(),
+            Some(Load::Ready(list)) => list.iter().filter(|u| !self.applied.contains(&u.current.project_id)).count(),
             _ => 0,
         };
         let mut header = div().flex().items_center().gap(px(space::S)).child(div().flex_1().child(sheet::label(if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") }, t)));
@@ -907,7 +1030,7 @@ impl BatchSheet {
             col = col.child(sheet::status("circle-check", t.success_text, note.clone()));
         }
         if let Some(e) = &self.update_error {
-            col = col.child(sheet::status("circle-alert", t.danger_text, e.clone()));
+            col = col.child(self.problem("update-error", "circle-alert", t.danger_text, e, cx, t));
         }
         match &self.updates {
             None => {}
@@ -918,7 +1041,7 @@ impl BatchSheet {
                         .flex()
                         .items_center()
                         .gap(px(space::S))
-                        .child(div().flex_1().min_w_0().child(sheet::status("wifi-off", t.danger_text, trf("Updates nicht geladen: %@", &[why]))))
+                        .child(div().flex_1().min_w_0().child(self.problem("updates-error", "wifi-off", t.danger_text, why, cx, t)))
                         .child(sheet::button("updates-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_updates(cx)))),
                 );
             }
@@ -932,7 +1055,13 @@ impl BatchSheet {
                 for u in list.clone() {
                     let pid = u.current.project_id.clone();
                     let working = self.updating.contains(&pid);
-                    let action = sheet::button(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, busy || self.saving, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx)));
+                    let done = self.applied.contains(&pid);
+                    let action = if done {
+                        sheet::status("check", t.success_text, tr("Aktualisiert")).into_any_element()
+                    } else {
+                        sheet::button(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, busy || self.saving, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx))).into_any_element()
+                    };
+                    let versions = if done { u.latest.file_name.clone() } else { format!("{} → {}", u.current.file_name, u.latest.file_name) };
                     rows = rows.child(
                         div()
                             .id(SharedString::from(format!("update-row-{}", u.current.project_id)))
@@ -951,7 +1080,7 @@ impl BatchSheet {
                                     .flex()
                                     .flex_col()
                                     .child(div().truncate().text_size(px(font::BODY)).child(u.current.title.clone()))
-                                    .child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(format!("{} → {}", u.current.file_name, u.latest.file_name))),
+                                    .child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(versions)),
                             )
                             .child(action),
                     );
@@ -966,8 +1095,10 @@ impl BatchSheet {
     }
 
     fn render_prism_picker(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let mut list = div().id("prism-list").flex().flex_col().gap(px(space::XXS)).max_h(px(RESULTS_MAX)).overflow_y_scroll();
-        for instance in self.prism_list.clone() {
+        let shown = self.prism_shown(cx);
+        let selected = self.prism_sel.min(shown.len().saturating_sub(1));
+        let mut list = div().id("prism-list").flex().flex_col().gap(px(space::XXS)).max_h(px(RESULTS_MAX)).overflow_y_scroll().track_scroll(&self.prism_scroll);
+        for (at, instance) in shown.iter().cloned().enumerate() {
             let reason = instance.unsupported.as_deref().map(unsupported_text);
             let ok = reason.is_none();
             let subtitle = match &reason {
@@ -982,7 +1113,8 @@ impl BatchSheet {
                 .gap(px(space::M))
                 .px(px(space::M))
                 .py(px(space::S))
-                .rounded(px(radius::CONTROL));
+                .rounded(px(radius::CONTROL))
+                .when(at == selected, |d| d.bg(t.ink.opacity(tint::HOVER)));
             let chosen = self.prism_choice.as_ref().is_some_and(|c| c.id == instance.id);
             let row = if ok && !self.mods_busy.is_some() && !self.saving {
                 let picked = instance.clone();
@@ -1005,7 +1137,15 @@ impl BatchSheet {
                     .when(chosen, |d| d.child(icon("check", iconsize::S, t.success_text))),
             );
         }
-        div().flex().flex_col().gap(px(space::S)).child(list)
+        let mut col = div().flex().flex_col().gap(px(space::S));
+        if self.prism_list.len() > PRISM_FILTER_FROM {
+            col = col.child(Input::new(&self.prism_filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true));
+        }
+        if shown.is_empty() {
+            let query = self.prism_filter.read(cx).value().trim().to_string();
+            return col.child(div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Keine Instanz passt zu „%@“. Lösche den Filter oder suche anders.", &[&query])));
+        }
+        col.child(list)
     }
 
     fn render_imported(&mut self, t: &Theme) -> Div {
@@ -1018,20 +1158,18 @@ impl BatchSheet {
             .gap(px(space::M))
             .child(sheet::status("circle-check", t.success_text, trf("„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.", &[&batch.name, &matched, &local])))
             .child(sheet::label(tr("Nicht auf Modrinth"), t));
-        let mut list = div().id("local-mods").flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
-        for name in &batch.local_mods {
-            list = list.child(div().pl(px(space::M)).pr(px(space::XS)).py(px(space::XS)).flex().items_center().gap(px(space::S)).child(icon("package", iconsize::S, t.tertiary)).child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name.clone())));
-        }
-        col = col.child(list).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
+        col = col.child(local_files("local-mods", &batch.local_mods, t)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
         col
     }
 
     fn render_search(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
         let field = Input::new(&self.query).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true);
-        let mut col = div().flex().flex_col().gap(px(space::M)).child(field);
-        if let Some(e) = &self.add_error {
-            col = col.child(sheet::status("circle-alert", t.danger_text, e.clone()));
-        }
+        let top = self.top_hit(cx);
+        let hint = match &top {
+            Some(hit) => div().h(px(font::CAPTION * font::LINE)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Enter fügt „%@“ hinzu.", &[&hit.title])),
+            None => div().h(px(font::CAPTION * font::LINE)),
+        };
+        let col = div().flex().flex_col().gap(px(space::XS)).child(field).child(hint);
         let query = self.query.read(cx).value().trim().to_string();
         let content = match &self.results {
             None => div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Suche nach Fabric-Mods auf Modrinth, die es für %@ gibt.", &[&self.version])),
@@ -1041,12 +1179,12 @@ impl BatchSheet {
                 .flex()
                 .items_center()
                 .gap(px(space::S))
-                .child(div().flex_1().min_w_0().child(sheet::status("wifi-off", t.danger_text, trf("Modrinth ist nicht erreichbar: %@", &[why]))))
+                .child(div().flex_1().min_w_0().child(self.problem("search-error", "wifi-off", t.danger_text, why, cx, t)))
                 .child(sheet::button("search-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.schedule_search(cx)))),
             Some(Load::Ready(hits)) if hits.is_empty() => div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Keine Mods zu „%@“ für %@. Versuche einen anderen Suchbegriff.", &[&query, &self.version])),
             Some(Load::Ready(hits)) => {
-                let mut list = div().id("results").flex().flex_col().gap(px(space::XXS)).max_h(px(RESULTS_MAX)).overflow_y_scroll();
-                for hit in hits.clone() {
+                let mut list = div().id("results").flex_1().min_h_0().flex().flex_col().gap(px(space::XXS)).overflow_y_scroll();
+                for (at, hit) in hits.clone().into_iter().enumerate() {
                     let added = self.mods.iter().any(|m| m.project_id == hit.project_id);
                     let adding = self.adding.contains(&hit.project_id);
                     let trailing = if added {
@@ -1064,7 +1202,8 @@ impl BatchSheet {
                         .gap(px(space::M))
                         .px(px(space::M))
                         .py(px(space::S))
-                        .rounded(px(radius::CONTROL));
+                        .rounded(px(radius::CONTROL))
+                        .when(at == 0 && top.is_some(), |d| d.bg(t.ink.opacity(tint::HOVER)));
                     let (title, description, downloads) = (hit.title.clone(), hit.description.clone(), hit.downloads);
                     let row = if added || adding { row } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| {
                         s.add_mod(&hit, cx);
@@ -1084,13 +1223,24 @@ impl BatchSheet {
                         .child(div().flex_none().child(trailing)),
                     );
                 }
-                div().child(list)
+                div().flex_1().min_h_0().flex().flex_col().child(list)
             }
         };
-        col.child(content)
+        let region = div().h(px(RESULTS_MAX)).flex().flex_col().gap(px(space::S)).overflow_hidden();
+        let region = match &self.add_error {
+            Some(e) => region.child(self.problem("add-error", "circle-alert", t.danger_text, e, cx, t)),
+            None => region,
+        };
+        col.child(region.child(content))
     }
 
     fn apply_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.focus_done) && self.imported.is_some() {
+            window.focus(&self.done_focus, cx);
+        }
+        if std::mem::take(&mut self.refocus) {
+            window.focus(&self.root, cx);
+        }
         if window.focused(cx).is_none() {
             window.focus(&self.root, cx);
         }
@@ -1118,18 +1268,28 @@ impl BatchSheet {
 const VERSION_WIDTH: f32 = 168.;
 const MEMORY_VALUE_WIDTH: f32 = 64.;
 const RESULTS_MAX: f32 = 340.;
+const PRISM_FILTER_FROM: usize = 6;
+const SNUG_PERCENT: u64 = 80;
+
+fn local_files(id: &'static str, names: &[String], t: &Theme) -> Stateful<Div> {
+    let mut list = div().id(id).flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+    for name in names {
+        list = list.child(div().pl(px(space::M)).pr(px(space::XS)).py(px(space::XS)).flex().items_center().gap(px(space::S)).child(icon("package", iconsize::S, t.tertiary)).child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name.clone())));
+    }
+    list
+}
 
 fn unsupported_text(reason: &str) -> String {
     if let Some(loader) = reason.strip_prefix("uses ").and_then(|r| r.split(',').next()) {
         trf("Nutzt %@. Nur Fabric geht.", &[&loader])
     } else if reason.contains("no mod loader") {
-        tr("Ohne Mod-Loader. Nur Fabric-Instanzen gehen.")
+        tr("Läuft ohne Fabric. Nur Fabric-Instanzen gehen.")
     } else if reason.contains("Minecraft version") {
         tr("Ohne Minecraft-Version.")
     } else if reason.contains("mmc-pack") {
         tr("Die Instanz ist unvollständig oder beschädigt.")
     } else {
-        trf("Nicht möglich: %@", &[&reason])
+        tr("Diese Instanz lässt sich nicht übernehmen.")
     }
 }
 
@@ -1167,7 +1327,7 @@ impl Render for BatchSheet {
         };
         let max_body = (window.viewport_size().height.as_f32() - 2. * sheet::MARGIN - CHROME_HEIGHT).max(160.);
         let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = if self.imported.is_some() {
-            (Vec::new(), vec![sheet::button("import-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element()])
+            (Vec::new(), vec![sheet::button("import-done", tr("Fertig"), None, Look::Primary, false, false, &t).track_focus(&self.done_focus).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element()])
         } else if self.prism_picking {
             (vec![sheet::button("prism-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_prism(false, window, cx))).into_any_element()], Vec::new())
         } else if self.searching {
@@ -1189,15 +1349,36 @@ impl Render for BatchSheet {
             let invalid = name_problem.is_some() || server_problem.is_some() || version_problem.is_some();
             let mut trailing = Vec::new();
             if let Some(e) = &self.save_error {
-                trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(sheet::status("circle-alert", t.danger_text, e.clone())).into_any_element());
+                trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(self.problem("save-error", "circle-alert", t.danger_text, e, cx, &t)).into_any_element());
             }
             trailing.push(sheet::button("batch-cancel", tr("Abbrechen"), None, Look::Secondary, !self.closable(), false, &t).on_click(cx.listener(|s, _, _, cx| if s.closable() { cx.emit(Dismissed) })).into_any_element());
             trailing.push(sheet::button("batch-save", if editing { tr("Sichern") } else { tr("Erstellen") }, None, Look::Primary, invalid || blocked, self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
             (leading, trailing)
         };
+        let me = cx.entity().downgrade();
         div()
             .id("batch-sheet")
             .track_focus(&self.root)
+            .capture_key_down(move |e: &KeyDownEvent, _, cx| {
+                let delta = match e.keystroke.key.as_str() {
+                    "up" => -1,
+                    "down" => 1,
+                    _ => return,
+                };
+                if e.keystroke.modifiers.modified() {
+                    return;
+                }
+                let stepped = me.update(cx, |s, cx| {
+                    let picking = s.prism_picking;
+                    if picking {
+                        s.step_prism(delta, cx);
+                    }
+                    picking
+                });
+                if stepped.unwrap_or(false) {
+                    cx.stop_propagation();
+                }
+            })
             .w_full()
             .flex()
             .flex_col()

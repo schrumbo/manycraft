@@ -1,5 +1,8 @@
 //! Checks and formats for the account and batch forms, free of UI so they are tested on their own.
 
+use std::fmt;
+use std::io::ErrorKind;
+
 use crate::core::account::Account;
 use crate::core::i18n::{tr, trf};
 
@@ -10,6 +13,64 @@ pub const MEMORY_STEP: u32 = 512;
 const FALLBACK_RAM_MB: u64 = 16 * 1024;
 const KEPT_FOR_SYSTEM_MB: u64 = 2048;
 const NAME_MAX: usize = 40;
+
+/// A failure as the person reads it: plain German with a next step, and the technical cause apart for those who want it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub text: String,
+    pub detail: Option<String>,
+}
+
+impl Problem {
+    /// A problem that needs no technical detail.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self { text: text.into(), detail: None }
+    }
+}
+
+/// An error whose text is already plain German with a next step, so [`explain`] shows it as it is.
+#[derive(Debug)]
+pub struct Plain(pub String);
+
+impl fmt::Display for Plain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Plain {}
+
+/// Turns any failure into a [`Problem`]: what happened in everyday German and what to do next; the raw cause only as detail.
+pub fn explain(e: &anyhow::Error) -> Problem {
+    if let Some(Plain(text)) = e.chain().find_map(|c| c.downcast_ref::<Plain>()) {
+        return Problem::plain(text.clone());
+    }
+    let raw = format!("{e:#}");
+    let io = e.chain().find_map(|c| c.downcast_ref::<std::io::Error>());
+    let text = if io.is_some_and(|i| i.kind() == ErrorKind::PermissionDenied) {
+        tr("Manycraft darf diese Datei nicht schreiben. Prüfe die Rechte des Ordners und versuche es noch einmal.")
+    } else if io.is_some_and(|i| i.kind() == ErrorKind::StorageFull) {
+        tr("Der Speicherplatz ist voll. Schaffe Platz und versuche es noch einmal.")
+    } else if super::remote::is_network(e) {
+        tr("Keine Verbindung. Prüfe Internet und Proxy und versuche es noch einmal.")
+    } else if raw.contains("changed by another Manycraft") {
+        tr("Ein anderes Manycraft-Fenster hat das gerade geändert. Versuche es noch einmal.")
+    } else if raw.contains("is damaged") || raw.contains("is unreadable") {
+        tr("Eine Datei von Manycraft ist beschädigt. Manycraft hat sie nicht verändert. Sichere oder verschiebe sie und versuche es noch einmal.")
+    } else if raw.contains("keychain") {
+        tr("Der Passwortspeicher deines Systems antwortet nicht. Entsperre ihn und versuche es noch einmal.")
+    } else {
+        tr("Das hat nicht geklappt. Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.")
+    };
+    Problem { text, detail: Some(raw) }
+}
+
+/// Like [`explain`], with what was being attempted in front of the reason.
+pub fn explain_as(what: String, e: &anyhow::Error) -> Problem {
+    let mut problem = explain(e);
+    problem.text = format!("{what} {}", problem.text);
+    problem
+}
 
 /// What is wrong with an offline account name, or `None` when vanilla and the saved accounts accept it.
 pub fn offline_name_problem(name: &str, accounts: &[Account]) -> Option<String> {
@@ -207,6 +268,27 @@ fn meminfo_mb(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::core::account::Account;
+
+    #[test]
+    fn failures_read_as_plain_german_and_keep_the_cause_apart() {
+        crate::core::i18n::init("de");
+        let wrapped = anyhow::Error::new(Plain("Diesen Batch gibt es nicht mehr.".into())).context("saving");
+        assert_eq!(explain(&wrapped), Problem::plain("Diesen Batch gibt es nicht mehr."));
+        let net = anyhow::Error::from(std::io::Error::other("reset")).context("cannot reach Modrinth");
+        let p = explain(&net);
+        assert!(p.text.starts_with("Keine Verbindung.") && p.detail.as_deref().is_some_and(|d| d.contains("cannot reach")), "{p:?}");
+        let stale = explain(&anyhow::anyhow!("accounts.json was changed by another Manycraft since it was read; reload and try again"));
+        assert!(stale.text.contains("anderes Manycraft-Fenster") && !stale.text.contains("accounts.json"), "{stale:?}");
+        let keychain = explain(&anyhow::anyhow!("system keychain is not available"));
+        assert!(keychain.text.contains("Passwortspeicher"), "{keychain:?}");
+        let denied = explain(&anyhow::Error::from(std::io::Error::from(ErrorKind::PermissionDenied)).context("cannot write x"));
+        assert!(denied.text.contains("nicht schreiben"), "{denied:?}");
+        let other = explain(&anyhow::anyhow!("something odd"));
+        assert!(other.text.starts_with("Das hat nicht geklappt.") && other.detail.as_deref() == Some("something odd"), "{other:?}");
+        for p in [p, stale, keychain, denied, other] {
+            assert!(p.text.contains("noch einmal"), "{p:?}");
+        }
+    }
 
     #[test]
     fn offline_names_follow_vanilla_and_refuse_duplicates() {

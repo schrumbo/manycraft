@@ -1,8 +1,9 @@
 //! Microsoft device-code login and the Xbox Live → Minecraft token chain.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -30,6 +31,7 @@ const MAX_BODY: u64 = 1 << 20;
 const DEFAULT_INTERVAL: u64 = 5;
 const SLOW_DOWN_STEP: u64 = 5;
 const TRANSPORT_FAILURES: u32 = 3;
+const CANCEL_SLICE: Duration = Duration::from_millis(100);
 const OFFLINE_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 const USAGE: &str = "usage: manycraft login [--proxy URL]\n       manycraft login --offline <name>\n       manycraft login --check <name or id>";
 
@@ -47,6 +49,7 @@ pub enum AuthError {
     XboxRejected(u64),
     AppNotApproved,
     GameNotOwned,
+    Cancelled,
 }
 
 impl fmt::Display for AuthError {
@@ -63,11 +66,23 @@ impl fmt::Display for AuthError {
             Self::XboxRejected(code) => write!(f, "Xbox Live refused the sign-in (code {code})"),
             Self::AppNotApproved => f.write_str("Minecraft services rejected this app registration: the client id must be approved by Mojang (https://aka.ms/AppRegInfo)"),
             Self::GameNotOwned => f.write_str("this account does not own Minecraft: Java Edition, or has no profile yet"),
+            Self::Cancelled => f.write_str("the sign-in was cancelled"),
         }
     }
 }
 
 impl std::error::Error for AuthError {}
+
+pub(crate) fn sleep_unless(cancel: &AtomicBool, total: Duration) {
+    let end = Instant::now() + total;
+    while !cancel.load(Ordering::SeqCst) {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(CANCEL_SLICE));
+    }
+}
 
 /// A Minecraft session ready to launch with.
 pub struct Session {
@@ -187,10 +202,20 @@ impl Flow {
 
     /// Waits until the code is entered and approved, honouring Microsoft's polling interval.
     pub fn poll(&self, code: &DeviceCode) -> Result<Tokens> {
-        self.poll_with(code, std::thread::sleep)
+        self.poll_cancellable(code, &AtomicBool::new(false))
     }
 
-    fn poll_with(&self, code: &DeviceCode, mut sleep: impl FnMut(Duration)) -> Result<Tokens> {
+    /// Like [`Flow::poll`], but stops with [`AuthError::Cancelled`] within a fraction of a second once `cancel` is set.
+    pub fn poll_cancellable(&self, code: &DeviceCode, cancel: &AtomicBool) -> Result<Tokens> {
+        self.poll_loop(code, |d| sleep_unless(cancel, d), || cancel.load(Ordering::SeqCst))
+    }
+
+    #[cfg(test)]
+    fn poll_with(&self, code: &DeviceCode, sleep: impl FnMut(Duration)) -> Result<Tokens> {
+        self.poll_loop(code, sleep, || false)
+    }
+
+    fn poll_loop(&self, code: &DeviceCode, mut sleep: impl FnMut(Duration), cancelled: impl Fn() -> bool) -> Result<Tokens> {
         let url = &self.ep.token_url;
         let form = [("grant_type", DEVICE_GRANT), ("client_id", &self.client_id), ("device_code", &code.device_code)];
         let mut interval = code.interval.max(1);
@@ -201,6 +226,9 @@ impl Flow {
                 return Err(AuthError::CodeExpired.into());
             }
             sleep(Duration::from_secs(interval));
+            if cancelled() {
+                return Err(AuthError::Cancelled.into());
+            }
             waited += interval;
             let reply = match post_form(&self.agent, url, &form) {
                 Ok(reply) => reply,
@@ -371,12 +399,21 @@ pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expect
     if !proceed() {
         bail!("sign-in was cancelled");
     }
-    let mut accounts = account::load()?;
-    account::store_token(session.uuid, &refresh)?;
-    let account = signed_in(&accounts, session.uuid, &session.name, proxy);
-    account::upsert(&mut accounts, account.clone());
-    account::save(&accounts)?;
-    Ok(account)
+    let mut retried = false;
+    loop {
+        let saved = || -> Result<Account> {
+            let mut accounts = account::load()?;
+            account::store_token(session.uuid, &refresh)?;
+            let account = signed_in(&accounts, session.uuid, &session.name, proxy);
+            account::upsert(&mut accounts, account.clone());
+            account::save(&accounts)?;
+            Ok(account)
+        };
+        match saved() {
+            Err(e) if !retried && format!("{e:#}").contains("changed by another Manycraft") => retried = true,
+            done => return done,
+        }
+    }
 }
 
 fn signed_in(accounts: &[Account], id: Uuid, name: &str, proxy: Option<&str>) -> Account {
@@ -1163,6 +1200,30 @@ mod tests {
         let e = fail(flow(&base).poll_with(&code(900), |_| {}));
         assert_eq!(kind(&e), Some(&AuthError::Declined));
         assert_eq!(requests(&seen, "/oauth/token").len(), 2);
+    }
+
+    #[test]
+    fn polling_stops_when_cancelled_and_asks_no_more() {
+        let (base, seen) = serve(vec![("/oauth/token", vec![(400, fixture!("token_pending"))])]);
+        let sleeps = std::cell::Cell::new(0);
+        let e = fail(flow(&base).poll_loop(&code(900), |_| sleeps.set(sleeps.get() + 1), || sleeps.get() >= 2));
+        assert_eq!(kind(&e), Some(&AuthError::Cancelled));
+        assert_eq!(requests(&seen, "/oauth/token").len(), 1);
+    }
+
+    #[test]
+    fn an_unset_flag_waits_the_whole_time() {
+        let started = Instant::now();
+        sleep_unless(&AtomicBool::new(false), Duration::from_millis(300));
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    #[test]
+    fn a_set_flag_cuts_the_wait_short() {
+        let cancel = AtomicBool::new(true);
+        let started = Instant::now();
+        sleep_unless(&cancel, Duration::from_secs(30));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
