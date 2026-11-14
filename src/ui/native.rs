@@ -2,21 +2,64 @@
 
 use gpui_kit::*;
 
-/// A window rectangle in the coordinates the game window uses: points on macOS, pixels elsewhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Rect {
-    pub x: i32,
-    pub y: i32,
-    pub w: u32,
-    pub h: u32,
-}
+use crate::core::place::{Mode, Place, Rect};
 
-/// Where `window` is, in the game window's coordinates.
-pub fn rect_of(window: &Window) -> Rect {
+/// Where the content of `window` is, in the game window's coordinates: points on macOS, pixels elsewhere.
+#[cfg(not(target_os = "windows"))]
+fn rect_of(window: &Window) -> Rect {
     let b = window.bounds();
     let scale = if cfg!(target_os = "macos") { 1. } else { window.scale_factor() };
     let at = |p: Pixels| (f32::from(p) * scale).round();
     Rect { x: at(b.origin.x) as i32, y: at(b.origin.y) as i32, w: at(b.size.width).max(1.) as u32, h: at(b.size.height).max(1.) as u32 }
+}
+
+#[cfg(target_os = "windows")]
+static MARGINS: std::sync::Mutex<Option<crate::core::place::Insets>> = std::sync::Mutex::new(None);
+
+/// The outer frame of `window` and its mode; nothing while it is minimized. Only Windows knows the frame; elsewhere it is the content area.
+pub fn place_of(window: &Window) -> Option<(Rect, Mode)> {
+    let fullscreen = window.is_fullscreen();
+    #[cfg(target_os = "windows")]
+    {
+        use crate::core::game_window::win;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsZoomed};
+        let hwnd = hwnd(window)?;
+        if unsafe { IsIconic(hwnd) } != 0 {
+            return None;
+        }
+        let zoomed = unsafe { IsZoomed(hwnd) } != 0;
+        if !zoomed && !fullscreen && let Some(margins) = win::margins(hwnd) {
+            *MARGINS.lock().unwrap_or_else(|e| e.into_inner()) = Some(margins);
+        }
+        let mode = if fullscreen { Mode::Fullscreen } else if zoomed { Mode::Maximized } else { Mode::Normal };
+        Some((win::frame(hwnd)?, mode))
+    }
+    #[cfg(not(target_os = "windows"))]
+    Some((rect_of(window), if fullscreen { Mode::Fullscreen } else { Mode::Normal }))
+}
+
+/// Moves `window` to `place`'s frame, maximized when it says so. It must not be minimized: GPUI keeps its old drawing size when a window comes back from minimized at a new size.
+pub fn put(window: &Window, place: Place) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = hwnd(window) {
+        use crate::core::game_window::win;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowPlacement, SW_RESTORE, SW_SHOWMAXIMIZED, SetWindowPlacement, WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED,
+        };
+        let margins = MARGINS.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_default();
+        let mut wp: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+        if unsafe { GetWindowPlacement(hwnd, &mut wp) } == 0 {
+            return;
+        }
+        let maximized = place.mode == Mode::Maximized;
+        wp.rcNormalPosition = win::workspace(win::grown(place.frame, margins));
+        wp.flags = if maximized { WPF_RESTORETOMAXIMIZED } else { 0 };
+        wp.showCmd = (if maximized { SW_SHOWMAXIMIZED } else { SW_RESTORE }) as u32;
+        unsafe { SetWindowPlacement(hwnd, &wp) };
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (window, place);
 }
 
 /// Lets the game process `pid` bring its window to the front, which Windows refuses to background processes otherwise.
@@ -66,18 +109,21 @@ pub fn hide(window: &mut Window) {
     window.minimize_window();
 }
 
-/// Brings the manager back to the front where it was.
-pub fn show(window: &mut Window, cx: &mut App) {
+/// Brings the manager back to the front, at `place` when given, else where it was.
+pub fn show(window: &mut Window, place: Option<Place>, cx: &mut App) {
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = hwnd(window) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow};
-        unsafe {
-            if IsIconic(hwnd) != 0 {
-                ShowWindow(hwnd, SW_RESTORE);
-            }
-            SetForegroundWindow(hwnd);
+        if unsafe { IsIconic(hwnd) } != 0 {
+            unsafe { ShowWindow(hwnd, SW_RESTORE) };
         }
+        if let Some(place) = place {
+            put(window, place);
+        }
+        unsafe { SetForegroundWindow(hwnd) };
     }
+    #[cfg(not(target_os = "windows"))]
+    let _ = place;
     #[cfg(target_os = "macos")]
     if let Some(ns_window) = ns_window(window) {
         use objc2::msg_send;

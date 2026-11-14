@@ -12,7 +12,7 @@ final class Protocol {
 	private static final Gson GSON = new GsonBuilder().serializeNulls().disableHtmlEscaping().create();
 
 	sealed interface Incoming {
-		record Show(int x, int y, int w, int h) implements Incoming {}
+		record Show(int x, int y, int w, int h, String mode) implements Incoming {}
 
 		record Hide() implements Incoming {}
 
@@ -96,7 +96,7 @@ final class Protocol {
 				return Optional.empty();
 			}
 			return Optional.ofNullable(switch (type) {
-				case "show" -> new Incoming.Show(requireInt(o, "x"), requireInt(o, "y"), requireInt(o, "w"), requireInt(o, "h"));
+				case "show" -> new Incoming.Show(requireInt(o, "x"), requireInt(o, "y"), requireInt(o, "w"), requireInt(o, "h"), string(o, "mode"));
 				case "hide" -> new Incoming.Hide();
 				case "profile" -> new Incoming.Profile(integer(o, "fps"), integer(o, "render_distance"), integer(o, "preview_interval_ms"), integer(o, "preview_width"));
 				case "chat_send" -> string(o, "text") == null ? null : new Incoming.ChatSend(string(o, "text"));

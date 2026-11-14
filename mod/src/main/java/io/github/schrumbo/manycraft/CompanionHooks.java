@@ -51,6 +51,11 @@ public final class CompanionHooks {
 		return c != null && c.blocksSave();
 	}
 
+	public static boolean closeToGrid() {
+		Companion c = Companion.get();
+		return c != null && c.closeToGrid();
+	}
+
 	public static boolean onKey(int action, int keycode, int modifiers) {
 		Companion c = Companion.get();
 		return c != null && c.onKey(action, keycode, modifiers);

@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::batch::Background;
+use super::place::Mode;
 
 const PREVIEW_MAGIC: u32 = 0x4D43_5056;
 const PREVIEW_HEADER: usize = 16;
@@ -85,7 +86,8 @@ pub enum FromMod {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToMod {
-    Show { x: i32, y: i32, w: u32, h: u32 },
+    /// Shows the game with its client area at `x`, `y`, `w`, `h`, then maximized or fullscreen as `mode` says.
+    Show { x: i32, y: i32, w: u32, h: u32, #[serde(default, skip_serializing_if = "Mode::is_normal")] mode: Mode },
     Hide,
     Profile { fps: u32, render_distance: u32, preview_interval_ms: u32, preview_width: u32 },
     ChatSend { text: String },
@@ -327,7 +329,8 @@ mod tests {
         assert_eq!(serde_json::to_string(&ToMod::Hide).unwrap(), r#"{"t":"hide"}"#);
         assert_eq!(serde_json::to_string(&ToMod::Respawn).unwrap(), r#"{"t":"respawn"}"#);
         assert_eq!(serde_json::to_string(&ToMod::ChatSend { text: "/home".into() }).unwrap(), r#"{"t":"chat_send","text":"/home"}"#);
-        assert_eq!(serde_json::to_string(&ToMod::Show { x: -5, y: 10, w: 800, h: 600 }).unwrap(), r#"{"t":"show","x":-5,"y":10,"w":800,"h":600}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Show { x: -5, y: 10, w: 800, h: 600, mode: Mode::Normal }).unwrap(), r#"{"t":"show","x":-5,"y":10,"w":800,"h":600}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Show { x: 0, y: 0, w: 800, h: 600, mode: Mode::Fullscreen }).unwrap(), r#"{"t":"show","x":0,"y":0,"w":800,"h":600,"mode":"fullscreen"}"#);
         let identity = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0x12_34_56, icon: Some("icon.png".into()) };
         assert_eq!(serde_json::to_string(&identity).unwrap(), r#"{"t":"identity","name":"Alt","batch":"Farm","rgb":1193046,"icon":"icon.png"}"#);
         let bare = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0, icon: None };

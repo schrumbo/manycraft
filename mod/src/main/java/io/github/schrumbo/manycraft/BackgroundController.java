@@ -143,13 +143,9 @@ final class BackgroundController {
 		reportWindow();
 	}
 
-	void show(int x, int y, int w, int h) {
+	void show(int x, int y, int w, int h, String windowMode) {
 		mode.exit();
-		long handle = mc.getWindow().handle();
-		SDLVideo.SDL_SetWindowSize(handle, Math.max(w, 320), Math.max(h, 240));
-		SDLVideo.SDL_SetWindowPosition(handle, x, y);
-		SDLVideo.SDL_ShowWindow(handle);
-		SDLVideo.SDL_RaiseWindow(handle);
+		GameWindow.show(mc, x, y, w, h, windowMode);
 		visible = true;
 		mc.getFramerateLimitTracker().onInputReceived();
 		reportWindow();

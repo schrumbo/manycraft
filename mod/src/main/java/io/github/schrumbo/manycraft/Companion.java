@@ -113,9 +113,19 @@ final class Companion {
 			return false;
 		}
 		if (action == 1) {
+			GameWindow.grantForeground();
 			send(Protocol.hotkey(name));
 		}
 		return true;
+	}
+
+	boolean closeToGrid() {
+		BackgroundController bg = background;
+		if (bg == null || bg.hidden() || !GameWindow.shown(Minecraft.getInstance())) {
+			return false;
+		}
+		GameWindow.grantForeground();
+		return link.send(Protocol.hotkey("grid"));
 	}
 
 	private void register() {
@@ -184,7 +194,7 @@ final class Companion {
 			return;
 		}
 		switch (message) {
-			case Protocol.Incoming.Show show -> bg.show(show.x(), show.y(), show.w(), show.h());
+			case Protocol.Incoming.Show show -> bg.show(show.x(), show.y(), show.w(), show.h(), show.mode());
 			case Protocol.Incoming.Hide hide -> bg.hide();
 			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
 			case Protocol.Incoming.Level level -> bg.applyLevel(level.level());
