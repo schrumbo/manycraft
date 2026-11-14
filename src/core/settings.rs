@@ -1,0 +1,179 @@
+//! App-wide settings in `settings.json`: how instances reconnect and restart. Missing keys take their defaults.
+
+use std::path::Path;
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use super::{net, paths};
+
+const FILE: &str = "settings.json";
+const MAX_ATTEMPTS: u32 = 100;
+const MAX_SECS: u64 = 24 * 3600;
+
+/// How a dropped instance comes back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reconnect {
+    pub enabled: bool,
+    /// Waits in seconds before try 1, 2, …; later tries reuse the last entry.
+    pub backoff_secs: Vec<u64>,
+    /// Waits for a full server or a kick, which only get worse when hammered.
+    pub patient_secs: Vec<u64>,
+    /// Random spread of every wait, in percent either side.
+    pub jitter_percent: u32,
+    pub max_attempts: u32,
+}
+
+impl Default for Reconnect {
+    fn default() -> Self {
+        Self { enabled: true, backoff_secs: vec![10, 30, 90, 300], patient_secs: vec![60, 180, 600, 1800], jitter_percent: 25, max_attempts: 5 }
+    }
+}
+
+/// Whether a game that exits with an error starts again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrashRestart {
+    pub enabled: bool,
+    pub backoff_secs: Vec<u64>,
+    pub jitter_percent: u32,
+    pub max_attempts: u32,
+}
+
+impl Default for CrashRestart {
+    fn default() -> Self {
+        Self { enabled: true, backoff_secs: vec![10, 30, 90, 300], jitter_percent: 25, max_attempts: 3 }
+    }
+}
+
+/// Everything configurable app-wide.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub reconnect: Reconnect,
+    pub crash_restart: CrashRestart,
+}
+
+impl Settings {
+    /// The same settings with values a hand-edited file could break put back in range: empty schedules, zero waits, huge counts.
+    pub fn sanitized(mut self) -> Self {
+        let fix = |secs: &mut Vec<u64>, fallback: &[u64]| {
+            if secs.is_empty() {
+                *secs = fallback.to_vec();
+            }
+            for s in secs.iter_mut() {
+                *s = (*s).clamp(1, MAX_SECS);
+            }
+        };
+        let (reconnect, crash) = (Reconnect::default(), CrashRestart::default());
+        fix(&mut self.reconnect.backoff_secs, &reconnect.backoff_secs);
+        fix(&mut self.reconnect.patient_secs, &reconnect.patient_secs);
+        fix(&mut self.crash_restart.backoff_secs, &crash.backoff_secs);
+        self.reconnect.jitter_percent = self.reconnect.jitter_percent.min(100);
+        self.crash_restart.jitter_percent = self.crash_restart.jitter_percent.min(100);
+        self.reconnect.max_attempts = self.reconnect.max_attempts.min(MAX_ATTEMPTS);
+        self.crash_restart.max_attempts = self.crash_restart.max_attempts.min(MAX_ATTEMPTS);
+        self
+    }
+}
+
+/// Loads `settings.json` from the data folder; an absent file gives the defaults, an unreadable one an error.
+pub fn load() -> Result<Settings> {
+    load_from(&paths::data_dir())
+}
+
+/// Saves `settings` atomically.
+pub fn save(settings: &Settings) -> Result<()> {
+    save_to(&paths::data_dir(), settings)
+}
+
+fn load_from(dir: &Path) -> Result<Settings> {
+    let path = dir.join(FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let settings: Settings = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged; it was left untouched", path.display()))?;
+    Ok(settings.sanitized())
+}
+
+fn save_to(dir: &Path, settings: &Settings) -> Result<()> {
+    net::write_atomic(&dir.join(FILE), &serde_json::to_vec_pretty(settings)?)
+}
+
+static ACTIVE: OnceLock<Settings> = OnceLock::new();
+
+/// Loads the settings once for the whole run. A damaged file leaves the defaults in force and is returned as the error.
+pub fn activate() -> Result<&'static Settings> {
+    if let Some(settings) = ACTIVE.get() {
+        return Ok(settings);
+    }
+    let (settings, error) = match load() {
+        Ok(settings) => (settings, None),
+        Err(e) => (Settings::default(), Some(e)),
+    };
+    let active = ACTIVE.get_or_init(|| settings);
+    error.map_or(Ok(active), Err)
+}
+
+/// The settings in force: the loaded ones, or the defaults before `activate`.
+pub fn active() -> &'static Settings {
+    static DEFAULT: OnceLock<Settings> = OnceLock::new();
+    ACTIVE.get().unwrap_or_else(|| DEFAULT.get_or_init(Settings::default))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_gives_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn partial_files_keep_defaults_for_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), r#"{"reconnect":{"max_attempts":2}}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert_eq!(s.reconnect.max_attempts, 2);
+        assert_eq!(s.reconnect.backoff_secs, Reconnect::default().backoff_secs);
+        assert_eq!(s.crash_restart, CrashRestart::default());
+    }
+
+    #[test]
+    fn round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.reconnect.enabled = false;
+        s.crash_restart.max_attempts = 1;
+        save_to(dir.path(), &s).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), s);
+    }
+
+    #[test]
+    fn damaged_file_is_an_error_and_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), b"{").unwrap();
+        assert!(load_from(dir.path()).is_err());
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), b"{");
+    }
+
+    #[test]
+    fn broken_values_are_put_back_in_range() {
+        let mut s = Settings::default();
+        s.reconnect.backoff_secs = Vec::new();
+        s.reconnect.patient_secs = vec![0, u64::MAX];
+        s.reconnect.jitter_percent = 900;
+        s.crash_restart.max_attempts = u32::MAX;
+        let s = s.sanitized();
+        assert_eq!(s.reconnect.backoff_secs, Reconnect::default().backoff_secs);
+        assert_eq!(s.reconnect.patient_secs, vec![1, MAX_SECS]);
+        assert_eq!(s.reconnect.jitter_percent, 100);
+        assert_eq!(s.crash_restart.max_attempts, MAX_ATTEMPTS);
+    }
+}

@@ -162,6 +162,8 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         Phase::LoginNeeded => Some(Primary::SignIn),
         Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } => Some(Primary::Play),
         Phase::Starting { .. } => None,
+        Phase::Banned { .. } => Some(Primary::Reconnect),
+        Phase::Restarting { .. } => Some(Primary::Start),
     }
 }
 
@@ -208,6 +210,7 @@ pub fn primary_action(key: &str, window: &mut Window, cx: &mut App) {
 fn tone(d: &TileData, t: &Theme) -> Option<(Hsla, Hsla, &'static str)> {
     match d.phase {
         Phase::LoginNeeded => Some((t.danger, t.danger_text, "log-in")),
+        Phase::Banned { .. } => Some((t.danger, t.danger_text, "ban")),
         Phase::Disconnected { .. } => Some((t.attention, t.attention_text, "wifi-off")),
         Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Failed { .. } => Some((t.attention, t.attention_text, "triangle-alert")),
         _ => None,

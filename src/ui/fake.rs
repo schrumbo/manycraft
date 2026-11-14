@@ -83,7 +83,7 @@ fn hash(text: &str) -> u64 {
 }
 
 fn state(instance: &str, kind: StateKind, reason: Option<&str>) -> Update {
-    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned) } })
+    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned), cause: None } })
 }
 
 fn connected(instance: &str) -> Update {
@@ -259,7 +259,7 @@ fn touches(update: &Update, key: &str) -> bool {
     match update {
         Update::Launched { key: k } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
-        Update::Preparing { .. } | Update::Progress { .. } => false,
+        Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } => false,
     }
 }
 

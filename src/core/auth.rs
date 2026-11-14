@@ -1,6 +1,7 @@
 //! Microsoft device-code login and the Xbox Live → Minecraft token chain.
 
 use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -266,16 +267,45 @@ pub fn session_for(account: &Account) -> Result<Session> {
         return Ok(offline_session(account, SystemTime::now()));
     }
     let flow = Flow::new(account.proxy.as_deref())?;
-    let stored = account::read_token(account.id)?.ok_or(AuthError::SignInAgain)?;
-    let mut tokens = flow.refresh(&stored)?;
-    if let Some(next) = tokens.refresh_token.take().filter(|next| *next != stored) {
-        account::store_token(account.id, &next)?;
-    }
+    let tokens = refresh_saved(&flow, account)?;
     let session = flow.session(&tokens)?;
     if session.uuid != account.id {
         bail!("the saved sign-in belongs to {}, not to {}", session.name, account.name);
     }
     Ok(session)
+}
+
+/// Trades the keychain's refresh token of `account` for fresh tokens and keeps the rotated one.
+/// One refresh per account at a time: two at once would both spend the same token.
+fn refresh_saved(flow: &Flow, account: &Account) -> Result<Tokens> {
+    static LOCKS: Mutex<Vec<(Uuid, Arc<Mutex<()>>)>> = Mutex::new(Vec::new());
+    let lock = {
+        let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        match locks.iter().find(|(id, _)| *id == account.id) {
+            Some((_, lock)) => Arc::clone(lock),
+            None => {
+                let lock = Arc::new(Mutex::new(()));
+                locks.push((account.id, Arc::clone(&lock)));
+                lock
+            }
+        }
+    };
+    let _turn = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    let stored = account::read_token(account.id)?.ok_or(AuthError::SignInAgain)?;
+    let mut tokens = flow.refresh(&stored)?;
+    if let Some(next) = tokens.refresh_token.take().filter(|next| *next != stored) {
+        account::store_token(account.id, &next)?;
+    }
+    Ok(tokens)
+}
+
+/// Checks that the saved sign-in of `account` still works by refreshing it, and keeps the rotated token.
+/// Fails with [`AuthError::SignInAgain`] when the person has to sign in again; other errors are transient. Offline accounts always pass.
+pub fn refresh_account(account: &Account) -> Result<()> {
+    if account.kind == AccountKind::Offline {
+        return Ok(());
+    }
+    refresh_saved(&Flow::new(account.proxy.as_deref())?, account).map(|_| ())
 }
 
 fn offline_session(account: &Account, now: SystemTime) -> Session {

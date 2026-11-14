@@ -28,13 +28,14 @@ class ProtocolTest {
 
 	@Test
 	void stateKeepsExplicitNulls() {
-		JsonObject o = json(Protocol.state("menu", null, null));
+		JsonObject o = json(Protocol.state("menu", null, null, null));
 		assertTrue(o.has("server") && o.get("server").isJsonNull());
 		assertTrue(o.has("reason") && o.get("reason").isJsonNull());
-		o = json(Protocol.state("disconnected", "mc.example:25565", "Test"));
+		o = json(Protocol.state("disconnected", "mc.example:25565", "Test", "banned"));
 		assertEquals("disconnected", o.get("kind").getAsString());
 		assertEquals("mc.example:25565", o.get("server").getAsString());
 		assertEquals("Test", o.get("reason").getAsString());
+		assertEquals("banned", o.get("cause").getAsString());
 	}
 
 	@Test

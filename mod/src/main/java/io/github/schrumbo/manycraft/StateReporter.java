@@ -12,6 +12,7 @@ import net.minecraft.client.gui.screens.LevelLoadingScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
+import net.minecraft.network.chat.Component;
 
 final class StateReporter {
 	private final Consumer<String> sink;
@@ -19,6 +20,7 @@ final class StateReporter {
 	private String kind = "menu";
 	private String server;
 	private String reason;
+	private String cause;
 	private ServerData pending;
 	private ServerData lastServer;
 
@@ -28,7 +30,7 @@ final class StateReporter {
 	}
 
 	synchronized String line() {
-		return Protocol.state(kind, server, reason);
+		return Protocol.state(kind, server, reason, cause);
 	}
 
 	synchronized ServerData lastServer() {
@@ -44,9 +46,12 @@ final class StateReporter {
 		Screen screen = mc.gui.screen();
 		String newKind;
 		String newReason = null;
+		String newCause = null;
 		if (screen instanceof DisconnectedScreen disconnected) {
 			newKind = "disconnected";
-			newReason = ((DisconnectedScreenAccessor) disconnected).manycraft$details().reason().getString();
+			Component details = ((DisconnectedScreenAccessor) disconnected).manycraft$details().reason();
+			newReason = details.getString();
+			newCause = DisconnectClassifier.classify(details);
 		} else if (screen instanceof DeathScreen death) {
 			newKind = "dead";
 			var cause = ((DeathScreenAccessor) death).manycraft$causeOfDeath();
@@ -59,7 +64,7 @@ final class StateReporter {
 			newKind = "menu";
 		}
 		String newServer = serverFor(mc, newKind);
-		update(newKind, newServer, newReason);
+		update(newKind, newServer, newReason, newCause);
 	}
 
 	private synchronized String serverFor(Minecraft mc, String newKind) {
@@ -84,16 +89,17 @@ final class StateReporter {
 		}
 	}
 
-	private void update(String newKind, String newServer, String newReason) {
+	private void update(String newKind, String newServer, String newReason, String newCause) {
 		String line;
 		synchronized (this) {
-			if (newKind.equals(kind) && Objects.equals(newServer, server) && Objects.equals(newReason, reason)) {
+			if (newKind.equals(kind) && Objects.equals(newServer, server) && Objects.equals(newReason, reason) && Objects.equals(newCause, cause)) {
 				return;
 			}
 			kind = newKind;
 			server = newServer;
 			reason = newReason;
-			line = Protocol.state(kind, server, reason);
+			cause = newCause;
+			line = Protocol.state(kind, server, reason, cause);
 		}
 		sink.accept(line);
 	}
