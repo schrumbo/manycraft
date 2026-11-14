@@ -164,7 +164,7 @@
   "Versionen nicht geladen: %@": "Versions not loaded: %@",
   "Versionen werden geladen …": "Loading versions …",
   "Version suchen": "Search versions",
-  "Dieser Batch läuft. Änderungen gelten beim nächsten Start.": "This batch is running. Changes apply at the next start.",
+  "Dieser Batch läuft. Version, Server, Mods und Accounts gelten beim nächsten Start.": "This batch is running. Version, server, mods and accounts apply at the next start.",
   "Minecraft-Version": "Minecraft version",
   "Server": "Server",
   "Optional. Adresse mit oder ohne Port.": "Optional. Address with or without port.",

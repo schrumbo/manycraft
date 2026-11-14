@@ -698,7 +698,7 @@ impl BatchSheet {
         };
         let mut body = div().flex().flex_col().gap(px(space::M));
         if running {
-            body = body.child(sheet::notice("info", t.accent, t.accent_text, tr("Dieser Batch läuft. Änderungen gelten beim nächsten Start.")));
+            body = body.child(sheet::notice("info", t.accent, t.accent_text, tr("Dieser Batch läuft. Version, Server, Mods und Accounts gelten beim nächsten Start.")));
         }
         if let Some(entry) = self.render_prism_entry(cx, t) {
             body = body.child(entry);
@@ -743,7 +743,7 @@ impl BatchSheet {
         });
         let control = div().id("batch-background").p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).when(self.saving || self.mods_busy.is_some(), |d| d.opacity(tint::DISABLED)).children(segments);
         let hint = if running { format!("{cost} {}", tr("Gilt sofort, auch für die laufenden Spiele.")) } else { cost };
-        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Im Hintergrund"), t)).child(div().flex().child(control)).child(sheet::note(Some(hint), None, t).min_h(px(font::CAPTION * font::LINE * 2.)))
+        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Im Hintergrund"), t)).child(div().flex().child(control)).child(sheet::note(Some(hint), None, t).line_height(px(font::CAPTION * font::LINE)).min_h(px(font::CAPTION * font::LINE * 2.)))
     }
 
     fn render_memory(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {

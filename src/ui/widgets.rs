@@ -72,12 +72,19 @@ pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Them
         .flex_none()
         .items_center()
         .text_size(px(font::CALLOUT))
-        .when(selected, |d| d.bg(t.content).shadow_xs().font_weight(FontWeight::MEDIUM).text_color(t.primary))
+        .when(selected, |d| d.bg(t.content).shadow_xs().text_color(t.primary))
         .when(!selected, |d| d.bg(t.raised).text_color(t.secondary))
         .cursor_pointer()
         .key_nav()
         .soft(t.ink.opacity(if selected { 0. } else { tint::HOVER }), radius::INNER)
-        .child(label)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(div().when(selected, |d| d.font_weight(FontWeight::MEDIUM)).child(label.clone()))
+                .child(div().h_0().overflow_hidden().font_weight(FontWeight::MEDIUM).text_color(transparent_black()).child(label)),
+        )
 }
 
 /// Tooltip builder for `.tooltip(...)`.
