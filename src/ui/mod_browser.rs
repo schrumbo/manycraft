@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::checkbox::Checkbox;
@@ -31,6 +32,7 @@ const MORE_AHEAD: usize = 4;
 const ICON_CHUNK: usize = 6;
 const KEPT_SEARCHES: usize = 200;
 const MAX_LOADED: usize = 300;
+const KEPT_ICONS: usize = 48;
 const NAME_BAR: f32 = 120.;
 const TEXT_BAR: f32 = 220.;
 const BAR_HEIGHT: f32 = 10.;
@@ -84,6 +86,55 @@ pub(super) struct Browser {
     error: Option<Problem>,
     visible: Vec<usize>,
     scroll: UniformListScrollHandle,
+    icons: Entity<IconCache>,
+}
+
+/// The decoded icons the browser drew last, at most `KEPT_ICONS`; all of them leave memory when the browser closes.
+pub(super) struct IconCache {
+    items: HashMap<Resource, (ImageCacheItem, u64)>,
+    tick: u64,
+}
+
+impl IconCache {
+    fn new(cx: &mut App) -> Entity<Self> {
+        let cache = cx.new(|_| Self { items: HashMap::new(), tick: 0 });
+        cx.observe_release(&cache, |cache, cx| {
+            for (_, (item, _)) in cache.items.drain() {
+                if let Some(Ok(image)) = item.get() {
+                    cx.drop_image(image, None);
+                }
+            }
+        })
+        .detach();
+        cache
+    }
+
+    fn clear(&mut self, window: &mut Window, cx: &mut App) {
+        for (_, (item, _)) in self.items.drain() {
+            if let Some(Ok(image)) = item.get() {
+                cx.drop_image(image, Some(&mut *window));
+            }
+        }
+    }
+}
+
+impl ImageCache for IconCache {
+    fn load(&mut self, resource: &Resource, window: &mut Window, cx: &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+        self.tick += 1;
+        let tick = self.tick;
+        let entry = self.items.entry(resource.clone()).or_insert_with(|| (ImageCacheItem::new(resource, cx), tick));
+        entry.1 = tick;
+        let image = entry.0.use_image(window);
+        while self.items.len() > KEPT_ICONS {
+            let Some(oldest) = self.items.iter().min_by_key(|(_, (_, used))| *used).map(|(r, _)| r.clone()) else { break };
+            if let Some((item, _)) = self.items.remove(&oldest)
+                && let Some(Ok(old)) = item.get()
+            {
+                cx.drop_image(old, Some(&mut *window));
+            }
+        }
+        image
+    }
 }
 
 impl Browser {
@@ -110,6 +161,7 @@ impl Browser {
             error: None,
             visible: Vec::new(),
             scroll: UniformListScrollHandle::new(),
+            icons: IconCache::new(cx),
         };
         (browser, sub)
     }
@@ -208,6 +260,7 @@ impl BatchSheet {
             self.browse_refresh(false, cx);
         } else {
             self.browser.forget();
+            self.browser.icons.update(cx, |icons, cx| icons.clear(window, cx));
             window.focus(&self.root, cx);
         }
         cx.notify();
@@ -483,7 +536,7 @@ impl BatchSheet {
         let dim = !installed && support != Support::Fits;
         let selected = ix == self.browser.sel && self.browser.fresh();
         let face = match modicons::icon(&pid) {
-            Some(path) => img(path).size(px(control::L)).flex_none().rounded(px(radius::INNER)).object_fit(ObjectFit::Cover).into_any_element(),
+            Some(path) => img(path).image_cache(&self.browser.icons).size(px(control::L)).flex_none().rounded(px(radius::INNER)).object_fit(ObjectFit::Cover).into_any_element(),
             None => div().size(px(control::L)).flex_none().rounded(px(radius::INNER)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::M, t.tertiary)).into_any_element(),
         };
         let author = (!hit.author.is_empty()).then(|| div().min_w_0().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("von %@", &[&hit.author])));
