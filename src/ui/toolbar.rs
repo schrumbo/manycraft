@@ -1,6 +1,6 @@
 //! The toolbar over the grid: sidebar toggle, filter, tile size, search, and starting or stopping what is shown.
 
-use gpui_kit::component::Sizable;
+use gpui_kit::component::{FocusableExt, Sizable};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::DropdownMenu;
@@ -182,6 +182,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let grid_focus = this.focus.clone();
     let size = Button::new("tile-size")
         .ghost()
+        .focus_ring(super::theme::rings(cx))
         .small()
         .h(px(control::M))
         .px(px(space::XS))

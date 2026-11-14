@@ -116,6 +116,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None };
+    let release = m.update.clone().filter(|(_, url)| url.starts_with("https://github.com/"));
     let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None };
     let mut batch_rows = Vec::new();
     for (r, id, running, stopped) in batches {
@@ -131,6 +132,26 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     let new_batch = tr("Neuer Batch");
     let settings = tr("Einstellungen");
     let shortcut = if cfg!(target_os = "macos") { "⌘,".to_owned() } else { format!("{}+,", tr("Strg")) };
+    let update = release.map(|(version, url)| {
+        let label = tr("Update verfügbar");
+        div()
+            .id("nav-update")
+            .mark("button", label.clone())
+            .h(px(shell::ROW))
+            .px(px(space::S))
+            .rounded(px(radius::INNER))
+            .flex()
+            .items_center()
+            .gap(px(space::S))
+            .cursor_pointer()
+            .key_nav()
+            .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+            .child(icon("download", iconsize::M, t.accent_text))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.accent_text).child(label))
+            .child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(version.clone()))
+            .tooltip(tip(trf("Version %@ auf GitHub ansehen", &[&version])))
+            .on_click(move |_, _, cx| cx.open_url(&url))
+    });
     div()
         .id("sidebar")
         .w(px(shell::SIDEBAR))
@@ -177,7 +198,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 .child(row(this, chat, &t, cx)),
         )
         .child(
-            div().flex_none().px(px(space::S)).pb(px(space::S)).child(
+            div().flex_none().px(px(space::S)).pb(px(space::S)).children(update).child(
                 div()
                     .id("nav-settings")
                     .mark("button", settings.clone())

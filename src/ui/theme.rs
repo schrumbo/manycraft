@@ -364,13 +364,16 @@ pub fn choose(choice: Choice, window: &mut Window, cx: &mut App) {
     cx.refresh_windows();
 }
 
+const TEXT_FIELD: &str = "Input";
+
 #[derive(Default)]
 struct FocusSeen(Option<WeakFocusHandle>, bool);
 
 impl Global for FocusSeen {}
 
 /// Shows the component library's focus rings only on controls the keyboard moved focus to, like focus-visible:
-/// a control focused by a click, a theme change or a resize looks like an unfocused one. Call it from the render of every window's root view.
+/// a button, segment or menu focused by a click, a theme change or a resize looks like an unfocused one.
+/// Text fields always show their ring, as on every platform. Call it from the render of every window's root view.
 pub fn follow_focus(window: &Window, cx: &mut App) {
     if !window.is_window_active() {
         return;
@@ -402,11 +405,17 @@ fn show_rings(cx: &mut App) {
     ct.colors.ring = wanted;
 }
 
+/// Whether focus rings show now; for library buttons, whose focus line ignores the theme's ring colour.
+pub fn rings(cx: &App) -> bool {
+    cx.try_global::<FocusSeen>().is_some_and(|s| s.1)
+}
+
 fn note_focus(window: &Window, keyboard: bool, cx: &mut App) {
     let focused = window.focused(cx);
     let seen = cx.default_global::<FocusSeen>();
     if seen.0.as_ref().and_then(WeakFocusHandle::upgrade) != focused {
-        *seen = FocusSeen(focused.as_ref().map(FocusHandle::downgrade), keyboard);
+        let text = focused.is_some() && window.context_stack().iter().any(|c| c.contains(TEXT_FIELD));
+        *cx.default_global::<FocusSeen>() = FocusSeen(focused.as_ref().map(FocusHandle::downgrade), keyboard || text);
     }
 }
 

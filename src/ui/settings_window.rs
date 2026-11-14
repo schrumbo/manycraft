@@ -227,7 +227,8 @@ fn chord_keys(chord: &str) -> Vec<String> {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::theme::follow_focus(window, cx);
         let t = Theme::get(cx);
         let s = settings::active().clone();
         let general = group(
