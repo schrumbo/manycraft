@@ -13,6 +13,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::batch::Background;
+
 const PREVIEW_MAGIC: u32 = 0x4D43_5056;
 const PREVIEW_HEADER: usize = 16;
 const MAX_PREVIEW_SIDE: u32 = 4096;
@@ -91,6 +93,12 @@ pub enum ToMod {
     Respawn,
     Quit,
     Hotkeys { next: String, prev: String, next_attention: String, grid: String },
+    /// Who the game is: window title, window icon (a PNG path) and badge colour as `0xRRGGBB`.
+    Identity { name: String, batch: String, rgb: u32, icon: Option<String> },
+    /// Whether the name badge shows in the game's corner.
+    Badge { visible: bool },
+    /// What the game may cost while hidden.
+    Level { level: Background },
 }
 
 /// What the manager learns about an instance.
@@ -320,6 +328,14 @@ mod tests {
         assert_eq!(serde_json::to_string(&ToMod::Respawn).unwrap(), r#"{"t":"respawn"}"#);
         assert_eq!(serde_json::to_string(&ToMod::ChatSend { text: "/home".into() }).unwrap(), r#"{"t":"chat_send","text":"/home"}"#);
         assert_eq!(serde_json::to_string(&ToMod::Show { x: -5, y: 10, w: 800, h: 600 }).unwrap(), r#"{"t":"show","x":-5,"y":10,"w":800,"h":600}"#);
+        let identity = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0x12_34_56, icon: Some("icon.png".into()) };
+        assert_eq!(serde_json::to_string(&identity).unwrap(), r#"{"t":"identity","name":"Alt","batch":"Farm","rgb":1193046,"icon":"icon.png"}"#);
+        let bare = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0, icon: None };
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"t":"identity","name":"Alt","batch":"Farm","rgb":0,"icon":null}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Badge { visible: false }).unwrap(), r#"{"t":"badge","visible":false}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Level { level: Background::Saving }).unwrap(), r#"{"t":"level","level":"saving"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Level { level: Background::Balanced }).unwrap(), r#"{"t":"level","level":"balanced"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Level { level: Background::Full }).unwrap(), r#"{"t":"level","level":"full"}"#);
     }
 
     #[test]

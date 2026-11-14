@@ -10,6 +10,8 @@ pub mod drive;
 #[allow(dead_code)]
 pub mod fit;
 pub mod fleet;
+pub mod game_icon;
+pub mod game_window;
 #[allow(dead_code)]
 pub mod history;
 pub mod i18n;

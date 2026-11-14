@@ -33,13 +33,22 @@ final class BackgroundController {
 		}
 	}
 
-	record Values(int renderDistance, int simulationDistance, ParticleStatus particles, CloudStatus clouds, double masterVolume) {}
+	record Values(int renderDistance, int simulationDistance, ParticleStatus particles, CloudStatus clouds, double masterVolume) {
+		Values reduced(BackgroundLevel level, int savingRenderDistance, int savingSimulationDistance) {
+			return switch (level) {
+				case SAVING -> new Values(savingRenderDistance, savingSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0);
+				case BALANCED -> new Values(renderDistance, simulationDistance, ParticleStatus.MINIMAL, clouds, 0.0);
+				case FULL -> new Values(renderDistance, simulationDistance, particles, clouds, 0.0);
+			};
+		}
+	}
 
 	private final Minecraft mc;
 	private final SaveGuard guard;
 	private final Consumer<String> sink;
 	private final BackgroundMode<Values> mode;
 	private volatile Profile profile = Profile.DEFAULT;
+	private volatile BackgroundLevel level = BackgroundLevel.SAVING;
 	private volatile boolean visible = true;
 	private boolean lastFocused = true;
 
@@ -63,13 +72,7 @@ final class BackgroundController {
 			@Override
 			public Values background(Values saved) {
 				Options o = mc.options;
-				return new Values(
-					clamp(o.renderDistance(), profile.renderDistance()),
-					clamp(o.simulationDistance(), 0),
-					ParticleStatus.MINIMAL,
-					CloudStatus.OFF,
-					0.0
-				);
+				return saved.reduced(level, clamp(o.renderDistance(), profile.renderDistance()), clamp(o.simulationDistance(), 0));
 			}
 
 			@Override
@@ -97,6 +100,29 @@ final class BackgroundController {
 
 	Profile profile() {
 		return profile;
+	}
+
+	boolean skipsRender() {
+		return !visible && level.skipsRender();
+	}
+
+	int hiddenFramerate() {
+		return switch (level) {
+			case SAVING -> profile.fps();
+			case BALANCED -> Math.min(BackgroundLevel.BALANCED_FPS, mc.options.framerateLimit().get());
+			case FULL -> mc.options.framerateLimit().get();
+		};
+	}
+
+	void applyLevel(BackgroundLevel next) {
+		if (next == level) {
+			return;
+		}
+		level = next;
+		LOGGER.info("background level {}", next);
+		if (!visible) {
+			mode.enter();
+		}
 	}
 
 	boolean blocksSave() {

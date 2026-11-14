@@ -10,14 +10,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::batch_sheet::{BatchSheet, Load};
-use super::chat::segment;
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint};
-use super::widgets::{KeyNav, TakeFocus, icon};
+use super::widgets::{KeyNav, TakeFocus, icon, segment};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 use crate::core::modicons;

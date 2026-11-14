@@ -92,6 +92,23 @@ class ProtocolTest {
 	}
 
 	@Test
+	void parsesIdentityBadgeAndLevel() {
+		var id = assertInstanceOf(Protocol.Incoming.Identity.class, Protocol.parse("{\"t\":\"identity\",\"name\":\"Alt\",\"batch\":\"Farm\",\"rgb\":1193046,\"icon\":\"icon.png\"}").orElseThrow());
+		assertEquals(new Protocol.Incoming.Identity("Alt", "Farm", 0x123456, "icon.png"), id);
+		var bare = assertInstanceOf(Protocol.Incoming.Identity.class, Protocol.parse("{\"t\":\"identity\",\"name\":\"Alt\",\"batch\":\"Farm\",\"rgb\":0,\"icon\":null}").orElseThrow());
+		assertNull(bare.icon());
+		assertEquals("Alt · Farm", GameIdentity.title(id.name(), id.batch()));
+		assertFalse(assertInstanceOf(Protocol.Incoming.Badge.class, Protocol.parse("{\"t\":\"badge\",\"visible\":false}").orElseThrow()).visible());
+		assertEquals(BackgroundLevel.SAVING, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"saving\"}").orElseThrow()).level());
+		assertEquals(BackgroundLevel.BALANCED, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"balanced\"}").orElseThrow()).level());
+		assertEquals(BackgroundLevel.FULL, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"full\"}").orElseThrow()).level());
+		assertTrue(Protocol.parse("{\"t\":\"level\",\"level\":\"turbo\"}").isEmpty());
+		assertTrue(Protocol.parse("{\"t\":\"badge\",\"visible\":\"yes\"}").isEmpty());
+		assertTrue(Protocol.parse("{\"t\":\"identity\",\"name\":\"Alt\",\"rgb\":1}").isEmpty());
+		assertTrue(Protocol.parse("{\"t\":\"identity\",\"name\":\"Alt\",\"batch\":\"Farm\"}").isEmpty());
+	}
+
+	@Test
 	void rejectsGarbage() {
 		assertTrue(Protocol.parse("not json").isEmpty());
 		assertTrue(Protocol.parse("[1,2]").isEmpty());

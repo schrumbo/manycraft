@@ -9,6 +9,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(Minecraft.class)
 abstract class MinecraftMixin {
@@ -17,9 +18,17 @@ abstract class MinecraftMixin {
 		CompanionHooks.render(renderer, () -> original.call(renderer));
 	}
 
+	@Inject(method = "createTitle", at = @At("HEAD"), cancellable = true)
+	private void manycraft$title(CallbackInfoReturnable<String> cir) {
+		String title = CompanionHooks.title();
+		if (title != null) {
+			cir.setReturnValue(title);
+		}
+	}
+
 	@Inject(method = "pauseIfInactive", at = @At("HEAD"), cancellable = true)
-	private void manycraft$noPauseWhileHidden(CallbackInfo ci) {
-		if (CompanionHooks.hidden()) {
+	private void manycraft$noPauseWhileManaged(CallbackInfo ci) {
+		if (CompanionHooks.managed()) {
 			ci.cancel();
 		}
 	}

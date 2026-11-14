@@ -60,6 +60,33 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
 }
 
+/// One choice of a segmented control; the selected one is raised.
+pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
+    div()
+        .id(id)
+        .mark("segment", label.clone())
+        .h(px(control::S))
+        .px(px(space::S))
+        .rounded(px(radius::INNER))
+        .flex()
+        .flex_none()
+        .items_center()
+        .text_size(px(font::CALLOUT))
+        .when(selected, |d| d.bg(t.content).shadow_xs().text_color(t.primary))
+        .when(!selected, |d| d.bg(t.raised).text_color(t.secondary))
+        .cursor_pointer()
+        .key_nav()
+        .soft(t.ink.opacity(if selected { 0. } else { tint::HOVER }), radius::INNER)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(div().when(selected, |d| d.font_weight(FontWeight::MEDIUM)).child(label.clone()))
+                .child(div().h_0().overflow_hidden().font_weight(FontWeight::MEDIUM).text_color(transparent_black()).child(label)),
+        )
+}
+
 /// Tooltip builder for `.tooltip(...)`.
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text: SharedString = text.into();

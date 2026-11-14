@@ -17,11 +17,10 @@ use super::actions::{Broadcast, OpenSettings, SendChat};
 use super::drive::Mark;
 use super::main_window::{self, MainWindow, Page};
 use super::model::{self, ChatLine, Model};
-use super::motion::Soft;
 use super::sheet::{self, Look};
 use super::toolbar;
-use super::theme::{Theme, chat, control, font, iconsize, radius, shell, space, tile, tint, with_alpha};
-use super::widgets::{KeyNav, TakeFocus, icon};
+use super::theme::{Theme, chat, control, font, iconsize, radius, shell, space, tile, with_alpha};
+use super::widgets::{TakeFocus, icon, segment};
 use crate::core::batch::MAX_CHAT_CHARS;
 use crate::core::i18n::{tr, trf};
 use crate::core::settings;
@@ -588,25 +587,6 @@ impl Render for ChatPage {
             .child(div().flex_1().min_h_0().child(body))
             .children(composer)
     }
-}
-
-pub(super) fn segment(id: &'static str, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
-    div()
-        .id(id)
-        .mark("segment", label.clone())
-        .h(px(control::S))
-        .px(px(space::S))
-        .rounded(px(radius::INNER))
-        .flex()
-        .flex_none()
-        .items_center()
-        .text_size(px(font::CALLOUT))
-        .when(selected, |d| d.bg(t.content).shadow_xs().font_weight(FontWeight::MEDIUM).text_color(t.primary))
-        .when(!selected, |d| d.bg(t.raised).text_color(t.secondary))
-        .cursor_pointer()
-        .key_nav()
-        .soft(t.ink.opacity(if selected { 0. } else { tint::HOVER }), radius::INNER)
-        .child(label)
 }
 
 fn line_row(id: u64, line: &ChatLine, batch: Option<String>, day: Option<String>, t: &Theme) -> AnyElement {

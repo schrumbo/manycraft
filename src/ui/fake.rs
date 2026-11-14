@@ -188,7 +188,7 @@ impl Sim {
                 self.at(Duration::from_millis(100), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind: ChatKind::Player, from, text } }));
             }
             ToMod::Quit => self.at(Duration::from_millis(300), None, Update::Exited { key: key.to_owned(), code: Some(0) }),
-            ToMod::Profile { .. } | ToMod::Hotkeys { .. } => {}
+            ToMod::Profile { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Level { .. } => {}
         }
     }
 

@@ -22,9 +22,9 @@ use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
-use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon};
+use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment};
 use crate::core::account::{Account, AccountKind};
-use crate::core::batch::{Batch, ModRef};
+use crate::core::batch::{Background, Batch, ModRef};
 use crate::core::i18n::{tr, trf};
 use crate::core::modrinth::Update;
 use crate::core::prism::Instance;
@@ -106,6 +106,7 @@ pub(super) struct BatchSheet {
     pub(super) version: String,
     memory: u32,
     memory_touched: bool,
+    background: Background,
     advanced: bool,
     memory_max: u32,
     total_ram: u64,
@@ -204,6 +205,7 @@ impl BatchSheet {
             }),
         ];
         let editing = original.is_some();
+        let original_background = original.as_ref().map_or_else(Background::default, |b| b.background);
         let free = cx.background_executor().spawn(async { crate::core::fit::system_memory().map(|m| m.free_mb) });
         cx.spawn(async move |this, cx| {
             let free_ram = free.await;
@@ -228,6 +230,7 @@ impl BatchSheet {
             version,
             memory,
             memory_touched: false,
+            background: original_background,
             advanced: false,
             memory_max,
             total_ram,
@@ -579,6 +582,7 @@ impl BatchSheet {
             memory_mb: (self.memory_touched || self.original.is_none()).then_some(self.memory),
             accounts: accounts.iter().map(|a| a.id).filter(|id| self.accounts.contains(id)).collect(),
             mods: self.mods.clone(),
+            background: self.background,
         };
         let id = self.original.as_ref().map(|b| b.id.clone());
         self.saving = true;
@@ -694,7 +698,7 @@ impl BatchSheet {
         };
         let mut body = div().flex().flex_col().gap(px(space::M));
         if running {
-            body = body.child(sheet::notice("info", t.accent, t.accent_text, tr("Dieser Batch läuft. Änderungen gelten beim nächsten Start.")));
+            body = body.child(sheet::notice("info", t.accent, t.accent_text, tr("Dieser Batch läuft. Version, Server, Mods und Accounts gelten beim nächsten Start.")));
         }
         if let Some(entry) = self.render_prism_entry(cx, t) {
             body = body.child(entry);
@@ -711,8 +715,35 @@ impl BatchSheet {
             )
             .child(self.render_accounts(cx, t))
             .child(if let Some(instance) = self.prism_choice.clone().filter(|_| self.original.is_none()) { self.render_prism_mods(&instance, t) } else { self.render_mods(cx, t) })
+            .child(self.render_background(running, cx, t))
             .child(self.render_memory(cx, t));
         body
+    }
+
+    fn render_background(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
+        let name = |level: Background| match level {
+            Background::Saving => tr("Sparsam"),
+            Background::Balanced => tr("Ausgewogen"),
+            Background::Full => tr("Volle Leistung"),
+        };
+        let cost = match self.background {
+            Background::Saving => tr("Kostet kaum etwas: Das Spiel zeigt nur wenige Bilder und sieht nicht weit."),
+            Background::Balanced => tr("Kostet spürbar mehr: Das Spiel läuft flüssig weiter und sieht so weit wie sonst."),
+            Background::Full => tr("Kostet so viel wie ein offenes Spiel."),
+        };
+        let segments = Background::ALL.into_iter().enumerate().map(|(n, level)| {
+            segment(("background", n), name(level), self.background == level, t).on_click(cx.listener(move |s, _, _, cx| {
+                if s.saving || s.mods_busy.is_some() {
+                    return;
+                }
+                s.background = level;
+                s.save_error = None;
+                cx.notify();
+            }))
+        });
+        let control = div().id("batch-background").p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).when(self.saving || self.mods_busy.is_some(), |d| d.opacity(tint::DISABLED)).children(segments);
+        let hint = if running { format!("{cost} {}", tr("Gilt sofort, auch für die laufenden Spiele.")) } else { cost };
+        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Im Hintergrund"), t)).child(div().flex().child(control)).child(sheet::note(Some(hint), None, t).line_height(px(font::CAPTION * font::LINE)).min_h(px(font::CAPTION * font::LINE * 2.)))
     }
 
     fn render_memory(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {

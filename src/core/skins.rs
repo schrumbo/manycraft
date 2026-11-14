@@ -84,6 +84,20 @@ fn prepare_in(dir: &Path, accounts: &[Account], heads: &Heads, fetch: &dyn Fn(&A
     changed
 }
 
+/// The cached head PNG of `account`'s own skin, read from disk only; `None` for offline accounts and before the first fetch.
+pub fn own_head(account: &Account) -> Option<PathBuf> {
+    own_head_in(&paths::data_dir().join("cache").join("skins"), account)
+}
+
+fn own_head_in(dir: &Path, account: &Account) -> Option<PathBuf> {
+    if account.kind != AccountKind::Microsoft {
+        return None;
+    }
+    let hash = std::fs::read_to_string(dir.join(format!("{}.skin", account.id.simple()))).ok()?;
+    let hash = hash.trim();
+    valid_hash(hash).then(|| dir.join(format!("head-{hash}.png"))).filter(|p| p.is_file())
+}
+
 fn real_head(dir: &Path, account: &Account, heads: &Heads, fetch: &dyn Fn(&Account) -> Result<Option<(String, Vec<u8>)>>) -> Option<PathBuf> {
     let index = dir.join(format!("{}.skin", account.id.simple()));
     let known = std::fs::read_to_string(&index).ok().map(|h| h.trim().to_owned()).filter(|h| valid_hash(h)).map(|h| dir.join(format!("head-{h}.png"))).filter(|p| p.is_file());
@@ -355,6 +369,8 @@ mod tests {
         assert!(default.file_name().unwrap().to_string_lossy().starts_with("default-"));
         let own = lock(&heads.ready).get(&ms.id).cloned().unwrap();
         assert_eq!(own, dir.path().join("head-abc123.png"));
+        assert_eq!(own_head_in(dir.path(), &ms), Some(own.clone()));
+        assert_eq!(own_head_in(dir.path(), &offline), None);
         let drawn = image::open(&own).unwrap().to_rgba8();
         assert_eq!((drawn.width(), drawn.height(), drawn.get_pixel(63, 63).0), (64, 64, [1, 2, 3, 255]));
         assert!(!prepare_in(dir.path(), &[offline, ms], &heads, &fetch));

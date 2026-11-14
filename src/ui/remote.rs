@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
-use crate::core::batch::{self, Batch, ModRef};
+use crate::core::batch::{self, Background, Batch, ModRef};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{drive, fleet, install};
@@ -400,6 +400,7 @@ pub struct BatchEdit {
     pub memory_mb: Option<u32>,
     pub accounts: Vec<Uuid>,
     pub mods: Vec<ModRef>,
+    pub background: Background,
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`.
@@ -428,6 +429,7 @@ fn apply(b: &mut Batch, edit: BatchEdit, known: &HashSet<Uuid>) {
     }
     b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).collect();
     b.mods = edit.mods;
+    b.background = edit.background;
 }
 
 /// Deletes a batch and keeps its shared files next to its game folders.
@@ -463,6 +465,7 @@ pub fn import_prism(instance: &Instance, edit: BatchEdit) -> Result<Batch> {
                 b.memory_mb = mb;
             }
             b.accounts = edit.accounts.iter().copied().filter(|id| known.contains(id)).collect();
+            b.background = edit.background;
             batch::save(b)
         };
         if let Err(e) = finish(&mut b) {
@@ -627,10 +630,11 @@ mod tests {
         b.loader_version = Some("0.17".into());
         b.memory_mb = 3000;
         b.jvm_args = vec!["-XX:+UseZGC".into()];
-        let edit = |version: &str, memory_mb| BatchEdit { name: "Lobby".into(), game_version: version.into(), server: None, memory_mb, accounts: vec![me, gone], mods: Vec::new() };
+        let edit = |version: &str, memory_mb| BatchEdit { name: "Lobby".into(), game_version: version.into(), server: None, memory_mb, accounts: vec![me, gone], mods: Vec::new(), background: Background::Balanced };
         apply(&mut b, edit("26.2", None), &HashSet::from([me]));
         assert_eq!((b.name.as_str(), b.memory_mb, b.loader_version.as_deref(), b.accounts.as_slice()), ("Lobby", 3000, Some("0.17"), &[me][..]));
         assert_eq!(b.jvm_args, ["-XX:+UseZGC"]);
+        assert_eq!(b.background, Background::Balanced);
         apply(&mut b, edit("26.3", Some(2048)), &HashSet::from([me]));
         assert_eq!((b.memory_mb, b.loader_version.as_deref()), (2048, None));
     }
