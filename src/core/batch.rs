@@ -64,6 +64,15 @@ fn default_join_delay() -> u32 {
 }
 
 impl Batch {
+    /// Puts account `id` back at `index` (or last); false when it already belongs to the batch.
+    pub fn rejoin(&mut self, id: Uuid, index: usize) -> bool {
+        if self.accounts.contains(&id) {
+            return false;
+        }
+        self.accounts.insert(index.min(self.accounts.len()), id);
+        true
+    }
+
     /// A new, empty batch for `game_version` with a fresh id.
     pub fn new(name: &str, game_version: &str) -> Self {
         Self {
@@ -167,6 +176,16 @@ pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejoin_keeps_the_place_and_refuses_twice() {
+        let mut b = Batch::new("A", "26.3");
+        b.accounts = vec![Uuid::from_u128(1), Uuid::from_u128(3)];
+        assert!(b.rejoin(Uuid::from_u128(2), 1));
+        assert!(!b.rejoin(Uuid::from_u128(2), 0));
+        assert!(b.rejoin(Uuid::from_u128(4), 9));
+        assert_eq!(b.accounts, (1..=4).map(Uuid::from_u128).collect::<Vec<_>>());
+    }
 
     #[test]
     fn round_trip_and_sorted_by_name() {

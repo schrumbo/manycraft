@@ -11,14 +11,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain, SignInEach};
+use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::motion::Soft;
 use super::remote::{self, SignIn, SignInError};
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
-use super::widgets::{KeyNav, icon, primary_button, tip};
+use super::widgets::{KeyNav, TakeFocus, icon, primary_button, tip};
 use crate::core::account::{Account, AccountKind};
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
@@ -26,6 +26,8 @@ use crate::core::prism::AccountImport;
 use crate::core::skins;
 
 const COPIED_FOR: Duration = Duration::from_secs(2);
+const UNDO_FOR: Duration = Duration::from_secs(10);
+const ADDED_NOTES: f32 = font::BODY * font::LINE * 2. + font::CAPTION * font::LINE * 2. + space::XS * 2.;
 
 /// Registers the account actions.
 pub fn init(cx: &mut App) {
@@ -38,6 +40,11 @@ pub fn init(cx: &mut App) {
     cx.on_action(|action: &SignInEach, cx| {
         let names = action.0.clone();
         sheet::in_window(cx, move |window, cx| open_add(None, true, names, window, cx));
+    });
+    cx.on_action(|_: &UndoRemoveAccount, cx| {
+        if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+            page.update(cx, |s, cx| s.undo_remove(cx));
+        }
     });
     cx.on_action(|action: &SignInAgain, cx| {
         let Ok(id) = Uuid::parse_str(&action.0) else { return };
@@ -79,6 +86,11 @@ pub fn import_prism(window: &mut Window, cx: &mut App) {
     if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
         page.update(cx, |s, cx| s.import_prism(cx));
     }
+}
+
+/// Whether a removed account can still be brought back.
+pub fn can_undo(cx: &App) -> bool {
+    cx.try_global::<Page>().is_some_and(|p| !p.0.read(cx).removed.is_empty())
 }
 
 /// The Microsoft accounts from the last Prism import that still have to sign in.
@@ -386,7 +398,7 @@ impl AddAccountSheet {
             return;
         }
         match &self.step {
-            Step::Offline => self.name.update(cx, |s, cx| s.focus(window, cx)),
+            Step::Offline => self.name.update(cx, |s, cx| s.take_focus(window, cx)),
             Step::Choose => {
                 let first = self.first.clone();
                 window.on_next_frame(move |window, cx| window.focus(&first, cx));
@@ -444,7 +456,7 @@ impl AddAccountSheet {
             .on_click(cx.listener(move |s, _, window, cx| {
                 s.advanced = !open;
                 if s.advanced {
-                    s.proxy.update(cx, |p, cx| p.focus(window, cx));
+                    s.proxy.update(cx, |p, cx| p.take_focus(window, cx));
                 }
                 cx.notify();
             }));
@@ -536,21 +548,21 @@ impl AddAccountSheet {
                 };
                 trailing.push(more.track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx))).into_any_element());
                 let before: Vec<&String> = self.added.iter().filter(|n| *n != name).collect();
-                let mut col = div().flex().flex_col().gap(px(space::S)).py(px(space::S)).child(div().id("signed-in").mark("status", name.clone()).child(sheet::status("circle-check", t.success_text, trf("Angemeldet als %@.", &[name]))));
+                let mut more_lines = div().min_h(px(ADDED_NOTES)).flex().flex_col().gap(px(space::XS));
                 if !before.is_empty() {
-                    col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Schon hinzugefügt: %@", &[&before.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")])));
+                    more_lines = more_lines.child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Schon hinzugefügt: %@", &[&before.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")])));
                 }
-                match next {
+                more_lines = match next {
                     Some(next) => {
                         let rest = self.queue.len();
-                        col = col.child(div().text_size(px(font::BODY)).text_color(t.primary).child(if rest == 1 { trf("Als Nächstes: %@. Das ist der letzte Prism-Account.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }));
+                        more_lines.child(div().line_clamp(2).text_size(px(font::BODY)).text_color(t.primary).child(if rest == 1 { trf("Als Nächstes: %@. Das ist der letzte Prism-Account.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }))
                     }
-                    None => col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."))),
-                }
+                    None => more_lines.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."))),
+                };
                 if self.again.is_none() && let Some(proxy) = self.chosen_proxy(cx) {
-                    col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der nächste Account nutzt wieder den Proxy %@.", &[&forms::proxy_display(&proxy)])));
+                    more_lines = more_lines.child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der nächste Account nutzt wieder den Proxy %@.", &[&forms::proxy_display(&proxy)])));
                 }
-                col
+                div().flex().flex_col().gap(px(space::S)).py(px(space::S)).child(div().id("signed-in").mark("status", name.clone()).child(sheet::status("circle-check", t.success_text, trf("Angemeldet als %@.", &[name])))).child(more_lines)
             }
             Ms::Failed(e) => {
                 let (title, detail, retry, offline) = failure_text(e, self.again.as_ref());
@@ -670,6 +682,8 @@ struct AccountsPage {
     heads_for: Vec<Uuid>,
     editing: Option<Editing>,
     removing: Option<Uuid>,
+    removed: Vec<remote::Removed>,
+    undo_gen: u64,
     error: Option<Problem>,
     details: HashSet<&'static str>,
     prism_found: bool,
@@ -707,6 +721,8 @@ impl AccountsPage {
             heads_for: Vec::new(),
             editing: None,
             removing: None,
+            removed: Vec::new(),
+            undo_gen: 0,
             error: None,
             details: HashSet::new(),
             prism_found: false,
@@ -787,6 +803,7 @@ impl AccountsPage {
             (
                 self.error.clone(),
                 self.details.contains("error"),
+                self.removed.last().map(|r| r.account.id),
                 self.prism_done.as_ref().map(|d| (d.added.len(), d.needs_sign_in.len(), d.skipped.len())),
                 self.accounts.len(),
                 self.prism_found,
@@ -947,7 +964,7 @@ impl AccountsPage {
             _ => {}
         });
         let focus = input.clone();
-        window.on_next_frame(move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
+        window.on_next_frame(move |window, cx| focus.update(cx, |s, cx| s.take_focus(window, cx)));
         self.details.remove("check");
         self.editing = Some(Editing { id: account.id, input, check: Check::Idle, saving: false, _sub: sub });
         cx.notify();
@@ -1017,8 +1034,11 @@ impl AccountsPage {
         }
         let id = account.id;
         let page = cx.entity().downgrade();
-        sheet::ask(window, cx, title, message, tr("Entfernen"), move |_, cx| {
-            let _ = page.update(cx, |s, cx| s.remove(id, cx));
+        sheet::ask(window, cx, title, message, tr("Entfernen"), move |window, cx| {
+            let _ = page.update(cx, |s, cx| {
+                window.focus(&s.root, cx);
+                s.remove(id, cx);
+            });
         });
     }
 
@@ -1030,14 +1050,74 @@ impl AccountsPage {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.removing = None;
-                if let Err(e) = result {
-                    s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig entfernt."), &e));
+                match result {
+                    Ok(Some(removed)) => s.offer_undo(removed, cx),
+                    Ok(None) => {}
+                    Err(e) => s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig entfernt."), &e)),
                 }
                 cx.dispatch_action(&Reload);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn offer_undo(&mut self, removed: remote::Removed, cx: &mut Context<Self>) {
+        self.removed.push(removed);
+        self.undo_gen += 1;
+        let generation = self.undo_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(UNDO_FOR).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.undo_gen == generation && !std::mem::take(&mut s.removed).is_empty() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn undo_remove(&mut self, cx: &mut Context<Self>) {
+        let Some(removed) = self.removed.pop() else { return };
+        self.undo_gen += 1;
+        cx.notify();
+        let removed = Arc::new(removed);
+        let task = cx.background_executor().spawn({
+            let removed = removed.clone();
+            async move { remote::restore_account(&removed) }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if let Err(e) = result {
+                    s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig zurückgeholt."), &e));
+                    if let Ok(removed) = Arc::try_unwrap(removed) {
+                        s.offer_undo(removed, cx);
+                    }
+                }
+                cx.dispatch_action(&Reload);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn undo_row(&self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
+        let removed = self.removed.last()?;
+        let undo = sheet::button("undo-remove", tr("Rückgängig"), Some("undo-2"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.undo_remove(cx)));
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(space::S))
+                .px(px(space::M))
+                .py(px(space::S))
+                .rounded(px(radius::CONTROL))
+                .bg(t.raised)
+                .child(div().id("removed-note").mark("status", removed.account.name.clone()).flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("„%@“ entfernt.", &[&removed.account.name])))
+                .child(undo),
+        )
     }
 
     fn avatar(account: &Account, t: &Theme) -> AnyElement {
@@ -1207,11 +1287,13 @@ impl AccountsPage {
                     .flex()
                     .items_center()
                     .gap(px(space::M))
+                    .child(sheet::sidebar_toggle("accounts-sidebar", t))
                     .child(div().flex_1().flex().items_baseline().gap(px(space::S)).child(div().id("accounts-title").mark("heading", tr("Accounts")).text_size(px(font::TITLE)).font_weight(FontWeight::BOLD).child(tr("Accounts"))).child(div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(count_label)))
                     .when(self.prism_found, |d| d.child(self.prism_button(cx, t)))
                     .child(add),
             )
             .children(error)
+            .children(self.undo_row(cx, t))
             .children(self.prism_result(&self.accounts, cx, t))
             .when(count > FILTER_FROM, |d| d.child(Input::new(&self.filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true)))
     }
@@ -1251,10 +1333,12 @@ impl Render for AccountsPage {
             let title = tr("Noch keine Accounts");
             return root
                 .overflow_y_scroll()
+                .relative()
                 .flex()
                 .items_center()
                 .justify_center()
                 .px(px(space::XL))
+                .child(div().absolute().top(px(space::XL)).left(px(space::XL)).child(sheet::sidebar_toggle("accounts-sidebar", &t)))
                 .child(
                     div()
                         .flex()
@@ -1265,6 +1349,7 @@ impl Render for AccountsPage {
                         .child(div().id("accounts-empty").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).child(title))
                         .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Online-Mode.")))
                         .child(div().mt(px(space::S)).flex().items_center().gap(px(space::S)).child(add).when(self.prism_found, |d| d.child(self.prism_button(cx, &t))))
+                        .children(self.undo_row(cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c)))
                         .children(self.prism_result(&self.accounts, cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c))),
                 )
                 .into_any_element();

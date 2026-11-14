@@ -228,21 +228,63 @@ pub fn set_proxy(id: Uuid, proxy: Option<String>) -> Result<()> {
     })
 }
 
+/// What `remove_account` took away, kept in memory so `restore_account` can put it back.
+pub struct Removed {
+    pub account: Account,
+    index: usize,
+    memberships: Vec<(String, usize)>,
+    token: Option<String>,
+}
+
 /// Removes account `id` from every batch, then from the saved accounts, then its sign-in from the keychain.
-pub fn remove_account(id: Uuid) -> Result<()> {
+pub fn remove_account(id: Uuid) -> Result<Option<Removed>> {
+    let mut memberships: Vec<(String, usize)> = Vec::new();
     saved(|| {
         let mut accounts = account::load()?;
+        let Some(at) = accounts.iter().position(|a| a.id == id) else { return Ok(None) };
+        let token = if accounts[at].kind == AccountKind::Microsoft && !drive::fenced("keychain read", id) { account::read_token(id).ok().flatten() } else { None };
         for mut b in batch::load_all()? {
-            if b.accounts.contains(&id) {
-                b.accounts.retain(|a| *a != id);
+            if let Some(place) = b.accounts.iter().position(|a| *a == id) {
+                b.accounts.remove(place);
                 batch::save(&b)?;
+                if !memberships.iter().any(|(known, _)| *known == b.id) {
+                    memberships.push((b.id.clone(), place));
+                }
             }
         }
-        let Some(at) = accounts.iter().position(|a| a.id == id) else { return Ok(()) };
         let removed = accounts.remove(at);
         account::save(&accounts)?;
         if removed.kind == AccountKind::Microsoft && !drive::fenced("keychain delete", id) {
             account::delete_token(id)?;
+        }
+        Ok(Some(Removed { account: removed, index: at, memberships: memberships.clone(), token }))
+    })
+}
+
+/// Puts back what `remove_account` took: the sign-in first, then the account where it was, then its batches.
+/// An account with the same name under another id blocks it; the same id again only gets its batches back.
+pub fn restore_account(removed: &Removed) -> Result<()> {
+    saved(|| {
+        let id = removed.account.id;
+        let mut accounts = account::load()?;
+        if accounts.iter().any(|a| a.id != id && a.name.eq_ignore_ascii_case(&removed.account.name)) {
+            return Ok(());
+        }
+        if !accounts.iter().any(|a| a.id == id) {
+            if let Some(token) = &removed.token
+                && !drive::fenced("keychain restore", id)
+            {
+                account::store_token(id, token)?;
+            }
+            account::reinsert(&mut accounts, removed.account.clone(), removed.index);
+            account::save(&accounts)?;
+        }
+        for (batch_id, place) in &removed.memberships {
+            if let Some(mut b) = batch::load_all()?.into_iter().find(|b| &b.id == batch_id)
+                && b.rejoin(id, *place)
+            {
+                batch::save(&b)?;
+            }
         }
         Ok(())
     })

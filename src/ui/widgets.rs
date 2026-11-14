@@ -1,3 +1,4 @@
+use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -15,6 +16,41 @@ impl KeyNav for Stateful<Div> {
         let color = ring::color();
         super::drive::marked(self, "clickable").tab_index(0).focus_visible(move |s| {
             s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(ring::WIDTH), inset: false }])
+        })
+    }
+}
+
+/// Focuses a text field without starting its caret blink while the window is inactive, where nothing would stop it.
+pub trait TakeFocus {
+    fn take_focus(&self, window: &mut Window, cx: &mut Context<InputState>);
+}
+
+impl TakeFocus for InputState {
+    fn take_focus(&self, window: &mut Window, cx: &mut Context<InputState>) {
+        if window.is_window_active() {
+            self.focus(window, cx);
+        } else {
+            let handle = Focusable::focus_handle(self, cx);
+            window.focus(&handle, cx);
+        }
+    }
+}
+
+/// Keeps a wheel turn that moved a list from also scrolling the sheet around it; at the list's end the sheet takes over.
+pub trait ContainScroll {
+    fn contain_scroll(self, handle: &ScrollHandle) -> Self;
+}
+
+impl<E: InteractiveElement> ContainScroll for E {
+    fn contain_scroll(self, handle: &ScrollHandle) -> Self {
+        let handle = handle.clone();
+        let seen = handle.offset().y;
+        self.on_scroll(move |_, _, cx| {
+            let max = handle.max_offset().y;
+            let clamped = |y: Pixels| y.clamp(-max, px(0.));
+            if max > px(0.) && clamped(handle.offset().y) != clamped(seen) {
+                cx.stop_propagation();
+            }
         })
     }
 }

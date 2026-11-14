@@ -79,6 +79,14 @@ pub fn upsert(accounts: &mut Vec<Account>, account: Account) {
     }
 }
 
+/// Puts back `account` at `index` (or last), unless an account with its id exists again.
+pub fn reinsert(accounts: &mut Vec<Account>, account: Account, index: usize) {
+    if accounts.iter().any(|a| a.id == account.id) {
+        return;
+    }
+    accounts.insert(index.min(accounts.len()), account);
+}
+
 /// Stores the refresh token for account `id` in the OS keychain.
 pub fn store_token(id: Uuid, token: &str) -> Result<()> {
     entry(id)?.set_secret(token.as_bytes()).context("cannot save the sign-in in the system keychain")
@@ -225,6 +233,16 @@ mod tests {
         again[0].name = "Renamed".into();
         save_to(dir.path(), &again).unwrap();
         assert_eq!(load_from(dir.path()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reinsert_restores_the_position_and_never_duplicates() {
+        let mut accounts = vec![account(1, "One", None), account(3, "Three", None)];
+        reinsert(&mut accounts, account(2, "Two", None), 1);
+        assert_eq!(accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["One", "Two", "Three"]);
+        reinsert(&mut accounts, account(2, "Other", Some("http://p:1")), 0);
+        reinsert(&mut accounts, account(4, "Four", None), 99);
+        assert_eq!(accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["One", "Two", "Three", "Four"]);
     }
 
     #[test]
