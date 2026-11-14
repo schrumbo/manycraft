@@ -136,7 +136,8 @@ pub fn import_accounts() -> Result<AccountImport> {
     Ok(done)
 }
 
-fn import_accounts_into(saved: &mut Vec<Account>, prism: &[PrismAccount]) -> AccountImport {
+/// Adds the offline accounts of `prism` to `saved` without writing anything; see `import_accounts`.
+pub fn import_accounts_into(saved: &mut Vec<Account>, prism: &[PrismAccount]) -> AccountImport {
     let mut done = AccountImport::default();
     for found in prism {
         let listed = done.needs_sign_in.iter().any(|n| n.eq_ignore_ascii_case(&found.name));

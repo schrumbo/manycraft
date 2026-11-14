@@ -113,6 +113,15 @@ pub fn batch_name_problem(name: &str) -> Option<String> {
     }
 }
 
+/// `base`, or `base (2)`, `base (3)` … when a batch of that name exists.
+pub fn unique_name(base: &str, taken: &[&str]) -> String {
+    let free = |name: &str| !taken.iter().any(|t| t.eq_ignore_ascii_case(name));
+    if free(base) {
+        return base.to_owned();
+    }
+    (2..).map(|n| format!("{base} ({n})")).find(|name| free(name)).unwrap_or_default()
+}
+
 /// The first `Batch N` that no batch uses yet.
 pub fn next_batch_name(taken: &[&str]) -> String {
     (1..).map(|n| trf("Batch %lld", &[&n])).find(|name| !taken.iter().any(|t| t.eq_ignore_ascii_case(name))).unwrap_or_default()
@@ -246,6 +255,13 @@ mod tests {
         crate::core::i18n::init("de");
         assert_eq!(next_batch_name(&[]), "Batch 1");
         assert_eq!(next_batch_name(&["batch 1", "Batch 2", "Farm"]), "Batch 3");
+    }
+
+    #[test]
+    fn unique_name_counts_up_only_when_taken() {
+        assert_eq!(unique_name("Farm", &["Other"]), "Farm");
+        assert_eq!(unique_name("Farm", &["farm"]), "Farm (2)");
+        assert_eq!(unique_name("Farm", &["Farm", "Farm (2)"]), "Farm (3)");
     }
 
     #[test]

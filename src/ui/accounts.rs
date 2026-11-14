@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, Reload, SignInAgain};
+use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain};
 use super::drive::Mark;
 use super::forms;
 use super::motion::Soft;
@@ -22,28 +22,38 @@ use super::widgets::{KeyNav, icon, primary_button, tip};
 use crate::core::account::{Account, AccountKind};
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
+use crate::core::prism::AccountImport;
 
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
 /// Registers the account actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &AddAccount, cx| {
-        sheet::in_window(cx, |window, cx| open_add(None, window, cx));
+        sheet::in_window(cx, |window, cx| open_add(None, false, window, cx));
+    });
+    cx.on_action(|_: &AddMicrosoft, cx| {
+        sheet::in_window(cx, |window, cx| open_add(None, true, window, cx));
     });
     cx.on_action(|action: &SignInAgain, cx| {
         let Ok(id) = Uuid::parse_str(&action.0) else { return };
         let account = super::model::get(cx).read(cx).account(id).cloned();
         if let Some(account) = account.filter(|a| a.kind == AccountKind::Microsoft) {
-            sheet::in_window(cx, move |window, cx| open_add(Some(account), window, cx));
+            sheet::in_window(cx, move |window, cx| open_add(Some(account), false, window, cx));
         }
     });
 }
 
-fn open_add(again: Option<Account>, window: &mut Window, cx: &mut App) {
+fn open_add(again: Option<Account>, microsoft: bool, window: &mut Window, cx: &mut App) {
     if sheet::busy(window, cx) {
         return;
     }
-    let view = cx.new(|cx| AddAccountSheet::new(again, window, cx));
+    let view = cx.new(|cx| {
+        let mut sheet = AddAccountSheet::new(again, window, cx);
+        if microsoft && matches!(sheet.step, Step::Choose) {
+            sheet.start_microsoft(cx);
+        }
+        sheet
+    });
     sheet::show(view, sheet::NARROW, window, cx);
 }
 
@@ -548,6 +558,9 @@ struct AccountsPage {
     editing: Option<Editing>,
     removing: Option<Uuid>,
     error: Option<String>,
+    prism_found: bool,
+    prism_busy: bool,
+    prism_done: Option<AccountImport>,
     filter: Entity<InputState>,
     _model: Subscription,
     _filter: Subscription,
@@ -563,7 +576,115 @@ impl AccountsPage {
                 cx.notify();
             }
         });
-        Self { editing: None, removing: None, error: None, filter, _model, _filter }
+        let mut page = Self { editing: None, removing: None, error: None, prism_found: false, prism_busy: false, prism_done: None, filter, _model, _filter };
+        page.look_for_prism(cx);
+        page
+    }
+
+    fn look_for_prism(&mut self, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async { remote::prism_accounts().map_or(0, |found| found.len()) });
+        cx.spawn(async move |this, cx| {
+            let count = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.prism_found = count > 0;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn import_prism(&mut self, cx: &mut Context<Self>) {
+        if self.prism_busy {
+            return;
+        }
+        self.prism_busy = true;
+        self.error = None;
+        cx.notify();
+        let task = cx.background_executor().spawn(async { remote::import_prism_accounts() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.prism_busy = false;
+                match result {
+                    Ok(done) => {
+                        s.prism_done = Some(done);
+                        cx.dispatch_action(&Reload);
+                    }
+                    Err(e) => s.error = Some(trf("Aus Prism nicht übernommen: %@", &[&e])),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn prism_button(&self, cx: &mut Context<Self>, t: &Theme) -> Stateful<Div> {
+        sheet::button("accounts-prism", tr("Aus Prism übernehmen"), Some("download"), Look::Secondary, false, self.prism_busy, t).on_click(cx.listener(|s, _, _, cx| s.import_prism(cx)))
+    }
+
+    fn prism_result(&self, accounts: &[Account], cx: &mut Context<Self>, t: &Theme) -> Option<Stateful<Div>> {
+        let done = self.prism_done.as_ref()?;
+        let waiting: Vec<&String> = done.needs_sign_in.iter().filter(|n| !accounts.iter().any(|a| a.name.eq_ignore_ascii_case(n))).collect();
+        let existing = done.skipped.iter().filter(|(_, why)| why == "already added").count();
+        let refused: Vec<String> = done
+            .skipped
+            .iter()
+            .filter(|(_, why)| why != "already added")
+            .map(|(name, why)| trf("„%@“ übersprungen: %@", &[name, &forms::offline_name_problem(name, &[]).unwrap_or_else(|| why.clone())]))
+            .collect();
+        let added = done.added.len();
+        let summary = match (added, waiting.len()) {
+            (0, 0) if refused.is_empty() => tr("Aus Prism gibt es nichts Neues. Alle Namen sind schon hier."),
+            (0, _) => tr("Keine Offline-Accounts aus Prism übernommen."),
+            (1, _) => tr("1 Offline-Account aus Prism übernommen."),
+            _ => trf("%lld Offline-Accounts aus Prism übernommen.", &[&added]),
+        };
+        let mut card = div()
+            .id("prism-result")
+            .mark("panel", tr("Aus Prism übernommen"))
+            .flex()
+            .flex_col()
+            .gap(px(space::S))
+            .px(px(space::L))
+            .py(px(space::M))
+            .rounded(px(radius::CARD))
+            .bg(t.content)
+            .border_1()
+            .border_color(t.separator)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(space::S))
+                    .child(div().flex_1().min_w_0().child(sheet::status(if added > 0 { "circle-check" } else { "info" }, if added > 0 { t.success_text } else { t.secondary }, summary)))
+                    .child(sheet::icon_button("prism-dismiss", "x", tr("Ausblenden"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| {
+                        s.prism_done = None;
+                        cx.notify();
+                    }))),
+            );
+        if !waiting.is_empty() {
+            card = card.child(sheet::note(Some(tr("Diese Microsoft-Accounts brauchen eine neue Anmeldung. Anmeldungen aus Prism werden nicht übernommen.")), None, t));
+            for name in waiting {
+                card = card.child(
+                    div()
+                        .id(SharedString::from(format!("prism-wait-{name}")))
+                        .mark("row", name.clone())
+                        .flex()
+                        .items_center()
+                        .gap(px(space::M))
+                        .child(icon("key-round", iconsize::S, t.secondary))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(name.clone()))
+                        .child(sheet::button(SharedString::from(format!("prism-signin-{name}")), tr("Anmelden"), Some("log-in"), Look::Secondary, false, false, t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddMicrosoft), cx))),
+                );
+            }
+        }
+        if existing > 0 && (added > 0 || !done.needs_sign_in.is_empty()) {
+            card = card.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(if existing == 1 { tr("1 Name war schon vorhanden.") } else { trf("%lld Namen waren schon vorhanden.", &[&existing]) }));
+        }
+        for line in refused {
+            card = card.child(sheet::status("circle-alert", t.danger_text, line));
+        }
+        Some(card)
     }
 
     fn edit_proxy(&mut self, account: &Account, window: &mut Window, cx: &mut Context<Self>) {
@@ -825,7 +946,8 @@ impl Render for AccountsPage {
                     .child(icon("users", iconsize::HERO, t.tertiary))
                     .child(div().id("accounts-empty").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).child(title))
                     .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Online-Mode.")))
-                    .child(div().mt(px(space::S)).child(add)),
+                    .child(div().mt(px(space::S)).flex().items_center().gap(px(space::S)).child(add).when(self.prism_found, |d| d.child(self.prism_button(cx, &t))))
+                    .children(self.prism_result(&accounts, cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c))),
             );
         }
         let count = accounts.len();
@@ -869,9 +991,11 @@ impl Render for AccountsPage {
                         .items_center()
                         .gap(px(space::M))
                         .child(div().flex_1().flex().items_baseline().gap(px(space::S)).child(div().id("accounts-title").mark("heading", tr("Accounts")).text_size(px(font::TITLE)).font_weight(FontWeight::BOLD).child(tr("Accounts"))).child(div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(count_label)))
+                        .when(self.prism_found, |d| d.child(self.prism_button(cx, &t)))
                         .child(add),
                 )
                 .children(error)
+                .children(self.prism_result(&accounts, cx, &t))
                 .when(many, |d| d.child(Input::new(&self.filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true)))
                 .child(list),
         )

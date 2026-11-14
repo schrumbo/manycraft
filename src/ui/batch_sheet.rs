@@ -19,12 +19,13 @@ use super::forms;
 use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
-use super::theme::{Theme, control, font, iconsize, radius, space, tint};
+use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
 use super::widgets::{KeyNav, icon};
 use crate::core::account::{Account, AccountKind};
 use crate::core::batch::{Batch, ModRef};
 use crate::core::i18n::{tr, trf};
-use crate::core::modrinth::Hit;
+use crate::core::modrinth::{Hit, Update};
+use crate::core::prism::Instance;
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const FILTER_FROM: usize = 12;
@@ -85,6 +86,15 @@ struct BatchSheet {
     search_gen: u64,
     adding: HashSet<String>,
     add_error: Option<String>,
+    prism_list: Vec<Instance>,
+    prism_choice: Option<Instance>,
+    prism_picking: bool,
+    imported: Option<Batch>,
+    updates: Option<Load<Vec<Update>>>,
+    updates_gen: u64,
+    updating: HashSet<String>,
+    update_error: Option<String>,
+    updates_note: Option<String>,
     saving: bool,
     save_error: Option<String>,
     tried: bool,
@@ -164,6 +174,15 @@ impl BatchSheet {
             search_gen: 0,
             adding: HashSet::new(),
             add_error: None,
+            prism_list: Vec::new(),
+            prism_choice: None,
+            prism_picking: false,
+            imported: None,
+            updates: None,
+            updates_gen: 0,
+            updating: HashSet::new(),
+            update_error: None,
+            updates_note: None,
             saving: false,
             save_error: None,
             tried: false,
@@ -172,7 +191,132 @@ impl BatchSheet {
             _subs: subs,
         };
         sheet.load_versions(cx);
+        if editing {
+            sheet.load_updates(cx);
+        } else {
+            sheet.load_prism(cx);
+        }
         sheet
+    }
+
+    fn load_prism(&mut self, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async { remote::prism_instances() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(list) = result {
+                    s.prism_list = list;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn open_prism(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.prism_picking = open;
+        self.focus_next = !open;
+        if open {
+            window.focus(&self.root, cx);
+        }
+        cx.notify();
+    }
+
+    fn choose_prism(&mut self, instance: Instance, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(game) = instance.game_version.clone().filter(|_| instance.unsupported.is_none()) else { return };
+        let taken: Vec<String> = super::model::get(cx).read(cx).batches.iter().map(|b| b.name.clone()).collect();
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        let name = forms::unique_name(&instance.name, &taken);
+        self.name.update(cx, |s, cx| s.set_value(name, window, cx));
+        if !self.version_list.contains(&game) {
+            self.version_list.insert(0, game.clone());
+        }
+        self.version = game;
+        self.pending_versions = true;
+        self.mods.clear();
+        self.notes.clear();
+        self.mods_error = None;
+        self.mods_touched = true;
+        self.prism_choice = Some(instance);
+        self.prism_picking = false;
+        self.focus_next = true;
+        cx.notify();
+    }
+
+    fn drop_prism(&mut self, cx: &mut Context<Self>) {
+        if self.prism_choice.take().is_none() {
+            return;
+        }
+        let version = std::mem::take(&mut self.version);
+        self.mods_touched = false;
+        self.mods.clear();
+        self.change_version(version, cx);
+    }
+
+    fn load_updates(&mut self, cx: &mut Context<Self>) {
+        let Some(original) = self.original.clone().filter(|b| !b.mods.is_empty()) else {
+            self.updates = None;
+            return;
+        };
+        self.updates = Some(Load::Loading);
+        self.updates_gen += 1;
+        let generation = self.updates_gen;
+        cx.notify();
+        let task = cx.background_executor().spawn(async move { remote::mod_updates(&original) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.updates_gen != generation {
+                    return;
+                }
+                s.updates = Some(match result {
+                    Ok(list) => Load::Ready(list),
+                    Err(e) => Load::Failed(e.root_cause().to_string()),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
+        let Some(Load::Ready(list)) = &self.updates else { return };
+        let Some(id) = self.original.as_ref().map(|b| b.id.clone()) else { return };
+        let selection: Vec<Update> = list.iter().filter(|u| only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
+        if selection.is_empty() || !self.updating.is_empty() {
+            return;
+        }
+        self.updating.extend(selection.iter().map(|u| u.current.project_id.clone()));
+        self.update_error = None;
+        self.updates_note = None;
+        let running = self.running(cx);
+        cx.notify();
+        let sent = selection.clone();
+        let task = cx.background_executor().spawn(async move { remote::apply_updates(&id, &sent, running) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.updating.clear();
+                match result {
+                    Ok(batch) => {
+                        for u in &selection {
+                            if let Some(slot) = s.mods.iter_mut().find(|m| m.project_id == u.current.project_id && m.version_id == u.current.version_id) {
+                                *slot = u.latest.clone();
+                            }
+                        }
+                        if let Some(Load::Ready(list)) = &mut s.updates {
+                            list.retain(|u| !selection.contains(u));
+                        }
+                        s.updates_note = Some(if running { trf("%lld Updates vorgemerkt. Sie gelten beim nächsten Start.", &[&selection.len()]) } else if selection.len() == 1 { tr("1 Mod aktualisiert.") } else { trf("%lld Mods aktualisiert.", &[&selection.len()]) });
+                        s.original = Some(batch);
+                        cx.dispatch_action(&Reload);
+                    }
+                    Err(e) => s.update_error = Some(trf("Nicht aktualisiert: %@", &[&e.root_cause()])),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn running(&self, cx: &App) -> bool {
@@ -357,7 +501,7 @@ impl BatchSheet {
     fn save(&mut self, cx: &mut Context<Self>) {
         self.tried = true;
         let (name, server, version) = self.problems(cx);
-        if self.saving || name.is_some() || server.is_some() || version.is_some() || self.mods_busy.is_some() {
+        if self.saving || name.is_some() || server.is_some() || version.is_some() || self.mods_busy.is_some() || !self.updating.is_empty() {
             cx.notify();
             return;
         }
@@ -373,6 +517,29 @@ impl BatchSheet {
         let id = self.original.as_ref().map(|b| b.id.clone());
         self.saving = true;
         cx.notify();
+        if let (None, Some(instance)) = (&self.original, self.prism_choice.clone()) {
+            let task = cx.background_executor().spawn(async move { remote::import_prism(&instance, edit) });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |s, cx| {
+                    s.saving = false;
+                    match result {
+                        Ok(batch) => {
+                            cx.dispatch_action(&Reload);
+                            if batch.local_mods.is_empty() {
+                                cx.emit(Dismissed);
+                            } else {
+                                s.imported = Some(batch);
+                            }
+                        }
+                        Err(e) => s.save_error = Some(trf("Nicht übernommen: %@", &[&e.root_cause()])),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
         let task = cx.background_executor().spawn(async move { remote::save_batch(id.as_deref(), edit) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -431,7 +598,9 @@ impl BatchSheet {
             cx.propagate();
             return;
         }
-        if !self.searching {
+        if self.imported.is_some() {
+            cx.emit(Dismissed);
+        } else if !self.searching && !self.prism_picking {
             self.save(cx);
         }
     }
@@ -448,23 +617,27 @@ impl BatchSheet {
                 .child(div().flex_1().min_w_0().child(sheet::status("circle-alert", t.danger_text, trf("Versionen nicht geladen: %@", &[why]))))
                 .child(sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)))),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
-            _ => div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some())),
+            _ => div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some())),
         };
         let mut body = div().flex().flex_col().gap(px(space::M));
         if running {
             body = body.child(sheet::notice("info", t.accent, t.accent_text, tr("Dieser Batch läuft. Änderungen gelten beim nächsten Start.")));
         }
+        if let Some(entry) = self.render_prism_entry(cx, t) {
+            body = body.child(entry);
+        }
+        let version_hint = self.prism_choice.is_some().then(|| tr("Kommt aus Prism."));
         body = body
             .child(sheet::field(tr("Name"), Input::new(&self.name), None, name_shown, t))
             .child(
                 div()
                     .flex()
                     .gap(px(space::M))
-                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, None, version_problem.filter(|_| self.tried), t)))
+                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, version_hint, version_problem.filter(|_| self.tried), t)))
                     .child(div().flex_1().min_w_0().child(sheet::field(tr("Server"), Input::new(&self.server), Some(tr("Optional. Adresse mit oder ohne Port.")), server_problem, t))),
             )
             .child(self.render_accounts(cx, t))
-            .child(self.render_mods(cx, t))
+            .child(if let Some(instance) = self.prism_choice.clone().filter(|_| self.original.is_none()) { self.render_prism_mods(&instance, t) } else { self.render_mods(cx, t) })
             .child(self.render_memory(cx, t));
         body
     }
@@ -637,6 +810,198 @@ impl BatchSheet {
         for n in &self.notes {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(n.clone()));
         }
+        if let Some(updates) = self.render_updates(cx, t) {
+            col = col.child(updates);
+        }
+        col
+    }
+
+    fn render_prism_entry(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
+        if self.prism_list.is_empty() || self.original.is_some() {
+            return None;
+        }
+        let blocked = self.mods_busy.is_some() || self.saving;
+        let card = |id: &'static str, title: String, subtitle: String| {
+            div()
+                .id(id)
+                .mark("option", title.clone())
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(space::M))
+                .px(px(space::M))
+                .py(px(space::S))
+                .rounded(px(radius::CONTROL))
+                .border_1()
+                .border_color(t.separator)
+                .child(div().size(px(control::M)).flex_none().rounded(px(radius::INNER)).bg(with_alpha(t.accent, tint::ATTENTION)).flex().items_center().justify_center().child(icon("download", iconsize::M, t.accent_text)))
+                .child(div().flex_1().min_w_0().flex().flex_col().child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title)).child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)))
+        };
+        let entry = match self.prism_choice.clone() {
+            None => {
+                let row = card("prism-pick", tr("Aus Prism-Instanz übernehmen"), tr("Version, Mods und Einstellungen aus Prism Launcher"));
+                let row = if blocked { row.opacity(tint::DISABLED) } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))) };
+                row.child(icon("chevron-right", iconsize::M, t.tertiary))
+            }
+            Some(instance) => {
+                let subtitle = trf("Aus Prism · Minecraft %@ · %lld Mods", &[&instance.game_version.clone().unwrap_or_default(), &instance.mods]);
+                card("prism-chosen", instance.name.clone(), subtitle)
+                    .child(sheet::icon_button("prism-change", "list", tr("Andere Instanz wählen"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))))
+                    .child(sheet::icon_button("prism-drop", "x", tr("Nicht aus Prism übernehmen"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.drop_prism(cx))))
+            }
+        };
+        Some(div().child(entry))
+    }
+
+    fn render_prism_mods(&self, instance: &Instance, t: &Theme) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(sheet::label(trf("Mods (%lld)", &[&instance.mods]), t))
+            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Mods, Config und Einstellungen werden aus der Instanz kopiert; Prism bleibt unverändert. Beim Erstellen wird geprüft, welche Mods auf Modrinth liegen. Die übrigen bleiben als eigene Dateien im Batch.")))
+    }
+
+    fn render_updates(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
+        let original = self.original.as_ref()?;
+        if self.mods.is_empty() && self.updates_note.is_none() {
+            return None;
+        }
+        let running = self.running(cx);
+        let mut col = div().flex().flex_col().gap(px(space::XS)).pt(px(space::S));
+        if self.version != original.game_version {
+            return Some(col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Updates gibt es nach dem Sichern der neuen Version."))));
+        }
+        let busy = !self.updating.is_empty();
+        let count = match &self.updates {
+            Some(Load::Ready(list)) => list.len(),
+            _ => 0,
+        };
+        let mut header = div().flex().items_center().gap(px(space::S)).child(div().flex_1().child(sheet::label(if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") }, t)));
+        if count > 1 {
+            header = header.child(sheet::button("updates-all", tr("Alle aktualisieren"), Some("refresh-cw"), Look::Secondary, false, busy, t).on_click(cx.listener(|s, _, _, cx| s.apply_updates(None, cx))));
+        }
+        col = col.child(header);
+        if let Some(note) = &self.updates_note {
+            col = col.child(sheet::status("circle-check", t.success_text, note.clone()));
+        }
+        if let Some(e) = &self.update_error {
+            col = col.child(sheet::status("circle-alert", t.danger_text, e.clone()));
+        }
+        match &self.updates {
+            None => {}
+            Some(Load::Loading) => col = col.child(sheet::waiting(tr("Suche nach Updates …"), t)),
+            Some(Load::Failed(why)) => {
+                col = col.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::S))
+                        .child(div().flex_1().min_w_0().child(sheet::status("wifi-off", t.danger_text, trf("Updates nicht geladen: %@", &[why]))))
+                        .child(sheet::button("updates-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_updates(cx)))),
+                );
+            }
+            Some(Load::Ready(list)) if list.is_empty() => {
+                if self.updates_note.is_none() {
+                    col = col.child(sheet::status("circle-check", t.success_text, tr("Alle Mods sind aktuell.")));
+                }
+            }
+            Some(Load::Ready(list)) => {
+                let mut rows = div().flex().flex_col().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+                for u in list.clone() {
+                    let pid = u.current.project_id.clone();
+                    let working = self.updating.contains(&pid);
+                    let action = sheet::button(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, busy, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx)));
+                    rows = rows.child(
+                        div()
+                            .id(SharedString::from(format!("update-row-{}", u.current.project_id)))
+                            .mark("row", u.current.title.clone())
+                            .pl(px(space::M))
+                            .pr(px(space::XS))
+                            .py(px(space::XS))
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S))
+                            .child(icon("package", iconsize::S, t.tertiary))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().truncate().text_size(px(font::BODY)).child(u.current.title.clone()))
+                                    .child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(format!("{} → {}", u.current.file_name, u.latest.file_name))),
+                            )
+                            .child(action),
+                    );
+                }
+                col = col.child(rows);
+                if running {
+                    col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Gilt beim nächsten Start.")));
+                }
+            }
+        }
+        Some(col)
+    }
+
+    fn render_prism_picker(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
+        let mut list = div().id("prism-list").flex().flex_col().gap(px(space::XXS)).max_h(px(RESULTS_MAX)).overflow_y_scroll();
+        for instance in self.prism_list.clone() {
+            let reason = instance.unsupported.as_deref().map(unsupported_text);
+            let ok = reason.is_none();
+            let subtitle = match &reason {
+                Some(r) => r.clone(),
+                None => trf("Minecraft %@ · %lld Mods", &[&instance.game_version.clone().unwrap_or_default(), &instance.mods]),
+            };
+            let row = div()
+                .id(SharedString::from(format!("prism-row-{}", instance.id)))
+                .mark("result", instance.name.clone())
+                .flex()
+                .items_center()
+                .gap(px(space::M))
+                .px(px(space::M))
+                .py(px(space::S))
+                .rounded(px(radius::CONTROL));
+            let chosen = self.prism_choice.as_ref().is_some_and(|c| c.id == instance.id);
+            let row = if ok {
+                let picked = instance.clone();
+                row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx)))
+            } else {
+                row.opacity(tint::DISABLED)
+            };
+            list = list.child(
+                row.child(icon(if ok { "package" } else { "circle-alert" }, iconsize::M, t.tertiary))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(space::XXS))
+                            .child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).child(instance.name.clone()))
+                            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)),
+                    )
+                    .when(chosen, |d| d.child(icon("check", iconsize::S, t.success_text))),
+            );
+        }
+        div().flex().flex_col().gap(px(space::S)).child(list)
+    }
+
+    fn render_imported(&mut self, t: &Theme) -> Div {
+        let Some(batch) = &self.imported else { return div() };
+        let matched = batch.mods.len();
+        let local = batch.local_mods.len();
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap(px(space::M))
+            .child(sheet::status("circle-check", t.success_text, trf("„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.", &[&batch.name, &matched, &local])))
+            .child(sheet::label(tr("Nicht auf Modrinth"), t));
+        let mut list = div().id("local-mods").flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+        for name in &batch.local_mods {
+            list = list.child(div().pl(px(space::M)).pr(px(space::XS)).py(px(space::XS)).flex().items_center().gap(px(space::S)).child(icon("package", iconsize::S, t.tertiary)).child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name.clone())));
+        }
+        col = col.child(list).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
         col
     }
 
@@ -733,6 +1098,20 @@ const VERSION_WIDTH: f32 = 168.;
 const MEMORY_VALUE_WIDTH: f32 = 64.;
 const RESULTS_MAX: f32 = 340.;
 
+fn unsupported_text(reason: &str) -> String {
+    if let Some(loader) = reason.strip_prefix("uses ").and_then(|r| r.split(',').next()) {
+        trf("Nutzt %@. Nur Fabric geht.", &[&loader])
+    } else if reason.contains("no mod loader") {
+        tr("Ohne Mod-Loader. Nur Fabric-Instanzen gehen.")
+    } else if reason.contains("Minecraft version") {
+        tr("Ohne Minecraft-Version.")
+    } else if reason.contains("mmc-pack") {
+        tr("Die Instanz ist unvollständig oder beschädigt.")
+    } else {
+        trf("Nicht möglich: %@", &[&reason])
+    }
+}
+
 fn default_note(note: &str, version: &str) -> String {
     let Some(rest) = note.strip_prefix("skipped ") else { return note.to_owned() };
     let slug = rest.split(':').next().unwrap_or(rest);
@@ -745,16 +1124,32 @@ impl Render for BatchSheet {
         self.apply_focus(window, cx);
         let t = Theme::get(cx);
         let editing = self.original.is_some();
-        let (title, subtitle) = if self.searching {
+        let (title, subtitle) = if self.imported.is_some() {
+            (tr("Batch erstellt"), None)
+        } else if self.prism_picking {
+            (tr("Aus Prism übernehmen"), Some(tr("Instanzen aus Prism Launcher. Nur Fabric-Instanzen lassen sich übernehmen.")))
+        } else if self.searching {
             (tr("Mod hinzufügen"), Some(trf("Fabric-Mods von Modrinth für Minecraft %@", &[&self.version])))
         } else if editing {
             (tr("Batch bearbeiten"), None)
         } else {
             (tr("Batch erstellen"), Some(tr("Alle Accounts eines Batches spielen dieselbe Version mit denselben Mods.")))
         };
-        let body = if self.searching { self.render_search(cx, &t) } else { self.render_form(cx, &t) };
+        let body = if self.imported.is_some() {
+            self.render_imported(&t)
+        } else if self.prism_picking {
+            self.render_prism_picker(cx, &t)
+        } else if self.searching {
+            self.render_search(cx, &t)
+        } else {
+            self.render_form(cx, &t)
+        };
         let max_body = (window.viewport_size().height.as_f32() - 2. * sheet::MARGIN - CHROME_HEIGHT).max(160.);
-        let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = if self.searching {
+        let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = if self.imported.is_some() {
+            (Vec::new(), vec![sheet::button("import-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element()])
+        } else if self.prism_picking {
+            (vec![sheet::button("prism-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_prism(false, window, cx))).into_any_element()], Vec::new())
+        } else if self.searching {
             (
                 vec![sheet::button("search-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_search(false, window, cx))).into_any_element()],
                 vec![sheet::button("search-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_search(false, window, cx))).into_any_element()],
@@ -768,7 +1163,7 @@ impl Render for BatchSheet {
             } else {
                 Vec::new()
             };
-            let blocked = self.mods_busy.is_some();
+            let blocked = self.mods_busy.is_some() || !self.updating.is_empty();
             let (name_problem, server_problem, version_problem) = self.problems(cx);
             let invalid = name_problem.is_some() || server_problem.is_some() || version_problem.is_some();
             let mut trailing = Vec::new();
@@ -788,7 +1183,9 @@ impl Render for BatchSheet {
             .text_color(t.primary)
             .on_action(cx.listener(|s, _: &Confirm, window, cx| s.confirm(window, cx)))
             .on_action(cx.listener(|s, _: &Cancel, window, cx| {
-                if s.searching {
+                if s.prism_picking {
+                    s.open_prism(false, window, cx);
+                } else if s.searching {
                     s.open_search(false, window, cx);
                 } else {
                     cx.propagate();

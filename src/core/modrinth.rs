@@ -510,6 +510,16 @@ pub fn update_mods(batch: &mut Batch, selection: &[Update]) -> Result<usize> {
     })
 }
 
+/// Applies `selection` to the batch's list and saves it without touching the mod folder, for a batch whose
+/// instances run. The files change at the next start, when the mod folder is synced.
+pub fn update_mods_later(batch: &mut Batch, selection: &[Update]) -> Result<()> {
+    update_with(batch, selection, |next| {
+        super::batch::save(next)?;
+        Ok(0)
+    })
+    .map(|_| ())
+}
+
 /// `manycraft mods`: searches and resolves mods from the terminal.
 pub fn cli(args: &[String]) -> i32 {
     match run(args) {
