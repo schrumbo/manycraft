@@ -198,11 +198,25 @@ pub fn apply(dir: &Path, plan: &Plan, key: &str) -> Result<()> {
         return result;
     }
     let name = plan.target.file_name().context("the install has no file name")?;
+    if super::load(dir).previous.is_some_and(|p| p.path.starts_with(dir.join(KEEPING))) {
+        ensure!(keep_previous(dir), "the copy kept from the last failed install is still in use");
+        edit(dir, |s| {
+            if let Some(previous) = s.previous.as_mut() {
+                previous.path = dir.join(KEPT).join(name);
+            }
+        })?;
+    }
     remove_all(&dir.join(KEEPING));
     let result = install(dir, plan, key, &dir.join(KEEPING).join(name));
     let unrestored = result.as_ref().is_err_and(|e| e.downcast_ref::<Unrestored>().is_some());
     let kept = (result.is_ok() || unrestored).then(|| keep_previous(dir).then(|| Previous { version: plan.from.clone(), path: dir.join(KEPT).join(name) }));
-    remove_all(&dir.join(KEEPING));
+    let kept = match kept {
+        Some(None) if unrestored => Some(Some(Previous { version: plan.from.clone(), path: dir.join(KEEPING).join(name) })),
+        kept => {
+            remove_all(&dir.join(KEEPING));
+            kept
+        }
+    };
     super::discard_ready(dir);
     edit(dir, |s| match &result {
         Ok(()) => {
