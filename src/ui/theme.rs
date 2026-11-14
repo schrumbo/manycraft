@@ -202,6 +202,8 @@ pub mod tint {
     pub const DISABLED: f32 = 0.4;
     /// What the pointer adds over a control.
     pub const HOVER: f32 = 0.06;
+    /// The row the keyboard has selected in a list.
+    pub const SELECTED: f32 = 0.12;
     /// What the pointer adds over a filled control; pressing doubles it.
     pub const SHADE: f32 = 0.1;
     /// The keyboard focus ring.

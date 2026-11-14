@@ -19,6 +19,7 @@ pub mod ipc;
 pub mod launch;
 #[allow(dead_code)]
 pub mod lock;
+pub mod modicons;
 pub mod modrinth;
 pub mod net;
 pub mod paths;

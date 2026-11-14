@@ -18,7 +18,8 @@ pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
 const HASH_CHUNK: usize = 200;
 const PROJECT_CHUNK: usize = 100;
-const SEARCH_LIMIT: u32 = 20;
+/// How many results one search page holds.
+pub const PAGE: usize = 20;
 const USAGE: &str = "usage: manycraft mods search <query> [--version <version>]\n       manycraft mods resolve <slug>... [--version <version>]";
 
 /// One search result.
@@ -31,6 +32,58 @@ pub struct Hit {
     pub downloads: u64,
     #[serde(default)]
     pub icon_url: Option<String>,
+    #[serde(default)]
+    pub author: String,
+    /// The game versions the project has a file for.
+    #[serde(default)]
+    pub versions: Vec<String>,
+    /// The project's categories; the mod loaders it supports are among them.
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+/// Whether a search result runs on a game version with Fabric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Support {
+    Fits,
+    OtherVersion,
+    OtherLoader,
+}
+
+impl Hit {
+    /// Whether the mod has a Fabric file for `game_version`, and if not, which of the two is missing.
+    pub fn support(&self, game_version: &str) -> Support {
+        if !self.categories.iter().any(|c| c == LOADER) {
+            Support::OtherLoader
+        } else if !self.versions.iter().any(|v| v == game_version) {
+            Support::OtherVersion
+        } else {
+            Support::Fits
+        }
+    }
+}
+
+/// How search results are ordered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Sort {
+    Relevance,
+    Downloads,
+}
+
+impl Sort {
+    fn index(self) -> &'static str {
+        match self {
+            Sort::Relevance => "relevance",
+            Sort::Downloads => "downloads",
+        }
+    }
+}
+
+/// One page of search results and how many results the whole search has.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Page {
+    pub hits: Vec<Hit>,
+    pub total: usize,
 }
 
 /// The default mods for a game version, and why any of them is missing.
@@ -65,6 +118,8 @@ fn is_unavailable(e: &anyhow::Error) -> bool {
 #[derive(Deserialize)]
 struct SearchResponse {
     hits: Vec<Hit>,
+    #[serde(default)]
+    total_hits: usize,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +187,7 @@ impl Api {
 
 impl Source for Api {
     fn search(&self, query: &str, game_version: &str) -> Result<Vec<Hit>> {
-        Ok(net::get_json::<SearchResponse>(&self.agent, &search_url(query, game_version))?.hits)
+        Ok(net::get_json::<SearchResponse>(&self.agent, &search_url(query, game_version, Sort::Relevance, false, 0))?.hits)
     }
 
     fn project(&self, key: &str) -> Result<Option<Project>> {
@@ -172,14 +227,14 @@ fn encode(s: &str) -> String {
     out
 }
 
-fn search_url(query: &str, game_version: &str) -> String {
-    let facets = serde_json::json!([
-        ["project_type:mod"],
-        [format!("categories:{LOADER}")],
-        [format!("versions:{game_version}")],
-        ["client_side:required", "client_side:optional"],
-    ]);
-    format!("{API}/search?query={}&facets={}&limit={SEARCH_LIMIT}", encode(query), encode(&facets.to_string()))
+fn search_url(query: &str, game_version: &str, sort: Sort, all: bool, offset: usize) -> String {
+    let mut facets = vec![vec!["project_type:mod".to_owned()]];
+    if !all {
+        facets.push(vec![format!("categories:{LOADER}")]);
+        facets.push(vec![format!("versions:{game_version}")]);
+    }
+    facets.push(vec!["client_side:required".to_owned(), "client_side:optional".to_owned()]);
+    format!("{API}/search?query={}&facets={}&index={}&offset={offset}&limit={PAGE}", encode(query), encode(&serde_json::json!(facets).to_string()), sort.index())
 }
 
 fn versions_url(project_id: &str, game_version: &str) -> String {
@@ -448,6 +503,13 @@ fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], dir: &Path)
 /// Fabric client mods matching `query` that have a version for `game_version`, most relevant first.
 pub fn search(query: &str, game_version: &str) -> Result<Vec<Hit>> {
     Api::new()?.search(query, game_version)
+}
+
+/// One page of mods matching `query`, starting at result `offset`. With `all` false only Fabric mods with a
+/// version for `game_version` come back; with `all` true the others do too, and [`Hit::support`] tells them apart.
+pub fn search_page(query: &str, game_version: &str, sort: Sort, all: bool, offset: usize) -> Result<Page> {
+    let response: SearchResponse = net::get_json(&Api::new()?.agent, &search_url(query, game_version, sort, all, offset))?;
+    Ok(Page { hits: response.hits, total: response.total_hits })
 }
 
 /// The newest Fabric version of a mod (slug or project id) for `game_version`, releases before betas before alphas.
@@ -1062,18 +1124,47 @@ mod tests {
         assert!(hits[0].downloads > 0 && !hits[0].description.is_empty());
         let none: Hit = serde_json::from_str(r#"{"title":"t","slug":"s","project_id":"p","description":"d","downloads":1,"icon_url":null}"#).unwrap();
         assert_eq!(none.icon_url, None);
+        let full: SearchResponse = serde_json::from_str(r#"{"hits":[{"title":"t","slug":"s","project_id":"p","description":"d","downloads":1,"author":"someone","versions":["26.3","26.2"],"categories":["fabric","optimization"]}],"offset":0,"limit":20,"total_hits":57}"#).unwrap();
+        assert_eq!((full.total_hits, full.hits[0].author.as_str(), full.hits[0].versions.len(), full.hits[0].support("26.2")), (57, "someone", 2, Support::Fits));
     }
 
     #[test]
     fn urls_are_encoded_and_filter_for_fabric() {
         assert_eq!(encode("a b&é/~-_."), "a%20b%26%C3%A9%2F~-_.");
-        let url = search_url("shaders & more", "26.3");
+        let url = search_url("shaders & more", "26.3", Sort::Relevance, false, 0);
         assert!(url.starts_with("https://api.modrinth.com/v2/search?query=shaders%20%26%20more&facets=%5B%5B"), "{url}");
         assert!(url.contains("categories%3Afabric") && url.contains("versions%3A26.3") && url.contains("client_side%3Arequired"));
+        assert!(url.ends_with("&index=relevance&offset=0&limit=20"), "{url}");
         assert_eq!(
             versions_url("lithium", "26.3"),
             "https://api.modrinth.com/v2/project/lithium/version?loaders=%5B%22fabric%22%5D&game_versions=%5B%2226.3%22%5D"
         );
+    }
+
+    #[test]
+    fn showing_all_drops_the_version_and_loader_filters_and_pages_by_offset() {
+        let url = search_url("", "26.3", Sort::Downloads, true, 40);
+        assert!(!url.contains("categories%3Afabric") && !url.contains("versions%3A") && url.contains("project_type%3Amod"), "{url}");
+        assert!(url.ends_with("&index=downloads&offset=40&limit=20"), "{url}");
+    }
+
+    #[test]
+    fn a_hit_says_which_of_version_and_loader_is_missing() {
+        let hit = |versions: &[&str], categories: &[&str]| Hit {
+            title: "t".into(),
+            slug: "s".into(),
+            project_id: "p".into(),
+            description: String::new(),
+            downloads: 0,
+            icon_url: None,
+            author: String::new(),
+            versions: versions.iter().map(|s| (*s).to_owned()).collect(),
+            categories: categories.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        assert_eq!(hit(&["26.3"], &["fabric", "forge"]).support("26.3"), Support::Fits);
+        assert_eq!(hit(&["26.2"], &["fabric"]).support("26.3"), Support::OtherVersion);
+        assert_eq!(hit(&["26.3"], &["forge"]).support("26.3"), Support::OtherLoader);
+        assert_eq!(hit(&[], &[]).support("26.3"), Support::OtherLoader);
     }
 
     #[test]
