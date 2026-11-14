@@ -29,3 +29,4 @@ pub mod scrub;
 #[allow(dead_code)]
 pub mod settings;
 pub mod store;
+pub mod update;

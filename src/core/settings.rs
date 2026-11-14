@@ -76,11 +76,13 @@ pub struct Settings {
     /// Whether the Chat page can send a line to one instance or a whole batch.
     pub broadcast: bool,
     pub notifications: Notifications,
+    /// Whether the app looks once a day for a newer release. It never installs one.
+    pub update_check: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default() }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), update_check: true }
     }
 }
 
@@ -221,7 +223,7 @@ mod tests {
         std::fs::write(dir.path().join(FILE), r#"{"reconnect":{"enabled":false}}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
         assert!(!s.reconnect.enabled);
-        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.notifications.whispers);
+        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.notifications.whispers && s.update_check);
         std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false,"notifications":{"whispers":false}}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
         assert!(!s.merged_chat && !s.notifications.whispers && s.notifications.attention);

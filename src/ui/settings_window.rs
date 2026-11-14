@@ -230,6 +230,12 @@ impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
         let s = settings::active().clone();
+        let general = group(
+            tr("Allgemein"),
+            vec![self.toggle("set-update-check", tr("Nach Updates suchen"), tr("Fragt einmal am Tag bei GitHub nach einer neueren Version. Installiert wird nie von selbst."), s.update_check, |st, on| st.update_check = on, &t, cx)],
+            None,
+            &t,
+        );
         let chat = group(
             tr("Chat"),
             vec![
@@ -286,6 +292,7 @@ impl Render for SettingsView {
                     .flex_col()
                     .gap(px(space::XL))
                     .children(error)
+                    .child(general)
                     .child(chat)
                     .child(notices)
                     .child(connection)

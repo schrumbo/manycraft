@@ -116,6 +116,8 @@ pub struct Model {
     pub order_seq: u64,
     /// Last events of every instance by key, oldest first, at most `history::KEPT` each.
     pub history: HashMap<String, history::Log>,
+    /// Version and page of a newer release, when the daily check found one.
+    pub update: Option<(String, String)>,
 }
 
 impl Model {
