@@ -500,7 +500,7 @@ impl Fleet {
     /// Installs the batch's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
     pub fn start_batch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
-        let prepared = self.prepare_launch(batch, companion_jar, progress)?;
+        let prepared = self.prepare_launch(batch, accounts, companion_jar, progress)?;
         let ipc_address = self.ipc.address();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
             Ok(Box::new(Held::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
@@ -510,14 +510,11 @@ impl Fleet {
 
     /// Syncs the batch's mods, finds its server and installs its game, once before `start_one` launches its accounts.
     /// Leaves the mods alone while instances of the batch run, since they hold the jars open.
-    pub fn prepare_launch(&self, batch: &Batch, companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
+    pub fn prepare_launch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         if !self.batch_runs(&batch.id) {
             sync_mods(batch)?;
         }
-        let server_addrs = match batch.server.as_deref() {
-            Some(s) => resolve_all(s).with_context(|| format!("cannot find the server {s}"))?,
-            None => Vec::new(),
-        };
+        let server_addrs = server_addresses(batch.server.as_deref(), accounts, resolve_all)?;
         let installed = install::install(&batch.game_version, batch.loader_version.as_deref(), progress)?;
         Ok(Prepared { batch: batch.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
     }
@@ -739,6 +736,20 @@ fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, in
         env: launch::SecretEnv(extra.secrets),
     };
     launch::spawn(&spec)
+}
+
+/// The addresses of `server` on this machine. Accounts behind a proxy resolve the name through it, so a lookup here
+/// is skipped when all of them have one and may fail when some do.
+fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>) -> Result<Vec<SocketAddr>> {
+    let Some(server) = server else { return Ok(Vec::new()) };
+    let proxied = accounts.iter().filter(|a| a.proxy.is_some()).count();
+    if !accounts.is_empty() && proxied == accounts.len() {
+        return Ok(Vec::new());
+    }
+    match lookup(server) {
+        Err(_) if proxied > 0 => Ok(Vec::new()),
+        found => found.with_context(|| format!("cannot find the server {server}")),
+    }
 }
 
 fn require_companion_for_proxy(account: &Account, mods: &Path) -> Result<()> {
@@ -1625,6 +1636,23 @@ mod tests {
         let dir = batch.instance_dir(alt.id);
         let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch, alt.id).display())));
+    }
+
+    #[test]
+    fn a_server_name_is_only_looked_up_here_when_an_account_goes_out_directly() {
+        let addr: SocketAddr = "10.0.0.1:25565".parse().unwrap();
+        let found = |_: &str| Ok(vec![addr]);
+        let missing = |s: &str| -> Result<Vec<SocketAddr>> { bail!("cannot find {s}") };
+        let direct = Account::offline("AltOne").unwrap();
+        let mut proxied = Account::offline("AltTwo").unwrap();
+        proxied.proxy = Some("socks5://10.1.1.1:1080".into());
+        assert_eq!(server_addresses(None, &[direct.clone()], found).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr]);
+        assert!(server_addresses(Some("s"), &[direct.clone()], missing).is_err());
+        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr]);
+        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), []);
+        let never = |_: &str| -> Result<Vec<SocketAddr>> { panic!("looked up on this machine") };
+        assert_eq!(server_addresses(Some("s"), &[proxied], never).unwrap(), []);
     }
 
     #[test]

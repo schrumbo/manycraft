@@ -169,7 +169,7 @@ impl Backend for Real {
                     let _ = out.send_blocking(Update::Preparing { batch: batch.id.clone(), percent });
                 }
             };
-            let prepared = match fleet.prepare_launch(&batch, Some(&jar), &progress) {
+            let prepared = match fleet.prepare_launch(&batch, &accounts, Some(&jar), &progress) {
                 Ok(prepared) => prepared,
                 Err(e) => return fail_all(format!("{e:#}")),
             };

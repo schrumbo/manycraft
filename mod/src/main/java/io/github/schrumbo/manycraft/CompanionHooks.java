@@ -24,6 +24,7 @@ public final class CompanionHooks {
 	}
 
 	public static java.net.Proxy javaProxy() {
+		ProxyInstaller.installDefaults();
 		return ProxyInstaller.javaProxy();
 	}
 
