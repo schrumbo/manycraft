@@ -84,6 +84,7 @@ struct Real {
 
 impl Real {
     fn new(out: async_channel::Sender<Update>) -> anyhow::Result<Self> {
+        crate::core::fleet::scrub_crash_files();
         let (fleet, events) = Fleet::new()?;
         let fleet = Arc::new(fleet);
         let forward = out.clone();
@@ -387,7 +388,8 @@ pub fn init(cx: &mut App) {
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
-        cx.global_mut::<Runtime>().notice = Some(format!("{e:#}"));
+        let text = format!("{e:#}");
+        cx.global_mut::<Runtime>().notice = Some(if text.contains("damaged") { tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.bak).") } else { text });
     }
     reload(cx);
     cx.spawn(async move |cx| {

@@ -78,6 +78,25 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_within_takes_a_free_lock_and_waits_for_a_busy_one_until_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let held = exclusive_within(&path, Duration::from_secs(1)).unwrap();
+        assert!(try_exclusive(&path).unwrap().is_none());
+        let start = Instant::now();
+        assert!(exclusive_within(&path, Duration::from_millis(300)).is_err());
+        let waited = start.elapsed();
+        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        assert!(waited < Duration::from_secs(5), "{waited:?}");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(held);
+        });
+        assert!(exclusive_within(&path, Duration::from_secs(10)).is_ok());
+        release.join().unwrap();
+    }
+
+    #[test]
     fn shared_locks_coexist_and_keep_exclusive_ones_out() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.lock");

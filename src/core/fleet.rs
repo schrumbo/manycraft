@@ -489,11 +489,15 @@ pub struct Fleet {
     pub stagger: Duration,
 }
 
+/// Redacts the crash files of all instance folders in the background.
+pub fn scrub_crash_files() {
+    let _ = std::thread::Builder::new().name("scrub-crash-files".into()).spawn(|| scrub::scrub_instances(&paths::instances_dir()));
+}
+
 impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
         let (ipc, events) = ipc::Server::start()?;
-        let _ = std::thread::Builder::new().name("scrub-crash-files".into()).spawn(|| scrub::scrub_instances(&paths::instances_dir()));
         Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
     }
 
@@ -738,18 +742,31 @@ fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, in
     launch::spawn(&spec)
 }
 
-/// The addresses of `server` on this machine. Accounts behind a proxy resolve the name through it, so a lookup here
-/// is skipped when all of them have one and may fail when some do.
+/// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
+/// resolve the name through it, still clash across batches. The lookup is skipped when all accounts have a proxy and
+/// may fail when some do.
 fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>) -> Result<Vec<SocketAddr>> {
     let Some(server) = server else { return Ok(Vec::new()) };
+    let name = name_stand_in(server)?;
     let proxied = accounts.iter().filter(|a| a.proxy.is_some()).count();
     if !accounts.is_empty() && proxied == accounts.len() {
-        return Ok(Vec::new());
+        return Ok(vec![name]);
     }
-    match lookup(server) {
-        Err(_) if proxied > 0 => Ok(Vec::new()),
-        found => found.with_context(|| format!("cannot find the server {server}")),
-    }
+    let mut found = match lookup(server) {
+        Err(_) if proxied > 0 => Vec::new(),
+        found => found.with_context(|| format!("cannot find the server {server}"))?,
+    };
+    found.push(name);
+    Ok(found)
+}
+
+fn name_stand_in(server: &str) -> Result<SocketAddr> {
+    use std::hash::{Hash, Hasher};
+    let (host, port) = split_server(server)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    host.to_ascii_lowercase().hash(&mut hasher);
+    let [_, a, b, c, ..] = hasher.finish().to_be_bytes();
+    Ok(SocketAddr::from(([240, a, b, c], port.unwrap_or(25565))))
 }
 
 fn require_companion_for_proxy(account: &Account, mods: &Path) -> Result<()> {
@@ -936,6 +953,7 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         .iter()
         .map(|id| saved.iter().find(|a| a.id == *id).cloned().with_context(|| format!("account {id} of {} is no longer saved", target.name)))
         .collect::<Result<Vec<_>>>()?;
+    scrub_crash_files();
     let (mut fleet, events) = Fleet::new()?;
     if let Some(seconds) = flags.get("--stagger") {
         fleet.stagger = seconds.parse::<f64>().ok().and_then(|s| Duration::try_from_secs_f64(s).ok()).context("--stagger is a number of seconds")?;
@@ -1646,13 +1664,23 @@ mod tests {
         let direct = Account::offline("AltOne").unwrap();
         let mut proxied = Account::offline("AltTwo").unwrap();
         proxied.proxy = Some("socks5://10.1.1.1:1080".into());
+        let name = name_stand_in("s").unwrap();
         assert_eq!(server_addresses(None, &[direct.clone()], found).unwrap(), []);
-        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr]);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr, name]);
         assert!(server_addresses(Some("s"), &[direct.clone()], missing).is_err());
-        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr]);
-        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr, name]);
+        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), [name]);
         let never = |_: &str| -> Result<Vec<SocketAddr>> { panic!("looked up on this machine") };
-        assert_eq!(server_addresses(Some("s"), &[proxied], never).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never).unwrap(), [name]);
+        assert_eq!(name_stand_in("S").unwrap(), name);
+        assert_eq!(name_stand_in("s:25565").unwrap(), name);
+        assert_ne!(name_stand_in("s:25566").unwrap(), name);
+        assert_ne!(name_stand_in("t").unwrap(), name);
+        let other = server_addresses(Some("S"), &[proxied], never).unwrap();
+        let reserved = HashMap::from([("k".to_owned(), (Uuid::nil(), vec![name]))]);
+        let mut account = Account::offline("AltThree").unwrap();
+        account.id = Uuid::nil();
+        assert!(free(&mut HashMap::new(), &reserved, "other", &account, &other).is_err());
     }
 
     #[test]

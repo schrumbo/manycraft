@@ -148,6 +148,15 @@ impl BatchSheet {
             }),
         ];
         let editing = original.is_some();
+        let free = cx.background_executor().spawn(async { crate::core::fit::system_memory().map(|m| m.free_mb) });
+        cx.spawn(async move |this, cx| {
+            let free_ram = free.await;
+            let _ = this.update(cx, |s, cx| {
+                s.free_ram = free_ram;
+                cx.notify();
+            });
+        })
+        .detach();
         let mut sheet = Self {
             mods: original.as_ref().map(|b| b.mods.clone()).unwrap_or_default(),
             mods_touched: editing,
@@ -166,7 +175,7 @@ impl BatchSheet {
             advanced: false,
             memory_max,
             total_ram,
-            free_ram: crate::core::fit::system_memory().map(|m| m.free_mb),
+            free_ram: None,
             accounts,
             mods_busy: None,
             mods_error: None,

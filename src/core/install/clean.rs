@@ -219,8 +219,8 @@ pub fn cli(args: &[String]) -> i32 {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--apply" => apply = true,
-            "--keep-days" => match it.next().and_then(|d| d.parse::<u64>().ok()) {
-                Some(days) => margin = Duration::from_secs(days * 24 * 3600),
+            "--keep-days" => match it.next().and_then(|d| d.parse::<u64>().ok()).and_then(|d| d.checked_mul(24 * 3600)) {
+                Some(secs) => margin = Duration::from_secs(secs),
                 None => return usage(),
             },
             _ => return usage(),
@@ -420,5 +420,6 @@ mod tests {
     fn the_command_line_rejects_what_it_does_not_know() {
         assert_eq!(cli(&["--wat".into()]), 2);
         assert_eq!(cli(&["--keep-days".into(), "x".into()]), 2);
+        assert_eq!(cli(&["--keep-days".into(), "213503982334602".into()]), 2);
     }
 }

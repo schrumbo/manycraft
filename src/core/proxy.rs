@@ -167,6 +167,12 @@ mod tests {
         Proxy { kind, host: "127.0.0.1".into(), port, user: login.map(|l| l.0.to_owned()), pass: login.map(|l| l.1.to_owned()) }
     }
 
+    #[test]
+    fn percent_escapes_decode_in_sequence_and_bad_ones_stay() {
+        assert_eq!(percent_decode("a%41%42c%2"), "aABc%2");
+        assert_eq!(percent_decode("%zz%40"), "%zz@");
+    }
+
     fn serve(handler: impl FnOnce(TcpStream) + Send + 'static) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
