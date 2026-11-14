@@ -83,11 +83,13 @@ pub struct Settings {
     pub prereleases: bool,
     /// Whether each game shows a small badge with the account's name and colour in its corner.
     pub game_badge: bool,
+    /// Whether the computer is kept from sleeping on its own while a game runs.
+    pub prevent_sleep: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), auto_update: true, prereleases: false, game_badge: true }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true }
     }
 }
 
@@ -228,7 +230,7 @@ mod tests {
         std::fs::write(dir.path().join(FILE), r#"{"reconnect":{"enabled":false}}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
         assert!(!s.reconnect.enabled);
-        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.notifications.whispers && s.auto_update && !s.prereleases);
+        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.notifications.whispers && s.auto_update && !s.prereleases && s.prevent_sleep);
         std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false,"notifications":{"whispers":false}}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
         assert!(!s.merged_chat && !s.notifications.whispers && s.notifications.attention);
