@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use md5::Digest;
 use uuid::Uuid;
 
-use super::{net, paths};
+use super::{paths, store};
 
 const FILE: &str = "accounts.json";
 const KEYCHAIN_SERVICE: &str = "Manycraft";
@@ -65,7 +65,8 @@ pub fn load() -> Result<Vec<Account>> {
     load_from(&paths::data_dir())
 }
 
-/// Saves `accounts`, refusing to replace an accounts file that cannot be read.
+/// Saves `accounts` under a lock, refusing to replace an accounts file that cannot be read
+/// or that another Manycraft changed since this thread loaded it.
 pub fn save(accounts: &[Account]) -> Result<()> {
     save_to(&paths::data_dir(), accounts)
 }
@@ -104,24 +105,26 @@ fn entry(id: Uuid) -> Result<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &id.to_string()).context("system keychain is not available")
 }
 
+fn parse(bytes: &[u8], path: &Path) -> Result<Vec<Account>> {
+    serde_json::from_slice(bytes).with_context(|| format!("{} is damaged; it was left untouched, fix or move it", path.display()))
+}
+
 fn load_from(dir: &Path) -> Result<Vec<Account>> {
     let path = dir.join(FILE);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
-    };
-    serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged; it was left untouched, fix or move it", path.display()))
+    match store::read(&path)? {
+        Some(bytes) => parse(&bytes, &path),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn save_to(dir: &Path, accounts: &[Account]) -> Result<()> {
-    load_from(dir)?;
     let mut ids = std::collections::HashSet::new();
     if let Some(dup) = accounts.iter().find(|a| !ids.insert(a.id)) {
         bail!("account {} appears twice", dup.id);
     }
     let bytes = serde_json::to_vec_pretty(accounts).context("cannot encode accounts")?;
-    net::write_atomic(&dir.join(FILE), &bytes)
+    let path = dir.join(FILE);
+    store::write(&path, &bytes, |current| current.map_or(Ok(()), |c| parse(c, &path).map(drop)))
 }
 
 #[cfg(test)]
@@ -174,7 +177,8 @@ mod tests {
         assert!(load_from(dir.path()).is_err());
         assert!(save_to(dir.path(), &[account(1, "Alpha", None)]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"[{\"id\": broken");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        let others = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok).filter(|e| e.file_name() != "accounts.json.lock").count();
+        assert_eq!(others, 1);
     }
 
     #[test]
@@ -198,6 +202,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(save_to(dir.path(), &[account(1, "A", None), account(1, "B", None)]).is_err());
         assert!(!dir.path().join(FILE).exists());
+    }
+
+    #[test]
+    fn a_stale_save_cannot_undo_another_windows_save() {
+        let dir = tempfile::tempdir().unwrap();
+        save_to(dir.path(), &[account(1, "Alpha", None)]).unwrap();
+        let mut stale = load_from(dir.path()).unwrap();
+        let other = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            let mut fresh = load_from(&other).unwrap();
+            fresh.push(account(2, "Beta", None));
+            save_to(&other, &fresh).unwrap();
+        })
+        .join()
+        .unwrap();
+        stale[0].name = "Renamed".into();
+        assert!(save_to(dir.path(), &stale).is_err());
+        let kept = load_from(dir.path()).unwrap();
+        assert_eq!(kept.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Alpha", "Beta"]);
+        let mut again = kept;
+        again[0].name = "Renamed".into();
+        save_to(dir.path(), &again).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap().len(), 2);
     }
 
     #[test]

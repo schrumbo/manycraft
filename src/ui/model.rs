@@ -1,7 +1,7 @@
 //! What the views show: accounts, batches and the live status of every instance, held in one entity.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 use gpui_kit::{App, AppContext, Entity, Global, RenderImage};
@@ -9,8 +9,12 @@ use uuid::Uuid;
 
 use crate::core::account::Account;
 use crate::core::batch::Batch;
+use crate::core::fit::Fit;
 use crate::core::history::{self, Entry};
 use crate::core::i18n::{tr, trf};
+use crate::core::proxy::Fault;
+
+use super::forms;
 
 /// Where an instance is in its life, as the grid shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,10 +128,64 @@ pub fn restart_status(attempt: u32, of: u32) -> String {
     trf("Startet neu · Versuch %lld von %lld", &[&attempt, &of])
 }
 
-fn rank(phase: &Phase) -> u8 {
+/// Extra facts about a live instance that its phase does not carry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hint {
+    /// The game runs but its link to the manager dropped.
+    pub link_lost: bool,
+    /// The account's proxy failed its check after a connection failure.
+    pub proxy: Option<Fault>,
+}
+
+fn hints() -> &'static Mutex<HashMap<String, Hint>> {
+    static HINTS: OnceLock<Mutex<HashMap<String, Hint>>> = OnceLock::new();
+    HINTS.get_or_init(Mutex::default)
+}
+
+/// The hint of `key`; empty when nothing is known.
+pub fn hint(key: &str) -> Hint {
+    hints().lock().unwrap_or_else(PoisonError::into_inner).get(key).copied().unwrap_or_default()
+}
+
+/// Changes the hint of `key`; an empty hint is forgotten.
+pub fn set_hint(key: &str, change: impl FnOnce(&mut Hint)) {
+    let mut all = hints().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut hint = all.get(key).copied().unwrap_or_default();
+    change(&mut hint);
+    if hint == Hint::default() {
+        all.remove(key);
+    } else {
+        all.insert(key.to_owned(), hint);
+    }
+}
+
+/// What `count` instances of `each_mb` need against the memory that is free, as one German line.
+pub fn fit_line(count: u32, each_mb: u32, fit: &Fit) -> String {
+    let label = |mb: u64| forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX));
+    if count == 1 {
+        return trf("Ein Account braucht %@, dein PC hat %@ frei", &[&label(fit.needed_mb), &label(fit.free_mb)]);
+    }
+    trf("%lld Accounts × %@ = %@, dein PC hat %@ frei", &[&count, &label(u64::from(each_mb)), &label(fit.needed_mb), &label(fit.free_mb)])
+}
+
+/// Tile status line of a proxy that failed its check.
+pub fn proxy_status(fault: Fault) -> String {
+    match fault {
+        Fault::Unreachable => tr("Proxy nicht erreichbar"),
+        Fault::Rejected => tr("Proxy lehnt die Anmeldung ab"),
+    }
+}
+
+/// Tile status line of a running game the manager lost contact with.
+pub fn link_status() -> String {
+    tr("Keine Verbindung zum Spiel")
+}
+
+/// Sort group of a phase: attention first, then running or restarting, then stopped.
+pub fn rank(phase: &Phase) -> u8 {
     if phase.needs_attention() {
         0
-    } else if phase.is_running() {
+    } else if phase.is_running() || matches!(phase, Phase::Restarting { .. }) {
         1
     } else {
         2
@@ -153,6 +211,15 @@ pub fn get(cx: &App) -> Entity<Model> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_fit_line_names_what_is_needed_and_what_is_free() {
+        crate::core::i18n::init("de");
+        let fit = |needed_mb, free_mb| Fit { needed_mb, free_mb, suggested_count: 0 };
+        assert_eq!(fit_line(50, 2048, &fit(102_400, 32_768)), "50 Accounts × 2 GB = 100 GB, dein PC hat 32 GB frei");
+        assert_eq!(fit_line(3, 2560, &fit(7680, 4096)), "3 Accounts × 2,5 GB = 7,5 GB, dein PC hat 4 GB frei");
+        assert_eq!(fit_line(1, 8192, &fit(8192, 4096)), "Ein Account braucht 8 GB, dein PC hat 4 GB frei");
+    }
+
     fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Instance {
         Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
     }
@@ -175,6 +242,20 @@ mod tests {
         assert_eq!(only_a, ["Abe", "zed", "Alex", "bob"]);
         assert_eq!(m.attention_count(None), 2);
         assert_eq!(m.attention_count(Some("b")), 0);
+    }
+
+    #[test]
+    fn restarting_sorts_with_the_running_ones() {
+        let mut m = Model::default();
+        for i in [
+            instance("1", "amy", "a", Phase::Stopped),
+            instance("2", "zed", "a", Phase::Restarting { attempt: 1, of: 3 }),
+            instance("3", "bob", "a", Phase::Playing { server: "s".into(), since: Instant::now() }),
+        ] {
+            m.instances.insert(i.key.clone(), i);
+        }
+        let names: Vec<&str> = m.sorted(None).iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["bob", "zed", "amy"]);
     }
 
     #[test]

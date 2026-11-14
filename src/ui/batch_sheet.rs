@@ -75,6 +75,7 @@ struct BatchSheet {
     advanced: bool,
     memory_max: u32,
     total_ram: u64,
+    free_ram: Option<u64>,
     accounts: HashSet<Uuid>,
     mods: Vec<ModRef>,
     mods_touched: bool,
@@ -147,6 +148,15 @@ impl BatchSheet {
             }),
         ];
         let editing = original.is_some();
+        let free = cx.background_executor().spawn(async { crate::core::fit::system_memory().map(|m| m.free_mb) });
+        cx.spawn(async move |this, cx| {
+            let free_ram = free.await;
+            let _ = this.update(cx, |s, cx| {
+                s.free_ram = free_ram;
+                cx.notify();
+            });
+        })
+        .detach();
         let mut sheet = Self {
             mods: original.as_ref().map(|b| b.mods.clone()).unwrap_or_default(),
             mods_touched: editing,
@@ -165,6 +175,7 @@ impl BatchSheet {
             advanced: false,
             memory_max,
             total_ram,
+            free_ram: None,
             accounts,
             mods_busy: None,
             mods_error: None,
@@ -654,9 +665,10 @@ impl BatchSheet {
         let total = u64::from(self.memory) * count as u64;
         let total_label = forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX));
         let over = total > self.total_ram;
+        let tight = self.free_ram.map(|free| crate::core::fit::fit_in(u32::try_from(count).unwrap_or(u32::MAX), self.memory, crate::core::fit::Memory { total_mb: self.total_ram, free_mb: free })).filter(|f| !f.fits());
         let at_min = self.memory <= forms::MEMORY_MIN;
         let at_max = self.memory >= self.memory_max;
-        let open = self.advanced || over;
+        let open = self.advanced || over || tight.is_some();
         let label = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(self.memory)]) };
         let disclosure = div()
             .id("batch-advanced")
@@ -702,6 +714,8 @@ impl BatchSheet {
             .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max, 1, cx));
         let line = if over {
             sheet::note(None, Some(trf("%lld Accounts brauchen zusammen bis zu %@, mehr als dieser Rechner hat (%@).", &[&count, &total_label, &forms::memory_label(u32::try_from(self.total_ram).unwrap_or(u32::MAX))])), t)
+        } else if let Some(fit) = tight {
+            sheet::note(None, Some(super::model::fit_line(u32::try_from(count).unwrap_or(u32::MAX), self.memory, &fit)), t)
         } else if count > 1 {
             sheet::note(Some(trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &total_label])), None, t)
         } else {

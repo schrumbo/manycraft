@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{net, paths};
 
 const FILE: &str = "settings.json";
+const BACKUP: &str = "settings.json.bak";
 const MAX_ATTEMPTS: u32 = 100;
 const MAX_SECS: u64 = 24 * 3600;
 
@@ -96,7 +97,14 @@ fn load_from(dir: &Path) -> Result<Settings> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    let settings: Settings = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged; it was left untouched", path.display()))?;
+    let settings: Settings = match serde_json::from_slice(&bytes) {
+        Ok(settings) => settings,
+        Err(e) => {
+            let kept = net::write_atomic(&dir.join(BACKUP), &bytes).is_ok();
+            let note = if kept { format!("a copy is in {BACKUP}") } else { "it was left untouched".to_owned() };
+            return Err(anyhow::Error::new(e).context(format!("{} is damaged, so the defaults apply; {note}", path.display())));
+        }
+    };
     Ok(settings.sanitized())
 }
 
@@ -161,6 +169,24 @@ mod tests {
         std::fs::write(dir.path().join(FILE), b"{").unwrap();
         assert!(load_from(dir.path()).is_err());
         assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), b"{");
+    }
+
+    #[test]
+    fn a_damaged_file_is_kept_as_a_backup_and_named_in_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), br#"{"reconnect": oops"#).unwrap();
+        let error = format!("{:#}", load_from(dir.path()).unwrap_err());
+        assert!(error.contains(BACKUP) && error.contains("defaults apply"), "{error}");
+        assert_eq!(std::fs::read(dir.path().join(BACKUP)).unwrap(), br#"{"reconnect": oops"#);
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"reconnect": oops"#);
+    }
+
+    #[test]
+    fn a_healthy_file_leaves_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        save_to(dir.path(), &Settings::default()).unwrap();
+        load_from(dir.path()).unwrap();
+        assert!(!dir.path().join(BACKUP).exists());
     }
 
     #[test]

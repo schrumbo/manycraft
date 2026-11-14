@@ -7,6 +7,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "batch" => super::fleet::cli,
         "mods" => super::modrinth::cli,
         "prism" => super::prism::cli,
+        "clean" => super::install::clean::cli,
         _ => return None,
     };
     attach_console();

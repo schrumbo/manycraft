@@ -1,6 +1,7 @@
 //! Installs a game version with Fabric: version metadata, libraries, assets, natives and the Java runtime.
 
 mod assets;
+pub mod clean;
 mod download;
 mod fabric;
 mod java;
@@ -115,6 +116,7 @@ fn release_ids(manifest: Manifest) -> Vec<String> {
 /// Files that are already there are not downloaded again. Without a connection, a version that was installed
 /// before is used as it is.
 pub fn install(game_version: &str, loader_version: Option<&str>, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
+    let _in_use = clean::in_use()?;
     let root = paths::data_dir();
     let (versions, libraries, assets_dir, runtimes) = (root.join("versions"), root.join("libraries"), root.join("assets"), root.join("runtimes"));
     let dl = Downloader::new()?;
