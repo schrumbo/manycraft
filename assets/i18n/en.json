@@ -399,5 +399,6 @@
   "Der Passwortspeicher deines Systems antwortet nicht. Entsperre ihn und versuche es noch einmal.": "Your system password store is not answering. Unlock it and try again.",
   "Account hinzugefügt": "Account added",
   "Der nächste Account nutzt wieder den Proxy %@.": "The next account uses the proxy %@ again.",
-  "Keine Instanz passt zu „%@“. Lösche den Filter oder suche anders.": "No instance matches “%@”. Clear the filter or search differently."
+  "Keine Instanz passt zu „%@“. Lösche den Filter oder suche anders.": "No instance matches “%@”. Clear the filter or search differently.",
+  "Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.": "Try again. If it stays that way, the details help find the cause."
 }

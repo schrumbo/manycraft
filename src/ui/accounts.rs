@@ -587,7 +587,7 @@ fn failure_text(e: &SignInError, again: Option<&Account>) -> (String, String, St
             false,
         ),
         SignInError::Network => (tr("Keine Verbindung zu Microsoft."), tr("Prüfe die Internetverbindung und den Proxy, dann versuche es erneut."), retry, false),
-        SignInError::Other(why) => (tr("Die Anmeldung hat nicht geklappt."), why.text.clone(), retry, false),
+        SignInError::Other(why) => (tr("Die Anmeldung hat nicht geklappt."), if why.text == forms::unexplained() { tr("Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.") } else { why.text.clone() }, retry, false),
     }
 }
 

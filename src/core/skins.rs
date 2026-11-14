@@ -1,10 +1,10 @@
 //! Player heads for the account lists: vanilla's Steve or Alex for offline accounts, the real skin for Microsoft ones.
 //! Heads live as small PNGs in the cache folder; the session server is asked off the UI thread and at most once a day.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -25,11 +25,18 @@ const SCALE: u32 = 8;
 
 static HEADS: LazyLock<Heads> = LazyLock::new(Heads::default);
 static PREPARING: Mutex<()> = Mutex::new(());
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Counts how often a head appeared or changed, so a view can tell cheaply whether its cached rows are stale.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
 
 #[derive(Default)]
 struct Heads {
     ready: Mutex<HashMap<Uuid, PathBuf>>,
     next_try: Mutex<HashMap<Uuid, Instant>>,
+    blocked: Mutex<HashMap<Option<String>, Instant>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -50,13 +57,15 @@ pub fn prepare(accounts: &[Account]) -> bool {
 
 fn prepare_in(dir: &Path, accounts: &[Account], heads: &Heads, fetch: &dyn Fn(&Account) -> Result<Option<(String, Vec<u8>)>>) -> bool {
     let mut changed = false;
-    let failed = Cell::new(false);
     let fetch = |account: &Account| {
-        if failed.get() {
-            bail!("skipped after an earlier failure");
+        let route = account.proxy.clone();
+        if lock(&heads.blocked).get(&route).is_some_and(|until| Instant::now() < *until) {
+            bail!("skipped after an earlier failure on the same route");
         }
         let got = fetch(account);
-        failed.set(got.is_err());
+        if got.is_err() {
+            lock(&heads.blocked).insert(route, Instant::now() + RETRY_AFTER);
+        }
         got
     };
     for account in accounts {
@@ -68,6 +77,9 @@ fn prepare_in(dir: &Path, accounts: &[Account], heads: &Heads, fetch: &dyn Fn(&A
         if lock(&heads.ready).insert(account.id, path.clone()).as_ref() != Some(&path) {
             changed = true;
         }
+    }
+    if changed {
+        GENERATION.fetch_add(1, Ordering::Relaxed);
     }
     changed
 }
@@ -336,7 +348,9 @@ mod tests {
             calls.set(calls.get() + 1);
             Ok(Some(("abc123".to_owned(), skin_png([1, 2, 3, 255], [0, 0, 0, 0]))))
         };
+        let before = generation();
         assert!(prepare_in(dir.path(), &[offline.clone(), ms.clone()], &heads, &fetch));
+        assert!(generation() > before);
         let default = lock(&heads.ready).get(&offline.id).cloned().unwrap();
         assert!(default.file_name().unwrap().to_string_lossy().starts_with("default-"));
         let own = lock(&heads.ready).get(&ms.id).cloned().unwrap();
@@ -363,6 +377,7 @@ mod tests {
         prepare_in(dir.path(), std::slice::from_ref(&ms), &heads, &fetch);
         assert_eq!(calls.get(), 1);
         lock(&heads.next_try).insert(ms.id, Instant::now());
+        lock(&heads.blocked).clear();
         prepare_in(dir.path(), std::slice::from_ref(&ms), &heads, &fetch);
         assert_eq!(calls.get(), 2);
     }

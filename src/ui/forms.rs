@@ -60,9 +60,14 @@ pub fn explain(e: &anyhow::Error) -> Problem {
     } else if raw.contains("keychain") {
         tr("Der Passwortspeicher deines Systems antwortet nicht. Entsperre ihn und versuche es noch einmal.")
     } else {
-        tr("Das hat nicht geklappt. Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.")
+        unexplained()
     };
     Problem { text, detail: Some(raw) }
+}
+
+/// The text of a failure nothing more specific is known about.
+pub fn unexplained() -> String {
+    tr("Das hat nicht geklappt. Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.")
 }
 
 /// Like [`explain`], with what was being attempted in front of the reason.

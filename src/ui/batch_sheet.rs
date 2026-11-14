@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::base::actions::{Cancel, Confirm};
@@ -28,6 +29,16 @@ use crate::core::i18n::{tr, trf};
 use crate::core::modrinth::{Hit, Update};
 use crate::core::prism::Instance;
 use crate::core::skins;
+
+type PickRow = (Uuid, String, String, Option<PathBuf>);
+
+struct PickRows {
+    raw_filter: String,
+    total: usize,
+    filtered: bool,
+    ids: Rc<Vec<Uuid>>,
+    rows: Rc<Vec<PickRow>>,
+}
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const FILTER_FROM: usize = 12;
@@ -95,6 +106,11 @@ struct BatchSheet {
     prism_sel: usize,
     prism_scroll: ScrollHandle,
     name_auto: String,
+    pick_rows: Option<PickRows>,
+    rows_dirty: bool,
+    skin_gen: u64,
+    body_scroll: ScrollHandle,
+    saved_scroll: Option<Point<Pixels>>,
     prism_choice: Option<Instance>,
     prism_picking: bool,
     imported: Option<Batch>,
@@ -156,6 +172,10 @@ impl BatchSheet {
                     s.schedule_search(cx);
                 }
             }),
+            cx.observe(&super::model::get(cx), |s: &mut Self, _, cx| {
+                s.rows_dirty = true;
+                cx.notify();
+            }),
             cx.subscribe(&prism_filter, |s: &mut Self, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
                     s.prism_sel = s.first_supported(cx);
@@ -211,6 +231,11 @@ impl BatchSheet {
             prism_sel: 0,
             prism_scroll: ScrollHandle::new(),
             name_auto,
+            pick_rows: None,
+            rows_dirty: true,
+            skin_gen: 0,
+            body_scroll: ScrollHandle::new(),
+            saved_scroll: None,
             prism_choice: None,
             prism_picking: false,
             imported: None,
@@ -268,6 +293,9 @@ impl BatchSheet {
     }
 
     fn open_prism(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if open && !self.prism_picking {
+            self.saved_scroll = Some(self.body_scroll.offset());
+        }
         self.prism_picking = open;
         self.focus_next = !open;
         if open {
@@ -597,6 +625,9 @@ impl BatchSheet {
     }
 
     fn open_search(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if open && !self.searching {
+            self.saved_scroll = Some(self.body_scroll.offset());
+        }
         self.searching = open;
         self.add_error = None;
         if open {
@@ -839,34 +870,51 @@ impl BatchSheet {
         col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(line))
     }
 
+    fn refresh_rows(&mut self, cx: &App) {
+        let raw_filter = self.filter.read(cx).value().trim().to_lowercase();
+        let skin_gen = skins::generation();
+        let stale = self.rows_dirty || self.skin_gen != skin_gen || self.pick_rows.as_ref().is_none_or(|c| c.raw_filter != raw_filter);
+        if !stale {
+            return;
+        }
+        self.rows_dirty = false;
+        self.skin_gen = skin_gen;
+        let model = super::model::get(cx).read(cx);
+        let total = model.accounts.len();
+        let filtered = total > FILTER_FROM && !raw_filter.is_empty();
+        let shown = model.accounts.iter().filter(|a| !filtered || a.name.to_lowercase().contains(&raw_filter));
+        let (ids, rows): (Vec<Uuid>, Vec<PickRow>) = shown.map(|a| (a.id, (a.id, a.name.clone(), if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") }, skins::head(a)))).unzip();
+        self.pick_rows = Some(PickRows { raw_filter, total, filtered, ids: Rc::new(ids), rows: Rc::new(rows) });
+    }
+
     fn render_accounts(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let accounts = super::model::get(cx).read(cx).accounts.clone();
-        let header = div().flex().items_center().gap(px(space::S)).child(div().flex_1().child(sheet::label(trf("Accounts (%lld von %lld)", &[&accounts.iter().filter(|a| self.accounts.contains(&a.id)).count(), &accounts.len()]), t)));
-        if accounts.is_empty() {
+        self.refresh_rows(cx);
+        let Some(cache) = self.pick_rows.as_ref() else { return div() };
+        let (total, filtered, ids, rows, raw_filter) = (cache.total, cache.filtered, cache.ids.clone(), cache.rows.clone(), cache.raw_filter.clone());
+        let picked = super::model::get(cx).read(cx).accounts.iter().filter(|a| self.accounts.contains(&a.id)).count();
+        let header = div().flex().items_center().gap(px(space::S)).child(div().flex_1().child(sheet::label(trf("Accounts (%lld von %lld)", &[&picked, &total]), t)));
+        if total == 0 {
             let add = sheet::button("batch-add-account", tr("Account hinzufügen"), Some("plus"), Look::Plain, false, false, t).on_click(|_, window, cx| {
                 window.close_dialog(cx);
                 window.dispatch_action(Box::new(AddAccount), cx);
             });
             return div().flex().flex_col().gap(px(space::XS)).child(header).child(div().flex().items_center().gap(px(space::S)).child(div().flex_1().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Noch keine Accounts. Du kannst sie später hinzufügen."))).child(add));
         }
-        let filter = if accounts.len() > FILTER_FROM { self.filter.read(cx).value().trim().to_lowercase() } else { String::new() };
-        let shown: Vec<&Account> = accounts.iter().filter(|a| filter.is_empty() || a.name.to_lowercase().contains(&filter)).collect();
-        let ids: Vec<Uuid> = shown.iter().map(|a| a.id).collect();
         let all = !ids.is_empty() && ids.iter().all(|id| self.accounts.contains(id));
-        let (pick, unpick) = if filter.is_empty() { (tr("Alle auswählen"), tr("Keine auswählen")) } else { (tr("Alle gefilterten auswählen"), tr("Gefilterte abwählen")) };
+        let (pick, unpick) = if filtered { (tr("Alle gefilterten auswählen"), tr("Gefilterte abwählen")) } else { (tr("Alle auswählen"), tr("Keine auswählen")) };
+        let toggled = ids.clone();
         let header = header.child(sheet::button("accounts-all", if all { unpick } else { pick }, None, Look::Plain, ids.is_empty(), false, t).on_click(cx.listener(move |s, _, _, cx| {
             if all {
-                s.accounts.retain(|id| !ids.contains(id));
+                s.accounts.retain(|id| !toggled.contains(id));
             } else {
-                s.accounts.extend(ids.iter().copied());
+                s.accounts.extend(toggled.iter().copied());
             }
             cx.notify();
         })));
         let frame = div().rounded(px(radius::CONTROL)).border_1().border_color(t.separator);
-        let list = if shown.is_empty() {
-            frame.py(px(space::XS)).child(div().px(px(space::M)).py(px(space::S)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Kein Account passt zu „%@“.", &[&filter])))
+        let list = if rows.is_empty() {
+            frame.py(px(space::XS)).child(div().px(px(space::M)).py(px(space::S)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Kein Account passt zu „%@“.", &[&raw_filter])))
         } else {
-            let rows: Vec<(Uuid, String, String, Option<PathBuf>)> = shown.iter().map(|a| (a.id, a.name.clone(), if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") }, skins::head(a))).collect();
             let count = rows.len();
             frame.child(
                 uniform_list("account-list", count, cx.processor(move |s, range: std::ops::Range<usize>, _, cx| rows[range].iter().map(|(id, name, kind, head)| s.pick_row(*id, name.clone(), kind.clone(), head.clone(), cx)).collect::<Vec<_>>()))
@@ -876,7 +924,7 @@ impl BatchSheet {
                     .max_h(px(sheet::LIST_MAX)),
             )
         };
-        div().flex().flex_col().gap(px(space::XS)).child(header).when(accounts.len() > FILTER_FROM, |d| d.child(Input::new(&self.filter))).child(list)
+        div().flex().flex_col().gap(px(space::XS)).child(header).when(total > FILTER_FROM, |d| d.child(Input::new(&self.filter))).child(list)
     }
 
     fn pick_row(&mut self, id: Uuid, name: String, kind: String, head: Option<PathBuf>, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -1238,6 +1286,9 @@ impl BatchSheet {
     }
 
     fn apply_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.searching && !self.prism_picking && self.imported.is_none() && let Some(offset) = self.saved_scroll.take() {
+            self.body_scroll.set_offset(offset);
+        }
         if std::mem::take(&mut self.focus_done) && self.imported.is_some() {
             window.focus(&self.done_focus, cx);
         }
@@ -1397,7 +1448,7 @@ impl Render for BatchSheet {
                 }
             }))
             .child(sheet::header(title, subtitle, &t))
-            .child(div().id("batch-body").max_h(px(max_body)).overflow_y_scroll().px(px(space::XL)).pb(px(space::L)).child(body))
+            .child(div().id("batch-body").track_scroll(&self.body_scroll).max_h(px(max_body)).overflow_y_scroll().px(px(space::XL)).pb(px(space::L)).child(body))
             .child(sheet::footer(leading, trailing, &t))
     }
 }
