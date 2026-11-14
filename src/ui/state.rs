@@ -9,15 +9,17 @@ use std::time::{Duration, Instant};
 use gpui_kit::*;
 
 use super::actions::{Broadcast, NextAttention, NextInstance, Play, PreviousInstance, Reconnect, Reload, Respawn, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
-use super::model::{self, ChatLine, Instance, Model, Phase};
+use super::model::{self, ChatLine, Instance, Model, Phase, rank};
 use super::native::{self, Rect};
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError};
 use crate::core::batch::{self, Batch};
+use crate::core::fit;
 use crate::core::fleet::{self, Fleet};
 use crate::core::history::{self, Kind};
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, HotkeyAction, StateKind, ToMod};
+use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::settings;
 use crate::core::{companion, drive, install, ipc};
@@ -44,6 +46,8 @@ pub enum Update {
     Seed { key: String, phase: Phase, attempts: u32 },
     /// Whether the saved sign-in of an account still works, from a token refresh.
     SignIn { account: uuid::Uuid, valid: bool },
+    /// What the check of an account's proxy found after a connection failure; `None` when it works.
+    ProxyChecked { key: String, fault: Option<Fault> },
 }
 
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
@@ -62,6 +66,8 @@ pub trait Backend: Send + Sync {
     fn known(&self, _instances: Vec<(String, String)>) {}
     /// Refreshes the sign-in of `accounts` one after another and reports each that works or needs a new sign-in.
     fn refresh(&self, _accounts: Vec<Account>) {}
+    /// Checks the proxy `url` of instance `key` and reports the result.
+    fn check_proxy(&self, _key: String, _url: String) {}
 }
 
 struct Real {
@@ -73,6 +79,7 @@ struct Real {
     sends: mpsc::Sender<(String, ToMod)>,
     previews: mpsc::Sender<(String, PathBuf)>,
     refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
+    checking: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Real {
@@ -125,7 +132,7 @@ impl Real {
                 }
             }
         })?;
-        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default() })
+        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default() })
     }
 }
 
@@ -247,6 +254,21 @@ impl Backend for Real {
         });
     }
 
+    fn check_proxy(&self, key: String, url: String) {
+        if !lock(&self.checking).insert(key.clone()) {
+            return;
+        }
+        let (out, busy) = (self.out.clone(), Arc::clone(&self.checking));
+        let spawned = std::thread::Builder::new().name("proxy-check".into()).spawn(move || {
+            let fault = proxy::parse(&url).map_or(Some(Fault::Unreachable), |p| proxy::check(&p).err());
+            lock(&busy).remove(&key);
+            let _ = out.send_blocking(Update::ProxyChecked { key, fault });
+        });
+        if spawned.is_err() {
+            lock(&self.checking).clear();
+        }
+    }
+
     fn quit(&self) {
         self.fleet.close();
         let until = Instant::now() + QUIT_WAIT;
@@ -319,6 +341,7 @@ struct Runtime {
     pids: HashMap<String, u32>,
     rect: Option<Rect>,
     badge: usize,
+    notice: Option<String>,
 }
 
 impl Global for Runtime {}
@@ -360,9 +383,11 @@ pub fn init(cx: &mut App) {
         pids: HashMap::new(),
         rect: None,
         badge: 0,
+        notice: None,
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
+        cx.global_mut::<Runtime>().notice = Some(format!("{e:#}"));
     }
     reload(cx);
     cx.spawn(async move |cx| {
@@ -442,6 +467,8 @@ pub fn reload(cx: &mut App) {
         let (accounts, batches, logs) = task.await;
         cx.update(|cx| {
             let model = model::get(cx);
+            let loaded = accounts.is_ok() && batches.is_ok();
+            let notice = if loaded && cx.has_global::<Runtime>() { cx.global_mut::<Runtime>().notice.take() } else { None };
             let mut retired = Vec::new();
             model.update(cx, |m, cx| {
                 for (key, log) in logs {
@@ -451,7 +478,7 @@ pub fn reload(cx: &mut App) {
                     (Ok(accounts), Ok(batches)) => {
                         m.accounts = accounts;
                         m.batches = batches;
-                        m.error = None;
+                        m.error = notice;
                     }
                     (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),
                 }
@@ -601,9 +628,25 @@ fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) 
         }
         m.order_seq += 1;
     });
+    if !restart {
+        warn_if_too_big(u32::try_from(accounts.len()).unwrap_or(u32::MAX), batch.memory_mb, cx);
+    }
     if let Some(backend) = backend(cx) {
         backend.start(batch, accounts, cancel);
     }
+}
+
+fn warn_if_too_big(count: u32, memory_mb: u32, cx: &mut App) {
+    let model = model::get(cx);
+    cx.spawn(async move |cx| {
+        let fit = cx.background_executor().spawn(async move { fit::fit(count, memory_mb) }).await;
+        let Some(fit) = fit.filter(|f| !f.fits()) else { return };
+        let _ = model.update(cx, |m, cx| {
+            m.error = Some(model::fit_line(count, memory_mb, &fit));
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 fn stop_keys(keys: Vec<String>, cx: &mut App) {
@@ -816,6 +859,7 @@ struct Effects {
     retired: Vec<Arc<RenderImage>>,
     changed_history: Vec<String>,
     stop: Vec<String>,
+    check_proxy: Vec<(String, String)>,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -828,7 +872,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
         for update in updates {
             let key = match &update {
                 Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } => None,
-                Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } => Some(key.clone()),
+                Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
             };
             let before = key.as_ref().and_then(|k| m.instances.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
@@ -853,6 +897,11 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
         && let Some(backend) = backend(cx)
     {
         backend.stop(fx.stop);
+    }
+    if let Some(backend) = backend(cx) {
+        for (key, url) in fx.check_proxy {
+            backend.check_proxy(key, url);
+        }
     }
     for deferred in fx.later {
         match deferred {
@@ -909,16 +958,6 @@ fn apply_previews(updates: Vec<Update>, cx: &mut App) {
     super::tile::show_previews(shown, cx);
     for image in retired {
         cx.drop_image(image, None);
-    }
-}
-
-fn rank(phase: &Phase) -> u8 {
-    if phase.needs_attention() {
-        0
-    } else if phase.is_running() {
-        1
-    } else {
-        2
     }
 }
 
@@ -984,7 +1023,13 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
             _ => fx.retired.push(image),
         },
+        Update::ProxyChecked { key, fault } => {
+            if m.instances.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })) {
+                model::set_hint(&key, |h| h.proxy = fault);
+            }
+        }
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
+            model::set_hint(&instance, |h| h.link_lost = false);
             rt.pids.insert(instance.clone(), pid);
             if let Some(i) = m.instances.get_mut(&instance)
                 && matches!(i.phase, Phase::Starting { .. })
@@ -992,12 +1037,21 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 i.phase = Phase::Menu;
             }
         }
-        Update::Ipc(Event::Disconnected { .. }) => {}
-        Update::Ipc(Event::Message { instance, message }) => on_message(m, rt, instance, message, fx),
+        Update::Ipc(Event::Disconnected { instance }) => {
+            let alive = rt.pids.contains_key(&instance) && m.instances.get(&instance).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
+            if alive {
+                model::set_hint(&instance, |h| h.link_lost = true);
+            }
+        }
+        Update::Ipc(Event::Message { instance, message }) => {
+            model::set_hint(&instance, |h| h.link_lost = false);
+            on_message(m, rt, instance, message, fx);
+        }
     }
 }
 
 fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code: Option<i32>) {
+    model::set_hint(&key, |h| *h = model::Hint::default());
     rt.pids.remove(&key);
     rt.joined.remove(&key);
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
@@ -1056,6 +1110,15 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
         *rt.joins.entry(key.clone()).or_default() += 1;
     }
     let offline = m.instances.get(&key).and_then(|i| m.account(i.account_id)).is_some_and(|a| a.kind == AccountKind::Offline);
+    if matches!(kind, StateKind::Menu | StateKind::Playing) {
+        model::set_hint(&key, |h| h.proxy = None);
+    }
+    if kind == StateKind::Disconnected
+        && matches!(cause, None | Some(DisconnectCause::ServerDown | DisconnectCause::Auth | DisconnectCause::Unknown))
+        && let Some(url) = m.instances.get(&key).and_then(|i| m.account(i.account_id)).and_then(|a| a.proxy.clone())
+    {
+        fx.check_proxy.push((key.clone(), url));
+    }
     let join = if kind == StateKind::Playing { join_lines_of(m, &key) } else { None };
     let Some(i) = m.instances.get_mut(&key) else { return };
     if i.stopping || i.phase == Phase::Stopped {
@@ -1313,6 +1376,15 @@ pub fn status(i: &Instance, preparing: Option<u8>) -> String {
     if i.stopping {
         return tr("Wird gestoppt…");
     }
+    let hint = model::hint(&i.key);
+    if let Some(fault) = hint.proxy
+        && matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })
+    {
+        return model::proxy_status(fault);
+    }
+    if hint.link_lost && i.phase.is_running() {
+        return model::link_status();
+    }
     match &i.phase {
         Phase::Stopped => tr("Gestoppt"),
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
@@ -1344,7 +1416,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, Instance, Instant, Kind, Model, Phase, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
+    use super::{model, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, Instance, Instant, Kind, Model, Phase, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
         Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
@@ -1410,6 +1482,7 @@ mod tests {
             pids: HashMap::new(),
             rect: None,
             badge: 0,
+            notice: None,
         }
     }
 
@@ -1671,5 +1744,95 @@ mod tests {
         assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 5");
         assert_eq!(status(&instance(Phase::Banned { server: None, reason: "Cheating".into() }), None), "Gesperrt · Cheating");
         assert_eq!(status(&instance(Phase::Restarting { attempt: 1, of: 3 }), None), "Startet neu · Versuch 1 von 3");
+    }
+
+    fn rekeyed(m: &mut Model, old: &str, new: &str) -> String {
+        let mut i = m.instances.remove(old).unwrap();
+        i.key = new.to_owned();
+        m.instances.insert(new.to_owned(), i);
+        new.to_owned()
+    }
+
+    #[test]
+    fn a_dropped_link_on_a_living_game_shows_until_it_talks_again() {
+        crate::core::i18n::init("de");
+        let (mut m, mut rt, old) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let key = rekeyed(&mut m, &old, "link-test");
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
+        assert!(!model::hint(&key).link_lost, "no process known yet");
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut fx);
+        apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
+        assert!(model::hint(&key).link_lost);
+        assert_eq!(status(&m.instances[&key], None), "Keine Verbindung zum Spiel");
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut fx);
+        assert!(!model::hint(&key).link_lost);
+        apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(!model::hint(&key).link_lost);
+        assert_eq!(status(&m.instances[&key], None), "Auf mc.example:25565");
+    }
+
+    #[test]
+    fn a_link_that_drops_because_the_game_is_closing_is_not_news() {
+        let (mut m, mut rt, old) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let key = rekeyed(&mut m, &old, "link-closing");
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut fx);
+        m.instances.get_mut(&key).unwrap().stopping = true;
+        apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
+        assert!(!model::hint(&key).link_lost);
+        m.instances.get_mut(&key).unwrap().stopping = false;
+        apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
+        assert!(model::hint(&key).link_lost);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
+        assert_eq!(model::hint(&key), model::Hint::default());
+    }
+
+    #[test]
+    fn a_connection_failure_on_a_proxied_account_asks_for_a_proxy_check() {
+        crate::core::i18n::init("de");
+        let (mut m, mut rt, old) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let key = rekeyed(&mut m, &old, "proxy-test");
+        m.accounts[0].proxy = Some("socks5://u:p@10.0.0.1:1080".into());
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(fx.check_proxy, [(key.clone(), "socks5://u:p@10.0.0.1:1080".to_owned())]);
+        assert_eq!(status(&m.instances[&key], None), "Verbindet neu · Versuch 1 von 5");
+        apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut fx);
+        assert_eq!(status(&m.instances[&key], None), "Proxy nicht erreichbar");
+        apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Rejected) }, &mut fx);
+        assert_eq!(status(&m.instances[&key], None), "Proxy lehnt die Anmeldung ab");
+        apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: None }, &mut fx);
+        assert_eq!(status(&m.instances[&key], None), "Verbindet neu · Versuch 1 von 5");
+        apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut fx);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(model::hint(&key).proxy, None);
+    }
+
+    #[test]
+    fn proxy_checks_only_follow_connection_failures_of_proxied_accounts() {
+        let (mut m, mut rt, old) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let key = rekeyed(&mut m, &old, "proxy-skip");
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(fx.check_proxy.is_empty(), "no proxy, no check");
+        m.accounts[0].proxy = Some("socks5://10.0.0.1".into());
+        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        for cause in [DisconnectCause::Banned, DisconnectCause::Kicked, DisconnectCause::Whitelist, DisconnectCause::ServerFull, DisconnectCause::Duplicate] {
+            send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(cause));
+            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        assert!(fx.check_proxy.is_empty(), "the server answered, the proxy works");
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert_eq!(fx.check_proxy.len(), 1);
+    }
+
+    #[test]
+    fn a_late_proxy_result_for_a_running_game_is_ignored() {
+        let (mut m, mut rt, old) = setup(Phase::Playing { server: "s".into(), since: Instant::now() }, AccountKind::Microsoft, &[]);
+        let key = rekeyed(&mut m, &old, "proxy-late");
+        apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut Effects::default());
+        assert_eq!(model::hint(&key).proxy, None);
     }
 }

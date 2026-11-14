@@ -17,10 +17,15 @@ pub mod install;
 #[allow(dead_code)]
 pub mod ipc;
 pub mod launch;
+#[allow(dead_code)]
+pub mod lock;
 pub mod modrinth;
 pub mod net;
 pub mod paths;
 pub mod prism;
+pub mod proxy;
 pub mod reconnect;
+pub mod scrub;
 #[allow(dead_code)]
 pub mod settings;
+pub mod store;

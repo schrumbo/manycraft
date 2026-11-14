@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{net, paths};
+use super::{paths, store};
 
 const FILE: &str = "batch.json";
 const DEFAULT_MEMORY_MB: u32 = 2048;
@@ -122,7 +122,7 @@ pub fn load_all() -> Result<Vec<Batch>> {
     load_all_in(&batches_dir())
 }
 
-/// Saves `batch` atomically.
+/// Saves `batch` atomically under a lock, refusing to overwrite a change another Manycraft made since this thread loaded it.
 pub fn save(batch: &Batch) -> Result<()> {
     save_in(&batches_dir(), batch)
 }
@@ -148,7 +148,7 @@ fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
         if !file.is_file() {
             continue;
         }
-        let bytes = std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
+        let bytes = store::read(&file)?.with_context(|| format!("cannot read {}", file.display()))?;
         let batch: Batch = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", file.display()))?;
         batches.push(batch);
     }
@@ -160,7 +160,7 @@ pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
     if batch.id.is_empty() || !batch.id.chars().all(|c| c.is_ascii_alphanumeric()) {
         bail!("invalid batch id {:?}", batch.id);
     }
-    net::write_atomic(&root.join(&batch.id).join(FILE), &serde_json::to_vec_pretty(batch)?)
+    store::write(&root.join(&batch.id).join(FILE), &serde_json::to_vec_pretty(batch)?, |_| Ok(()))
 }
 
 #[cfg(test)]

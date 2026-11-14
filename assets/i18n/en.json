@@ -271,5 +271,10 @@
   "Nicht übernommen: %@": "Not imported: %@",
   "Aus Prism · Minecraft %@ · %lld Mods": "From Prism · Minecraft %@ · %lld mods",
   "Minecraft %@ · %lld Mods": "Minecraft %@ · %lld mods",
-  "„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.": "“%@” is created: %lld mods from Modrinth, %lld own files."
+  "„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.": "“%@” is created: %lld mods from Modrinth, %lld own files.",
+  "Proxy nicht erreichbar": "Proxy unreachable",
+  "Proxy lehnt die Anmeldung ab": "Proxy rejects the sign-in",
+  "Keine Verbindung zum Spiel": "No connection to the game",
+  "Eine Instanz braucht %@, dein PC hat %@ frei": "One instance needs %@, your PC has %@ free",
+  "%lld Instanzen × %@ = %@, dein PC hat %@ frei": "%lld instances × %@ = %@, your PC has %@ free"
 }

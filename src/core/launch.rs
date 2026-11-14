@@ -147,7 +147,7 @@ impl LaunchSpec {
         let mut list: Vec<String> = jvm.iter().chain(&game).map(|a| substitute(a, &vars)).collect();
         let game_start = jvm.len();
         list.insert(game_start, main_class.to_owned());
-        let mut extra = vec![format!("-Xmx{}M", self.memory_mb)];
+        let mut extra = vec![format!("-Xmx{}M", self.memory_mb), format!("-XX:ErrorFile={}", self.game_dir.join("logs").join("hs_err_pid%p.log").display())];
         extra.extend(self.extra_jvm.iter().cloned());
         list.splice(game_start..game_start, extra);
         let secret = self.session.as_ref().map(|s| s.access_token.clone()).filter(|t| !t.is_empty());
@@ -341,6 +341,15 @@ mod tests {
         assert!(args.iter().position(|a| a == "-DFabricMarker=1").unwrap() < main);
         assert!(args.iter().position(|a| a == "--username").unwrap() > main);
         assert_eq!(args.last().map(String::as_str), Some("release"));
+    }
+
+    #[test]
+    fn crash_files_land_in_the_instance_logs_folder() {
+        let args = spec(None, None).arguments().unwrap();
+        let file = args.as_slice().iter().find_map(|a| a.strip_prefix("-XX:ErrorFile=")).unwrap();
+        assert_eq!(Path::new(file), Path::new("inst").join("logs").join("hs_err_pid%p.log"));
+        let main = args.as_slice().iter().position(|a| a == "net.fabricmc.loader.impl.launch.knot.KnotClient").unwrap();
+        assert!(args.as_slice().iter().position(|a| a.starts_with("-XX:ErrorFile=")).unwrap() < main);
     }
 
     #[test]

@@ -55,6 +55,14 @@ class ConfigTest {
 	}
 
 	@Test
+	void proxyComesFromTheEnvironmentBeforeTheProperty() {
+		Map<String, String> props = Map.of("manycraft.ipc", "127.0.0.1:4000", "manycraft.proxy", "socks5://prop:1");
+		assertEquals(new ProxySpec(ProxySpec.Kind.SOCKS5, "env", 2, "u", "p"), read(props, Map.of(Config.ENV_PROXY, "socks5://u:p@env:2")).proxy());
+		assertEquals(new ProxySpec(ProxySpec.Kind.SOCKS5, "prop", 1, null, null), read(props, Map.of(Config.ENV_PROXY, " ")).proxy());
+		assertTrue(read(Map.of("manycraft.ipc", "127.0.0.1:4000"), Map.of(Config.ENV_PROXY, "ftp://x:1")).proxyRequested());
+	}
+
+	@Test
 	void malformedIpcThrows() {
 		assertThrows(IllegalArgumentException.class, () -> read(Map.of("manycraft.ipc", "nocolon"), Map.of()));
 	}

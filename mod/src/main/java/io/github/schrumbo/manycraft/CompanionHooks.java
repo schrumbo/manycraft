@@ -20,8 +20,15 @@ public final class CompanionHooks {
 	}
 
 	public static boolean proxyRequested() {
-		return System.getProperty("manycraft.ipc") != null && System.getProperty("manycraft.proxy") != null
-			&& !System.getProperty("manycraft.proxy").isBlank();
+		return ProxyInstaller.requested();
+	}
+
+	public static java.net.Proxy javaProxy() {
+		return ProxyInstaller.javaProxy();
+	}
+
+	public static java.util.Optional<java.net.InetSocketAddress> remoteName(String host, int port) {
+		return ProxyInstaller.remoteName(host, port);
 	}
 
 	public static boolean hidden() {

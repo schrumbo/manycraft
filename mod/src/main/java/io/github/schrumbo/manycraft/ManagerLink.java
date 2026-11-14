@@ -26,6 +26,7 @@ final class ManagerLink {
 	private final LinkedBlockingDeque<String> outbound = new LinkedBlockingDeque<>(2048);
 	private volatile boolean connected;
 	private volatile boolean stopped;
+	private volatile Thread thread;
 
 	ManagerLink(Config config, Supplier<String[]> handshake, Consumer<Protocol.Incoming> inbound) {
 		this.config = config;
@@ -34,9 +35,18 @@ final class ManagerLink {
 	}
 
 	void start() {
-		Thread thread = new Thread(this::run, "manycraft-link");
-		thread.setDaemon(true);
-		thread.start();
+		Thread created = new Thread(this::run, "manycraft-link");
+		created.setDaemon(true);
+		thread = created;
+		created.start();
+	}
+
+	void ensureRunning() {
+		Thread current = thread;
+		if (!stopped && (current == null || !current.isAlive())) {
+			LOGGER.warn("manager link thread was gone, restarting it");
+			start();
+		}
 	}
 
 	void stop() {
@@ -56,7 +66,7 @@ final class ManagerLink {
 				socket.setTcpNoDelay(true);
 				everConnected = true;
 				session(socket);
-			} catch (IOException | RuntimeException e) {
+			} catch (IOException | RuntimeException | OutOfMemoryError e) {
 				LOGGER.debug("manager link: {}", e.toString());
 			} finally {
 				connected = false;

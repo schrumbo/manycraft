@@ -477,6 +477,23 @@ fn needs_fabric_api(batch: &Batch) -> bool {
 /// then deletes `.jar` files directly in the folder that are neither in the list nor in `local_mods`. Returns how many were downloaded.
 /// Fabric API is added for the sync when the batch does not list it, since the companion mod depends on it.
 pub fn sync_mods(batch: &Batch) -> Result<usize> {
+    with_mods_lock(&batch.dir(), || sync_locked(&saved(batch)))
+}
+
+fn with_mods_lock<T>(batch_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _held = super::lock::exclusive(&batch_dir.join("mods.lock"))?;
+    work()
+}
+
+fn saved(batch: &Batch) -> Batch {
+    saved_in(&batch.dir(), batch)
+}
+
+fn saved_in(dir: &Path, batch: &Batch) -> Batch {
+    std::fs::read(dir.join("batch.json")).ok().and_then(|bytes| serde_json::from_slice::<Batch>(&bytes).ok()).filter(|b| b.id == batch.id).unwrap_or_else(|| batch.clone())
+}
+
+fn sync_locked(batch: &Batch) -> Result<usize> {
     let mut mods = batch.mods.clone();
     if needs_fabric_api(batch) {
         mods.push(resolve(FABRIC_API, &batch.game_version).context("the companion mod needs Fabric API, which could not be found")?);
@@ -504,9 +521,11 @@ pub fn match_hashes(hashes: &[String]) -> Result<HashMap<String, ModRef>> {
 /// runs: running games hold the old jars open, so the sync could not remove them.
 pub fn update_mods(batch: &mut Batch, selection: &[Update]) -> Result<usize> {
     update_with(batch, selection, |next| {
-        let fetched = sync_mods(next)?;
-        super::batch::save(next)?;
-        Ok(fetched)
+        with_mods_lock(&next.dir(), || {
+            let fetched = sync_locked(next)?;
+            super::batch::save(next)?;
+            Ok(fetched)
+        })
     })
 }
 
@@ -578,6 +597,46 @@ fn run(args: &[String]) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mod_folder_syncs_of_one_batch_run_one_after_another() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let inside = AtomicUsize::new(0);
+        let overlap = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    with_mods_lock(dir.path(), || {
+                        if inside.fetch_add(1, Ordering::SeqCst) > 0 {
+                            overlap.fetch_add(1, Ordering::SeqCst);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                        inside.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        assert_eq!(overlap.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_sync_after_an_update_uses_the_saved_list_not_a_stale_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stale = Batch::new("b", "26.3");
+        stale.local_mods = vec!["old.jar".into()];
+        assert_eq!(saved_in(dir.path(), &stale).local_mods, ["old.jar"]);
+        let mut current = stale.clone();
+        current.local_mods = vec!["new.jar".into()];
+        std::fs::write(dir.path().join("batch.json"), serde_json::to_vec(&current).unwrap()).unwrap();
+        assert_eq!(saved_in(dir.path(), &stale).local_mods, ["new.jar"]);
+        let mut other = current.clone();
+        other.id = "else".into();
+        std::fs::write(dir.path().join("batch.json"), serde_json::to_vec(&other).unwrap()).unwrap();
+        assert_eq!(saved_in(dir.path(), &stale).local_mods, ["old.jar"]);
+    }
+
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
