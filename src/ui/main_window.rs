@@ -185,14 +185,14 @@ impl MainWindow {
     /// The quiet memory line for `batch` while nothing in it runs: worked out off the UI thread once per scope, `None` when everything fits.
     fn fit_line(&mut self, batch: Option<&str>, cx: &mut Context<Self>) -> Option<String> {
         let m = model::get(cx).read(cx);
-        let scope: Vec<_> = m.instances.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
+        let scope: Vec<_> = m.games.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
         if scope.is_empty() || scope.iter().any(|i| i.phase.is_active()) {
             self.fit = None;
             return None;
         }
         let mut per: Vec<(u32, u32)> = m.batches.iter().filter_map(|b| {
             let n = scope.iter().filter(|i| i.batch_id == b.id).count();
-            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory_mb))
+            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory_mb))))
         }).collect();
         per.sort_unstable();
         let key: FitScope = (batch.map(str::to_owned), per.clone());

@@ -272,10 +272,10 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         .batches
         .iter()
         .map(|b| {
-            let total = m.instances.values().filter(|i| i.batch_id == b.id).count();
-            let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active()).count();
+            let total = m.games.values().filter(|i| i.batch_id == b.id).count();
+            let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.is_active()).count();
             let attention = m.attention_count(Some(&b.id));
-            let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
+            let fine = m.games.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
             let hint = match (total, running) {
                 (0, _) => tr("Noch keiner da."),
                 (1, 0) if attention == 0 => tr("Schläft noch."),

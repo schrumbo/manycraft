@@ -334,7 +334,7 @@ impl BatchSheet {
     }
 
     fn browse_update_for(&self, project_id: &str) -> bool {
-        let Some(original) = &self.original else { return false };
+        let Some(original) = &self.setup else { return false };
         let Some(Load::Ready(list)) = &self.updates else { return false };
         self.version == original.game_version && !self.applied.contains(project_id) && list.iter().any(|u| u.current.project_id == project_id)
     }

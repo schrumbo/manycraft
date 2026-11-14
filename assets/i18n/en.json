@@ -639,5 +639,14 @@
   "„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.": "“%@” was cancelled but could not be removed completely.",
   "Die Datei ist beschädigt oder lässt sich nicht lesen.": "The file is damaged or can’t be read.",
   "Die Datei lässt sich nicht schreiben. Ist sie in einem anderen Programm offen?": "The file can’t be written. Is it open in another program?",
-  "Modpack (.mrpack) oder Prism-Export": "Modpack (.mrpack) or Prism export"
+  "Modpack (.mrpack) oder Prism-Export": "Modpack (.mrpack) or Prism export",
+  "Gerade laufen Spiele. Stoppe sie zuerst.": "Games are running. Stop them first.",
+  "Manycraft kann %@ noch nicht starten. Das kommt mit einem der nächsten Updates.": "Manycraft can’t start %@ yet. That comes with one of the next updates.",
+  "„%@“ wird noch von %@ gespielt. Gib ihnen zuerst eine andere Instanz.": "“%@” is still played by %@. Give them another instance first.",
+  "%@ Batches ziehen beim nächsten Start in Instanzen um; gerade laufen noch Spiele.": "%@ batches move into instances at the next start; games are still running.",
+  "Batch „%@“ konnte nicht in eine Instanz umziehen: %@": "Batch “%@” could not move into an instance: %@",
+  "%@ · allein": "%@ · solo",
+  "Diese Instanz gibt es nicht mehr.": "This instance no longer exists.",
+  "Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.": "There is already an instance “%@”. Choose another name.",
+  "Spielt schon in %@": "Already playing in %@"
 }

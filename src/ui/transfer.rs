@@ -9,6 +9,7 @@ use gpui_kit::*;
 use super::actions::{CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder};
 use super::{forms, model, remote};
 use crate::core::batch::Batch;
+use crate::core::instance::Instance;
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
 use crate::core::mrpack::{self, Refused};
@@ -22,14 +23,14 @@ pub fn init(cx: &mut App) {
     cx.on_action(|a: &ExportBatch, cx| export(&a.0, cx));
     cx.on_action(|a: &CancelImport, cx| cancel(a.0, cx));
     cx.on_action(|a: &OpenBatchFolder, cx| {
-        let dir = model::get(cx).read(cx).batch(&a.0).map(Batch::dir);
+        let dir = model::get(cx).read(cx).instance_of(&a.0).map(Instance::dir);
         if let Some(dir) = dir {
             open_folder(dir, cx);
         }
     });
     cx.on_action(|a: &OpenGameFolder, cx| {
         let m = model::get(cx).read(cx);
-        let dir = m.instances.get(&a.0).and_then(|i| m.batch(&i.batch_id).map(|b| b.instance_dir(i.account_id)));
+        let dir = m.games.get(&a.0).and_then(|i| m.instance(&i.instance_id).map(|made| made.game_dir(i.account_id)));
         if let Some(dir) = dir {
             open_folder(dir, cx);
         }
@@ -204,7 +205,7 @@ fn with_extension(path: PathBuf) -> PathBuf {
 
 fn export(id: &str, cx: &mut App) {
     let m = model::get(cx).read(cx);
-    let Some(made) = m.batch(id).cloned().filter(|b| !m.exporting.contains(&b.id)) else { return };
+    let Some(made) = m.instance_of(id).or_else(|| m.instance(id)).cloned().filter(|b| !m.exporting.contains(&b.id)) else { return };
     let suggested = file_name(&made.name);
     if drive::on() {
         if let Some(path) = drive::answer("save").and_then(|p| p.into_iter().next()) {
@@ -224,7 +225,7 @@ fn export(id: &str, cx: &mut App) {
     .detach();
 }
 
-fn write(made: Batch, path: PathBuf, cx: &mut App) {
+fn write(made: Instance, path: PathBuf, cx: &mut App) {
     let id = made.id.clone();
     let started = model::get(cx).update(cx, |m, cx| {
         cx.notify();
@@ -235,7 +236,7 @@ fn write(made: Batch, path: PathBuf, cx: &mut App) {
     }
     let out = path.clone();
     let name = made.name.clone();
-    let job = cx.background_spawn(async move { remote::export_batch(&made, &out) });
+    let job = cx.background_spawn(async move { remote::export_instance(&made, &out) });
     cx.spawn(async move |cx| {
         let result = job.await;
         let _ = cx.update(|cx| {

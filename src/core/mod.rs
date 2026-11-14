@@ -17,12 +17,14 @@ pub mod game_window;
 #[allow(dead_code)]
 pub mod history;
 pub mod i18n;
+pub mod instance;
 pub mod install;
 #[allow(dead_code)]
 pub mod ipc;
 pub mod launch;
 #[allow(dead_code)]
 pub mod lock;
+pub mod migrate;
 pub mod modicons;
 pub mod modrinth;
 pub mod mrpack;

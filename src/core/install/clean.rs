@@ -1,4 +1,4 @@
-//! Removes what no batch needs any more: game versions, libraries and Java runtimes.
+//! Removes what no instance needs any more: game versions, libraries and Java runtimes.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -8,14 +8,14 @@ use anyhow::{Context, Result, bail};
 
 use super::meta::{self, Env, VersionJson};
 use super::{FALLBACK_JAVA_COMPONENT, LOADER_PREFIX};
-use crate::core::batch::{self, Batch};
+use crate::core::instance::{self, Instance, Loader};
 use crate::core::{lock, paths};
 
 /// How long unused files must have sat untouched before cleaning may remove them.
 pub const MARGIN: Duration = Duration::from_secs(14 * 24 * 3600);
 
 const MARKER: &str = ".complete";
-const LOCK_FILE: &str = "in-use.lock";
+pub(crate) const LOCK_FILE: &str = "in-use.lock";
 
 /// What cleaning would remove.
 #[derive(Debug, Default)]
@@ -33,20 +33,20 @@ pub fn in_use() -> Result<lock::Guard> {
 /// Applying fails when an instance runs or a game installs.
 pub fn clean(apply: bool, margin: Duration) -> Result<Plan> {
     let root = paths::data_dir();
-    let batches = batch::load_all()?;
+    let instances = instance::load_all()?;
     let _exclusive = if apply { Some(lock::try_exclusive(&root.join(LOCK_FILE))?.context("instances are running or a game is installing: stop them first")?) } else { None };
-    let found = plan(&root, &batches, margin, SystemTime::now())?;
+    let found = plan(&root, &instances, margin, SystemTime::now())?;
     if apply {
         remove(&root, &found)?;
     }
     Ok(found)
 }
 
-/// What under `root` no batch of `batches` needs and has not been touched for `margin`.
-/// Fails without planning anything when a version a batch needs cannot be read.
-pub fn plan(root: &Path, batches: &[Batch], margin: Duration, now: SystemTime) -> Result<Plan> {
+/// What under `root` no instance of `instances` needs and has not been touched for `margin`.
+/// Fails without planning anything when a version an instance needs cannot be read.
+pub fn plan(root: &Path, instances: &[Instance], margin: Duration, now: SystemTime) -> Result<Plan> {
     let versions = root.join("versions");
-    let (kept, doomed) = split_versions(&versions, batches, margin, now);
+    let (kept, doomed) = split_versions(&versions, instances, margin, now);
     let mut components = HashSet::new();
     let mut keep_libraries = HashSet::new();
     let libraries = root.join("libraries");
@@ -63,8 +63,8 @@ pub fn plan(root: &Path, batches: &[Batch], margin: Duration, now: SystemTime) -
     for path in doomed {
         plan.add(path);
     }
-    if kept.is_empty() && !batches.is_empty() {
-        bail!("none of the versions the batches need is installed, nothing to compare with");
+    if kept.is_empty() && !instances.is_empty() {
+        bail!("none of the versions the instances need is installed, nothing to compare with");
     }
     for file in files_under(&libraries) {
         if !keep_libraries.contains(&file) && older(&file, margin, now) {
@@ -96,7 +96,7 @@ fn remove(root: &Path, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-fn split_versions(versions: &Path, batches: &[Batch], margin: Duration, now: SystemTime) -> (Vec<String>, Vec<PathBuf>) {
+fn split_versions(versions: &Path, instances: &[Instance], margin: Duration, now: SystemTime) -> (Vec<String>, Vec<PathBuf>) {
     let installed: Vec<String> = std::fs::read_dir(versions)
         .into_iter()
         .flatten()
@@ -106,23 +106,23 @@ fn split_versions(versions: &Path, batches: &[Batch], margin: Duration, now: Sys
         .filter(|name| versions.join(name).join(format!("{name}.json")).is_file())
         .collect();
     let mut kept: HashSet<String> = HashSet::new();
-    let games: HashSet<&str> = batches.iter().map(|b| b.game_version.as_str()).collect();
+    let games: HashSet<&str> = instances.iter().map(|b| b.game_version.as_str()).collect();
     for game in &games {
         if installed.iter().any(|n| n == game) {
             kept.insert((*game).to_owned());
         }
         let suffix = format!("-{game}");
         let loaders: Vec<&String> = installed.iter().filter(|n| n.starts_with(LOADER_PREFIX) && n.ends_with(&suffix)).collect();
-        let here: Vec<&Batch> = batches.iter().filter(|b| b.game_version == *game).collect();
-        for batch in &here {
-            if let Some(loader) = &batch.loader_version {
+        let here: Vec<&Instance> = instances.iter().filter(|b| b.game_version == *game).collect();
+        for made in &here {
+            if let Some(loader) = made.loader.version() {
                 let wanted = format!("{LOADER_PREFIX}{loader}{suffix}");
                 if loaders.iter().any(|n| **n == wanted) {
                     kept.insert(wanted);
                 }
             }
         }
-        if here.iter().any(|b| b.loader_version.is_none())
+        if here.iter().any(|b| matches!(b.loader, Loader::Fabric(None)))
             && let Some(newest) = loaders.iter().max_by_key(|n| modified(&versions.join(n.as_str()).join(format!("{n}.json"))))
         {
             kept.insert((*newest).clone());
@@ -211,7 +211,7 @@ fn prune_empty(dir: &Path) -> bool {
     empty
 }
 
-/// `manycraft clean [--apply] [--keep-days N]`: lists what no batch needs, and removes it with `--apply`.
+/// `manycraft clean [--apply] [--keep-days N]`: lists what no instance needs, and removes it with `--apply`.
 pub fn cli(args: &[String]) -> i32 {
     let mut apply = false;
     let mut margin = MARGIN;
@@ -285,10 +285,8 @@ mod tests {
         touch(&root.join("runtimes").join(component).join(format!("{sha}.json")), age);
     }
 
-    fn batch(game: &str, loader: Option<&str>) -> Batch {
-        let mut b = Batch::new("b", game);
-        b.loader_version = loader.map(str::to_owned);
-        b
+    fn instance(game: &str, loader: Option<&str>) -> Instance {
+        Instance::new("b", game, Loader::Fabric(loader.map(str::to_owned)))
     }
 
     fn names(root: &Path, plan: &Plan) -> Vec<String> {
@@ -298,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn what_a_batch_needs_stays_and_the_rest_goes() {
+    fn what_an_instance_needs_stays_and_the_rest_goes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         version(root, "26.3", "delta", &["x/used.jar"], NOW_AGE);
@@ -310,7 +308,7 @@ mod tests {
         }
         runtime(root, "delta", "aaa", NOW_AGE);
         runtime(root, "gamma", "bbb", NOW_AGE);
-        let plan = plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let plan = plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).unwrap();
         assert_eq!(
             names(root, &plan),
             ["libraries/x/old.jar", "libraries/x/orphan.jar", "runtimes/gamma", "versions/26.2", "versions/fabric-loader-0.19-26.2"]
@@ -327,7 +325,7 @@ mod tests {
         library(root, "x/fresh.jar", Duration::from_secs(60));
         library(root, "x/stale.jar", NOW_AGE);
         runtime(root, "gamma", "bbb", Duration::from_secs(60));
-        let plan = plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let plan = plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).unwrap();
         assert_eq!(names(root, &plan), ["libraries/x/stale.jar"]);
     }
 
@@ -338,20 +336,20 @@ mod tests {
         version(root, "26.3", "delta", &[], NOW_AGE);
         runtime(root, "delta", "old", NOW_AGE * 2);
         runtime(root, "delta", "new", NOW_AGE);
-        let plan = plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let plan = plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).unwrap();
         assert_eq!(names(root, &plan), ["runtimes/delta/old", "runtimes/delta/old.json"]);
     }
 
     #[test]
-    fn a_pinned_loader_stays_and_so_does_the_newest_for_unpinned_batches() {
+    fn a_pinned_loader_stays_and_so_does_the_newest_for_unpinned_instances() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         version(root, "26.3", "delta", &[], NOW_AGE);
         version(root, "fabric-loader-0.18-26.3", "delta", &[], NOW_AGE * 3);
         version(root, "fabric-loader-0.19-26.3", "delta", &[], NOW_AGE * 2);
         version(root, "fabric-loader-0.20-26.3", "delta", &[], NOW_AGE);
-        let pinned = batch("26.3", Some("0.18"));
-        let both = plan(root, &[pinned.clone(), batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let pinned = instance("26.3", Some("0.18"));
+        let both = plan(root, &[pinned.clone(), instance("26.3", None)], MARGIN, SystemTime::now()).unwrap();
         assert_eq!(names(root, &both), ["versions/fabric-loader-0.19-26.3"]);
         let only_pinned = plan(root, &[pinned], MARGIN, SystemTime::now()).unwrap();
         assert_eq!(names(root, &only_pinned), ["versions/fabric-loader-0.19-26.3", "versions/fabric-loader-0.20-26.3"]);
@@ -364,7 +362,7 @@ mod tests {
         version(root, "26.3", "delta", &["x/used.jar"], NOW_AGE);
         std::fs::write(root.join("versions/26.3/26.3.json"), b"{broken").unwrap();
         library(root, "x/used.jar", NOW_AGE);
-        assert!(plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).is_err());
+        assert!(plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).is_err());
         assert!(root.join("libraries/x/used.jar").exists());
     }
 
@@ -374,11 +372,11 @@ mod tests {
         let root = dir.path();
         version(root, "26.2", "gamma", &["x/old.jar"], NOW_AGE);
         library(root, "x/old.jar", NOW_AGE);
-        assert!(plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).is_err());
+        assert!(plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).is_err());
     }
 
     #[test]
-    fn without_batches_nothing_is_needed() {
+    fn without_instances_nothing_is_needed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         version(root, "26.2", "gamma", &["x/old.jar"], NOW_AGE);
@@ -395,7 +393,7 @@ mod tests {
         version(root, "26.2", "gamma", &[], NOW_AGE);
         library(root, "x/used.jar", NOW_AGE);
         library(root, "deep/er/orphan.jar", NOW_AGE);
-        let found = plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let found = plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).unwrap();
         remove(root, &found).unwrap();
         assert!(root.join("libraries/x/used.jar").exists());
         assert!(!root.join("libraries/deep").exists());
@@ -430,7 +428,7 @@ mod tests {
         library(root, "orphan.jar", NOW_AGE);
         std::fs::write(root.join("libraries/orphan.jar"), [0u8; 700]).unwrap();
         touch(&root.join("libraries/orphan.jar"), NOW_AGE);
-        let found = plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let found = plan(root, &[instance("26.3", None)], MARGIN, SystemTime::now()).unwrap();
         let folder: u64 = ["26.2.json", "26.2.jar"].iter().map(|f| root.join("versions/26.2").join(f).metadata().unwrap().len()).sum();
         assert_eq!(found.bytes, 700 + folder);
         assert!(found.bytes > 700);
@@ -444,7 +442,7 @@ mod tests {
         version(root, "26.2", "delta", &[], NOW_AGE);
         version(root, "fabric-loader-0.19-26.3", "delta", &[], NOW_AGE * 2);
         version(root, "fabric-loader-0.20-26.3", "delta", &[], NOW_AGE);
-        let found = plan(root, &[batch("26.3", Some("0.19")), batch("26.2", None)], MARGIN, SystemTime::now()).unwrap();
+        let found = plan(root, &[instance("26.3", Some("0.19")), instance("26.2", None)], MARGIN, SystemTime::now()).unwrap();
         assert_eq!(names(root, &found), ["versions/fabric-loader-0.20-26.3"]);
     }
 

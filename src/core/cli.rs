@@ -9,6 +9,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "login" => super::auth::cli,
         "launch" => super::launch::cli,
         "batch" => super::fleet::cli,
+        "instance" => super::fleet::instance_cli,
         "mods" => super::modrinth::cli,
         "prism" => super::prism::cli,
         "mrpack" => super::mrpack::cli,
@@ -17,6 +18,11 @@ pub fn run(args: &[String]) -> Option<i32> {
         _ => return None,
     };
     attach_console();
+    if cmd != "apply-update" {
+        for problem in super::migrate::run().problems {
+            eprintln!("{problem}");
+        }
+    }
     Some(run(rest))
 }
 

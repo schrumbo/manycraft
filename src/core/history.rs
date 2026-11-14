@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::batch::Batch;
+use super::instance::Instance;
 use super::net;
 
 /// Entries kept per instance; older ones fall off.
@@ -58,9 +58,9 @@ pub fn push(log: &mut Log, entry: Entry) {
     }
 }
 
-/// File holding the history of `account` in `batch`.
-pub fn path(batch: &Batch, account: Uuid) -> PathBuf {
-    batch.instance_dir(account).join(FILE)
+/// File holding the history of the game of `account` in `instance`.
+pub fn path(instance: &Instance, account: Uuid) -> PathBuf {
+    instance.game_dir(account).join(FILE)
 }
 
 /// Reads a history file. An absent file is an empty history, a damaged or oversized one too: it only records, so it never blocks anything.

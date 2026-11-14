@@ -1,4 +1,4 @@
-//! Mods from Modrinth: search, version resolution with required dependencies, verified downloads into a batch.
+//! Mods from Modrinth: search, version resolution with required dependencies, verified downloads into an instance.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -7,13 +7,14 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use super::batch::{Batch, ModRef};
+use super::batch::ModRef;
+use super::instance::Instance;
 use super::{install, net};
 
 const API: &str = "https://api.modrinth.com/v2";
 const LOADER: &str = "fabric";
 const DEFAULTS: [&str; 5] = ["fabric-api", "lithium", "ferrite-core", "modernfix", "krypton"];
-/// Modrinth project id of Fabric API, which the companion mod needs in every batch.
+/// Modrinth project id of Fabric API, which the companion mod needs in every instance.
 pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
 const HASH_CHUNK: usize = 200;
@@ -93,7 +94,7 @@ pub struct Defaults {
     pub notes: Vec<String>,
 }
 
-/// A newer file for a mod of a batch.
+/// A newer file for a mod of an instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Update {
     pub current: ModRef,
@@ -426,27 +427,27 @@ fn matched_from(src: &dyn Source, hashes: &[String]) -> Result<HashMap<String, M
     Ok(matched)
 }
 
-fn replaced(batch: &Batch, selection: &[Update]) -> Result<Batch> {
-    let mut next = batch.clone();
+fn replaced(instance: &Instance, selection: &[Update]) -> Result<Instance> {
+    let mut next = instance.clone();
     for update in selection {
         let current = &update.current;
         let slot = next
             .mods
             .iter_mut()
             .find(|m| m.project_id == current.project_id && m.version_id == current.version_id)
-            .with_context(|| format!("{} is no longer in the batch at that version", current.title))?;
+            .with_context(|| format!("{} is no longer in the instance at that version", current.title))?;
         *slot = update.latest.clone();
     }
     Ok(next)
 }
 
-fn update_with(batch: &mut Batch, selection: &[Update], sync: impl FnOnce(&Batch) -> Result<usize>) -> Result<usize> {
+fn update_with(instance: &mut Instance, selection: &[Update], sync: impl FnOnce(&Instance) -> Result<usize>) -> Result<usize> {
     if selection.is_empty() {
         return Ok(0);
     }
-    let next = replaced(batch, selection)?;
+    let next = replaced(instance, selection)?;
     let fetched = sync(&next)?;
-    *batch = next;
+    *instance = next;
     Ok(fetched)
 }
 
@@ -530,42 +531,42 @@ pub fn default_mods(game_version: &str) -> Result<Defaults> {
     defaults_from(&Api::new()?, game_version)
 }
 
-fn needs_fabric_api(batch: &Batch) -> bool {
-    let has_local = batch.local_mods.iter().any(|name| name.to_lowercase().starts_with("fabric-api"));
-    !has_local && !batch.mods.iter().any(|m| m.project_id == FABRIC_API)
+fn needs_fabric_api(instance: &Instance) -> bool {
+    let has_local = instance.local_mods.iter().any(|name| name.to_lowercase().starts_with("fabric-api"));
+    !has_local && !instance.mods.iter().any(|m| m.project_id == FABRIC_API)
 }
 
-/// Makes the batch's mod folder hold exactly its mods: downloads missing or changed files (SHA-1 checked),
+/// Makes the instance's mod folder hold exactly its mods: downloads missing or changed files (SHA-1 checked),
 /// then deletes `.jar` files directly in the folder that are neither in the list nor in `local_mods`. Returns how many were downloaded.
-/// Fabric API is added for the sync when the batch does not list it, since the companion mod depends on it.
-pub fn sync_mods(batch: &Batch) -> Result<usize> {
-    with_mods_lock(&batch.dir(), || sync_locked(&saved(batch)))
+/// Fabric API is added for the sync when the instance does not list it, since the companion mod depends on it.
+pub fn sync_mods(instance: &Instance) -> Result<usize> {
+    with_mods_lock(&instance.dir(), || sync_locked(&saved(instance)))
 }
 
-fn with_mods_lock<T>(batch_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _held = super::lock::exclusive(&batch_dir.join("mods.lock"))?;
+fn with_mods_lock<T>(instance_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _held = super::lock::exclusive(&instance_dir.join("mods.lock"))?;
     work()
 }
 
-fn saved(batch: &Batch) -> Batch {
-    saved_in(&batch.dir(), batch)
+fn saved(instance: &Instance) -> Instance {
+    saved_in(&instance.dir(), instance)
 }
 
-fn saved_in(dir: &Path, batch: &Batch) -> Batch {
-    std::fs::read(dir.join("batch.json")).ok().and_then(|bytes| serde_json::from_slice::<Batch>(&bytes).ok()).filter(|b| b.id == batch.id).unwrap_or_else(|| batch.clone())
+fn saved_in(dir: &Path, instance: &Instance) -> Instance {
+    std::fs::read(dir.join("instance.json")).ok().and_then(|bytes| serde_json::from_slice::<Instance>(&bytes).ok()).filter(|b| b.id == instance.id).unwrap_or_else(|| instance.clone())
 }
 
-fn sync_locked(batch: &Batch) -> Result<usize> {
-    let mut mods = batch.mods.clone();
-    if needs_fabric_api(batch) {
-        mods.push(resolve(FABRIC_API, &batch.game_version).context("the companion mod needs Fabric API, which could not be found")?);
+fn sync_locked(instance: &Instance) -> Result<usize> {
+    let mut mods = instance.mods.clone();
+    if needs_fabric_api(instance) {
+        mods.push(resolve(FABRIC_API, &instance.game_version).context("the companion mod needs Fabric API, which could not be found")?);
     }
-    sync_into(&net::agent(None)?, &mods, &batch.local_mods, &batch.mods_dir())
+    sync_into(&net::agent(None)?, &mods, &instance.local_mods, &instance.mods_dir())
 }
 
-/// Mods of the batch that have a newer file for the batch's game version.
-pub fn updates(batch: &Batch) -> Result<Vec<Update>> {
-    updates_from(&Api::new()?, &batch.game_version, &batch.mods)
+/// Mods of the instance that have a newer file for its game version.
+pub fn updates(instance: &Instance) -> Result<Vec<Update>> {
+    updates_from(&Api::new()?, &instance.game_version, &instance.mods)
 }
 
 /// Looks up files by SHA-1 (hex, any case) on Modrinth. The result maps each lowercase hash that is on
@@ -577,25 +578,25 @@ pub fn match_hashes(hashes: &[String]) -> Result<HashMap<String, ModRef>> {
     matched_from(&Api::new()?, hashes)
 }
 
-/// Applies `selection` (from `updates`): replaces those mods in `batch`, makes the mod folder match
-/// (local jars stay) and saves the batch. Returns how many files were downloaded.
-/// On any error `batch` and its saved file are unchanged. Call it only while no instance of the batch
+/// Applies `selection` (from `updates`): replaces those mods in `instance`, makes the mod folder match
+/// (local jars stay) and saves the instance. Returns how many files were downloaded.
+/// On any error `instance` and its saved file are unchanged. Call it only while no game of the instance
 /// runs: running games hold the old jars open, so the sync could not remove them.
-pub fn update_mods(batch: &mut Batch, selection: &[Update]) -> Result<usize> {
-    update_with(batch, selection, |next| {
+pub fn update_mods(instance: &mut Instance, selection: &[Update]) -> Result<usize> {
+    update_with(instance, selection, |next| {
         with_mods_lock(&next.dir(), || {
             let fetched = sync_locked(next)?;
-            super::batch::save(next)?;
+            super::instance::save(next)?;
             Ok(fetched)
         })
     })
 }
 
-/// Applies `selection` to the batch's list and saves it without touching the mod folder, for a batch whose
-/// instances run. The files change at the next start, when the mod folder is synced.
-pub fn update_mods_later(batch: &mut Batch, selection: &[Update]) -> Result<()> {
-    update_with(batch, selection, |next| {
-        super::batch::save(next)?;
+/// applies `selection` to the instance's list and saves it without touching the mod folder, for an instance whose
+/// games run. The files change at the next start, when the mod folder is synced.
+pub fn update_mods_later(instance: &mut Instance, selection: &[Update]) -> Result<()> {
+    update_with(instance, selection, |next| {
+        super::instance::save(next)?;
         Ok(0)
     })
     .map(|_| ())
@@ -660,7 +661,7 @@ fn run(args: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn mod_folder_syncs_of_one_batch_run_one_after_another() {
+    fn mod_folder_syncs_of_one_instance_run_one_after_another() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let dir = tempfile::tempdir().unwrap();
         let inside = AtomicUsize::new(0);
@@ -686,16 +687,16 @@ mod tests {
     #[test]
     fn a_sync_after_an_update_uses_the_saved_list_not_a_stale_copy() {
         let dir = tempfile::tempdir().unwrap();
-        let mut stale = Batch::new("b", "26.3");
+        let mut stale = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         stale.local_mods = vec!["old.jar".into()];
         assert_eq!(saved_in(dir.path(), &stale).local_mods, ["old.jar"]);
         let mut current = stale.clone();
         current.local_mods = vec!["new.jar".into()];
-        std::fs::write(dir.path().join("batch.json"), serde_json::to_vec(&current).unwrap()).unwrap();
+        std::fs::write(dir.path().join("instance.json"), serde_json::to_vec(&current).unwrap()).unwrap();
         assert_eq!(saved_in(dir.path(), &stale).local_mods, ["new.jar"]);
         let mut other = current.clone();
         other.id = "else".into();
-        std::fs::write(dir.path().join("batch.json"), serde_json::to_vec(&other).unwrap()).unwrap();
+        std::fs::write(dir.path().join("instance.json"), serde_json::to_vec(&other).unwrap()).unwrap();
         assert_eq!(saved_in(dir.path(), &stale).local_mods, ["old.jar"]);
     }
 
@@ -1020,9 +1021,9 @@ mod tests {
     }
 
     #[test]
-    fn an_update_replaces_the_mod_syncs_the_new_batch_and_keeps_the_others() {
+    fn an_update_replaces_the_mod_syncs_the_new_instance_and_keeps_the_others() {
         let fx = Fixtures::recorded();
-        let mut batch = Batch::new("b", "26.3");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         batch.mods = vec![pinned(&fx, "xS0Q8LSi"), pinned(&fx, "v7Lw0h1m")];
         batch.local_mods = vec!["mine.jar".into()];
         let update = update_for(&fx, "xS0Q8LSi", "fWv5bnZk");
@@ -1040,9 +1041,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_sync_or_a_stale_update_leaves_the_batch_as_it_was() {
+    fn a_failed_sync_or_a_stale_update_leaves_the_instance_as_it_was() {
         let fx = Fixtures::recorded();
-        let mut batch = Batch::new("b", "26.3");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         batch.mods = vec![pinned(&fx, "xS0Q8LSi")];
         let before = batch.clone();
         let update = update_for(&fx, "xS0Q8LSi", "fWv5bnZk");
@@ -1050,14 +1051,14 @@ mod tests {
         assert_eq!(batch, before);
         let stale = update_for(&fx, "v7Lw0h1m", "fWv5bnZk");
         let err = update_with(&mut batch, &[stale], |_| panic!("must not sync")).unwrap_err().to_string();
-        assert!(err.contains("no longer in the batch"), "{err}");
+        assert!(err.contains("no longer in the instance"), "{err}");
         assert_eq!(batch, before);
         assert_eq!(update_with(&mut batch, &[], |_| panic!("must not sync")).unwrap(), 0);
     }
 
     #[test]
     fn an_update_needs_both_the_project_and_the_pinned_version_to_match() {
-        let mut batch = Batch::new("b", "26.3");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         let a = ModRef { project_id: "p1".into(), version_id: "v1".into(), ..jar("a.jar", b"a") };
         let b = ModRef { project_id: "p2".into(), version_id: "v2".into(), ..jar("b.jar", b"b") };
         batch.mods = vec![a.clone(), b.clone()];
@@ -1084,7 +1085,7 @@ mod tests {
 
     #[test]
     fn fabric_api_is_added_unless_the_batch_has_it_by_id_or_as_a_local_jar() {
-        let mut batch = Batch::new("b", "26.3");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         assert!(needs_fabric_api(&batch));
         batch.local_mods = vec!["Fabric-API-0.100.jar".into()];
         assert!(!needs_fabric_api(&batch));
@@ -1102,7 +1103,7 @@ mod tests {
         std::fs::write(dir.path().join("mine.jar"), b"mine").unwrap();
         std::fs::write(dir.path().join("Other.JAR"), b"other").unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"stray").unwrap();
-        let mut batch = Batch::new("b", "26.3");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         batch.mods = vec![jar("old.jar", b"old")];
         batch.local_mods = vec!["MINE.jar".into(), "other.jar".into()];
         let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") } };

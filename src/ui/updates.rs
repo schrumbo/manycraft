@@ -241,8 +241,8 @@ fn found_page(version: &str, cx: &App) -> String {
 /// Instances still starting, and instances with a running game.
 pub fn counts(cx: &App) -> (usize, usize) {
     let m = model::get(cx).read(cx);
-    let launching = m.instances.values().filter(|i| matches!(i.phase, Phase::Starting { .. })).count();
-    let running = m.instances.values().filter(|i| i.phase.is_running()).count();
+    let launching = m.games.values().filter(|i| matches!(i.phase, Phase::Starting { .. })).count();
+    let running = m.games.values().filter(|i| i.phase.is_running()).count();
     (launching, running)
 }
 

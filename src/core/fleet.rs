@@ -1,4 +1,4 @@
-//! Running instances: preparing game folders from a batch, starting them staggered, tracking their processes.
+//! Running games: preparing game folders from an instance, starting them staggered, tracking their processes.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -20,7 +20,8 @@ use hickory_resolver::proto::rr::RData;
 use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
-use super::batch::{self, Batch};
+use super::batch::{self, Background, Batch};
+use super::instance::{self, Instance, Loader};
 use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::proxy::{self, Kind};
@@ -45,12 +46,67 @@ const PREVIEW_FILE: &str = "manycraft-preview.bin";
 const ICON_FILE: &str = "manycraft-icon.png";
 const TOKEN_VAR: &str = "MANYCRAFT_TOKEN";
 const PROXY_VAR: &str = "MANYCRAFT_PROXY";
-const USAGE: &str = "usage: manycraft batch create <name> [--version <version>] [--server <host:port>] [--memory <MB>]
+const USAGE: &str = "usage: manycraft batch create <name> [--instance <instance>] [--version <version>] [--server <host:port>] [--memory <MB>]
        manycraft batch list
        manycraft batch add <batch> <account>
        manycraft batch remove <batch> <account>
+       manycraft batch instance <batch> <instance>
        manycraft batch start <batch> [--companion <jar>] [--stagger <seconds>]
        manycraft batch delete <batch>";
+const INSTANCE_USAGE: &str = "usage: manycraft instance create <name> [--version <version>] [--loader vanilla|fabric|quilt|forge|neoforge] [--memory <MB>]
+       manycraft instance list
+       manycraft instance play <instance> <account> [--companion <jar>]
+       manycraft instance delete <instance>";
+const SOLO: &str = "solo";
+
+/// What a start plays: an instance, inside a batch or alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub instance: Instance,
+    pub batch: Option<Batch>,
+}
+
+impl Target {
+    /// `batch` playing `instance`.
+    pub fn of_batch(batch: &Batch, instance: &Instance) -> Self {
+        Self { instance: instance.clone(), batch: Some(batch.clone()) }
+    }
+
+    /// `instance` played alone.
+    pub fn solo(instance: &Instance) -> Self {
+        Self { instance: instance.clone(), batch: None }
+    }
+
+    /// Key of the game of `account`.
+    pub fn key(&self, account: Uuid) -> String {
+        match &self.batch {
+            Some(batch) => instance_key(batch, account),
+            None => solo_key(&self.instance, account),
+        }
+    }
+
+    /// The batch id, or [`solo_owner`] when played alone, for progress and cancelling.
+    pub fn owner(&self) -> String {
+        self.batch.as_ref().map_or_else(|| solo_owner(&self.instance.id), |b| b.id.clone())
+    }
+
+    /// Memory each game gets.
+    pub fn memory_mb(&self) -> u32 {
+        self.batch.as_ref().map_or(self.instance.memory_mb, |b| b.memory(self.instance.memory_mb))
+    }
+
+    fn server(&self) -> Option<&str> {
+        self.batch.as_ref().and_then(|b| b.server.as_deref())
+    }
+
+    fn label(&self) -> &str {
+        self.batch.as_ref().map_or(&self.instance.name, |b| &b.name)
+    }
+
+    fn background(&self) -> Background {
+        self.batch.as_ref().map_or_else(Background::default, |b| b.background)
+    }
+}
 
 struct Shared {
     mods: PathBuf,
@@ -62,24 +118,23 @@ struct Shared {
 }
 
 impl Shared {
-    fn of(batch: &Batch) -> Self {
+    fn of(instance: &Instance) -> Self {
         Self {
-            mods: batch.mods_dir(),
-            config: batch.config_dir(),
-            resourcepacks: batch.resourcepacks_dir(),
-            shaderpacks: batch.shaderpacks_dir(),
-            options: batch.options_template(),
-            servers: batch.servers_template(),
+            mods: instance.mods_dir(),
+            config: instance.config_dir(),
+            resourcepacks: instance.resourcepacks_dir(),
+            shaderpacks: instance.shaderpacks_dir(),
+            options: instance.options_template(),
+            servers: instance.servers_template(),
         }
     }
 }
 
-/// Readies the game folder of `account` in `batch` and returns it: shared `mods`, `config`, `resourcepacks` and
-/// `shaderpacks` linked in, `options.txt` and `servers.dat` from the batch templates, the companion mod in the shared mods folder.
-pub fn prepare(batch: &Batch, account: &Account, companion_jar: Option<&Path>) -> Result<PathBuf> {
-    let dir = batch.instance_dir(account.id);
-    let siblings: Vec<PathBuf> = batch.accounts.iter().filter(|a| **a != account.id).map(|a| batch.instance_dir(*a)).collect();
-    prepare_in(&dir, &Shared::of(batch), companion_jar, &siblings)?;
+/// Readies the game folder of `account` in `instance` and returns it: shared `mods`, `config`, `resourcepacks` and
+/// `shaderpacks` linked in, `options.txt` and `servers.dat` from the instance templates, the companion mod in the shared mods folder.
+pub fn prepare(instance: &Instance, account: &Account, companion_jar: Option<&Path>) -> Result<PathBuf> {
+    let dir = instance.game_dir(account.id);
+    prepare_in(&dir, &Shared::of(instance), companion_jar, &instance.other_games(account.id))?;
     Ok(dir)
 }
 
@@ -360,8 +415,8 @@ struct Extra {
     secrets: Vec<(String, String)>,
 }
 
-fn extra_arguments(batch: &Batch, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str) -> Result<Extra> {
-    let mut jvm = batch.jvm_args.clone();
+fn extra_arguments(instance: &Instance, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str) -> Result<Extra> {
+    let mut jvm = instance.jvm_args.clone();
     jvm.extend([
         format!("-Dmanycraft.ipc={ipc_address}"),
         format!("-Dmanycraft.instance={key}"),
@@ -381,49 +436,55 @@ fn extra_arguments(batch: &Batch, account: &Account, game_dir: &Path, ipc_addres
     Ok(Extra { jvm, game, secrets })
 }
 
-fn sync_mods(batch: &Batch) -> Result<()> {
-    super::modrinth::sync_mods(batch)?;
+fn sync_mods(instance: &Instance) -> Result<()> {
+    if instance.loader.takes_mods() {
+        super::modrinth::sync_mods(instance)?;
+    }
     Ok(())
 }
 
-/// Deletes `batch` but keeps its shared mods, configs, packs and templates next to its game folders.
-pub fn delete_batch(target: &Batch) -> Result<PathBuf> {
-    let keep = paths::instances_dir().join(&target.id);
-    let shared = [
-        (target.mods_dir(), "batch-mods"),
-        (target.config_dir(), "batch-config"),
-        (target.resourcepacks_dir(), "batch-resourcepacks"),
-        (target.shaderpacks_dir(), "batch-shaderpacks"),
-        (target.options_template(), "batch-options.txt"),
-        (target.servers_template(), "batch-servers.dat"),
-    ];
-    keep_shared(&shared, &keep)?;
-    batch::delete(target)?;
-    Ok(keep)
+/// Deletes `target`; its instance with mods, configs, packs, templates and game folders stays.
+pub fn delete_batch(target: &Batch) -> Result<()> {
+    batch::delete(target)
 }
 
-/// The window icon the game of `account` in `batch` shows, written at each launch.
-pub fn icon_path(batch: &Batch, account: Uuid) -> PathBuf {
-    batch.instance_dir(account).join(ICON_FILE)
+/// The window icon the game of `account` in `instance` shows, written at each launch.
+pub fn icon_path(instance: &Instance, account: Uuid) -> PathBuf {
+    instance.game_dir(account).join(ICON_FILE)
 }
 
-/// What the companion mod of `account` in `batch` needs to know: name, colour, icon, badge and background level.
-pub fn identity_messages(batch: &Batch, account: &Account, badge: bool) -> Vec<ipc::ToMod> {
+/// What the companion mod of `account` playing `target` needs to know: name, colour, icon, badge and background level.
+pub fn identity_messages(target: &Target, account: &Account, badge: bool) -> Vec<ipc::ToMod> {
     vec![
-        ipc::ToMod::Identity { name: account.name.clone(), batch: batch.name.clone(), rgb: account.rgb(), icon: Some(icon_path(batch, account.id).display().to_string()) },
+        ipc::ToMod::Identity { name: account.name.clone(), batch: target.label().to_owned(), rgb: account.rgb(), icon: Some(icon_path(&target.instance, account.id).display().to_string()) },
         ipc::ToMod::Badge { visible: badge },
-        ipc::ToMod::Level(batch.background.into()),
+        ipc::ToMod::Level(target.background().into()),
     ]
 }
 
-/// Where the companion mod of `account` in `batch` writes its preview frames.
-pub fn preview_path(batch: &Batch, account: Uuid) -> PathBuf {
-    batch.instance_dir(account).join(PREVIEW_FILE)
+/// Where the companion mod of `account` in `instance` writes its preview frames.
+pub fn preview_path(instance: &Instance, account: Uuid) -> PathBuf {
+    instance.game_dir(account).join(PREVIEW_FILE)
 }
 
-/// Key of the instance of `account` in `batch`, used for IPC and the fleet.
+/// Key of the game of `account` in `batch`, used for IPC and the fleet.
 pub fn instance_key(batch: &Batch, account: Uuid) -> String {
     format!("{}-{}", batch.id, account.simple())
+}
+
+/// What stands for a batch when `instance` is played alone; never a batch id.
+pub fn solo_owner(instance: &str) -> String {
+    format!("{instance}-{SOLO}")
+}
+
+/// Key of the game of `account` playing `instance` alone.
+pub fn solo_key(instance: &Instance, account: Uuid) -> String {
+    format!("{}-{}-{SOLO}", instance.id, account.simple())
+}
+
+/// Whether `key` names a game played alone.
+pub fn is_solo(key: &str) -> bool {
+    key.ends_with(&format!("-{SOLO}"))
 }
 
 trait Process: Send {
@@ -505,7 +566,9 @@ impl Clock for SystemClock {
 
 /// A started game process.
 pub struct RunningInstance {
-    pub batch: String,
+    /// The batch the game runs in; `None` when played alone.
+    pub batch: Option<String>,
+    pub instance: String,
     pub account: Uuid,
     child: Box<dyn Process>,
     pub pid: u32,
@@ -534,9 +597,9 @@ impl RunningInstance {
     }
 }
 
-/// A batch readied by `Fleet::prepare_launch`: mods synced, server found, game installed.
+/// A target readied by `Fleet::prepare_launch`: mods synced, server found, game installed.
 pub struct Prepared {
-    batch: Batch,
+    target: Target,
     installed: Installed,
     server_addrs: Vec<SocketAddr>,
     companion_jar: Option<PathBuf>,
@@ -549,11 +612,18 @@ pub type Started = (Uuid, Result<String>);
 pub struct Fleet {
     ipc: ipc::Server,
     running: Arc<Mutex<HashMap<String, RunningInstance>>>,
-    reserved: Mutex<HashMap<String, (Uuid, Vec<SocketAddr>)>>,
+    reserved: Mutex<HashMap<String, Reservation>>,
+    games: sync::Games,
     reaping: Arc<AtomicBool>,
     closing: AtomicBool,
     /// Pause between two starts.
     pub stagger: Duration,
+}
+
+struct Reservation {
+    account: Uuid,
+    instance: String,
+    server_addrs: Vec<SocketAddr>,
 }
 
 /// Redacts the crash files of all instance folders in the background.
@@ -565,43 +635,49 @@ impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
         let (ipc, raw) = ipc::Server::start()?;
-        let events = sync::spawn(ipc.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
+        let games = sync::Games::default();
+        let events = sync::spawn(ipc.clone(), games.clone(), raw)?;
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
     }
 
-    /// Installs the batch's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
+    /// Installs the target's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
-    pub fn start_batch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
-        let prepared = self.prepare_launch(batch, accounts, companion_jar, progress)?;
+    pub fn start_batch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
+        let prepared = self.prepare_launch(target, accounts, companion_jar, progress)?;
         let ipc_address = self.ipc.address();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(Held::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
         };
-        Ok(self.start_all(batch, accounts, &prepared.server_addrs, &SystemClock, launch))
+        Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
 
-    /// Syncs the batch's mods, finds its server and installs its game, once before `start_one` launches its accounts.
-    /// Leaves the mods alone while instances of the batch run, since they hold the jars open.
-    pub fn prepare_launch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
-        if !self.batch_runs(&batch.id) {
-            sync_mods(batch)?;
+    /// Syncs the instance's mods, finds the server and installs the game, once before `start_one` launches the accounts.
+    /// Leaves the mods alone while games of the instance run, since they hold the jars open.
+    pub fn prepare_launch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
+        let instance = &target.instance;
+        let Loader::Fabric(loader_version) = &instance.loader else {
+            bail!(super::i18n::trf("Manycraft kann %@ noch nicht starten. Das kommt mit einem der nächsten Updates.", &[&instance.loader.name()]));
+        };
+        if !self.instance_runs(&instance.id) {
+            sync_mods(instance)?;
         }
-        let server_addrs = server_addresses(batch.server.as_deref(), accounts, resolve_all)?;
-        let installed = install::install(&batch.game_version, batch.loader_version.as_deref(), progress)?;
-        Ok(Prepared { batch: batch.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
+        let server_addrs = server_addresses(target.server(), accounts, resolve_all)?;
+        let installed = install::install(&instance.game_version, loader_version.as_deref(), progress)?;
+        Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
     }
 
-    /// Prepares and starts `account` in the prepared batch right away and returns its instance key.
-    /// Refuses an instance that already runs and an account that is already on the same server in another batch.
+    /// Prepares and starts `account` in the prepared target right away and returns its key.
+    /// Refuses a game that already runs, an account that already plays the instance elsewhere, and an account that is
+    /// already on the same server in another batch.
     pub fn start_one(&self, prepared: &Prepared, account: &Account) -> Result<String> {
         let ipc_address = self.ipc.address();
-        self.launch_checked(&prepared.batch, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(Held::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
+        self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
         })
     }
 
-    fn batch_runs(&self, batch_id: &str) -> bool {
-        lock(&self.running).values_mut().any(|r| r.batch == batch_id && r.poll())
+    fn instance_runs(&self, instance_id: &str) -> bool {
+        lock(&self.running).values_mut().any(|r| r.instance == instance_id && r.poll())
     }
 
     /// Sends `message` to the companion mod of the instance `key`. Fails when it is not connected.
@@ -609,12 +685,12 @@ impl Fleet {
         self.ipc.send(key, message)
     }
 
-    fn start_all(&self, batch: &Batch, accounts: &[Account], server_addrs: &[SocketAddr], clock: &dyn Clock, mut launch: impl FnMut(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Vec<Started> {
+    fn start_all(&self, target: &Target, accounts: &[Account], server_addrs: &[SocketAddr], clock: &dyn Clock, mut launch: impl FnMut(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Vec<Started> {
         let mut last: Option<Instant> = None;
         let mut outcomes = Vec::with_capacity(accounts.len());
         for account in accounts {
-            let key = instance_key(batch, account.id);
-            let result = self.check_free(&key, account, server_addrs).and_then(|()| {
+            let key = target.key(account.id);
+            let result = self.check_free(&key, &target.instance.id, account, server_addrs).and_then(|()| {
                 if let Some(at) = last {
                     let wait = self.stagger.saturating_sub(clock.now().saturating_duration_since(at));
                     if !wait.is_zero() {
@@ -623,7 +699,7 @@ impl Fleet {
                 }
                 let started = clock.now();
                 last = Some(started);
-                self.launch_checked(batch, account, server_addrs, started, &mut launch)
+                self.launch_checked(target, account, server_addrs, started, &mut launch)
             });
             outcomes.push((account.id, result));
         }
@@ -635,9 +711,10 @@ impl Fleet {
         self.closing.store(true, Ordering::SeqCst);
     }
 
-    fn launch_checked(&self, batch: &Batch, account: &Account, server_addrs: &[SocketAddr], started: Instant, launch: impl FnOnce(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Result<String> {
-        let key = instance_key(batch, account.id);
-        self.reserve(&key, account, server_addrs)?;
+    fn launch_checked(&self, target: &Target, account: &Account, server_addrs: &[SocketAddr], started: Instant, launch: impl FnOnce(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Result<String> {
+        let key = target.key(account.id);
+        self.reserve(&key, &target.instance.id, account, server_addrs)?;
+        sync::register(&self.games, &key, &target.instance.id, account.id);
         let token = self.ipc.register(&key);
         let child = launch(account, &key, &token).inspect_err(|_| {
             self.ipc.unregister(&key);
@@ -652,26 +729,37 @@ impl Fleet {
             bail!("Manycraft is quitting");
         }
         let pid = child.id();
-        let logs = batch.instance_dir(account.id).join("logs");
-        let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None, logs };
+        let logs = target.instance.game_dir(account.id).join("logs");
+        let instance = RunningInstance {
+            batch: target.batch.as_ref().map(|b| b.id.clone()),
+            instance: target.instance.id.clone(),
+            account: account.id,
+            child,
+            pid,
+            server_addr: server_addrs.first().copied(),
+            server_addrs: server_addrs.to_vec(),
+            started,
+            exit: None,
+            logs,
+        };
         self.insert(key.clone(), instance);
         Ok(key)
     }
 
-    fn check_free(&self, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
+    fn check_free(&self, key: &str, instance: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
         let mut running = lock(&self.running);
-        free(&mut running, &lock(&self.reserved), key, account, server_addrs)
+        free(&mut running, &lock(&self.reserved), key, instance, account, server_addrs)
     }
 
-    fn reserve(&self, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
+    fn reserve(&self, key: &str, instance: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
         if self.closing.load(Ordering::SeqCst) {
             bail!("Manycraft is quitting");
         }
         let mut running = lock(&self.running);
         let mut reserved = lock(&self.reserved);
-        free(&mut running, &reserved, key, account, server_addrs)?;
+        free(&mut running, &reserved, key, instance, account, server_addrs)?;
         running.remove(key);
-        reserved.insert(key.to_owned(), (account.id, server_addrs.to_vec()));
+        reserved.insert(key.to_owned(), Reservation { account: account.id, instance: instance.to_owned(), server_addrs: server_addrs.to_vec() });
         Ok(())
     }
 
@@ -745,7 +833,7 @@ impl Fleet {
 
     /// Stops every instance of the batch `batch_id`.
     pub fn stop_batch(&self, batch_id: &str) {
-        let keys: Vec<String> = lock(&self.running).iter().filter(|(_, r)| r.batch == batch_id).map(|(k, _)| k.clone()).collect();
+        let keys: Vec<String> = lock(&self.running).iter().filter(|(_, r)| r.batch.as_deref() == Some(batch_id)).map(|(k, _)| k.clone()).collect();
         self.stop_all(&keys);
     }
 
@@ -770,11 +858,15 @@ impl Fleet {
     }
 }
 
-fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<String, (Uuid, Vec<SocketAddr>)>, key: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
+fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<String, Reservation>, key: &str, instance: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
     if reserved.contains_key(key) || running.get_mut(key).is_some_and(RunningInstance::poll) {
         bail!("{} is already running in this batch", account.name);
     }
-    if reserved.values().any(|(id, addrs)| *id == account.id && addrs.iter().any(|a| server_addrs.contains(a))) {
+    let same_game = reserved.values().any(|r| r.account == account.id && r.instance == instance) || running.values_mut().any(|r| r.account == account.id && r.instance == instance && r.poll());
+    if same_game {
+        bail!("{} already plays this instance elsewhere", account.name);
+    }
+    if reserved.values().any(|r| r.account == account.id && r.server_addrs.iter().any(|a| server_addrs.contains(a))) {
         bail!("{} is already on this server in another batch", account.name);
     }
     let clash = running.values_mut().filter(|r| r.account == account.id && r.server_addrs.iter().any(|a| server_addrs.contains(a))).find_map(|r| r.poll().then_some(r.server_addr));
@@ -785,11 +877,12 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
     Ok(())
 }
 
-fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
-    let game_dir = prepare(batch, account, companion_jar)?;
-    require_companion_for_proxy(account, &batch.mods_dir())?;
+fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
+    let instance = &target.instance;
+    let game_dir = prepare(instance, account, companion_jar)?;
+    require_companion_for_proxy(account, &instance.mods_dir())?;
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
-    let extra = extra_arguments(batch, account, &game_dir, ipc_address, key, token)?;
+    let extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
     let session = match account.kind {
         AccountKind::Offline => {
             account::validate_offline_name(&account.name)?;
@@ -802,8 +895,8 @@ fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, in
         game_dir,
         session,
         offline_name: account.name.clone(),
-        memory_mb: batch.memory_mb,
-        server: batch.server.clone(),
+        memory_mb: target.memory_mb(),
+        server: target.server().map(str::to_owned),
         extra_jvm: extra.jvm,
         extra_game: extra.game,
         env: launch::SecretEnv(extra.secrets),
@@ -868,7 +961,16 @@ fn catch_ctrl_c() {}
 
 /// `manycraft batch`: creates, edits and starts batches from the terminal.
 pub fn cli(args: &[String]) -> i32 {
-    match run(args) {
+    report(run(args))
+}
+
+/// `manycraft instance`: creates, lists, plays and deletes instances from the terminal.
+pub fn instance_cli(args: &[String]) -> i32 {
+    report(run_instance(args))
+}
+
+fn report(outcome: Result<i32>) -> i32 {
+    match outcome {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{e:#}");
@@ -884,10 +986,25 @@ fn run(args: &[String]) -> Result<i32> {
         ["list"] => list(),
         ["add", batch, account] => edit(batch, account, true),
         ["remove", batch, account] => edit(batch, account, false),
+        ["instance", batch, instance] => set_instance(batch, instance),
         ["start", batch, flags @ ..] => start(batch, flags),
         ["delete", batch] => delete(batch),
         _ => {
             eprintln!("{USAGE}");
+            Ok(2)
+        }
+    }
+}
+
+fn run_instance(args: &[String]) -> Result<i32> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["create", name, flags @ ..] => create_instance(name, flags),
+        ["list"] => list_instances(),
+        ["play", instance, account, flags @ ..] => play(instance, account, flags),
+        ["delete", instance] => delete_instance(instance),
+        _ => {
+            eprintln!("{INSTANCE_USAGE}");
             Ok(2)
         }
     }
@@ -913,8 +1030,45 @@ fn find_batch<'a>(batches: &'a mut [Batch], who: &str) -> Result<&'a mut Batch> 
     batches.iter_mut().find(|b| b.id == who || b.name.eq_ignore_ascii_case(who)).with_context(|| format!("no batch {who}"))
 }
 
+fn find_instance<'a>(instances: &'a [Instance], who: &str) -> Result<&'a Instance> {
+    let count = instances.iter().filter(|i| i.id == who || i.name.eq_ignore_ascii_case(who)).count();
+    if count > 1 {
+        bail!("several instances are named {who}, use the id");
+    }
+    instances.iter().find(|i| i.id == who || i.name.eq_ignore_ascii_case(who)).with_context(|| format!("no instance {who}"))
+}
+
+fn instance_of<'a>(instances: &'a [Instance], batch: &Batch) -> Result<&'a Instance> {
+    instances.iter().find(|i| i.id == batch.instance_id).with_context(|| format!("the instance of {} is gone: manycraft batch instance {} <instance>", batch.name, batch.name))
+}
+
+fn parse_loader(text: &str) -> Result<Loader> {
+    instance::LOADERS.into_iter().find(|l| l.name().eq_ignore_ascii_case(text)).with_context(|| format!("unknown loader {text}: vanilla, fabric, quilt, forge or neoforge"))
+}
+
+/// Saves a new instance named `name`, for the newest release unless `version` names one, with Manycraft's default mods for Fabric.
+fn new_instance(name: &str, version: Option<&str>, loader: Loader, memory: Option<u32>) -> Result<Instance> {
+    let version = match version {
+        Some(v) => v.to_owned(),
+        None => install::latest_release()?,
+    };
+    let mut made = Instance::new(name, &version, loader);
+    if let Some(mb) = memory {
+        made.memory_mb = mb;
+    }
+    if made.loader.has_companion() {
+        let defaults = super::modrinth::default_mods(&made.game_version)?;
+        for note in &defaults.notes {
+            println!("{note}");
+        }
+        made.mods = defaults.mods;
+    }
+    instance::save(&made)?;
+    Ok(made)
+}
+
 fn create(name: &str, args: &[&str]) -> Result<i32> {
-    let Some(flags) = flags(args, &["--version", "--server", "--memory"]) else {
+    let Some(flags) = flags(args, &["--instance", "--version", "--server", "--memory"]) else {
         eprintln!("{USAGE}");
         return Ok(2);
     };
@@ -922,29 +1076,27 @@ fn create(name: &str, args: &[&str]) -> Result<i32> {
     if name.is_empty() {
         bail!("a batch needs a name");
     }
+    if flags.contains_key("--instance") && flags.contains_key("--version") {
+        bail!("--version belongs to the instance; leave it out with --instance");
+    }
     let batches = batch::load_all()?;
     if batches.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
         bail!("a batch named {name} exists already");
     }
-    let version = match flags.get("--version") {
-        Some(v) => (*v).to_owned(),
-        None => install::latest_release()?,
+    let server = flags.get("--server").map(|s| split_server(s).map(|_| (*s).to_owned())).transpose()?;
+    let memory = flags.get("--memory").map(|m| parse_memory(m)).transpose()?;
+    let (played, memory_override) = match flags.get("--instance") {
+        Some(who) => (find_instance(&instance::load_all()?, who)?.clone(), memory),
+        None => {
+            let taken: Vec<String> = instance::load_all()?.into_iter().map(|i| i.name).collect();
+            (new_instance(&instance::free_name(name, &taken), flags.get("--version").copied(), Loader::default(), memory)?, None)
+        }
     };
-    let mut new = Batch::new(name, &version);
-    if let Some(server) = flags.get("--server") {
-        split_server(server)?;
-        new.server = Some((*server).to_owned());
-    }
-    if let Some(memory) = flags.get("--memory") {
-        new.memory_mb = parse_memory(memory)?;
-    }
-    let defaults = super::modrinth::default_mods(&new.game_version)?;
-    for note in &defaults.notes {
-        println!("{note}");
-    }
-    new.mods = defaults.mods;
+    let mut new = Batch::new(name, &played.id);
+    new.server = server;
+    new.memory_override = memory_override;
     batch::save(&new)?;
-    println!("Batch {} ({}) for Minecraft {}", new.name, new.id, new.game_version);
+    println!("Batch {} ({}) plays {}: {}", new.name, new.id, played.name, played.version_line());
     Ok(0)
 }
 
@@ -954,10 +1106,12 @@ fn parse_memory(text: &str) -> Result<u32> {
 
 fn list() -> Result<i32> {
     let accounts = account::load()?;
+    let instances = instance::load_all()?;
     let name = |id: &Uuid| accounts.iter().find(|a| a.id == *id).map_or_else(|| id.to_string(), |a| a.name.clone());
     for b in batch::load_all()? {
         let members: Vec<String> = b.accounts.iter().map(name).collect();
-        println!("{} ({})  Minecraft {}  server {}  {} MB  accounts: {}", b.name, b.id, b.game_version, b.server.as_deref().unwrap_or("-"), b.memory_mb, if members.is_empty() { "-".to_owned() } else { members.join(", ") });
+        let (played, memory) = instance_of(&instances, &b).map_or_else(|_| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory_mb)));
+        println!("{} ({})  instance {played}  server {}  {memory} MB  accounts: {}", b.name, b.id, b.server.as_deref().unwrap_or("-"), if members.is_empty() { "-".to_owned() } else { members.join(", ") });
     }
     Ok(0)
 }
@@ -983,27 +1137,73 @@ fn set_member(batch: &mut Batch, account: &Account, add: bool) -> Result<()> {
     Ok(())
 }
 
-fn delete(who: &str) -> Result<i32> {
+fn set_instance(who: &str, instance_name: &str) -> Result<i32> {
     let mut batches = batch::load_all()?;
     let target = find_batch(&mut batches, who)?;
-    let keep = delete_batch(target)?;
-    println!("Deleted batch {}; its mods, configs and game folders are kept in {}", target.name, keep.display());
+    let instances = instance::load_all()?;
+    let played = find_instance(&instances, instance_name)?;
+    let old = instances.iter().find(|i| i.id == target.instance_id && i.id != played.id).map(|i| i.name.clone());
+    target.instance_id.clone_from(&played.id);
+    batch::save(target)?;
+    println!("{} plays {} now", target.name, played.name);
+    if let Some(old) = old {
+        println!("Worlds and screenshots stay with {old}");
+    }
     Ok(0)
 }
 
-fn keep_shared(items: &[(PathBuf, &str)], keep: &Path) -> Result<()> {
-    for (from, name) in items {
-        if fs::symlink_metadata(from).is_err() {
-            continue;
-        }
-        fs::create_dir_all(keep).with_context(|| format!("cannot create {}", keep.display()))?;
-        let dest = keep.join(name);
-        if fs::symlink_metadata(&dest).is_ok() {
-            move_aside(&dest)?;
-        }
-        fs::rename(from, &dest).with_context(|| format!("cannot move {} to {}", from.display(), dest.display()))?;
+fn delete(who: &str) -> Result<i32> {
+    let mut batches = batch::load_all()?;
+    let target = find_batch(&mut batches, who)?;
+    delete_batch(target)?;
+    println!("Deleted batch {}; its instance with mods, configs and worlds stays", target.name);
+    Ok(0)
+}
+
+fn create_instance(name: &str, args: &[&str]) -> Result<i32> {
+    let Some(flags) = flags(args, &["--version", "--loader", "--memory"]) else {
+        eprintln!("{INSTANCE_USAGE}");
+        return Ok(2);
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("an instance needs a name");
     }
-    Ok(())
+    if instance::load_all()?.iter().any(|i| i.name.eq_ignore_ascii_case(name)) {
+        bail!("an instance named {name} exists already");
+    }
+    let loader = flags.get("--loader").map_or_else(|| Ok(Loader::default()), |l| parse_loader(l))?;
+    let memory = flags.get("--memory").map(|m| parse_memory(m)).transpose()?;
+    let made = new_instance(name, flags.get("--version").copied(), loader, memory)?;
+    println!("Instance {} ({}): {}", made.name, made.id, made.version_line());
+    Ok(0)
+}
+
+fn list_instances() -> Result<i32> {
+    let batches = batch::load_all()?;
+    for i in instance::load_all()? {
+        let users: Vec<&str> = batches.iter().filter(|b| b.instance_id == i.id).map(|b| b.name.as_str()).collect();
+        println!("{} ({})  {}  {} mods  {} MB  batches: {}", i.name, i.id, i.version_line(), i.mods.len() + i.local_mods.len(), i.memory_mb, if users.is_empty() { "-".to_owned() } else { users.join(", ") });
+    }
+    Ok(0)
+}
+
+fn delete_instance(who: &str) -> Result<i32> {
+    let instances = instance::load_all()?;
+    let doomed = find_instance(&instances, who)?;
+    remove_instance(doomed)?;
+    println!("Deleted instance {} with its mods, configs and worlds", doomed.name);
+    Ok(0)
+}
+
+/// Deletes `doomed` with its mods, configs and worlds; refused while a batch plays it or any game runs.
+pub fn remove_instance(doomed: &Instance) -> Result<()> {
+    let users: Vec<String> = batch::load_all()?.into_iter().filter(|b| b.instance_id == doomed.id).map(|b| b.name).collect();
+    if !users.is_empty() {
+        bail!(super::i18n::trf("„%@“ wird noch von %@ gespielt. Gib ihnen zuerst eine andere Instanz.", &[&doomed.name, &users.join(", ")]));
+    }
+    let _quiet = lock::try_exclusive(&paths::data_dir().join(install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))?;
+    instance::delete(doomed)
 }
 
 fn start(who: &str, args: &[&str]) -> Result<i32> {
@@ -1012,16 +1212,34 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         return Ok(2);
     };
     let mut batches = batch::load_all()?;
-    let target = find_batch(&mut batches, who)?.clone();
-    if target.accounts.is_empty() {
-        bail!("{} has no accounts yet: manycraft batch add {} <account>", target.name, target.name);
+    let chosen = find_batch(&mut batches, who)?.clone();
+    if chosen.accounts.is_empty() {
+        bail!("{} has no accounts yet: manycraft batch add {} <account>", chosen.name, chosen.name);
     }
+    let instances = instance::load_all()?;
+    let target = Target::of_batch(&chosen, instance_of(&instances, &chosen)?);
     let saved = account::load()?;
-    let accounts = target
+    let accounts = chosen
         .accounts
         .iter()
-        .map(|id| saved.iter().find(|a| a.id == *id).cloned().with_context(|| format!("account {id} of {} is no longer saved", target.name)))
+        .map(|id| saved.iter().find(|a| a.id == *id).cloned().with_context(|| format!("account {id} of {} is no longer saved", chosen.name)))
         .collect::<Result<Vec<_>>>()?;
+    run_target(&target, &accounts, &flags)
+}
+
+fn play(who: &str, account_name: &str, args: &[&str]) -> Result<i32> {
+    let Some(flags) = flags(args, &["--companion"]) else {
+        eprintln!("{INSTANCE_USAGE}");
+        return Ok(2);
+    };
+    let instances = instance::load_all()?;
+    let target = Target::solo(find_instance(&instances, who)?);
+    let saved = account::load()?;
+    let account = auth::find_account(&saved, account_name)?.clone();
+    run_target(&target, &[account], &flags)
+}
+
+fn run_target(target: &Target, accounts: &[Account], flags: &HashMap<&str, &str>) -> Result<i32> {
     scrub_crash_files();
     let (mut fleet, events) = Fleet::new()?;
     if let Some(seconds) = flags.get("--stagger") {
@@ -1033,13 +1251,13 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
             println!("{}: {}/{}", p.stage.label(), p.done, p.total);
         }
     };
-    let names: HashMap<String, String> = accounts.iter().map(|a| (instance_key(&target, a.id), a.name.clone())).collect();
+    let names: HashMap<String, String> = accounts.iter().map(|a| (target.key(a.id), a.name.clone())).collect();
     let mut live = Vec::new();
     let companion = match flags.get("--companion") {
         Some(path) => PathBuf::from(path),
         None => super::companion::jar()?,
     };
-    for (id, outcome) in fleet.start_batch(&target, &accounts, Some(&companion), &report)? {
+    for (id, outcome) in fleet.start_batch(target, accounts, Some(&companion), &report)? {
         let name = accounts.iter().find(|a| a.id == id).map_or("?", |a| a.name.as_str());
         match outcome {
             Ok(key) => {
@@ -1056,7 +1274,7 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         match events.recv_timeout(EVENT_POLL) {
             Ok(event) => {
                 print_event(&names, &event);
-                greet(&fleet, &target, &accounts, &mut pids, badge, &event);
+                greet(&fleet, target, accounts, &mut pids, badge, &event);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -1070,12 +1288,13 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
             running
         });
     }
-    fleet.stop_batch(&target.id);
-    println!("Stopped {}", target.name);
+    let keys: Vec<String> = names.into_keys().collect();
+    fleet.stop_all(&keys);
+    println!("Stopped {}", target.label());
     Ok(0)
 }
 
-fn greet(fleet: &Fleet, batch: &Batch, accounts: &[Account], pids: &mut HashMap<String, u32>, badge: bool, event: &ipc::Event) {
+fn greet(fleet: &Fleet, target: &Target, accounts: &[Account], pids: &mut HashMap<String, u32>, badge: bool, event: &ipc::Event) {
     let instance = match event {
         ipc::Event::Connected { instance, pid, .. } => {
             pids.insert(instance.clone(), *pid);
@@ -1084,9 +1303,9 @@ fn greet(fleet: &Fleet, batch: &Batch, accounts: &[Account], pids: &mut HashMap<
         ipc::Event::Message { instance, message: ipc::FromMod::Window { visible: true, .. } } => instance,
         _ => return,
     };
-    let Some(account) = accounts.iter().find(|a| instance_key(batch, a.id) == *instance) else { return };
+    let Some(account) = accounts.iter().find(|a| target.key(a.id) == *instance) else { return };
     if matches!(event, ipc::Event::Connected { .. }) {
-        for message in identity_messages(batch, account, badge) {
+        for message in identity_messages(target, account, badge) {
             let _ = fleet.send(instance, &message);
         }
     }
@@ -1110,6 +1329,11 @@ mod tests {
     use std::process::{Command, Stdio};
 
     use super::*;
+
+    fn target(name: &str) -> Target {
+        let instance = Instance::new(name, "26.3", Loader::default());
+        Target::of_batch(&Batch::new(name, &instance.id), &instance)
+    }
 
     struct Dirs {
         _root: tempfile::TempDir,
@@ -1466,9 +1690,9 @@ mod tests {
         let exits = RefCell::default();
         let tokens = RefCell::default();
         let alts = accounts(&["AltOne", "AltTwo"]);
-        let a = Batch::new("A", "26.3");
-        let b = Batch::new("B", "26.3");
-        let c = Batch::new("C", "26.3");
+        let a = target("A");
+        let b = target("B");
+        let c = target("C");
         let server = [addr("10.0.0.1:25565"), addr("10.0.0.3:25565")];
         let rotated = [addr("10.0.0.3:25565"), addr("10.0.0.1:25565")];
         let first = fleet.start_all(&a, &alts, &server, &clock, launcher(&exits, &tokens));
@@ -1479,7 +1703,7 @@ mod tests {
         assert!(format!("{:#}", dup[0].1.as_ref().unwrap_err()).contains("AltOne is already on the server 10.0.0.1:25565"));
         let elsewhere = fleet.start_all(&c, &alts[..1], &[addr("10.0.0.2:25565")], &clock, launcher(&exits, &tokens));
         assert!(elsewhere[0].1.is_ok());
-        let no_server = fleet.start_all(&Batch::new("D", "26.3"), &alts[..1], &[], &clock, launcher(&exits, &tokens));
+        let no_server = fleet.start_all(&target("D"), &alts[..1], &[], &clock, launcher(&exits, &tokens));
         assert!(no_server[0].1.is_ok());
         lock(&exits.borrow()[&alts[0].id]).replace(Some(0));
         let after_exit = fleet.start_all(&b, &alts[..1], &server, &clock, launcher(&exits, &tokens));
@@ -1495,7 +1719,7 @@ mod tests {
         let clock = FakeClock::new();
         let exits = RefCell::default();
         let tokens = RefCell::default();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alts = accounts(&["AltOne", "AltTwo", "AltThree"]);
         fleet.start_all(&batch, &alts[..1], &[], &clock, launcher(&exits, &tokens));
         clock.advance(Duration::from_secs(10));
@@ -1516,12 +1740,12 @@ mod tests {
     #[test]
     fn a_failed_launch_is_reported_and_unregistered() {
         let (fleet, _events) = Fleet::new().unwrap();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alts = accounts(&["AltOne"]);
         let outcomes = fleet.start_all(&batch, &alts, &[], &FakeClock::new(), |_: &Account, _: &str, _: &str| Err(anyhow!("no java")));
         assert!(outcomes[0].1.is_err());
-        assert!(!fleet.is_running(&instance_key(&batch, alts[0].id)));
-        assert!(fleet.exit_code(&instance_key(&batch, alts[0].id)).is_none());
+        assert!(!fleet.is_running(&batch.key(alts[0].id)));
+        assert!(fleet.exit_code(&batch.key(alts[0].id)).is_none());
     }
 
     #[test]
@@ -1529,7 +1753,7 @@ mod tests {
         let (mut fleet, _events) = Fleet::new().unwrap();
         let exits = RefCell::default();
         let tokens = RefCell::default();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alts = accounts(&["AltOne", "AltTwo"]);
         fleet.stagger = Duration::ZERO;
         let keys: Vec<String> = fleet.start_all(&batch, &alts, &[], &SystemClock, launcher(&exits, &tokens)).into_iter().map(|(_, r)| r.unwrap()).collect();
@@ -1544,7 +1768,7 @@ mod tests {
         assert_eq!(fleet.exit_code(&keys[0]), Some(Some(3)));
         assert_eq!(lock(&fleet.running)[&keys[0]].pid, 1);
         assert_eq!(fleet.running_keys(), vec![keys[1].clone()]);
-        fleet.stop_batch(&batch.id);
+        fleet.stop_batch(&batch.owner());
         assert!(!fleet.is_running(&keys[1]));
         assert_eq!(fleet.exit_code(&keys[1]), Some(Some(1)));
         assert!(fleet.stop("nope").is_err());
@@ -1552,10 +1776,10 @@ mod tests {
 
     #[test]
     fn proxy_credentials_go_through_the_environment_never_the_command_line() {
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let mut alt = Account::offline("AltOne").unwrap();
         alt.proxy = Some("socks5://us%40r:p%3Ass@10.1.1.1:1081".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert_eq!(extra.game, ["--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
         assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), "socks5://us%40r:p%3Ass@10.1.1.1:1081".to_owned())));
         assert!(extra.secrets.contains(&("MANYCRAFT_TOKEN".to_owned(), "tok".to_owned())));
@@ -1568,15 +1792,15 @@ mod tests {
         assert!(extra.jvm.contains(&"-Dmanycraft.instance=k".to_owned()));
         assert!(extra.jvm.contains(&"-Dmanycraft.ipc=127.0.0.1:9".to_owned()));
         alt.proxy = Some("http://proxy.example:3128".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.game.is_empty());
         assert!(extra.jvm.contains(&"-Dhttps.proxyHost=proxy.example".to_owned()) && extra.jvm.contains(&"-Dhttps.proxyPort=3128".to_owned()));
         alt.proxy = None;
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.game.is_empty() && !extra.jvm.iter().any(|a| a.contains("proxy")));
         assert_eq!(extra.secrets.len(), 1);
         alt.proxy = Some("ftp://x:1".into());
-        assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k", "tok").is_err());
+        assert!(extra_arguments(&batch.instance, &alt, Path::new("inst"), "", "k", "tok").is_err());
     }
 
     #[test]
@@ -1612,7 +1836,7 @@ mod tests {
         let (fleet, _events) = Fleet::new().unwrap();
         let exits = RefCell::default();
         let tokens = RefCell::default();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alts = accounts(&["AltOne"]);
         let key = fleet.start_all(&batch, &alts, &[], &SystemClock, launcher(&exits, &tokens)).remove(0).1.unwrap();
         std::thread::sleep(REAP_INTERVAL * 2);
@@ -1632,7 +1856,7 @@ mod tests {
         let (fleet, events) = Fleet::new().unwrap();
         let exits = RefCell::default();
         let tokens = RefCell::default();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alts = accounts(&["AltOne"]);
         let key = fleet.start_all(&batch, &alts, &[], &SystemClock, launcher(&exits, &tokens)).remove(0).1.unwrap();
         let exit = Arc::clone(&exits.borrow()[&alts[0].id]);
@@ -1660,7 +1884,7 @@ mod tests {
         let (fleet, events) = Fleet::new().unwrap();
         let exits = RefCell::default();
         let tokens = RefCell::default();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alts = accounts(&["AltOne"]);
         let key = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), launcher(&exits, &tokens)).unwrap();
         assert!(fleet.send(&key, &ipc::ToMod::Hide).is_err());
@@ -1682,10 +1906,10 @@ mod tests {
         let exits = RefCell::default();
         let tokens = RefCell::default();
         let alts = accounts(&["AltOne"]);
-        let (a, b) = (Batch::new("A", "26.3"), Batch::new("B", "26.3"));
+        let (a, b) = (target("A"), target("B"));
         let server = [addr("10.0.0.1:25565")];
         let key = fleet.launch_checked(&a, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap();
-        assert_eq!(key, instance_key(&a, alts[0].id));
+        assert_eq!(key, a.key(alts[0].id));
         assert!(format!("{:#}", fleet.launch_checked(&a, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap_err()).contains("already running"));
         assert!(format!("{:#}", fleet.launch_checked(&b, &alts[0], &server, Instant::now(), launcher(&exits, &tokens)).unwrap_err()).contains("already on the server"));
         assert_eq!(tokens.borrow().len(), 1);
@@ -1700,7 +1924,7 @@ mod tests {
     fn two_starts_at_once_launch_an_instance_only_once() {
         let (fleet, _events) = Fleet::new().unwrap();
         let alts = accounts(&["AltOne"]);
-        let (a, b) = (Batch::new("A", "26.3"), Batch::new("B", "26.3"));
+        let (a, b) = (target("A"), target("B"));
         let server = [addr("10.0.0.1:25565")];
         let launches = std::sync::atomic::AtomicUsize::new(0);
         let slow = |_: &Account, _: &str, _: &str| {
@@ -1726,7 +1950,7 @@ mod tests {
         use std::io::Write;
         let (fleet, events) = Fleet::new().unwrap();
         let alts = accounts(&["AltOne", "AltTwo"]);
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         fleet.launch_checked(&batch, &alts[1], &[], Instant::now(), |_, _, _| Ok(live(2))).unwrap();
         let exit = Arc::new(Mutex::new(None));
         let dying = Arc::clone(&exit);
@@ -1751,7 +1975,7 @@ mod tests {
     fn a_closing_fleet_starts_nothing_and_a_failed_launch_frees_its_slot() {
         let (fleet, _events) = Fleet::new().unwrap();
         let alts = accounts(&["AltOne"]);
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         assert!(fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| bail!("no java")).is_err());
         assert!(fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), |_, _, _| Ok(live(1))).is_ok());
         fleet.stop_all(&fleet.running_keys());
@@ -1772,21 +1996,24 @@ mod tests {
     fn a_reservation_blocks_only_its_account_on_its_server_and_mods_wait_for_the_batch() {
         let (fleet, _events) = Fleet::new().unwrap();
         let alts = accounts(&["AltOne", "AltTwo"]);
-        let (a, b) = (Batch::new("A", "26.3"), Batch::new("B", "26.3"));
+        let (a, b) = (target("A"), target("B"));
         let (x, y) = ([addr("10.0.0.1:25565")], [addr("10.0.0.2:25565")]);
-        let reserved = HashMap::from([(instance_key(&a, alts[0].id), (alts[0].id, x.to_vec()))]);
+        let reserved = HashMap::from([(a.key(alts[0].id), Reservation { account: alts[0].id, instance: a.instance.id.clone(), server_addrs: x.to_vec() })]);
         let mut running = HashMap::new();
-        assert!(free(&mut running, &reserved, &instance_key(&b, alts[0].id), &alts[0], &y).is_ok());
-        assert!(free(&mut running, &reserved, &instance_key(&b, alts[1].id), &alts[1], &x).is_ok());
-        assert!(format!("{:#}", free(&mut running, &reserved, &instance_key(&b, alts[0].id), &alts[0], &x).unwrap_err()).contains("this server in another batch"));
-        assert!(!fleet.batch_runs(&a.id));
+        assert!(free(&mut running, &reserved, &b.key(alts[0].id), &b.instance.id, &alts[0], &y).is_ok());
+        assert!(free(&mut running, &reserved, &b.key(alts[1].id), &b.instance.id, &alts[1], &x).is_ok());
+        assert!(format!("{:#}", free(&mut running, &reserved, &b.key(alts[0].id), &b.instance.id, &alts[0], &x).unwrap_err()).contains("this server in another batch"));
+        let shared = Target::of_batch(&Batch::new("C", &a.instance.id), &a.instance);
+        assert!(format!("{:#}", free(&mut running, &reserved, &shared.key(alts[0].id), &a.instance.id, &alts[0], &y).unwrap_err()).contains("already plays this instance elsewhere"));
+        assert!(free(&mut running, &reserved, &shared.key(alts[1].id), &a.instance.id, &alts[1], &y).is_ok());
+        assert!(!fleet.instance_runs(&a.instance.id));
         let exit = Arc::new(Mutex::new(None));
         let key = fleet.launch_checked(&a, &alts[0], &x, Instant::now(), |_, _, _| Ok(Box::new(FakeProcess { pid: 1, exit: Arc::clone(&exit) }) as Box<dyn Process>)).unwrap();
-        assert!(fleet.batch_runs(&a.id));
-        assert!(!fleet.batch_runs(&b.id));
+        assert!(fleet.instance_runs(&a.instance.id));
+        assert!(!fleet.instance_runs(&b.instance.id));
         *exit.lock().unwrap() = Some(Some(0));
-        assert!(!fleet.batch_runs(&a.id));
-        assert!(fleet.running_keys().iter().all(|k| *k != key) || !fleet.batch_runs(&a.id));
+        assert!(!fleet.instance_runs(&a.instance.id));
+        assert!(fleet.running_keys().iter().all(|k| *k != key) || !fleet.instance_runs(&a.instance.id));
     }
 
     #[test]
@@ -1794,11 +2021,11 @@ mod tests {
         fn shared<T: Send + Sync>() {}
         shared::<Fleet>();
         shared::<Prepared>();
-        let batch = Batch::new("A", "26.3");
+        let batch = target("A");
         let alt = Account::offline("AltOne").unwrap();
-        let dir = batch.instance_dir(alt.id);
-        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
-        assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch, alt.id).display())));
+        let dir = batch.instance.game_dir(alt.id);
+        let extra = extra_arguments(&batch.instance, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
+        assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch.instance, alt.id).display())));
     }
 
     #[test]
@@ -1822,27 +2049,10 @@ mod tests {
         assert_ne!(name_stand_in("s:25566").unwrap(), name);
         assert_ne!(name_stand_in("t").unwrap(), name);
         let other = server_addresses(Some("S"), &[proxied], never).unwrap();
-        let reserved = HashMap::from([("k".to_owned(), (Uuid::nil(), vec![name]))]);
+        let reserved = HashMap::from([("k".to_owned(), Reservation { account: Uuid::nil(), instance: "i".into(), server_addrs: vec![name] })]);
         let mut account = Account::offline("AltThree").unwrap();
         account.id = Uuid::nil();
-        assert!(free(&mut HashMap::new(), &reserved, "other", &account, &other).is_err());
-    }
-
-    #[test]
-    fn deleting_a_batch_keeps_its_shared_folders() {
-        let d = dirs();
-        prep(&d, None).unwrap();
-        fs::write(d.mods.join("a.jar"), b"mod").unwrap();
-        fs::write(&d.template, b"fov:1\n").unwrap();
-        let keep = d.inst.parent().unwrap().join("keep");
-        fs::create_dir_all(keep.join("batch-mods")).unwrap();
-        let missing = d.inst.parent().unwrap().join("missing");
-        keep_shared(&[(d.mods.clone(), "batch-mods"), (d.template.clone(), "batch-options.txt"), (missing, "batch-x")], &keep).unwrap();
-        assert_eq!(fs::read(keep.join("batch-mods").join("a.jar")).unwrap(), b"mod");
-        assert!(keep.join("batch-mods.old-1").is_dir());
-        assert_eq!(fs::read(keep.join("batch-options.txt")).unwrap(), b"fov:1\n");
-        assert!(!keep.join("batch-x").exists());
-        assert!(!d.mods.exists());
+        assert!(free(&mut HashMap::new(), &reserved, "other", "j", &account, &other).is_err());
     }
 
     #[test]
@@ -1852,12 +2062,12 @@ mod tests {
         assert!(flags(&["--version"], &["--version"]).is_none());
         assert!(flags(&["--bogus", "1"], &["--version"]).is_none());
         assert!(flags(&["--version", "1", "--version", "2"], &["--version"]).is_none());
-        let mut batches = vec![Batch::new("Test", "26.3"), Batch::new("Other", "26.3")];
+        let mut batches = vec![Batch::new("Test", "i1"), Batch::new("Other", "i1")];
         assert_eq!(find_batch(&mut batches, "test").unwrap().name, "Test");
         let id = batches[1].id.clone();
         assert_eq!(find_batch(&mut batches, &id).unwrap().name, "Other");
         assert!(find_batch(&mut batches, "none").is_err());
-        batches.push(Batch::new("TEST", "26.3"));
+        batches.push(Batch::new("TEST", "i1"));
         assert!(format!("{:#}", find_batch(&mut batches, "test").unwrap_err()).contains("several"));
         assert_eq!(parse_memory("512").unwrap(), 512);
         assert!(parse_memory("511").is_err() && parse_memory("x").is_err());

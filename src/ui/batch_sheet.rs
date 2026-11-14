@@ -27,6 +27,7 @@ use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment, segmented}
 use crate::core::account::{Account, AccountKind};
 use crate::core::batch::{Background, Batch, ModRef};
 use crate::core::i18n::{tr, trf};
+use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB};
 use crate::core::modrinth::Update;
 use crate::core::prism::Instance;
 use crate::core::skins;
@@ -96,6 +97,7 @@ pub(super) enum Load<T> {
 
 pub(super) struct BatchSheet {
     pub(super) original: Option<Batch>,
+    pub(super) setup: Option<setup::Instance>,
     name: Entity<InputState>,
     server: Entity<InputState>,
     filter: Entity<InputState>,
@@ -135,7 +137,7 @@ pub(super) struct BatchSheet {
     list_max: f32,
     prism_choice: Option<Instance>,
     prism_picking: bool,
-    imported: Option<Batch>,
+    imported: Option<setup::Instance>,
     pub(super) updates: Option<Load<Vec<Update>>>,
     updates_gen: u64,
     pub(super) updating: HashSet<String>,
@@ -159,6 +161,7 @@ impl EventEmitter<Dismissed> for BatchSheet {}
 impl BatchSheet {
     fn new(original: Option<Batch>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = super::model::get(cx).read(cx);
+        let setup = original.as_ref().and_then(|b| model.instance(&b.instance_id).cloned());
         let taken: Vec<&str> = model.batches.iter().map(|b| b.name.as_str()).collect();
         let name_value = original.as_ref().map_or_else(|| forms::next_batch_name(&taken), |b| b.name.clone());
         let server_value = original.as_ref().and_then(|b| b.server.clone()).unwrap_or_default();
@@ -168,8 +171,8 @@ impl BatchSheet {
         };
         let total_ram = forms::total_ram_mb();
         let memory_max = forms::memory_max(total_ram);
-        let memory = forms::memory_step(original.as_ref().map_or(2048, |b| b.memory_mb), 0, memory_max);
-        let version = original.as_ref().map(|b| b.game_version.clone()).unwrap_or_default();
+        let memory = forms::memory_step(setup.as_ref().map_or(DEFAULT_MEMORY_MB, |i| i.memory_mb), 0, memory_max);
+        let version = setup.as_ref().map(|i| i.game_version.clone()).unwrap_or_default();
         let initial: Vec<String> = if version.is_empty() { Vec::new() } else { vec![version.clone()] };
         let selected = (!initial.is_empty()).then(|| IndexPath::new(0));
         let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(initial.clone()), selected, window, cx).searchable(true));
@@ -217,9 +220,10 @@ impl BatchSheet {
         })
         .detach();
         let mut sheet = Self {
-            mods: original.as_ref().map(|b| b.mods.clone()).unwrap_or_default(),
+            mods: setup.as_ref().map(|i| i.mods.clone()).unwrap_or_default(),
             mods_touched: editing,
             original,
+            setup,
             name,
             server,
             filter,
@@ -405,7 +409,7 @@ impl BatchSheet {
     }
 
     fn load_updates(&mut self, cx: &mut Context<Self>) {
-        let Some(original) = self.original.clone().filter(|b| !b.mods.is_empty()) else {
+        let Some(original) = self.setup.clone().filter(|i| !i.mods.is_empty()) else {
             self.updates = None;
             return;
         };
@@ -433,7 +437,7 @@ impl BatchSheet {
 
     pub(super) fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
         let Some(Load::Ready(list)) = &self.updates else { return };
-        let Some(id) = self.original.as_ref().map(|b| b.id.clone()) else { return };
+        let Some(id) = self.setup.as_ref().map(|i| i.id.clone()) else { return };
         let selection: Vec<Update> = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
         if selection.is_empty() || !self.updating.is_empty() || self.saving {
             return;
@@ -459,7 +463,7 @@ impl BatchSheet {
                         s.applied.extend(selection.iter().map(|u| u.current.project_id.clone()));
                         s.refocus = true;
                         s.updates_note = Some(if running { trf("%lld Updates vorgemerkt. Sie gelten beim nächsten Start.", &[&selection.len()]) } else if selection.len() == 1 { tr("1 Mod aktualisiert.") } else { trf("%lld Mods aktualisiert.", &[&selection.len()]) });
-                        s.original = Some(batch);
+                        s.setup = Some(batch);
                         cx.dispatch_action(&Reload);
                     }
                     Err(e) => {
@@ -474,8 +478,8 @@ impl BatchSheet {
     }
 
     fn running(&self, cx: &App) -> bool {
-        let Some(b) = &self.original else { return false };
-        super::model::get(cx).read(cx).instances.values().any(|i| i.batch_id == b.id && i.phase.is_running())
+        let Some(made) = &self.setup else { return false };
+        super::model::get(cx).read(cx).games.values().any(|i| i.instance_id == made.id && i.phase.is_running())
     }
 
     fn load_versions(&mut self, cx: &mut Context<Self>) {
@@ -993,7 +997,7 @@ impl BatchSheet {
         for n in &self.notes {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(n.clone()));
         }
-        if let Some(own) = self.original.as_ref().filter(|b| !b.local_mods.is_empty()) {
+        if let Some(own) = self.setup.as_ref().filter(|i| !i.local_mods.is_empty()) {
             col = col
                 .child(div().pt(px(space::S)).child(sheet::label(trf("Eigene Dateien (%lld)", &[&own.local_mods.len()]), t)))
                 .child(local_files("local-files", &own.local_mods, &self.local_scroll, self.list_max, t))
@@ -1069,7 +1073,7 @@ impl BatchSheet {
     }
 
     fn render_updates(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
-        let original = self.original.as_ref()?;
+        let original = self.setup.as_ref()?;
         if self.mods.is_empty() && self.updates_note.is_none() {
             return None;
         }

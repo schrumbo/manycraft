@@ -1,4 +1,4 @@
-//! Batches: groups of instances that share one game version, one mod list and one config.
+//! Batches: groups of accounts that play one instance together on one server.
 
 use std::path::{Path, PathBuf};
 
@@ -9,7 +9,6 @@ use uuid::Uuid;
 use super::{paths, store};
 
 const FILE: &str = "batch.json";
-const DEFAULT_MEMORY_MB: u32 = 2048;
 const DEFAULT_JOIN_DELAY_MS: u32 = 2000;
 const MAX_JOIN_LINES: usize = 20;
 /// Longest line a chat message can hold.
@@ -90,27 +89,18 @@ impl Background {
     }
 }
 
-/// A group of instances: every account in it runs the same version, mods and config.
+/// A group of accounts that all play the same instance with the same run settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Batch {
     pub id: String,
     pub name: String,
-    pub game_version: String,
+    /// The instance every account plays; empty in a file the migration has not reached yet.
     #[serde(default)]
-    pub loader_version: Option<String>,
-    #[serde(default)]
-    pub mods: Vec<ModRef>,
-    /// File names in the shared mods folder that are not on Modrinth; syncing never deletes them.
-    #[serde(default)]
-    pub local_mods: Vec<String>,
+    pub instance_id: String,
     #[serde(default)]
     pub server: Option<String>,
-    #[serde(default = "default_memory")]
-    pub memory_mb: u32,
     #[serde(default)]
     pub accounts: Vec<Uuid>,
-    #[serde(default)]
-    pub jvm_args: Vec<String>,
     /// Chat lines or commands every instance sends once after each successful join, in order.
     #[serde(default)]
     pub join_commands: Vec<String>,
@@ -120,15 +110,14 @@ pub struct Batch {
     /// What hidden instances may cost; a value from a newer version reads as the default.
     #[serde(default, deserialize_with = "lenient")]
     pub background: Background,
+    /// Memory each game of the batch gets instead of the instance's.
+    #[serde(default)]
+    pub memory_override: Option<u32>,
 }
 
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value::<Background>(value).map(Background::clamped).unwrap_or_default())
-}
-
-fn default_memory() -> u32 {
-    DEFAULT_MEMORY_MB
 }
 
 fn default_join_delay() -> u32 {
@@ -145,69 +134,34 @@ impl Batch {
         true
     }
 
-    /// A new, empty batch for `game_version` with a fresh id.
-    pub fn new(name: &str, game_version: &str) -> Self {
+    /// A new, empty batch playing `instance_id` with a fresh id.
+    pub fn new(name: &str, instance_id: &str) -> Self {
         Self {
             id: Uuid::new_v4().simple().to_string(),
             name: name.to_owned(),
-            game_version: game_version.to_owned(),
-            loader_version: None,
-            mods: Vec::new(),
-            local_mods: Vec::new(),
+            instance_id: instance_id.to_owned(),
             server: None,
-            memory_mb: DEFAULT_MEMORY_MB,
             accounts: Vec::new(),
-            jvm_args: Vec::new(),
             join_commands: Vec::new(),
             join_delay_ms: DEFAULT_JOIN_DELAY_MS,
             background: Background::Saving,
+            memory_override: None,
         }
     }
 
-    /// Folder holding `batch.json`, the shared `mods/`, `config/`, `resourcepacks/` and `shaderpacks/`, and the
-    /// `options.txt` and `servers.dat` templates.
+    /// Folder holding `batch.json`.
     pub fn dir(&self) -> PathBuf {
         batches_dir().join(&self.id)
     }
 
-    /// Shared mod folder every instance of the batch links to.
-    pub fn mods_dir(&self) -> PathBuf {
-        self.dir().join("mods")
-    }
-
-    /// Shared config folder every instance of the batch links to.
-    pub fn config_dir(&self) -> PathBuf {
-        self.dir().join("config")
-    }
-
-    /// Shared resource pack folder every instance of the batch links to.
-    pub fn resourcepacks_dir(&self) -> PathBuf {
-        self.dir().join("resourcepacks")
-    }
-
-    /// Shared shader pack folder every instance of the batch links to.
-    pub fn shaderpacks_dir(&self) -> PathBuf {
-        self.dir().join("shaderpacks")
-    }
-
-    /// Game options every instance starts from; a game that saves its options updates the keys it changed.
-    pub fn options_template(&self) -> PathBuf {
-        self.dir().join("options.txt")
-    }
-
-    /// Server list every instance starts from; a game that saves its list replaces it.
-    pub fn servers_template(&self) -> PathBuf {
-        self.dir().join("servers.dat")
+    /// Memory each game gets: the batch's own value, else `instance_mb`.
+    pub fn memory(&self, instance_mb: u32) -> u32 {
+        self.memory_override.unwrap_or(instance_mb)
     }
 
     /// The join commands as they are sent: trimmed, without empty lines or lines longer than a chat message, at most 20.
     pub fn join_lines(&self) -> Vec<String> {
         self.join_commands.iter().map(|l| l.trim()).filter(|l| !l.is_empty() && l.chars().count() <= MAX_CHAT_CHARS).take(MAX_JOIN_LINES).map(str::to_owned).collect()
-    }
-
-    /// Game folder of `account` in this batch.
-    pub fn instance_dir(&self, account: Uuid) -> PathBuf {
-        paths::instances_dir().join(&self.id).join(account.simple().to_string())
     }
 }
 
@@ -216,7 +170,8 @@ pub fn batches_dir() -> PathBuf {
     paths::data_dir().join("batches")
 }
 
-/// All saved batches, sorted by name. A batch whose file cannot be read is an error, never skipped silently.
+/// All saved batches, sorted by name. A batch whose file cannot be read is an error, never skipped silently; one the
+/// migration has not reached yet is left out.
 pub fn load_all() -> Result<Vec<Batch>> {
     load_all_in(&batches_dir())
 }
@@ -226,16 +181,22 @@ pub fn save(batch: &Batch) -> Result<()> {
     save_in(&batches_dir(), batch)
 }
 
-/// Deletes the batch's folder including its shared mods and config. Use `fleet::delete_batch` to keep those.
+/// Deletes the batch's file. Its instance, mods, configs and worlds stay; anything else in its folder stays too.
 pub fn delete(batch: &Batch) -> Result<()> {
-    let dir = batch.dir();
+    delete_in(&batches_dir(), batch)
+}
+
+pub(super) fn delete_in(root: &Path, batch: &Batch) -> Result<()> {
+    if !super::instance::valid_id(&batch.id) {
+        bail!("invalid batch id {:?}", batch.id);
+    }
+    let dir = root.join(&batch.id);
     match std::fs::remove_file(dir.join(FILE)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
         _ => {}
     }
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).with_context(|| format!("cannot delete {}", dir.display()))?;
-    }
+    let _ = std::fs::remove_file(dir.join(format!("{FILE}.lock")));
+    let _ = std::fs::remove_dir(&dir);
     Ok(())
 }
 
@@ -253,15 +214,20 @@ pub(super) fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
         }
         let bytes = store::read(&file)?.with_context(|| format!("cannot read {}", file.display()))?;
         let batch: Batch = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", file.display()))?;
-        batches.push(batch);
+        if !batch.instance_id.is_empty() {
+            batches.push(batch);
+        }
     }
     batches.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
     Ok(batches)
 }
 
 pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
-    if batch.id.is_empty() || !batch.id.chars().all(|c| c.is_ascii_alphanumeric()) {
+    if !super::instance::valid_id(&batch.id) {
         bail!("invalid batch id {:?}", batch.id);
+    }
+    if !super::instance::valid_id(&batch.instance_id) {
+        bail!("batch {} has no instance", batch.id);
     }
     store::write(&root.join(&batch.id).join(FILE), &serde_json::to_vec_pretty(batch)?, |_| Ok(()))
 }
@@ -272,7 +238,7 @@ mod tests {
 
     #[test]
     fn rejoin_keeps_the_place_and_refuses_twice() {
-        let mut b = Batch::new("A", "26.3");
+        let mut b = Batch::new("A", "i1");
         b.accounts = vec![Uuid::from_u128(1), Uuid::from_u128(3)];
         assert!(b.rejoin(Uuid::from_u128(2), 1));
         assert!(!b.rejoin(Uuid::from_u128(2), 0));
@@ -283,9 +249,9 @@ mod tests {
     #[test]
     fn round_trip_and_sorted_by_name() {
         let dir = tempfile::tempdir().unwrap();
-        let mut b = Batch::new("zeta", "26.3");
+        let mut b = Batch::new("zeta", "i1");
         b.accounts.push(Uuid::nil());
-        let a = Batch::new("Alpha", "26.3");
+        let a = Batch::new("Alpha", "i1");
         save_in(dir.path(), &b).unwrap();
         save_in(dir.path(), &a).unwrap();
         let loaded = load_all_in(dir.path()).unwrap();
@@ -303,9 +269,8 @@ mod tests {
 
     #[test]
     fn old_files_get_defaults() {
-        let batch: Batch = serde_json::from_str(r#"{"id":"a1","name":"A","game_version":"26.3"}"#).unwrap();
-        assert_eq!(batch.memory_mb, DEFAULT_MEMORY_MB);
-        assert!(batch.mods.is_empty() && batch.accounts.is_empty() && batch.server.is_none());
+        let batch: Batch = serde_json::from_str(r#"{"id":"a1","name":"A","instance_id":"i1"}"#).unwrap();
+        assert!(batch.memory_override.is_none() && batch.accounts.is_empty() && batch.server.is_none());
         assert!(batch.join_commands.is_empty());
         assert_eq!(batch.join_delay_ms, DEFAULT_JOIN_DELAY_MS);
         assert_eq!(batch.background, Background::Saving);
@@ -314,11 +279,11 @@ mod tests {
     #[test]
     fn background_round_trips_and_unknown_levels_read_as_saving() {
         let dir = tempfile::tempdir().unwrap();
-        let mut b = Batch::new("a", "26.3");
+        let mut b = Batch::new("a", "i1");
         b.background = Background::Full;
         save_in(dir.path(), &b).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
-        let json = |level: &str| format!(r#"{{"id":"a1","name":"A","game_version":"26.3","background":{level}}}"#);
+        let json = |level: &str| format!(r#"{{"id":"a1","name":"A","instance_id":"i1","background":{level}}}"#);
         assert_eq!(serde_json::from_str::<Batch>(&json(r#""balanced""#)).unwrap().background, Background::Balanced);
         assert_eq!(serde_json::from_str::<Batch>(&json(r#""turbo""#)).unwrap().background, Background::Saving);
         assert_eq!(serde_json::from_str::<Batch>(&json("7")).unwrap().background, Background::Saving);
@@ -327,11 +292,11 @@ mod tests {
     #[test]
     fn custom_background_round_trips_with_defaults_and_ranges() {
         let dir = tempfile::tempdir().unwrap();
-        let mut b = Batch::new("a", "26.3");
+        let mut b = Batch::new("a", "i1");
         b.background = Background::Custom { fps: 10, sight: 6 };
         save_in(dir.path(), &b).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
-        let json = |level: &str| format!(r#"{{"id":"a1","name":"A","game_version":"26.3","background":{level}}}"#);
+        let json = |level: &str| format!(r#"{{"id":"a1","name":"A","instance_id":"i1","background":{level}}}"#);
         let read = |level: &str| serde_json::from_str::<Batch>(&json(level)).unwrap().background;
         assert_eq!(read(r#"{"custom":{"fps":10,"sight":6}}"#), Background::Custom { fps: 10, sight: 6 });
         assert_eq!(read(r#"{"custom":{}}"#), Background::Custom { fps: 5, sight: 4 });
@@ -352,7 +317,7 @@ mod tests {
     #[test]
     fn join_commands_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let mut b = Batch::new("a", "26.3");
+        let mut b = Batch::new("a", "i1");
         b.join_commands = vec!["/login x".into(), "/server survival".into()];
         b.join_delay_ms = 500;
         save_in(dir.path(), &b).unwrap();
@@ -361,7 +326,7 @@ mod tests {
 
     #[test]
     fn join_lines_are_trimmed_and_bounded() {
-        let mut b = Batch::new("a", "26.3");
+        let mut b = Batch::new("a", "i1");
         b.join_commands = vec!["  /login x ".into(), String::new(), "   ".into(), "y".repeat(257), "hello".into()];
         assert_eq!(b.join_lines(), vec!["/login x".to_owned(), "hello".to_owned()]);
         b.join_commands = (0..50).map(|n| format!("/c{n}")).collect();
@@ -369,9 +334,35 @@ mod tests {
     }
 
     #[test]
+    fn unmigrated_batches_are_left_out_and_cannot_be_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("old")).unwrap();
+        std::fs::write(dir.path().join("old").join(FILE), br#"{"id":"old","name":"Old","game_version":"26.3"}"#).unwrap();
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
+        assert!(save_in(dir.path(), &Batch::new("x", "")).is_err());
+        assert_eq!(Batch::new("x", "i1").memory(3000), 3000);
+        assert_eq!(Batch { memory_override: Some(1024), ..Batch::new("x", "i1") }.memory(3000), 1024);
+    }
+
+    #[test]
+    fn delete_keeps_anything_it_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Batch::new("a", "i1");
+        let b = Batch::new("b", "i1");
+        save_in(dir.path(), &a).unwrap();
+        save_in(dir.path(), &b).unwrap();
+        std::fs::write(dir.path().join(&b.id).join("stray.txt"), b"x").unwrap();
+        delete_in(dir.path(), &a).unwrap();
+        delete_in(dir.path(), &b).unwrap();
+        assert!(!dir.path().join(&a.id).exists());
+        assert!(dir.path().join(&b.id).join("stray.txt").is_file());
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
     fn ids_that_could_escape_the_folder_are_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let mut b = Batch::new("x", "26.3");
+        let mut b = Batch::new("x", "i1");
         b.id = "../evil".into();
         assert!(save_in(dir.path(), &b).is_err());
     }

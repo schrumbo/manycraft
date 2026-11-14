@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
+use crate::core::instance::{self as setup, Loader};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
 use crate::core::mrpack;
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
@@ -547,38 +548,54 @@ pub struct BatchEdit {
     pub background: Background,
 }
 
-/// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`.
-/// Accounts that no longer exist are left out.
+/// Applies `edit` to the saved batch `id` and its instance as they are on disk now, or creates a batch with
+/// a new instance of its name when `id` is `None`. Accounts that no longer exist are left out.
 pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<()> {
     saved(|| {
-        let mut b = match id {
-            Some(id) => batch::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?,
-            None => Batch::new(&edit.name, &edit.game_version),
+        let instances = setup::load_all()?;
+        let (mut b, mut i) = match id {
+            Some(id) => {
+                let b = batch::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?;
+                let i = instances.iter().find(|i| i.id == b.instance_id).cloned().ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
+                (b, i)
+            }
+            None => {
+                let taken: Vec<String> = instances.iter().map(|i| i.name.clone()).collect();
+                let i = setup::Instance::new(&setup::free_name(&edit.name, &taken), &edit.game_version, Loader::default());
+                (Batch::new(&edit.name, &i.id), i)
+            }
         };
         let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
-        apply(&mut b, edit.clone(), &known);
+        apply(&mut b, &mut i, edit.clone(), &known);
+        setup::save(&i)?;
         batch::save(&b)
     })
 }
 
-fn apply(b: &mut Batch, edit: BatchEdit, known: &HashSet<Uuid>) {
-    if b.game_version != edit.game_version {
-        b.loader_version = None;
+fn apply(b: &mut Batch, i: &mut setup::Instance, edit: BatchEdit, known: &HashSet<Uuid>) {
+    if i.game_version != edit.game_version {
+        i.loader = i.loader.with_version(None);
     }
     b.name = edit.name;
-    b.game_version = edit.game_version;
+    i.game_version = edit.game_version;
     b.server = edit.server;
     if let Some(mb) = edit.memory_mb {
-        b.memory_mb = mb;
+        i.memory_mb = mb;
     }
     b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).collect();
-    b.mods = edit.mods;
+    i.mods = edit.mods;
     b.background = edit.background;
 }
 
-/// Deletes a batch and keeps its shared files next to its game folders.
+/// Deletes a batch; its instance with worlds, mods and settings stays.
 pub fn delete_batch(b: &Batch) -> Result<()> {
-    saved(|| fleet::delete_batch(b).map(|_| ()))
+    saved(|| fleet::delete_batch(b))
+}
+
+fn batch_on(made: &setup::Instance) -> Result<Batch> {
+    let b = Batch::new(&made.name, &made.id);
+    batch::save(&b)?;
+    Ok(b)
 }
 
 /// The Prism Launcher instances on this machine, Fabric ones first.
@@ -592,39 +609,44 @@ pub fn prism_instances() -> Result<Vec<Instance>> {
     Ok(found)
 }
 
-/// Imports `instance` as a new batch and applies the name, server, memory and accounts of `edit`; its version and mods stay the instance's.
-/// A batch that was imported but could not be completed is removed again.
-pub fn import_prism(instance: &Instance, edit: BatchEdit) -> Result<Batch> {
+/// Imports `instance` as a new instance with a batch on it and applies the name, server, memory and accounts of
+/// `edit`; its version and mods stay the Prism instance's. What was imported but could not be completed is removed again.
+pub fn import_prism(instance: &Instance, edit: BatchEdit) -> Result<setup::Instance> {
     saved(|| {
-        let mut b = if drive::fenced("prism import", &instance.id) {
+        let mut made = if drive::fenced("prism import", &instance.id) {
             std::thread::sleep(CANNED_DELAY);
             canned_import(instance, &edit.name)?
         } else {
-            prism::import_instance(instance, &edit.name).map_err(|e| if format!("{e:#}").contains("exists already") { gone(crate::core::i18n::trf("Es gibt schon einen Batch „%@“. Wähle einen anderen Namen.", &[&edit.name])) } else { e })?
+            prism::import_instance(instance, &edit.name).map_err(|e| if format!("{e:#}").contains("exists already") { gone(crate::core::i18n::trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&edit.name])) } else { e })?
         };
-        let finish = |b: &mut Batch| -> Result<()> {
+        let finish = |made: &mut setup::Instance| -> Result<()> {
             let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
-            b.server.clone_from(&edit.server);
             if let Some(mb) = edit.memory_mb {
-                b.memory_mb = mb;
+                made.memory_mb = mb;
+                setup::save(made)?;
             }
+            let mut b = Batch::new(&edit.name, &made.id);
+            b.server.clone_from(&edit.server);
             b.accounts = edit.accounts.iter().copied().filter(|id| known.contains(id)).collect();
             b.background = edit.background;
-            batch::save(b)
+            batch::save(&b)
         };
-        if let Err(e) = finish(&mut b) {
-            let _ = batch::delete(&b);
+        if let Err(e) = finish(&mut made) {
+            let _ = setup::delete(&made);
             return Err(e);
         }
-        Ok(b)
+        Ok(made)
     })
 }
 
-/// Imports a `.mrpack`, Prism export or Prism instance folder as a new batch; see `mrpack::import`.
-/// A driven instance runs the same checks, then makes an empty batch of the pack's name without downloading.
+/// Imports a `.mrpack`, Prism export or Prism instance folder as a new instance with a batch on it; see `mrpack::import`.
+/// A driven instance runs the same checks, then makes an empty one of the pack's name without downloading.
 pub fn import_batch(path: &std::path::Path, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<Batch> {
     if !drive::fenced("mrpack import", path.display()) {
-        return mrpack::import(path, cancel, progress);
+        let made = mrpack::import(path, cancel, progress)?;
+        return saved(|| batch_on(&made)).inspect_err(|_| {
+            let _ = setup::delete(&made);
+        });
     }
     let name = mrpack::peek(path)?;
     for step in 0..=CANNED_STEPS {
@@ -635,41 +657,45 @@ pub fn import_batch(path: &std::path::Path, cancel: &AtomicBool, progress: &(dyn
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {
-        let taken: Vec<String> = batch::load_all()?.into_iter().map(|b| b.name).collect();
-        let made = Batch::new(&mrpack::free_name(&name, &taken), "1.21.1");
-        batch::save(&made)?;
-        Ok(made)
+        let taken: Vec<String> = setup::load_all()?.into_iter().map(|b| b.name).collect();
+        let made = setup::Instance::new(&mrpack::free_name(&name, &taken), "1.21.1", Loader::default());
+        setup::save(&made)?;
+        batch_on(&made)
     })
 }
 
-/// Deletes a batch an import made after it was cancelled too late to stop.
+/// Deletes a batch and its instance an import made after it was cancelled too late to stop.
 pub fn drop_import(b: &Batch) -> Result<()> {
-    batch::delete(b)
+    batch::delete(b)?;
+    match setup::load_all()?.into_iter().find(|i| i.id == b.instance_id) {
+        Some(made) => setup::delete(&made),
+        None => Ok(()),
+    }
 }
 
-/// Writes `b` as a `.mrpack` to `out`; a driven instance only records it.
-pub fn export_batch(b: &Batch, out: &std::path::Path) -> Result<()> {
+/// Writes `made` as a `.mrpack` to `out`; a driven instance only records it.
+pub fn export_instance(made: &setup::Instance, out: &std::path::Path) -> Result<()> {
     if drive::fenced("mrpack export", out.display()) {
         std::thread::sleep(CANNED_DELAY);
         return Ok(());
     }
-    mrpack::export(b, out)
+    mrpack::export(made, out)
 }
 
-/// Newer files for the mods of the saved batch `batch`.
-pub fn mod_updates(batch: &Batch) -> Result<Vec<Update>> {
-    if drive::fenced("modrinth updates", &batch.name) {
+/// Newer files for the mods of the saved instance `made`.
+pub fn mod_updates(made: &setup::Instance) -> Result<Vec<Update>> {
+    if drive::fenced("modrinth updates", &made.name) {
         std::thread::sleep(CANNED_DELAY);
-        return Ok(batch.mods.iter().take(2).map(canned_update).collect());
+        return Ok(made.mods.iter().take(2).map(canned_update).collect());
     }
-    modrinth::updates(batch)
+    modrinth::updates(made)
 }
 
-/// Applies `selection` to the saved batch `id` as it is on disk now and returns it. While the batch `running`
-/// only its list changes; the files follow at the next start.
-pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<Batch> {
+/// Applies `selection` to the saved instance `id` as it is on disk now and returns it. While a game of it
+/// is `running` only its list changes; the files follow at the next start.
+pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<setup::Instance> {
     saved(|| {
-        let mut b = batch::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?;
+        let mut b = setup::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
         if running || drive::fenced("modrinth apply", selection.len()) {
             modrinth::update_mods_later(&mut b, selection)?;
         } else {
@@ -728,21 +754,20 @@ fn canned_instances() -> Vec<Instance> {
     ]
 }
 
-fn canned_import(instance: &Instance, name: &str) -> Result<Batch> {
+fn canned_import(instance: &Instance, name: &str) -> Result<setup::Instance> {
     if let Some(reason) = &instance.unsupported {
         bail!("{} cannot be imported: {reason}", instance.name);
     }
-    if batch::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
-        return Err(gone(crate::core::i18n::trf("Es gibt schon einen Batch „%@“. Wähle einen anderen Namen.", &[&name])));
+    if setup::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
+        return Err(gone(crate::core::i18n::trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name])));
     }
     let game = instance.game_version.clone().context("no Minecraft version")?;
-    let mut b = Batch::new(name, &game);
-    b.loader_version.clone_from(&instance.loader_version);
+    let mut b = setup::Instance::new(name, &game, Loader::Fabric(instance.loader_version.clone()));
     b.mods = vec![canned_ref("fabric-api", "Fabric API", &game), canned_ref("lithium", "Lithium", &game), canned_ref("sodium", "Sodium", &game)];
     if instance.mods > 0 {
         b.local_mods = vec!["my-private-mod-1.0.jar".into(), "friend-build-1.2.jar".into()];
     }
-    batch::save(&b)?;
+    setup::save(&b)?;
     Ok(b)
 }
 
@@ -806,17 +831,17 @@ mod tests {
     #[test]
     fn an_edit_keeps_what_the_sheet_does_not_show() {
         let (me, gone) = (Uuid::from_u128(1), Uuid::from_u128(2));
-        let mut b = Batch::new("Farm", "26.2");
-        b.loader_version = Some("0.17".into());
-        b.memory_mb = 3000;
-        b.jvm_args = vec!["-XX:+UseZGC".into()];
+        let mut i = setup::Instance::new("Farm", "26.2", Loader::Fabric(Some("0.17".into())));
+        i.memory_mb = 3000;
+        i.jvm_args = vec!["-XX:+UseZGC".into()];
+        let mut b = Batch::new("Farm", &i.id);
         let edit = |version: &str, memory_mb| BatchEdit { name: "Lobby".into(), game_version: version.into(), server: None, memory_mb, accounts: vec![me, gone], mods: Vec::new(), background: Background::Balanced };
-        apply(&mut b, edit("26.2", None), &HashSet::from([me]));
-        assert_eq!((b.name.as_str(), b.memory_mb, b.loader_version.as_deref(), b.accounts.as_slice()), ("Lobby", 3000, Some("0.17"), &[me][..]));
-        assert_eq!(b.jvm_args, ["-XX:+UseZGC"]);
+        apply(&mut b, &mut i, edit("26.2", None), &HashSet::from([me]));
+        assert_eq!((b.name.as_str(), i.memory_mb, i.loader.version(), b.accounts.as_slice()), ("Lobby", 3000, Some("0.17"), &[me][..]));
+        assert_eq!(i.jvm_args, ["-XX:+UseZGC"]);
         assert_eq!(b.background, Background::Balanced);
-        apply(&mut b, edit("26.3", Some(2048)), &HashSet::from([me]));
-        assert_eq!((b.memory_mb, b.loader_version.as_deref()), (2048, None));
+        apply(&mut b, &mut i, edit("26.3", Some(2048)), &HashSet::from([me]));
+        assert_eq!((i.memory_mb, &i.loader), (2048, &Loader::Fabric(None)));
     }
 
     #[test]

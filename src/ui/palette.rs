@@ -278,7 +278,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     let chosen = if grid { this.grid.chosen() } else { Vec::new() };
     if !chosen.is_empty() {
         let detail = match chosen.as_slice() {
-            [one] => m.instances.get(one).map(|i| i.name.clone()),
+            [one] => m.games.get(one).map(|i| i.name.clone()),
             many => Some(trf("%lld Accounts", &[&many.len()])),
         };
         let n = super::grid::offers(&chosen, m).map(|o| o.3);
@@ -302,9 +302,9 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Selection, "palette", label, detail.clone(), Box::new(SetColor { accounts: accounts.clone(), color }), cx));
         }
     }
-    let stopped = m.instances.values().any(|i| !i.phase.is_active());
-    let active = m.instances.values().any(|i| i.phase.is_active() && !i.stopping);
-    let playable = m.instances.values().any(|i| super::tile::playable(&i.phase));
+    let stopped = m.games.values().any(|i| !i.phase.is_active());
+    let active = m.games.values().any(|i| i.phase.is_active() && !i.stopping);
+    let playable = m.games.values().any(|i| super::tile::playable(&i.phase));
     let attention = m.attention_count(None) > 0;
     let ready = matches!(m.updates.status, model::UpdateStatus::Ready { .. }) && super::updates::counts(cx).0 == 0;
     for (icon, label, action, able) in [
@@ -314,7 +314,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
         ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
-        ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.instances.is_empty()),
+        ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.games.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
         ("gamepad-2", tr("Vorherigen Account spielen"), Box::new(PreviousInstance), playable),
         ("triangle-alert", tr("Nächsten, der dich braucht"), Box::new(NextAttention), attention),
@@ -359,7 +359,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     for a in m.accounts.iter().filter(|a| a.kind == crate::core::account::AccountKind::Microsoft) {
         out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));
     }
-    let mut instances: Vec<_> = m.instances.values().collect();
+    let mut instances: Vec<_> = m.games.values().collect();
     instances.sort_by_cached_key(|i| (i.name.to_lowercase(), m.batch(&i.batch_id).map(|b| b.name.to_lowercase())));
     for i in instances {
         let batch = m.batch(&i.batch_id).map(|b| b.name.clone()).unwrap_or_default();
