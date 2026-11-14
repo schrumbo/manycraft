@@ -656,7 +656,6 @@ fn update_model(cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)
     change_model(Redraw::All, cx, f);
 }
 
-/// What a change to the model redraws.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Redraw {
     All,
@@ -682,7 +681,6 @@ fn change_model(redraw: Redraw, cx: &mut App, f: impl FnOnce(&mut Model, &mut Ru
     refresh_badge(cx);
 }
 
-/// What applying `updates` redraws: a preview notice or a chat line that is not a whisper changes nothing the grid shows.
 fn redraw(updates: &[Update]) -> Redraw {
     let mut chat = false;
     for update in updates {
@@ -692,7 +690,7 @@ fn redraw(updates: &[Update]) -> Redraw {
             _ => return Redraw::All,
         }
     }
-    if chat { Redraw::Chat } else { Redraw::Nothing }
+    if chat && settings::active().merged_chat { Redraw::Chat } else { Redraw::Nothing }
 }
 
 fn start_keys(keys: &[String], cx: &mut App) {

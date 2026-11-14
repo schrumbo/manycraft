@@ -321,12 +321,12 @@ pub fn read_preview(path: &Path) -> Option<Preview> {
 pub struct PreviewChanges(HashMap<String, (u32, u64)>);
 
 impl PreviewChanges {
-    /// Whether `preview` differs from the last frame passed for `key`. A lower `seq` means a new game process and counts as a change.
+    /// Whether `preview` differs from the last frame passed for `key`. A `seq` that did not rise means a new game process or a read again and counts as a change.
     pub fn changed(&mut self, key: &str, preview: &Preview) -> bool {
         let mut hasher = std::hash::DefaultHasher::new();
         (preview.width, preview.height, &preview.rgba).hash(&mut hasher);
         let print = hasher.finish();
-        let fresh = self.0.get(key).is_none_or(|&(seq, last)| last != print || preview.seq < seq);
+        let fresh = self.0.get(key).is_none_or(|&(seq, last)| last != print || preview.seq <= seq);
         self.0.insert(key.to_owned(), (preview.seq, print));
         fresh
     }
@@ -505,7 +505,7 @@ mod tests {
         let mut changes = PreviewChanges::default();
         assert!(changes.changed("a", &frame(2, &[1, 2, 3, 4])));
         assert!(!changes.changed("a", &frame(4, &[1, 2, 3, 4])));
-        assert!(!changes.changed("a", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("a", &frame(4, &[1, 2, 3, 4])));
         assert!(changes.changed("b", &frame(4, &[1, 2, 3, 4])));
         assert!(changes.changed("a", &frame(6, &[1, 2, 3, 5])));
         assert!(!changes.changed("a", &frame(8, &[1, 2, 3, 5])));
