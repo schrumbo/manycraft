@@ -35,6 +35,9 @@ fn main() {
         std::process::exit(code);
     }
     log_panics();
+    if core::updater::install::boot(env!("CARGO_PKG_VERSION")) {
+        return;
+    }
     core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
     ui::theme::start_with(ui::theme::Choice::parse(&std::env::var("MANYCRAFT_THEME").unwrap_or_default()));
     let app = gpui_kit::application().with_assets(Assets);
@@ -50,6 +53,7 @@ fn main() {
         ui::settings_window::init(cx);
         ui::main_window::open(cx);
         ui::drive::init(cx);
+        ui::updates::init(cx);
     });
 }
 

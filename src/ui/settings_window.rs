@@ -5,10 +5,11 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::OpenSettings;
+use super::actions::{OpenSettings, PreviousVersion, RestartToUpdate};
 use super::drive::Mark;
 use super::motion::Soft;
-use super::sheet;
+use super::model::{self, UpdateStatus};
+use super::sheet::{self, Look};
 use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
@@ -78,10 +79,13 @@ struct SettingsView {
 
 impl SettingsView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let subs = vec![cx.observe_window_appearance(window, |_, window, cx| {
-            theme::refresh(window, cx);
-            cx.notify();
-        })];
+        let subs = vec![
+            cx.observe_window_appearance(window, |_, window, cx| {
+                theme::refresh(window, cx);
+                cx.notify();
+            }),
+            cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
+        ];
         let focus = cx.focus_handle();
         let first = focus.clone();
         window.on_next_frame(move |window, cx| window.focus(&first, cx));
@@ -89,12 +93,17 @@ impl SettingsView {
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        let mut next = settings::active().clone();
+        let before = settings::active().clone();
+        let mut next = before.clone();
         edit(&mut next);
         let badge_changed = next.game_badge != settings::active().game_badge;
+        let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         settings::set(next);
         if badge_changed {
             super::state::tell_games(cx);
+        }
+        if recheck {
+            super::updates::check(false, cx);
         }
         let task = cx.background_executor().spawn(async { settings::persist() });
         cx.spawn(async move |this, cx| {
@@ -232,15 +241,37 @@ fn chord_keys(chord: &str) -> Vec<String> {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::perf::frame_start();
         super::theme::follow_focus(window, cx);
         let t = Theme::get(cx);
         let s = settings::active().clone();
+        let updates = model::get(cx).read(cx).updates.clone();
+        let searching = matches!(updates.status, UpdateStatus::Checking) || (updates.asked && matches!(updates.status, UpdateStatus::Downloading { .. }));
+        let launching = super::updates::counts(cx).0 > 0;
+        let search = if matches!(updates.status, UpdateStatus::Ready { .. }) {
+            let restart = sheet::button("set-update-restart", tr("Neu starten"), None, Look::Primary, launching, false, &t);
+            if launching { restart.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))) } else { restart.on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx)) }
+        } else {
+            sheet::button("set-update-now", tr("Nach Updates suchen"), None, Look::Secondary, false, searching, &t).when(!searching, |b| b.on_click(|_, _, cx| super::updates::check(true, cx)))
+        };
+        let mut rows = vec![
+            row(trf("Manycraft %@", &[&env!("CARGO_PKG_VERSION")]), Some(super::updates::status_line(&updates)), search, &t),
+            self.toggle("set-auto-update", tr("Updates automatisch laden"), tr("Lädt neue Versionen im Hintergrund und installiert sie beim Beenden."), s.auto_update, |st, on| st.auto_update = on, &t, cx),
+            self.toggle("set-prereleases", tr("Vorabversionen"), tr("Bietet auch Testversionen an, bevor sie veröffentlicht sind."), s.prereleases, |st, on| st.prereleases = on, &t, cx),
+        ];
+        if let Some(previous) = updates.previous.clone() {
+            let back = sheet::button("set-previous", tr("Zurückkehren"), Some("rotate-ccw-clock"), Look::Secondary, launching, false, &t);
+            let back = if launching {
+                back.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet.")))
+            } else {
+                back.on_click(|_, window, cx| window.dispatch_action(Box::new(PreviousVersion), cx))
+            };
+            rows.push(row(tr("Vorherige Version"), Some(trf("Version %@ ist noch da, falls die neue Probleme macht.", &[&previous])), back, &t));
+        }
+        let updates_group = group(tr("Updates"), rows, super::updates::trouble_line(&updates), &t);
         let general = group(
-            tr("Allgemein"),
-            vec![
-                self.toggle("set-update-check", tr("Nach Updates suchen"), tr("Fragt einmal am Tag bei GitHub nach einer neueren Version. Installiert wird nie von selbst."), s.update_check, |st, on| st.update_check = on, &t, cx),
-                self.toggle("set-game-badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |st, on| st.game_badge = on, &t, cx),
-            ],
+            tr("Im Spiel"),
+            vec![self.toggle("set-game-badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |st, on| st.game_badge = on, &t, cx)],
             None,
             &t,
         );
@@ -300,6 +331,7 @@ impl Render for SettingsView {
                     .flex_col()
                     .gap(px(space::XL))
                     .children(error)
+                    .child(updates_group)
                     .child(general)
                     .child(chat)
                     .child(notices)
@@ -321,7 +353,7 @@ impl Render for SettingsView {
             .relative()
             .child(page)
             .child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Scrolling));
-        super::chrome::frame(title(), root, &t)
+        super::chrome::frame(title(), super::perf::frame_end(root), &t)
     }
 }
 

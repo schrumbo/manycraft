@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, ClearSelection, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, CheckForUpdates, ClearSelection, DismissNews, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleSidebar, UndoRemoveAccount,
 };
 use super::drive::Mark;
@@ -305,6 +305,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     let active = m.instances.values().any(|i| i.phase.is_active() && !i.stopping);
     let playable = m.instances.values().any(|i| super::tile::playable(&i.phase));
     let attention = m.attention_count(None) > 0;
+    let ready = matches!(m.updates.status, model::UpdateStatus::Ready { .. }) && super::updates::counts(cx).0 == 0;
     for (icon, label, action, able) in [
         ("play", tr("Alle starten"), Box::new(StartAll) as Box<dyn Action>, stopped),
         ("square", tr("Alle stoppen"), Box::new(StopAll), active),
@@ -319,6 +320,10 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
         ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
+        ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
+        ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
+        ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
+        ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),
         ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
         ("download", tr("Aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
     ] {

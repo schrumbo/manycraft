@@ -8,6 +8,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "mods" => super::modrinth::cli,
         "prism" => super::prism::cli,
         "clean" => super::install::clean::cli,
+        "apply-update" => super::updater::install::cli,
         _ => return None,
     };
     attach_console();

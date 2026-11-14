@@ -4,10 +4,10 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditBatch, NewBatch, OpenSettings, StartBatch, StopBatch};
+use super::actions::{DismissNews, EditBatch, NewBatch, OpenSettings, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
-use super::model;
+use super::model::{self, UpdateStatus, Updates};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, radius, shell, space, tint};
 use super::widgets::{KeyNav, icon, tip};
@@ -83,6 +83,113 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
         .on_click(cx.listener(move |this, _, window, cx| this.go(page.clone(), window, cx)))
 }
 
+fn news_line(updates: &Updates, t: &Theme) -> Option<Stateful<Div>> {
+    let (version, notes) = updates.news.clone()?;
+    let text = if notes.is_empty() { trf("Neu in %@", &[&version]) } else { trf("Neu in %@: %@", &[&version, &notes]) };
+    let close = tr("Ausblenden");
+    Some(
+        div()
+            .id("nav-news")
+            .mark("note", text.clone())
+            .min_h(px(shell::ROW))
+            .pl(px(space::S))
+            .flex()
+            .items_center()
+            .gap(px(space::S))
+            .child(icon("sparkles", iconsize::S, t.tertiary))
+            .child(div().id("nav-news-text").flex_1().min_w_0().truncate().text_size(px(font::CAPTION)).text_color(t.secondary).child(text.clone()).tooltip(tip(text)))
+            .child(
+                div()
+                    .id("nav-news-close")
+                    .mark("button", close.clone())
+                    .size(px(shell::PILL))
+                    .flex_none()
+                    .rounded(px(radius::INNER))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                    .child(icon("x", iconsize::S, t.tertiary))
+                    .tooltip(tip(close))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(DismissNews), cx)),
+            ),
+    )
+}
+
+fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<Div>> {
+    let base = |label: String, icon_name: &str| {
+        div()
+            .id("nav-update")
+            .mark("button", label.clone())
+            .h(px(shell::ROW))
+            .px(px(space::S))
+            .rounded(px(radius::INNER))
+            .flex()
+            .items_center()
+            .gap(px(space::S))
+            .child(icon(icon_name, iconsize::M, t.accent_text))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.accent_text).child(label))
+    };
+    let trailing = |text: String| div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(text);
+    match updates.status.clone() {
+        UpdateStatus::Ready { version } => {
+            let label = tr("Neu starten");
+            let pill = div()
+                .id("nav-update-restart")
+                .mark("button", label.clone())
+                .h(px(shell::PILL))
+                .px(px(space::S))
+                .flex_none()
+                .rounded(px(radius::FULL))
+                .bg(t.accent.opacity(tint::SELECTED))
+                .flex()
+                .items_center()
+                .text_size(px(font::CAPTION))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.accent_text)
+                .child(label);
+            let row = base(tr("Update bereit"), "download");
+            if launching {
+                return Some(row.opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))).child(pill));
+            }
+            Some(
+                row.cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                    .tooltip(tip(trf("Version %@ ist geladen und wird beim Beenden installiert.", &[&version])))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx))
+                    .child(pill),
+            )
+        }
+        UpdateStatus::Available { version, page, installs: false } if page.starts_with("https://github.com/") => Some(
+            base(tr("Update verfügbar"), "download")
+                .cursor_pointer()
+                .key_nav()
+                .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                .child(trailing(version.clone()))
+                .tooltip(tip(trf("Version %@ auf GitHub ansehen", &[&version])))
+                .on_click(move |_, _, cx| cx.open_url(&page)),
+        ),
+        UpdateStatus::Available { version, installs: true, .. } => Some(
+            base(tr("Update verfügbar"), "download")
+                .cursor_pointer()
+                .key_nav()
+                .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                .child(trailing(version.clone()))
+                .tooltip(tip(trf("Version %@ laden", &[&version])))
+                .on_click(|_, _, cx| super::updates::fetch(cx)),
+        ),
+        UpdateStatus::Checking if updates.asked => Some(base(tr("Sucht …"), "refresh-cw")),
+        UpdateStatus::Downloading { version, percent } if updates.asked => {
+            let done = percent.map_or_else(|| version.clone(), |p| format!("{p} %"));
+            Some(base(tr("Update wird geladen"), "download").child(trailing(done)).tooltip(tip(trf("Version %@ wird geladen.", &[&version]))))
+        }
+        _ => None,
+    }
+}
+
 fn heading(text: String, t: &Theme) -> Div {
     div().px(px(space::S)).pt(px(space::M)).pb(px(space::XS)).text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(t.tertiary).child(text)
 }
@@ -121,7 +228,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None };
-    let release = m.update.clone().filter(|(_, url)| url.starts_with("https://github.com/"));
+    let updates = m.updates.clone();
     let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None };
     let mut batch_rows = Vec::new();
     for (r, id, running, stopped) in batches {
@@ -137,26 +244,9 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     let new_batch = tr("Neuer Batch");
     let settings = tr("Einstellungen");
     let shortcut = super::palette::shortcut(&OpenSettings, cx).unwrap_or_default();
-    let update = release.map(|(version, url)| {
-        let label = tr("Update verfügbar");
-        div()
-            .id("nav-update")
-            .mark("button", label.clone())
-            .h(px(shell::ROW))
-            .px(px(space::S))
-            .rounded(px(radius::INNER))
-            .flex()
-            .items_center()
-            .gap(px(space::S))
-            .cursor_pointer()
-            .key_nav()
-            .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-            .child(icon("download", iconsize::M, t.accent_text))
-            .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.accent_text).child(label))
-            .child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(version.clone()))
-            .tooltip(tip(trf("Version %@ auf GitHub ansehen", &[&version])))
-            .on_click(move |_, _, cx| cx.open_url(&url))
-    });
+    let launching = super::updates::counts(cx).0 > 0;
+    let news = news_line(&updates, &t);
+    let update = update_row(&updates, launching, &t);
     div()
         .id("sidebar")
         .w(px(shell::SIDEBAR))
@@ -203,7 +293,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 .child(row(this, chat, &t, cx)),
         )
         .child(
-            div().flex_none().px(px(space::S)).pb(px(space::S)).children(update).child(
+            div().flex_none().px(px(space::S)).pb(px(space::S)).children(news).children(update).child(
                 div()
                     .id("nav-settings")
                     .mark("button", settings.clone())

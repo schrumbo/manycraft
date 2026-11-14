@@ -22,7 +22,7 @@ use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, HotkeyAction, 
 use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::settings;
-use crate::core::{companion, drive, install, ipc, update};
+use crate::core::{companion, drive, install, ipc};
 
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -411,20 +411,6 @@ pub fn init(cx: &mut App) {
         });
     }
     reload(cx);
-    if settings::active().update_check && !drive::on() {
-        let task = cx.background_spawn(async { update::check(env!("CARGO_PKG_VERSION")) });
-        cx.spawn(async move |cx| match task.await {
-            Ok(Some(release)) => cx.update(|cx| {
-                model::get(cx).update(cx, |m, cx| {
-                    m.update = Some((release.version, release.url));
-                    cx.notify();
-                });
-            }),
-            Ok(None) => {}
-            Err(e) => eprintln!("update: {e:#}"),
-        })
-        .detach();
-    }
     cx.spawn(async move |cx| {
         while let Ok(first) = updates.recv().await {
             let mut batch = vec![first];
