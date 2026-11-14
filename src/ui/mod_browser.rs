@@ -515,7 +515,7 @@ impl BatchSheet {
             .items_center()
             .gap(px(space::M))
             .rounded(px(radius::INNER))
-            .when(selected, |d| d.bg(t.ink.opacity(tint::SELECTED)))
+            .when(selected, |d| d.bg(t.highlight.opacity(tint::SELECTED)))
             .child(face)
             .child(text)
             .child(trailing)
