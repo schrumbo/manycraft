@@ -78,7 +78,7 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
                     .child(r.unread.to_string()),
             )
         })
-        .when_some(r.trailing, |d, text| d.child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(text)))
+        .when_some(r.trailing, |d, text| d.child(div().flex_none().text_size(px(font::CAPTION)).text_color(if selected { t.accent_text } else { t.tertiary }).child(text)))
         .when_some(r.hint, |d, hint| d.tooltip(tip(hint)))
         .on_click(cx.listener(move |this, _, window, cx| this.go(page.clone(), window, cx)))
 }
@@ -112,8 +112,8 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
             let hint = match (total, running) {
                 (0, _) => tr("Noch keiner da."),
-                (1, 0) => tr("Schläft noch."),
-                (_, 0) => trf("Alle %lld schlummern.", &[&total]),
+                (1, 0) if attention == 0 => tr("Schläft noch."),
+                (_, 0) if attention == 0 => trf("Alle %lld schlummern.", &[&total]),
                 _ => trf("%lld von %lld laufen", &[&fine, &total]),
             };
             let stopped = total - running;

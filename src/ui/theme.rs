@@ -296,7 +296,7 @@ pub struct Theme {
     pub accent_text: Hsla,
     /// Text and icons on a solid accent fill.
     pub on_accent: Hsla,
-    /// The aqua behind selected rows and chips; text on it stays `primary`.
+    /// The aqua behind selected rows and chips; text and icons on it use `accent_text`.
     pub highlight: Hsla,
     /// An account that needs work. Never the accent, so it stands out from selection and actions.
     pub attention: Hsla,
@@ -535,7 +535,7 @@ pub fn apply(t: Theme, window: Option<&mut Window>, cx: &mut App) {
     k.link_active = t.accent_text.opacity(0.7);
     k.switch = t.ink.opacity(if dark { 0.22 } else { 0.15 });
     k.switch_thumb = white();
-    k.list_active = t.highlight.opacity(0.22);
+    k.list_active = t.highlight.opacity(tint::SELECTED);
     k.list_hover = t.ink.opacity(0.06);
     k.tab_bar = t.raised;
     k.tab_active = t.content;
@@ -616,8 +616,8 @@ mod tests {
                 ("danger on window", contrast(t.danger, t.window), 3.),
                 ("danger text on content", contrast(t.danger_text, t.content), 4.5),
                 ("on danger", contrast(t.on_danger, t.danger), 4.5),
-                ("primary on selected", contrast(t.primary, selected(&t, t.window)), 4.5),
-                ("secondary on selected", contrast(t.secondary, selected(&t, t.window)), 4.5),
+                ("accent text on selected", contrast(t.accent_text, selected(&t, t.window)), 4.5),
+                ("accent text on selected material", contrast(t.accent_text, selected(&t, t.material)), 4.5),
             ];
             for (name, ratio, least) in checks {
                 assert!(ratio >= least, "{name} ({}): {ratio:.2} < {least}", if dark { "dark" } else { "light" });
