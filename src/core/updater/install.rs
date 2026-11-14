@@ -200,7 +200,8 @@ pub fn apply(dir: &Path, plan: &Plan, key: &str) -> Result<()> {
     let name = plan.target.file_name().context("the install has no file name")?;
     remove_all(&dir.join(KEEPING));
     let result = install(dir, plan, key, &dir.join(KEEPING).join(name));
-    let kept = result.is_ok().then(|| keep_previous(dir).then(|| Previous { version: plan.from.clone(), path: dir.join(KEPT).join(name) }));
+    let unrestored = result.as_ref().is_err_and(|e| e.downcast_ref::<Unrestored>().is_some());
+    let kept = (result.is_ok() || unrestored).then(|| keep_previous(dir).then(|| Previous { version: plan.from.clone(), path: dir.join(KEPT).join(name) }));
     remove_all(&dir.join(KEEPING));
     super::discard_ready(dir);
     edit(dir, |s| match &result {
@@ -214,9 +215,22 @@ pub fn apply(dir: &Path, plan: &Plan, key: &str) -> Result<()> {
         Err(_) => {
             s.failed_at = super::now();
             s.trouble = Some(Trouble::Install);
+            if let Some(previous) = kept.clone().flatten() {
+                s.previous = Some(previous);
+            }
         }
     })?;
     result
+}
+
+/// The installer failed and the old version could not be put back; the copy kept during the install must stay.
+#[derive(Debug)]
+struct Unrestored;
+
+impl std::fmt::Display for Unrestored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the old version could not be put back")
+    }
 }
 
 fn install(dir: &Path, plan: &Plan, key: &str, kept: &Path) -> Result<()> {
@@ -228,10 +242,10 @@ fn install(dir: &Path, plan: &Plan, key: &str, kept: &Path) -> Result<()> {
         Kind::Installer => {
             keep_copy(&plan.target, kept)?;
             let result = run_installer(&plan.file, plan.target.parent().context("the install has no folder")?);
-            if result.is_err() {
-                let _ = place_file(kept, &plan.target);
+            match result {
+                Err(e) if place_file(kept, &plan.target).is_err() => Err(e.context(Unrestored)),
+                result => result,
             }
-            result
         }
         Kind::AppImage => {
             keep_copy(&plan.target, kept)?;
@@ -470,10 +484,17 @@ pub fn hold() {
     }
 }
 
-/// Lets go of this process's mark and tells whether any other Manycraft still runs.
+/// Trades this process's mark for the exclusive lock, held until the process ends, and tells whether no other Manycraft runs.
 fn alone(dir: &Path) -> bool {
-    HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-    crate::core::lock::try_exclusive(&dir.join(RUNNING)).is_ok_and(|g| g.is_some())
+    let mut held = HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.take();
+    match crate::core::lock::try_exclusive(&dir.join(RUNNING)) {
+        Ok(Some(guard)) => {
+            *held = Some(guard);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Records that the running `current` works.

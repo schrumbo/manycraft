@@ -152,7 +152,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .child(label);
             let row = base(tr("Update bereit"), "download");
             if launching {
-                return Some(row.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))).child(pill.opacity(tint::DISABLED).cursor_not_allowed()));
+                return Some(row.opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))).child(pill));
             }
             Some(
                 row.cursor_pointer()
