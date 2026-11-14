@@ -1,4 +1,4 @@
-//! One instance in the grid: its preview, name and status, with the action that fits its phase.
+//! One instance in the mosaic: all preview, with the account and its status in a strip on top and the action that fits its phase on hover.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,8 +13,9 @@ use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
 use super::motion::Soft;
-use super::theme::{Theme, control, font, iconsize, radius, selection, space, tile, tint, with_alpha};
-use super::widgets::{KeyNav, icon, tip};
+use super::identity;
+use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint, with_alpha};
+use super::widgets::{icon, tip};
 use crate::core::i18n::{tr, trf};
 
 /// What a tile shows, copied out of the model for one frame.
@@ -22,9 +23,11 @@ pub struct TileData {
     pub key: String,
     pub name: String,
     pub account_id: Uuid,
+    /// The account's colour index.
+    pub color: u8,
     pub batch_id: String,
     pub phase: Phase,
-    /// The status line as it fits the tile.
+    /// The status in a word.
     pub status: String,
     /// The full status, with the server, for the tooltip.
     pub detail: String,
@@ -33,7 +36,7 @@ pub struct TileData {
     pub preview: Option<Arc<RenderImage>>,
     /// Whether `preview` is the running game rather than the still of an earlier run.
     pub live: bool,
-    /// The account's skin face, shown when there is no preview.
+    /// The account's skin face, on its chip and when there is no preview.
     pub face: Option<Arc<RenderImage>>,
     pub selected: bool,
     /// Whether the tile is part of a selection of several.
@@ -45,6 +48,7 @@ impl TileData {
     fn same(&self, other: &Self) -> bool {
         self.key == other.key
             && self.name == other.name
+            && self.color == other.color
             && self.phase == other.phase
             && self.status == other.status
             && self.detail == other.detail
@@ -72,7 +76,6 @@ pub struct TileView {
     data: TileData,
     geometry: Geometry,
     offset: (f32, f32),
-    focused: bool,
     hovered: bool,
     main: WeakEntity<MainWindow>,
 }
@@ -95,7 +98,7 @@ impl Render for TileView {
                 }
             });
         };
-        render(&self.data, &self.geometry, self.offset, self.focused, self.hovered, hover, self.main.clone(), &t)
+        render(&self.data, &self.geometry, self.offset, self.hovered, hover, self.main.clone(), &t)
     }
 }
 
@@ -133,14 +136,14 @@ pub struct TileViews(HashMap<String, Entity<TileView>>);
 impl Global for TileViews {}
 
 /// The cached view of the tile for `data`; it redraws only when something it shows changed.
-pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: bool, main: WeakEntity<MainWindow>, cx: &mut App) -> AnyElement {
-    let style = StyleRefinement::default().w(px(geometry.width)).h(px(geometry.height())).flex_none();
+pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), main: WeakEntity<MainWindow>, cx: &mut App) -> AnyElement {
+    let style = StyleRefinement::default().w(px(geometry.width)).h(px(geometry.height)).flex_none();
     let existing = cx.default_global::<TileViews>().0.get(&data.key).cloned();
     let entity = match existing {
         Some(entity) => {
             entity.update(cx, |v, cx| {
-                if !v.data.same(&data) || v.geometry != geometry || v.offset != offset || v.focused != focused {
-                    *v = TileView { data, geometry, offset, focused, hovered: v.hovered, main };
+                if !v.data.same(&data) || v.geometry != geometry || v.offset != offset {
+                    *v = TileView { data, geometry, offset, hovered: v.hovered, main };
                     cx.notify();
                 }
             });
@@ -150,7 +153,7 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: boo
             let key = data.key.clone();
             let entity = cx.new(|cx: &mut Context<TileView>| {
                 cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
-                TileView { data, geometry, offset, focused, hovered: false, main }
+                TileView { data, geometry, offset, hovered: false, main }
             });
             cx.global_mut::<TileViews>().0.insert(key, entity.clone());
             entity
@@ -178,48 +181,34 @@ pub fn forget_except(keep: &dyn Fn(&str) -> bool, cx: &mut App) {
     }
 }
 
-/// Sizes of a tile of one width.
-#[derive(Clone, Copy, PartialEq)]
+/// The size of one tile.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Geometry {
     pub width: f32,
-    pub preview: f32,
-    pub strip: f32,
-    pub small: bool,
-    pub dense: bool,
-    pub tiny: bool,
-    /// Whether the strip has room for a labelled sign-in button.
-    pub roomy: bool,
+    pub height: f32,
 }
 
 impl Geometry {
-    pub fn new(width: f32) -> Self {
-        Self { width, preview: (width * 9. / 16.).round(), strip: Self::strip_for(width), small: width < tile::MEDIUM, dense: width < tile::DENSE, tiny: width < tile::TINY, roomy: width >= tile::SIGN_IN }
+    pub fn new(width: f32, height: f32) -> Self {
+        Self { width, height }
     }
 
-    /// Height of the strip under a preview of `width`.
-    pub fn strip_for(width: f32) -> f32 {
-        if width < tile::TINY {
-            tile::STRIP_TINY
-        } else if width < tile::MEDIUM {
-            tile::STRIP_SMALL
+    /// Whether the overlay strip is too narrow for the status word.
+    pub fn wordless(&self) -> bool {
+        self.width < tile::WORDLESS
+    }
+
+    /// Where a picture of `aspect` (width over height) lies so that it covers the tile: left, top, width and height. A tile narrower
+    /// than the picture loses both sides evenly; a wider one loses the top, keeping the bottom with hotbar, hearts and chat.
+    pub fn cover(&self, aspect: f32) -> (f32, f32, f32, f32) {
+        let aspect = aspect.max(f32::EPSILON);
+        if self.width / self.height.max(1.) < aspect {
+            let width = self.height * aspect;
+            ((self.width - width) / 2., 0., width, self.height)
         } else {
-            tile::STRIP
+            let height = self.width / aspect;
+            (0., self.height - height, self.width, height)
         }
-    }
-
-    /// Space between tiles of `width`.
-    pub fn gap_for(width: f32) -> f32 {
-        if width < tile::TINY {
-            tile::GAP_TINY
-        } else if width < tile::MEDIUM {
-            tile::GAP_SMALL
-        } else {
-            tile::GAP
-        }
-    }
-
-    pub fn height(&self) -> f32 {
-        self.preview + self.strip
     }
 }
 
@@ -365,47 +354,46 @@ fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
     }
 }
 
-fn glyph(d: &TileData, t: &Theme) -> AnyElement {
-    if let Some((_, text, name)) = tone(d, t) {
-        return icon(name, iconsize::XS, text).into_any_element();
+fn glyph(d: &TileData, neutral: Hsla, t: &Theme) -> AnyElement {
+    if let Some((fill, _, name)) = tone(d, t) {
+        return icon(name, iconsize::XS, fill).into_any_element();
     }
     let dot = div().size(px(tile::GLYPH)).mx(px((iconsize::XS - tile::GLYPH) / 2.)).flex_none().rounded(px(radius::FULL));
     let dot = match d.phase {
-        _ if d.stopping => dot.border_1().border_color(t.secondary),
+        _ if d.stopping => dot.border_1().border_color(neutral),
         Phase::Playing { .. } => dot.bg(t.success),
-        Phase::Menu | Phase::Queue { .. } => dot.bg(t.secondary),
-        Phase::Stopped => dot.border_1().border_color(t.tertiary),
-        _ => dot.border_1().border_color(t.secondary),
+        Phase::Menu | Phase::Queue { .. } => dot.bg(neutral),
+        _ => dot.border_1().border_color(neutral),
     };
     dot.into_any_element()
 }
 
-fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement {
-    let attention = tone(d, t).is_some();
-    let top = px(radius::CARD);
-    let live = d.preview.as_ref().filter(|_| d.live).map(|image| img(ImageSource::Render(Arc::clone(image))).size_full().rounded_t(top).object_fit(ObjectFit::Cover).when(attention, |i| i.opacity(tile::DIMMED)));
-    let still = d.preview.as_ref().filter(|_| !d.live).map(|image| {
-        let fade = linear_gradient(180., linear_color_stop(t.content.opacity(0.), 0.), linear_color_stop(t.content, 1.));
-        div()
-            .absolute()
-            .inset_0()
-            .child(img(ImageSource::Render(Arc::clone(image))).size_full().object_fit(ObjectFit::Cover).grayscale(true).opacity(tint::STILL))
-            .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::FADE)).bg(fade))
-    });
-    let mark = placeholder(d, t).filter(|_| !d.live).map(|(name, color)| icon(name, if g.dense { iconsize::M } else { iconsize::L }, color));
-    let face = (d.preview.is_none() && mark.is_none()).then(|| match &d.face {
-        Some(face) => img(ImageSource::Render(Arc::clone(face))).size(px(tile::FACE)).flex_none().opacity(tint::FACE).into_any_element(),
-        None => icon("user", iconsize::L, with_alpha(t.secondary, tint::FACE)).into_any_element(),
-    });
+fn aspect(image: &RenderImage) -> f32 {
+    let size = image.size(0);
+    let (w, h) = (size.width.0 as f32, size.height.0 as f32);
+    if w > 0. && h > 0. { w / h } else { tile::ASPECT }
+}
+
+fn picture(d: &TileData, g: &Geometry, t: &Theme) -> Option<AnyElement> {
+    let image = d.preview.as_ref()?;
+    let (left, top, width, height) = g.cover(aspect(image));
+    let shown = img(ImageSource::Render(Arc::clone(image))).absolute().left(px(left)).top(px(top)).w(px(width)).h(px(height)).object_fit(ObjectFit::Fill);
+    Some(if d.live { shown.when(tone(d, t).is_some(), |i| i.opacity(tile::DIMMED)).into_any_element() } else { shown.grayscale(true).opacity(tint::STILL).into_any_element() })
+}
+
+fn actions(d: &TileData, g: &Geometry, t: &Theme) -> Option<Div> {
     let active = d.phase.is_active() && !d.stopping;
-    let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || !g.roomy);
+    let main = primary(&d.phase, d.stopping);
     let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
-    let actions = (controls && (main.is_some() || stop.is_some())).then(|| {
-        let shade = linear_gradient(180., linear_color_stop(black().opacity(0.), 0.), linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 1.));
+    if main.is_none() && stop.is_none() {
+        return None;
+    }
+    let shade = linear_gradient(180., linear_color_stop(black().opacity(0.), 0.), linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 1.));
+    Some(
         div()
             .absolute()
             .inset_0()
-            .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::SHADE.min(g.preview))).bg(shade))
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::SHADE.min(g.height))).bg(shade))
             .child(
                 div()
                     .absolute()
@@ -416,18 +404,19 @@ fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement 
                     .items_center()
                     .justify_between()
                     .gap(px(space::S))
-                    .child(div().min_w_0().flex().children(main.map(|p| pill(format!("primary-{}", d.key), p, d, g.small, t))))
+                    .child(div().min_w_0().flex().children(main.map(|p| pill(format!("primary-{}", d.key), p, d, g.wordless(), t))))
                     .children(stop),
-            )
-    });
-    let whispers = (d.whispers > 0).then(|| {
-        let n = d.whispers;
+            ),
+    )
+}
+
+fn whispers(d: &TileData, t: &Theme) -> Option<Stateful<Div>> {
+    let n = d.whispers;
+    (n > 0).then(|| {
         div()
             .id(SharedString::from(format!("whispers-{}", d.key)))
             .mark("badge", n.to_string())
-            .absolute()
-            .top(px(space::S))
-            .right(px(space::S))
+            .flex_none()
             .min_w(px(tile::BADGE))
             .h(px(tile::BADGE))
             .px(px(space::XS))
@@ -443,107 +432,70 @@ fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement 
             .child(icon("message-square", iconsize::XS, t.on_accent))
             .child(n.to_string())
             .tooltip(tip(if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) }))
-    });
-    div().relative().w_full().h(px(g.preview)).flex_none().rounded_t(top).overflow_hidden().bg(t.well).flex().items_center().justify_center().children(live).children(still).children(mark).children(face).children(actions).children(whispers).into_any_element()
+    })
 }
 
-fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
-    let tone = tone(d, t);
-    let status_color = match tone {
-        Some((_, text, _)) => text,
-        None if d.phase == Phase::Stopped && !d.stopping => t.tertiary,
-        None => t.secondary,
-    };
-    if g.tiny {
-        return div()
-            .id(SharedString::from(format!("strip-{}", d.key)))
-            .mark("status", d.status.clone())
-            .h(px(g.strip))
-            .flex_none()
-            .when_some(tone, |s, (fill, _, _)| s.bg(with_alpha(fill, tint::ATTENTION)))
-            .px(px(space::S))
-            .flex()
-            .items_center()
-            .gap(px(space::XS))
-            .child(glyph(d, t))
-            .child(div().flex_1().min_w_0().truncate().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(d.name.clone()))
-            .tooltip(tip(format!("{} · {}", d.name, d.detail)))
-            .into_any_element();
-    }
-    let sign_in = (d.phase == Phase::LoginNeeded && g.roomy).then(|| {
-        let label = tr("Anmelden");
-        div()
-            .id(SharedString::from(format!("sign-in-{}", d.key)))
-            .mark("button", label.clone())
-            .h(px(control::S))
-            .px(px(space::S))
-            .rounded(px(radius::INNER))
-            .border_1()
-            .border_color(with_alpha(t.danger, tint::OUTLINE))
-            .text_color(t.danger_text)
-            .text_size(px(font::CALLOUT))
-            .font_weight(FontWeight::MEDIUM)
-            .flex()
-            .flex_none()
-            .items_center()
-            .cursor_pointer()
-            .key_nav()
-            .soft(with_alpha(t.danger, tint::HOVER * 2.), radius::INNER)
-            .child(label)
-            .on_click(dispatch(Box::new(SignInAgain(d.account_id.to_string()))))
+fn strip(d: &TileData, g: &Geometry, t: &Theme) -> Div {
+    let pictured = d.preview.is_some();
+    let (ink, quiet) = if pictured { (white(), white().opacity(tint::OVERLAY_TEXT)) } else { (t.primary, t.secondary) };
+    let shade = pictured.then(|| {
+        let fade = linear_gradient(180., linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 0.), linear_color_stop(black().opacity(0.), 1.));
+        div().absolute().top_0().left_0().right_0().h(px(tile::BAR_SHADE.min(g.height))).bg(fade)
     });
-    let name = div()
-        .id(SharedString::from(format!("name-{}", d.key)))
-        .truncate()
-        .text_size(px(if g.small { font::CALLOUT } else { font::BODY }))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(t.primary)
-        .child(d.name.clone())
-        .when(g.small, |n| n.tooltip(tip(d.name.clone())));
+    let face = d.face.as_ref().map(|f| ImageSource::Render(Arc::clone(f)));
     let status = div()
         .id(SharedString::from(format!("status-{}", d.key)))
         .mark("status", d.status.clone())
         .flex()
+        .flex_none()
         .items_center()
         .gap(px(space::XS))
+        .child(glyph(d, quiet, t))
+        .when(!g.wordless(), |s| s.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::MEDIUM).text_color(quiet).child(d.status.clone())))
+        .tooltip(tip(d.detail.clone()));
+    let name = div()
+        .id(SharedString::from(format!("name-{}", d.key)))
+        .flex_1()
         .min_w_0()
-        .child(glyph(d, t))
-        .child(div().min_w_0().truncate().text_size(px(font::CAPTION)).text_color(status_color).child(d.status.clone()))
-        .when(d.detail != d.status, |s| s.tooltip(tip(d.detail.clone())));
-    div()
-        .h(px(g.strip))
-        .flex_none()
-        .when_some(tone, |s, (fill, _, _)| s.bg(with_alpha(fill, tint::ATTENTION)))
-        .px(px(if g.small { space::S } else { space::S + space::XXS }))
-        .flex()
-        .items_center()
-        .gap(px(space::S))
-        .child(div().flex_1().min_w_0().flex().flex_col().child(name).child(status))
-        .children(sign_in)
-        .into_any_element()
+        .truncate()
+        .text_size(px(font::CALLOUT))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(ink)
+        .child(d.name.clone())
+        .tooltip(tip(d.name.clone()));
+    div().absolute().top_0().left_0().right_0().children(shade).child(
+        div()
+            .id(SharedString::from(format!("strip-{}", d.key)))
+            .relative()
+            .h(px(tile::BAR))
+            .px(px(space::S))
+            .flex()
+            .items_center()
+            .gap(px(space::XS + space::XXS))
+            .child(identity::chip(&d.name, d.color, face, tile::CHIP, font::CAPTION2))
+            .child(name)
+            .children(whispers(d, t))
+            .child(status),
+    )
 }
 
 /// Draws one tile at `offset` from its slot, which animates a re-sort.
-#[allow(clippy::too_many_arguments)]
-pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool, hovered: bool, hover: impl Fn(&bool, &mut Window, &mut App) + 'static, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
+pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hover: impl Fn(&bool, &mut Window, &mut App) + 'static, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
     let tone = tone(d, t);
-    let edge = match (tone, d.playing) {
-        (Some((ring, _, _)), _) => Some(ring),
-        (None, true) => Some(with_alpha(t.accent, tint::OUTLINE)),
-        _ => None,
-    };
-    let ring = if d.selected && grid_focused {
-        Some((t.accent, tile::RING + 1.))
-    } else if d.selected || d.picked {
-        Some((t.accent, tile::RING))
+    let ring = if d.selected || d.picked {
+        Some(t.accent)
+    } else if hovered {
+        Some(t.ink.opacity(tint::OUTLINE))
+    } else if let Some((fill, _, _)) = tone {
+        Some(fill)
     } else {
-        edge.map(|c| (c, tile::RING))
+        d.playing.then(|| with_alpha(t.accent, tint::OUTLINE))
     };
-    let mut shadows: Vec<BoxShadow> = ring.into_iter().map(|(color, spread)| BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset: false }).collect();
-    if !t.dark {
-        shadows.push(BoxShadow { color: black().opacity(tint::CARD_SHADOW), offset: point(px(0.), px(1.)), blur_radius: px(tile::SHADOW_BLUR), spread_radius: px(0.), inset: false });
-        shadows.push(BoxShadow { color: black().opacity(tint::CARD_SHADOW / 2.), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false });
-    }
+    let mark = placeholder(d, t).filter(|_| !d.live).map(|(name, color)| icon(name, iconsize::L, color));
+    let face = (d.preview.is_none() && mark.is_none()).then(|| match &d.face {
+        Some(face) => img(ImageSource::Render(Arc::clone(face))).size(px(tile::FACE)).flex_none().opacity(tint::FACE).into_any_element(),
+        None => icon("user", iconsize::L, with_alpha(t.secondary, tint::FACE)).into_any_element(),
+    });
     let (key, name) = (d.key.clone(), d.name.clone());
     let select = view.clone();
     let (pick, pick_key) = (view.clone(), d.key.clone());
@@ -558,40 +510,21 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         .relative()
         .left(px(offset.0))
         .top(px(offset.1))
-        .w(px(g.width))
-        .h(px(g.height()))
-        .flex_none()
-        .flex()
-        .flex_col()
-        .rounded(px(radius::CARD))
+        .size_full()
         .overflow_hidden()
-        .bg(t.content)
-        .when(!shadows.is_empty(), |s| s.shadow(shadows))
+        .bg(t.well)
+        .flex()
+        .items_center()
+        .justify_center()
         .cursor_pointer()
-        .when(hovered, |s| s.child(div().absolute().inset_0().bg(t.ink.opacity(tint::HOVER))))
         .active(|s| s.opacity(tint::PRESSED))
-        .child(preview(d, g, hovered || (d.selected && grid_focused), t))
-        .on_hover(hover)
+        .children(picture(d, g, t))
+        .children(mark)
+        .children(face)
         .child(strip(d, g, t))
-        .when(d.picked, |s| {
-            s.child(
-                div()
-                    .absolute()
-                    .top(px(space::S))
-                    .left(px(space::S))
-                    .id(SharedString::from(format!("picked-{}", d.key)))
-                    .mark("selection", tr("Ausgewählt"))
-                    .size(px(selection::CHECK))
-                    .rounded(px(radius::FULL))
-                    .bg(t.accent)
-                    .border_2()
-                    .border_color(t.on_accent)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("check", iconsize::XS, t.on_accent)),
-            )
-        })
+        .children(actions(d, g, t).filter(|_| hovered || d.selected || d.phase == Phase::LoginNeeded))
+        .children(ring.map(|c| div().absolute().inset_0().border(px(tile::RING)).border_color(c)))
+        .on_hover(hover)
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
             let _ = pick.update(cx, |this, cx| {
                 if this.grid.picks.set.contains(&pick_key) {
@@ -616,9 +549,12 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
             }
         });
     let (account, login) = (d.account_id, d.phase == Phase::LoginNeeded);
-    tile.context_menu(move |menu, _, cx| {
+    tile.context_menu(move |menu, window, cx| {
         let chosen = menu_view.upgrade().map(|v| v.read(cx).grid.chosen()).unwrap_or_default();
-        if chosen.len() > 1 && chosen.contains(&menu_key) {
+        let several = chosen.len() > 1 && chosen.contains(&menu_key);
+        let keys = if several { chosen.clone() } else { vec![menu_key.clone()] };
+        let (ids, current) = accounts_of(&keys, cx);
+        if several {
             let offers = super::grid::offers(&chosen, model::get(cx).read(cx));
             let mut menu = menu.label(trf("%lld ausgewählt", &[&chosen.len()]));
             for (n, (label, _, shown, count)) in offers.into_iter().enumerate() {
@@ -632,7 +568,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
                 };
                 menu = menu.menu_element_with_disabled(action, count == 0, super::palette::menu_row(label, keys, count == 0));
             }
-            return menu;
+            return menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current));
         }
         let menu = if can_play { menu.menu(tr("Spielen"), Box::new(Play(menu_key.clone()))) } else { menu };
         let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
@@ -645,9 +581,23 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
             menu.menu(tr("Starten"), Box::new(Start(menu_key.clone())))
         };
         let menu = menu.menu_with_disabled(tr("Neu starten"), Box::new(RestartMany(vec![menu_key.clone()])), stopping || login);
-        menu.separator().menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone())))
+        menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone())))
     })
     .into_any_element()
+}
+
+/// The account ids behind the instances `keys`, each once, and their colour when they all share one.
+pub fn accounts_of(keys: &[String], cx: &App) -> (Vec<String>, Option<u8>) {
+    let m = model::get(cx).read(cx);
+    let mut ids: Vec<Uuid> = Vec::new();
+    for id in keys.iter().filter_map(|k| m.instances.get(k)).map(|i| i.account_id) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let colors: Vec<u8> = ids.iter().filter_map(|id| m.account(*id)).map(|a| a.color()).collect();
+    let same = colors.first().copied().filter(|c| colors.iter().all(|o| o == c));
+    (ids.iter().map(Uuid::to_string).collect(), same)
 }
 
 #[cfg(test)]
@@ -669,11 +619,13 @@ mod tests {
     }
 
     #[test]
-    fn tiles_keep_sixteen_by_nine_previews() {
-        let g = Geometry::new(320.);
-        assert_eq!(g.preview, 180.);
-        assert_eq!(g.height(), 180. + tile::STRIP);
-        assert!(Geometry::new(160.).small && !Geometry::new(160.).dense);
-        assert_eq!(Geometry::new(100.).strip, tile::STRIP_TINY);
+    fn previews_cover_the_tile_cropping_the_sides_evenly_or_the_top() {
+        let picture = 16. / 9.;
+        assert_eq!(Geometry::new(320., 180.).cover(picture), (0., 0., 320., 180.), "a 16:9 tile shows the whole picture");
+        assert_eq!(Geometry::new(160., 180.).cover(picture), (-80., 0., 320., 180.), "a narrower tile loses both sides evenly");
+        assert_eq!(Geometry::new(640., 180.).cover(picture), (0., -180., 640., 360.), "a wider tile loses the top, keeps the bottom");
+        assert_eq!(Geometry::new(100., 300.).cover(picture).1, 0., "a tall tile keeps its full height");
+        assert!(Geometry::new(tile::MIN_W, tile::MIN_H).wordless() && !Geometry::new(tile::WORDLESS, tile::MIN_H).wordless());
     }
+
 }

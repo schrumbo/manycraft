@@ -17,6 +17,7 @@ use uuid::Uuid;
 use super::actions::{AddAccount, EditBatch, NewBatch, NewBatchFromPrism, Reload};
 use super::drive::Mark;
 use super::forms::{self, Problem};
+use super::identity;
 use super::mod_browser::Browser;
 use super::motion::Soft;
 use super::remote;
@@ -30,7 +31,7 @@ use crate::core::modrinth::Update;
 use crate::core::prism::Instance;
 use crate::core::skins;
 
-type PickRow = (Uuid, String, String, Option<PathBuf>);
+type PickRow = (Uuid, String, String, Option<PathBuf>, u8);
 
 struct PickRows {
     raw_filter: String,
@@ -827,7 +828,7 @@ impl BatchSheet {
         let total = model.accounts.len();
         let filtered = total > FILTER_FROM && !raw_filter.is_empty();
         let shown = model.accounts.iter().filter(|a| !filtered || a.name.to_lowercase().contains(&raw_filter));
-        let (ids, rows): (Vec<Uuid>, Vec<PickRow>) = shown.map(|a| (a.id, (a.id, a.name.clone(), if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") }, skins::head(a)))).unzip();
+        let (ids, rows): (Vec<Uuid>, Vec<PickRow>) = shown.map(|a| (a.id, (a.id, a.name.clone(), if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") }, skins::head(a), a.color()))).unzip();
         self.pick_rows = Some(PickRows { raw_filter, total, filtered, ids: Rc::new(ids), rows: Rc::new(rows) });
     }
 
@@ -861,7 +862,7 @@ impl BatchSheet {
         } else {
             let count = rows.len();
             frame.child(
-                uniform_list("account-list", count, cx.processor(move |s, range: std::ops::Range<usize>, _, cx| rows[range].iter().map(|(id, name, kind, head)| s.pick_row(*id, name.clone(), kind.clone(), head.clone(), cx)).collect::<Vec<_>>()))
+                uniform_list("account-list", count, cx.processor(move |s, range: std::ops::Range<usize>, _, cx| rows[range].iter().map(|(id, name, kind, head, color)| s.pick_row(*id, name.clone(), kind.clone(), head.clone(), *color, cx)).collect::<Vec<_>>()))
                     .track_scroll(&self.account_scroll)
                     .with_sizing_behavior(ListSizingBehavior::Infer)
                     .px(px(space::XS))
@@ -872,7 +873,7 @@ impl BatchSheet {
         div().flex().flex_col().gap(px(space::XS)).child(header).when(total > FILTER_FROM, |d| d.child(Input::new(&self.filter))).child(list)
     }
 
-    fn pick_row(&mut self, id: Uuid, name: String, kind: String, head: Option<PathBuf>, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn pick_row(&mut self, id: Uuid, name: String, kind: String, head: Option<PathBuf>, color: u8, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = Theme::get(cx);
         let checked = self.accounts.contains(&id);
         let toggle = move |s: &mut Self, cx: &mut Context<Self>| {
@@ -899,10 +900,7 @@ impl BatchSheet {
                 toggle(s, cx);
                 cx.stop_propagation();
             })))
-            .child(match head {
-                Some(path) => img(path).size(px(iconsize::L)).flex_none().rounded(px(radius::SMALL)).into_any_element(),
-                None => div().size(px(iconsize::L)).flex_none().rounded(px(radius::SMALL)).bg(t.raised).into_any_element(),
-            })
+            .child(identity::chip(&name, color, head.map(ImageSource::from), iconsize::L, font::CAPTION))
             .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name))
             .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(kind))
     }

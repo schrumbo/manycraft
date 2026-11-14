@@ -40,10 +40,8 @@ pub struct Account {
 }
 
 /// Account colours as `0xRRGGBB`, chosen away from the accent, attention and danger colours.
-#[allow(dead_code)]
 pub const COLORS: [u32; 8] = [0x9B7BFF, 0xFF6FB5, 0x9BD84E, 0x3DDC97, 0xE8D9B5, 0x5B6CFF, 0xC97B4A, 0xC9D1D9];
 
-#[allow(dead_code)]
 impl Account {
     /// The account's colour index, falling back to one derived from its id.
     pub fn color(&self) -> u8 {
@@ -89,12 +87,28 @@ pub fn save(accounts: &[Account]) -> Result<()> {
     save_to(&paths::data_dir(), accounts)
 }
 
-/// Adds `account`, or replaces the saved account with the same id in place.
-pub fn upsert(accounts: &mut Vec<Account>, account: Account) {
-    match accounts.iter_mut().find(|a| a.id == account.id) {
-        Some(slot) => *slot = account,
-        None => accounts.push(account),
+/// The colour index the fewest of `accounts` use, the lowest on a tie.
+pub fn least_used(accounts: &[Account]) -> u8 {
+    let mut used = [0usize; COLORS.len()];
+    for a in accounts {
+        used[usize::from(a.color())] += 1;
     }
+    (0..COLORS.len()).min_by_key(|n| used[*n]).unwrap_or(0) as u8
+}
+
+/// Adds `account`, or replaces the saved account with the same id in place; a new account without a colour gets the least used one. Returns the account as saved.
+pub fn upsert(accounts: &mut Vec<Account>, mut account: Account) -> Account {
+    match accounts.iter_mut().find(|a| a.id == account.id) {
+        Some(slot) => {
+            account.color = account.color.or(slot.color);
+            *slot = account.clone();
+        }
+        None => {
+            account.color = account.color.or_else(|| Some(least_used(accounts)));
+            accounts.push(account.clone());
+        }
+    }
+    account
 }
 
 /// Puts back `account` at `index` (or last), unless an account with its id exists again.
@@ -268,7 +282,54 @@ mod tests {
         let mut accounts = vec![account(1, "Old", None), account(2, "Two", None)];
         upsert(&mut accounts, account(1, "New", Some("http://p:1")));
         upsert(&mut accounts, account(3, "Three", None));
-        assert_eq!(accounts, vec![account(1, "New", Some("http://p:1")), account(2, "Two", None), account(3, "Three", None)]);
+        let three = Account { color: accounts[2].color, ..account(3, "Three", None) };
+        assert_eq!(accounts, vec![account(1, "New", Some("http://p:1")), account(2, "Two", None), three]);
+    }
+
+    #[test]
+    fn replacing_without_a_colour_keeps_the_saved_one() {
+        let mut accounts = vec![Account { color: Some(5), ..account(1, "Old", None) }];
+        assert_eq!(upsert(&mut accounts, account(1, "New", None)).color, Some(5));
+        assert_eq!(upsert(&mut accounts, Account { color: Some(2), ..account(1, "New", None) }).color, Some(2));
+        assert_eq!(accounts[0].color, Some(2));
+    }
+
+    #[test]
+    fn new_accounts_get_the_least_used_colour_and_keep_it() {
+        let mut accounts = Vec::new();
+        for n in 0..COLORS.len() as u128 {
+            upsert(&mut accounts, account(n + 1, "A", None));
+        }
+        let mut colors: Vec<u8> = accounts.iter().map(|a| a.color.unwrap()).collect();
+        colors.sort_unstable();
+        assert_eq!(colors, (0..COLORS.len() as u8).collect::<Vec<_>>(), "eight new accounts take eight different colours");
+        let first = accounts[0].color.unwrap();
+        accounts[0].color = Some((first + 1) % COLORS.len() as u8);
+        assert_eq!(least_used(&accounts), first, "the colour nobody uses any more comes next");
+        let mut again = accounts.clone();
+        upsert(&mut again, Account { color: Some(5), ..account(1, "Renamed", None) });
+        assert_eq!(again[0].color, Some(5), "a known account keeps what it brings");
+        upsert(&mut again, Account { color: Some(1), ..account(99, "Brought", None) });
+        assert_eq!(again.last().unwrap().color, Some(1), "a colour already chosen is kept");
+    }
+
+    #[test]
+    fn least_used_counts_fallback_colours_and_breaks_ties_low() {
+        assert_eq!(least_used(&[]), 0);
+        let mut taken = account(1, "A", None);
+        taken.color = Some(0);
+        assert_eq!(least_used(&[taken.clone()]), 1);
+        let derived = account(2, "B", None);
+        let fallback = derived.color();
+        let used = least_used(&[taken, derived]);
+        assert!(used != 0 && used != fallback && used == (1..8).find(|n| *n != fallback).unwrap());
+    }
+
+    #[test]
+    fn colours_wrap() {
+        let mut a = account(1, "A", None);
+        a.color = Some(9);
+        assert_eq!(a.color(), 1);
     }
 
 

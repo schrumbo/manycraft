@@ -4,7 +4,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected, TileLarger, TileSmaller,
+    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
     ToggleSidebar,
 };
 use super::drive::Mark;
@@ -16,7 +16,7 @@ use super::theme::{self, Theme, chat, control, font, iconsize, selection, shell,
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button};
 use crate::core::i18n::{tr, trf};
 
-actions!(main_window, [FocusSearch, ClearSearch, TileSmall, TileMedium, TileLarge, TileFit, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
+actions!(main_window, [FocusSearch, ClearSearch, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
 
 /// What the memory line under the toolbar was worked out for: the scope and its accounts as count and memory per batch.
 type FitScope = (Option<String>, Vec<(u32, u32)>);
@@ -39,38 +39,10 @@ pub enum Filter {
     Stopped,
 }
 
-/// How big the tiles are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TileSize {
-    Small,
-    Medium,
-    Large,
-    Fit,
-}
-
-impl TileSize {
-    fn larger(self) -> Self {
-        match self {
-            Self::Small => Self::Medium,
-            Self::Medium | Self::Fit => Self::Large,
-            Self::Large => Self::Large,
-        }
-    }
-
-    fn smaller(self) -> Self {
-        match self {
-            Self::Large => Self::Medium,
-            Self::Medium | Self::Fit => Self::Small,
-            Self::Small => Self::Small,
-        }
-    }
-}
-
 pub struct MainWindow {
     pub(super) focus: FocusHandle,
     pub(super) page: Page,
     pub(super) filter: Filter,
-    pub(super) size: TileSize,
     pub(super) sidebar: bool,
     pub(super) overlay: bool,
     pub(super) narrow_now: bool,
@@ -127,7 +99,6 @@ impl MainWindow {
             focus: cx.focus_handle(),
             page: Page::Grid(None),
             filter: Filter::All,
-            size: TileSize::Medium,
             sidebar: true,
             overlay: false,
             narrow_now: false,
@@ -248,13 +219,6 @@ impl MainWindow {
         })
         .detach();
         None
-    }
-
-    fn set_size(&mut self, size: TileSize, window: &mut Window, cx: &mut Context<Self>) {
-        self.size = size;
-        self.grid.reset_scroll();
-        window.focus(&self.grid.focus, cx);
-        cx.notify();
     }
 
     /// Whether the window is too narrow to keep the sidebar beside the grid.
@@ -413,20 +377,6 @@ impl Render for MainWindow {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &TileLarger, _, cx| {
-                this.size = this.size.larger();
-                this.grid.reset_scroll();
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &TileSmaller, _, cx| {
-                this.size = this.size.smaller();
-                this.grid.reset_scroll();
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &TileSmall, window, cx| this.set_size(TileSize::Small, window, cx)))
-            .on_action(cx.listener(|this, _: &TileMedium, window, cx| this.set_size(TileSize::Medium, window, cx)))
-            .on_action(cx.listener(|this, _: &TileLarge, window, cx| this.set_size(TileSize::Large, window, cx)))
-            .on_action(cx.listener(|this, _: &TileFit, window, cx| this.set_size(TileSize::Fit, window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 match this.page {
                     Page::Grid(_) if this.can_search(cx) => {
@@ -546,13 +496,6 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(k("b"), ToggleSidebar, Some("MainWindow")),
         KeyBinding::new(k("z"), UndoRemoveAccount, Some("MainWindow")),
-        KeyBinding::new(k("="), TileLarger, Some("MainWindow")),
-        KeyBinding::new(k("+"), TileLarger, Some("MainWindow")),
-        KeyBinding::new(k("-"), TileSmaller, Some("MainWindow")),
-        KeyBinding::new(k("1"), TileSmall, Some("MainWindow")),
-        KeyBinding::new(k("2"), TileMedium, Some("MainWindow")),
-        KeyBinding::new(k("3"), TileLarge, Some("MainWindow")),
-        KeyBinding::new(k("0"), TileFit, Some("MainWindow")),
         KeyBinding::new(k("f"), FocusSearch, Some("MainWindow")),
         KeyBinding::new(k("shift-c"), OpenChat, Some("MainWindow")),
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),

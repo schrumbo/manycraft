@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, ChatLine, Instance, Model, Phase, rank};
 use super::native::{self, Rect};
 use crate::core::account::{self, Account, AccountKind};
@@ -478,6 +478,7 @@ pub fn init(cx: &mut App) {
             reconnect(key, cx);
         }
     });
+    cx.on_action(|a: &SetColor, cx| set_color(a, cx));
     cx.on_action(|a: &SendChatMany, cx| {
         for key in &a.keys {
             send_chat(key, &a.text, cx);
@@ -813,6 +814,37 @@ fn stop_batch(batch: &str, cx: &mut App) {
     }
     let keys: Vec<String> = model::get(cx).read(cx).instances.values().filter(|i| i.batch_id == batch).map(|i| i.key.clone()).collect();
     stop_keys(keys, cx);
+}
+
+fn set_color(a: &SetColor, cx: &mut App) {
+    let ids: Vec<uuid::Uuid> = a.accounts.iter().filter_map(|id| id.parse().ok()).collect();
+    let color = a.color;
+    model::get(cx).update(cx, |m, cx| {
+        for account in m.accounts.iter_mut().filter(|account| ids.contains(&account.id)) {
+            account.color = Some(color);
+        }
+        cx.notify();
+    });
+    let task = cx.background_spawn(async move { super::remote::set_color(&ids, color) });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            if let Err(e) = result {
+                eprintln!("color: {e:#}");
+                let text = tr("Die Farbe wurde nicht gesichert. Versuch es noch einmal.");
+                if cx.has_global::<Runtime>() {
+                    cx.global_mut::<Runtime>().notice = Some(text);
+                } else {
+                    model::get(cx).update(cx, |m, cx| {
+                        m.error = Some(text);
+                        cx.notify();
+                    });
+                }
+            }
+            reload(cx);
+        });
+    })
+    .detach();
 }
 
 fn reconnect(key: &str, cx: &mut App) {

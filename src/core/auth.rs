@@ -407,7 +407,7 @@ pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expect
             let mut accounts = account::load()?;
             account::store_token(session.uuid, &refresh)?;
             let account = signed_in(&accounts, session.uuid, &session.name, proxy);
-            account::upsert(&mut accounts, account.clone());
+            let account = account::upsert(&mut accounts, account);
             account::save(&accounts)?;
             Ok(account)
         };
@@ -439,8 +439,15 @@ fn login_offline(name: &str) -> Result<()> {
     let account = Account::offline(name)?;
     let mut accounts = account::load()?;
     println!("Offline account {} ({})", account.name, account.id);
-    account::upsert(&mut accounts, account);
-    account::save(&accounts)
+    if add_new(&mut accounts, account) { account::save(&accounts) } else { Ok(()) }
+}
+
+fn add_new(accounts: &mut Vec<Account>, account: Account) -> bool {
+    if accounts.iter().any(|a| a.id == account.id) {
+        return false;
+    }
+    account::upsert(accounts, account);
+    true
 }
 
 /// The saved account named `who` (case-insensitive) or with that id in any spelling.
@@ -709,6 +716,16 @@ fn base64url_decode(text: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adding_an_offline_account_again_keeps_the_saved_one() {
+        let saved = Account { proxy: Some("socks5://p:1".into()), color: Some(4), ..Account::offline("Alt").unwrap() };
+        let mut accounts = vec![saved.clone()];
+        assert!(!super::add_new(&mut accounts, Account::offline("Alt").unwrap()));
+        assert_eq!(accounts, [saved]);
+        assert!(super::add_new(&mut accounts, Account::offline("Other").unwrap()));
+        assert_eq!(accounts.len(), 2);
+    }
+
     #[test]
     fn one_refresh_lock_per_account() {
         let (a, b) = (Uuid::from_u128(0xa1), Uuid::from_u128(0xb2));

@@ -1,4 +1,4 @@
-//! The toolbar over the grid: sidebar toggle, filter, tile size, search, and starting or stopping what is shown.
+//! The toolbar over the grid: sidebar toggle, filter, search, and starting or stopping what is shown.
 
 use gpui_kit::component::{FocusableExt, Sizable};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -9,8 +9,8 @@ use gpui_kit::*;
 
 use super::actions::{StartAll, StartBatch, StopAll, StopBatch, ToggleSidebar};
 use super::drive::Mark;
-use super::main_window::{Filter, FilterAll, FilterAttention, FilterRunning, FilterStopped, MainWindow, TileFit, TileLarge, TileMedium, TileSize, TileSmall};
-use super::palette::{hint, menu_row, shortcut};
+use super::main_window::{Filter, FilterAll, FilterAttention, FilterRunning, FilterStopped, MainWindow};
+use super::palette::hint;
 use super::model;
 use super::motion::Soft;
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
@@ -196,7 +196,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let menu = space::S * 2. + text_w(&picked_label, font::CALLOUT) + space::XS + text_w(&picked_count.to_string(), font::CAPTION) + suffix + space::XS + iconsize::XS;
     let labelled = |label: &str| space::M * 2. + iconsize::S + space::XS + text_w(label, font::BODY);
     let widths = Widths {
-        fixed: lead() + tile::INSET + control::M + shell::TITLE.min(title_w) + space::S + space::XS + (space::XS * 2. + iconsize::M + space::XXS + iconsize::XS) + space::S + space::S * 9.,
+        fixed: lead() + tile::INSET + control::M + shell::TITLE.min(title_w) + space::S + space::XS + space::S * 8.,
         segments,
         menu,
         labelled: labelled(&start_label) + labelled(&stop_label) + space::S,
@@ -258,29 +258,6 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         )
         .into_any_element()
     };
-    let current = this.size;
-    let grid_focus = this.focus.clone();
-    let size = Button::new("tile-size")
-        .ghost()
-        .focus_ring(super::theme::rings(cx))
-        .small()
-        .h(px(control::M))
-        .px(px(space::XS))
-        .gap(px(space::XXS))
-        .child(icon("layout-grid", iconsize::M, t.secondary))
-        .child(icon("chevron-down", iconsize::XS, t.tertiary))
-        .tooltip(tr("Kachelgröße"))
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
-            let row = |label: &str, action: &dyn Action| menu_row(tr(label), shortcut(action, cx), false);
-            let (small, medium, large, fit) = (row("Klein", &TileSmall), row("Mittel", &TileMedium), row("Groß", &TileLarge), row("Einpassen", &TileFit));
-            menu.action_context(grid_focus.clone())
-                .label(tr("Kachelgröße"))
-                .menu_element_with_check(current == TileSize::Small, Box::new(TileSmall), small)
-                .menu_element_with_check(current == TileSize::Medium, Box::new(TileMedium), medium)
-                .menu_element_with_check(current == TileSize::Large, Box::new(TileLarge), large)
-                .separator()
-                .menu_element_with_check(current == TileSize::Fit, Box::new(TileFit), fit)
-        });
     let roomy = search_w >= shell::SEARCH;
     if this.search_roomy != roomy {
         this.search_roomy = roomy;
@@ -317,7 +294,6 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(div().w(px(space::S)).flex_none())
         .child(filter)
         .child(div().flex_1().min_w(px(space::S)))
-        .child(size)
         .child(search)
         .child(div().w(px(space::XS)).flex_none())
         .child(action_button("stop-scope", stop_label.clone(), "square", false, running == 0, compact, stop, &t).tooltip(tip(format!("{stop_label} · {}", if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) }))))
