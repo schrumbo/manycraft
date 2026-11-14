@@ -103,8 +103,8 @@ pub mod tile {
     pub const HEADING: f32 = 40.;
     /// Blur of the soft shadow under a tile in the light appearance.
     pub const SHADOW_BLUR: f32 = 3.;
-    /// How far past the visible rows the grid lays out, so scrolling always knows the next row.
-    pub const OVERDRAW: f32 = 360.;
+    /// How far past the visible rows the grid lays out, so the wheel always knows the next row's height.
+    pub const OVERDRAW: f32 = 8.;
 }
 
 /// The sidebar and toolbar around the grid.
