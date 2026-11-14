@@ -672,8 +672,8 @@ mod tests {
         assert_eq!(line(&lost, None, true), "Getrennt · Zeitüberschreitung");
         let mut again = mk(Phase::Connecting { server: "s".into() });
         again.reconnect_attempts = 2;
-        assert_eq!(line(&again, None, false), "Verbindet neu · 2/3");
-        assert_eq!(line(&again, None, true), "Versuch 2/3");
+        assert_eq!(line(&again, None, false), "Verbindet neu · 2/5");
+        assert_eq!(line(&again, None, true), "Versuch 2/5");
         assert_eq!(line(&mk(Phase::Starting { done: 12, total: 50 }), None, true), "Wartet 12/50");
     }
 }
