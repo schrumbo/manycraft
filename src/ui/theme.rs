@@ -51,6 +51,10 @@ pub mod control {
     pub const L: f32 = 36.;
     /// The widest a block of explanatory text gets.
     pub const READING: f32 = 360.;
+    /// Width of the value between a stepper's minus and plus.
+    pub const STEPPER_VALUE: f32 = 64.;
+    /// Width of a stepper value with a unit, like "32 Chunks".
+    pub const STEPPER_VALUE_WIDE: f32 = 80.;
 }
 
 /// Icon sizes.

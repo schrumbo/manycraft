@@ -104,6 +104,9 @@ class ProtocolTest {
 		assertEquals(BackgroundLevel.SAVING, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"saving\"}").orElseThrow()).level());
 		assertEquals(BackgroundLevel.BALANCED, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"balanced\"}").orElseThrow()).level());
 		assertEquals(BackgroundLevel.FULL, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"full\"}").orElseThrow()).level());
+		var custom = assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"custom\",\"fps\":10,\"render_distance\":6}").orElseThrow());
+		assertEquals(new Protocol.Incoming.Level(BackgroundLevel.CUSTOM, new BackgroundLevel.Custom(10, 6)), custom);
+		assertEquals(BackgroundLevel.Custom.DEFAULT, assertInstanceOf(Protocol.Incoming.Level.class, Protocol.parse("{\"t\":\"level\",\"level\":\"custom\"}").orElseThrow()).custom());
 		assertTrue(Protocol.parse("{\"t\":\"level\",\"level\":\"turbo\"}").isEmpty());
 		assertTrue(Protocol.parse("{\"t\":\"badge\",\"visible\":\"yes\"}").isEmpty());
 		assertTrue(Protocol.parse("{\"t\":\"identity\",\"name\":\"Alt\",\"rgb\":1}").isEmpty());

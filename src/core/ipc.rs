@@ -100,7 +100,28 @@ pub enum ToMod {
     /// Whether the name badge shows in the game's corner.
     Badge { visible: bool },
     /// What the game may cost while hidden.
-    Level { level: Background },
+    Level(Level),
+}
+
+/// A background level as the mod reads it: the level name, plus frames per second and sight for `custom`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "level", rename_all = "snake_case")]
+pub enum Level {
+    Saving,
+    Balanced,
+    Full,
+    Custom { fps: u8, render_distance: u8 },
+}
+
+impl From<Background> for Level {
+    fn from(b: Background) -> Self {
+        match b.clamped() {
+            Background::Saving => Self::Saving,
+            Background::Balanced => Self::Balanced,
+            Background::Full => Self::Full,
+            Background::Custom { fps, sight } => Self::Custom { fps, render_distance: sight },
+        }
+    }
 }
 
 /// What the manager learns about an instance.
@@ -336,9 +357,14 @@ mod tests {
         let bare = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0, icon: None };
         assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"t":"identity","name":"Alt","batch":"Farm","rgb":0,"icon":null}"#);
         assert_eq!(serde_json::to_string(&ToMod::Badge { visible: false }).unwrap(), r#"{"t":"badge","visible":false}"#);
-        assert_eq!(serde_json::to_string(&ToMod::Level { level: Background::Saving }).unwrap(), r#"{"t":"level","level":"saving"}"#);
-        assert_eq!(serde_json::to_string(&ToMod::Level { level: Background::Balanced }).unwrap(), r#"{"t":"level","level":"balanced"}"#);
-        assert_eq!(serde_json::to_string(&ToMod::Level { level: Background::Full }).unwrap(), r#"{"t":"level","level":"full"}"#);
+        let level = |b: Background| serde_json::to_string(&ToMod::Level(b.into())).unwrap();
+        assert_eq!(level(Background::Saving), r#"{"t":"level","level":"saving"}"#);
+        assert_eq!(level(Background::Balanced), r#"{"t":"level","level":"balanced"}"#);
+        assert_eq!(level(Background::Full), r#"{"t":"level","level":"full"}"#);
+        assert_eq!(level(Background::Custom { fps: 10, sight: 6 }), r#"{"t":"level","level":"custom","fps":10,"render_distance":6}"#);
+        assert_eq!(level(Background::Custom { fps: 0, sight: 99 }), r#"{"t":"level","level":"custom","fps":1,"render_distance":32}"#);
+        let custom = r#"{"t":"level","level":"custom","fps":10,"render_distance":6}"#;
+        assert_eq!(serde_json::from_str::<ToMod>(custom).unwrap(), ToMod::Level(Level::Custom { fps: 10, render_distance: 6 }));
     }
 
     #[test]
