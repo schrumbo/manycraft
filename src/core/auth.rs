@@ -12,8 +12,13 @@ use super::account::{self, Account, AccountKind};
 use super::net;
 
 const CLIENT_ID_VAR: &str = "MANYCRAFT_MSA_CLIENT_ID";
-const SCOPE: &str = "XboxLive.signin offline_access";
-const AUTHORITY: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
+const LIVE_CLIENT_ID: &str = "00000000402b5328";
+const LIVE_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
+const LIVE_DEVICE_URL: &str = "https://login.live.com/oauth20_connect.srf";
+const LIVE_TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
+const AZURE_SCOPE: &str = "XboxLive.signin offline_access";
+const AZURE_DEVICE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
+const AZURE_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const XBL_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
@@ -124,7 +129,11 @@ struct Profile {
 }
 
 struct Endpoints {
-    authority: String,
+    device_url: String,
+    token_url: String,
+    scope: &'static str,
+    rps_prefix: &'static str,
+    response_type: Option<&'static str>,
     xbl: String,
     xsts: String,
     mc_login: String,
@@ -134,12 +143,24 @@ struct Endpoints {
 impl Endpoints {
     fn live() -> Self {
         Self {
-            authority: AUTHORITY.into(),
+            device_url: LIVE_DEVICE_URL.into(),
+            token_url: LIVE_TOKEN_URL.into(),
+            scope: LIVE_SCOPE,
+            rps_prefix: "t=",
+            response_type: Some("device_code"),
             xbl: XBL_URL.into(),
             xsts: XSTS_URL.into(),
             mc_login: MC_LOGIN_URL.into(),
             mc_profile: MC_PROFILE_URL.into(),
         }
+    }
+
+    fn azure() -> Self {
+        Self { device_url: AZURE_DEVICE_URL.into(), token_url: AZURE_TOKEN_URL.into(), scope: AZURE_SCOPE, rps_prefix: "d=", response_type: None, ..Self::live() }
+    }
+
+    fn for_client(client_id: &str) -> Self {
+        if client_id == LIVE_CLIENT_ID { Self::live() } else { Self::azure() }
     }
 }
 
@@ -153,14 +174,15 @@ pub struct Flow {
 impl Flow {
     /// Prepares a flow whose every request goes through `proxy`, or the environment's proxy without one.
     pub fn new(proxy: Option<&str>) -> Result<Self> {
-        let client_id = client_id()?;
-        Ok(Self { agent: net::agent(proxy)?, ep: Endpoints::live(), client_id })
+        let client_id = client_id();
+        Ok(Self { agent: net::agent(proxy)?, ep: Endpoints::for_client(&client_id), client_id })
     }
 
     /// Asks Microsoft for a device code.
     pub fn start(&self) -> Result<DeviceCode> {
-        let url = format!("{}/devicecode", self.ep.authority);
-        let reply = post_form(&self.agent, &url, &[("client_id", &self.client_id), ("scope", SCOPE)])?;
+        let mut form = vec![("client_id", self.client_id.as_str()), ("scope", self.ep.scope)];
+        form.extend(self.ep.response_type.map(|kind| ("response_type", kind)));
+        let reply = post_form(&self.agent, &self.ep.device_url, &form)?;
         device_code(&reply)
     }
 
@@ -170,7 +192,7 @@ impl Flow {
     }
 
     fn poll_with(&self, code: &DeviceCode, mut sleep: impl FnMut(Duration)) -> Result<Tokens> {
-        let url = format!("{}/token", self.ep.authority);
+        let url = &self.ep.token_url;
         let form = [("grant_type", DEVICE_GRANT), ("client_id", &self.client_id), ("device_code", &code.device_code)];
         let mut interval = code.interval.max(1);
         let mut waited = 0;
@@ -181,7 +203,7 @@ impl Flow {
             }
             sleep(Duration::from_secs(interval));
             waited += interval;
-            let reply = match post_form(&self.agent, &url, &form) {
+            let reply = match post_form(&self.agent, url, &form) {
                 Ok(reply) => reply,
                 Err(e) => {
                     failures += 1;
@@ -209,15 +231,14 @@ impl Flow {
 
     /// Trades a saved refresh token for fresh Microsoft tokens; the new refresh token replaces the old one.
     pub fn refresh(&self, refresh_token: &str) -> Result<Tokens> {
-        let url = format!("{}/token", self.ep.authority);
-        let form = [("grant_type", "refresh_token"), ("client_id", &self.client_id), ("refresh_token", refresh_token), ("scope", SCOPE)];
-        token_refresh(&post_form(&self.agent, &url, &form)?)
+        let form = [("grant_type", "refresh_token"), ("client_id", &self.client_id), ("refresh_token", refresh_token), ("scope", self.ep.scope)];
+        token_refresh(&post_form(&self.agent, &self.ep.token_url, &form)?)
     }
 
     /// Runs the Xbox Live → XSTS → Minecraft chain and fetches the profile.
     pub fn session(&self, tokens: &Tokens) -> Result<Session> {
         let xbl = xbox_token("Xbox Live", &post_json(&self.agent, &self.ep.xbl, &json!({
-            "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": format!("d={}", tokens.access_token)},
+            "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": format!("{}{}", self.ep.rps_prefix, tokens.access_token)},
             "RelyingParty": "http://auth.xboxlive.com",
             "TokenType": "JWT",
         }))?)?;
@@ -234,8 +255,8 @@ impl Flow {
     }
 }
 
-/// The Azure client id from `MANYCRAFT_MSA_CLIENT_ID` at runtime, else the one built in.
-pub fn client_id() -> Result<String> {
+/// The client id from `MANYCRAFT_MSA_CLIENT_ID` at runtime, else the one built in, else Microsoft's Xbox Live id.
+pub fn client_id() -> String {
     pick_client_id(std::env::var(CLIENT_ID_VAR).ok().as_deref(), option_env!("MANYCRAFT_MSA_CLIENT_ID"))
 }
 
@@ -347,14 +368,14 @@ fn check(who: &str) -> Result<()> {
     Ok(())
 }
 
-fn pick_client_id(runtime: Option<&str>, built: Option<&str>) -> Result<String> {
+fn pick_client_id(runtime: Option<&str>, built: Option<&str>) -> String {
     [runtime, built]
         .into_iter()
         .flatten()
         .map(str::trim)
         .find(|id| !id.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| AuthError::MissingClientId.into())
+        .unwrap_or(LIVE_CLIENT_ID)
+        .to_owned()
 }
 
 struct Reply {
@@ -456,7 +477,7 @@ fn token_poll(reply: &Reply) -> Result<Poll> {
         Some("authorization_pending") => Ok(Poll::Pending),
         Some("slow_down") => Ok(Poll::SlowDown),
         Some("expired_token") => Err(AuthError::CodeExpired.into()),
-        Some("authorization_declined") => Err(AuthError::Declined.into()),
+        Some("authorization_declined" | "access_denied") => Err(AuthError::Declined.into()),
         _ => Err(microsoft_failure(reply)),
     }
 }
@@ -792,11 +813,11 @@ mod tests {
 
     #[test]
     fn client_id_prefers_runtime_then_build_time() {
-        assert_eq!(pick_client_id(Some(" run "), Some("built")).unwrap(), "run");
-        assert_eq!(pick_client_id(None, Some("built")).unwrap(), "built");
-        assert_eq!(pick_client_id(Some("  "), Some("built")).unwrap(), "built");
-        assert_eq!(kind(&fail(pick_client_id(None, None))), Some(&AuthError::MissingClientId));
-        assert_eq!(kind(&fail(pick_client_id(Some(""), Some("")))), Some(&AuthError::MissingClientId));
+        assert_eq!(pick_client_id(Some(" run "), Some("built")), "run");
+        assert_eq!(pick_client_id(None, Some("built")), "built");
+        assert_eq!(pick_client_id(Some("  "), Some("built")), "built");
+        assert_eq!(pick_client_id(None, None), LIVE_CLIENT_ID);
+        assert_eq!(pick_client_id(Some(""), Some("")), LIVE_CLIENT_ID);
     }
 
     #[test]
@@ -892,7 +913,11 @@ mod tests {
         Flow {
             agent: net::agent(None).unwrap(),
             ep: Endpoints {
-                authority: format!("{base}/oauth"),
+                device_url: format!("{base}/oauth/devicecode"),
+                token_url: format!("{base}/oauth/token"),
+                scope: AZURE_SCOPE,
+                rps_prefix: "d=",
+                response_type: None,
                 xbl: format!("{base}/xbl"),
                 xsts: format!("{base}/xsts"),
                 mc_login: format!("{base}/mc/login"),
@@ -900,6 +925,55 @@ mod tests {
             },
             client_id: "test-client".into(),
         }
+    }
+
+    fn live_flow(base: &str) -> Flow {
+        let azure = flow(base);
+        Flow {
+            ep: Endpoints { device_url: azure.ep.device_url.clone(), token_url: azure.ep.token_url.clone(), xbl: azure.ep.xbl.clone(), ..Endpoints::live() },
+            client_id: LIVE_CLIENT_ID.into(),
+            ..azure
+        }
+    }
+
+    #[test]
+    fn endpoints_follow_the_client_id() {
+        let live = Endpoints::for_client(LIVE_CLIENT_ID);
+        assert_eq!((live.device_url.as_str(), live.token_url.as_str()), (LIVE_DEVICE_URL, LIVE_TOKEN_URL));
+        assert_eq!(live.rps_prefix, "t=");
+        let azure = Endpoints::for_client("custom");
+        assert_eq!((azure.device_url.as_str(), azure.token_url.as_str()), (AZURE_DEVICE_URL, AZURE_TOKEN_URL));
+        assert_eq!(azure.rps_prefix, "d=");
+    }
+
+    #[test]
+    fn live_flow_sends_the_live_form_fields_and_t_ticket() {
+        let (base, seen) = serve(vec![
+            ("/oauth/devicecode", vec![(200, fixture!("devicecode"))]),
+            ("/oauth/token", vec![(400, fixture!("token_pending")), (200, fixture!("token_ok")), (200, fixture!("token_ok"))]),
+            ("/xbl", vec![(200, fixture!("xbl_ok"))]),
+            ("/xsts", vec![(401, fixture!("xsts_2148916233"))]),
+        ]);
+        let flow = live_flow(&base);
+        let device = flow.start().unwrap();
+        let start = &requests(&seen, "/oauth/devicecode")[0].1;
+        assert!(start.contains("client_id=00000000402b5328") && start.contains("response_type=device_code"), "{start}");
+        assert!(start.contains("scope=service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL"), "{start}");
+        let tokens = flow.poll_with(&device, |_| {}).unwrap();
+        let poll = &requests(&seen, "/oauth/token")[0].1;
+        assert!(poll.contains("client_id=00000000402b5328") && poll.contains("device_code=FAKE-DEVICE-CODE-0000"), "{poll}");
+        flow.refresh("OLD").unwrap();
+        let refresh = &requests(&seen, "/oauth/token")[2].1;
+        assert!(refresh.contains("grant_type=refresh_token") && refresh.contains("refresh_token=OLD") && refresh.contains("MBI_SSL"), "{refresh}");
+        assert!(!refresh.contains("offline_access"), "{refresh}");
+        let _ = flow.session(&tokens);
+        let body: serde_json::Value = serde_json::from_str(&requests(&seen, "/xbl")[0].1).unwrap();
+        assert_eq!(body["Properties"]["RpsTicket"], "t=FAKE-MSA-ACCESS-TOKEN");
+    }
+
+    #[test]
+    fn access_denied_stops_polling_like_a_declined_code() {
+        assert_eq!(kind(&fail(token_poll(&reply(400, r#"{"error":"access_denied"}"#)))), Some(&AuthError::Declined));
     }
 
     fn code(expires_in: u64) -> DeviceCode {
