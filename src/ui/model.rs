@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{App, AppContext, Entity, Global, RenderImage};
 use uuid::Uuid;
@@ -42,6 +42,20 @@ impl Phase {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 
+    /// The server the instance is on or was last on, when it is known.
+    pub fn server(&self) -> Option<&str> {
+        match self {
+            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } => Some(server),
+            Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether the instance is on a server, where a chat line can go out.
+    pub fn on_server(&self) -> bool {
+        matches!(self, Phase::Queue { .. } | Phase::Playing { .. })
+    }
+
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
         !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. })
@@ -63,10 +77,21 @@ pub struct Instance {
     pub stopping: bool,
 }
 
+/// How long after a server line the same line from another instance counts as the same line.
+pub const CHAT_MERGE: Duration = Duration::from_secs(5);
+const CHAT_RECENT_KEPT: usize = 512;
+
 /// One line of the merged chat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatLine {
     pub instance: String,
+    /// Name of the account whose game showed the line.
+    pub account: String,
+    pub batch: String,
+    /// The other instances that received the same line from the same server, by key, account name and batch.
+    pub also: Vec<(String, String, String)>,
+    /// Seconds since the Unix epoch when the line arrived.
+    pub at: i64,
     pub whisper: bool,
     pub from: Option<String>,
     pub text: String,
@@ -79,6 +104,10 @@ pub struct Model {
     pub batches: Vec<Batch>,
     pub instances: HashMap<String, Instance>,
     pub chat: Vec<ChatLine>,
+    /// How many lines were ever added to `chat`, so a view can tell new lines from dropped old ones.
+    pub chat_seq: u64,
+    /// Where the latest line of each (server, sender, text) went, so the copies other instances receive join it.
+    pub chat_recent: HashMap<(String, String, String), (u64, Instant)>,
     pub playing: Option<String>,
     pub error: Option<String>,
     /// Batches whose game is being installed, with the percent done.
@@ -110,6 +139,51 @@ impl Model {
     /// The batch with this id.
     pub fn batch(&self, id: &str) -> Option<&Batch> {
         self.batches.iter().find(|b| b.id == id)
+    }
+
+    /// Adds a chat line. A `shared` line, one the whole server sees, that another instance on `server` received within `CHAT_MERGE` joins that line instead of repeating it.
+    pub fn receive_chat(&mut self, line: ChatLine, server: Option<&str>, shared: bool, now: Instant, kept: usize) {
+        if let (true, Some(server)) = (shared, server) {
+            let key = (server.to_owned(), line.from.clone().unwrap_or_default(), line.text.clone());
+            let base = self.chat_base();
+            if let Some((seq, at)) = self.chat_recent.get(&key).copied()
+                && now.duration_since(at) < CHAT_MERGE
+                && seq >= base
+                && let Some(first) = self.chat.get_mut((seq - base) as usize)
+                && first.instance != line.instance
+                && !first.also.iter().any(|(k, ..)| *k == line.instance)
+            {
+                first.also.push((line.instance, line.account, line.batch));
+                return;
+            }
+            if self.chat_recent.len() >= CHAT_RECENT_KEPT {
+                self.chat_recent.retain(|_, (_, at)| now.duration_since(*at) < CHAT_MERGE);
+                if self.chat_recent.len() >= CHAT_RECENT_KEPT {
+                    self.chat_recent.clear();
+                }
+            }
+            self.chat_recent.insert(key, (self.chat_seq, now));
+        }
+        self.push_chat(line, kept);
+    }
+
+    /// Adds a chat line, dropping the oldest tenth once `kept` lines are held.
+    pub fn push_chat(&mut self, line: ChatLine, kept: usize) {
+        if self.chat.len() >= kept {
+            self.chat.drain(..(kept / 10).max(1));
+        }
+        self.chat.push(line);
+        self.chat_seq += 1;
+    }
+
+    /// Sequence number of the oldest line still in `chat`; line `n` is at index `n - chat_base()`.
+    pub fn chat_base(&self) -> u64 {
+        self.chat_seq - self.chat.len() as u64
+    }
+
+    /// Whispers not yet seen, over all instances.
+    pub fn unread_whispers_total(&self) -> u32 {
+        self.instances.values().map(|i| i.unread_whispers).sum()
     }
 
     /// The recorded events of instance `key`, newest first.
@@ -275,6 +349,34 @@ mod tests {
         assert_eq!(restart_status(1, 3), "Startet neu · Versuch 1 von 3");
     }
 
+    fn line(n: u64) -> ChatLine {
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), also: Vec::new(), at: 0, whisper: false, from: None, text: n.to_string() }
+    }
+
+    #[test]
+    fn chat_keeps_the_newest_lines_and_numbers_them() {
+        let mut m = Model::default();
+        for n in 0..25 {
+            m.push_chat(line(n), 20);
+        }
+        assert_eq!(m.chat_seq, 25);
+        assert_eq!(m.chat.len(), 19);
+        assert_eq!(m.chat_base(), 6);
+        assert_eq!(m.chat.first().map(|l| l.text.as_str()), Some("6"));
+        assert_eq!(m.chat.last().map(|l| l.text.as_str()), Some("24"));
+    }
+
+    #[test]
+    fn whispers_add_up_over_instances() {
+        let mut m = Model::default();
+        for (key, n) in [("1", 2), ("2", 0), ("3", 5)] {
+            let mut i = instance(key, key, "a", Phase::Stopped);
+            i.unread_whispers = n;
+            m.instances.insert(key.into(), i);
+        }
+        assert_eq!(m.unread_whispers_total(), 7);
+    }
+
     #[test]
     fn events_come_newest_first() {
         let mut m = Model::default();
@@ -284,5 +386,77 @@ mod tests {
         }
         assert_eq!(m.events("k").iter().map(|e| e.at).collect::<Vec<_>>(), [3, 2, 1]);
         assert!(m.events("none").is_empty());
+    }
+
+    fn said(key: &str, account: &str, from: Option<&str>, text: &str) -> ChatLine {
+        ChatLine { instance: key.into(), account: account.into(), batch: "b".into(), also: Vec::new(), at: 0, whisper: false, from: from.map(Into::into), text: text.into() }
+    }
+
+    #[test]
+    fn one_server_line_received_by_many_instances_is_one_line() {
+        let mut m = Model::default();
+        let t0 = Instant::now();
+        for (n, key) in ["1", "2", "3"].into_iter().enumerate() {
+            m.receive_chat(said(key, &format!("Dev{key}"), Some("Notch"), "hi"), Some("s"), true, t0 + Duration::from_millis(n as u64 * 50), 100);
+        }
+        assert_eq!(m.chat.len(), 1);
+        assert_eq!(m.chat_seq, 1);
+        assert_eq!(m.chat[0].account, "Dev1");
+        assert_eq!(m.chat[0].also, [("2".to_owned(), "Dev2".to_owned(), "b".to_owned()), ("3".to_owned(), "Dev3".to_owned(), "b".to_owned())]);
+    }
+
+    #[test]
+    fn same_text_later_or_from_elsewhere_stays_separate() {
+        let mut m = Model::default();
+        let t0 = Instant::now();
+        m.receive_chat(said("1", "A", Some("Notch"), "hi"), Some("s"), true, t0, 100);
+        m.receive_chat(said("2", "B", Some("Notch"), "hi"), Some("s"), true, t0 + CHAT_MERGE, 100);
+        m.receive_chat(said("3", "C", Some("Notch"), "hi"), Some("other"), true, t0, 100);
+        m.receive_chat(said("4", "D", Some("Alina"), "hi"), Some("s"), true, t0, 100);
+        m.receive_chat(said("5", "E", Some("Notch"), "ho"), Some("s"), true, t0, 100);
+        assert_eq!(m.chat.len(), 5);
+    }
+
+    #[test]
+    fn the_same_instance_repeating_itself_is_not_merged() {
+        let mut m = Model::default();
+        let t0 = Instant::now();
+        for _ in 0..3 {
+            m.receive_chat(said("1", "A", Some("Notch"), "hi"), Some("s"), true, t0, 100);
+        }
+        assert_eq!(m.chat.len(), 3);
+    }
+
+    #[test]
+    fn lines_not_shared_by_the_server_stay_per_account() {
+        let mut m = Model::default();
+        let t0 = Instant::now();
+        for key in ["1", "2"] {
+            m.receive_chat(said(key, "A", Some("Notch"), "psst"), Some("s"), false, t0, 100);
+            m.receive_chat(said(key, "A", Some("Notch"), "hello"), None, true, t0, 100);
+        }
+        assert_eq!(m.chat.len(), 4);
+    }
+
+    #[test]
+    fn a_trimmed_first_copy_does_not_swallow_the_next() {
+        let mut m = Model::default();
+        let t0 = Instant::now();
+        m.receive_chat(said("1", "A", Some("Notch"), "hi"), Some("s"), true, t0, 10);
+        for n in 0..10 {
+            m.receive_chat(said("1", "A", None, &format!("x{n}")), None, false, t0, 10);
+        }
+        m.receive_chat(said("2", "B", Some("Notch"), "hi"), Some("s"), true, t0, 10);
+        assert_eq!(m.chat.last().map(|l| l.account.as_str()), Some("B"));
+    }
+
+    #[test]
+    fn recent_table_stays_bounded() {
+        let mut m = Model::default();
+        let t0 = Instant::now();
+        for n in 0..5000 {
+            m.receive_chat(said("1", "A", Some("Notch"), &n.to_string()), Some("s"), true, t0 + Duration::from_millis(n), 100);
+        }
+        assert!(m.chat_recent.len() <= 512);
     }
 }

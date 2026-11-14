@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, Play, PreviousInstance, Reconnect, Reload, Respawn, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
+use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, Reload, Respawn, SendChat, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
 use super::model::{self, ChatLine, Instance, Model, Phase, rank};
 use super::native::{self, Rect};
 use crate::core::account::{self, Account, AccountKind};
@@ -343,6 +343,7 @@ struct Runtime {
     rect: Option<Rect>,
     badge: usize,
     notice: Option<String>,
+    whispers: Vec<Whisper>,
 }
 
 impl Global for Runtime {}
@@ -385,6 +386,7 @@ pub fn init(cx: &mut App) {
         rect: None,
         badge: 0,
         notice: None,
+        whispers: Vec::new(),
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
@@ -434,13 +436,19 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &PreviousInstance, cx| cx.defer(|cx| step(HotkeyAction::Prev, cx)));
     cx.on_action(|_: &NextAttention, cx| cx.defer(|cx| step(HotkeyAction::NextAttention, cx)));
     cx.on_action(|_: &Reload, cx| reload(cx));
+    cx.on_action(|_: &OpenChat, cx| cx.defer(super::chat::open));
     cx.on_action(|a: &Broadcast, cx| broadcast(&a.batch, &a.text, cx));
+    cx.on_action(|a: &SendChat, cx| send_chat(&a.key, &a.text, cx));
     cx.on_system_notification_response(|response, cx| {
         let batch = response.tag.strip_prefix("attention-").map(str::to_owned);
+        let whisper = response.tag.as_ref() == WHISPER_TAG;
         cx.defer(move |cx| {
             show_grid(cx);
             if let Some(batch) = batch {
                 super::main_window::select_batch(&batch, cx);
+            }
+            if whisper {
+                super::chat::show(cx);
             }
         });
     });
@@ -735,10 +743,31 @@ fn server_of(phase: &Phase) -> Option<String> {
     }
 }
 
+/// Sends a chat line or command to one running instance.
+fn send_chat(key: &str, text: &str, cx: &mut App) {
+    let Some(backend) = backend(cx) else { return };
+    if model::get(cx).read(cx).instances.get(key).is_some_and(|i| i.phase.on_server()) {
+        backend.send(key, ToMod::ChatSend { text: text.to_owned() });
+    }
+}
+
+/// Marks the whispers of `batch` (all instances when `None`) as seen.
+pub fn clear_whispers(batch: Option<&str>, cx: &mut App) {
+    let model = model::get(cx);
+    if !model.read(cx).instances.values().any(|i| i.unread_whispers > 0 && batch.is_none_or(|b| i.batch_id == b)) {
+        return;
+    }
+    update_model(cx, |m, _, _| {
+        for i in m.instances.values_mut().filter(|i| batch.is_none_or(|b| i.batch_id == b)) {
+            i.unread_whispers = 0;
+        }
+    });
+}
+
 fn broadcast(batch: &str, text: &str, cx: &mut App) {
     let Some(backend) = backend(cx) else { return };
     let model = model::get(cx);
-    for i in model.read(cx).instances.values().filter(|i| i.batch_id == batch && i.phase.is_running()) {
+    for i in model.read(cx).instances.values().filter(|i| i.batch_id == batch && i.phase.on_server()) {
         backend.send(&i.key, ToMod::ChatSend { text: text.to_owned() });
     }
 }
@@ -868,6 +897,7 @@ struct Effects {
     changed_history: Vec<String>,
     stop: Vec<String>,
     check_proxy: Vec<(String, String)>,
+    whispers: Vec<Whisper>,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -920,6 +950,9 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     }
     for (batch, name, kind) in fresh {
         queue_alert(batch, name, kind, cx);
+    }
+    for whisper in fx.whispers {
+        queue_whisper(whisper, cx);
     }
     if fx.exited_playing {
         show_grid(cx);
@@ -1216,14 +1249,21 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             let whisper = kind == ChatKind::Whisper;
             if whisper
                 && !playing
+                && settings::active().merged_chat
                 && let Some(i) = m.instances.get_mut(&key)
             {
                 i.unread_whispers += 1;
             }
-            if m.chat.len() >= KEPT_CHAT {
-                m.chat.drain(..KEPT_CHAT / 10);
+            let (account, batch) = m.instances.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
+            if whisper && !playing {
+                fx.whispers.push(Whisper { account: account.clone(), from: from.clone(), text: text.clone() });
             }
-            m.chat.push(ChatLine { instance: key, whisper, from, text });
+            if settings::active().merged_chat {
+                let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+                let server = m.instances.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
+                let shared = !whisper && !(from.is_none() && text.contains(&account));
+                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at, whisper, from, text }, server.as_deref(), shared, Instant::now(), KEPT_CHAT);
+            }
         }
         FromMod::Preview { .. } => {
             let now = Instant::now();
@@ -1331,6 +1371,10 @@ fn flush_alert(batch_id: &str, cx: &mut App) {
     if !cx.has_global::<Runtime>() {
         return;
     }
+    if !settings::active().notifications.attention {
+        cx.global_mut::<Runtime>().alerts.remove(batch_id);
+        return;
+    }
     let Some(list) = cx.global_mut::<Runtime>().alerts.remove(batch_id) else { return };
     let model = model::get(cx);
     let (names, kinds, batch_name) = {
@@ -1361,6 +1405,65 @@ fn flush_alert(batch_id: &str, cx: &mut App) {
         return;
     }
     cx.show_system_notification(SystemNotification { tag: format!("attention-{batch_id}").into(), title: title.into(), body: body.into(), actions: Vec::new() });
+}
+
+/// A whisper that reached an instance nobody is playing.
+struct Whisper {
+    account: String,
+    from: Option<String>,
+    text: String,
+}
+
+const WHISPER_TAG: &str = "whisper";
+const WHISPER_PREVIEW: usize = 90;
+
+fn queue_whisper(whisper: Whisper, cx: &mut App) {
+    if !cx.has_global::<Runtime>() || !settings::active().notifications.whispers {
+        return;
+    }
+    let rt = cx.global_mut::<Runtime>();
+    let first = rt.whispers.is_empty();
+    rt.whispers.push(whisper);
+    if !first {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(ALERT_AFTER).await;
+        cx.update(flush_whispers);
+    })
+    .detach();
+}
+
+fn flush_whispers(cx: &mut App) {
+    if !cx.has_global::<Runtime>() {
+        return;
+    }
+    let list = std::mem::take(&mut cx.global_mut::<Runtime>().whispers);
+    if list.is_empty() || !settings::active().notifications.whispers || (super::main_window::is_active(cx) && model::get(cx).read(cx).playing.is_none()) {
+        return;
+    }
+    let n = list.len();
+    let (title, body) = if n == 1 {
+        let w = &list[0];
+        let mut text: String = w.text.chars().take(WHISPER_PREVIEW).collect();
+        if w.text.chars().count() > WHISPER_PREVIEW {
+            text.push('…');
+        }
+        let who = w.from.clone().unwrap_or_else(|| tr("Jemand"));
+        (trf("%@ flüstert · %@", &[&who, &w.account]), text)
+    } else {
+        let mut seen = HashSet::new();
+        let names: Vec<&str> = list.iter().filter(|w| seen.insert(w.account.as_str())).map(|w| w.account.as_str()).collect();
+        let mut body = names.iter().take(ALERT_NAMES).copied().collect::<Vec<_>>().join(", ");
+        if names.len() > ALERT_NAMES {
+            body = trf("%@ und %lld weitere", &[&body, &(names.len() - ALERT_NAMES)]);
+        }
+        (trf("%lld Flüsternachrichten", &[&n]), body)
+    };
+    if drive::fenced("notify", format!("{title} | {body}")) {
+        return;
+    }
+    cx.show_system_notification(SystemNotification { tag: WHISPER_TAG.into(), title: title.into(), body: body.into(), actions: Vec::new() });
 }
 
 fn refresh_badge(cx: &mut App) {
@@ -1491,6 +1594,7 @@ mod tests {
             rect: None,
             badge: 0,
             notice: None,
+            whispers: Vec::new(),
         }
     }
 
