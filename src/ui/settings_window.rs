@@ -277,7 +277,7 @@ impl Render for SettingsView {
         let general = group(
             tr("Im Spiel"),
             vec![
-                self.toggle("set-prevent-sleep", tr("Ruhezustand verhindern, solange Spiele laufen"), tr("Der Bildschirm darf trotzdem ausgehen."), s.prevent_sleep, |st, on| st.prevent_sleep = on, &t, cx),
+                self.toggle("set-prevent-sleep", tr("Computer wach halten, solange Spiele laufen"), tr("Der Bildschirm darf trotzdem ausgehen."), s.prevent_sleep, |st, on| st.prevent_sleep = on, &t, cx),
                 self.toggle("set-game-badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |st, on| st.game_badge = on, &t, cx),
             ],
             None,
