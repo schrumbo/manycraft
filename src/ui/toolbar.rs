@@ -321,7 +321,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(search)
         .child(div().w(px(space::XS)).flex_none())
         .child(action_button("stop-scope", stop_label.clone(), "square", false, running == 0, compact, stop, &t).tooltip(tip(format!("{stop_label} · {}", if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) }))))
-        .child(action_button("start-scope", start_label.clone(), "play", true, startable == 0, compact, start, &t).tooltip(tip(format!("{start_label} · {}", if startable == 0 { tr("Alle laufen schon") } else { trf("%lld gestoppte starten", &[&startable]) }))))
+        .child(action_button("start-scope", start_label.clone(), "play", true, startable == 0, compact, start, &t).tooltip(tip(format!("{start_label} · {}", if startable == 0 { tr("Alle sind schon wach") } else { trf("%lld gestoppte starten", &[&startable]) }))))
         .into_any_element()
 }
 

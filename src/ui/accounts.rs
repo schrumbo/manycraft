@@ -1454,7 +1454,7 @@ impl Render for AccountsPage {
         let root = div().id("accounts-page").size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         if self.accounts.is_empty() {
             let add = primary_button("accounts-add", tr("Account hinzufügen"), "plus", false, &t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddAccount), cx));
-            let title = tr("Noch keine Accounts");
+            let title = tr("Hier ist es noch still");
             return root
                 .overflow_y_scroll()
                 .relative()
