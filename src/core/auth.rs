@@ -407,7 +407,7 @@ pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expect
             let mut accounts = account::load()?;
             account::store_token(session.uuid, &refresh)?;
             let account = signed_in(&accounts, session.uuid, &session.name, proxy);
-            account::upsert(&mut accounts, account.clone());
+            let account = account::upsert(&mut accounts, account);
             account::save(&accounts)?;
             Ok(account)
         };

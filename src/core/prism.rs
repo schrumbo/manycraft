@@ -149,8 +149,7 @@ pub fn import_accounts_into(saved: &mut Vec<Account>, prism: &[PrismAccount]) ->
             AccountKind::Microsoft => done.needs_sign_in.push(found.name.clone()),
             AccountKind::Offline => match Account::offline(&found.name) {
                 Ok(new) => {
-                    saved.push(new.clone());
-                    done.added.push(new);
+                    done.added.push(account::upsert(saved, new));
                 }
                 Err(e) => done.skipped.push((found.name.clone(), e.to_string())),
             },
@@ -925,7 +924,8 @@ mod tests {
             prism_account("notch", AccountKind::Microsoft),
         ];
         let done = import_accounts_into(&mut saved, &prism);
-        assert_eq!(done.added, [Account::offline("Steve").unwrap()]);
+        let used = account::least_used(&saved[..2]);
+        assert_eq!(done.added, [Account { color: Some(used), ..Account::offline("Steve").unwrap() }], "an imported account gets the least used colour");
         assert_eq!(done.needs_sign_in, ["Notch"]);
         let skipped: Vec<&str> = done.skipped.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(skipped, ["existing", "SIGNED", "steve", "x", "notch"]);

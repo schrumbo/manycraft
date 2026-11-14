@@ -189,7 +189,7 @@ fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &Atomic
         if proxy.is_some() && expected.is_none() {
             account.proxy.clone_from(&proxy);
         }
-        account::upsert(&mut accounts, account.clone());
+        let account = account::upsert(&mut accounts, account);
         account::save(&accounts)?;
         Ok(account)
     });
@@ -214,7 +214,7 @@ pub fn add_offline(name: &str, proxy: Option<String>) -> Result<Account> {
         }
         let mut account = Account::offline(name)?;
         account.proxy.clone_from(&proxy);
-        account::upsert(&mut accounts, account.clone());
+        let account = account::upsert(&mut accounts, account);
         account::save(&accounts)?;
         Ok(account)
     })
@@ -226,6 +226,17 @@ pub fn set_proxy(id: Uuid, proxy: Option<String>) -> Result<()> {
         let mut accounts = account::load()?;
         let account = accounts.iter_mut().find(|a| a.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Account gibt es nicht mehr.")))?;
         account.proxy.clone_from(&proxy);
+        account::save(&accounts)
+    })
+}
+
+/// Gives the accounts `ids` colour `color`; ids no longer saved are skipped.
+pub fn set_color(ids: &[Uuid], color: u8) -> Result<()> {
+    saved(|| {
+        let mut accounts = account::load()?;
+        for a in accounts.iter_mut().filter(|a| ids.contains(&a.id)) {
+            a.color = Some(color);
+        }
         account::save(&accounts)
     })
 }
