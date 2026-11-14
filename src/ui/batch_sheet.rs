@@ -136,6 +136,7 @@ struct BatchSheet {
     mods_scroll: ScrollHandle,
     local_scroll: ScrollHandle,
     saved_scroll: Option<Point<Pixels>>,
+    list_max: f32,
     prism_choice: Option<Instance>,
     prism_picking: bool,
     imported: Option<Batch>,
@@ -264,6 +265,7 @@ impl BatchSheet {
             mods_scroll: ScrollHandle::new(),
             local_scroll: ScrollHandle::new(),
             saved_scroll: None,
+            list_max: sheet::LIST_MAX,
             prism_choice: None,
             prism_picking: false,
             imported: None,
@@ -805,7 +807,7 @@ impl BatchSheet {
                 .child(div().flex_1().min_w_0().child(self.problem("versions-error", "circle-alert", t.danger_text, why, cx, t)))
                 .child(sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)))),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
-            _ => div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some())),
+            _ => div().child(Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some())),
         };
         let mut body = div().flex().flex_col().gap(px(space::M));
         if running {
@@ -950,7 +952,7 @@ impl BatchSheet {
                     .with_sizing_behavior(ListSizingBehavior::Infer)
                     .px(px(space::XS))
                     .py(px(space::XS))
-                    .max_h(px(sheet::LIST_MAX)),
+                    .max_h(px(self.list_max)),
             )
         };
         div().flex().flex_col().gap(px(space::XS)).child(header).when(total > FILTER_FROM, |d| d.child(Input::new(&self.filter))).child(list)
@@ -1009,7 +1011,7 @@ impl BatchSheet {
         if self.mods.is_empty() {
             col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Keine Mods. Der Batch startet mit Fabric allein.")));
         } else {
-            let mut list = div().id("mod-list").flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().track_scroll(&self.mods_scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+            let mut list = div().id("mod-list").flex().flex_col().max_h(px(self.list_max)).overflow_y_scroll().track_scroll(&self.mods_scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
             for m in &self.mods {
                 let pid = m.project_id.clone();
                 list = list.child(
@@ -1032,7 +1034,7 @@ impl BatchSheet {
         if let Some(own) = self.original.as_ref().filter(|b| !b.local_mods.is_empty()) {
             col = col
                 .child(div().pt(px(space::S)).child(sheet::label(trf("Eigene Dateien (%lld)", &[&own.local_mods.len()]), t)))
-                .child(local_files("local-files", &own.local_mods, &self.local_scroll, t))
+                .child(local_files("local-files", &own.local_mods, &self.local_scroll, self.list_max, t))
                 .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Diese Dateien bleiben unverändert im Batch und werden nicht aktualisiert.")));
         }
         if let Some(updates) = self.render_updates(cx, t) {
@@ -1238,7 +1240,7 @@ impl BatchSheet {
             .gap(px(space::M))
             .child(sheet::status("circle-check", t.success_text, trf("„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.", &[&batch.name, &matched, &local])))
             .child(sheet::label(tr("Nicht auf Modrinth"), t));
-        col = col.child(local_files("local-mods", &batch.local_mods, &self.local_scroll, t)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
+        col = col.child(local_files("local-mods", &batch.local_mods, &self.local_scroll, self.list_max, t)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
         col
     }
 
@@ -1351,11 +1353,21 @@ impl BatchSheet {
 const VERSION_WIDTH: f32 = 168.;
 const MEMORY_VALUE_WIDTH: f32 = 64.;
 const RESULTS_MAX: f32 = 340.;
+const LIST_MIN: f32 = 96.;
+const LIST_SHARE: f32 = 0.5;
+
+fn body_max(viewport: f32) -> f32 {
+    (viewport - 2. * sheet::MARGIN - CHROME_HEIGHT).max(160.)
+}
+
+fn list_max(viewport: f32) -> f32 {
+    (body_max(viewport) * LIST_SHARE).clamp(LIST_MIN, sheet::LIST_MAX)
+}
 const PRISM_FILTER_FROM: usize = 6;
 const SNUG_PERCENT: u64 = 80;
 
-fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, t: &Theme) -> Div {
-    let mut list = div().id(id).flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().track_scroll(scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, max: f32, t: &Theme) -> Div {
+    let mut list = div().id(id).flex().flex_col().max_h(px(max)).overflow_y_scroll().track_scroll(scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
     for name in names {
         list = list.child(div().pl(px(space::M)).pr(px(space::XS)).py(px(space::XS)).flex().items_center().gap(px(space::S)).child(icon("package", iconsize::S, t.tertiary)).child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name.clone())));
     }
@@ -1386,6 +1398,7 @@ fn default_note(note: &str, version: &str) -> String {
 impl Render for BatchSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_focus(window, cx);
+        self.list_max = list_max(window.viewport_size().height.as_f32());
         let t = Theme::get(cx);
         let editing = self.original.is_some();
         let (title, subtitle) = if self.imported.is_some() {
@@ -1408,7 +1421,7 @@ impl Render for BatchSheet {
         } else {
             self.render_form(cx, &t)
         };
-        let max_body = (window.viewport_size().height.as_f32() - 2. * sheet::MARGIN - CHROME_HEIGHT).max(160.);
+        let max_body = body_max(window.viewport_size().height.as_f32());
         let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = if self.imported.is_some() {
             (Vec::new(), vec![sheet::button("import-done", tr("Fertig"), None, Look::Primary, false, false, &t).track_focus(&self.done_focus).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element()])
         } else if self.prism_picking {
@@ -1483,3 +1496,22 @@ impl Render for BatchSheet {
 }
 
 const SAVE_ERROR_MAX: f32 = 220.;
+
+#[cfg(test)]
+mod tests {
+    use super::{LIST_MIN, body_max, list_max};
+    use crate::ui::sheet;
+
+    #[test]
+    fn lists_leave_room_for_the_sheet_to_scroll_in_a_small_window() {
+        let body = body_max(420.);
+        assert!(list_max(420.) <= body * 0.6);
+        assert!(list_max(420.) < sheet::LIST_MAX);
+    }
+
+    #[test]
+    fn lists_keep_their_full_height_in_a_tall_window() {
+        assert_eq!(list_max(1200.), sheet::LIST_MAX);
+        assert!(list_max(300.) >= LIST_MIN);
+    }
+}

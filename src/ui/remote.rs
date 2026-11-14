@@ -268,7 +268,7 @@ pub fn restore_account(removed: &Removed) -> Result<()> {
         let id = removed.account.id;
         let mut accounts = account::load()?;
         if accounts.iter().any(|a| a.id != id && a.name.eq_ignore_ascii_case(&removed.account.name)) {
-            return Ok(());
+            return Err(gone(crate::core::i18n::tr("Ein anderer Account heißt schon so.")));
         }
         if !accounts.iter().any(|a| a.id == id) {
             if let Some(token) = &removed.token

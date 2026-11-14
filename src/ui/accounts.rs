@@ -17,7 +17,8 @@ use super::forms::{self, Problem};
 use super::motion::Soft;
 use super::remote::{self, SignIn, SignInError};
 use super::sheet::{self, Dismissed, Look};
-use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
+use super::toolbar;
+use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint, with_alpha};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button, tip};
 use crate::core::account::{Account, AccountKind};
 use crate::core::drive;
@@ -27,6 +28,7 @@ use crate::core::skins;
 
 const COPIED_FOR: Duration = Duration::from_secs(2);
 const UNDO_FOR: Duration = Duration::from_secs(10);
+const MAX_TOASTS: usize = 3;
 const ADDED_NOTES: f32 = font::BODY * font::LINE * 2. + font::CAPTION * font::LINE * 2. + space::XS * 2.;
 
 /// Registers the account actions.
@@ -43,7 +45,7 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &UndoRemoveAccount, cx| {
         if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
-            page.update(cx, |s, cx| s.undo_remove(cx));
+            page.update(cx, |s, cx| s.undo_newest(cx));
         }
     });
     cx.on_action(|action: &SignInAgain, cx| {
@@ -76,7 +78,9 @@ pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
         return page.0.clone();
     }
     let view = cx.new(|cx| AccountsPage::new(window, cx));
+    let toasts = cx.new(|cx| UndoToasts::new(&view, cx));
     cx.set_global(Page(view.clone()));
+    cx.set_global(Toasts(toasts));
     view
 }
 
@@ -104,6 +108,61 @@ pub fn waiting(cx: &App) -> Vec<String> {
 struct Page(Entity<AccountsPage>);
 
 impl Global for Page {}
+
+struct Toasts(Entity<UndoToasts>);
+
+impl Global for Toasts {}
+
+/// The undo notices over the main window: one per removal, each with its own timer.
+pub fn toasts(cx: &App) -> Option<Entity<UndoToasts>> {
+    cx.try_global::<Toasts>().map(|t| t.0.clone())
+}
+
+/// Moves the Accounts page's filter into focus, if it shows one.
+pub fn focus_filter(window: &mut Window, cx: &mut App) {
+    let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) else { return };
+    page.update(cx, |s, cx| s.focus_filter(window, cx));
+}
+
+/// Whether the Accounts page shows a filter to focus.
+pub fn has_filter(cx: &App) -> bool {
+    cx.try_global::<Page>().is_some_and(|p| p.0.read(cx).filter_shown())
+}
+
+struct Offer {
+    removed: remote::Removed,
+    failed: bool,
+}
+
+struct Pending<T> {
+    items: Vec<(u64, T)>,
+    next: u64,
+}
+
+impl<T> Pending<T> {
+    fn new() -> Self {
+        Self { items: Vec::new(), next: 0 }
+    }
+
+    fn push(&mut self, item: T) -> u64 {
+        self.next += 1;
+        self.items.push((self.next, item));
+        self.next
+    }
+
+    fn take(&mut self, id: u64) -> Option<T> {
+        let at = self.items.iter().position(|(i, _)| *i == id)?;
+        Some(self.items.remove(at).1)
+    }
+
+    fn newest(&self) -> Option<u64> {
+        self.items.last().map(|(id, _)| *id)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum Check {
@@ -682,8 +741,7 @@ struct AccountsPage {
     heads_for: Vec<Uuid>,
     editing: Option<Editing>,
     removing: Option<Uuid>,
-    removed: Vec<remote::Removed>,
-    undo_gen: u64,
+    removed: Pending<Offer>,
     error: Option<Problem>,
     details: HashSet<&'static str>,
     prism_found: bool,
@@ -721,8 +779,7 @@ impl AccountsPage {
             heads_for: Vec::new(),
             editing: None,
             removing: None,
-            removed: Vec::new(),
-            undo_gen: 0,
+            removed: Pending::new(),
             error: None,
             details: HashSet::new(),
             prism_found: false,
@@ -803,7 +860,6 @@ impl AccountsPage {
             (
                 self.error.clone(),
                 self.details.contains("error"),
-                self.removed.last().map(|r| r.account.id),
                 self.prism_done.as_ref().map(|d| (d.added.len(), d.needs_sign_in.len(), d.skipped.len())),
                 self.accounts.len(),
                 self.prism_found,
@@ -1051,7 +1107,7 @@ impl AccountsPage {
             let _ = this.update(cx, |s, cx| {
                 s.removing = None;
                 match result {
-                    Ok(Some(removed)) => s.offer_undo(removed, cx),
+                    Ok(Some(removed)) => s.offer_undo(removed, false, cx),
                     Ok(None) => {}
                     Err(e) => s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig entfernt."), &e)),
                 }
@@ -1062,14 +1118,12 @@ impl AccountsPage {
         .detach();
     }
 
-    fn offer_undo(&mut self, removed: remote::Removed, cx: &mut Context<Self>) {
-        self.removed.push(removed);
-        self.undo_gen += 1;
-        let generation = self.undo_gen;
+    fn offer_undo(&mut self, removed: remote::Removed, failed: bool, cx: &mut Context<Self>) {
+        let id = self.removed.push(Offer { removed, failed });
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNDO_FOR).await;
             let _ = this.update(cx, |s, cx| {
-                if s.undo_gen == generation && !std::mem::take(&mut s.removed).is_empty() {
+                if s.removed.take(id).is_some() {
                     cx.notify();
                 }
             });
@@ -1078,11 +1132,16 @@ impl AccountsPage {
         cx.notify();
     }
 
-    fn undo_remove(&mut self, cx: &mut Context<Self>) {
-        let Some(removed) = self.removed.pop() else { return };
-        self.undo_gen += 1;
+    fn undo_newest(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.removed.newest() {
+            self.undo_remove(id, cx);
+        }
+    }
+
+    fn undo_remove(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(offer) = self.removed.take(id) else { return };
         cx.notify();
-        let removed = Arc::new(removed);
+        let removed = Arc::new(offer.removed);
         let task = cx.background_executor().spawn({
             let removed = removed.clone();
             async move { remote::restore_account(&removed) }
@@ -1093,7 +1152,7 @@ impl AccountsPage {
                 if let Err(e) = result {
                     s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig zurückgeholt."), &e));
                     if let Ok(removed) = Arc::try_unwrap(removed) {
-                        s.offer_undo(removed, cx);
+                        s.offer_undo(removed, true, cx);
                     }
                 }
                 cx.dispatch_action(&Reload);
@@ -1103,21 +1162,17 @@ impl AccountsPage {
         .detach();
     }
 
-    fn undo_row(&self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
-        let removed = self.removed.last()?;
-        let undo = sheet::button("undo-remove", tr("Rückgängig"), Some("undo-2"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.undo_remove(cx)));
-        Some(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(space::S))
-                .px(px(space::M))
-                .py(px(space::S))
-                .rounded(px(radius::CONTROL))
-                .bg(t.raised)
-                .child(div().id("removed-note").mark("status", removed.account.name.clone()).flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("„%@“ entfernt.", &[&removed.account.name])))
-                .child(undo),
-        )
+    fn filter_shown(&self) -> bool {
+        self.accounts.len() > FILTER_FROM
+    }
+
+    fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.filter_shown() {
+            return;
+        }
+        self.list.scroll_to_reveal_item(0);
+        self.filter.update(cx, |f, cx| f.take_focus(window, cx));
+        cx.notify();
     }
 
     fn avatar(account: &Account, t: &Theme) -> AnyElement {
@@ -1251,8 +1306,6 @@ impl AccountsPage {
 
     fn header(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
         let count = self.accounts.len();
-        let count_label = if count == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&count]) };
-        let add = primary_button("accounts-add", tr("Account hinzufügen"), "plus", false, t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddAccount), cx));
         let error = self.error.clone().map(|e| {
             div()
                 .flex()
@@ -1277,25 +1330,37 @@ impl AccountsPage {
                     cx.notify();
                 })))
         });
+        let prism = self.prism_result(&self.accounts, cx, t);
+        let filter = count > FILTER_FROM;
+        let any = error.is_some() || prism.is_some() || filter;
         div()
             .flex()
             .flex_col()
             .gap(px(space::L))
-            .pb(px(space::L))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(space::M))
-                    .child(sheet::sidebar_toggle("accounts-sidebar", t))
-                    .child(div().flex_1().flex().items_baseline().gap(px(space::S)).child(div().id("accounts-title").mark("heading", tr("Accounts")).text_size(px(font::TITLE)).font_weight(FontWeight::BOLD).child(tr("Accounts"))).child(div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(count_label)))
-                    .when(self.prism_found, |d| d.child(self.prism_button(cx, t)))
-                    .child(add),
-            )
+            .when(any, |d| d.pb(px(space::L)))
             .children(error)
-            .children(self.undo_row(cx, t))
-            .children(self.prism_result(&self.accounts, cx, t))
-            .when(count > FILTER_FROM, |d| d.child(Input::new(&self.filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true)))
+            .children(prism)
+            .when(filter, |d| d.child(Input::new(&self.filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true)))
+    }
+
+    fn bar(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
+        let count = self.accounts.len();
+        let count_label = if count == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&count]) };
+        let add = primary_button("accounts-add", tr("Account hinzufügen"), "plus", false, t).on_click(|_, window, cx| window.dispatch_action(Box::new(AddAccount), cx));
+        div()
+            .h(px(shell::TOOLBAR))
+            .flex_none()
+            .pl(px(toolbar::lead()))
+            .pr(px(tile::INSET))
+            .flex()
+            .items_center()
+            .gap(px(space::S))
+            .border_b_1()
+            .border_color(t.separator)
+            .child(toolbar::slot())
+            .child(div().flex_1().min_w_0().flex().items_baseline().gap(px(space::S)).child(div().id("accounts-title").mark("heading", tr("Accounts")).text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).child(tr("Accounts"))).child(div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(count_label)))
+            .when(self.prism_found, |d| d.child(self.prism_button(cx, t)))
+            .child(add)
     }
 
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1319,6 +1384,65 @@ impl AccountsPage {
     }
 }
 
+/// The undo notices: a stack above the content, bottom centre, that never moves the content under it.
+pub struct UndoToasts {
+    page: Entity<AccountsPage>,
+    _page: Subscription,
+}
+
+impl UndoToasts {
+    fn new(page: &Entity<AccountsPage>, cx: &mut Context<Self>) -> Self {
+        let _page = cx.observe(page, |_, _, cx| cx.notify());
+        Self { page: page.clone(), _page }
+    }
+
+    fn toast(&self, id: u64, name: &str, failed: bool, t: &Theme) -> Stateful<Div> {
+        let page = self.page.downgrade();
+        let label = if failed { tr("Erneut versuchen") } else { tr("Rückgängig") };
+        let undo = sheet::button(SharedString::from(format!("undo-remove-{id}")), label, Some("undo-2"), Look::Plain, false, false, t).on_click(move |_, _, cx| {
+            let _ = page.update(cx, |s, cx| s.undo_remove(id, cx));
+        });
+        let text = if failed { trf("„%@“ wurde nicht zurückgeholt.", &[&name]) } else { trf("„%@“ entfernt.", &[&name]) };
+        div()
+            .id(SharedString::from(format!("removed-note-{id}")))
+            .mark("status", name.to_owned())
+            .occlude()
+            .max_w(px(shell::TOAST))
+            .flex()
+            .items_center()
+            .gap(px(space::S))
+            .pl(px(space::M))
+            .pr(px(space::XS))
+            .py(px(space::XS))
+            .rounded(px(radius::CONTROL))
+            .bg(t.content)
+            .border_1()
+            .border_color(if failed { with_alpha(t.danger, tint::ATTENTION) } else { t.separator })
+            .shadow_md()
+            .child(div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if failed { t.danger_text } else { t.primary }).child(text))
+            .child(undo)
+    }
+}
+
+impl Render for UndoToasts {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::get(cx);
+        let items = &self.page.read(cx).removed.items;
+        let hidden = items.len().saturating_sub(MAX_TOASTS);
+        let shown: Vec<(u64, String, bool)> = items.iter().rev().take(MAX_TOASTS).rev().map(|(id, o)| (*id, o.removed.account.name.clone(), o.failed)).collect();
+        let toasts: Vec<Stateful<Div>> = shown.iter().map(|(id, name, failed)| self.toast(*id, name, *failed, &t)).collect();
+        div()
+            .w_full()
+            .px(px(space::XL))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(space::S))
+            .when(hidden > 0, |d| d.child(div().text_size(px(font::CAPTION)).text_color(t.secondary).child(trf("+%lld weitere", &[&hidden]))))
+            .children(toasts)
+    }
+}
+
 fn framed(child: impl IntoElement, top: bool, bottom: bool) -> Div {
     div().w_full().flex().justify_center().child(div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).when(top, |d| d.pt(px(space::XL))).when(bottom, |d| d.pb(px(space::XL))).child(child))
 }
@@ -1338,7 +1462,6 @@ impl Render for AccountsPage {
                 .items_center()
                 .justify_center()
                 .px(px(space::XL))
-                .child(div().absolute().top(px(space::XL)).left(px(space::XL)).child(sheet::sidebar_toggle("accounts-sidebar", &t)))
                 .child(
                     div()
                         .flex()
@@ -1349,16 +1472,54 @@ impl Render for AccountsPage {
                         .child(div().id("accounts-empty").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).child(title))
                         .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Online-Mode.")))
                         .child(div().mt(px(space::S)).flex().items_center().gap(px(space::S)).child(add).when(self.prism_found, |d| d.child(self.prism_button(cx, &t))))
-                        .children(self.undo_row(cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c)))
                         .children(self.prism_result(&self.accounts, cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c))),
                 )
                 .into_any_element();
         }
         self.sync_heights(cx);
-        root.child(list(self.list.clone(), cx.processor(|s, ix: usize, _, cx| s.item(ix, cx))).size_full()).into_any_element()
+        let bar = self.bar(cx, &t);
+        root.flex().flex_col().child(bar).child(div().flex_1().min_h_0().child(list(self.list.clone(), cx.processor(|s, ix: usize, _, cx| s.item(ix, cx))).size_full())).into_any_element()
     }
 }
 
 const PAGE_MAX: f32 = 760.;
 const FILTER_FROM: usize = 12;
 const OVERDRAW: f32 = 480.;
+
+#[cfg(test)]
+mod tests {
+    use super::Pending;
+
+    #[test]
+    fn expiring_one_notice_keeps_the_others() {
+        let mut p = Pending::new();
+        let a = p.push("a");
+        let b = p.push("b");
+        assert_eq!(p.take(a), Some("a"));
+        assert_eq!(p.newest(), Some(b));
+        assert_eq!(p.take(a), None);
+    }
+
+    #[test]
+    fn undoing_picks_the_notice_asked_for() {
+        let mut p = Pending::new();
+        let a = p.push(1);
+        let b = p.push(2);
+        let c = p.push(3);
+        assert_eq!(p.take(b), Some(2));
+        assert_eq!(p.newest(), Some(c));
+        assert_eq!(p.take(c), Some(3));
+        assert_eq!(p.newest(), Some(a));
+        assert!(!p.is_empty());
+    }
+
+    #[test]
+    fn a_reoffered_notice_gets_a_fresh_id() {
+        let mut p = Pending::new();
+        let a = p.push("a");
+        p.take(a);
+        let again = p.push("a");
+        assert_ne!(a, again);
+        assert_eq!(p.take(a), None);
+    }
+}

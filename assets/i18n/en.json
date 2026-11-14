@@ -474,5 +474,8 @@
   "Der Account wurde nicht vollständig zurückgeholt.": "The account was not fully restored.",
   "Rückgängig": "Undo",
   "„%@“ entfernt.": "“%@” removed.",
-  "Entfernen rückgängig": "Undo remove"
+  "Entfernen rückgängig": "Undo remove",
+  "„%@“ wurde nicht zurückgeholt.": "“%@” was not restored.",
+  "+%lld weitere": "+%lld more",
+  "Ein anderer Account heißt schon so.": "Another account already has that name."
 }

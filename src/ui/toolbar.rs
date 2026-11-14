@@ -17,8 +17,8 @@ use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, t
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
 
-/// The toolbar's leading padding that puts the sidebar symbol on the grid's edge.
-fn lead() -> f32 {
+/// The leading padding of a page's top bar that puts the sidebar symbol on the grid's edge.
+pub fn lead() -> f32 {
     tile::INSET - (control::M - iconsize::M) / 2.
 }
 
@@ -26,10 +26,16 @@ fn tabular() -> FontFeatures {
     FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
-fn toggle(this: &MainWindow, t: &Theme, cx: &App) -> Stateful<Div> {
+/// The room a page's top bar keeps free for the sidebar toggle.
+pub fn slot() -> Div {
+    div().size(px(control::M)).flex_none()
+}
+
+/// The sidebar toggle, drawn once by the main window at the same place on every page.
+pub fn toggle(this: &MainWindow, t: &Theme, cx: &App) -> Div {
     let shown = if this.narrow_now { this.overlay } else { this.sidebar };
     let hint = hint(if shown { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, &ToggleSidebar, cx);
-    icon_button("toggle-sidebar", "panel-left", hint, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx))
+    div().absolute().occlude().top(px((shell::TOOLBAR - control::M) / 2.)).left(px(lead() + if this.narrow_now && this.overlay { shell::SIDEBAR } else { 0. })).child(icon_button("toggle-sidebar", "panel-left", hint, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx)))
 }
 
 fn icon_button(id: &'static str, name: &'static str, hint: String, t: &Theme) -> Stateful<Div> {
@@ -253,7 +259,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .gap(px(space::S))
         .border_b_1()
         .border_color(t.separator)
-        .child(toggle(this, &t, cx))
+        .child(slot())
         .child(
             div()
                 .id("toolbar-title")

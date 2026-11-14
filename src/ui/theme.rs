@@ -133,6 +133,8 @@ pub mod shell {
     pub const TITLE: f32 = 96.;
     /// Below this window width the sidebar floats over the grid instead of beside it.
     pub const NARROW: f32 = 880.;
+    /// The widest an undo notice gets.
+    pub const TOAST: f32 = 440.;
 }
 
 /// The command palette.
@@ -179,6 +181,8 @@ pub mod chat {
     pub const BAR: f32 = 2.;
     /// Width of the picker for the batch shown and for the one written to.
     pub const PICKER: f32 = 200.;
+    /// Height of the composer under the lines, with its hint line.
+    pub const COMPOSER: f32 = 88.;
     /// Width of the time at the start of a line.
     pub const TIME: f32 = 44.;
     /// Space under the last line, and the gap between it and the jump button.
