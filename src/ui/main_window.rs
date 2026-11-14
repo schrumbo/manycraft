@@ -6,12 +6,13 @@ use super::actions::{AddAccount, NewBatch, OpenChat, TileLarger, TileSmaller, To
 use super::drive::Mark;
 use super::grid::Grid;
 use super::model;
+use super::motion::Soft;
 use super::native::{self, Rect};
 use super::theme::{self, Theme, control, font, iconsize, shell, space, tint};
-use super::widgets::{icon, primary_button};
+use super::widgets::{KeyNav, icon, primary_button};
 use crate::core::i18n::tr;
 
-actions!(main_window, [FocusSearch, ClearSearch]);
+actions!(main_window, [FocusSearch, ClearSearch, TileSmall, TileMedium, TileLarge, TileFit]);
 
 /// What the window shows next to the sidebar.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +72,7 @@ pub struct MainWindow {
     pub(super) query: String,
     pub(super) grid: Grid,
     title_count: Option<usize>,
+    last_playing: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,7 +97,13 @@ impl MainWindow {
                 theme::refresh(window, cx);
                 cx.notify();
             }),
-            cx.observe(&model, |_, _, cx| cx.notify()),
+            cx.observe(&model, |this, model, cx| {
+                let playing = model.read(cx).playing.clone();
+                if let Some(left) = std::mem::replace(&mut this.last_playing, playing.clone()).filter(|_| playing.is_none()) {
+                    this.grid.reveal(left);
+                }
+                cx.notify();
+            }),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() && model::get(cx).read(cx).playing.is_some() {
                     cx.defer(super::state::show_grid);
@@ -116,6 +124,7 @@ impl MainWindow {
             query: String::new(),
             grid: Grid::new(cx),
             title_count: None,
+            last_playing: None,
             _subscriptions: subscriptions,
         }
     }
@@ -131,6 +140,13 @@ impl MainWindow {
         if matches!(self.page, Page::Grid(_)) {
             window.focus(&self.grid.focus, cx);
         }
+        cx.notify();
+    }
+
+    fn set_size(&mut self, size: TileSize, window: &mut Window, cx: &mut Context<Self>) {
+        self.size = size;
+        self.grid.reset_scroll();
+        window.focus(&self.grid.focus, cx);
         cx.notify();
     }
 
@@ -200,6 +216,7 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         super::perf::frame_start();
+        super::theme::follow_focus(window, cx);
         self.narrow_now = Self::narrow(window);
         if !std::mem::replace(&mut self.focused_once, true) && window.focused(cx).is_none() {
             window.focus(&self.grid.focus, cx);
@@ -220,6 +237,7 @@ impl Render for MainWindow {
                     .flex()
                     .flex_col()
                     .child(super::toolbar::render(self, batch.as_deref(), window, cx))
+                    .children(model::get(cx).read(cx).error.clone().map(|e| notice(e, &t, cx)))
                     .child(div().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)))
                     .into_any_element(),
             },
@@ -229,6 +247,8 @@ impl Render for MainWindow {
             .id("main")
             .key_context("MainWindow")
             .track_focus(&self.focus)
+            .capture_any_mouse_down(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
+            .capture_any_mouse_up(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 if !this.overlay {
                     return;
@@ -261,6 +281,10 @@ impl Render for MainWindow {
                 this.grid.reset_scroll();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &TileSmall, window, cx| this.set_size(TileSize::Small, window, cx)))
+            .on_action(cx.listener(|this, _: &TileMedium, window, cx| this.set_size(TileSize::Medium, window, cx)))
+            .on_action(cx.listener(|this, _: &TileLarge, window, cx| this.set_size(TileSize::Large, window, cx)))
+            .on_action(cx.listener(|this, _: &TileFit, window, cx| this.set_size(TileSize::Fit, window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 if !matches!(this.page, Page::Grid(_)) {
                     this.page = Page::Grid(None);
@@ -336,6 +360,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("="), TileLarger, Some("MainWindow")),
         KeyBinding::new(k("+"), TileLarger, Some("MainWindow")),
         KeyBinding::new(k("-"), TileSmaller, Some("MainWindow")),
+        KeyBinding::new(k("1"), TileSmall, Some("MainWindow")),
+        KeyBinding::new(k("2"), TileMedium, Some("MainWindow")),
+        KeyBinding::new(k("3"), TileLarge, Some("MainWindow")),
+        KeyBinding::new(k("0"), TileFit, Some("MainWindow")),
         KeyBinding::new(k("f"), FocusSearch, Some("MainWindow")),
         KeyBinding::new(k("shift-c"), OpenChat, Some("MainWindow")),
         KeyBinding::new("escape", ClearSearch, Some("Toolbar")),
@@ -406,7 +434,9 @@ pub fn select_batch(batch: &str, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
     let batch = batch.to_owned();
     let _ = h.update(cx, |view, window, cx| {
-        if let Ok(view) = view.downcast::<MainWindow>() {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
             view.update(cx, |this, cx| {
                 this.filter = Filter::Attention;
                 this.grid.reset_scroll();
@@ -414,4 +444,47 @@ pub fn select_batch(batch: &str, cx: &mut App) {
             });
         }
     });
+}
+
+/// A quiet line under the toolbar for a problem the app could not handle on its own, with a way to dismiss it.
+fn notice(text: String, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
+    div()
+        .id("notice")
+        .mark("notice", text.clone())
+        .h(px(shell::NOTICE))
+        .flex_none()
+        .pl(px(theme::tile::INSET))
+        .pr(px(space::S))
+        .flex()
+        .items_center()
+        .gap(px(space::S))
+        .bg(theme::with_alpha(t.attention, tint::ATTENTION))
+        .border_b_1()
+        .border_color(t.separator)
+        .child(icon("triangle-alert", iconsize::S, t.attention_text))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.primary).child(text.clone()))
+        .tooltip(super::widgets::tip(text))
+        .child(
+            div()
+                .id("notice-close")
+                .mark("button", tr("Hinweis ausblenden"))
+                .size(px(control::S))
+                .rounded(px(theme::radius::INNER))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .key_nav()
+                .soft(t.ink.opacity(tint::HOVER), theme::radius::INNER)
+                .child(icon("x", iconsize::S, t.secondary))
+                .tooltip(super::widgets::tip(tr("Hinweis ausblenden")))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    model::get(cx).update(cx, |m, cx| {
+                        m.error = None;
+                        cx.notify();
+                    });
+                })),
+        )
+        .into_any_element()
 }

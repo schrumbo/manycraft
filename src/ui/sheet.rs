@@ -3,7 +3,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogEntrance, DialogFooter};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Sizable, WindowExt};
+use gpui_kit::component::{FocusableExt, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -69,14 +69,15 @@ pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok
     let ok = std::rc::Rc::new(ok);
     let cancel = cx.focus_handle();
     let first = cancel.clone();
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    window.open_alert_dialog(cx, move |alert, _, cx| {
         let ok = ok.clone();
-        let confirm = Button::new("alert-ok").label(ok_text.clone()).danger().on_click(move |_, window, cx| {
+        let rings = super::theme::rings(cx);
+        let confirm = Button::new("alert-ok").label(ok_text.clone()).danger().focus_ring(rings).on_click(move |_, window, cx| {
             window.close_dialog(cx);
             ok(window, cx);
         });
         alert.title(title.clone()).description(message.clone()).on_ok(pass_enter).footer(
-            DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).track_focus(&cancel).on_click(|_, window, cx| window.close_dialog(cx))).child(confirm),
+            DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).focus_ring(rings).track_focus(&cancel).on_click(|_, window, cx| window.close_dialog(cx))).child(confirm),
         )
     });
     first.focus(window, cx);

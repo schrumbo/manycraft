@@ -42,6 +42,11 @@ impl Phase {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 
+    /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash is due.
+    pub fn is_active(&self) -> bool {
+        self.is_running() || matches!(self, Phase::Restarting { .. })
+    }
+
     /// The server the instance is on or was last on, when it is known.
     pub fn server(&self) -> Option<&str> {
         match self {
@@ -74,6 +79,8 @@ pub struct Instance {
     pub unread_whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
     pub preview_seq: u32,
+    /// Whether `preview` came from the running game; otherwise it is the still of an earlier run.
+    pub live: bool,
     pub stopping: bool,
 }
 
@@ -116,6 +123,8 @@ pub struct Model {
     pub order_seq: u64,
     /// Last events of every instance by key, oldest first, at most `history::KEPT` each.
     pub history: HashMap<String, history::Log>,
+    /// Skin faces by account id, for tiles of instances without a still.
+    pub faces: HashMap<Uuid, Arc<RenderImage>>,
     /// Version and page of a newer release, when the daily check found one.
     pub update: Option<(String, String)>,
 }
@@ -261,7 +270,7 @@ pub fn link_status() -> String {
 pub fn rank(phase: &Phase) -> u8 {
     if phase.needs_attention() {
         0
-    } else if phase.is_running() || matches!(phase, Phase::Restarting { .. }) {
+    } else if phase.is_active() {
         1
     } else {
         2
@@ -297,7 +306,7 @@ mod tests {
     }
 
     fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Instance {
-        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
+        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     #[test]

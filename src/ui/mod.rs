@@ -20,6 +20,7 @@ pub mod settings_window;
 pub mod sheet;
 pub mod sidebar;
 pub mod state;
+pub mod stills;
 pub mod tile;
 pub mod toolbar;
 #[allow(dead_code)]

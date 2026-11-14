@@ -13,7 +13,7 @@ use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
 use super::motion::Soft;
-use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint, with_alpha};
+use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint, with_alpha};
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
 
@@ -24,10 +24,17 @@ pub struct TileData {
     pub account_id: Uuid,
     pub batch_id: String,
     pub phase: Phase,
+    /// The status line as it fits the tile.
     pub status: String,
+    /// The full status, with the server, for the tooltip.
+    pub detail: String,
     pub stopping: bool,
     pub whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
+    /// Whether `preview` is the running game rather than the still of an earlier run.
+    pub live: bool,
+    /// The account's skin face, shown when there is no preview.
+    pub face: Option<Arc<RenderImage>>,
     pub selected: bool,
     pub playing: bool,
 }
@@ -38,15 +45,22 @@ impl TileData {
             && self.name == other.name
             && self.phase == other.phase
             && self.status == other.status
+            && self.detail == other.detail
             && self.stopping == other.stopping
             && self.whispers == other.whispers
             && self.selected == other.selected
             && self.playing == other.playing
-            && match (&self.preview, &other.preview) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
+            && self.live == other.live
+            && same_image(&self.preview, &other.preview)
+            && same_image(&self.face, &other.face)
+    }
+}
+
+fn same_image(a: &Option<Arc<RenderImage>>, b: &Option<Arc<RenderImage>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -56,14 +70,57 @@ pub struct TileView {
     geometry: Geometry,
     offset: (f32, f32),
     focused: bool,
+    hovered: bool,
     main: WeakEntity<MainWindow>,
 }
 
 impl Render for TileView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        render(&self.data, &self.geometry, self.offset, self.focused, self.main.clone(), &t)
+        let (me, key) = (cx.entity(), self.data.key.clone());
+        let hover = move |hovered: &bool, _: &mut Window, cx: &mut App| {
+            if *hovered {
+                unhover_except(Some(&key), cx);
+                cx.set_global(Hovered(Some((key.clone(), me.downgrade()))));
+            } else if cx.try_global::<Hovered>().and_then(|h| h.0.as_ref()).is_some_and(|(k, _)| *k == key) {
+                cx.set_global(Hovered(None));
+            }
+            me.update(cx, |v, cx| {
+                if v.hovered != *hovered {
+                    v.hovered = *hovered;
+                    cx.notify();
+                }
+            });
+        };
+        render(&self.data, &self.geometry, self.offset, self.focused, self.hovered, hover, self.main.clone(), &t)
     }
+}
+
+/// The tile under the pointer, if any.
+#[derive(Default)]
+struct Hovered(Option<(String, WeakEntity<TileView>)>);
+
+impl Global for Hovered {}
+
+/// The key of the tile under the pointer.
+pub fn hovered(cx: &App) -> Option<String> {
+    cx.try_global::<Hovered>().and_then(|h| h.0.as_ref()).map(|(k, _)| k.clone())
+}
+
+/// Drops the hover of the tile under the pointer unless it is `key`, for tiles that left the grid without the pointer leaving them.
+pub fn unhover_except(key: Option<&str>, cx: &mut App) {
+    let Some((hovered, view)) = cx.try_global::<Hovered>().and_then(|h| h.0.clone()) else { return };
+    if key == Some(hovered.as_str()) {
+        return;
+    }
+    cx.set_global(Hovered(None));
+    view.update(cx, |v, cx| {
+        if v.hovered {
+            v.hovered = false;
+            cx.notify();
+        }
+    })
+    .ok();
 }
 
 /// The tile views by instance key.
@@ -80,7 +137,7 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: boo
         Some(entity) => {
             entity.update(cx, |v, cx| {
                 if !v.data.same(&data) || v.geometry != geometry || v.offset != offset || v.focused != focused {
-                    *v = TileView { data, geometry, offset, focused, main };
+                    *v = TileView { data, geometry, offset, focused, hovered: v.hovered, main };
                     cx.notify();
                 }
             });
@@ -90,7 +147,7 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: boo
             let key = data.key.clone();
             let entity = cx.new(|cx: &mut Context<TileView>| {
                 cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
-                TileView { data, geometry, offset, focused, main }
+                TileView { data, geometry, offset, focused, hovered: false, main }
             });
             cx.global_mut::<TileViews>().0.insert(key, entity.clone());
             entity
@@ -105,6 +162,7 @@ pub fn show_previews(previews: Vec<(String, Arc<RenderImage>)>, cx: &mut App) {
         let Some(entity) = cx.try_global::<TileViews>().and_then(|v| v.0.get(&key).cloned()) else { continue };
         entity.update(cx, |v, cx| {
             v.data.preview = Some(image);
+            v.data.live = true;
             cx.notify();
         });
     }
@@ -124,12 +182,35 @@ pub struct Geometry {
     pub preview: f32,
     pub strip: f32,
     pub small: bool,
+    pub dense: bool,
+    pub tiny: bool,
 }
 
 impl Geometry {
     pub fn new(width: f32) -> Self {
-        let small = width < tile::MEDIUM;
-        Self { width, preview: (width * 9. / 16.).round(), strip: if small { tile::STRIP_SMALL } else { tile::STRIP }, small }
+        Self { width, preview: (width * 9. / 16.).round(), strip: Self::strip_for(width), small: width < tile::MEDIUM, dense: width < tile::DENSE, tiny: width < tile::TINY }
+    }
+
+    /// Height of the strip under a preview of `width`.
+    pub fn strip_for(width: f32) -> f32 {
+        if width < tile::TINY {
+            tile::STRIP_TINY
+        } else if width < tile::MEDIUM {
+            tile::STRIP_SMALL
+        } else {
+            tile::STRIP
+        }
+    }
+
+    /// Space between tiles of `width`.
+    pub fn gap_for(width: f32) -> f32 {
+        if width < tile::TINY {
+            tile::GAP_TINY
+        } else if width < tile::MEDIUM {
+            tile::GAP_SMALL
+        } else {
+            tile::GAP
+        }
     }
 
     pub fn height(&self) -> f32 {
@@ -224,14 +305,15 @@ fn dispatch(action: Box<dyn Action>) -> impl Fn(&ClickEvent, &mut Window, &mut A
     }
 }
 
-fn pill(id: String, p: Primary, d: &TileData, t: &Theme) -> Stateful<Div> {
+fn pill(id: String, p: Primary, d: &TileData, compact: bool, t: &Theme) -> Stateful<Div> {
     let label = p.label();
     let (fill, text) = if p == Primary::SignIn { (t.danger, t.on_danger) } else { (t.accent, t.on_accent) };
     div()
         .id(SharedString::from(id))
         .mark("button", label.clone())
         .h(px(control::S))
-        .px(px(space::M))
+        .when(compact, |d| d.w(px(control::S)).justify_center())
+        .when(!compact, |d| d.pl(px(space::S)).pr(px(space::M)))
         .rounded(px(radius::FULL))
         .bg(fill)
         .text_color(text)
@@ -244,7 +326,8 @@ fn pill(id: String, p: Primary, d: &TileData, t: &Theme) -> Stateful<Div> {
         .cursor_pointer()
         .soft(t.shade, radius::FULL)
         .child(icon(p.icon(), iconsize::XS, text))
-        .child(label)
+        .when(!compact, |d| d.child(label.clone()))
+        .when(compact, |d| d.tooltip(tip(label)))
         .on_click(dispatch(p.action(&d.key, d.account_id)))
 }
 
@@ -252,7 +335,7 @@ fn round_button(id: String, icon_name: &'static str, hint: String, action: Box<d
     div()
         .id(SharedString::from(id))
         .mark("button", hint.clone())
-        .size(px(control::S))
+        .size(px(control::M))
         .rounded(px(radius::FULL))
         .bg(with_alpha(t.material, tint::FLOATING))
         .flex()
@@ -266,41 +349,72 @@ fn round_button(id: String, icon_name: &'static str, hint: String, action: Box<d
         .on_click(dispatch(action))
 }
 
-fn preview(d: &TileData, g: &Geometry, group: &SharedString, t: &Theme) -> AnyElement {
+fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
+    if let Some((_, text, name)) = tone(d, t) {
+        return Some((name, text));
+    }
+    match d.phase {
+        Phase::Stopped if !d.stopping => None,
+        Phase::Starting { .. } if !d.stopping => Some(("hourglass", t.tertiary)),
+        _ => Some(("loader-circle", t.tertiary)),
+    }
+}
+
+fn glyph(d: &TileData, t: &Theme) -> AnyElement {
+    if let Some((_, text, name)) = tone(d, t) {
+        return icon(name, iconsize::XS, text).into_any_element();
+    }
+    let dot = div().size(px(tile::GLYPH)).mx(px((iconsize::XS - tile::GLYPH) / 2.)).flex_none().rounded(px(radius::FULL));
+    let dot = match d.phase {
+        _ if d.stopping => dot.border_1().border_color(t.secondary),
+        Phase::Playing { .. } => dot.bg(t.success),
+        Phase::Menu | Phase::Queue { .. } => dot.bg(t.secondary),
+        Phase::Stopped => dot.border_1().border_color(t.tertiary),
+        _ => dot.border_1().border_color(t.secondary),
+    };
+    dot.into_any_element()
+}
+
+fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement {
     let attention = tone(d, t).is_some();
-    let content = match &d.preview {
-        Some(image) => img(ImageSource::Render(Arc::clone(image))).size_full().object_fit(ObjectFit::Cover).when(attention, |i| i.opacity(tile::DIMMED)).into_any_element(),
-        None => {
-            let initial: String = d.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(t.raised)
-                .child(div().text_size(px(if g.small { tile::INITIAL_SMALL } else { tile::INITIAL })).font_weight(FontWeight::SEMIBOLD).text_color(t.tertiary).child(initial))
-                .into_any_element()
-        }
-    };
-    let running = d.phase.is_running() && !d.stopping;
+    let top = px(radius::CARD);
+    let live = d.preview.as_ref().filter(|_| d.live).map(|image| img(ImageSource::Render(Arc::clone(image))).size_full().rounded_t(top).object_fit(ObjectFit::Cover).when(attention, |i| i.opacity(tile::DIMMED)));
+    let still = d.preview.as_ref().filter(|_| !d.live).map(|image| {
+        let fade = linear_gradient(180., linear_color_stop(t.content.opacity(0.), 0.), linear_color_stop(t.content, 1.));
+        div()
+            .absolute()
+            .inset_0()
+            .child(img(ImageSource::Render(Arc::clone(image))).size_full().object_fit(ObjectFit::Cover).grayscale(true).opacity(tint::STILL))
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::FADE)).bg(fade))
+    });
+    let mark = placeholder(d, t).filter(|_| !d.live).map(|(name, color)| icon(name, if g.dense { iconsize::M } else { iconsize::L }, color));
+    let face = (d.preview.is_none() && mark.is_none()).then(|| match &d.face {
+        Some(face) => img(ImageSource::Render(Arc::clone(face))).size(px(tile::FACE)).flex_none().opacity(tint::FACE).into_any_element(),
+        None => icon("user", iconsize::L, with_alpha(t.secondary, tint::FACE)).into_any_element(),
+    });
+    let active = d.phase.is_active() && !d.stopping;
     let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || g.small);
-    let stop_or_start: Option<(&'static str, String, Box<dyn Action>)> = if running && main != Some(Primary::Start) {
-        Some(("square", tr("Stoppen"), Box::new(Stop(d.key.clone()))))
-    } else {
-        None
-    };
-    let actions = div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(space::S))
-        .bg(black().opacity(tint::SCRIM))
-        .opacity(if d.selected { 1. } else { 0. })
-        .group_hover(group.clone(), |s| s.opacity(1.))
-        .when_some(main, |row, p| row.child(pill(format!("primary-{}", d.key), p, d, t)))
-        .when_some(stop_or_start, |row, (name, hint, action)| row.child(round_button(format!("stop-{}", d.key), name, hint, action, t)));
+    let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
+    let actions = (controls && (main.is_some() || stop.is_some())).then(|| {
+        let shade = linear_gradient(180., linear_color_stop(black().opacity(0.), 0.), linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 1.));
+        div()
+            .absolute()
+            .inset_0()
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::SHADE.min(g.preview))).bg(shade))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(space::S))
+                    .right(px(space::S))
+                    .bottom(px(space::S))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(space::S))
+                    .child(div().min_w_0().flex().children(main.map(|p| pill(format!("primary-{}", d.key), p, d, g.small, t))))
+                    .children(stop),
+            )
+    });
     let whispers = (d.whispers > 0).then(|| {
         let n = d.whispers;
         div()
@@ -325,7 +439,7 @@ fn preview(d: &TileData, g: &Geometry, group: &SharedString, t: &Theme) -> AnyEl
             .child(n.to_string())
             .tooltip(tip(if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) }))
     });
-    div().relative().w_full().h(px(g.preview)).overflow_hidden().bg(t.raised).child(content).child(actions).children(whispers).into_any_element()
+    div().relative().w_full().h(px(g.preview)).flex_none().rounded_t(top).overflow_hidden().bg(t.well).flex().items_center().justify_center().children(live).children(still).children(mark).children(face).children(actions).children(whispers).into_any_element()
 }
 
 fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
@@ -335,7 +449,22 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
         None if d.phase == Phase::Stopped && !d.stopping => t.tertiary,
         None => t.secondary,
     };
-    let running_dot = matches!(d.phase, Phase::Playing { .. }) && !d.stopping;
+    if g.tiny {
+        return div()
+            .id(SharedString::from(format!("strip-{}", d.key)))
+            .mark("status", d.status.clone())
+            .h(px(g.strip))
+            .flex_none()
+            .when_some(tone, |s, (fill, _, _)| s.bg(with_alpha(fill, tint::ATTENTION)))
+            .px(px(space::S))
+            .flex()
+            .items_center()
+            .gap(px(space::XS))
+            .child(glyph(d, t))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(d.name.clone()))
+            .tooltip(tip(format!("{} · {}", d.name, d.detail)))
+            .into_any_element();
+    }
     let sign_in = (d.phase == Phase::LoginNeeded && !g.small).then(|| {
         let label = tr("Anmelden");
         div()
@@ -358,48 +487,40 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
             .child(label)
             .on_click(dispatch(Box::new(SignInAgain(d.account_id.to_string()))))
     });
+    let name = div()
+        .id(SharedString::from(format!("name-{}", d.key)))
+        .truncate()
+        .text_size(px(if g.small { font::CALLOUT } else { font::BODY }))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.primary)
+        .child(d.name.clone())
+        .when(g.small, |n| n.tooltip(tip(d.name.clone())));
+    let status = div()
+        .id(SharedString::from(format!("status-{}", d.key)))
+        .mark("status", d.status.clone())
+        .flex()
+        .items_center()
+        .gap(px(space::XS))
+        .min_w_0()
+        .child(glyph(d, t))
+        .child(div().min_w_0().truncate().text_size(px(font::CAPTION)).text_color(status_color).child(d.status.clone()))
+        .when(d.detail != d.status, |s| s.tooltip(tip(d.detail.clone())));
     div()
         .h(px(g.strip))
+        .flex_none()
         .when_some(tone, |s, (fill, _, _)| s.bg(with_alpha(fill, tint::ATTENTION)))
-        .px(px(space::S + space::XXS))
+        .px(px(if g.small { space::S } else { space::S + space::XXS }))
         .flex()
         .items_center()
         .gap(px(space::S))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(div().text_size(px(if g.small { font::CALLOUT } else { font::BODY })).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).truncate().id(SharedString::from(format!("name-{}", d.key))).child(d.name.clone()).when(g.small, |n| n.tooltip(tip(d.name.clone()))))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(space::XS))
-                        .min_w_0()
-                        .when_some(tone, |s, (_, text, name)| s.child(icon(name, iconsize::XS, text)))
-                        .when(running_dot, |s| s.child(div().size(px(shell::DOT)).flex_none().rounded(px(radius::FULL)).bg(t.success)))
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("status-{}", d.key)))
-                                .mark("status", d.status.clone())
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(font::CAPTION))
-                                .text_color(status_color)
-                                .child(d.status.clone())
-                                .when(g.small, |s| s.tooltip(tip(d.status.clone()))),
-                        ),
-                ),
-        )
+        .child(div().flex_1().min_w_0().flex().flex_col().child(name).child(status))
         .children(sign_in)
         .into_any_element()
 }
 
 /// Draws one tile at `offset` from its slot, which animates a re-sort.
-pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
-    let group: SharedString = format!("tile-{}", d.key).into();
+#[allow(clippy::too_many_arguments)]
+pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool, hovered: bool, hover: impl Fn(&bool, &mut Window, &mut App) + 'static, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
     let tone = tone(d, t);
     let edge = match (tone, d.playing) {
         (Some((ring, _, _)), _) => Some(ring),
@@ -407,6 +528,12 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         _ => None,
     };
     let focus = (d.selected && grid_focused).then_some(t.accent);
+    let ring = focus.map(|c| (c, tile::RING + 1.)).or(edge.map(|c| (c, tile::RING)));
+    let mut shadows: Vec<BoxShadow> = ring.into_iter().map(|(color, spread)| BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset: false }).collect();
+    if !t.dark {
+        shadows.push(BoxShadow { color: black().opacity(tint::CARD_SHADOW), offset: point(px(0.), px(1.)), blur_radius: px(tile::SHADOW_BLUR), spread_radius: px(0.), inset: false });
+        shadows.push(BoxShadow { color: black().opacity(tint::CARD_SHADOW / 2.), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false });
+    }
     let (key, name) = (d.key.clone(), d.name.clone());
     let select = view.clone();
     let (pick, pick_key) = (view.clone(), d.key.clone());
@@ -415,10 +542,8 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. }) && !stopping;
-    let tile = div()
-        .id(SharedString::from(format!("tile-{}", d.key)))
+    let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
-        .group(group.clone())
         .relative()
         .left(px(offset.0))
         .top(px(offset.1))
@@ -430,14 +555,12 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         .rounded(px(radius::CARD))
         .overflow_hidden()
         .bg(t.content)
-        .border_1()
-        .border_color(t.separator)
-        .when_some(edge, |s, color| s.border_color(color))
-        .when_some(edge.filter(|_| focus.is_none()), |s, color| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::RING - 1.), inset: false }]))
-        .when_some(focus, |s, color| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::RING + 1.), inset: false }]))
+        .when(!shadows.is_empty(), |s| s.shadow(shadows))
         .cursor_pointer()
-        .soft(t.ink.opacity(tint::HOVER), radius::CARD)
-        .child(preview(d, g, &group, t))
+        .when(hovered, |s| s.child(div().absolute().inset_0().bg(t.ink.opacity(tint::HOVER))))
+        .active(|s| s.opacity(tint::PRESSED))
+        .child(preview(d, g, hovered || (d.selected && grid_focused), t))
+        .on_hover(hover)
         .child(strip(d, g, t))
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
             let _ = pick.update(cx, |this, cx| {
@@ -496,6 +619,7 @@ mod tests {
         let g = Geometry::new(320.);
         assert_eq!(g.preview, 180.);
         assert_eq!(g.height(), 180. + tile::STRIP);
-        assert!(Geometry::new(160.).small);
+        assert!(Geometry::new(160.).small && !Geometry::new(160.).dense);
+        assert_eq!(Geometry::new(100.).strip, tile::STRIP_TINY);
     }
 }

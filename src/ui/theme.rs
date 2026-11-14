@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use gpui_kit::component::{Theme as ComponentTheme, ThemeMode};
-use gpui_kit::{App, Global, Hsla, Window, WindowAppearance, black, px, rgb, white};
+use gpui_kit::{App, FocusHandle, Global, Hsla, WeakFocusHandle, Window, WindowAppearance, black, px, rgb, white};
 
 /// Spacing scale for padding, margins and gaps.
 pub mod space {
@@ -71,28 +71,52 @@ pub mod tile {
     pub const LARGE: f32 = 340.;
     /// Smallest tile width "Einpassen" goes down to before it scrolls after all.
     pub const FIT_MIN: f32 = 96.;
+    /// Below this width the status line keeps only its first words.
+    pub const DENSE: f32 = 150.;
+    /// Below this width a tile shows only its name under the preview; the status moves into a tooltip.
+    pub const TINY: f32 = 110.;
     /// Height of the strip under the preview.
     pub const STRIP: f32 = 44.;
     /// Height of the strip on small tiles, where only the name and status fit.
     pub const STRIP_SMALL: f32 = 38.;
+    /// Height of the one-line strip on tiny tiles.
+    pub const STRIP_TINY: f32 = 26.;
+    /// Space between tiles, by tile size.
+    pub const GAP: f32 = 16.;
+    pub const GAP_SMALL: f32 = 12.;
+    pub const GAP_TINY: f32 = 8.;
+    /// Space around the grid, the same as the toolbar's edges.
+    pub const INSET: f32 = 16.;
     /// Width of the attention and focus ring.
     pub const RING: f32 = 2.;
     /// How bright the preview stays behind an account that needs work.
     pub const DIMMED: f32 = 0.7;
-    /// The account's initial on a tile without a preview.
-    pub const INITIAL: f32 = 28.;
+    /// The status mark in front of the status line.
+    pub const GLYPH: f32 = 7.;
+    /// Height of the shade that carries the actions at the bottom of a hovered preview.
+    pub const SHADE: f32 = 56.;
     /// The skin head in the strip.
     pub const HEAD: f32 = 22.;
     /// Unread whispers badge.
     pub const BADGE: f32 = 18.;
-    /// The initial on a small tile.
-    pub const INITIAL_SMALL: f32 = 21.;
+    /// Height of a batch heading in the grid of all batches.
+    pub const HEADING: f32 = 40.;
+    /// Blur of the soft shadow under a tile in the light appearance.
+    pub const SHADOW_BLUR: f32 = 3.;
+    /// Height of the fade at the bottom of a still, so the strip below stays apart from it.
+    pub const FADE: f32 = 2.;
+    /// Side of the skin face on a tile without a still.
+    pub const FACE: f32 = 32.;
+    /// How far past the visible rows the grid lays out, so the wheel always knows the next row's height.
+    pub const OVERDRAW: f32 = 8.;
 }
 
 /// The sidebar and toolbar around the grid.
 pub mod shell {
     pub const SIDEBAR: f32 = 220.;
     pub const TOOLBAR: f32 = 48.;
+    /// Height of the quiet notice line under the toolbar.
+    pub const NOTICE: f32 = 32.;
     pub const ROW: f32 = 28.;
     pub const SEARCH: f32 = 180.;
     /// The attention dot in a sidebar row.
@@ -135,8 +159,18 @@ pub mod tint {
     pub const RING: f32 = 0.8;
     /// The wash behind an account that needs work.
     pub const ATTENTION: f32 = 0.12;
-    /// The shade over a preview that shows its actions.
+    /// The shade behind the floating sidebar.
     pub const SCRIM: f32 = 0.28;
+    /// The bottom of the shade under a hovered preview's actions.
+    pub const PREVIEW_SHADE: f32 = 0.55;
+    /// How bright a tile stays while it is pressed.
+    pub const PRESSED: f32 = 0.85;
+    /// How much of a stopped instance's last frame shows through.
+    pub const STILL: f32 = 0.4;
+    /// How much of the skin face shows on a tile that never ran.
+    pub const FACE: f32 = 0.5;
+    /// The soft shadow under a card in the light appearance.
+    pub const CARD_SHADOW: f32 = 0.08;
     /// Controls floating over a preview.
     pub const FLOATING: f32 = 0.92;
     /// An outline in a status color.
@@ -196,6 +230,8 @@ pub struct Theme {
     pub content: Hsla,
     /// Grouped areas and inset fields on the window.
     pub raised: Hsla,
+    /// A recessed area inside a card, like a tile with no picture yet.
+    pub well: Hsla,
     pub primary: Hsla,
     pub secondary: Hsla,
     pub tertiary: Hsla,
@@ -244,6 +280,7 @@ impl Theme {
             window: if dark { c(0x1E1E1E) } else { c(0xF2F2F7) },
             content: if dark { c(0x2C2C2E) } else { c(0xFFFFFF) },
             raised: if dark { c(0x3A3A3C) } else { c(0xE8E8ED) },
+            well: if dark { c(0x242426) } else { c(0xECECF1) },
             primary: ink.opacity(0.88),
             secondary: ink.opacity(0.62),
             tertiary: ink.opacity(if dark { 0.47 } else { 0.56 }),
@@ -325,6 +362,61 @@ pub fn choose(choice: Choice, window: &mut Window, cx: &mut App) {
     start_with(choice);
     refresh(window, cx);
     cx.refresh_windows();
+}
+
+const TEXT_FIELD: &str = "Input";
+
+#[derive(Default)]
+struct FocusSeen(Option<WeakFocusHandle>, bool);
+
+impl Global for FocusSeen {}
+
+/// Shows the component library's focus rings only on controls the keyboard moved focus to, like focus-visible:
+/// a button, segment or menu focused by a click, a theme change or a resize looks like an unfocused one.
+/// Text fields always show their ring, as on every platform. Call it from the render of every window's root view.
+pub fn follow_focus(window: &Window, cx: &mut App) {
+    if !window.is_window_active() {
+        return;
+    }
+    note_focus(window, window.last_input_was_keyboard(), cx);
+    show_rings(cx);
+}
+
+/// Lets every keystroke in any window, including Tab and arrows that controls consume, count as the keyboard moving focus.
+pub fn watch_focus(cx: &mut App) {
+    cx.intercept_keystrokes(|_, window, cx| window.defer(cx, |window, cx| focus_moved(window, true, cx))).detach();
+}
+
+/// Notes whether the keyboard moved focus, right after an input event in `window`, then updates the rings like `follow_focus`.
+pub fn focus_moved(window: &mut Window, keyboard: bool, cx: &mut App) {
+    note_focus(window, keyboard, cx);
+    show_rings(cx);
+}
+
+fn show_rings(cx: &mut App) {
+    let keyboard = cx.default_global::<FocusSeen>().1;
+    let ct = ComponentTheme::global(cx);
+    let wanted = if keyboard { ring::color() } else { ct.colors.input };
+    if ct.focus_ring == keyboard && ct.colors.ring == wanted {
+        return;
+    }
+    let ct = ComponentTheme::global_mut(cx);
+    ct.focus_ring = keyboard;
+    ct.colors.ring = wanted;
+}
+
+/// Whether focus rings show now; for library buttons, whose focus line ignores the theme's ring colour.
+pub fn rings(cx: &App) -> bool {
+    cx.try_global::<FocusSeen>().is_some_and(|s| s.1)
+}
+
+fn note_focus(window: &Window, keyboard: bool, cx: &mut App) {
+    let focused = window.focused(cx);
+    let seen = cx.default_global::<FocusSeen>();
+    if seen.0.as_ref().and_then(WeakFocusHandle::upgrade) != focused {
+        let text = focused.is_some() && window.context_stack().iter().any(|c| c.contains(TEXT_FIELD));
+        *cx.default_global::<FocusSeen>() = FocusSeen(focused.as_ref().map(FocusHandle::downgrade), keyboard || text);
+    }
 }
 
 /// Sets the palette and maps it onto the component library so its controls match.
@@ -431,6 +523,8 @@ mod tests {
                 ("secondary on window", contrast(t.secondary, t.window), 4.5),
                 ("secondary on content", contrast(t.secondary, t.content), 4.5),
                 ("tertiary on window", contrast(t.tertiary, t.window), 3.),
+                ("tertiary on well", contrast(t.tertiary, t.well), 3.),
+                ("secondary on well", contrast(t.secondary, t.well), 4.5),
                 ("on accent", contrast(t.on_accent, t.accent), 4.5),
                 ("on danger", contrast(t.on_danger, t.danger), 3.),
                 ("accent text on window", contrast(t.accent_text, t.window), 4.5),
