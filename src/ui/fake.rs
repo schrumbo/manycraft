@@ -201,6 +201,8 @@ impl Sim {
                 }
                 35 => self.at(Duration::ZERO, None, seed(Phase::LoginNeeded, 0)),
                 36 => self.at(Duration::ZERO, None, seed(Phase::Crashed { code: Some(1) }, 0)),
+                37 => self.at(Duration::ZERO, None, seed(Phase::Banned { server: Some(SERVER.into()), reason: "Cheating".into() }, 0)),
+                38 => self.at(Duration::ZERO, None, seed(Phase::Restarting { attempt: 1, of: 3 }, 0)),
                 _ => {}
             }
             if kind <= 27 && hash(&key).is_multiple_of(7) {

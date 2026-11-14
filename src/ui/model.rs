@@ -33,7 +33,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// Whether the user has work here: dropped off the server after auto-reconnect gave up, crashed, or must sign in.
+    /// Whether the user has work here: dropped off the server after auto-reconnect gave up, banned, crashed, or must sign in.
     pub fn needs_attention(&self) -> bool {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
@@ -121,7 +121,7 @@ pub fn banned_status(reason: &str) -> String {
 
 /// Tile status line of an instance that starts again after a crash.
 pub fn restart_status(attempt: u32, of: u32) -> String {
-    trf("Neustart nach Absturz · Versuch %lld von %lld", &[&attempt, &of])
+    trf("Startet neu · Versuch %lld von %lld", &[&attempt, &of])
 }
 
 fn rank(phase: &Phase) -> u8 {
@@ -191,7 +191,7 @@ mod tests {
         crate::core::i18n::init("de");
         assert_eq!(banned_status(""), "Gesperrt");
         assert_eq!(banned_status("Cheating"), "Gesperrt · Cheating");
-        assert_eq!(restart_status(1, 3), "Neustart nach Absturz · Versuch 1 von 3");
+        assert_eq!(restart_status(1, 3), "Startet neu · Versuch 1 von 3");
     }
 
     #[test]

@@ -692,7 +692,7 @@ fn broadcast(batch: &str, text: &str, cx: &mut App) {
 }
 
 fn playable(phase: &Phase) -> bool {
-    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Banned { .. })
+    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
 /// Puts the game window of `key` in the manager's place and hides the manager.
@@ -1022,7 +1022,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
         rt.crash_restarts.remove(&key);
     }
     let tried = rt.crash_restarts.get(&key).copied().unwrap_or(0);
-    let reason = code.map_or_else(|| tr("Ohne Exit-Code beendet"), |c| trf("Exit-Code %lld", &[&c]));
+    let reason = tr("Unerwartet beendet");
     let banned = matches!(i.phase, Phase::Banned { .. });
     match reconnect::restart(tried, policy, reconnect::unit()) {
         Decision::Retry(_) if banned => i.phase = Phase::Crashed { code },
@@ -1628,6 +1628,6 @@ mod tests {
         again.reconnect_attempts = 2;
         assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 5");
         assert_eq!(status(&instance(Phase::Banned { server: None, reason: "Cheating".into() }), None), "Gesperrt · Cheating");
-        assert_eq!(status(&instance(Phase::Restarting { attempt: 1, of: 3 }), None), "Neustart nach Absturz · Versuch 1 von 3");
+        assert_eq!(status(&instance(Phase::Restarting { attempt: 1, of: 3 }), None), "Startet neu · Versuch 1 von 3");
     }
 }
