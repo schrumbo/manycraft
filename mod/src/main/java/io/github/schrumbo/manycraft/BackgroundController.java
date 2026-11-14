@@ -39,7 +39,7 @@ final class BackgroundController {
 				case SAVING -> new Values(hiddenRenderDistance, hiddenSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, framerateLimit);
 				case BALANCED -> new Values(renderDistance, simulationDistance, ParticleStatus.MINIMAL, clouds, 0.0, framerateLimit);
 				case FULL -> new Values(renderDistance, simulationDistance, particles, clouds, 0.0, framerateLimit);
-				case CUSTOM -> new Values(hiddenRenderDistance, hiddenSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, hiddenFramerateLimit);
+				case CUSTOM -> new Values(Math.min(renderDistance, hiddenRenderDistance), hiddenSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, Math.min(framerateLimit, hiddenFramerateLimit));
 			};
 		}
 	}
@@ -117,7 +117,7 @@ final class BackgroundController {
 			case SAVING -> profile.fps();
 			case BALANCED -> Math.min(BackgroundLevel.BALANCED_FPS, mc.options.framerateLimit().get());
 			case FULL -> mc.options.framerateLimit().get();
-			case CUSTOM -> custom.fps();
+			case CUSTOM -> Math.min(custom.fps(), mc.options.framerateLimit().get());
 		};
 	}
 

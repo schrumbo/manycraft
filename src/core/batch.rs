@@ -46,7 +46,7 @@ pub enum Background {
     Balanced,
     /// Nothing reduced.
     Full,
-    /// The user's own frames per second and sight in chunks; particles and clouds as in `Saving`.
+    /// At most these frames per second and this sight in chunks, never above the player's own; particles and clouds as in `Saving`.
     Custom {
         #[serde(default = "default_fps")]
         fps: u8,
@@ -67,7 +67,7 @@ impl Background {
     /// The presets, cheapest first; `Custom` comes after them.
     pub const PRESETS: [Self; 3] = [Self::Saving, Self::Balanced, Self::Full];
 
-    /// The custom level starting from what this level allows, so picking it changes nothing yet.
+    /// The custom level starting from the frames and sight this level allows.
     pub fn to_custom(self) -> Self {
         let (fps, sight) = match self {
             Self::Saving => (SAVING_FPS, SAVING_SIGHT),

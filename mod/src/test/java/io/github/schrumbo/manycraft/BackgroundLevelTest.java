@@ -36,6 +36,12 @@ class BackgroundLevelTest {
 	}
 
 	@Test
+	void customNeverGoesAboveThePlayersOwnValues() {
+		BackgroundController.Values modest = new BackgroundController.Values(4, 4, ParticleStatus.ALL, CloudStatus.FAST, 1.0, 30);
+		assertEquals(new BackgroundController.Values(4, 5, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, 30), modest.reduced(BackgroundLevel.CUSTOM, 12, 5, 60));
+	}
+
+	@Test
 	void optionFramerateStaysOnTheGamesSteps() {
 		assertEquals(10, BackgroundLevel.optionFramerate(1));
 		assertEquals(10, BackgroundLevel.optionFramerate(5));

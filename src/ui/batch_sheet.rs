@@ -763,7 +763,7 @@ impl BatchSheet {
         let step = |icon_name: &'static str, label: String, up: bool, cx: &mut Context<Self>| {
             let id = SharedString::from(format!("background-{id}-{}", if up { "more" } else { "less" }));
             if busy || forms::ladder_step(value, up, steps) == value {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().opacity(tint::DISABLED).tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().opacity(tint::DISABLED).cursor_not_allowed().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 if s.saving || s.mods_busy.is_some() {
@@ -785,9 +785,9 @@ impl BatchSheet {
             .items_center()
             .gap(px(space::XS))
             .child(step("minus", less, false, cx))
-            .child(div().id(SharedString::from(format!("background-{id}-value"))).mark("value", value_label.clone()).min_w(px(BACKGROUND_VALUE_WIDTH)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(value_label))
+            .child(div().id(SharedString::from(format!("background-{id}-value"))).mark("value", value_label.clone()).min_w(px(control::STEPPER_VALUE_WIDE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).when(busy, |d| d.opacity(tint::DISABLED)).child(value_label))
             .child(step("plus", more, true, cx));
-        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(label, t)).child(stepper)
+        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(label, t).when(busy, |d| d.opacity(tint::DISABLED))).child(stepper)
     }
 
     fn render_memory(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -829,7 +829,7 @@ impl BatchSheet {
         }
         let step = |id: &'static str, icon_name: &'static str, label: String, limit: bool, delta: i32, cx: &mut Context<Self>| {
             if limit {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().opacity(tint::DISABLED).tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().opacity(tint::DISABLED).cursor_not_allowed().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
@@ -842,7 +842,7 @@ impl BatchSheet {
             .items_center()
             .gap(px(space::XS))
             .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), at_min, -1, cx))
-            .child(div().id("memory-value").mark("value", forms::memory_label(self.memory)).min_w(px(MEMORY_VALUE_WIDTH)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(forms::memory_label(self.memory)))
+            .child(div().id("memory-value").mark("value", forms::memory_label(self.memory)).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(forms::memory_label(self.memory)))
             .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max, 1, cx));
         let line = if over {
             sheet::note(None, Some(trf("%lld Accounts brauchen zusammen bis zu %@, mehr als dieser Rechner hat (%@).", &[&count, &total_label, &forms::memory_label(u32::try_from(self.total_ram).unwrap_or(u32::MAX))])), t)
@@ -1239,14 +1239,6 @@ impl BatchSheet {
 
 const VERSION_WIDTH: f32 = 168.;
 const RESULTS_MAX: f32 = 340.;
-const MEMORY_VALUE_WIDTH: f32 = 64.;
-const BACKGROUND_VALUE_WIDTH: f32 = 80.;
-
-#[derive(Clone, Copy)]
-enum Dial {
-    Fps,
-    Sight,
-}
 const LIST_MIN: f32 = 96.;
 const LIST_SHARE: f32 = 0.5;
 
@@ -1400,6 +1392,12 @@ impl Render for BatchSheet {
 }
 
 const SAVE_ERROR_MAX: f32 = 220.;
+
+#[derive(Clone, Copy)]
+enum Dial {
+    Fps,
+    Sight,
+}
 
 #[cfg(test)]
 mod tests {
