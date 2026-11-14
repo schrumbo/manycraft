@@ -850,12 +850,15 @@ impl BatchSheet {
         };
         let segments = Background::ALL.into_iter().enumerate().map(|(n, level)| {
             segment(("background", n), name(level), self.background == level, t).on_click(cx.listener(move |s, _, _, cx| {
+                if s.saving || s.mods_busy.is_some() {
+                    return;
+                }
                 s.background = level;
                 s.save_error = None;
                 cx.notify();
             }))
         });
-        let control = div().id("batch-background").p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).children(segments);
+        let control = div().id("batch-background").p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).when(self.saving || self.mods_busy.is_some(), |d| d.opacity(tint::DISABLED)).children(segments);
         let hint = if running { format!("{cost} {}", tr("Gilt sofort, auch für die laufenden Spiele.")) } else { cost };
         div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Im Hintergrund"), t)).child(div().flex().child(control)).child(sheet::note(Some(hint), None, t).min_h(px(font::CAPTION * font::LINE * 2.)))
     }

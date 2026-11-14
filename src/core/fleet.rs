@@ -998,11 +998,12 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
     }
     println!("Press Ctrl+C to stop all");
     let mut pids = HashMap::new();
+    let badge = super::settings::load().map_or(true, |s| s.game_badge);
     while !live.is_empty() && !STOP.load(Ordering::SeqCst) {
         match events.recv_timeout(EVENT_POLL) {
             Ok(event) => {
                 print_event(&names, &event);
-                greet(&fleet, &target, &accounts, &mut pids, &event);
+                greet(&fleet, &target, &accounts, &mut pids, badge, &event);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -1021,7 +1022,7 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
     Ok(0)
 }
 
-fn greet(fleet: &Fleet, batch: &Batch, accounts: &[Account], pids: &mut HashMap<String, u32>, event: &ipc::Event) {
+fn greet(fleet: &Fleet, batch: &Batch, accounts: &[Account], pids: &mut HashMap<String, u32>, badge: bool, event: &ipc::Event) {
     let instance = match event {
         ipc::Event::Connected { instance, pid, .. } => {
             pids.insert(instance.clone(), *pid);
@@ -1032,7 +1033,7 @@ fn greet(fleet: &Fleet, batch: &Batch, accounts: &[Account], pids: &mut HashMap<
     };
     let Some(account) = accounts.iter().find(|a| instance_key(batch, a.id) == *instance) else { return };
     if matches!(event, ipc::Event::Connected { .. }) {
-        for message in identity_messages(batch, account, super::settings::active().game_badge) {
+        for message in identity_messages(batch, account, badge) {
             let _ = fleet.send(instance, &message);
         }
     }
