@@ -112,6 +112,11 @@ fn release_ids(manifest: Manifest) -> Vec<String> {
     manifest.versions.into_iter().filter(|v| v.kind == "release").map(|v| v.id).collect()
 }
 
+/// Newest stable Fabric loader for `game_version`.
+pub fn latest_loader(game_version: &str) -> Result<String> {
+    fabric::latest_loader(&net::agent(None)?, game_version)
+}
+
 /// Installs `game_version` with Fabric (`loader_version`, or the newest stable loader) into the shared folders.
 /// Files that are already there are not downloaded again. Without a connection, a version that was installed
 /// before is used as it is.

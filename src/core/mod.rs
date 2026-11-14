@@ -24,6 +24,7 @@ pub mod launch;
 pub mod lock;
 pub mod modicons;
 pub mod modrinth;
+pub mod mrpack;
 pub mod net;
 pub mod paths;
 pub mod place;

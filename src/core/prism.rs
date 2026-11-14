@@ -2,6 +2,7 @@
 //! Prism's files are only read, never moved or changed, and its sign-in tokens are never kept, logged or stored.
 
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -9,7 +10,7 @@ use serde::Deserialize;
 
 use super::account::{self, Account, AccountKind};
 use super::batch::{self, Batch, ModRef};
-use super::{fleet, modrinth, net};
+use super::{fleet, modrinth, mrpack, net};
 
 const CONFIG_FILE: &str = "prismlauncher.cfg";
 const INSTANCE_FILE: &str = "instance.cfg";
@@ -159,6 +160,63 @@ pub fn import_accounts_into(saved: &mut Vec<Account>, prism: &[PrismAccount]) ->
 }
 
 type Lookup<'a> = &'a dyn Fn(&[String]) -> Result<HashMap<String, ModRef>>;
+
+/// Whether `dir` is a Prism instance folder: it holds an `instance.cfg`.
+pub fn is_instance(dir: &Path) -> bool {
+    dir.join(INSTANCE_FILE).is_file()
+}
+
+/// Reads the Prism instance in `dir`, named after the folder when its `instance.cfg` has no name.
+pub fn instance_at(dir: &Path) -> Result<Instance> {
+    let id = dir.file_name().and_then(|n| n.to_str()).unwrap_or("instance").to_owned();
+    read_instance(id, dir.to_path_buf())
+}
+
+/// Copies `instance` into a new batch `name` under `root`; see `import_instance`. Does not check that the name is free.
+pub(super) fn import_into(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Result<Batch> {
+    import_to(instance, name, root, lookup)
+}
+
+/// Where the instance sits in a Prism export zip: `""` when `instance.cfg` and `mmc-pack.json` are at the top,
+/// `"folder/"` when they are one folder down; `None` when the zip is no Prism export.
+pub fn export_prefix<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Option<String> {
+    let names: HashSet<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
+    let mut prefixes: Vec<&str> = names.iter().filter_map(|n| n.strip_suffix(INSTANCE_FILE)).filter(|p| p.is_empty() || (p.ends_with('/') && p.matches('/').count() == 1)).collect();
+    prefixes.sort_unstable();
+    prefixes.into_iter().find(|p| names.contains(&format!("{p}{PACK_FILE}"))).map(str::to_owned)
+}
+
+/// Unpacks what an import reads from a Prism export zip into `staging`: `instance.cfg`, `mmc-pack.json` and the
+/// game folder's jars, config and `options.txt`. Worlds, logs and everything else stay in the zip. Returns the instance folder.
+pub fn unpack_export<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, prefix: &str, staging: &Path) -> Result<PathBuf> {
+    let dir = staging.join("instance");
+    let mut total = 0;
+    for index in 0..zip.len() {
+        let entry = zip.by_index(index).context("cannot read the zip")?;
+        if entry.is_dir() || entry.is_symlink() {
+            continue;
+        }
+        let Some(rest) = entry.name().context("cannot read the zip")?.strip_prefix(prefix).map(str::to_owned) else { continue };
+        if !wanted_in_export(&rest) {
+            continue;
+        }
+        let path = dir.join(mrpack::safe_rel(&rest)?);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+        }
+        let mut out = std::fs::File::create(&path).with_context(|| format!("cannot write {}", path.display()))?;
+        mrpack::copy_limited(entry, &mut out, &mut total)?;
+    }
+    Ok(dir)
+}
+
+fn wanted_in_export(rest: &str) -> bool {
+    if rest == INSTANCE_FILE || rest == PACK_FILE {
+        return true;
+    }
+    let Some(inner) = GAME_DIRS.iter().find_map(|d| rest.strip_prefix(d).and_then(|r| r.strip_prefix('/'))) else { return false };
+    inner == OPTIONS_FILE || inner.starts_with("config/") || inner.strip_prefix("mods/").is_some_and(|jar| !jar.contains('/') && is_jar(jar))
+}
 
 struct Jar {
     path: PathBuf,
@@ -880,6 +938,67 @@ mod tests {
         }
         fs::create_dir_all(&deep).unwrap();
         assert!(copy_tree(&dir.path().join("from"), &dir.path().join("to"), 0).is_err());
+    }
+
+    fn zip_of(entries: &[(&str, &[u8])]) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip::ZipArchive::new(std::io::Cursor::new(zip.finish().unwrap().into_inner())).unwrap()
+    }
+
+    #[test]
+    fn prism_exports_are_found_at_the_top_or_one_folder_down() {
+        let cfg = b"[General]
+name=Farm
+";
+        assert_eq!(export_prefix(&zip_of(&[("instance.cfg", cfg), ("mmc-pack.json", PACK.as_bytes())])).as_deref(), Some(""));
+        assert_eq!(export_prefix(&zip_of(&[("Farm/instance.cfg", cfg), ("Farm/mmc-pack.json", PACK.as_bytes())])).as_deref(), Some("Farm/"));
+        assert_eq!(export_prefix(&zip_of(&[("instance.cfg", cfg)])), None);
+        assert_eq!(export_prefix(&zip_of(&[("a/b/instance.cfg", cfg), ("a/b/mmc-pack.json", PACK.as_bytes())])), None);
+        assert_eq!(export_prefix(&zip_of(&[("modrinth.index.json", b"{}")])), None);
+    }
+
+    #[test]
+    fn a_prism_export_unpacks_only_what_an_import_reads_and_imports() {
+        let staging = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let cfg = "[General]
+name=Farm
+".to_owned();
+        let mut zip = zip_of(&[
+            ("Farm/instance.cfg", cfg.as_bytes()),
+            ("Farm/mmc-pack.json", PACK.as_bytes()),
+            ("Farm/.minecraft/mods/a.jar", b"a"),
+            ("Farm/.minecraft/mods/sub/b.jar", b"b"),
+            ("Farm/.minecraft/config/x.json", b"{}"),
+            ("Farm/.minecraft/options.txt", b"fov:1.0
+"),
+            ("Farm/.minecraft/saves/w/level.dat", b"world"),
+            ("Farm/.minecraft/logs/latest.log", b"log"),
+        ]);
+        let dir = unpack_export(&mut zip, "Farm/", staging.path()).unwrap();
+        assert!(is_instance(&dir));
+        assert!(dir.join(".minecraft").join("mods").join("a.jar").is_file());
+        assert!(!dir.join(".minecraft").join("mods").join("sub").exists());
+        assert!(!dir.join(".minecraft").join("saves").exists() && !dir.join(".minecraft").join("logs").exists());
+        let inst = instance_at(&dir).unwrap();
+        assert_eq!((inst.name.as_str(), inst.unsupported.as_deref()), ("Farm", None));
+        let batch = import_into(&inst, "Farm", out.path(), &lookup_of(Vec::new())).unwrap();
+        assert_eq!(batch.local_mods, ["a.jar"]);
+        assert_eq!(fs::read(out.path().join(&batch.id).join(OPTIONS_FILE)).unwrap(), b"fov:1.0
+");
+    }
+
+    #[test]
+    fn zip_slip_in_a_prism_export_is_refused() {
+        let staging = tempfile::tempdir().unwrap();
+        let mut zip = zip_of(&[("instance.cfg", b"x"), ("mmc-pack.json", PACK.as_bytes()), (".minecraft/config/../../../evil.txt", b"x")]);
+        assert!(unpack_export(&mut zip, "", staging.path()).is_err());
+        assert!(!staging.path().parent().unwrap().join("evil.txt").exists());
     }
 
     const ACCOUNTS: &str = r#"{"accounts":[
