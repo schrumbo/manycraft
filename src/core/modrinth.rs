@@ -327,7 +327,7 @@ fn pool() -> Result<rayon::ThreadPool> {
 }
 
 fn safe_file_name(name: &str) -> Result<()> {
-    if Path::new(name).file_name().and_then(std::ffi::OsStr::to_str) != Some(name) {
+    if name.contains(['/', '\\', ':']) || name.chars().any(char::is_control) || Path::new(name).file_name().and_then(std::ffi::OsStr::to_str) != Some(name) {
         bail!("unsafe mod file name {name:?}");
     }
     Ok(())
