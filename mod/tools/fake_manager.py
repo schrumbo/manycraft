@@ -5,7 +5,7 @@ Run:  python tools/fake_manager.py [--port 34567] [--preview PATH] [--control FI
 Then: MANYCRAFT_TOKEN=dev ./gradlew runClient -Pmanycraft.ipc=127.0.0.1:34567 \
         -Pmanycraft.instance=dev -Pmanycraft.preview=PATH -Pmanycraft.token=dev
 Commands (stdin, or lines appended to --control FILE):
-  show X Y W H | hide | profile FPS RD INTERVAL_MS WIDTH | chat TEXT | reconnect
+  show X Y W H | hide | profile FPS RD INTERVAL_MS WIDTH | chat TEXT | reconnect | respawn
   hotkeys NEXT PREV NEXT_ATTENTION GRID | quit | raw JSON
 """
 import argparse
@@ -72,6 +72,8 @@ def command(line):
         send({"t": "chat_send", "text": rest})
     elif name == "reconnect":
         send({"t": "reconnect"})
+    elif name == "respawn":
+        send({"t": "respawn"})
     elif name == "quit":
         send({"t": "quit"})
     elif name == "hotkeys":

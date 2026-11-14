@@ -22,6 +22,8 @@ final class Protocol {
 
 		record Reconnect() implements Incoming {}
 
+		record Respawn() implements Incoming {}
+
 		record Quit() implements Incoming {}
 
 		record Hotkeys(String next, String prev, String nextAttention, String grid) implements Incoming {}
@@ -92,6 +94,7 @@ final class Protocol {
 				case "profile" -> new Incoming.Profile(integer(o, "fps"), integer(o, "render_distance"), integer(o, "preview_interval_ms"), integer(o, "preview_width"));
 				case "chat_send" -> string(o, "text") == null ? null : new Incoming.ChatSend(string(o, "text"));
 				case "reconnect" -> new Incoming.Reconnect();
+				case "respawn" -> new Incoming.Respawn();
 				case "quit" -> new Incoming.Quit();
 				case "hotkeys" -> new Incoming.Hotkeys(string(o, "next"), string(o, "prev"), string(o, "next_attention"), string(o, "grid"));
 				default -> null;

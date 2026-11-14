@@ -5,6 +5,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
@@ -172,6 +173,7 @@ final class Companion {
 			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
 			case Protocol.Incoming.ChatSend chatSend -> sendChat(mc, chatSend.text());
 			case Protocol.Incoming.Reconnect reconnect -> reconnect(mc);
+			case Protocol.Incoming.Respawn respawn -> respawn(mc);
 			default -> {
 			}
 		}
@@ -196,6 +198,14 @@ final class Companion {
 			return;
 		}
 		ConnectScreen.startConnecting(new TitleScreen(), mc, ServerAddress.parseString(data.ip), data, false, null);
+	}
+
+	private void respawn(Minecraft mc) {
+		if (mc.player == null || !(mc.gui.screen() instanceof DeathScreen)) {
+			return;
+		}
+		mc.player.respawn();
+		mc.gui.setScreen(null);
 	}
 
 	private static Hotkeys merge(Hotkeys current, Protocol.Incoming.Hotkeys update) {

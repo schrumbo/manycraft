@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, Play, Reconnect, SignInAgain, Start, Stop};
+use super::actions::{EditBatch, Play, Reconnect, Respawn, SignInAgain, Start, Stop};
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
@@ -146,6 +146,7 @@ pub fn playable(phase: &Phase) -> bool {
 enum Primary {
     Play,
     Reconnect,
+    Respawn,
     Start,
     SignIn,
 }
@@ -155,7 +156,8 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         return None;
     }
     match phase {
-        Phase::Disconnected { .. } | Phase::Dead { .. } => Some(Primary::Reconnect),
+        Phase::Disconnected { .. } => Some(Primary::Reconnect),
+        Phase::Dead { .. } => Some(Primary::Respawn),
         Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
         Phase::LoginNeeded => Some(Primary::SignIn),
         Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } => Some(Primary::Play),
@@ -168,6 +170,7 @@ impl Primary {
         match self {
             Self::Play => tr("Spielen"),
             Self::Reconnect => tr("Neu verbinden"),
+            Self::Respawn => tr("Wiederbeleben"),
             Self::Start => tr("Starten"),
             Self::SignIn => tr("Anmelden"),
         }
@@ -177,6 +180,7 @@ impl Primary {
         match self {
             Self::Play => "gamepad-2",
             Self::Reconnect => "refresh-cw",
+            Self::Respawn => "heart-pulse",
             Self::Start => "play",
             Self::SignIn => "log-in",
         }
@@ -186,6 +190,7 @@ impl Primary {
         match self {
             Self::Play => Box::new(Play(key.to_owned())),
             Self::Reconnect => Box::new(Reconnect(key.to_owned())),
+            Self::Respawn => Box::new(Respawn(key.to_owned())),
             Self::Start => Box::new(Start(key.to_owned())),
             Self::SignIn => Box::new(SignInAgain(account.to_string())),
         }
@@ -405,6 +410,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
     let menu_key = d.key.clone();
     let menu_batch = d.batch_id.clone();
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
+    let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. }) && !stopping;
     let tile = div()
         .id(SharedString::from(format!("tile-{}", d.key)))
@@ -450,6 +456,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
     let (account, login) = (d.account_id, d.phase == Phase::LoginNeeded);
     tile.context_menu(move |menu, _, _| {
         let menu = if can_play { menu.menu(tr("Spielen"), Box::new(Play(menu_key.clone()))) } else { menu };
+        let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
         let menu = menu.menu_with_disabled(tr("Neu verbinden"), Box::new(Reconnect(menu_key.clone())), !reconnectable);
         let menu = if running || stopping {
             menu.menu_with_disabled(tr("Stoppen"), Box::new(Stop(menu_key.clone())), stopping)
@@ -471,6 +478,8 @@ mod tests {
     fn the_main_button_follows_the_phase() {
         let lost = Phase::Disconnected { server: None, reason: String::new() };
         assert!(primary(&lost, false) == Some(Primary::Reconnect));
+        let dead = Phase::Dead { server: None, reason: String::new() };
+        assert!(primary(&dead, false) == Some(Primary::Respawn));
         assert!(primary(&Phase::Stopped, false) == Some(Primary::Start));
         assert!(primary(&Phase::Crashed { code: Some(1) }, false) == Some(Primary::Start));
         assert!(primary(&Phase::Menu, false) == Some(Primary::Play));

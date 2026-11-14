@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, Play, PreviousInstance, Reconnect, Reload, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
+use super::actions::{Broadcast, NextAttention, NextInstance, Play, PreviousInstance, Reconnect, Reload, Respawn, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
 use super::model::{self, ChatLine, Instance, Model, Phase};
 use super::native::{self, Rect};
 use crate::core::account::{self, Account};
@@ -342,6 +342,7 @@ pub fn init(cx: &mut App) {
         }
     });
     cx.on_action(|a: &Reconnect, cx| reconnect(&a.0, cx));
+    cx.on_action(|a: &Respawn, cx| respawn(&a.0, cx));
     cx.on_action(|a: &Play, cx| {
         let key = a.0.clone();
         cx.defer(move |cx| play(&key, cx));
@@ -575,6 +576,13 @@ fn reconnect(key: &str, cx: &mut App) {
     });
     if send && let Some(backend) = backend(cx) {
         backend.send(&key, ToMod::Reconnect);
+    }
+}
+
+fn respawn(key: &str, cx: &mut App) {
+    let dead = model::get(cx).read(cx).instances.get(key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. }));
+    if dead && let Some(backend) = backend(cx) {
+        backend.send(key, ToMod::Respawn);
     }
 }
 

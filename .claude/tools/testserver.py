@@ -66,7 +66,14 @@ def write_config(folder, port):
         "spawn-monsters": "false",
         "white-list": "false",
     }
-    (folder / "server.properties").write_text("".join(f"{k}={v}\n" for k, v in props.items()))
+    path = folder / "server.properties"
+    if not path.exists():
+        props["difficulty"] = "peaceful"
+    else:
+        kept = [l.partition("=")[2].strip() for l in path.read_text().splitlines() if l.startswith("difficulty=")]
+        if kept:
+            props["difficulty"] = kept[0]
+    path.write_text("".join(f"{k}={v}\n" for k, v in props.items()))
 
 
 def rcon(command):

@@ -26,6 +26,11 @@ pub struct Stop(pub String);
 #[action(namespace = manycraft)]
 pub struct Reconnect(pub String);
 
+/// Respawns a dead player.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct Respawn(pub String);
+
 /// Starts every account of a batch, staggered.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

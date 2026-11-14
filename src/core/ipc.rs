@@ -73,6 +73,7 @@ pub enum ToMod {
     Profile { fps: u32, render_distance: u32, preview_interval_ms: u32, preview_width: u32 },
     ChatSend { text: String },
     Reconnect,
+    Respawn,
     Quit,
     Hotkeys { next: String, prev: String, next_attention: String, grid: String },
 }
@@ -295,6 +296,7 @@ mod tests {
         let hotkey = r#"{"t":"hotkey","action":"next_attention"}"#;
         assert_eq!(serde_json::from_str::<FromMod>(hotkey).unwrap(), FromMod::Hotkey { action: HotkeyAction::NextAttention });
         assert_eq!(serde_json::to_string(&ToMod::Hide).unwrap(), r#"{"t":"hide"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Respawn).unwrap(), r#"{"t":"respawn"}"#);
         assert_eq!(serde_json::to_string(&ToMod::ChatSend { text: "/home".into() }).unwrap(), r#"{"t":"chat_send","text":"/home"}"#);
         assert_eq!(serde_json::to_string(&ToMod::Show { x: -5, y: 10, w: 800, h: 600 }).unwrap(), r#"{"t":"show","x":-5,"y":10,"w":800,"h":600}"#);
     }

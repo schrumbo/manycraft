@@ -79,9 +79,10 @@ class ProtocolTest {
 	}
 
 	@Test
-	void parsesChatSendReconnectQuitHotkeys() {
+	void parsesChatSendReconnectRespawnQuitHotkeys() {
 		assertEquals("/say hi", assertInstanceOf(Protocol.Incoming.ChatSend.class, Protocol.parse("{\"t\":\"chat_send\",\"text\":\"/say hi\"}").orElseThrow()).text());
 		assertInstanceOf(Protocol.Incoming.Reconnect.class, Protocol.parse("{\"t\":\"reconnect\"}").orElseThrow());
+		assertInstanceOf(Protocol.Incoming.Respawn.class, Protocol.parse("{\"t\":\"respawn\"}").orElseThrow());
 		assertInstanceOf(Protocol.Incoming.Quit.class, Protocol.parse("{\"t\":\"quit\"}").orElseThrow());
 		var keys = assertInstanceOf(Protocol.Incoming.Hotkeys.class, Protocol.parse("{\"t\":\"hotkeys\",\"next\":\"ctrl+tab\",\"grid\":\"f9\"}").orElseThrow());
 		assertEquals("ctrl+tab", keys.next());

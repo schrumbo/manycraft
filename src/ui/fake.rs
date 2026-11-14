@@ -161,6 +161,7 @@ impl Sim {
                     self.at(Duration::from_secs(2), None, state(key, StateKind::Playing, None));
                 }
             }
+            ToMod::Respawn => self.at(Duration::from_millis(300), None, state(key, StateKind::Playing, None)),
             ToMod::Show { .. } | ToMod::Hide => {
                 let visible = matches!(message, ToMod::Show { .. });
                 self.at(Duration::ZERO, None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Window { visible, focused: visible } }));
