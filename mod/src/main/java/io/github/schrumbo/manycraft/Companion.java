@@ -205,7 +205,6 @@ final class Companion {
 			return;
 		}
 		mc.player.respawn();
-		mc.gui.setScreen(null);
 	}
 
 	private static Hotkeys merge(Hotkeys current, Protocol.Incoming.Hotkeys update) {
