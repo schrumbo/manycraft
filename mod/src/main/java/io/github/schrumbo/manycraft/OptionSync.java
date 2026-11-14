@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 final class OptionSync {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final String PART_FILE = "manycraft-options.part";
+	private final WhenShown packReload = new WhenShown();
 	private boolean applying;
 	private WeakReference<JoinMultiplayerScreen> multiplayer = new WeakReference<>(null);
 
@@ -53,19 +54,26 @@ final class OptionSync {
 		}
 		List<String> packs = List.copyOf(options.resourcePacks);
 		List<String> incompatible = List.copyOf(options.incompatibleResourcePacks);
-		Runnable load = () -> load(options, file, changes);
 		if (background == null) {
-			load.run();
+			load(options, file, changes);
 		} else {
-			background.applyUser(changes.keySet(), load);
+			background.applyUser(changes, keys -> load(options, file, keys));
 		}
 		LOGGER.info("applied shared options {}", changes.keySet());
 		if (!packs.equals(options.resourcePacks) || !incompatible.equals(options.incompatibleResourcePacks)) {
-			PackRepository repository = mc.getResourcePackRepository();
-			repository.reload();
-			options.loadSelectedResourcePacks(repository);
-			mc.reloadResourcePacks();
+			packReload.run(background != null && background.hidden(), () -> reloadPacks(mc));
 		}
+	}
+
+	void shown() {
+		packReload.shown();
+	}
+
+	private static void reloadPacks(Minecraft mc) {
+		PackRepository repository = mc.getResourcePackRepository();
+		repository.reload();
+		mc.options.loadSelectedResourcePacks(repository);
+		mc.reloadResourcePacks();
 	}
 
 	void multiplayerOpened(JoinMultiplayerScreen screen) {

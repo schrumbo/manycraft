@@ -10,8 +10,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import net.minecraft.client.CloudStatus;
-import net.minecraft.server.level.ParticleStatus;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -100,11 +98,7 @@ class OptionsFileTest {
 	}
 
 	@Test
-	void hiddenGameTakesTheSharedValuesAsThePlayersOwn() {
-		var saved = new BackgroundController.Values(12, 10, ParticleStatus.ALL, CloudStatus.FANCY, 0.7, 120);
-		var live = new BackgroundController.Values(16, 8, ParticleStatus.DECREASED, CloudStatus.FAST, 0.2, 60);
-		assertEquals(new BackgroundController.Values(16, 10, ParticleStatus.ALL, CloudStatus.FANCY, 0.7, 60), saved.adopt(Set.of("renderDistance", "maxFps", "guiScale"), live));
-		assertEquals(live, saved.adopt(Set.of("renderDistance", "simulationDistance", "particles", "renderClouds", "soundCategory_master", "maxFps"), live));
-		assertEquals(saved, saved.adopt(Set.of(), live));
+	void aHiddenGameStoresExactlyTheBackgroundKeys() {
+		assertEquals(Set.of("renderDistance", "simulationDistance", "particles", "renderClouds", "soundCategory_master", "maxFps"), BackgroundController.USER_KEYS);
 	}
 }

@@ -226,7 +226,10 @@ final class Companion {
 			return;
 		}
 		switch (message) {
-			case Protocol.Incoming.Show show -> bg.show(show.x(), show.y(), show.w(), show.h(), show.mode());
+			case Protocol.Incoming.Show show -> {
+				bg.show(show.x(), show.y(), show.w(), show.h(), show.mode());
+				options.shown();
+			}
 			case Protocol.Incoming.Hide hide -> bg.hide();
 			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
 			case Protocol.Incoming.Level level -> bg.applyLevel(level.level(), level.custom());

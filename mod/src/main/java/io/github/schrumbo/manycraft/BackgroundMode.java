@@ -1,6 +1,6 @@
 package io.github.schrumbo.manycraft;
 
-import java.util.function.BinaryOperator;
+import java.util.function.UnaryOperator;
 
 final class BackgroundMode<V> {
 	interface Target<V> {
@@ -32,11 +32,11 @@ final class BackgroundMode<V> {
 		target.write(target.background(saved));
 	}
 
-	void adopt(BinaryOperator<V> merge) {
+	void store(UnaryOperator<V> update) {
 		if (saved == null) {
 			return;
 		}
-		saved = merge.apply(saved, target.read());
+		saved = update.apply(saved);
 		target.write(target.background(saved));
 	}
 
