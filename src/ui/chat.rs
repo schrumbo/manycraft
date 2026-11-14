@@ -32,10 +32,21 @@ const OVERDRAW: f32 = 400.;
 pub fn show(cx: &mut App) {
     let Some(handle) = cx.windows().into_iter().find(|w| main_window::is_main(w.window_id(), cx)) else { return };
     let _ = handle.update(cx, |view, window, cx| {
-        if let Ok(view) = view.downcast::<MainWindow>() {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
             view.update(cx, |this, cx| this.go(Page::Chat, window, cx));
         }
     });
+}
+
+/// Shows the Chat page and puts the cursor in its input.
+pub fn open(cx: &mut App) {
+    cx.set_global(FocusInput);
+    show(cx);
+    if let Some(page) = cx.try_global::<Shared>().map(|s| s.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
 }
 
 /// The Chat page the main window shows.
@@ -49,6 +60,10 @@ pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
 }
 
 struct Shared(Entity<ChatPage>);
+
+struct FocusInput;
+
+impl Global for FocusInput {}
 
 impl Global for Shared {}
 
@@ -88,6 +103,8 @@ struct ChatPage {
     recall: Option<usize>,
     draft: String,
     sent: Option<String>,
+    rejected: Option<(String, String)>,
+    caret_parked: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -108,12 +125,26 @@ impl ChatPage {
         let batch_select = cx.new(|cx| SelectState::new(SearchableVec::new(vec![tr("Alle Batches")]), Some(gpui_kit::component::IndexPath::new(0)), window, cx).searchable(true));
         let target_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
         let subs = vec![
+            cx.observe_window_activation(window, |s: &mut Self, window, cx| {
+                let focus = s.input.focus_handle(cx);
+                if window.is_window_active() {
+                    if std::mem::take(&mut s.caret_parked) {
+                        window.focus(&focus, cx);
+                    }
+                } else if focus.is_focused(window) {
+                    s.caret_parked = true;
+                    window.blur(cx);
+                }
+            }),
             cx.subscribe_in(&input, window, |s: &mut Self, _, e: &InputEvent, window, cx| match e {
                 InputEvent::PressEnter { .. } => s.send(window, cx),
                 InputEvent::Change => {
                     let value = s.input.read(cx).value().to_string();
                     if s.recall.is_some_and(|at| s.history.get(at) != Some(&value)) {
                         s.recall = None;
+                    }
+                    if s.rejected.as_ref().is_some_and(|(text, _)| value.trim() != text) {
+                        s.rejected = None;
                     }
                     if !value.is_empty() {
                         s.sent = None;
@@ -151,6 +182,8 @@ impl ChatPage {
             recall: None,
             draft: String::new(),
             sent: None,
+            rejected: None,
+            caret_parked: false,
             _subs: subs,
         }
     }
@@ -170,6 +203,7 @@ impl ChatPage {
         self.target = target;
         self.target_manual = manual;
         self.sent = None;
+        self.rejected = None;
         let label = self.target.as_ref().and_then(|t| self.target_choices.iter().find(|(_, c)| c == t)).map(|(l, _)| l.clone());
         let select = self.target_select.clone();
         window.on_next_frame(move |window, cx| {
@@ -262,7 +296,14 @@ impl ChatPage {
         let text = self.input.read(cx).value().trim().to_owned();
         let model = model::get(cx);
         let reached = self.running(model.read(cx));
-        if text.is_empty() || line_problem(&text).is_some() || reached == 0 || !settings::active().broadcast {
+        if text.is_empty() || !settings::active().broadcast {
+            return;
+        }
+        let problem = line_problem(&text).or_else(|| self.target.is_none().then(|| tr("Wähle, wer die Nachricht bekommt."))).or_else(|| (reached == 0).then(|| tr("Dort läuft gerade keine Instanz.")));
+        if let Some(problem) = problem {
+            self.rejected = Some((text, problem));
+            self.sent = None;
+            cx.notify();
             return;
         }
         let Some(target) = self.target.clone() else { return };
@@ -304,8 +345,6 @@ impl ChatPage {
         let whispers = self.scope.whispers;
         let on = settings::active().merged_chat;
         let title = tr("Chat");
-        let gear_hint = format!("{} · {}", tr("Einstellungen"), if cfg!(target_os = "macos") { "⌘,".to_owned() } else { format!("{}+,", tr("Strg")) });
-        let gear = sheet::icon_button("chat-settings", "settings", gear_hint, t.secondary, t).on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx));
         let segments = div()
             .id("chat-scope")
             .p(px(space::XXS))
@@ -338,7 +377,6 @@ impl ChatPage {
             .children(on.then_some(segments))
             .child(div().flex_1().min_w(px(space::S)))
             .children(on.then(|| div().w(px(chat::PICKER)).flex_none().child(Select::new(&self.batch_select).small().menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Batch suchen")))))
-            .child(gear)
     }
 
     fn empty(&self, id: &'static str, symbol: &str, title: String, text: String, button: Option<AnyElement>, t: &Theme) -> Stateful<Div> {
@@ -384,13 +422,16 @@ impl ChatPage {
             let m = model.read(cx);
             let Some(line) = id.checked_sub(m.chat_base()).and_then(|at| m.chat.get(at as usize)) else { return div().into_any_element() };
             let batch = if m.batches.len() > 1 { m.batch(&line.batch).map(|b| b.name.clone()) } else { None };
-            line_row(id, line, batch, &t)
+            let before = ix.checked_sub(1).and_then(|p| rows.borrow().get(p).copied()).and_then(|p| p.checked_sub(m.chat_base())).and_then(|p| m.chat.get(p as usize)).map(|l| l.at);
+            let day = before.is_none_or(|b| !same_day(b, line.at)).then(|| day_title(line.at, now()));
+            line_row(id, line, batch, day, &t)
         })
         .size_full()
         .px(px(space::S))
-        .py(px(space::S));
-        let jump = self.away.get().then(|| {
-            div().absolute().bottom(px(space::M)).left_0().right_0().flex().justify_center().child(
+        .pt(px(space::S))
+        .pb(px(chat::INSET));
+        let jump = (self.list.is_scrolled_to_end() == Some(false)).then(|| {
+            div().absolute().bottom(px(chat::INSET)).left_0().right_0().flex().justify_center().child(
                 sheet::button("chat-newest", tr("Zu den neuesten"), Some("arrow-down"), Look::Primary, false, false, &t).shadow_md().on_click(cx.listener(|s, _, _, cx| {
                     s.list.scroll_to_end();
                     s.away.set(false);
@@ -413,14 +454,13 @@ impl ChatPage {
             .items_center()
             .justify_between()
             .gap(px(space::M))
-            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Senden ist in den Einstellungen ausgeschaltet.")))
+            .child(div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(tr("Senden ist in den Einstellungen ausgeschaltet.")))
             .child(open)
     }
 
     fn composer(&mut self, reached: usize, target_name: String, t: &Theme, cx: &mut Context<Self>) -> Div {
         let text = self.input.read(cx).value().trim().to_owned();
-        let problem = line_problem(&text).or_else(|| (self.target.is_some() && reached == 0 && !text.is_empty()).then(|| tr("Dort läuft gerade keine Instanz.")));
-        let can_send = !text.is_empty() && problem.is_none() && self.target.is_some() && reached > 0;
+        let can_send = !text.is_empty();
         let hint = match (&self.target, self.sent.clone()) {
             (_, Some(sent)) => sent,
             (None, None) => tr("Wähle, wer die Nachricht bekommt."),
@@ -434,7 +474,8 @@ impl ChatPage {
             }
             (Some(Target::Instance(_)), None) => trf("An %@ · Enter sendet · ↑ letzte Eingabe", &[&target_name]),
         };
-        let send = sheet::button("chat-send", tr("Senden"), Some("send"), Look::Primary, !can_send, false, t).on_click(cx.listener(|s, _, window, cx| s.send(window, cx)));
+        let look = if can_send { Look::Primary } else { Look::Secondary };
+        let send = sheet::button("chat-send", tr("Senden"), Some("send"), look, !can_send, false, t).on_click(cx.listener(|s, _, window, cx| s.send(window, cx)));
         let me = cx.entity().downgrade();
         div()
             .flex_none()
@@ -473,7 +514,10 @@ impl ChatPage {
                     )
                     .child(send),
             )
-            .child(sheet::note(Some(hint), problem, t))
+            .child(match self.rejected.clone().map(|(_, why)| why) {
+                Some(why) => div().min_h(px(font::CAPTION * font::LINE)).text_size(px(font::CAPTION)).text_color(t.primary).child(why),
+                None => sheet::note(Some(hint), None, t),
+            })
     }
 }
 
@@ -488,7 +532,7 @@ impl Render for ChatPage {
             self.choices(data, sig, window, cx);
         }
         self.sync(model.read(cx));
-        if settings::active().merged_chat && (window.is_window_active() || crate::core::drive::on()) {
+        if window.is_window_active() || crate::core::drive::on() {
             let scope = self.scope.batch.clone();
             if model.read(cx).instances.values().any(|i| i.unread_whispers > 0 && scope.as_deref().is_none_or(|b| i.batch_id == b)) {
                 cx.defer(move |cx| super::state::clear_whispers(scope.as_deref(), cx));
@@ -505,12 +549,14 @@ impl Render for ChatPage {
         };
         let header = self.header(&t, cx);
         let body = self.body(any_lines, &t, cx);
-        let composer = if broadcast { self.composer(reached, target_name, &t, cx) } else { self.composer_off(&t) };
-        let mut fresh = false;
-        window.use_keyed_state("chat-entered", cx, |_, _| fresh = true);
-        if fresh && broadcast && settings::active().merged_chat {
-            let input = self.input.clone();
-            window.on_next_frame(move |window, cx| input.update(cx, |s, cx| s.focus(window, cx)));
+        let merged = settings::active().merged_chat;
+        let composer = (merged && broadcast).then(|| self.composer(reached, target_name, &t, cx)).or_else(|| merged.then(|| self.composer_off(&t)));
+        if cx.has_global::<FocusInput>() {
+            cx.remove_global::<FocusInput>();
+            if merged && broadcast {
+                let input = self.input.clone();
+                window.on_next_frame(move |window, cx| input.update(cx, |s, cx| s.focus(window, cx)));
+            }
         }
         div()
             .id("chat-page")
@@ -524,7 +570,7 @@ impl Render for ChatPage {
             .line_height(relative(font::LINE))
             .child(header)
             .child(div().flex_1().min_h_0().child(body))
-            .child(composer)
+            .children(composer)
     }
 }
 
@@ -547,13 +593,13 @@ fn segment(id: &'static str, label: String, selected: bool, t: &Theme) -> Statef
         .child(label)
 }
 
-fn line_row(id: u64, line: &ChatLine, batch: Option<String>, t: &Theme) -> AnyElement {
+fn line_row(id: u64, line: &ChatLine, batch: Option<String>, day: Option<String>, t: &Theme) -> AnyElement {
     let label = div()
         .w(px(chat::LABEL))
         .flex_none()
         .flex()
         .flex_col()
-        .child(div().truncate().text_size(px(font::CALLOUT)).font_weight(FontWeight::MEDIUM).text_color(t.primary).child(line.account.clone()))
+        .child(div().truncate().text_size(px(font::CALLOUT)).font_weight(FontWeight::MEDIUM).text_color(t.secondary).child(line.account.clone()))
         .children(batch.map(|batch| div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(batch)));
     let text = clip(&line.text);
     let (prefix, color) = match (&line.from, line.whisper) {
@@ -571,7 +617,8 @@ fn line_row(id: u64, line: &ChatLine, batch: Option<String>, t: &Theme) -> AnyEl
         None => div().text_color(t.secondary).child(text.clone()).into_any_element(),
     };
     let summary = format!("{}: {}", line.account, line.text);
-    div()
+    let time = div().w(px(chat::TIME)).flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).pt(px(space::XXS)).child(clock(line.at));
+    let row = div()
         .id(SharedString::from(format!("chat-line-{id}")))
         .mark("chat-line", summary)
         .w_full()
@@ -584,9 +631,46 @@ fn line_row(id: u64, line: &ChatLine, batch: Option<String>, t: &Theme) -> AnyEl
         .border_l(px(chat::BAR))
         .border_color(if line.whisper { t.accent } else { gpui_kit::transparent_black() })
         .when(line.whisper, |d| d.bg(with_alpha(t.accent, chat::WASH)))
+        .child(time)
         .child(label)
-        .child(div().flex_1().min_w_0().text_color(t.primary).child(body))
-        .into_any_element()
+        .child(div().flex_1().min_w_0().text_color(t.primary).child(body));
+    match day {
+        Some(day) => div().w_full().child(day_separator(day, t)).child(row).into_any_element(),
+        None => row.into_any_element(),
+    }
+}
+
+fn day_separator(day: String, t: &Theme) -> Div {
+    let rule = || div().flex_1().h(px(1.)).bg(t.separator);
+    div().w_full().px(px(space::M)).py(px(space::S)).flex().items_center().gap(px(space::S)).child(rule()).child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(day)).child(rule())
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+fn local(at: i64) -> Option<chrono::DateTime<chrono::Local>> {
+    chrono::DateTime::from_timestamp(at, 0).map(|d| d.with_timezone(&chrono::Local))
+}
+
+fn clock(at: i64) -> String {
+    local(at).map_or_else(String::new, |d| d.format("%H:%M").to_string())
+}
+
+fn same_day(a: i64, b: i64) -> bool {
+    local(a).map(|d| d.date_naive()) == local(b).map(|d| d.date_naive())
+}
+
+fn day_title(at: i64, now: i64) -> String {
+    let Some(day) = local(at).map(|d| d.date_naive()) else { return String::new() };
+    let today = local(now).map(|d| d.date_naive());
+    if Some(day) == today {
+        tr("Heute")
+    } else if today.and_then(|t| t.pred_opt()) == Some(day) {
+        tr("Gestern")
+    } else {
+        day.format("%d.%m.%Y").to_string()
+    }
 }
 
 fn clip(text: &str) -> String {
@@ -620,11 +704,28 @@ impl Choices {
         let mut batches: Vec<(String, Option<String>)> = vec![(tr("Alle Batches"), None)];
         let names = unique(m.batches.iter().map(|b| b.name.clone()).collect());
         batches.extend(m.batches.iter().zip(names).map(|(b, name)| (name, Some(b.id.clone()))));
-        let batch_labels = unique(m.batches.iter().map(|b| trf("Alle in %@", &[&b.name])).collect());
+        let batch_labels = unique(
+            m.batches
+                .iter()
+                .map(|b| {
+                    let total = m.instances.values().filter(|i| i.batch_id == b.id).count();
+                    let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.on_server()).count();
+                    trf("Alle in %@ · %lld von %lld laufen", &[&b.name, &running, &total])
+                })
+                .collect(),
+        );
         let mut targets: Vec<(String, Target)> = m.batches.iter().zip(batch_labels).map(|(b, label)| (label, Target::Batch(b.id.clone()))).collect();
         let mut instances: Vec<_> = m.instances.values().collect();
-        instances.sort_by_cached_key(|i| (i.name.to_lowercase(), i.key.clone()));
-        let instance_labels = unique(instances.iter().map(|i| instance_label(m, &i.name, &i.batch_id)).collect());
+        instances.sort_by_cached_key(|i| (!i.phase.on_server(), i.name.to_lowercase(), i.key.clone()));
+        let instance_labels = unique(
+            instances
+                .iter()
+                .map(|i| {
+                    let label = instance_label(m, &i.name, &i.batch_id);
+                    if i.phase.on_server() { label } else { format!("{label} · {}", tr("aus")) }
+                })
+                .collect(),
+        );
         targets.extend(instances.iter().zip(instance_labels).map(|(i, label)| (label, Target::Instance(i.key.clone()))));
         Self { batches, targets, batch_ids: m.batches.iter().map(|b| b.id.clone()).collect(), only_batch: (m.batches.len() == 1).then(|| m.batches[0].id.clone()) }
     }
@@ -665,7 +766,7 @@ fn choices_signature(m: &Model) -> u64 {
     let mut total = 0u64;
     for i in m.instances.values() {
         let mut h = DefaultHasher::new();
-        (&i.key, &i.name, &i.batch_id).hash(&mut h);
+        (&i.key, &i.name, &i.batch_id, i.phase.on_server()).hash(&mut h);
         total ^= h.finish();
     }
     let mut h = DefaultHasher::new();
@@ -697,10 +798,10 @@ fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &st
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatLine, MAX_CHAT_CHARS, Scope, chat, clip, in_scope, line_problem, recall_step, unique};
+    use super::{ChatLine, MAX_CHAT_CHARS, Scope, chat, clip, clock, day_title, in_scope, line_problem, now, recall_step, same_day, unique};
 
     fn line(batch: &str, whisper: bool) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), whisper, from: None, text: "x".into() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), at: 0, whisper, from: None, text: "x".into() }
     }
 
     #[test]
@@ -713,6 +814,17 @@ mod tests {
         assert!(in_scope(&line("farm", false), &farm) && !in_scope(&line("a", false), &farm));
         assert!(in_scope(&line("a", true), &whispers) && !in_scope(&line("a", false), &whispers));
         assert!(in_scope(&line("farm", true), &farm_whispers) && !in_scope(&line("farm", false), &farm_whispers) && !in_scope(&line("a", true), &farm_whispers));
+    }
+
+    #[test]
+    fn lines_know_their_day_and_clock() {
+        let at = now();
+        assert!(same_day(at, at));
+        assert!(!same_day(at, at - 3 * 24 * 3600));
+        assert_eq!(clock(at).len(), 5);
+        assert_eq!(day_title(at, at), crate::core::i18n::tr("Heute"));
+        assert_eq!(day_title(at - 24 * 3600, at), crate::core::i18n::tr("Gestern"));
+        assert_ne!(day_title(at - 5 * 24 * 3600, at), crate::core::i18n::tr("Heute"));
     }
 
     #[test]

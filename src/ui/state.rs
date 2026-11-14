@@ -403,7 +403,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &PreviousInstance, cx| cx.defer(|cx| step(HotkeyAction::Prev, cx)));
     cx.on_action(|_: &NextAttention, cx| cx.defer(|cx| step(HotkeyAction::NextAttention, cx)));
     cx.on_action(|_: &Reload, cx| reload(cx));
-    cx.on_action(|_: &OpenChat, cx| cx.defer(super::chat::show));
+    cx.on_action(|_: &OpenChat, cx| cx.defer(super::chat::open));
     cx.on_action(|a: &Broadcast, cx| broadcast(&a.batch, &a.text, cx));
     cx.on_action(|a: &SendChat, cx| send_chat(&a.key, &a.text, cx));
     cx.on_system_notification_response(|response, cx| {
@@ -1169,6 +1169,7 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             let whisper = kind == ChatKind::Whisper;
             if whisper
                 && !playing
+                && settings::active().merged_chat
                 && let Some(i) = m.instances.get_mut(&key)
             {
                 i.unread_whispers += 1;
@@ -1178,7 +1179,8 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
                 fx.whispers.push(Whisper { account: account.clone(), from: from.clone(), text: text.clone() });
             }
             if settings::active().merged_chat {
-                m.push_chat(ChatLine { instance: key, account, batch, whisper, from, text }, KEPT_CHAT);
+                let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+                m.push_chat(ChatLine { instance: key, account, batch, at, whisper, from, text }, KEPT_CHAT);
             }
         }
         FromMod::Preview { .. } => {

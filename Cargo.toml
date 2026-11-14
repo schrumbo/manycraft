@@ -12,6 +12,7 @@ ignored = ["md-5"]
 
 [dependencies]
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 async-channel = "2.5.0"
 dirs = "6"
 gpui-kit = "0.8.1"

@@ -115,6 +115,10 @@ pub mod chat {
     pub const BAR: f32 = 2.;
     /// Width of the picker for the batch shown and for the one written to.
     pub const PICKER: f32 = 200.;
+    /// Width of the time at the start of a line.
+    pub const TIME: f32 = 44.;
+    /// Space under the last line, and the gap between it and the jump button.
+    pub const INSET: f32 = 12.;
     /// The most characters shown of a line before it is cut off.
     pub const SHOWN_CHARS: usize = 600;
 }

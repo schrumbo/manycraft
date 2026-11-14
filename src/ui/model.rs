@@ -71,6 +71,8 @@ pub struct ChatLine {
     /// Name of the account whose game showed the line.
     pub account: String,
     pub batch: String,
+    /// Seconds since the Unix epoch when the line arrived.
+    pub at: i64,
     pub whisper: bool,
     pub from: Option<String>,
     pub text: String,
@@ -224,7 +226,7 @@ mod tests {
     }
 
     fn line(n: u64) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), whisper: false, from: None, text: n.to_string() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), at: 0, whisper: false, from: None, text: n.to_string() }
     }
 
     #[test]

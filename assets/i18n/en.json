@@ -338,5 +338,9 @@
   "Zurück zum Raster": "Back to the grid",
   "Alles zeigen": "Show everything",
   "Senden ist in den Einstellungen ausgeschaltet.": "Sending is turned off in the settings.",
-  "Sprache und Erscheinungsbild folgen dem System.": "Language and appearance follow the system."
+  "Sprache und Erscheinungsbild folgen dem System.": "Language and appearance follow the system.",
+  "Heute": "Today",
+  "Gestern": "Yesterday",
+  "aus": "off",
+  "Alle in %@ · %lld von %lld laufen": "Everyone in %@ · %lld of %lld running"
 }

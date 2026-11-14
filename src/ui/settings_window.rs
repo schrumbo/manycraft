@@ -1,5 +1,6 @@
 //! The settings window: the few options that rarely change, saved the moment they are touched.
 
+use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -15,6 +16,8 @@ use crate::core::settings::{self, HOTKEYS, Settings};
 
 const WIDTH: f32 = 560.;
 const HEIGHT: f32 = 700.;
+const TALL_HEIGHT: f32 = 880.;
+const TALL_SCREEN: f32 = 1000.;
 const MIN_WIDTH: f32 = 440.;
 const MIN_HEIGHT: f32 = 360.;
 const PAGE_MAX: f32 = 520.;
@@ -45,14 +48,15 @@ pub fn open(cx: &mut App) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
         return;
     }
-    let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
+    let roomy = cx.primary_display().is_some_and(|d| f32::from(d.bounds().size.height) >= TALL_SCREEN);
+    let bounds = Bounds::centered(None, size(px(WIDTH), px(if roomy { TALL_HEIGHT } else { HEIGHT })), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
         app_id: Some("io.github.schrumbo.manycraft".into()),
         ..Default::default()
     };
-    let options = super::chrome::window_options(options, tr("Einstellungen"));
+    let options = super::chrome::window_options(options, title());
     if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::refresh(window, cx);
         cx.new(|cx| SettingsView::new(window, cx))
@@ -61,8 +65,13 @@ pub fn open(cx: &mut App) {
     }
 }
 
+fn title() -> String {
+    format!("{} – Manycraft", tr("Einstellungen"))
+}
+
 struct SettingsView {
     focus: FocusHandle,
+    scroll: ScrollHandle,
     error: Option<String>,
     _subs: Vec<Subscription>,
 }
@@ -76,7 +85,7 @@ impl SettingsView {
         let focus = cx.focus_handle();
         let first = focus.clone();
         window.on_next_frame(move |window, cx| window.focus(&first, cx));
-        Self { focus, error: None, _subs: subs }
+        Self { focus, scroll: ScrollHandle::new(), error: None, _subs: subs }
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
@@ -108,12 +117,18 @@ impl SettingsView {
 
     fn attempts(&self, id: &'static str, label: String, value: u32, enabled: bool, apply: impl Fn(&mut Settings, u32) + Clone + 'static, t: &Theme, cx: &mut Context<Self>) -> Div {
         let (less, more) = (apply.clone(), apply);
-        let minus = step_button(SharedString::from(format!("{id}-less")), "minus", tr("Weniger"), enabled && value > *ATTEMPTS.start(), t).on_click(cx.listener(move |s, _, _, cx| {
-            s.change(|st| less(st, value.saturating_sub(1).max(*ATTEMPTS.start())), cx);
-        }));
-        let plus = step_button(SharedString::from(format!("{id}-more")), "plus", tr("Mehr"), enabled && value < *ATTEMPTS.end(), t).on_click(cx.listener(move |s, _, _, cx| {
-            s.change(|st| more(st, (value + 1).min(*ATTEMPTS.end())), cx);
-        }));
+        let can_less = enabled && value > *ATTEMPTS.start();
+        let can_more = enabled && value < *ATTEMPTS.end();
+        let minus = step_button(SharedString::from(format!("{id}-less")), "minus", tr("Weniger"), can_less, t).when(can_less, |b| {
+            b.on_click(cx.listener(move |s, _, _, cx| {
+                s.change(|st| less(st, value.saturating_sub(1).max(*ATTEMPTS.start())), cx);
+            }))
+        });
+        let plus = step_button(SharedString::from(format!("{id}-more")), "plus", tr("Mehr"), can_more, t).when(can_more, |b| {
+            b.on_click(cx.listener(move |s, _, _, cx| {
+                s.change(|st| more(st, (value + 1).min(*ATTEMPTS.end())), cx);
+            }))
+        });
         let control = div().flex().items_center().gap(px(space::XS)).child(minus).child(div().id(SharedString::from(format!("{id}-value"))).mark("value", value.to_string()).min_w(px(control::M)).text_center().text_color(if enabled { t.primary } else { t.tertiary }).child(value.to_string())).child(plus);
         row(label, None, control, t)
     }
@@ -134,16 +149,21 @@ fn row(label: String, hint: Option<String>, control: impl IntoElement, t: &Theme
 }
 
 fn row_with(label: String, hint: Option<String>, control: impl IntoElement, press: Option<(SharedString, Press)>, t: &Theme) -> Div {
-    let text = div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .child(div().text_size(px(font::BODY)).text_color(t.primary).child(label))
-        .children(hint.map(|h| div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(h)));
+    let lines = (div().text_size(px(font::BODY)).text_color(t.primary).child(label), hint.map(|h| div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(h)));
     let text = match press {
-        Some((id, press)) => text.id(id).cursor_pointer().on_click(press).into_any_element(),
-        None => text.into_any_element(),
+        Some((id, press)) => div()
+            .id(id)
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .cursor_pointer()
+            .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+            .on_click(press)
+            .child(lines.0)
+            .children(lines.1)
+            .into_any_element(),
+        None => div().flex_1().min_w_0().flex().flex_col().child(lines.0).children(lines.1).into_any_element(),
     };
     div()
         .flex()
@@ -254,6 +274,7 @@ impl Render for SettingsView {
             .id("settings-page")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .child(
                 div()
                     .mx_auto()
@@ -282,8 +303,10 @@ impl Render for SettingsView {
             .font_family(Theme::font_family())
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE))
-            .child(page);
-        super::chrome::frame(tr("Einstellungen"), root, &t)
+            .relative()
+            .child(page)
+            .child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Scrolling));
+        super::chrome::frame(title(), root, &t)
     }
 }
 
