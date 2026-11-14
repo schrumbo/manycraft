@@ -2,6 +2,7 @@ pub mod accounts;
 #[allow(dead_code)]
 pub mod actions;
 pub mod batch_sheet;
+pub mod chat;
 pub mod chrome;
 pub mod drive;
 pub mod fake;
@@ -15,6 +16,7 @@ pub mod motion;
 pub mod native;
 pub mod perf;
 pub mod remote;
+pub mod settings_window;
 pub mod sheet;
 pub mod sidebar;
 pub mod state;

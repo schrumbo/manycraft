@@ -51,6 +51,7 @@ final class Companion {
 	}
 
 	static void start(Config config) {
+		ProxyInstaller.installDefaults();
 		Companion companion = new Companion(config);
 		instance = companion;
 		companion.register();
@@ -122,6 +123,7 @@ final class Companion {
 		});
 		ClientTickEvents.END_CLIENT_TICK.register(mc -> {
 			try {
+				link.ensureRunning();
 				state.tick(mc);
 				BackgroundController bg = background;
 				if (bg != null) {

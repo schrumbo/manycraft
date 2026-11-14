@@ -3783,6 +3783,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64 0.22.1",
+ "chrono",
  "dirs 6.0.0",
  "gpui-kit",
  "hickory-resolver",

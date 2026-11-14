@@ -129,6 +129,24 @@ pub mod shell {
     pub const NARROW: f32 = 880.;
 }
 
+/// The Chat page.
+pub mod chat {
+    /// Width of the column naming the account and batch of a line.
+    pub const LABEL: f32 = 148.;
+    /// The wash behind a whisper.
+    pub const WASH: f32 = 0.1;
+    /// Width of the bar at the edge of a whisper.
+    pub const BAR: f32 = 2.;
+    /// Width of the picker for the batch shown and for the one written to.
+    pub const PICKER: f32 = 200.;
+    /// Width of the time at the start of a line.
+    pub const TIME: f32 = 44.;
+    /// Space under the last line, and the gap between it and the jump button.
+    pub const INSET: f32 = 12.;
+    /// The most characters shown of a line before it is cut off.
+    pub const SHOWN_CHARS: usize = 600;
+}
+
 /// Opacities that tint states.
 pub mod tint {
     /// A control that waits for something.

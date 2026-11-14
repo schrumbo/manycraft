@@ -12,7 +12,9 @@
 		"MinecraftMixin",
 		"OptionsAccessor",
 		"OptionsMixin",
+		"ServerNameResolverMixin",
 		"ServerStatusPingerMixin",
+		"UserDataMixin",
 		"WindowMixin"
 	],
 	"injectors": {

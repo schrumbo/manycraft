@@ -2,7 +2,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{AddAccount, NewBatch, TileLarger, TileSmaller, ToggleSidebar};
+use super::actions::{AddAccount, NewBatch, OpenChat, TileLarger, TileSmaller, ToggleSidebar};
 use super::drive::Mark;
 use super::grid::Grid;
 use super::model;
@@ -211,29 +211,6 @@ impl MainWindow {
                 .into_any_element(),
         )
     }
-
-    fn page_placeholder(&self, name: &str, title: String, text: String, t: &Theme) -> AnyElement {
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(super::toolbar::bar(self, title.clone(), t))
-            .child(
-                div()
-                    .id(SharedString::from(format!("page-{name}")))
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(space::M))
-                    .px(px(space::XL))
-                    .child(icon("messages-square", iconsize::HERO, t.tertiary))
-                    .child(div().text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
-                    .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).text_center().child(text)),
-            )
-            .into_any_element()
-    }
 }
 
 impl Render for MainWindow {
@@ -252,7 +229,7 @@ impl Render for MainWindow {
         }
         let content = match self.page.clone() {
             Page::Accounts => super::accounts::page(window, cx).into_any_element(),
-            Page::Chat => self.page_placeholder("chat", tr("Chat"), tr("Der gemeinsame Chat aller Instanzen erscheint hier."), &t),
+            Page::Chat => super::chat::page(window, cx).into_any_element(),
             Page::Grid(batch) => match self.onboarding(cx) {
                 Some(empty) => empty,
                 None => div()
@@ -388,6 +365,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("3"), TileLarge, Some("MainWindow")),
         KeyBinding::new(k("0"), TileFit, Some("MainWindow")),
         KeyBinding::new(k("f"), FocusSearch, Some("MainWindow")),
+        KeyBinding::new(k("shift-c"), OpenChat, Some("MainWindow")),
         KeyBinding::new("escape", ClearSearch, Some("Toolbar")),
     ]);
 }

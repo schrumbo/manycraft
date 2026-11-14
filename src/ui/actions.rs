@@ -58,3 +58,11 @@ pub struct Broadcast {
     pub batch: String,
     pub text: String,
 }
+
+/// Sends a chat line or command to one running instance.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct SendChat {
+    pub key: String,
+    pub text: String,
+}

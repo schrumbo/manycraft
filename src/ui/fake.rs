@@ -20,6 +20,21 @@ const PREVIEW_EVERY: Duration = Duration::from_secs(3);
 const TICK: Duration = Duration::from_millis(250);
 const STAGGER: Duration = Duration::from_millis(400);
 const SERVER: &str = "play.example.net";
+const CHAT_EVERY: Duration = Duration::from_millis(1500);
+const WHISPER_EVERY: u64 = 9;
+const BACKLOG: usize = 60;
+const BACKLOG_MAX: usize = 20_000;
+const SPEAKERS: [&str; 6] = ["Notch", "Herobrine", "Steve_99", "Creeper_Fan", "xX_Miner_Xx", "Alina"];
+const SAYINGS: [&str; 7] = [
+    "Hat jemand Diamanten übrig?",
+    "/home farm",
+    "Der Spawn ist wieder voll, wer kommt zum Markt?",
+    "Ich verkaufe 64 Eisenbarren für 200 Münzen, bei Interesse einfach melden.",
+    "Achtung: In zehn Minuten startet der Server neu. Bitte sichert eure Farmen, leert die Kisten und loggt euch rechtzeitig aus, damit nichts verloren geht. Danke für euer Verständnis!",
+    "gg",
+    "Wer hat die Netherportale an der Küste gebaut?",
+];
+const WHISPERS: [&str; 4] = ["kommst du kurz zum Spawn?", "hast du meine Nachricht gesehen?", "wo bist du gerade?", "Kannst du mir 3 Stack Weizen leihen? Ich zahle morgen zurück, versprochen."];
 
 enum Cmd {
     Known(Vec<(String, String)>),
@@ -76,6 +91,8 @@ struct Sim {
     running: HashMap<String, Running>,
     queue: Vec<(Instant, Option<Arc<AtomicBool>>, Update)>,
     reconnects: u64,
+    chat_at: Instant,
+    chat_n: u64,
 }
 
 fn hash(text: &str) -> u64 {
@@ -92,7 +109,7 @@ fn connected(instance: &str) -> Update {
 
 impl Sim {
     fn new(out: async_channel::Sender<Update>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
-        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0 }
+        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0 }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Cmd>) {
@@ -175,7 +192,38 @@ impl Sim {
         }
     }
 
+    fn chat_line(&mut self, key: &str, whisper: bool, unique: bool) -> Update {
+        self.chat_n += 1;
+        let h = hash(&format!("{key}{}", self.chat_n));
+        let name = self.names.get(key).cloned().unwrap_or_default();
+        let (kind, from, text) = match if whisper { h % 10 } else { 1 + h % 9 } {
+            0 => (ChatKind::Whisper, Some(SPEAKERS[(h >> 8) as usize % 2].to_owned()), WHISPERS[(h >> 16) as usize % WHISPERS.len()].to_owned()),
+            1 => (ChatKind::System, None, format!("{name} joined the game")),
+            2 => (ChatKind::System, None, format!("{name} was slain by Zombie")),
+            _ => {
+                let said = SAYINGS[(h >> 16) as usize % SAYINGS.len()];
+                (ChatKind::Player, Some(SPEAKERS[(h >> 8) as usize % SPEAKERS.len()].to_owned()), if unique { format!("{said} ({})", self.chat_n) } else { said.to_owned() })
+            }
+        };
+        Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind, from, text } })
+    }
+
+    fn backlog(&mut self) {
+        let wanted = std::env::var("MANYCRAFT_FAKE_CHAT").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(BACKLOG).min(BACKLOG_MAX);
+        let mut keys: Vec<String> = self.names.keys().cloned().collect();
+        keys.sort();
+        if keys.is_empty() {
+            return;
+        }
+        for n in 0..wanted {
+            let key = keys[(hash(&n.to_string()) as usize) % keys.len()].clone();
+            let line = self.chat_line(&key, true, true);
+            self.at(Duration::ZERO, None, line);
+        }
+    }
+
     fn seed(&mut self) {
+        self.backlog();
         let mut keys: Vec<String> = self.names.keys().cloned().collect();
         keys.sort();
         for key in keys {
@@ -183,10 +231,12 @@ impl Sim {
             let seed = |phase: Phase, attempts: u32| Update::Seed { key: key.clone(), phase, attempts };
             match kind {
                 0..=27 => {
+                    self.at(Duration::ZERO, None, seed(Phase::Menu, 0));
                     self.at(Duration::ZERO, None, connected(&key));
                     self.at(Duration::ZERO, None, state(&key, StateKind::Playing, None));
                 }
                 28 | 29 => {
+                    self.at(Duration::ZERO, None, seed(Phase::Menu, 0));
                     self.at(Duration::ZERO, None, connected(&key));
                     self.at(Duration::ZERO, None, state(&key, StateKind::Menu, None));
                 }
@@ -241,6 +291,27 @@ impl Sim {
                 return false;
             }
         }
+        if now >= self.chat_at {
+            self.chat_at = now + CHAT_EVERY;
+            let mut keys: Vec<String> = self.running.keys().cloned().collect();
+            keys.sort();
+            if !keys.is_empty() {
+                let key = keys[(hash(&self.chat_n.to_string()) as usize) % keys.len()].clone();
+                let line = self.chat_line(&key, (self.chat_n + 1).is_multiple_of(WHISPER_EVERY), false);
+                let lines = match &line {
+                    Update::Ipc(Event::Message { message: FromMod::Chat { kind: ChatKind::Player, from, text }, .. }) => keys
+                        .iter()
+                        .map(|k| Update::Ipc(Event::Message { instance: k.clone(), message: FromMod::Chat { kind: ChatKind::Player, from: from.clone(), text: text.clone() } }))
+                        .collect(),
+                    _ => vec![line],
+                };
+                for line in lines {
+                    if self.out.send_blocking(line).is_err() {
+                        return false;
+                    }
+                }
+            }
+        }
         let visible = self.visible.lock().map(|v| v.clone()).unwrap_or_default();
         for (key, run) in &mut self.running {
             if !visible.contains(key) || run.next_preview > now {
@@ -259,7 +330,7 @@ impl Sim {
 
 fn touches(update: &Update, key: &str) -> bool {
     match update {
-        Update::Launched { key: k } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } => k == key,
+        Update::Launched { key: k } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
         Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } => false,
     }

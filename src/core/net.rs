@@ -23,6 +23,16 @@ pub fn agent(proxy: Option<&str>) -> Result<ureq::Agent> {
         .into())
 }
 
+/// HTTP agent for short calls: the whole request, connect to last byte, ends within `timeout`. Uses the proxy from the environment, if any.
+pub fn agent_within(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .user_agent(concat!("Manycraft/", env!("CARGO_PKG_VERSION")))
+        .proxy(ureq::Proxy::try_from_env())
+        .build()
+        .into()
+}
+
 /// Fetches `url` and parses the body as JSON, retrying transient failures.
 pub fn get_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str) -> Result<T> {
     let bytes = retrying(url, || {

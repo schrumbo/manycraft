@@ -23,7 +23,8 @@ use super::account::{self, Account, AccountKind};
 use super::batch::{self, Batch};
 use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
-use super::{auth, ipc, net, paths};
+use super::proxy::{self, Kind};
+use super::{auth, ipc, lock, net, paths, scrub};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
@@ -42,6 +43,7 @@ const MIN_MEMORY_MB: u32 = 512;
 const PREVIEW_FILE: &str = "manycraft-preview.bin";
 const OPTIONS_FILE: &str = "options.txt";
 const TOKEN_VAR: &str = "MANYCRAFT_TOKEN";
+const PROXY_VAR: &str = "MANYCRAFT_PROXY";
 const PER_INSTANCE_KEYS: &[&str] = &[];
 const USAGE: &str = "usage: manycraft batch create <name> [--version <version>] [--server <host:port>] [--memory <MB>]
        manycraft batch list
@@ -200,7 +202,7 @@ impl<L: Lookup> Resolver<L> {
     }
 }
 
-fn split_server(server: &str) -> Result<(String, Option<u16>)> {
+pub(super) fn split_server(server: &str) -> Result<(String, Option<u16>)> {
     let s = server.trim();
     let port = |p: &str| p.parse::<u16>().ok().filter(|p| *p != 0).with_context(|| format!("{s}: {p} is not a port"));
     let (host, port) = if let Some(rest) = s.strip_prefix('[') {
@@ -307,65 +309,13 @@ fn usable_nameserver(ip: IpAddr) -> bool {
     !matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local())
 }
 
-#[derive(PartialEq, Eq)]
-enum ProxyKind {
-    Socks,
-    Http,
-}
-
-struct Proxy {
-    kind: ProxyKind,
-    host: String,
-    port: u16,
-    user: Option<String>,
-    pass: Option<String>,
-}
-
-fn parse_proxy(url: &str) -> Result<Proxy> {
-    let (scheme, rest) = url.trim().split_once("://").context("a proxy looks like socks5://host:1080 or http://host:8080")?;
-    let kind = match scheme.to_ascii_lowercase().as_str() {
-        "socks" | "socks5" | "socks5h" => ProxyKind::Socks,
-        "http" | "https" => ProxyKind::Http,
-        other => bail!("proxy type {other} is not supported"),
-    };
-    let rest = rest.trim_end_matches('/');
-    let (auth, address) = match rest.rsplit_once('@') {
-        Some((auth, address)) => (Some(auth), address),
-        None => (None, rest),
-    };
-    let (user, pass) = match auth.map(|a| a.split_once(':').unwrap_or((a, ""))) {
-        Some((user, pass)) => (Some(percent_decode(user)), Some(percent_decode(pass)).filter(|p| !p.is_empty())),
-        None => (None, None),
-    };
-    let (host, port) = split_server(address).context("the proxy address is invalid")?;
-    let port = port.unwrap_or(if kind == ProxyKind::Socks { 1080 } else { 80 });
-    Ok(Proxy { kind, host, port, user, pass })
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(byte) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(byte);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 struct Extra {
     jvm: Vec<String>,
     game: Vec<String>,
+    secrets: Vec<(String, String)>,
 }
 
-fn extra_arguments(batch: &Batch, account: &Account, game_dir: &Path, ipc_address: &str, key: &str) -> Result<Extra> {
+fn extra_arguments(batch: &Batch, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str) -> Result<Extra> {
     let mut jvm = batch.jvm_args.clone();
     jvm.extend([
         format!("-Dmanycraft.ipc={ipc_address}"),
@@ -374,23 +324,16 @@ fn extra_arguments(batch: &Batch, account: &Account, game_dir: &Path, ipc_addres
         "-Dmanycraft.hidden=true".to_owned(),
     ]);
     let mut game = Vec::new();
+    let mut secrets = vec![(TOKEN_VAR.to_owned(), token.to_owned())];
     if let Some(url) = &account.proxy {
-        let proxy = parse_proxy(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
-        jvm.push(format!("-Dmanycraft.proxy={url}"));
+        let proxy = proxy::parse(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
+        secrets.push((PROXY_VAR.to_owned(), url.clone()));
         match proxy.kind {
-            ProxyKind::Socks => {
-                game.extend(["--proxyHost".to_owned(), proxy.host, "--proxyPort".to_owned(), proxy.port.to_string()]);
-                if let Some(user) = proxy.user {
-                    game.extend(["--proxyUser".to_owned(), user]);
-                }
-                if let Some(pass) = proxy.pass {
-                    game.extend(["--proxyPass".to_owned(), pass]);
-                }
-            }
-            ProxyKind::Http => jvm.extend([format!("-Dhttps.proxyHost={}", proxy.host), format!("-Dhttps.proxyPort={}", proxy.port)]),
+            Kind::Socks => game.extend(["--proxyHost".to_owned(), proxy.host, "--proxyPort".to_owned(), proxy.port.to_string()]),
+            Kind::Http => jvm.extend([format!("-Dhttps.proxyHost={}", proxy.host), format!("-Dhttps.proxyPort={}", proxy.port)]),
         }
     }
-    Ok(Extra { jvm, game })
+    Ok(Extra { jvm, game, secrets })
 }
 
 fn sync_mods(batch: &Batch) -> Result<()> {
@@ -441,6 +384,41 @@ impl Process for Child {
     }
 }
 
+struct Held {
+    child: Child,
+    in_use: Option<lock::Guard>,
+}
+
+impl Held {
+    fn new(child: Child) -> Self {
+        Self { child, in_use: install::clean::in_use().ok() }
+    }
+}
+
+impl Process for Held {
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<Option<i32>>> {
+        let exit = Process::try_wait(&mut self.child)?;
+        if exit.is_some() {
+            self.in_use = None;
+        }
+        Ok(exit)
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        Child::kill(&mut self.child)
+    }
+
+    fn wait(&mut self) -> io::Result<Option<i32>> {
+        let code = Process::wait(&mut self.child);
+        self.in_use = None;
+        code
+    }
+}
+
 trait Clock {
     fn now(&self) -> Instant;
     fn sleep(&self, duration: Duration);
@@ -468,6 +446,7 @@ pub struct RunningInstance {
     server_addrs: Vec<SocketAddr>,
     pub started: Instant,
     exit: Option<Option<i32>>,
+    logs: PathBuf,
 }
 
 impl RunningInstance {
@@ -475,11 +454,16 @@ impl RunningInstance {
         if self.exit.is_none() {
             match self.child.try_wait() {
                 Ok(None) => return true,
-                Ok(Some(code)) => self.exit = Some(code),
-                Err(_) => self.exit = Some(None),
+                Ok(Some(code)) => self.ended(code),
+                Err(_) => self.ended(None),
             }
         }
         false
+    }
+
+    fn ended(&mut self, code: Option<i32>) {
+        self.exit = Some(code);
+        scrub::scrub_logs(&self.logs);
     }
 }
 
@@ -505,6 +489,11 @@ pub struct Fleet {
     pub stagger: Duration,
 }
 
+/// Redacts the crash files of all instance folders in the background.
+pub fn scrub_crash_files() {
+    let _ = std::thread::Builder::new().name("scrub-crash-files".into()).spawn(|| scrub::scrub_instances(&paths::instances_dir()));
+}
+
 impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
@@ -515,24 +504,21 @@ impl Fleet {
     /// Installs the batch's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
     pub fn start_batch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
-        let prepared = self.prepare_launch(batch, companion_jar, progress)?;
+        let prepared = self.prepare_launch(batch, accounts, companion_jar, progress)?;
         let ipc_address = self.ipc.address();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?))
+            Ok(Box::new(Held::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
         };
         Ok(self.start_all(batch, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
 
     /// Syncs the batch's mods, finds its server and installs its game, once before `start_one` launches its accounts.
     /// Leaves the mods alone while instances of the batch run, since they hold the jars open.
-    pub fn prepare_launch(&self, batch: &Batch, companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
+    pub fn prepare_launch(&self, batch: &Batch, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         if !self.batch_runs(&batch.id) {
             sync_mods(batch)?;
         }
-        let server_addrs = match batch.server.as_deref() {
-            Some(s) => resolve_all(s).with_context(|| format!("cannot find the server {s}"))?,
-            None => Vec::new(),
-        };
+        let server_addrs = server_addresses(batch.server.as_deref(), accounts, resolve_all)?;
         let installed = install::install(&batch.game_version, batch.loader_version.as_deref(), progress)?;
         Ok(Prepared { batch: batch.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
     }
@@ -542,7 +528,7 @@ impl Fleet {
     pub fn start_one(&self, prepared: &Prepared, account: &Account) -> Result<String> {
         let ipc_address = self.ipc.address();
         self.launch_checked(&prepared.batch, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?))
+            Ok(Box::new(Held::new(launch_one(&prepared.batch, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
         })
     }
 
@@ -598,7 +584,8 @@ impl Fleet {
             bail!("Manycraft is quitting");
         }
         let pid = child.id();
-        let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None };
+        let logs = batch.instance_dir(account.id).join("logs");
+        let instance = RunningInstance { batch: batch.id.clone(), account: account.id, child, pid, server_addr: server_addrs.first().copied(), server_addrs: server_addrs.to_vec(), started, exit: None, logs };
         self.insert(key.clone(), instance);
         Ok(key)
     }
@@ -707,7 +694,8 @@ impl Fleet {
                 && instance.poll()
             {
                 let _ = instance.child.kill();
-                instance.exit = Some(instance.child.wait().ok().flatten());
+                let code = instance.child.wait().ok().flatten();
+                instance.ended(code);
             }
             self.ipc.unregister(key);
         }
@@ -732,7 +720,7 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
 fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
     let game_dir = prepare(batch, account, companion_jar)?;
     require_companion_for_proxy(account, &batch.mods_dir())?;
-    let extra = extra_arguments(batch, account, &game_dir, ipc_address, key)?;
+    let extra = extra_arguments(batch, account, &game_dir, ipc_address, key, token)?;
     let session = match account.kind {
         AccountKind::Offline => {
             account::validate_offline_name(&account.name)?;
@@ -749,9 +737,36 @@ fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, in
         server: batch.server.clone(),
         extra_jvm: extra.jvm,
         extra_game: extra.game,
-        env: launch::SecretEnv(vec![(TOKEN_VAR.to_owned(), token.to_owned())]),
+        env: launch::SecretEnv(extra.secrets),
     };
     launch::spawn(&spec)
+}
+
+/// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
+/// resolve the name through it, still clash across batches. The lookup is skipped when all accounts have a proxy and
+/// may fail when some do.
+fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>) -> Result<Vec<SocketAddr>> {
+    let Some(server) = server else { return Ok(Vec::new()) };
+    let name = name_stand_in(server)?;
+    let proxied = accounts.iter().filter(|a| a.proxy.is_some()).count();
+    if !accounts.is_empty() && proxied == accounts.len() {
+        return Ok(vec![name]);
+    }
+    let mut found = match lookup(server) {
+        Err(_) if proxied > 0 => Vec::new(),
+        found => found.with_context(|| format!("cannot find the server {server}"))?,
+    };
+    found.push(name);
+    Ok(found)
+}
+
+fn name_stand_in(server: &str) -> Result<SocketAddr> {
+    use std::hash::{Hash, Hasher};
+    let (host, port) = split_server(server)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    host.to_ascii_lowercase().hash(&mut hasher);
+    let [_, a, b, c, ..] = hasher.finish().to_be_bytes();
+    Ok(SocketAddr::from(([240, a, b, c], port.unwrap_or(25565))))
 }
 
 fn require_companion_for_proxy(account: &Account, mods: &Path) -> Result<()> {
@@ -938,6 +953,7 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         .iter()
         .map(|id| saved.iter().find(|a| a.id == *id).cloned().with_context(|| format!("account {id} of {} is no longer saved", target.name)))
         .collect::<Result<Vec<_>>>()?;
+    scrub_crash_files();
     let (mut fleet, events) = Fleet::new()?;
     if let Some(seconds) = flags.get("--stagger") {
         fleet.stagger = seconds.parse::<f64>().ok().and_then(|s| Duration::try_from_secs_f64(s).ok()).context("--stagger is a number of seconds")?;
@@ -1390,36 +1406,32 @@ mod tests {
     }
 
     #[test]
-    fn proxies_become_game_and_jvm_arguments() {
+    fn proxy_credentials_go_through_the_environment_never_the_command_line() {
         let batch = Batch::new("A", "26.3");
         let mut alt = Account::offline("AltOne").unwrap();
         alt.proxy = Some("socks5://us%40r:p%3Ass@10.1.1.1:1081".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k").unwrap();
-        assert_eq!(extra.game, ["--proxyHost", "10.1.1.1", "--proxyPort", "1081", "--proxyUser", "us@r", "--proxyPass", "p:ss"]);
-        assert!(extra.jvm.contains(&"-Dmanycraft.proxy=socks5://us%40r:p%3Ass@10.1.1.1:1081".to_owned()));
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        assert_eq!(extra.game, ["--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
+        assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), "socks5://us%40r:p%3Ass@10.1.1.1:1081".to_owned())));
+        assert!(extra.secrets.contains(&("MANYCRAFT_TOKEN".to_owned(), "tok".to_owned())));
+        let command_line = extra.jvm.iter().chain(&extra.game).cloned().collect::<Vec<_>>().join(" ");
+        for secret in ["us%40r", "us@r", "p%3Ass", "p:ss", "tok"] {
+            assert!(!command_line.contains(secret), "{secret} in {command_line}");
+        }
+        assert!(!extra.jvm.iter().any(|a| a.starts_with("-Dmanycraft.proxy")));
         assert!(extra.jvm.contains(&"-Dmanycraft.hidden=true".to_owned()));
         assert!(extra.jvm.contains(&"-Dmanycraft.instance=k".to_owned()));
         assert!(extra.jvm.contains(&"-Dmanycraft.ipc=127.0.0.1:9".to_owned()));
         alt.proxy = Some("http://proxy.example:3128".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.game.is_empty());
         assert!(extra.jvm.contains(&"-Dhttps.proxyHost=proxy.example".to_owned()) && extra.jvm.contains(&"-Dhttps.proxyPort=3128".to_owned()));
         alt.proxy = None;
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.game.is_empty() && !extra.jvm.iter().any(|a| a.contains("proxy")));
+        assert_eq!(extra.secrets.len(), 1);
         alt.proxy = Some("ftp://x:1".into());
-        assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k").is_err());
-    }
-
-    #[test]
-    fn proxy_defaults_and_errors_never_show_the_password() {
-        let p = parse_proxy("socks5://host").unwrap();
-        assert_eq!((p.host.as_str(), p.port, p.user, p.pass), ("host", 1080, None, None));
-        let p = parse_proxy("SOCKS5://u@[::1]:9/").unwrap();
-        assert_eq!((p.host.as_str(), p.port, p.user.as_deref(), p.pass), ("::1", 9, Some("u"), None));
-        let err = format!("{:#}", parse_proxy("socks5://u:secret@host:x").err().unwrap());
-        assert!(!err.contains("secret"), "{err}");
-        assert!(parse_proxy("host:1080").is_err());
+        assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k", "tok").is_err());
     }
 
     #[test]
@@ -1640,8 +1652,35 @@ mod tests {
         let batch = Batch::new("A", "26.3");
         let alt = Account::offline("AltOne").unwrap();
         let dir = batch.instance_dir(alt.id);
-        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k").unwrap();
+        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch, alt.id).display())));
+    }
+
+    #[test]
+    fn a_server_name_is_only_looked_up_here_when_an_account_goes_out_directly() {
+        let addr: SocketAddr = "10.0.0.1:25565".parse().unwrap();
+        let found = |_: &str| Ok(vec![addr]);
+        let missing = |s: &str| -> Result<Vec<SocketAddr>> { bail!("cannot find {s}") };
+        let direct = Account::offline("AltOne").unwrap();
+        let mut proxied = Account::offline("AltTwo").unwrap();
+        proxied.proxy = Some("socks5://10.1.1.1:1080".into());
+        let name = name_stand_in("s").unwrap();
+        assert_eq!(server_addresses(None, &[direct.clone()], found).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr, name]);
+        assert!(server_addresses(Some("s"), &[direct.clone()], missing).is_err());
+        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr, name]);
+        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), [name]);
+        let never = |_: &str| -> Result<Vec<SocketAddr>> { panic!("looked up on this machine") };
+        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never).unwrap(), [name]);
+        assert_eq!(name_stand_in("S").unwrap(), name);
+        assert_eq!(name_stand_in("s:25565").unwrap(), name);
+        assert_ne!(name_stand_in("s:25566").unwrap(), name);
+        assert_ne!(name_stand_in("t").unwrap(), name);
+        let other = server_addresses(Some("S"), &[proxied], never).unwrap();
+        let reserved = HashMap::from([("k".to_owned(), (Uuid::nil(), vec![name]))]);
+        let mut account = Account::offline("AltThree").unwrap();
+        account.id = Uuid::nil();
+        assert!(free(&mut HashMap::new(), &reserved, "other", &account, &other).is_err());
     }
 
     #[test]
