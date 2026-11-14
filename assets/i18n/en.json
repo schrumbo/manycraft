@@ -55,9 +55,6 @@
   "Strg": "Ctrl",
   "Brauchen dich": "Need you",
   "Läuft": "Running",
-  "Kleine Kacheln": "Small tiles",
-  "Mittlere Kacheln": "Medium tiles",
-  "Große Kacheln": "Large tiles",
   "Alle starten": "Start all",
   "Alle stoppen": "Stop all",
   "Seitenleiste ausblenden": "Hide sidebar",
@@ -81,7 +78,6 @@
   "Starte die Accounts, um sie hier zu sehen.": "Start the accounts to see them here.",
   "Kein Account passt zu „%@“.": "No account matches “%@”.",
   "Wartet · %lld/%lld gestartet": "Waiting · %lld/%lld started",
-  "Einpassen: so groß, dass möglichst alle Kacheln sichtbar sind": "Fit: as large as possible while showing every tile",
   "Alle laufen schon": "All are running already",
   "Proxy wird geprüft …": "Checking proxy …",
   "Der Proxy erreicht das Internet.": "The proxy reaches the internet.",
@@ -277,13 +273,12 @@
   "Lädt %lld %%": "Loading %lld %%",
   "Wartet %lld/%lld": "Waiting %lld/%lld",
   "Hauptmenü": "Main menu",
-  "Neu %lld/%lld": "Retry %lld/%lld",
   "Verbindet neu · %lld/%lld": "Reconnecting · %lld/%lld",
   "Warteschlange": "Queue",
-  "Fehlgeschlagen": "Failed",
   "Kachelgröße": "Tile size",
   "Klein": "Small",
   "Mittel": "Medium",
   "Groß": "Large",
-  "Alle einpassen": "Fit all"
+  "Alle einpassen": "Fit all",
+  "Versuch %lld/%lld": "Try %lld/%lld"
 }

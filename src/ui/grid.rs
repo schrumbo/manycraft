@@ -240,13 +240,11 @@ fn line(i: &Instance, preparing: Option<u8>, terse: bool) -> String {
         Phase::Starting { .. } if terse && preparing.is_some() => trf("Lädt %lld %%", &[&preparing.unwrap_or(0)]),
         Phase::Starting { done, total } if terse && *total > 1 => trf("Wartet %lld/%lld", &[done, total]),
         Phase::Menu if terse => tr("Hauptmenü"),
-        Phase::Connecting { .. } if i.reconnect_attempts > 0 && terse => trf("Neu %lld/%lld", &[&i.reconnect_attempts, &tries]),
+        Phase::Connecting { .. } if i.reconnect_attempts > 0 && terse => trf("Versuch %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } => tr("Verbindet…"),
         Phase::Queue { .. } if terse => tr("Warteschlange"),
         Phase::Playing { .. } => tr("Spielt"),
-        Phase::Disconnected { .. } if terse => tr("Getrennt"),
-        Phase::Failed { .. } if terse => tr("Fehlgeschlagen"),
         _ => full(),
     }
 }
@@ -337,8 +335,8 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         .when(pinned, |d| d.items_center())
         .when(!pinned, |d| d.items_end().pb(px(space::S)))
         .gap(px(space::S))
-        .child(div().flex_none().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(name))
-        .child(div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(summary))
+        .child(div().min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(name))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(summary))
         .when(attention > 0, |d| {
             d.child(
                 div()
@@ -671,11 +669,11 @@ mod tests {
         assert_eq!(line(&mk(Phase::Connecting { server: "play.example.net".into() }), None, false), "Verbindet…");
         let lost = mk(Phase::Disconnected { server: Some("s".into()), reason: "Zeitüberschreitung".into() });
         assert_eq!(line(&lost, None, false), "Getrennt · Zeitüberschreitung");
-        assert_eq!(line(&lost, None, true), "Getrennt");
+        assert_eq!(line(&lost, None, true), "Getrennt · Zeitüberschreitung");
         let mut again = mk(Phase::Connecting { server: "s".into() });
         again.reconnect_attempts = 2;
         assert_eq!(line(&again, None, false), "Verbindet neu · 2/3");
-        assert_eq!(line(&again, None, true), "Neu 2/3");
+        assert_eq!(line(&again, None, true), "Versuch 2/3");
         assert_eq!(line(&mk(Phase::Starting { done: 12, total: 50 }), None, true), "Wartet 12/50");
     }
 }
