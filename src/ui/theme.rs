@@ -442,9 +442,16 @@ pub fn rings(cx: &App) -> bool {
 fn note_focus(window: &Window, keyboard: bool, cx: &mut App) {
     let focused = window.focused(cx);
     let seen = cx.default_global::<FocusSeen>();
-    if seen.0.as_ref().and_then(WeakFocusHandle::upgrade) != focused {
-        let text = focused.is_some() && window.context_stack().iter().any(|c| c.contains(TEXT_FIELD));
-        *cx.default_global::<FocusSeen>() = FocusSeen(focused.as_ref().map(FocusHandle::downgrade), keyboard || text);
+    let same = seen.0.as_ref().and_then(WeakFocusHandle::upgrade) == focused;
+    if same && seen.1 {
+        return;
+    }
+    let text = focused.is_some() && window.context_stack().iter().any(|c| c.contains(TEXT_FIELD));
+    let seen = cx.default_global::<FocusSeen>();
+    if same {
+        seen.1 = text;
+    } else {
+        *seen = FocusSeen(focused.as_ref().map(FocusHandle::downgrade), keyboard || text);
     }
 }
 
