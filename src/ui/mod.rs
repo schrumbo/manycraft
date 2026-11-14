@@ -8,6 +8,7 @@ pub mod drive;
 pub mod fake;
 pub mod forms;
 pub mod grid;
+pub mod identity;
 pub mod main_window;
 pub mod mod_browser;
 #[allow(dead_code)]

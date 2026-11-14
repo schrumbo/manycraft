@@ -65,48 +65,41 @@ pub mod iconsize {
 
 /// The instance grid and its tiles.
 pub mod tile {
-    /// Smallest width a tile gets in each size.
-    pub const SMALL: f32 = 168.;
-    pub const MEDIUM: f32 = 240.;
-    pub const LARGE: f32 = 340.;
-    /// Smallest tile width "Einpassen" goes down to before it scrolls after all.
-    pub const FIT_MIN: f32 = 96.;
-    /// Below this width the status line keeps only its first words.
-    pub const DENSE: f32 = 150.;
-    /// Below this width a tile shows only its name under the preview; the status moves into a tooltip.
-    pub const TINY: f32 = 110.;
-    /// Height of the strip under the preview.
-    pub const STRIP: f32 = 44.;
-    /// Height of the strip on small tiles, where only the name and status fit.
-    pub const STRIP_SMALL: f32 = 38.;
-    /// Height of the one-line strip on tiny tiles.
-    pub const STRIP_TINY: f32 = 26.;
-    /// Space between tiles, by tile size.
-    pub const GAP: f32 = 16.;
-    pub const GAP_SMALL: f32 = 12.;
-    pub const GAP_TINY: f32 = 8.;
-    /// Space around the grid, the same as the toolbar's edges.
+    /// The smallest tile; below it the grid stops shrinking and scrolls.
+    pub const MIN_W: f32 = 192.;
+    pub const MIN_H: f32 = 108.;
+    /// The shape tiles stay near, and the shape of a game's picture.
+    pub const ASPECT: f32 = 16. / 9.;
+    /// The narrowest tile, as width over height, whose preview still crops at the sides; narrower ones letterbox.
+    pub const CROP_MIN: f32 = 4. / 3.;
+    /// The line of window colour between tiles.
+    pub const HAIRLINE: f32 = 1.;
+    /// Below this width the overlay drops the status word and keeps the dot.
+    pub const WORDLESS: f32 = 240.;
+    /// Height of the overlay strip at the top of a tile.
+    pub const BAR: f32 = 28.;
+    /// Height of the dark gradient that carries the overlay strip.
+    pub const BAR_SHADE: f32 = 44.;
+    /// The account chip in the overlay strip.
+    pub const CHIP: f32 = 18.;
+    /// The colour around a skin face on an account chip.
+    pub const CHIP_RIM: f32 = 2.;
+    /// Above this brightness (0–255) a chip's letter is dark, below it light.
+    pub const CHIP_LUMA: f32 = 150.;
+    /// Space around the grid's headings, the same as the toolbar's edges.
     pub const INSET: f32 = 16.;
-    /// Width of the attention and focus ring.
+    /// Width of the selection, hover and attention outline inside a tile.
     pub const RING: f32 = 2.;
     /// How bright the preview stays behind an account that needs work.
     pub const DIMMED: f32 = 0.7;
-    /// The status mark in front of the status line.
+    /// The status dot in the overlay strip.
     pub const GLYPH: f32 = 7.;
     /// Height of the shade that carries the actions at the bottom of a hovered preview.
     pub const SHADE: f32 = 56.;
-    /// The skin head in the strip.
-    pub const HEAD: f32 = 22.;
     /// Unread whispers badge.
     pub const BADGE: f32 = 18.;
     /// Height of a batch heading in the grid of all batches.
     pub const HEADING: f32 = 40.;
-    /// Smallest tile width whose strip still carries a labelled sign-in button.
-    pub const SIGN_IN: f32 = 280.;
-    /// Blur of the soft shadow under a tile in the light appearance.
-    pub const SHADOW_BLUR: f32 = 3.;
-    /// Height of the fade at the bottom of a still, so the strip below stays apart from it.
-    pub const FADE: f32 = 2.;
     /// Side of the skin face on a tile without a still.
     pub const FACE: f32 = 32.;
     /// How far past the visible rows the grid lays out, so the wheel always knows the next row's height.
@@ -212,8 +205,12 @@ pub mod tint {
     pub const SELECTED: f32 = 0.22;
     /// The shade behind the floating sidebar.
     pub const SCRIM: f32 = 0.28;
-    /// The bottom of the shade under a hovered preview's actions.
+    /// The bottom of the shade under a hovered preview's actions, and the top of the shade behind a tile's overlay strip.
     pub const PREVIEW_SHADE: f32 = 0.55;
+    /// The dark letter on a light account chip.
+    pub const CHIP_INK: f32 = 0.8;
+    /// The status word over a preview.
+    pub const OVERLAY_TEXT: f32 = 0.8;
     /// How bright a tile stays while it is pressed.
     pub const PRESSED: f32 = 0.85;
     /// How much of a stopped instance's last frame shows through.
@@ -324,6 +321,12 @@ fn c(hex: u32) -> Hsla {
 }
 
 /// `color` with its opacity set to `alpha`.
+/// Account colour `index` (into `core::account::COLORS`) as a fill.
+pub fn account_fill(index: u8) -> Hsla {
+    let colors = crate::core::account::COLORS;
+    rgb(colors[usize::from(index) % colors.len()]).into()
+}
+
 pub fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }

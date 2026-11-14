@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::base::actions::{Cancel, Confirm};
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
+use gpui_kit::component::FocusableExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
@@ -14,6 +17,7 @@ use uuid::Uuid;
 use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
 use super::drive::Mark;
 use super::forms::{self, Problem};
+use super::identity;
 use super::motion::Soft;
 use super::remote::{self, SignIn, SignInError};
 use super::sheet::{self, Dismissed, Look};
@@ -1175,20 +1179,16 @@ impl AccountsPage {
         cx.notify();
     }
 
-    fn avatar(account: &Account, t: &Theme) -> AnyElement {
-        match skins::head(account) {
-            Some(path) => img(path).size(px(control::M)).flex_none().rounded(px(radius::SMALL)).into_any_element(),
-            None => div()
-                .size(px(control::M))
-                .flex_none()
-                .rounded(px(radius::FULL))
-                .bg(t.raised)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(if account.kind == AccountKind::Microsoft { "key-round" } else { "user" }, iconsize::S, t.secondary))
-                .into_any_element(),
-        }
+    fn avatar(account: &Account, cx: &App) -> impl IntoElement {
+        let (ids, color) = (vec![account.id.to_string()], account.color());
+        Button::new(SharedString::from(format!("color-{}", account.id.simple())))
+            .ghost()
+            .focus_ring(super::theme::rings(cx))
+            .p(px(space::XXS))
+            .rounded(px(radius::SMALL))
+            .child(identity::chip(&account.name, color, skins::head(account).map(ImageSource::from), control::M - space::XXS * 2., font::CALLOUT))
+            .tooltip(tr("Farbe"))
+            .dropdown_menu(move |menu, _, _| identity::colors(menu, ids.clone(), Some(color)))
     }
 
     fn row(&mut self, account: &Account, batches: &[String], last: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -1241,7 +1241,7 @@ impl AccountsPage {
             .px(px(space::L))
             .py(px(space::S))
             .min_h(px(control::L + space::M))
-            .child(Self::avatar(account, t))
+            .child(Self::avatar(account, cx))
             .child(
                 div()
                     .flex_1()
@@ -1251,7 +1251,14 @@ impl AccountsPage {
                     .child(div().flex().items_center().gap(px(space::S)).child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).text_color(t.primary).child(account.name.clone())).children(proxy_chip))
                     .child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(format!("{kind} · {usage}"))),
             )
-            .child(actions);
+            .child(actions)
+            .context_menu({
+                let (ids, color) = (vec![id.to_string()], account.color());
+                move |menu, window, cx| {
+                    let ids = ids.clone();
+                    menu.submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), Some(color)))
+                }
+            });
         let mut row = div().flex().flex_col().when(!last || editing, |d| d.border_b_1().border_color(t.separator)).child(line);
         if editing && let Some(edit) = self.editing.as_ref() {
             let value = input_value(&edit.input, cx);

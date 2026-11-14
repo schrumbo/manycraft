@@ -8,11 +8,11 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, ClearSelection, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
-    StartSelected, StopAll, StopBatch, StopSelected, TileLarger, TileSmaller, ToggleSidebar, UndoRemoveAccount,
+    AddAccount, AddMicrosoft, ClearSelection, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    StartSelected, StopAll, StopBatch, StopSelected, ToggleSidebar, UndoRemoveAccount,
 };
 use super::drive::Mark;
-use super::main_window::{FocusSearch, MainWindow, Page, TileFit, TileLarge, TileMedium, TileSmall};
+use super::main_window::{FocusSearch, MainWindow, Page};
 use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
@@ -295,6 +295,11 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
                 out.push(entry(Group::Selection, icon, label, detail.clone(), action, cx));
             }
         }
+        let (accounts, current) = super::tile::accounts_of(&chosen, cx);
+        for color in (0..crate::core::account::COLORS.len() as u8).filter(|c| current != Some(*c)) {
+            let label = trf("Farbe: %@", &[&super::identity::name(color)]);
+            out.push(entry(Group::Selection, "palette", label, detail.clone(), Box::new(SetColor { accounts: accounts.clone(), color }), cx));
+        }
     }
     let stopped = m.instances.values().any(|i| !i.phase.is_active());
     let active = m.instances.values().any(|i| i.phase.is_active() && !i.stopping);
@@ -312,12 +317,6 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("gamepad-2", tr("Vorherigen Account spielen"), Box::new(PreviousInstance), playable),
         ("triangle-alert", tr("Nächsten, der dich braucht"), Box::new(NextAttention), attention),
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
-        ("zoom-in", tr("Kacheln größer"), Box::new(TileLarger), true),
-        ("zoom-out", tr("Kacheln kleiner"), Box::new(TileSmaller), true),
-        ("layout-grid", tr("Kachelgröße: Klein"), Box::new(TileSmall), true),
-        ("layout-grid", tr("Kachelgröße: Mittel"), Box::new(TileMedium), true),
-        ("layout-grid", tr("Kachelgröße: Groß"), Box::new(TileLarge), true),
-        ("layout-grid", tr("Kachelgröße: Einpassen"), Box::new(TileFit), true),
         ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
