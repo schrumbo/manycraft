@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 use super::{paths, store};
@@ -24,6 +24,24 @@ pub struct ModRef {
     pub file_name: String,
     pub url: String,
     pub sha1: String,
+}
+
+/// How much a hidden instance may cost. Every level mutes the game.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Background {
+    /// A few frames a second, short sight, no particles or clouds.
+    #[default]
+    Saving,
+    /// At most 30 frames a second and few particles; sight stays.
+    Balanced,
+    /// Nothing reduced.
+    Full,
+}
+
+impl Background {
+    /// All levels, cheapest first.
+    pub const ALL: [Self; 3] = [Self::Saving, Self::Balanced, Self::Full];
 }
 
 /// A group of instances: every account in it runs the same version, mods and config.
@@ -53,6 +71,14 @@ pub struct Batch {
     /// Pause before the first join command and between two of them.
     #[serde(default = "default_join_delay")]
     pub join_delay_ms: u32,
+    /// What hidden instances may cost; a value from a newer version reads as the default.
+    #[serde(default, deserialize_with = "lenient")]
+    pub background: Background,
+}
+
+fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 fn default_memory() -> u32 {
@@ -88,6 +114,7 @@ impl Batch {
             jvm_args: Vec::new(),
             join_commands: Vec::new(),
             join_delay_ms: DEFAULT_JOIN_DELAY_MS,
+            background: Background::Saving,
         }
     }
 
@@ -215,6 +242,20 @@ mod tests {
         assert!(batch.mods.is_empty() && batch.accounts.is_empty() && batch.server.is_none());
         assert!(batch.join_commands.is_empty());
         assert_eq!(batch.join_delay_ms, DEFAULT_JOIN_DELAY_MS);
+        assert_eq!(batch.background, Background::Saving);
+    }
+
+    #[test]
+    fn background_round_trips_and_unknown_levels_read_as_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("a", "26.3");
+        b.background = Background::Full;
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
+        let json = |level: &str| format!(r#"{{"id":"a1","name":"A","game_version":"26.3","background":{level}}}"#);
+        assert_eq!(serde_json::from_str::<Batch>(&json(r#""balanced""#)).unwrap().background, Background::Balanced);
+        assert_eq!(serde_json::from_str::<Batch>(&json(r#""turbo""#)).unwrap().background, Background::Saving);
+        assert_eq!(serde_json::from_str::<Batch>(&json("7")).unwrap().background, Background::Saving);
     }
 
     #[test]

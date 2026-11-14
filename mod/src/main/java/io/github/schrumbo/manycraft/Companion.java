@@ -35,6 +35,7 @@ final class Companion {
 	private final StateReporter state;
 	private final ChatBridge chat;
 	private final PreviewService preview;
+	private final GameIdentity identity = new GameIdentity();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 
@@ -68,7 +69,11 @@ final class Companion {
 	}
 
 	int hiddenFramerate() {
-		return background.profile().fps();
+		return background.hiddenFramerate();
+	}
+
+	String title() {
+		return identity.title();
 	}
 
 	void noteConnecting(ServerData data) {
@@ -83,7 +88,7 @@ final class Companion {
 		}
 		BackgroundController.Profile p = bg.profile();
 		boolean due = preview != null && preview.due(p.previewIntervalMs());
-		if (bg.hidden() && !due) {
+		if (bg.skipsRender() && !due) {
 			return;
 		}
 		body.run();
@@ -134,6 +139,7 @@ final class Companion {
 			}
 		});
 		chat.register();
+		identity.register();
 	}
 
 	private String[] handshake() {
@@ -165,6 +171,14 @@ final class Companion {
 			mc.stop();
 			return;
 		}
+		if (message instanceof Protocol.Incoming.Identity id) {
+			identity.apply(mc, id);
+			return;
+		}
+		if (message instanceof Protocol.Incoming.Badge b) {
+			identity.showBadge(b.visible());
+			return;
+		}
 		BackgroundController bg = background;
 		if (bg == null) {
 			return;
@@ -173,6 +187,7 @@ final class Companion {
 			case Protocol.Incoming.Show show -> bg.show(show.x(), show.y(), show.w(), show.h());
 			case Protocol.Incoming.Hide hide -> bg.hide();
 			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
+			case Protocol.Incoming.Level level -> bg.applyLevel(level.level());
 			case Protocol.Incoming.ChatSend chatSend -> sendChat(mc, chatSend.text());
 			case Protocol.Incoming.Reconnect reconnect -> reconnect(mc);
 			case Protocol.Incoming.Respawn respawn -> respawn(mc);

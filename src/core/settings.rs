@@ -78,11 +78,13 @@ pub struct Settings {
     pub notifications: Notifications,
     /// Whether the app looks once a day for a newer release. It never installs one.
     pub update_check: bool,
+    /// Whether each game shows a small badge with the account's name and colour in its corner.
+    pub game_badge: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), update_check: true }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), update_check: true, game_badge: true }
     }
 }
 

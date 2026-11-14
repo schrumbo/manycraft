@@ -569,6 +569,7 @@ pub fn reload(cx: &mut App) {
             if first && cx.has_global::<Runtime>() {
                 cx.global_mut::<Runtime>().refreshed = true;
             }
+            tell_games(cx);
         });
     })
     .detach();
@@ -1201,6 +1202,10 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
             model::set_hint(&instance, |h| h.link_lost = false);
             rt.pids.insert(instance.clone(), pid);
+            for message in game_identity(m, &instance) {
+                rt.backend.send(&instance, message);
+            }
+            tint(m, &instance, pid);
             if let Some(i) = m.instances.get_mut(&instance)
                 && matches!(i.phase, Phase::Starting { .. })
             {
@@ -1428,7 +1433,35 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
                 fx.hotkeys.push(action);
             }
         }
+        FromMod::Window { visible: true, .. } => {
+            if let Some(pid) = rt.pids.get(&key) {
+                tint(m, &key, *pid);
+            }
+        }
         FromMod::Window { .. } | FromMod::Hello { .. } => {}
+    }
+}
+
+fn game_identity(m: &Model, key: &str) -> Vec<ToMod> {
+    let Some(i) = m.instances.get(key) else { return Vec::new() };
+    let (Some(account), Some(batch)) = (m.accounts.iter().find(|a| a.id == i.account_id), m.batches.iter().find(|b| b.id == i.batch_id)) else { return Vec::new() };
+    fleet::identity_messages(batch, account, settings::active().game_badge)
+}
+
+fn tint(m: &Model, key: &str, pid: u32) {
+    if let Some(account) = m.instances.get(key).and_then(|i| m.accounts.iter().find(|a| a.id == i.account_id)) {
+        crate::core::game_window::tint(pid, account);
+    }
+}
+
+/// Tells every connected game its identity, badge and background level again, after batches, accounts or settings changed.
+pub fn tell_games(cx: &mut App) {
+    let Some(rt) = cx.try_global::<Runtime>() else { return };
+    let m = model::get(cx).read(cx);
+    for key in rt.pids.keys() {
+        for message in game_identity(m, key) {
+            rt.backend.send(key, message);
+        }
     }
 }
 

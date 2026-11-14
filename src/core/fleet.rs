@@ -41,6 +41,7 @@ const QUIT_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
 const MIN_MEMORY_MB: u32 = 512;
 const PREVIEW_FILE: &str = "manycraft-preview.bin";
+const ICON_FILE: &str = "manycraft-icon.png";
 const OPTIONS_FILE: &str = "options.txt";
 const TOKEN_VAR: &str = "MANYCRAFT_TOKEN";
 const PROXY_VAR: &str = "MANYCRAFT_PROXY";
@@ -347,6 +348,20 @@ pub fn delete_batch(target: &Batch) -> Result<PathBuf> {
     keep_shared(&[(target.mods_dir(), "batch-mods"), (target.config_dir(), "batch-config"), (target.options_template(), "batch-options.txt")], &keep)?;
     batch::delete(target)?;
     Ok(keep)
+}
+
+/// The window icon the game of `account` in `batch` shows, written at each launch.
+pub fn icon_path(batch: &Batch, account: Uuid) -> PathBuf {
+    batch.instance_dir(account).join(ICON_FILE)
+}
+
+/// What the companion mod of `account` in `batch` needs to know: name, colour, icon, badge and background level.
+pub fn identity_messages(batch: &Batch, account: &Account, badge: bool) -> Vec<ipc::ToMod> {
+    vec![
+        ipc::ToMod::Identity { name: account.name.clone(), batch: batch.name.clone(), rgb: account.rgb(), icon: Some(icon_path(batch, account.id).display().to_string()) },
+        ipc::ToMod::Badge { visible: badge },
+        ipc::ToMod::Level { level: batch.background },
+    ]
 }
 
 /// Where the companion mod of `account` in `batch` writes its preview frames.
@@ -720,6 +735,7 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
 fn launch_one(batch: &Batch, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
     let game_dir = prepare(batch, account, companion_jar)?;
     require_companion_for_proxy(account, &batch.mods_dir())?;
+    let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let extra = extra_arguments(batch, account, &game_dir, ipc_address, key, token)?;
     let session = match account.kind {
         AccountKind::Offline => {
@@ -981,9 +997,13 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         }
     }
     println!("Press Ctrl+C to stop all");
+    let mut pids = HashMap::new();
     while !live.is_empty() && !STOP.load(Ordering::SeqCst) {
         match events.recv_timeout(EVENT_POLL) {
-            Ok(event) => print_event(&names, &event),
+            Ok(event) => {
+                print_event(&names, &event);
+                greet(&fleet, &target, &accounts, &mut pids, &event);
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -999,6 +1019,26 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
     fleet.stop_batch(&target.id);
     println!("Stopped {}", target.name);
     Ok(0)
+}
+
+fn greet(fleet: &Fleet, batch: &Batch, accounts: &[Account], pids: &mut HashMap<String, u32>, event: &ipc::Event) {
+    let instance = match event {
+        ipc::Event::Connected { instance, pid, .. } => {
+            pids.insert(instance.clone(), *pid);
+            instance
+        }
+        ipc::Event::Message { instance, message: ipc::FromMod::Window { visible: true, .. } } => instance,
+        _ => return,
+    };
+    let Some(account) = accounts.iter().find(|a| instance_key(batch, a.id) == *instance) else { return };
+    if matches!(event, ipc::Event::Connected { .. }) {
+        for message in identity_messages(batch, account, super::settings::active().game_badge) {
+            let _ = fleet.send(instance, &message);
+        }
+    }
+    if let Some(pid) = pids.get(instance) {
+        super::game_window::tint(*pid, account);
+    }
 }
 
 fn print_event(names: &HashMap<String, String>, event: &ipc::Event) {

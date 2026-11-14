@@ -27,6 +27,12 @@ final class Protocol {
 		record Quit() implements Incoming {}
 
 		record Hotkeys(String next, String prev, String nextAttention, String grid) implements Incoming {}
+
+		record Identity(String name, String batch, int rgb, String icon) implements Incoming {}
+
+		record Badge(boolean visible) implements Incoming {}
+
+		record Level(BackgroundLevel level) implements Incoming {}
 	}
 
 	private Protocol() {}
@@ -98,6 +104,9 @@ final class Protocol {
 				case "respawn" -> new Incoming.Respawn();
 				case "quit" -> new Incoming.Quit();
 				case "hotkeys" -> new Incoming.Hotkeys(string(o, "next"), string(o, "prev"), string(o, "next_attention"), string(o, "grid"));
+				case "identity" -> string(o, "name") == null || string(o, "batch") == null ? null : new Incoming.Identity(string(o, "name"), string(o, "batch"), requireInt(o, "rgb") & 0xFFFFFF, string(o, "icon"));
+				case "badge" -> bool(o, "visible") == null ? null : new Incoming.Badge(bool(o, "visible"));
+				case "level" -> BackgroundLevel.parse(string(o, "level")).map(Incoming.Level::new).orElse(null);
 				default -> null;
 			});
 		} catch (RuntimeException e) {
@@ -114,6 +123,11 @@ final class Protocol {
 	private static String string(JsonObject o, String key) {
 		JsonElement e = o.get(key);
 		return e != null && e.isJsonPrimitive() ? e.getAsString() : null;
+	}
+
+	private static Boolean bool(JsonObject o, String key) {
+		JsonElement e = o.get(key);
+		return e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isBoolean() ? e.getAsBoolean() : null;
 	}
 
 	private static Integer integer(JsonObject o, String key) {

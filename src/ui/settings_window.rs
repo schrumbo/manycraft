@@ -91,7 +91,11 @@ impl SettingsView {
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         let mut next = settings::active().clone();
         edit(&mut next);
+        let badge_changed = next.game_badge != settings::active().game_badge;
         settings::set(next);
+        if badge_changed {
+            super::state::tell_games(cx);
+        }
         let task = cx.background_executor().spawn(async { settings::persist() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -233,7 +237,10 @@ impl Render for SettingsView {
         let s = settings::active().clone();
         let general = group(
             tr("Allgemein"),
-            vec![self.toggle("set-update-check", tr("Nach Updates suchen"), tr("Fragt einmal am Tag bei GitHub nach einer neueren Version. Installiert wird nie von selbst."), s.update_check, |st, on| st.update_check = on, &t, cx)],
+            vec![
+                self.toggle("set-update-check", tr("Nach Updates suchen"), tr("Fragt einmal am Tag bei GitHub nach einer neueren Version. Installiert wird nie von selbst."), s.update_check, |st, on| st.update_check = on, &t, cx),
+                self.toggle("set-game-badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |st, on| st.game_badge = on, &t, cx),
+            ],
             None,
             &t,
         );

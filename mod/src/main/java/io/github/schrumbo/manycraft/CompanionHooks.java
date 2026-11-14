@@ -42,6 +42,11 @@ public final class CompanionHooks {
 		return c != null && c.hidden() ? c.hiddenFramerate() : 0;
 	}
 
+	public static String title() {
+		Companion c = Companion.get();
+		return c == null ? null : c.title();
+	}
+
 	public static boolean blocksSave() {
 		Companion c = Companion.get();
 		return c != null && c.blocksSave();

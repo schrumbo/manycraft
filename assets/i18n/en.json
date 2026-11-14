@@ -477,5 +477,15 @@
   "Entfernen rückgängig": "Undo remove",
   "„%@“ wurde nicht zurückgeholt.": "“%@” was not restored.",
   "+%lld weitere": "+%lld more",
-  "Ein anderer Account heißt schon so.": "Another account already has that name."
+  "Ein anderer Account heißt schon so.": "Another account already has that name.",
+  "Im Hintergrund": "In the background",
+  "Sparsam": "Saving",
+  "Ausgewogen": "Balanced",
+  "Volle Leistung": "Full power",
+  "Kostet kaum etwas: Das Spiel zeigt nur wenige Bilder und sieht nicht weit.": "Costs almost nothing: the game draws only a few frames and does not see far.",
+  "Kostet spürbar mehr: Das Spiel läuft flüssig weiter und sieht so weit wie sonst.": "Costs noticeably more: the game keeps running smoothly and sees as far as usual.",
+  "Kostet so viel wie ein offenes Spiel.": "Costs as much as an open game.",
+  "Gilt sofort, auch für die laufenden Spiele.": "Applies at once, also to running games.",
+  "Namensschild im Spiel": "Name badge in game",
+  "Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus.": "Shows in the game's top left which account it is. F1 hides it with the rest."
 }
