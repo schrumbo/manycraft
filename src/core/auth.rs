@@ -148,6 +148,7 @@ struct Endpoints {
     scope: &'static str,
     rps_prefix: &'static str,
     response_type: Option<&'static str>,
+    device_grant: &'static str,
     xbl: String,
     xsts: String,
     mc_login: String,
@@ -162,6 +163,7 @@ impl Endpoints {
             scope: LIVE_SCOPE,
             rps_prefix: "t=",
             response_type: Some("device_code"),
+            device_grant: "device_code",
             xbl: XBL_URL.into(),
             xsts: XSTS_URL.into(),
             mc_login: MC_LOGIN_URL.into(),
@@ -170,7 +172,7 @@ impl Endpoints {
     }
 
     fn azure() -> Self {
-        Self { device_url: AZURE_DEVICE_URL.into(), token_url: AZURE_TOKEN_URL.into(), scope: AZURE_SCOPE, rps_prefix: "d=", response_type: None, ..Self::live() }
+        Self { device_url: AZURE_DEVICE_URL.into(), token_url: AZURE_TOKEN_URL.into(), scope: AZURE_SCOPE, rps_prefix: "d=", response_type: None, device_grant: DEVICE_GRANT, ..Self::live() }
     }
 
     fn for_client(client_id: &str) -> Self {
@@ -217,7 +219,7 @@ impl Flow {
 
     fn poll_loop(&self, code: &DeviceCode, mut sleep: impl FnMut(Duration), cancelled: impl Fn() -> bool) -> Result<Tokens> {
         let url = &self.ep.token_url;
-        let form = [("grant_type", DEVICE_GRANT), ("client_id", &self.client_id), ("device_code", &code.device_code)];
+        let form = [("grant_type", self.ep.device_grant), ("client_id", &self.client_id), ("device_code", &code.device_code)];
         let mut interval = code.interval.max(1);
         let mut waited = 0;
         let mut failures = 0;
@@ -1027,6 +1029,7 @@ mod tests {
                 scope: AZURE_SCOPE,
                 rps_prefix: "d=",
                 response_type: None,
+                device_grant: DEVICE_GRANT,
                 xbl: format!("{base}/xbl"),
                 xsts: format!("{base}/xsts"),
                 mc_login: format!("{base}/mc/login"),
@@ -1071,6 +1074,7 @@ mod tests {
         let tokens = flow.poll_with(&device, |_| {}).unwrap();
         let poll = &requests(&seen, "/oauth/token")[0].1;
         assert!(poll.contains("client_id=00000000402b5328") && poll.contains("device_code=FAKE-DEVICE-CODE-0000"), "{poll}");
+        assert!(poll.contains("grant_type=device_code&"), "{poll}");
         flow.refresh("OLD").unwrap();
         let refresh = &requests(&seen, "/oauth/token")[2].1;
         assert!(refresh.contains("grant_type=refresh_token") && refresh.contains("refresh_token=OLD") && refresh.contains("MBI_SSL"), "{refresh}");
