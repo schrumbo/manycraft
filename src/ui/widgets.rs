@@ -7,7 +7,7 @@ use super::motion::Soft;
 use super::theme::{Theme, control, edge, font, iconsize, radius, ring, space, tint};
 
 /// Makes a clickable element reachable with Tab; Enter and Space then click it, and a ring shows where the focus is.
-/// Call it after the element's fill: a control without one gets its ring inside, since a ring outside would fill it.
+/// Call it after the element's fill: a control without an opaque one gets its ring inside, since a ring outside would show through.
 pub trait KeyNav {
     fn key_nav(self) -> Self;
 }
@@ -15,7 +15,7 @@ pub trait KeyNav {
 impl KeyNav for Stateful<Div> {
     fn key_nav(mut self) -> Self {
         let color = ring::color();
-        let filled = self.style().background.as_ref().and_then(Fill::color).is_some_and(|c| !c.is_transparent());
+        let filled = self.style().background.as_ref().and_then(Fill::color).and_then(|c| c.as_solid()).is_some_and(|c| c.a >= 1.);
         let (spread, inset) = if filled { (ring::WIDTH, false) } else { (ring::INSET, true) };
         super::drive::marked(self, "clickable")
             .tab_index(0)
