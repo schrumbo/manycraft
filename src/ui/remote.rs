@@ -230,7 +230,7 @@ pub(super) fn is_network(e: &anyhow::Error) -> bool {
     })
 }
 
-fn auth_text(e: &AuthError) -> String {
+pub(super) fn auth_text(e: &AuthError) -> String {
     use crate::core::i18n::{tr, trf};
     match e {
         AuthError::SignInAgain => tr("Die gespeicherte Anmeldung gilt nicht mehr. Melde dich erneut an."),

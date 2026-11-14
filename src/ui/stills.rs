@@ -118,6 +118,15 @@ pub fn load(keys: Vec<String>, accounts: Vec<Account>, cx: &mut App) {
     }
 }
 
+/// Shows `face`, 8 × 8 RGBA pixels, as the tile face of `account` right away, after its skin changed.
+pub fn show_face(account: Uuid, face: &[u8], cx: &mut App) {
+    if let Some(s) = cx.try_global::<Stills>()
+        && let Some(image) = render_image(FACE, FACE, upscale(face))
+    {
+        let _ = s.out.try_send(Update::Face { account, image });
+    }
+}
+
 /// Forgets which stills were loaded for instances that are gone, so they load again if the instance comes back.
 pub fn forget_except(keep: &dyn Fn(&str) -> bool, cx: &mut App) {
     if cx.has_global::<Stills>() {

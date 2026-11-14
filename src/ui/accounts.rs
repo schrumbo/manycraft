@@ -14,7 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMicrosoft, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
+use super::actions::{AddAccount, AddMicrosoft, ChangeSkin, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::identity;
@@ -120,6 +120,13 @@ impl Global for Toasts {}
 /// The undo notices over the main window: one per removal, each with its own timer.
 pub fn toasts(cx: &App) -> Option<Entity<UndoToasts>> {
     cx.try_global::<Toasts>().map(|t| t.0.clone())
+}
+
+/// Draws the Accounts page again, after an account's head changed.
+pub fn redraw(cx: &mut App) {
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
 }
 
 /// Moves the Accounts page's filter into focus, if it shows one.
@@ -1318,7 +1325,9 @@ impl AccountsPage {
                 .gap(px(space::XXS))
                 .when(account.kind == AccountKind::Microsoft, |d| {
                     let target = id.to_string();
+                    let skin = target.clone();
                     d.child(sheet::icon_button(SharedString::from(format!("again-{key}")), "log-in", tr("Erneut anmelden"), t.secondary, t).on_click(move |_, window, cx| window.dispatch_action(Box::new(SignInAgain(target.clone())), cx)))
+                        .child(sheet::icon_button(SharedString::from(format!("skin-{key}")), "shirt", tr("Skin ändern"), t.secondary, t).on_click(move |_, window, cx| window.dispatch_action(Box::new(ChangeSkin(skin.clone())), cx)))
                 })
                 .child({
                     let a = account.clone();
@@ -1347,9 +1356,10 @@ impl AccountsPage {
             )
             .child(actions)
             .context_menu({
-                let (ids, color) = (vec![id.to_string()], account.color());
+                let (ids, color, microsoft) = (vec![id.to_string()], account.color(), account.kind == AccountKind::Microsoft);
                 move |menu, window, cx| {
                     let ids = ids.clone();
+                    let menu = if microsoft { menu.menu(tr("Skin ändern…"), Box::new(ChangeSkin(id.to_string()))).separator() } else { menu };
                     menu.submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), Some(color)))
                 }
             });

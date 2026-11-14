@@ -65,6 +65,13 @@ pub fn faces(accounts: &[Account], mut found: impl FnMut(Uuid, Vec<u8>) -> bool)
     }
 }
 
+/// Stores the face of `skin`, the skin the account `id` now wears, and returns it for the tiles; `None` for an image that is not a skin.
+pub fn adopt(id: Uuid, skin: &RgbaImage) -> Option<Vec<u8>> {
+    let face = face_of(skin)?;
+    let _ = store(id, &face);
+    Some(face)
+}
+
 fn default_index(id: Uuid) -> usize {
     let (most, least) = id.as_u64_pair();
     let both = most ^ least;

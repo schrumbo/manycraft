@@ -38,6 +38,7 @@ pub mod settings;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod signin_window;
 pub mod skin;
+pub mod skin_change;
 pub mod still;
 pub mod store;
 pub mod sync;

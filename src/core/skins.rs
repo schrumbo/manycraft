@@ -118,6 +118,21 @@ fn real_head(dir: &Path, account: &Account, heads: &Heads, fetch: &dyn Fn(&Accou
     shown
 }
 
+/// Shows `skin`, the PNG with texture id `hash` that `account` now wears, as its head right away.
+pub fn adopt(account: &Account, hash: &str, skin: &[u8]) -> Result<()> {
+    adopt_in(&paths::data_dir().join("cache").join("skins"), account, hash, skin, &HEADS)
+}
+
+fn adopt_in(dir: &Path, account: &Account, hash: &str, skin: &[u8], heads: &Heads) -> Result<()> {
+    if !valid_hash(hash) {
+        bail!("invalid texture id");
+    }
+    let path = store_head(dir, &dir.join(format!("{}.skin", account.id.simple())), hash, skin)?;
+    lock(&heads.ready).insert(account.id, path);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
 fn store_head(dir: &Path, index: &Path, hash: &str, skin: &[u8]) -> Result<PathBuf> {
     let path = dir.join(format!("head-{hash}.png"));
     if !path.is_file() {
@@ -470,6 +485,22 @@ mod tests {
         assert!(head(&account).is_some_and(|p| p.starts_with(dir.path())));
         let _busy = lock(&PREPARING);
         assert!(!prepare(&[account]));
+    }
+
+    #[test]
+    fn an_adopted_skin_replaces_the_head_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let heads = Heads::default();
+        let ms = microsoft(14);
+        prepare_in(dir.path(), std::slice::from_ref(&ms), &heads, &|_| Ok(Some(("aa11".to_owned(), skin_png([1, 1, 1, 255], [0, 0, 0, 0])))));
+        let before = generation();
+        adopt_in(dir.path(), &ms, "bb22", &skin_png([9, 9, 9, 255], [0, 0, 0, 0]), &heads).unwrap();
+        assert!(generation() > before);
+        let shown = lock(&heads.ready).get(&ms.id).cloned().unwrap();
+        assert_eq!(shown, dir.path().join("head-bb22.png"));
+        assert_eq!(own_head_in(dir.path(), &ms), Some(shown.clone()));
+        assert_eq!(image::open(&shown).unwrap().to_rgba8().get_pixel(0, 0).0, [9, 9, 9, 255]);
+        assert!(adopt_in(dir.path(), &ms, "../x", &skin_png([9, 9, 9, 255], [0, 0, 0, 0]), &heads).is_err());
     }
 
     #[test]
