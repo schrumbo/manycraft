@@ -976,7 +976,8 @@ fn reveal(reveal: Reveal, cx: &mut App) {
         }
     }
     if reveal.manager && playing.is_some() {
-        super::main_window::hide(cx);
+        let place = cx.try_global::<Runtime>().and_then(|rt| rt.place);
+        super::main_window::hide(place, cx);
     }
 }
 
@@ -1217,7 +1218,8 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
         reveal(r, cx);
     }
     if fx.game_focused {
-        super::main_window::hide(cx);
+        let place = follow_shown(cx);
+        super::main_window::hide(place, cx);
     }
     if fx.exited_playing {
         show_grid(cx);
