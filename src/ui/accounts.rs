@@ -19,13 +19,13 @@ use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::identity;
 use super::motion::Soft;
-use super::remote::{self, SignIn, SignInError};
+use super::remote::{self, CodeStep, SignIn, SignInError, Via};
 use super::sheet::{self, Dismissed, Look};
 use super::toolbar;
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint, with_alpha};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button, tip};
 use crate::core::account::{Account, AccountKind};
-use crate::core::drive;
+use crate::core::{browser, drive};
 use crate::core::i18n::{tr, trf};
 use crate::core::prism::AccountImport;
 use crate::core::skins;
@@ -205,6 +205,12 @@ fn input_value(input: &Entity<InputState>, cx: &App) -> String {
     input.read(cx).value().trim().to_string()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Copied {
+    Code,
+    Link,
+}
+
 enum Step {
     Choose,
     Microsoft(Ms),
@@ -213,7 +219,8 @@ enum Step {
 
 enum Ms {
     Requesting,
-    Code { user_code: String, uri: String, expires_in: u64 },
+    Window,
+    Code(CodeStep),
     Finishing,
     Added(String),
     Failed(SignInError),
@@ -231,7 +238,11 @@ struct AddAccountSheet {
     details: bool,
     queue: Vec<String>,
     added: Vec<String>,
-    copied: bool,
+    copied: Option<Copied>,
+    windowed: bool,
+    via: Via,
+    opened_private: bool,
+    private_left_open: bool,
     cancel: Arc<AtomicBool>,
     first: FocusHandle,
     main: FocusHandle,
@@ -279,7 +290,11 @@ impl AddAccountSheet {
             details: false,
             queue,
             added: Vec::new(),
-            copied: false,
+            copied: None,
+            windowed: false,
+            via: Via::Window,
+            opened_private: false,
+            private_left_open: false,
             cancel: Arc::new(AtomicBool::new(false)),
             first: cx.focus_handle().tab_index(0).tab_stop(true),
             main: cx.focus_handle().tab_index(0).tab_stop(true),
@@ -322,22 +337,29 @@ impl AddAccountSheet {
         if !self.queue.is_empty() {
             self.queue.remove(0);
         }
-        self.start_microsoft(cx);
+        self.start(self.via, cx);
     }
 
     fn start_microsoft(&mut self, cx: &mut Context<Self>) {
+        self.start(Via::Window, cx);
+    }
+
+    fn start(&mut self, via: Via, cx: &mut Context<Self>) {
         self.cancel.store(true, Ordering::SeqCst);
         self.cancel = Arc::new(AtomicBool::new(false));
-        self.copied = false;
-        self.go(Step::Microsoft(Ms::Requesting), cx);
+        self.copied = None;
+        self.opened_private = false;
+        self.via = via;
         let proxy = match &self.again {
             Some(account) => account.proxy.clone(),
             None => self.chosen_proxy(cx),
         };
+        self.windowed = remote::uses_window(proxy.as_deref(), via);
+        self.go(Step::Microsoft(Ms::Requesting), cx);
         let expected = self.again.as_ref().map(|a| a.id);
         let (tx, rx) = async_channel::unbounded();
         let cancel = self.cancel.clone();
-        std::thread::spawn(move || remote::sign_in(proxy, expected, cancel, tx));
+        std::thread::spawn(move || remote::sign_in(proxy, expected, via, cancel, tx));
         let cancel = self.cancel.clone();
         self._pump = Some(cx.spawn(async move |this, cx| {
             while let Ok(step) = rx.recv().await {
@@ -355,7 +377,16 @@ impl AddAccountSheet {
 
     fn advance(&mut self, step: SignIn, cx: &mut Context<Self>) {
         match step {
-            SignIn::Code { user_code, uri, expires_in } => self.go(Step::Microsoft(Ms::Code { user_code, uri, expires_in }), cx),
+            SignIn::Window => self.go(Step::Microsoft(Ms::Window), cx),
+            SignIn::Code(step) => {
+                let open = step.open;
+                self.windowed = false;
+                self.via = Via::Browser;
+                self.go(Step::Microsoft(Ms::Code(step)), cx);
+                if open {
+                    self.open_page(cx);
+                }
+            }
             SignIn::Approved => self.go(Step::Microsoft(Ms::Finishing), cx),
             SignIn::Failed(e) => self.go(Step::Microsoft(Ms::Failed(e)), cx),
             SignIn::Done(name) => {
@@ -363,6 +394,7 @@ impl AddAccountSheet {
                 if self.again.is_some() {
                     return self.finish(cx);
                 }
+                self.private_left_open = self.opened_private;
                 self.queue.retain(|n| !n.eq_ignore_ascii_case(&name));
                 self.added.push(name.clone());
                 self.go(Step::Microsoft(Ms::Added(name)), cx);
@@ -378,28 +410,49 @@ impl AddAccountSheet {
     }
 
     fn open_page(&mut self, cx: &mut Context<Self>) {
-        let Step::Microsoft(Ms::Code { user_code, uri, .. }) = &self.step else { return };
-        let (code, uri) = (user_code.clone(), uri.clone());
-        self.copy(code, cx);
-        if !drive::fenced("open", &uri) {
-            cx.open_url(&uri);
+        let Step::Microsoft(Ms::Code(step)) = &self.step else { return };
+        let (link, private) = (step.link.clone(), step.private);
+        if drive::fenced(if private { "open private" } else { "open" }, &link) {
+            self.opened_private |= private;
+            return;
         }
+        if !private {
+            return cx.open_url(&link);
+        }
+        let target = link.clone();
+        let opened = cx.background_executor().spawn(async move { browser::open_private(&target) });
+        cx.spawn(async move |this, cx| {
+            if matches!(opened.await, Ok(true)) {
+                let _ = this.update(cx, |s, _| s.opened_private = true);
+            } else {
+                cx.update(|cx| cx.open_url(&link));
+            }
+        })
+        .detach();
     }
 
-    fn copy(&mut self, code: String, cx: &mut Context<Self>) {
-        if !drive::fenced("clipboard", &code) {
-            cx.write_to_clipboard(ClipboardItem::new_string(code));
+    fn copy(&mut self, text: String, what: Copied, cx: &mut Context<Self>) {
+        if !drive::fenced("clipboard", &text) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
-        self.copied = true;
+        self.copied = Some(what);
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(COPIED_FOR).await;
             let _ = this.update(cx, |s, cx| {
-                s.copied = false;
-                cx.notify();
+                if s.copied == Some(what) {
+                    s.copied = None;
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    fn copy_link(&mut self, cx: &mut Context<Self>) {
+        let Step::Microsoft(Ms::Code(step)) = &self.step else { return };
+        let link = step.link.clone();
+        self.copy(link, Copied::Link, cx);
     }
 
     fn add_offline(&mut self, cx: &mut Context<Self>) {
@@ -466,7 +519,7 @@ impl AddAccountSheet {
                 let first = self.first.clone();
                 window.on_next_frame(move |window, cx| window.focus(&first, cx));
             }
-            Step::Microsoft(Ms::Code { .. } | Ms::Added(_) | Ms::Failed(_)) => window.focus(&self.main, cx),
+            Step::Microsoft(Ms::Window | Ms::Code(_) | Ms::Added(_) | Ms::Failed(_)) => window.focus(&self.main, cx),
             Step::Microsoft(_) => {}
         }
     }
@@ -493,7 +546,7 @@ impl AddAccountSheet {
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(space::XXS)).child(div().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)))
                 .child(icon("chevron-right", iconsize::M, t.tertiary))
         };
-        let microsoft = option("choose-microsoft", "key-round", tr("Microsoft-Konto"), tr("Für alle Server. Du meldest dich im Browser an."), Some(&self.first))
+        let microsoft = option("choose-microsoft", "key-round", tr("Microsoft-Konto"), tr("Für alle Server. Du meldest dich bei Microsoft an."), Some(&self.first))
             .when(!blocked, |d| d.on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx))));
         let offline = option("choose-offline", "user", tr("Offline-Konto"), tr("nur für Server ohne Online-Mode"), None).when(!blocked, |d| d.on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))));
         let open = self.advanced || blocked;
@@ -571,11 +624,26 @@ impl AddAccountSheet {
         let mut leading = if self.again.is_none() && !added { vec![sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx))).into_any_element()] } else { Vec::new() };
         let Step::Microsoft(ms) = &self.step else { return (div(), leading, trailing) };
         let body = match ms {
-            Ms::Requesting => div().py(px(space::L)).child(sheet::waiting(tr("Code wird angefordert …"), t)),
+            Ms::Requesting => div().py(px(space::L)).child(sheet::waiting(if self.windowed { tr("Anmeldefenster wird geöffnet …") } else { tr("Code wird angefordert …") }, t)),
+            Ms::Window => {
+                let instruction = match self.again.as_ref().map(|a| &a.name).or(self.queue.first()) {
+                    Some(name) => trf("Melde dich im Anmeldefenster mit dem Konto „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
+                    None => tr("Melde dich im Anmeldefenster mit dem Konto an, das du hinzufügen willst. Danach geht es hier von selbst weiter."),
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::M))
+                    .child(div().text_size(px(font::BODY)).text_color(t.primary).child(instruction))
+                    .child(div().id("sign-in-window").track_focus(&self.main).mark("status", tr("Warte auf deine Anmeldung im Fenster …")).child(sheet::waiting(tr("Warte auf deine Anmeldung im Fenster …"), t)))
+                    .child(div().flex().ml(px(-space::S)).child(sheet::button("use-browser", tr("Im Browser anmelden"), Some("external-link"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.start(Via::Browser, cx)))))
+            }
             Ms::Finishing => div().py(px(space::L)).child(sheet::waiting(tr("Anmeldung wird abgeschlossen …"), t)),
-            Ms::Code { user_code, expires_in, .. } => {
+            Ms::Code(step) => {
+                let (user_code, expires_in) = (&step.user_code, step.expires_in);
                 let code = user_code.clone();
-                let copy = sheet::icon_button("copy-code", if self.copied { "check" } else { "copy" }, if self.copied { tr("Kopiert") } else { tr("Code kopieren") }, if self.copied { t.success_text } else { t.secondary }, t).on_click(cx.listener(move |s, _, _, cx| s.copy(code.clone(), cx)));
+                let copied = self.copied == Some(Copied::Code);
+                let copy = sheet::icon_button("copy-code", if copied { "check" } else { "copy" }, if copied { tr("Kopiert") } else { tr("Code kopieren") }, if copied { t.success_text } else { t.secondary }, t).on_click(cx.listener(move |s, _, _, cx| s.copy(code.clone(), Copied::Code, cx)));
                 let code_box = div()
                     .id("device-code")
                     .mark("code", user_code.clone())
@@ -590,18 +658,38 @@ impl AddAccountSheet {
                     .child(div().absolute().right(px(space::S)).top_0().bottom_0().flex().items_center().child(copy));
                 let minutes = (expires_in / 60).max(1);
                 let instruction = match self.queue.first() {
-                    Some(name) => trf("Öffne die Microsoft-Seite, gib diesen Code ein und melde dich mit dem Konto „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
-                    None => tr("Öffne die Microsoft-Seite und gib diesen Code ein. Danach geht es hier von selbst weiter."),
+                    Some(name) => trf("Öffne die Microsoft-Seite, prüfe den Code und melde dich mit dem Konto „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
+                    None => tr("Öffne die Microsoft-Seite, prüfe den Code und melde dich an. Danach geht es hier von selbst weiter."),
+                };
+                let hint = if step.private {
+                    tr("Die Seite öffnet sich in einem privaten Fenster, unabhängig von deiner Anmeldung im Browser.")
+                } else {
+                    tr("Melde dich vorher bei Microsoft ab, wenn du ein anderes Konto nehmen willst.")
+                };
+                let status = match self.copied {
+                    Some(Copied::Code) => sheet::status("check", t.success_text, tr("Code kopiert. Auf der Seite einfügen.")),
+                    Some(Copied::Link) => sheet::status("check", t.success_text, tr("Link kopiert. Der Code steckt schon darin.")),
+                    None => sheet::waiting(tr("Warte auf deine Anmeldung im Browser …"), t),
                 };
                 trailing.push(sheet::button("open-page", tr("Seite öffnen"), Some("external-link"), Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.open_page(cx))).into_any_element());
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(space::M))
+                    .children(step.fallback.then(|| div().id("window-fallback").mark("note", tr("Das Anmeldefenster ließ sich nicht öffnen, deshalb geht es im Browser weiter.")).text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Das Anmeldefenster ließ sich nicht öffnen, deshalb geht es im Browser weiter."))))
                     .child(div().text_size(px(font::BODY)).text_color(t.primary).child(instruction))
                     .child(code_box)
-                    .child(if self.copied { sheet::status("check", t.success_text, tr("Code kopiert. Auf der Seite einfügen.")) } else { sheet::waiting(tr("Warte auf deine Anmeldung im Browser …"), t) })
-                    .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der Code gilt %lld Minuten.", &[&minutes])))
+                    .child(status)
+                    .child(div().id("browser-hint").mark("note", hint.clone()).text_size(px(font::CALLOUT)).text_color(t.secondary).child(hint))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(space::M))
+                            .child(div().min_w_0().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der Code gilt %lld Minuten.", &[&minutes])))
+                            .child(sheet::button("copy-link", tr("Link kopieren"), Some("link"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.copy_link(cx)))),
+                    )
             }
             Ms::Added(name) => {
                 let next = self.queue.first().cloned();
@@ -622,6 +710,9 @@ impl AddAccountSheet {
                     }
                     None => more_lines.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."))),
                 };
+                if self.private_left_open {
+                    more_lines = more_lines.child(div().id("close-private").mark("note", tr("Schließ das private Fenster, bevor du das nächste Konto anmeldest.")).text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Schließ das private Fenster, bevor du das nächste Konto anmeldest.")));
+                }
                 if self.again.is_none() && let Some(proxy) = self.chosen_proxy(cx) {
                     more_lines = more_lines.child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("Der nächste Account nutzt wieder den Proxy %@.", &[&forms::proxy_display(&proxy)])));
                 }
@@ -634,10 +725,11 @@ impl AddAccountSheet {
                     _ => None,
                 };
                 let skip = (self.queue.len() > 1 && self.again.is_none()).then(|| div().flex().child(sheet::button("skip", tr("Überspringen"), None, Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.skip(cx)))));
+                let to_browser = matches!(e, SignInError::Closed).then(|| div().flex().ml(px(-space::S)).child(sheet::button("use-browser", tr("Im Browser anmelden"), Some("external-link"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.start(Via::Browser, cx)))));
                 if offline {
                     trailing.push(sheet::button("to-offline", tr("Offline-Konto hinzufügen"), None, Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))).into_any_element());
                 } else {
-                    trailing.push(sheet::button("retry", retry, Some("refresh-cw"), Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx))).into_any_element());
+                    trailing.push(sheet::button("retry", retry, Some("refresh-cw"), Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.start(s.via, cx))).into_any_element());
                 }
                 let icon_name = if matches!(e, SignInError::Network) { "wifi-off" } else { "circle-alert" };
                 div()
@@ -655,6 +747,7 @@ impl AddAccountSheet {
                             .child(div().id("sign-in-error").mark("error", title.clone()).text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
                             .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(detail))
                             .children(technical.map(|d| sheet::details("sign-in-technical", d, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t)))
+                            .children(to_browser)
                             .children(skip),
                     )
             }
@@ -667,7 +760,8 @@ fn failure_text(e: &SignInError, again: Option<&Account>) -> (String, String, St
     let retry = tr("Erneut versuchen");
     match e {
         SignInError::Expired => (tr("Der Code ist abgelaufen."), tr("Fordere einen neuen Code an und gib ihn innerhalb der Frist ein."), tr("Neuer Code"), false),
-        SignInError::Declined => (tr("Die Anmeldung wurde im Browser abgebrochen."), tr("Versuche es erneut, wenn du bereit bist."), retry, false),
+        SignInError::Declined => (tr("Die Anmeldung wurde bei Microsoft abgebrochen."), tr("Versuche es erneut, wenn du bereit bist."), retry, false),
+        SignInError::Closed => (tr("Das Anmeldefenster wurde geschlossen."), tr("Es wurde nichts gespeichert."), tr("Erneut öffnen"), false),
         SignInError::NoClientId => (
             tr("Die Anmeldung mit Microsoft gibt es in dieser Version noch nicht."),
             if again.is_some() { tr("Eine spätere Version kann Microsoft-Konten anmelden.") } else { tr("Offline-Konten kannst du schon hinzufügen.") },
@@ -692,7 +786,7 @@ impl Render for AddAccountSheet {
         let t = Theme::get(cx);
         let (title, subtitle) = match (&self.step, &self.again) {
             (Step::Microsoft(_), Some(a)) => (tr("Erneut anmelden"), Some(a.name.clone())),
-            (Step::Microsoft(Ms::Added(_)), None) => (tr("Account hinzugefügt"), None),
+            (Step::Microsoft(Ms::Added(_)), None) => (trf("Konto %lld hinzugefügt", &[&self.added.len()]), None),
             (Step::Microsoft(_), None) => (tr("Mit Microsoft anmelden"), self.queue.first().map(|n| trf("Für das Prism-Konto „%@“", &[n]))),
             (Step::Offline, _) => (tr("Offline-Konto"), Some(tr("Ohne Anmeldung, nur mit Namen. Für Server ohne Online-Mode."))),
             (Step::Choose, _) => (tr("Account hinzufügen"), None),

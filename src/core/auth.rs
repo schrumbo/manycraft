@@ -1,4 +1,4 @@
-//! Microsoft device-code login and the Xbox Live → Minecraft token chain.
+//! Microsoft device-code and authorization-code login and the Xbox Live → Minecraft token chain.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,11 +11,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
-use super::net;
+use super::{net, webauth};
 
 const CLIENT_ID_VAR: &str = "MANYCRAFT_MSA_CLIENT_ID";
-const LIVE_CLIENT_ID: &str = "00000000402b5328";
-const LIVE_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
+pub(super) const LIVE_CLIENT_ID: &str = "00000000402b5328";
+pub(super) const LIVE_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 const LIVE_DEVICE_URL: &str = "https://login.live.com/oauth20_connect.srf";
 const LIVE_TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
 const AZURE_SCOPE: &str = "XboxLive.signin offline_access";
@@ -258,6 +258,17 @@ impl Flow {
         }
     }
 
+    /// Whether a sign-in in the sign-in window can finish with this flow's client id; only Microsoft's Xbox Live id has that page.
+    pub fn has_window(&self) -> bool {
+        self.client_id == LIVE_CLIENT_ID
+    }
+
+    /// Trades the authorization code from the sign-in window for Microsoft tokens.
+    pub fn redeem(&self, code: &str) -> Result<Tokens> {
+        let form = [("grant_type", "authorization_code"), ("client_id", &self.client_id), ("code", code), ("redirect_uri", webauth::REDIRECT), ("scope", self.ep.scope)];
+        token_redeem(&post_form(&self.agent, &self.ep.token_url, &form)?)
+    }
+
     /// Trades a saved refresh token for fresh Microsoft tokens; the new refresh token replaces the old one.
     pub fn refresh(&self, refresh_token: &str) -> Result<Tokens> {
         let form = [("grant_type", "refresh_token"), ("client_id", &self.client_id), ("refresh_token", refresh_token), ("scope", self.ep.scope)];
@@ -389,7 +400,7 @@ fn login(proxy: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Finishes a device-code sign-in: fetches the profile, stores the refresh token in the keychain and saves the account,
+/// Finishes a sign-in: fetches the profile, stores the refresh token in the keychain and saves the account,
 /// keeping its proxy unless `proxy` replaces it. With `expected`, a sign-in as anyone else is refused before anything is stored;
 /// when `proceed` says no right before storing, nothing is stored either.
 pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expected: Option<Uuid>, proceed: &mut dyn FnMut() -> bool) -> Result<Account> {
@@ -583,6 +594,16 @@ fn token_poll(reply: &Reply) -> Result<Poll> {
         Some("slow_down") => Ok(Poll::SlowDown),
         Some("expired_token") => Err(AuthError::CodeExpired.into()),
         Some("authorization_declined" | "access_denied") => Err(AuthError::Declined.into()),
+        _ => Err(microsoft_failure(reply)),
+    }
+}
+
+fn token_redeem(reply: &Reply) -> Result<Tokens> {
+    if reply.is_ok() {
+        return tokens(reply);
+    }
+    match oauth_error(reply).as_ref().map(|e| e.error.as_str()) {
+        Some("access_denied") => Err(AuthError::Declined.into()),
         _ => Err(microsoft_failure(reply)),
     }
 }
@@ -1099,6 +1120,42 @@ mod tests {
         let _ = flow.session(&tokens);
         let body: serde_json::Value = serde_json::from_str(&requests(&seen, "/xbl")[0].1).unwrap();
         assert_eq!(body["Properties"]["RpsTicket"], "t=FAKE-MSA-ACCESS-TOKEN");
+    }
+
+    #[test]
+    fn window_code_is_redeemed_with_the_redirect_and_runs_the_chain() {
+        let (base, seen) = serve(vec![
+            ("/oauth/token", vec![(200, fixture!("token_ok"))]),
+            ("/xbl", vec![(200, fixture!("xbl_ok"))]),
+            ("/xsts", vec![(200, fixture!("xsts_ok"))]),
+            ("/mc/login", vec![(200, fixture!("mc_login_ok"))]),
+            ("/mc/profile", vec![(200, fixture!("profile_ok"))]),
+        ]);
+        let local = flow(&base);
+        let flow = Flow { ep: Endpoints { scope: LIVE_SCOPE, rps_prefix: "t=", ..local.ep }, client_id: LIVE_CLIENT_ID.into(), agent: local.agent };
+        assert!(flow.has_window());
+        assert!(!self::flow(&base).has_window());
+        let tokens = flow.redeem("M.C540_BAY.2.U.code+/=").unwrap();
+        let body = &requests(&seen, "/oauth/token")[0].1;
+        assert!(body.contains("grant_type=authorization_code&"), "{body}");
+        assert!(body.contains("code=M.C540_BAY.2.U.code%2B%2F%3D"), "{body}");
+        assert!(body.contains("client_id=00000000402b5328"), "{body}");
+        assert!(body.contains("redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf"), "{body}");
+        assert!(body.contains("MBI_SSL"), "{body}");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("FAKE-MSA-REFRESH-TOKEN"));
+        let session = flow.session(&tokens).unwrap();
+        assert_eq!(session.name, "TestPlayer");
+        let xbl: serde_json::Value = serde_json::from_str(&requests(&seen, "/xbl")[0].1).unwrap();
+        assert_eq!(xbl["Properties"]["RpsTicket"], "t=FAKE-MSA-ACCESS-TOKEN");
+    }
+
+    #[test]
+    fn window_code_failures_map() {
+        assert_eq!(kind(&fail(token_redeem(&reply(400, r#"{"error":"access_denied"}"#)))), Some(&AuthError::Declined));
+        assert_eq!(kind(&fail(token_redeem(&reply(400, fixture!("token_invalid_client"))))), Some(&AuthError::InvalidClientId));
+        let other = fail(token_redeem(&reply(400, r#"{"error":"invalid_grant","error_description":"The provided value for the 'code' parameter is not valid."}"#))).to_string();
+        assert!(other.contains("invalid_grant"), "{other}");
+        assert!(token_redeem(&reply(200, "garbage")).is_err());
     }
 
     #[test]
