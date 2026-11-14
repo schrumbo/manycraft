@@ -935,6 +935,21 @@ mod tests {
     }
 
     #[test]
+    fn an_update_needs_both_the_project_and_the_pinned_version_to_match() {
+        let mut batch = Batch::new("b", "26.3");
+        let a = ModRef { project_id: "p1".into(), version_id: "v1".into(), ..jar("a.jar", b"a") };
+        let b = ModRef { project_id: "p2".into(), version_id: "v2".into(), ..jar("b.jar", b"b") };
+        batch.mods = vec![a.clone(), b.clone()];
+        let latest = ModRef { version_id: "v9".into(), ..jar("a2.jar", b"a2") };
+        let same_project_other_version = Update { current: ModRef { version_id: "vX".into(), ..a.clone() }, latest: latest.clone() };
+        assert!(replaced(&batch, &[same_project_other_version]).is_err());
+        let same_version_other_project = Update { current: ModRef { project_id: "pX".into(), ..a.clone() }, latest: latest.clone() };
+        assert!(replaced(&batch, &[same_version_other_project]).is_err());
+        let next = replaced(&batch, &[Update { current: a, latest: latest.clone() }]).unwrap();
+        assert_eq!(next.mods, [latest, b]);
+    }
+
+    #[test]
     fn a_mod_file_called_like_a_local_jar_is_refused_before_anything_changes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Foo.jar"), b"mine").unwrap();

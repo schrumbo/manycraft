@@ -222,7 +222,14 @@ impl BatchSheet {
         cx.notify();
     }
 
+    fn closable(&self) -> bool {
+        !self.saving && self.updating.is_empty()
+    }
+
     fn choose_prism(&mut self, instance: Instance, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mods_busy.is_some() || self.saving {
+            return;
+        }
         let Some(game) = instance.game_version.clone().filter(|_| instance.unsupported.is_none()) else { return };
         let taken: Vec<String> = super::model::get(cx).read(cx).batches.iter().map(|b| b.name.clone()).collect();
         let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
@@ -244,7 +251,7 @@ impl BatchSheet {
     }
 
     fn drop_prism(&mut self, cx: &mut Context<Self>) {
-        if self.prism_choice.take().is_none() {
+        if self.mods_busy.is_some() || self.saving || self.prism_choice.take().is_none() {
             return;
         }
         let version = std::mem::take(&mut self.version);
@@ -283,7 +290,7 @@ impl BatchSheet {
         let Some(Load::Ready(list)) = &self.updates else { return };
         let Some(id) = self.original.as_ref().map(|b| b.id.clone()) else { return };
         let selection: Vec<Update> = list.iter().filter(|u| only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
-        if selection.is_empty() || !self.updating.is_empty() {
+        if selection.is_empty() || !self.updating.is_empty() || self.saving {
             return;
         }
         self.updating.extend(selection.iter().map(|u| u.current.project_id.clone()));
@@ -879,7 +886,7 @@ impl BatchSheet {
         };
         let mut header = div().flex().items_center().gap(px(space::S)).child(div().flex_1().child(sheet::label(if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") }, t)));
         if count > 1 {
-            header = header.child(sheet::button("updates-all", tr("Alle aktualisieren"), Some("refresh-cw"), Look::Secondary, false, busy, t).on_click(cx.listener(|s, _, _, cx| s.apply_updates(None, cx))));
+            header = header.child(sheet::button("updates-all", tr("Alle aktualisieren"), Some("refresh-cw"), Look::Secondary, self.saving, busy, t).on_click(cx.listener(|s, _, _, cx| s.apply_updates(None, cx))));
         }
         col = col.child(header);
         if let Some(note) = &self.updates_note {
@@ -911,7 +918,7 @@ impl BatchSheet {
                 for u in list.clone() {
                     let pid = u.current.project_id.clone();
                     let working = self.updating.contains(&pid);
-                    let action = sheet::button(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, busy, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx)));
+                    let action = sheet::button(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, busy || self.saving, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx)));
                     rows = rows.child(
                         div()
                             .id(SharedString::from(format!("update-row-{}", u.current.project_id)))
@@ -963,7 +970,7 @@ impl BatchSheet {
                 .py(px(space::S))
                 .rounded(px(radius::CONTROL));
             let chosen = self.prism_choice.as_ref().is_some_and(|c| c.id == instance.id);
-            let row = if ok {
+            let row = if ok && !self.mods_busy.is_some() && !self.saving {
                 let picked = instance.clone();
                 row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx)))
             } else {
@@ -1170,7 +1177,7 @@ impl Render for BatchSheet {
             if let Some(e) = &self.save_error {
                 trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(sheet::status("circle-alert", t.danger_text, e.clone())).into_any_element());
             }
-            trailing.push(sheet::button("batch-cancel", tr("Abbrechen"), None, Look::Secondary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element());
+            trailing.push(sheet::button("batch-cancel", tr("Abbrechen"), None, Look::Secondary, !self.closable(), false, &t).on_click(cx.listener(|s, _, _, cx| if s.closable() { cx.emit(Dismissed) })).into_any_element());
             trailing.push(sheet::button("batch-save", if editing { tr("Sichern") } else { tr("Erstellen") }, None, Look::Primary, invalid || blocked, self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
             (leading, trailing)
         };
@@ -1187,7 +1194,7 @@ impl Render for BatchSheet {
                     s.open_prism(false, window, cx);
                 } else if s.searching {
                     s.open_search(false, window, cx);
-                } else {
+                } else if s.closable() {
                     cx.propagate();
                 }
             }))
