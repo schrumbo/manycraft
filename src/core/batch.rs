@@ -32,6 +32,9 @@ pub struct Batch {
     pub loader_version: Option<String>,
     #[serde(default)]
     pub mods: Vec<ModRef>,
+    /// File names in the shared mods folder that are not on Modrinth; syncing never deletes them.
+    #[serde(default)]
+    pub local_mods: Vec<String>,
     #[serde(default)]
     pub server: Option<String>,
     #[serde(default = "default_memory")]
@@ -55,6 +58,7 @@ impl Batch {
             game_version: game_version.to_owned(),
             loader_version: None,
             mods: Vec::new(),
+            local_mods: Vec::new(),
             server: None,
             memory_mb: DEFAULT_MEMORY_MB,
             accounts: Vec::new(),
@@ -132,7 +136,7 @@ fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
     Ok(batches)
 }
 
-fn save_in(root: &Path, batch: &Batch) -> Result<()> {
+pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
     if batch.id.is_empty() || !batch.id.chars().all(|c| c.is_ascii_alphanumeric()) {
         bail!("invalid batch id {:?}", batch.id);
     }

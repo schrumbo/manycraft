@@ -1,6 +1,6 @@
 //! Mods from Modrinth: search, version resolution with required dependencies, verified downloads into a batch.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -16,6 +16,8 @@ const DEFAULTS: [&str; 5] = ["fabric-api", "lithium", "ferrite-core", "modernfix
 /// Modrinth project id of Fabric API, which the companion mod needs in every batch.
 pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
+const HASH_CHUNK: usize = 200;
+const PROJECT_CHUNK: usize = 100;
 const SEARCH_LIMIT: u32 = 20;
 const USAGE: &str = "usage: manycraft mods search <query> [--version <version>]\n       manycraft mods resolve <slug>... [--version <version>]";
 
@@ -114,6 +116,8 @@ trait Source: Sync {
     fn project(&self, key: &str) -> Result<Option<Project>>;
     fn versions(&self, project_id: &str, game_version: &str) -> Result<Vec<Version>>;
     fn version(&self, id: &str) -> Result<Version>;
+    fn versions_by_hash(&self, hashes: &[String]) -> Result<HashMap<String, Version>>;
+    fn projects(&self, ids: &[String]) -> Result<Vec<Project>>;
 }
 
 struct Api {
@@ -145,6 +149,14 @@ impl Source for Api {
 
     fn version(&self, id: &str) -> Result<Version> {
         net::get_json(&self.agent, &format!("{API}/version/{}", encode(id)))
+    }
+
+    fn versions_by_hash(&self, hashes: &[String]) -> Result<HashMap<String, Version>> {
+        net::post_json(&self.agent, &format!("{API}/version_files"), &serde_json::json!({ "hashes": hashes, "algorithm": "sha1" }))
+    }
+
+    fn projects(&self, ids: &[String]) -> Result<Vec<Project>> {
+        net::get_json(&self.agent, &format!("{API}/projects?ids={}", encode(&serde_json::json!(ids).to_string())))
     }
 }
 
@@ -201,14 +213,18 @@ fn mod_ref(title: &str, version: &Version) -> Result<ModRef> {
         .find(|f| f.primary)
         .or(version.files.first())
         .with_context(|| format!("{title} {} has no file", version.version_number))?;
-    Ok(ModRef {
+    Ok(file_ref(title, version, file))
+}
+
+fn file_ref(title: &str, version: &Version, file: &File) -> ModRef {
+    ModRef {
         project_id: version.project_id.clone(),
         version_id: version.id.clone(),
         title: title.to_owned(),
         file_name: file.filename.clone(),
         url: file.url.clone(),
         sha1: file.hashes.sha1.clone(),
-    })
+    }
 }
 
 #[derive(Debug)]
@@ -322,26 +338,88 @@ fn updates_from(src: &dyn Source, game_version: &str, mods: &[ModRef]) -> Result
     Ok(found.into_iter().flatten().collect())
 }
 
+fn matched_from(src: &dyn Source, hashes: &[String]) -> Result<HashMap<String, ModRef>> {
+    let mut wanted: Vec<String> = hashes.iter().map(|h| h.to_ascii_lowercase()).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let mut found = Vec::new();
+    for chunk in wanted.chunks(HASH_CHUNK) {
+        for (hash, version) in src.versions_by_hash(chunk)? {
+            found.push((hash.to_ascii_lowercase(), version));
+        }
+    }
+    found.retain(|(hash, _)| wanted.binary_search(hash).is_ok());
+    let mut ids: Vec<String> = found.iter().map(|(_, v)| v.project_id.clone()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut titles = HashMap::new();
+    for chunk in ids.chunks(PROJECT_CHUNK) {
+        for project in src.projects(chunk)? {
+            titles.insert(project.id, project.title);
+        }
+    }
+    let mut matched = HashMap::new();
+    for (hash, version) in found {
+        let Some(file) = version.files.iter().find(|f| f.hashes.sha1.eq_ignore_ascii_case(&hash)) else {
+            continue;
+        };
+        let title = titles.get(&version.project_id).map_or(file.filename.as_str(), String::as_str);
+        let mut found = file_ref(title, &version, file);
+        found.sha1 = hash.clone();
+        matched.insert(hash, found);
+    }
+    Ok(matched)
+}
+
+fn replaced(batch: &Batch, selection: &[Update]) -> Result<Batch> {
+    let mut next = batch.clone();
+    for update in selection {
+        let current = &update.current;
+        let slot = next
+            .mods
+            .iter_mut()
+            .find(|m| m.project_id == current.project_id && m.version_id == current.version_id)
+            .with_context(|| format!("{} is no longer in the batch at that version", current.title))?;
+        *slot = update.latest.clone();
+    }
+    Ok(next)
+}
+
+fn update_with(batch: &mut Batch, selection: &[Update], sync: impl FnOnce(&Batch) -> Result<usize>) -> Result<usize> {
+    if selection.is_empty() {
+        return Ok(0);
+    }
+    let next = replaced(batch, selection)?;
+    let fetched = sync(&next)?;
+    *batch = next;
+    Ok(fetched)
+}
+
 fn pool() -> Result<rayon::ThreadPool> {
     rayon::ThreadPoolBuilder::new().num_threads(POOL_THREADS).build().context("cannot start download threads")
 }
 
-fn safe_file_name(name: &str) -> Result<()> {
+pub(super) fn safe_file_name(name: &str) -> Result<()> {
     if name.contains(['/', '\\', ':']) || name.chars().any(char::is_control) || Path::new(name).file_name().and_then(std::ffi::OsStr::to_str) != Some(name) {
         bail!("unsafe mod file name {name:?}");
     }
     Ok(())
 }
 
-fn sync_into(agent: &ureq::Agent, mods: &[ModRef], dir: &Path) -> Result<usize> {
+fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], dir: &Path) -> Result<usize> {
+    let local: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
     let mut keep = HashSet::new();
     let mut jobs = Vec::new();
     for m in mods {
         safe_file_name(&m.file_name)?;
+        if local.contains(&m.file_name.to_lowercase()) {
+            bail!("{} is called {} like a local mod; rename or remove the local one", m.title, m.file_name);
+        }
         if keep.insert(m.file_name.to_lowercase()) {
             jobs.push(m);
         }
     }
+    keep.extend(local);
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let fetched = pool()?.install(|| {
         jobs.par_iter()
@@ -390,20 +468,56 @@ pub fn default_mods(game_version: &str) -> Result<Defaults> {
     defaults_from(&Api::new()?, game_version)
 }
 
+fn needs_fabric_api(batch: &Batch) -> bool {
+    let has_local = batch.local_mods.iter().any(|name| name.to_lowercase().starts_with("fabric-api"));
+    !has_local && !batch.mods.iter().any(|m| m.project_id == FABRIC_API)
+}
+
 /// Makes the batch's mod folder hold exactly its mods: downloads missing or changed files (SHA-1 checked),
-/// then deletes `.jar` files directly in the folder that are not in the list. Returns how many were downloaded.
+/// then deletes `.jar` files directly in the folder that are neither in the list nor in `local_mods`. Returns how many were downloaded.
 /// Fabric API is added for the sync when the batch does not list it, since the companion mod depends on it.
 pub fn sync_mods(batch: &Batch) -> Result<usize> {
     let mut mods = batch.mods.clone();
-    if !mods.iter().any(|m| m.project_id == FABRIC_API) {
+    if needs_fabric_api(batch) {
         mods.push(resolve(FABRIC_API, &batch.game_version).context("the companion mod needs Fabric API, which could not be found")?);
     }
-    sync_into(&net::agent(None)?, &mods, &batch.mods_dir())
+    sync_into(&net::agent(None)?, &mods, &batch.local_mods, &batch.mods_dir())
 }
 
 /// Mods of the batch that have a newer file for the batch's game version.
 pub fn updates(batch: &Batch) -> Result<Vec<Update>> {
     updates_from(&Api::new()?, &batch.game_version, &batch.mods)
+}
+
+/// Looks up files by SHA-1 (hex, any case) on Modrinth. The result maps each lowercase hash that is on
+/// Modrinth to a `ModRef` of exactly that file; hashes Modrinth does not know are absent.
+pub fn match_hashes(hashes: &[String]) -> Result<HashMap<String, ModRef>> {
+    if hashes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    matched_from(&Api::new()?, hashes)
+}
+
+/// Applies `selection` (from `updates`): replaces those mods in `batch`, makes the mod folder match
+/// (local jars stay) and saves the batch. Returns how many files were downloaded.
+/// On any error `batch` and its saved file are unchanged. Call it only while no instance of the batch
+/// runs: running games hold the old jars open, so the sync could not remove them.
+pub fn update_mods(batch: &mut Batch, selection: &[Update]) -> Result<usize> {
+    update_with(batch, selection, |next| {
+        let fetched = sync_mods(next)?;
+        super::batch::save(next)?;
+        Ok(fetched)
+    })
+}
+
+/// Applies `selection` to the batch's list and saves it without touching the mod folder, for a batch whose
+/// instances run. The files change at the next start, when the mod folder is synced.
+pub fn update_mods_later(batch: &mut Batch, selection: &[Update]) -> Result<()> {
+    update_with(batch, selection, |next| {
+        super::batch::save(next)?;
+        Ok(0)
+    })
+    .map(|_| ())
 }
 
 /// `manycraft mods`: searches and resolves mods from the terminal.
@@ -538,6 +652,22 @@ mod tests {
 
         fn version(&self, id: &str) -> Result<Version> {
             self.versions.iter().find(|v| v.id == id).cloned().context("unknown version")
+        }
+
+        fn versions_by_hash(&self, hashes: &[String]) -> Result<HashMap<String, Version>> {
+            assert!(hashes.len() <= HASH_CHUNK);
+            let mut found = HashMap::new();
+            for hash in hashes {
+                if let Some(v) = self.versions.iter().find(|v| v.files.iter().any(|f| f.hashes.sha1 == *hash)) {
+                    found.insert(hash.clone(), v.clone());
+                }
+            }
+            Ok(found)
+        }
+
+        fn projects(&self, ids: &[String]) -> Result<Vec<Project>> {
+            assert!(ids.len() <= PROJECT_CHUNK);
+            Ok(self.projects.iter().filter(|(_, id, _)| ids.contains(id)).map(|(_, id, p)| Project { id: id.clone(), title: p.title.clone() }).collect())
         }
     }
 
@@ -706,6 +836,164 @@ mod tests {
         assert_eq!(updates_from(&fx, "26.3", &[unknown]).unwrap().len(), 1);
     }
 
+    fn sha_of(fx: &Fixtures, version: &str) -> String {
+        fx.version(version).unwrap().files[0].hashes.sha1.clone()
+    }
+
+    #[test]
+    fn files_are_matched_by_hash_to_the_exact_version() {
+        let fx = Fixtures::recorded();
+        let old = sha_of(&fx, "xS0Q8LSi");
+        let new = sha_of(&fx, "fWv5bnZk");
+        let sodium = sha_of(&fx, "bAZQdGpg");
+        let upper = old.to_uppercase();
+        let matched = matched_from(&fx, &[upper, new.clone(), "0".repeat(40), new.clone(), sodium.clone()]).unwrap();
+        assert_eq!(matched.len(), 3);
+        let m = &matched[&old];
+        assert_eq!((m.version_id.as_str(), m.title.as_str(), m.sha1.as_str()), ("xS0Q8LSi", "Lithium", old.as_str()));
+        assert_eq!(matched[&new].version_id, "fWv5bnZk");
+        assert_eq!(matched[&sodium].title, "Sodium");
+        assert!(m.url.starts_with("https://cdn.modrinth.com/") && m.file_name.ends_with(".jar"));
+        assert!(matched_from(&fx, &[]).unwrap().is_empty());
+        assert!(matched_from(&fx, &["0".repeat(40)]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_matched_file_is_the_one_with_the_hash_and_unknown_titles_fall_back_to_the_file_name() {
+        let mut fx = Fixtures::recorded();
+        let id = fx.versions.iter().position(|v| v.id == "fWv5bnZk").unwrap();
+        let mut second = fx.versions[id].files[0].clone();
+        second.filename = "lithium-extra.jar".into();
+        second.hashes.sha1 = "ab".repeat(20);
+        second.primary = false;
+        fx.versions[id].files[0].primary = true;
+        fx.versions[id].files.push(second);
+        let matched = matched_from(&fx, &["AB".repeat(20)]).unwrap();
+        let m = &matched["ab".repeat(20).as_str()];
+        assert_eq!((m.file_name.as_str(), m.sha1.as_str(), m.version_id.as_str()), ("lithium-extra.jar", "ab".repeat(20).as_str(), "fWv5bnZk"));
+        fx.projects.clear();
+        assert_eq!(matched_from(&fx, &["ab".repeat(20)]).unwrap()["ab".repeat(20).as_str()].title, "lithium-extra.jar");
+    }
+
+    #[test]
+    fn many_hashes_and_projects_are_asked_in_chunks() {
+        let fx = Fixtures::synthetic(&[("a", &[])]);
+        let hashes: Vec<String> = (0..HASH_CHUNK * 2 + 1).map(|i| format!("{i:040x}")).collect();
+        assert!(matched_from(&fx, &hashes).unwrap().is_empty());
+        let mut many = Fixtures::synthetic(&[]);
+        for i in 0..PROJECT_CHUNK + 1 {
+            let more = Fixtures::synthetic(&[(&format!("m{i}"), &[])]);
+            many.projects.extend(more.projects);
+            many.versions.extend(more.versions);
+        }
+        for v in &mut many.versions {
+            v.files[0].hashes.sha1 = format!("{:040x}", v.id.len() + v.id.bytes().map(usize::from).sum::<usize>());
+        }
+        let hashes: Vec<String> = many.versions.iter().map(|v| v.files[0].hashes.sha1.clone()).collect();
+        let matched = matched_from(&many, &hashes).unwrap();
+        assert_eq!(matched.len(), hashes.iter().collect::<HashSet<_>>().len());
+    }
+
+    fn update_for(fx: &Fixtures, from: &str, to: &str) -> Update {
+        Update { current: pinned(fx, from), latest: pinned(fx, to) }
+    }
+
+    #[test]
+    fn an_update_replaces_the_mod_syncs_the_new_batch_and_keeps_the_others() {
+        let fx = Fixtures::recorded();
+        let mut batch = Batch::new("b", "26.3");
+        batch.mods = vec![pinned(&fx, "xS0Q8LSi"), pinned(&fx, "v7Lw0h1m")];
+        batch.local_mods = vec!["mine.jar".into()];
+        let update = update_for(&fx, "xS0Q8LSi", "fWv5bnZk");
+        let seen = std::cell::RefCell::new(None);
+        let fetched = update_with(&mut batch, &[update.clone()], |next| {
+            *seen.borrow_mut() = Some(next.clone());
+            Ok(3)
+        })
+        .unwrap();
+        assert_eq!(fetched, 3);
+        assert_eq!(batch.mods[0], update.latest);
+        assert_eq!(batch.mods[1], pinned(&fx, "v7Lw0h1m"));
+        assert_eq!(batch.local_mods, ["mine.jar"]);
+        assert_eq!(seen.into_inner().unwrap(), batch);
+    }
+
+    #[test]
+    fn a_failed_sync_or_a_stale_update_leaves_the_batch_as_it_was() {
+        let fx = Fixtures::recorded();
+        let mut batch = Batch::new("b", "26.3");
+        batch.mods = vec![pinned(&fx, "xS0Q8LSi")];
+        let before = batch.clone();
+        let update = update_for(&fx, "xS0Q8LSi", "fWv5bnZk");
+        assert!(update_with(&mut batch, &[update], |_| bail!("offline")).is_err());
+        assert_eq!(batch, before);
+        let stale = update_for(&fx, "v7Lw0h1m", "fWv5bnZk");
+        let err = update_with(&mut batch, &[stale], |_| panic!("must not sync")).unwrap_err().to_string();
+        assert!(err.contains("no longer in the batch"), "{err}");
+        assert_eq!(batch, before);
+        assert_eq!(update_with(&mut batch, &[], |_| panic!("must not sync")).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_update_needs_both_the_project_and_the_pinned_version_to_match() {
+        let mut batch = Batch::new("b", "26.3");
+        let a = ModRef { project_id: "p1".into(), version_id: "v1".into(), ..jar("a.jar", b"a") };
+        let b = ModRef { project_id: "p2".into(), version_id: "v2".into(), ..jar("b.jar", b"b") };
+        batch.mods = vec![a.clone(), b.clone()];
+        let latest = ModRef { version_id: "v9".into(), ..jar("a2.jar", b"a2") };
+        let same_project_other_version = Update { current: ModRef { version_id: "vX".into(), ..a.clone() }, latest: latest.clone() };
+        assert!(replaced(&batch, &[same_project_other_version]).is_err());
+        let same_version_other_project = Update { current: ModRef { project_id: "pX".into(), ..a.clone() }, latest: latest.clone() };
+        assert!(replaced(&batch, &[same_version_other_project]).is_err());
+        let next = replaced(&batch, &[Update { current: a, latest: latest.clone() }]).unwrap();
+        assert_eq!(next.mods, [latest, b]);
+    }
+
+    #[test]
+    fn a_mod_file_called_like_a_local_jar_is_refused_before_anything_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Foo.jar"), b"mine").unwrap();
+        std::fs::write(dir.path().join("stray.jar"), b"stray").unwrap();
+        let agent = net::agent(None).unwrap();
+        let err = sync_into(&agent, &[jar("foo.jar", b"theirs")], &["FOO.jar".into()], dir.path()).unwrap_err().to_string();
+        assert!(err.contains("local mod"), "{err}");
+        assert_eq!(std::fs::read(dir.path().join("Foo.jar")).unwrap(), b"mine");
+        assert!(dir.path().join("stray.jar").is_file());
+    }
+
+    #[test]
+    fn fabric_api_is_added_unless_the_batch_has_it_by_id_or_as_a_local_jar() {
+        let mut batch = Batch::new("b", "26.3");
+        assert!(needs_fabric_api(&batch));
+        batch.local_mods = vec!["Fabric-API-0.100.jar".into()];
+        assert!(!needs_fabric_api(&batch));
+        batch.local_mods = vec!["lithium.jar".into()];
+        assert!(needs_fabric_api(&batch));
+        batch.mods = vec![ModRef { project_id: FABRIC_API.into(), ..jar("x.jar", b"x") }];
+        assert!(!needs_fabric_api(&batch));
+    }
+
+    #[test]
+    fn syncing_after_an_update_swaps_the_jar_and_keeps_local_jars() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.jar"), b"old").unwrap();
+        std::fs::write(dir.path().join("new.jar"), b"new").unwrap();
+        std::fs::write(dir.path().join("mine.jar"), b"mine").unwrap();
+        std::fs::write(dir.path().join("Other.JAR"), b"other").unwrap();
+        std::fs::write(dir.path().join("stray.jar"), b"stray").unwrap();
+        let mut batch = Batch::new("b", "26.3");
+        batch.mods = vec![jar("old.jar", b"old")];
+        batch.local_mods = vec!["MINE.jar".into(), "other.jar".into()];
+        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") } };
+        let agent = net::agent(None).unwrap();
+        let fetched = update_with(&mut batch, &[update], |next| sync_into(&agent, &next.mods, &next.local_mods, dir.path())).unwrap();
+        assert_eq!(fetched, 0);
+        let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        assert_eq!(left, ["Other.JAR", "mine.jar", "new.jar"]);
+        assert_eq!(batch.mods[0].file_name, "new.jar");
+    }
+
     #[test]
     fn search_hits_parse() {
         let fx = Fixtures::recorded();
@@ -764,12 +1052,12 @@ mod tests {
         std::fs::write(mods.join("manual").join("mine.jar"), b"keep").unwrap();
         let list = [jar("a.jar", b"aaa"), jar("b.jar", b"bbb"), jar("a.jar", b"aaa")];
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &list, &mods).unwrap(), 0);
+        assert_eq!(sync_into(&agent, &list, &[], &mods).unwrap(), 0);
         let mut left: Vec<String> = std::fs::read_dir(&mods).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
         assert_eq!(left, ["a.jar", "b.jar", "folder.jar", "manual", "notes.txt"]);
         assert!(mods.join("manual").join("mine.jar").is_file());
-        assert_eq!(sync_into(&agent, &[], &mods).unwrap(), 0);
+        assert_eq!(sync_into(&agent, &[], &[], &mods).unwrap(), 0);
         assert!(!mods.join("a.jar").exists() && !mods.join("b.jar").exists());
         assert!(mods.join("folder.jar").is_dir() && mods.join("notes.txt").is_file());
     }
@@ -779,11 +1067,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mods = dir.path().join("new").join("mods");
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &[], &mods).unwrap(), 0);
+        assert_eq!(sync_into(&agent, &[], &[], &mods).unwrap(), 0);
         assert!(mods.is_dir());
         let mut evil = jar("x.jar", b"x");
         evil.file_name = "../x.jar".into();
-        assert!(sync_into(&agent, &[evil], &mods).is_err());
+        assert!(sync_into(&agent, &[evil], &[], &mods).is_err());
         assert!(!dir.path().join("new").join("x.jar").exists());
     }
 
@@ -813,7 +1101,7 @@ mod tests {
             ModRef { url: url("changed.jar"), ..jar("changed.jar", b"updated") },
         ];
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &list, dir.path()).unwrap(), 2);
+        assert_eq!(sync_into(&agent, &list, &[], dir.path()).unwrap(), 2);
         server.join().unwrap();
         assert_eq!(std::fs::read(dir.path().join("new.jar")).unwrap(), b"fresh");
         assert_eq!(std::fs::read(dir.path().join("changed.jar")).unwrap(), b"updated");
@@ -826,7 +1114,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"x").unwrap();
         let agent = net::agent(None).unwrap();
-        assert!(sync_into(&agent, &[jar("missing.jar", b"m")], dir.path()).is_err());
+        assert!(sync_into(&agent, &[jar("missing.jar", b"m")], &[], dir.path()).is_err());
         assert!(dir.path().join("stray.jar").is_file());
     }
 

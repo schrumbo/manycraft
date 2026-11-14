@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Batch, ModRef};
-use crate::core::modrinth::{self, Defaults, Hit};
+use crate::core::modrinth::{self, Defaults, Hit, Update};
+use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{drive, fleet, install};
 
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -345,6 +346,136 @@ fn apply(b: &mut Batch, edit: BatchEdit, known: &HashSet<Uuid>) {
 pub fn delete_batch(b: &Batch) -> Result<()> {
     let _saving = saving();
     fleet::delete_batch(b).map(|_| ())
+}
+
+/// The Prism Launcher instances on this machine, Fabric ones first.
+pub fn prism_instances() -> Result<Vec<Instance>> {
+    if drive::fenced("prism instances", "canned") {
+        std::thread::sleep(CANNED_DELAY);
+        return Ok(canned_instances());
+    }
+    let mut found = prism::instances()?;
+    found.sort_by_key(|i| i.unsupported.is_some());
+    Ok(found)
+}
+
+/// Imports `instance` as a new batch and applies the name, server, memory and accounts of `edit`; its version and mods stay the instance's.
+/// A batch that was imported but could not be completed is removed again.
+pub fn import_prism(instance: &Instance, edit: BatchEdit) -> Result<Batch> {
+    let _saving = saving();
+    let mut b = if drive::fenced("prism import", &instance.id) {
+        std::thread::sleep(CANNED_DELAY);
+        canned_import(instance, &edit.name)?
+    } else {
+        prism::import_instance(instance, &edit.name)?
+    };
+    let finish = |b: &mut Batch| -> Result<()> {
+        let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
+        b.server = edit.server.clone();
+        if let Some(mb) = edit.memory_mb {
+            b.memory_mb = mb;
+        }
+        b.accounts = edit.accounts.iter().copied().filter(|id| known.contains(id)).collect();
+        batch::save(b)
+    };
+    if let Err(e) = finish(&mut b) {
+        let _ = batch::delete(&b);
+        return Err(e);
+    }
+    Ok(b)
+}
+
+/// Newer files for the mods of the saved batch `batch`.
+pub fn mod_updates(batch: &Batch) -> Result<Vec<Update>> {
+    if drive::fenced("modrinth updates", &batch.name) {
+        std::thread::sleep(CANNED_DELAY);
+        return Ok(batch.mods.iter().take(2).map(canned_update).collect());
+    }
+    modrinth::updates(batch)
+}
+
+/// Applies `selection` to the saved batch `id` as it is on disk now and returns it. While the batch `running`
+/// only its list changes; the files follow at the next start.
+pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<Batch> {
+    let _saving = saving();
+    let mut b = batch::load_all()?.into_iter().find(|b| b.id == id).with_context(|| crate::core::i18n::tr("Diesen Batch gibt es nicht mehr."))?;
+    if running || drive::fenced("modrinth apply", selection.len()) {
+        modrinth::update_mods_later(&mut b, selection)?;
+    } else {
+        modrinth::update_mods(&mut b, selection)?;
+    }
+    Ok(b)
+}
+
+/// The accounts Prism Launcher lists, names and kinds only.
+pub fn prism_accounts() -> Result<Vec<PrismAccount>> {
+    if drive::fenced("prism accounts", "canned") {
+        return Ok(canned_prism_accounts());
+    }
+    prism::accounts()
+}
+
+/// Saves Prism's offline accounts; Microsoft ones come back as names that must sign in.
+pub fn import_prism_accounts() -> Result<AccountImport> {
+    let _saving = saving();
+    if !drive::fenced("prism accounts import", "canned") {
+        return prism::import_accounts();
+    }
+    std::thread::sleep(CANNED_DELAY);
+    let mut saved = account::load()?;
+    let done = prism::import_accounts_into(&mut saved, &canned_prism_accounts());
+    if !done.added.is_empty() {
+        account::save(&saved)?;
+    }
+    Ok(done)
+}
+
+fn canned_prism_accounts() -> Vec<PrismAccount> {
+    let one = |name: &str, kind| PrismAccount { name: name.into(), kind };
+    vec![one("Steve", AccountKind::Offline), one("Notch", AccountKind::Microsoft), one("AltTwo", AccountKind::Microsoft), one("Farm_Bot3", AccountKind::Offline), one("Ünicode", AccountKind::Offline)]
+}
+
+fn canned_instances() -> Vec<Instance> {
+    let one = |id: &str, name: &str, game: &str, mods: usize, unsupported: Option<&str>| Instance {
+        id: id.into(),
+        name: name.into(),
+        dir: std::path::PathBuf::from("canned").join(id),
+        game_dir: std::path::PathBuf::from("canned").join(id).join(".minecraft"),
+        game_version: Some(game.into()),
+        loader_version: unsupported.is_none().then(|| "0.16.5".to_owned()),
+        mods,
+        icon: "default".into(),
+        unsupported: unsupported.map(Into::into),
+    };
+    vec![
+        one("farm-alts", "Farm Alts", "26.2", 12, None),
+        one("creative", "Creative Build", "1.21.4", 7, None),
+        one("old-forge", "Old Forge Pack", "1.20.1", 41, Some("uses Forge, only Fabric is supported")),
+        one("vanilla", "Vanilla", "1.21.1", 0, Some("no mod loader, only Fabric instances can be imported")),
+    ]
+}
+
+fn canned_import(instance: &Instance, name: &str) -> Result<Batch> {
+    if let Some(reason) = &instance.unsupported {
+        bail!("{} cannot be imported: {reason}", instance.name);
+    }
+    if batch::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
+        bail!("a batch named {name} exists already");
+    }
+    let game = instance.game_version.clone().context("no Minecraft version")?;
+    let mut b = Batch::new(name, &game);
+    b.loader_version.clone_from(&instance.loader_version);
+    b.mods = vec![canned_ref("fabric-api", "Fabric API", &game), canned_ref("lithium", "Lithium", &game), canned_ref("sodium", "Sodium", &game)];
+    if instance.mods > 0 {
+        b.local_mods = vec!["my-private-mod-1.0.jar".into(), "friend-build-1.2.jar".into()];
+    }
+    batch::save(&b)?;
+    Ok(b)
+}
+
+fn canned_update(m: &ModRef) -> Update {
+    let latest = ModRef { version_id: format!("{}-new", m.version_id), file_name: m.file_name.replace(".jar", "-b.jar"), sha1: "1".repeat(40), ..m.clone() };
+    Update { current: m.clone(), latest }
 }
 
 fn canned_hits() -> Vec<Hit> {

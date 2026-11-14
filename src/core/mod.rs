@@ -16,3 +16,4 @@ pub mod launch;
 pub mod modrinth;
 pub mod net;
 pub mod paths;
+pub mod prism;
