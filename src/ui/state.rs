@@ -562,6 +562,7 @@ fn start_batch(batch: &str, cx: &mut App) {
 }
 
 fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) {
+    let alive: HashSet<String> = cx.try_global::<Runtime>().map(|rt| rt.pids.keys().cloned().collect()).unwrap_or_default();
     let model = model::get(cx);
     let (batch, accounts) = {
         let m = model.read(cx);
@@ -572,7 +573,7 @@ fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) 
             .filter_map(|id| m.account(*id).cloned())
             .filter(|a| {
                 let key = fleet::instance_key(&batch, a.id);
-                only.is_none_or(|o| o.contains(&key)) && m.instances.get(&key).is_some_and(|i| !i.phase.is_running() )
+                only.is_none_or(|o| o.contains(&key)) && !alive.contains(&key) && m.instances.get(&key).is_some_and(|i| !i.phase.is_running() )
             })
             .collect();
         (batch, accounts)
@@ -1003,12 +1004,18 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     let Some(i) = m.instances.get_mut(&key) else { return };
     *rt.joins.entry(key.clone()).or_default() += 1;
     let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
+    let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
     i.stopping = false;
     if let Some(old) = i.preview.take() {
         fx.retired.push(old);
     }
     if m.playing.as_deref() == Some(key.as_str()) {
         fx.exited_playing = true;
+    }
+    if relaunch {
+        let generation = rt.reconnects.get(&key).copied().unwrap_or_default();
+        fx.later.push(Deferred::Restart { key, delay: Duration::ZERO, generation });
+        return;
     }
     if !crashed {
         if !matches!(i.phase, Phase::LoginNeeded | Phase::Restarting { .. }) {
@@ -1059,7 +1066,10 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
     let reason_text = reason.clone().unwrap_or_default();
     let mut event: Option<(Kind, Option<String>, String)> = None;
     i.phase = match kind {
-        StateKind::Menu => Phase::Menu,
+        StateKind::Menu => {
+            rt.joined.remove(&key);
+            Phase::Menu
+        }
         StateKind::Connecting => Phase::Connecting { server: server_text },
         StateKind::Queue => Phase::Queue { server: server_text },
         StateKind::Playing => {
@@ -1114,7 +1124,6 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
                     match reconnect::restart(tried, crash, 0.0) {
                         Decision::Retry(_) => {
                             rt.crash_restarts.insert(key.clone(), tried + 1);
-                            fx.later.push(Deferred::Restart { key: key.clone(), delay: Duration::from_secs(5), generation: *generation });
                             Phase::Restarting { attempt: tried + 1, of: crash.max_attempts }
                         }
                         Decision::Stop => Phase::LoginNeeded,
@@ -1480,9 +1489,11 @@ mod tests {
             send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
             assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
             assert_eq!(fx.stop.len(), 1);
-            assert!(matches!(fx.later.pop(), Some(Deferred::Restart { .. })));
-            apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut Effects::default());
+            assert!(fx.later.is_empty());
+            let mut exit = Effects::default();
+            apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut exit);
             assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert!(matches!(exit.later.pop(), Some(Deferred::Restart { .. })));
             m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
         }
         let mut fx = Effects::default();
@@ -1516,7 +1527,6 @@ mod tests {
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
         assert_eq!(fx.later.len(), 1);
-        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Connecting, None);
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
         assert_eq!(fx.later.len(), 1);
@@ -1524,6 +1534,38 @@ mod tests {
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
         assert_eq!(fx.later.iter().filter(|d| matches!(d, Deferred::Join { .. })).count(), 2);
+    }
+
+    #[test]
+    fn leaving_to_the_menu_and_rejoining_sends_the_join_commands_again() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &["/login pw"]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Connecting, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.iter().filter(|d| matches!(d, Deferred::Join { .. })).count(), 2);
+        assert_eq!(m.history[&key].iter().filter(|e| e.kind == Kind::Connected).count(), 2);
+    }
+
+    #[test]
+    fn a_late_exit_relaunches_only_after_the_old_process_ended() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut Effects::default());
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        assert_eq!(fx.stop, [key.clone()]);
+        assert!(fx.later.is_empty());
+        assert!(rt.pids.contains_key(&key));
+        let mut exit = Effects::default();
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut exit);
+        assert!(!rt.pids.contains_key(&key));
+        assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        let Some(Deferred::Restart { delay, generation, .. }) = exit.later.pop() else { panic!("no restart scheduled") };
+        assert_eq!(delay, Duration::ZERO);
+        assert_eq!(generation, rt.reconnects[&key]);
+        assert!(exit.later.is_empty());
     }
 
     #[test]
