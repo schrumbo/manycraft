@@ -133,7 +133,7 @@ pub mod shell {
     /// The attention count in a sidebar row.
     pub const BADGE: f32 = 19.;
     /// The small button at the end of a sidebar row.
-    pub const PILL: f32 = 22.;
+    pub const PILL: f32 = 24.;
     /// Below this content width the selection bar shows its buttons as icons.
     pub const COMPACT: f32 = 860.;
     /// Width the toolbar title keeps before anything else shrinks.

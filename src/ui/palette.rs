@@ -323,7 +323,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
-        ("undo-2", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
+        ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
         ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),
         ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
         ("download", tr("Aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),

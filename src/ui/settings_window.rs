@@ -250,7 +250,13 @@ impl Render for SettingsView {
             self.toggle("set-prereleases", tr("Vorabversionen"), tr("Bietet auch Testversionen an, bevor sie veröffentlicht sind."), s.prereleases, |st, on| st.prereleases = on, &t, cx),
         ];
         if let Some(previous) = updates.previous.clone() {
-            let back = sheet::button("set-previous", tr("Zurückkehren"), Some("undo-2"), Look::Secondary, false, false, &t).on_click(|_, window, cx| window.dispatch_action(Box::new(PreviousVersion), cx));
+            let launching = super::updates::counts(cx).0 > 0;
+            let back = sheet::button("set-previous", tr("Zurückkehren"), Some("rotate-ccw-clock"), Look::Secondary, launching, false, &t);
+            let back = if launching {
+                back.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet.")))
+            } else {
+                back.on_click(|_, window, cx| window.dispatch_action(Box::new(PreviousVersion), cx))
+            };
             rows.push(row(tr("Vorherige Version"), Some(trf("Version %@ ist noch da, falls die neue Probleme macht.", &[&previous])), back, &t));
         }
         let general = group(tr("Updates"), rows, super::updates::trouble_line(&updates), &t);

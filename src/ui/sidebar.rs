@@ -150,12 +150,18 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(t.accent_text)
                 .child(label);
-            let pill = if launching {
-                pill.opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(tr("Geht, sobald keine Instanz mehr startet.")))
-            } else {
-                pill.cursor_pointer().key_nav().soft(t.accent.opacity(tint::HOVER), radius::FULL).on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx))
-            };
-            Some(base(tr("Update bereit"), "download").tooltip(tip(trf("Version %@ ist geladen und wird beim Beenden installiert.", &[&version]))).child(pill))
+            let row = base(tr("Update bereit"), "download");
+            if launching {
+                return Some(row.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))).child(pill.opacity(tint::DISABLED).cursor_not_allowed()));
+            }
+            Some(
+                row.cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                    .tooltip(tip(trf("Version %@ ist geladen und wird beim Beenden installiert.", &[&version])))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx))
+                    .child(pill),
+            )
         }
         UpdateStatus::Available { version, page, installs: false } if page.starts_with("https://github.com/") => Some(
             base(tr("Update verfügbar"), "download")
@@ -175,6 +181,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .tooltip(tip(trf("Version %@ laden", &[&version])))
                 .on_click(|_, _, cx| super::updates::fetch(cx)),
         ),
+        UpdateStatus::Checking if updates.asked => Some(base(tr("Sucht …"), "refresh-cw")),
         UpdateStatus::Downloading { version, percent } if updates.asked => {
             let done = percent.map_or_else(|| version.clone(), |p| format!("{p} %"));
             Some(base(tr("Update wird geladen"), "download").child(trailing(done)).tooltip(tip(trf("Version %@ wird geladen.", &[&version]))))
