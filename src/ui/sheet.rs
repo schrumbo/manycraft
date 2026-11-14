@@ -26,7 +26,7 @@ pub const MARGIN: f32 = 48.;
 /// Emitted by a sheet that is done, saved or cancelled.
 pub struct Dismissed;
 
-/// Presents `view` as a sheet over the window; it closes when the view emits `Dismissed`, on Escape and on Abbrechen.
+/// Presents `view` as a sheet over the window; it closes when the view emits `Dismissed`, on Escape and on Abbrechen, never on a click beside it.
 pub fn show<V: Render + EventEmitter<Dismissed>>(view: Entity<V>, width: f32, window: &mut Window, cx: &mut App) {
     if busy(window, cx) {
         return;
@@ -36,7 +36,7 @@ pub fn show<V: Render + EventEmitter<Dismissed>>(view: Entity<V>, width: f32, wi
         let _ = handle.update(cx, |_, window, cx| window.close_dialog(cx));
     })
     .detach();
-    window.open_dialog(cx, move |d, _, _| d.entrance(DialogEntrance::Fade).w(px(width)).p_0().close_button(false).on_ok(pass_enter).child(view.clone()));
+    window.open_dialog(cx, move |d, _, _| d.entrance(DialogEntrance::Fade).w(px(width)).p_0().close_button(false).overlay_closable(false).on_ok(pass_enter).child(view.clone()));
 }
 
 /// Whether a sheet or alert is already up, so a second one must not open.
