@@ -24,6 +24,7 @@ use super::batch::{self, Batch};
 use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::proxy::{self, Kind};
+use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
 use super::{auth, ipc, lock, net, paths, scrub};
 
 /// Pause between two instance starts unless the caller sets another.
@@ -42,10 +43,8 @@ const EVENT_POLL: Duration = Duration::from_millis(250);
 const MIN_MEMORY_MB: u32 = 512;
 const PREVIEW_FILE: &str = "manycraft-preview.bin";
 const ICON_FILE: &str = "manycraft-icon.png";
-const OPTIONS_FILE: &str = "options.txt";
 const TOKEN_VAR: &str = "MANYCRAFT_TOKEN";
 const PROXY_VAR: &str = "MANYCRAFT_PROXY";
-const PER_INSTANCE_KEYS: &[&str] = &[];
 const USAGE: &str = "usage: manycraft batch create <name> [--version <version>] [--server <host:port>] [--memory <MB>]
        manycraft batch list
        manycraft batch add <batch> <account>
@@ -53,24 +52,70 @@ const USAGE: &str = "usage: manycraft batch create <name> [--version <version>] 
        manycraft batch start <batch> [--companion <jar>] [--stagger <seconds>]
        manycraft batch delete <batch>";
 
-/// Readies the game folder of `account` in `batch` and returns it: shared `mods` and `config` linked in,
-/// `options.txt` from the batch template, the companion mod in the shared mods folder.
+struct Shared {
+    mods: PathBuf,
+    config: PathBuf,
+    resourcepacks: PathBuf,
+    shaderpacks: PathBuf,
+    options: PathBuf,
+    servers: PathBuf,
+}
+
+impl Shared {
+    fn of(batch: &Batch) -> Self {
+        Self {
+            mods: batch.mods_dir(),
+            config: batch.config_dir(),
+            resourcepacks: batch.resourcepacks_dir(),
+            shaderpacks: batch.shaderpacks_dir(),
+            options: batch.options_template(),
+            servers: batch.servers_template(),
+        }
+    }
+}
+
+/// Readies the game folder of `account` in `batch` and returns it: shared `mods`, `config`, `resourcepacks` and
+/// `shaderpacks` linked in, `options.txt` and `servers.dat` from the batch templates, the companion mod in the shared mods folder.
 pub fn prepare(batch: &Batch, account: &Account, companion_jar: Option<&Path>) -> Result<PathBuf> {
     let dir = batch.instance_dir(account.id);
-    prepare_in(&dir, &batch.mods_dir(), &batch.config_dir(), &batch.options_template(), companion_jar)?;
+    let siblings: Vec<PathBuf> = batch.accounts.iter().filter(|a| **a != account.id).map(|a| batch.instance_dir(*a)).collect();
+    prepare_in(&dir, &Shared::of(batch), companion_jar, &siblings)?;
     Ok(dir)
 }
 
-fn prepare_in(dir: &Path, mods: &Path, config: &Path, template: &Path, companion_jar: Option<&Path>) -> Result<()> {
+fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, siblings: &[PathBuf]) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    for (name, target) in [("mods", mods), ("config", config)] {
+    for (name, target, merge) in [("mods", &shared.mods, false), ("config", &shared.config, false), ("resourcepacks", &shared.resourcepacks, true), ("shaderpacks", &shared.shaderpacks, true)] {
         fs::create_dir_all(target).with_context(|| format!("cannot create {}", target.display()))?;
+        if merge {
+            merge_into(&dir.join(name), target)?;
+        }
         link(&dir.join(name), target)?;
     }
     if let Some(jar) = companion_jar {
-        install_companion(jar, mods)?;
+        install_companion(jar, &shared.mods)?;
     }
-    copy_options(template, &dir.join(OPTIONS_FILE))
+    sync::adopt_options(&shared.options, dir, siblings)?;
+    copy_options(&shared.options, &dir.join(OPTIONS_FILE))?;
+    sync::copy_servers(&shared.servers, dir, siblings)
+}
+
+fn merge_into(path: &Path, target: &Path) -> Result<()> {
+    let real_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) && !is_junction(path);
+    if !real_dir {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).with_context(|| format!("cannot read {}", path.display()))? {
+        let entry = entry.with_context(|| format!("cannot read {}", path.display()))?;
+        let dest = target.join(entry.file_name());
+        if fs::symlink_metadata(&dest).is_err() {
+            let _ = fs::rename(entry.path(), &dest);
+        }
+    }
+    if fs::read_dir(path).is_ok_and(|mut d| d.next().is_none()) {
+        let _ = fs::remove_dir(path);
+    }
+    Ok(())
 }
 
 fn link(path: &Path, target: &Path) -> Result<()> {
@@ -134,18 +179,17 @@ fn copy_options(template: &Path, dest: &Path) -> Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
     };
-    let existing = if PER_INSTANCE_KEYS.is_empty() { None } else { fs::read_to_string(dest).ok() };
+    let existing = fs::read_to_string(dest).ok();
     net::write_atomic(dest, merge_options(&text, existing.as_deref(), PER_INSTANCE_KEYS).as_bytes())
 }
 
 fn merge_options(template: &str, existing: Option<&str>, keys: &[&str]) -> String {
     let key = |line: &str| line.split_once(':').map(|(k, _)| k.to_owned());
-    let kept: HashMap<String, &str> = existing.unwrap_or_default().lines().filter_map(|l| key(l).filter(|k| keys.contains(&k.as_str())).map(|k| (k, l))).collect();
-    let mut out: Vec<&str> = template.lines().map(|l| key(l).and_then(|k| kept.get(&k).copied()).unwrap_or(l)).collect();
     let in_template: Vec<String> = template.lines().filter_map(key).collect();
-    let mut extra: Vec<(&String, &&str)> = kept.iter().filter(|(k, _)| !in_template.contains(k)).collect();
-    extra.sort();
-    out.extend(extra.into_iter().map(|(_, l)| *l));
+    let kept: Vec<(String, &str)> = existing.unwrap_or_default().lines().filter_map(|l| key(l).filter(|k| keys.contains(&k.as_str()) || !in_template.contains(k)).map(|k| (k, l))).collect();
+    let own: HashMap<&str, &str> = kept.iter().map(|(k, l)| (k.as_str(), *l)).collect();
+    let mut out: Vec<&str> = template.lines().map(|l| key(l).and_then(|k| own.get(k.as_str()).copied()).unwrap_or(l)).collect();
+    out.extend(kept.iter().filter(|(k, _)| !in_template.contains(k)).map(|(_, l)| *l));
     let mut text = out.join("\n");
     text.push('\n');
     text
@@ -342,10 +386,18 @@ fn sync_mods(batch: &Batch) -> Result<()> {
     Ok(())
 }
 
-/// Deletes `batch` but keeps its shared mods, configs and options template next to its game folders.
+/// Deletes `batch` but keeps its shared mods, configs, packs and templates next to its game folders.
 pub fn delete_batch(target: &Batch) -> Result<PathBuf> {
     let keep = paths::instances_dir().join(&target.id);
-    keep_shared(&[(target.mods_dir(), "batch-mods"), (target.config_dir(), "batch-config"), (target.options_template(), "batch-options.txt")], &keep)?;
+    let shared = [
+        (target.mods_dir(), "batch-mods"),
+        (target.config_dir(), "batch-config"),
+        (target.resourcepacks_dir(), "batch-resourcepacks"),
+        (target.shaderpacks_dir(), "batch-shaderpacks"),
+        (target.options_template(), "batch-options.txt"),
+        (target.servers_template(), "batch-servers.dat"),
+    ];
+    keep_shared(&shared, &keep)?;
     batch::delete(target)?;
     Ok(keep)
 }
@@ -512,7 +564,8 @@ pub fn scrub_crash_files() {
 impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
-        let (ipc, events) = ipc::Server::start()?;
+        let (ipc, raw) = ipc::Server::start()?;
+        let events = sync::spawn(ipc.clone(), raw)?;
         Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
     }
 
@@ -1064,16 +1117,63 @@ mod tests {
         mods: PathBuf,
         config: PathBuf,
         template: PathBuf,
+        shared: Shared,
     }
 
     fn dirs() -> Dirs {
         let root = tempfile::tempdir().unwrap();
         let base = root.path().to_path_buf();
-        Dirs { inst: base.join("inst"), mods: base.join("batch").join("mods"), config: base.join("batch").join("config"), template: base.join("batch").join(OPTIONS_FILE), _root: root }
+        let batch = base.join("batch");
+        let shared = Shared {
+            mods: batch.join("mods"),
+            config: batch.join("config"),
+            resourcepacks: batch.join("resourcepacks"),
+            shaderpacks: batch.join("shaderpacks"),
+            options: batch.join(OPTIONS_FILE),
+            servers: batch.join(sync::SERVERS_FILE),
+        };
+        Dirs { inst: base.join("inst"), mods: shared.mods.clone(), config: shared.config.clone(), template: shared.options.clone(), shared, _root: root }
     }
 
     fn prep(d: &Dirs, jar: Option<&Path>) -> Result<()> {
-        prepare_in(&d.inst, &d.mods, &d.config, &d.template, jar)
+        prepare_in(&d.inst, &d.shared, jar, &[])
+    }
+
+    #[test]
+    fn packs_are_merged_into_the_batch_and_clashes_kept() {
+        let d = dirs();
+        let own = d.inst.join("resourcepacks");
+        fs::create_dir_all(&own).unwrap();
+        fs::write(own.join("mine.zip"), b"mine").unwrap();
+        fs::write(own.join("both.zip"), b"own copy").unwrap();
+        fs::create_dir_all(&d.shared.resourcepacks).unwrap();
+        fs::write(d.shared.resourcepacks.join("both.zip"), b"batch copy").unwrap();
+        fs::create_dir_all(d.inst.join("shaderpacks")).unwrap();
+        fs::write(d.inst.join("shaderpacks").join("s.zip"), b"s").unwrap();
+        prep(&d, None).unwrap();
+        assert!(same(&own, &d.shared.resourcepacks));
+        assert!(same(&d.inst.join("shaderpacks"), &d.shared.shaderpacks));
+        assert_eq!(fs::read(d.shared.resourcepacks.join("mine.zip")).unwrap(), b"mine");
+        assert_eq!(fs::read(d.shared.resourcepacks.join("both.zip")).unwrap(), b"batch copy");
+        assert_eq!(fs::read(d.inst.join("resourcepacks.old-1").join("both.zip")).unwrap(), b"own copy");
+        assert_eq!(fs::read(d.shared.shaderpacks.join("s.zip")).unwrap(), b"s");
+        assert!(!d.inst.join("shaderpacks.old-1").exists());
+        prep(&d, None).unwrap();
+        assert!(!d.inst.join("resourcepacks.old-2").exists());
+        assert_eq!(fs::read(d.shared.resourcepacks.join("mine.zip")).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn the_server_list_comes_from_the_template_on_every_start() {
+        let d = dirs();
+        fs::create_dir_all(&d.inst).unwrap();
+        fs::write(d.inst.join(sync::SERVERS_FILE), b"own").unwrap();
+        prep(&d, None).unwrap();
+        assert_eq!(fs::read(&d.shared.servers).unwrap(), b"own");
+        fs::write(&d.shared.servers, b"batch").unwrap();
+        prep(&d, None).unwrap();
+        assert_eq!(fs::read(d.inst.join(sync::SERVERS_FILE)).unwrap(), b"batch");
+        assert!(!d.inst.join("servers.dat.old-1").exists());
     }
 
     fn same(a: &Path, b: &Path) -> bool {
@@ -1146,9 +1246,10 @@ mod tests {
         fs::write(d.inst.join(OPTIONS_FILE), "fov:1.0\n").unwrap();
         prep(&d, None).unwrap();
         assert_eq!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap(), "fov:1.0\n");
-        fs::write(&d.template, "soundCategory_master:0.0\nonboardAccessibility:false\n").unwrap();
+        fs::write(&d.template, "soundCategory_master:0.0\nonboardAccessibility:false\nfullscreen:false\n").unwrap();
+        fs::write(d.inst.join(OPTIONS_FILE), "fov:1.0\nfullscreen:true\nonboardAccessibility:true\n").unwrap();
         prep(&d, None).unwrap();
-        assert_eq!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap(), "soundCategory_master:0.0\nonboardAccessibility:false\n");
+        assert_eq!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap(), "soundCategory_master:0.0\nonboardAccessibility:false\nfullscreen:true\nfov:1.0\n");
         fs::write(d.inst.join(OPTIONS_FILE), "soundCategory_master:1.0\n").unwrap();
         prep(&d, None).unwrap();
         assert!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap().contains("soundCategory_master:0.0"));
@@ -1163,8 +1264,11 @@ mod tests {
 
     #[test]
     fn per_instance_keys_survive_the_template() {
-        let merged = merge_options("a:1\nb:2\n", Some("b:9\nc:3\nd:4\n"), &["b", "c"]);
-        assert_eq!(merged, "a:1\nb:9\nc:3\n");
+        let merged = merge_options("a:1\nb:2\nd:5\n", Some("d:4\nb:9\nc:3\n"), &["b", "c"]);
+        assert_eq!(merged, "a:1\nb:9\nd:5\nc:3\n");
+        for key in ["fullscreen", "overrideWidth", "overrideHeight", "lastServer"] {
+            assert!(PER_INSTANCE_KEYS.contains(&key));
+        }
         assert_eq!(merge_options("a:1\n", None, &["a"]), "a:1\n");
         assert_eq!(merge_options("a:1\n", Some("a:5\n"), &[]), "a:1\n");
     }

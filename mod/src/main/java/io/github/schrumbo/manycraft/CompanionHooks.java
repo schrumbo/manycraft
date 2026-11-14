@@ -2,6 +2,7 @@ package io.github.schrumbo.manycraft;
 
 import io.netty.channel.Channel;
 import net.minecraft.client.Options;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.renderer.GameRenderer;
 
@@ -53,7 +54,27 @@ public final class CompanionHooks {
 	}
 
 	public static void saveOptions(Options options, Runnable save) {
-		GameWindow.saving(options, save);
+		Runnable windowed = () -> GameWindow.saving(options, save);
+		Companion c = Companion.get();
+		if (c == null) {
+			windowed.run();
+		} else {
+			c.saveOptions(options, windowed);
+		}
+	}
+
+	public static void multiplayerOpened(JoinMultiplayerScreen screen) {
+		Companion c = Companion.get();
+		if (c != null) {
+			c.multiplayerOpened(screen);
+		}
+	}
+
+	public static void serversSaved() {
+		Companion c = Companion.get();
+		if (c != null) {
+			c.serversSaved();
+		}
 	}
 
 	public static boolean closeToGrid() {

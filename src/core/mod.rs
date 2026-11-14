@@ -39,5 +39,6 @@ pub mod signin_window;
 pub mod skin;
 pub mod still;
 pub mod store;
+pub mod sync;
 pub mod updater;
 pub mod webauth;

@@ -1,6 +1,10 @@
 package io.github.schrumbo.manycraft;
 
+import com.mojang.serialization.JsonOps;
 import io.github.schrumbo.manycraft.mixin.OptionsAccessor;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import net.minecraft.client.CloudStatus;
 import net.minecraft.client.Minecraft;
@@ -8,6 +12,7 @@ import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
 import net.minecraft.server.level.ParticleStatus;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.LenientJsonParser;
 import net.minecraft.util.Mth;
 import org.lwjgl.sdl.SDLVideo;
 import org.slf4j.Logger;
@@ -15,6 +20,8 @@ import org.slf4j.LoggerFactory;
 
 final class BackgroundController {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
+	private static final String MASTER_VOLUME = "soundCategory_" + SoundSource.MASTER.getName();
+	static final Set<String> USER_KEYS = Set.of("renderDistance", "simulationDistance", "particles", "renderClouds", MASTER_VOLUME, "maxFps");
 
 	record Profile(int fps, int renderDistance, int previewIntervalMs, int previewWidth) {
 		static final Profile DEFAULT = new Profile(3, 2, 3000, 320);
@@ -136,6 +143,43 @@ final class BackgroundController {
 
 	boolean blocksSave() {
 		return guard.blocksSave();
+	}
+
+	void applyUser(Map<String, String> changes, Consumer<Map<String, String>> load) {
+		if (!mode.active()) {
+			load.accept(changes);
+			return;
+		}
+		Map<String, String> live = new LinkedHashMap<>();
+		Map<String, String> stored = new LinkedHashMap<>();
+		changes.forEach((key, value) -> (USER_KEYS.contains(key) ? stored : live).put(key, value));
+		if (!live.isEmpty()) {
+			load.accept(live);
+		}
+		mode.store(saved -> parse(saved, stored));
+	}
+
+	private Values parse(Values saved, Map<String, String> raw) {
+		Options o = mc.options;
+		return new Values(
+			parse(o.renderDistance(), raw.get("renderDistance"), saved.renderDistance()),
+			parse(o.simulationDistance(), raw.get("simulationDistance"), saved.simulationDistance()),
+			parse(o.particles(), raw.get("particles"), saved.particles()),
+			parse(o.cloudStatus(), raw.get("renderClouds"), saved.clouds()),
+			parse(o.getSoundSourceOptionInstance(SoundSource.MASTER), raw.get(MASTER_VOLUME), saved.masterVolume()),
+			parse(o.framerateLimit(), raw.get("maxFps"), saved.framerateLimit())
+		);
+	}
+
+	private static <T> T parse(OptionInstance<T> option, String raw, T fallback) {
+		if (raw == null || raw.isEmpty()) {
+			return fallback;
+		}
+		try {
+			return option.codec().parse(JsonOps.INSTANCE, LenientJsonParser.parse(raw)).result().orElse(fallback);
+		} catch (RuntimeException e) {
+			return fallback;
+		}
 	}
 
 	void applyProfile(Protocol.Incoming.Profile update) {

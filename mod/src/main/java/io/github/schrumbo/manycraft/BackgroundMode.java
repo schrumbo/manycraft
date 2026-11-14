@@ -1,5 +1,7 @@
 package io.github.schrumbo.manycraft;
 
+import java.util.function.UnaryOperator;
+
 final class BackgroundMode<V> {
 	interface Target<V> {
 		V read();
@@ -27,6 +29,14 @@ final class BackgroundMode<V> {
 			guard.enable();
 			saved = target.read();
 		}
+		target.write(target.background(saved));
+	}
+
+	void store(UnaryOperator<V> update) {
+		if (saved == null) {
+			return;
+		}
+		saved = update.apply(saved);
 		target.write(target.background(saved));
 	}
 

@@ -1,7 +1,7 @@
 //! Link between the manager and the companion mod in each instance: newline-delimited JSON over local TCP,
 //! plus a preview file the mod writes and the manager reads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
@@ -80,6 +80,10 @@ pub enum FromMod {
     Preview { seq: u32, w: u32, h: u32 },
     Hotkey { action: HotkeyAction },
     Window { visible: bool, focused: bool },
+    /// The `options.txt` keys this save changed, with the player's values, never the background ones.
+    Options { values: BTreeMap<String, String> },
+    /// The game saved its `servers.dat`.
+    Servers,
 }
 
 /// Messages from the manager to the mod.
@@ -101,6 +105,10 @@ pub enum ToMod {
     Badge { visible: bool },
     /// What the game may cost while hidden.
     Level(Level),
+    /// `options.txt` keys another game of the batch changed; the game applies and saves them without reporting back.
+    Options { values: BTreeMap<String, String> },
+    /// Another game of the batch changed the server list; an open server list reloads it.
+    Servers,
 }
 
 /// A background level as the mod reads it: the level name, plus frames per second and sight for `custom`.
@@ -199,6 +207,11 @@ impl Server {
     /// Whether `instance` is connected right now.
     pub fn is_connected(&self, instance: &str) -> bool {
         self.lock().links.contains_key(instance)
+    }
+
+    /// The instances connected right now.
+    pub fn connected(&self) -> Vec<String> {
+        self.lock().links.keys().cloned().collect()
     }
 
     /// Sends `message` to `instance`. Fails when it is not connected; a link that fails to take a message is closed.
@@ -363,6 +376,12 @@ mod tests {
         assert_eq!(level(Background::Full), r#"{"t":"level","level":"full"}"#);
         assert_eq!(level(Background::Custom { fps: 10, sight: 6 }), r#"{"t":"level","level":"custom","fps":10,"render_distance":6}"#);
         assert_eq!(level(Background::Custom { fps: 0, sight: 99 }), r#"{"t":"level","level":"custom","fps":1,"render_distance":32}"#);
+        let options = r#"{"t":"options","values":{"guiScale":"3","key_key.jump":"key.keyboard.j"}}"#;
+        let values = BTreeMap::from([("guiScale".to_owned(), "3".to_owned()), ("key_key.jump".to_owned(), "key.keyboard.j".to_owned())]);
+        assert_eq!(serde_json::from_str::<FromMod>(options).unwrap(), FromMod::Options { values: values.clone() });
+        assert_eq!(serde_json::to_string(&ToMod::Options { values }).unwrap(), options);
+        assert_eq!(serde_json::from_str::<FromMod>(r#"{"t":"servers"}"#).unwrap(), FromMod::Servers);
+        assert_eq!(serde_json::to_string(&ToMod::Servers).unwrap(), r#"{"t":"servers"}"#);
         let custom = r#"{"t":"level","level":"custom","fps":10,"render_distance":6}"#;
         assert_eq!(serde_json::from_str::<ToMod>(custom).unwrap(), ToMod::Level(Level::Custom { fps: 10, render_distance: 6 }));
     }

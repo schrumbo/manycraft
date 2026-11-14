@@ -122,4 +122,22 @@ class ProtocolTest {
 		assertTrue(Protocol.parse("{\"t\":\"show\",\"x\":1}").isEmpty());
 		assertTrue(Protocol.parse("{\"t\":\"chat_send\"}").isEmpty());
 	}
+
+	@Test
+	void sharedOptionsAndServersTravelBothWays() {
+		var values = new java.util.LinkedHashMap<String, String>();
+		values.put("guiScale", "3");
+		values.put("resourcePacks", "[\"vanilla\",\"file/x.zip\"]");
+		JsonObject o = json(Protocol.options(values));
+		assertEquals("options", o.get("t").getAsString());
+		assertEquals("[\"vanilla\",\"file/x.zip\"]", o.getAsJsonObject("values").get("resourcePacks").getAsString());
+		var parsed = assertInstanceOf(Protocol.Incoming.Options.class, Protocol.parse(Protocol.options(values)).orElseThrow());
+		assertEquals(values, parsed.values());
+		assertEquals("servers", json(Protocol.servers()).get("t").getAsString());
+		assertInstanceOf(Protocol.Incoming.Servers.class, Protocol.parse("{\"t\":\"servers\"}").orElseThrow());
+		assertTrue(Protocol.parse("{\"t\":\"options\"}").isEmpty());
+		assertTrue(Protocol.parse("{\"t\":\"options\",\"values\":[1]}").isEmpty());
+		var skipped = assertInstanceOf(Protocol.Incoming.Options.class, Protocol.parse("{\"t\":\"options\",\"values\":{\"a\":\"1\",\"b\":{}}}").orElseThrow());
+		assertEquals(java.util.Map.of("a", "1"), skipped.values());
+	}
 }
