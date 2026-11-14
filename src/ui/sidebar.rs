@@ -225,24 +225,27 @@ fn import_row(import: &model::Import, t: &Theme) -> Stateful<Div> {
         .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.secondary).child(import.name.clone()))
         .child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(state))
         .tooltip(tip(trf("„%@“ wird als Batch importiert.", &[&import.name])))
-        .when(!stopping, |d| {
-            d.child(
-                div()
-                    .id(SharedString::from(format!("nav-import-cancel-{id}")))
-                    .mark("button", cancel.clone())
-                    .size(px(shell::PILL))
-                    .flex_none()
-                    .rounded(px(radius::INNER))
-                    .flex()
-                    .items_center()
-                    .justify_center()
+        .child({
+            let button = div()
+                .id(SharedString::from(format!("nav-import-cancel-{id}")))
+                .mark("button", cancel.clone())
+                .size(px(shell::PILL))
+                .flex_none()
+                .rounded(px(radius::INNER))
+                .flex()
+                .items_center()
+                .justify_center();
+            if stopping {
+                button.opacity(tint::DISABLED).child(icon("x", iconsize::S, t.tertiary))
+            } else {
+                button
                     .cursor_pointer()
                     .key_nav()
                     .soft(t.ink.opacity(tint::HOVER), radius::INNER)
                     .child(icon("x", iconsize::S, t.tertiary))
                     .tooltip(tip(cancel))
-                    .on_click(move |_, window, cx| window.dispatch_action(Box::new(CancelImport(id)), cx)),
-            )
+                    .on_click(move |_, window, cx| window.dispatch_action(Box::new(CancelImport(id)), cx))
+            }
         })
 }
 
@@ -281,7 +284,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             };
             let stopped = total - running;
             let exporting = m.exporting.contains(&b.id);
-            let trailing = if exporting { tr("Exportiert …") } else { format!("{fine}/{total}") };
+            let trailing = if exporting { tr("Wird exportiert …") } else { format!("{fine}/{total}") };
             (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint) }, b.id.clone(), running, stopped, exporting)
         })
         .collect();
@@ -290,7 +293,8 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None };
     let imports: Vec<AnyElement> = m.imports.iter().map(|import| {
         let id = import.id;
-        import_row(import, &t).context_menu(move |menu, _, _| menu.menu(tr("Import abbrechen"), Box::new(CancelImport(id)))).into_any_element()
+        let stopping = import.cancel.load(std::sync::atomic::Ordering::SeqCst);
+        import_row(import, &t).context_menu(move |menu, _, _| menu.menu_with_disabled(tr("Import abbrechen"), Box::new(CancelImport(id)), stopping)).into_any_element()
     }).collect();
     let mut batch_rows = Vec::new();
     for (r, id, running, stopped, exporting) in batches {

@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CheckForUpdates, ClearSelection, DismissNews, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
 };
 use super::drive::Mark;
@@ -313,7 +313,6 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount), true),
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
-        ("download", tr("Batch importieren…"), Box::new(ImportBatch), true),
         ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
         ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.instances.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
@@ -334,6 +333,10 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
         }
     }
+    out.push(entry(Group::Commands, "download", tr("Batch importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
+    for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+        out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
+    }
     let waiting = super::accounts::waiting(cx);
     if waiting.len() > 1 {
         let detail = trf("%lld Accounts", &[&waiting.len()]);
@@ -348,7 +351,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Batches, "play", trf("%@ starten", &[&b.name]), server.clone(), Box::new(StartBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "square", trf("%@ stoppen", &[&b.name]), server.clone(), Box::new(StopBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "pencil", trf("%@ bearbeiten", &[&b.name]), server.clone(), Box::new(EditBatch(b.id.clone())), cx));
-        out.push(entry(Group::Batches, "folder-open", trf("Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
+        out.push(entry(Group::Batches, "folder-open", trf("Batch-Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
         if !m.exporting.contains(&b.id) {
             out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server, Box::new(ExportBatch(b.id.clone())), cx));
         }

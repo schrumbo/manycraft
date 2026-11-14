@@ -77,6 +77,9 @@ fn start(path: PathBuf, cx: &mut App) {
     let id = NEXT.fetch_add(1, Ordering::SeqCst);
     let cancel = Arc::new(AtomicBool::new(false));
     model::get(cx).update(cx, |m, cx| {
+        if m.imports.is_empty() {
+            m.error = None;
+        }
         m.imports.push(model::Import { id, name: shown, percent: None, cancel: Arc::clone(&cancel) });
         cx.notify();
     });
@@ -125,9 +128,25 @@ fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow:
         cx.notify();
     });
     match result {
-        Ok(made) if cancelled => cx.background_spawn(async move { remote::drop_import(&made) }).detach(),
+        Ok(made) if cancelled => {
+            let job = cx.background_spawn(async move { remote::drop_import(&made) });
+            let label = label.to_owned();
+            cx.spawn(async move |cx| {
+                let result = job.await;
+                let _ = cx.update(|cx| {
+                    if let Err(e) = result {
+                        model::get(cx).update(cx, |m, cx| {
+                            m.error = Some(forms::explain_as(trf("„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.", &[&label]), &e).text);
+                            cx.notify();
+                        });
+                    }
+                    super::state::reload_keeping_error(cx);
+                });
+            })
+            .detach();
+        }
         Ok(made) => {
-            super::state::reload(cx);
+            super::state::reload_keeping_error(cx);
             super::main_window::show_batch(&made.id, cx);
         }
         Err(_) => {}
@@ -150,20 +169,27 @@ fn is_cancelled(e: &anyhow::Error) -> bool {
 /// What went wrong with importing `label`, in plain German.
 fn explain(label: &str, e: &anyhow::Error) -> String {
     let Some(refused) = e.chain().find_map(|c| c.downcast_ref::<Refused>()) else {
-        return forms::explain_as(trf("„%@“ nicht importiert.", &[&label]), e).text;
+        let what = trf("„%@“ nicht importiert.", &[&label]);
+        return if local_io(e) { format!("{what} {}", tr("Die Datei ist beschädigt oder lässt sich nicht lesen.")) } else { forms::explain_as(what, e).text };
     };
     match refused {
-        Refused::NotAPack => trf("„%@“ ist kein Modrinth-Modpack.", &[&label]),
-        Refused::Loader(loader) => trf("„%@“ ist für %@ gebaut. Manycraft kann nur Fabric-Modpacks importieren.", &[&label, loader]),
+        Refused::NotAPack => trf("„%@“ ist kein Modpack von Modrinth. Wähle eine .mrpack-Datei.", &[&label]),
+        Refused::Loader(loader) => trf("„%@“ ist für %@ gebaut. Manycraft kann nur Fabric-Modpacks importieren. Such nach der Fabric-Version.", &[&label, loader]),
         Refused::NoLoader => trf("„%@“ nennt keinen Mod-Loader. Manycraft kann nur Fabric-Modpacks importieren.", &[&label]),
         Refused::NoGame => trf("„%@“ nennt keine Minecraft-Version.", &[&label]),
         Refused::Host(_) => trf("„%@“ lädt Dateien von einer Seite, die Manycraft nicht kennt. Nichts wurde importiert.", &[&label]),
         Refused::Hash(_) => trf("Eine Datei aus „%@“ kam verändert an. Nichts wurde importiert. Versuche es noch einmal.", &[&label]),
         Refused::Path(_) => trf("„%@“ enthält Dateien, die außerhalb des Batch-Ordners landen würden. Nichts wurde importiert.", &[&label]),
         Refused::Prism(_) => trf("„%@“ lässt sich nicht übernehmen. Nur Fabric-Instanzen gehen.", &[&label]),
-        Refused::Unknown => trf("„%@“ ist weder ein Modrinth-Modpack noch eine Prism-Instanz.", &[&label]),
+        Refused::Unknown => trf("„%@“ ist weder ein Modpack von Modrinth noch etwas aus Prism. Wähle eine .mrpack-Datei, einen Prism-Export oder einen Prism-Instanzordner.", &[&label]),
         Refused::Cancelled => String::new(),
     }
+}
+
+fn local_io(e: &anyhow::Error) -> bool {
+    let io = e.chain().find_map(|c| c.downcast_ref::<std::io::Error>());
+    let network = e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some()) || ["cannot download", "cannot look the mods up", "cannot find the Fabric loader"].iter().any(|m| format!("{e:#}").contains(m));
+    io.is_some_and(|i| !matches!(i.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull)) && !network
 }
 
 fn file_name(name: &str) -> String {
@@ -200,10 +226,13 @@ fn export(id: &str, cx: &mut App) {
 
 fn write(made: Batch, path: PathBuf, cx: &mut App) {
     let id = made.id.clone();
-    model::get(cx).update(cx, |m, cx| {
-        m.exporting.insert(id.clone());
+    let started = model::get(cx).update(cx, |m, cx| {
         cx.notify();
+        m.exporting.insert(id.clone())
     });
+    if !started {
+        return;
+    }
     let out = path.clone();
     let name = made.name.clone();
     let job = cx.background_spawn(async move { remote::export_batch(&made, &out) });
@@ -213,7 +242,8 @@ fn write(made: Batch, path: PathBuf, cx: &mut App) {
             model::get(cx).update(cx, |m, cx| {
                 m.exporting.remove(&id);
                 if let Err(e) = &result {
-                    m.error = Some(forms::explain_as(trf("„%@“ nicht exportiert.", &[&name]), e).text);
+                    let what = trf("„%@“ nicht exportiert.", &[&name]);
+                    m.error = Some(if local_io(e) { format!("{what} {}", tr("Die Datei lässt sich nicht schreiben. Ist sie in einem anderen Programm offen?")) } else { forms::explain_as(what, e).text });
                 }
                 cx.notify();
             });

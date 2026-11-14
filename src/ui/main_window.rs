@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -400,6 +400,14 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_drag_move::<ExternalPaths>(|_, window, cx| {
+                if window.last_input_was_keyboard() {
+                    let position = window.mouse_position();
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }), cx);
+                    });
+                }
+            })
             .on_drop(|paths: &ExternalPaths, _, cx| super::transfer::drop_paths(paths, cx))
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|this, _: &ImportPrismAccounts, window, cx| {
@@ -513,6 +521,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
+        KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
         KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
@@ -623,7 +632,7 @@ pub fn select_batch(batch: &str, cx: &mut App) {
     });
 }
 
-/// Shows the grid of `batch` with the window's filter, as after importing it.
+/// Shows the grid of `batch` with the window's filter, as after importing it; stays put while the palette or a sheet is open.
 pub fn show_batch(batch: &str, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
     let batch = batch.to_owned();
@@ -632,6 +641,9 @@ pub fn show_batch(batch: &str, cx: &mut App) {
         let content = root.read(cx).view().clone();
         if let Ok(view) = content.downcast::<MainWindow>() {
             view.update(cx, |this, cx| {
+                if this.palette.is_some() || window.has_active_dialog(cx) {
+                    return;
+                }
                 this.grid.reset_scroll();
                 this.go(Page::Grid(Some(batch)), window, cx);
             });
@@ -657,7 +669,7 @@ fn drop_hint(t: &Theme) -> AnyElement {
         .gap(px(space::XS))
         .child(icon("download", iconsize::L, t.accent_text))
         .child(div().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(text))
-        .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Modrinth-Modpack (.mrpack), Prism-Export (.zip) oder Prism-Instanz")))
+        .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Modpack von Modrinth, Export oder Instanz aus Prism")))
         .into_any_element()
 }
 

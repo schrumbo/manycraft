@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -188,10 +189,14 @@ pub fn export_prefix<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Option<String>
 
 /// Unpacks what an import reads from a Prism export zip into `staging`: `instance.cfg`, `mmc-pack.json` and the
 /// game folder's jars, config and `options.txt`. Worlds, logs and everything else stay in the zip. Returns the instance folder.
-pub fn unpack_export<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, prefix: &str, staging: &Path) -> Result<PathBuf> {
+pub fn unpack_export<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, prefix: &str, staging: &Path, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<PathBuf> {
     let dir = staging.join("instance");
     let mut total = 0;
     for index in 0..zip.len() {
+        if cancel.load(Ordering::SeqCst) {
+            bail!(mrpack::Refused::Cancelled);
+        }
+        progress(index, zip.len());
         let entry = zip.by_index(index).context("cannot read the zip")?;
         if entry.is_dir() || entry.is_symlink() {
             continue;
@@ -314,7 +319,7 @@ fn copy_tree(from: &Path, to: &Path, depth: usize) -> Result<()> {
     Ok(())
 }
 
-fn is_jar(name: &str) -> bool {
+pub(super) fn is_jar(name: &str) -> bool {
     name.len() > 4 && name.get(name.len() - 4..).is_some_and(|ext| ext.eq_ignore_ascii_case(".jar"))
 }
 
@@ -980,7 +985,7 @@ name=Farm
             ("Farm/.minecraft/saves/w/level.dat", b"world"),
             ("Farm/.minecraft/logs/latest.log", b"log"),
         ]);
-        let dir = unpack_export(&mut zip, "Farm/", staging.path()).unwrap();
+        let dir = unpack_export(&mut zip, "Farm/", staging.path(), &AtomicBool::new(false), &|_, _| {}).unwrap();
         assert!(is_instance(&dir));
         assert!(dir.join(".minecraft").join("mods").join("a.jar").is_file());
         assert!(!dir.join(".minecraft").join("mods").join("sub").exists());
@@ -994,10 +999,21 @@ name=Farm
     }
 
     #[test]
+    fn unpacking_a_prism_export_reports_progress_and_stops_on_cancel() {
+        let staging = tempfile::tempdir().unwrap();
+        let entries: &[(&str, &[u8])] = &[("instance.cfg", b"x"), ("mmc-pack.json", PACK.as_bytes()), (".minecraft/options.txt", b"fov:1.0")];
+        let steps = std::sync::Mutex::new(Vec::new());
+        unpack_export(&mut zip_of(entries), "", staging.path(), &AtomicBool::new(false), &|done, total| steps.lock().unwrap().push((done, total))).unwrap();
+        assert_eq!(steps.into_inner().unwrap(), [(0, 3), (1, 3), (2, 3)]);
+        let err = unpack_export(&mut zip_of(entries), "", staging.path(), &AtomicBool::new(true), &|_, _| {}).unwrap_err();
+        assert!(matches!(err.downcast_ref::<mrpack::Refused>(), Some(mrpack::Refused::Cancelled)));
+    }
+
+    #[test]
     fn zip_slip_in_a_prism_export_is_refused() {
         let staging = tempfile::tempdir().unwrap();
         let mut zip = zip_of(&[("instance.cfg", b"x"), ("mmc-pack.json", PACK.as_bytes()), (".minecraft/config/../../../evil.txt", b"x")]);
-        assert!(unpack_export(&mut zip, "", staging.path()).is_err());
+        assert!(unpack_export(&mut zip, "", staging.path(), &AtomicBool::new(false), &|_, _| {}).is_err());
         assert!(!staging.path().parent().unwrap().join("evil.txt").exists());
     }
 

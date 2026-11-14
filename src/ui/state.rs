@@ -521,6 +521,15 @@ fn backend(cx: &App) -> Option<Arc<dyn Backend>> {
 
 /// Reads accounts and batches from disk again and rebuilds the instance list, keeping what runs.
 pub fn reload(cx: &mut App) {
+    reload_with(cx, false);
+}
+
+/// Like [`reload`], but a message already shown stays.
+pub fn reload_keeping_error(cx: &mut App) {
+    reload_with(cx, true);
+}
+
+fn reload_with(cx: &mut App, keep: bool) {
     let task = cx.background_spawn(async {
         let (accounts, batches) = (account::load(), batch::load_all());
         let logs = batches.as_ref().map(|batches| saved_history(batches)).unwrap_or_default();
@@ -541,7 +550,7 @@ pub fn reload(cx: &mut App) {
                     (Ok(accounts), Ok(batches)) => {
                         m.accounts = accounts;
                         m.batches = batches;
-                        m.error = notice;
+                        m.error = if keep { notice.or(m.error.take()) } else { notice };
                     }
                     (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),
                 }

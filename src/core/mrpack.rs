@@ -7,6 +7,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -39,6 +40,7 @@ const MAX_DEPTH: usize = 32;
 const MAX_NAME: usize = 40;
 const THREADS: usize = 8;
 const FALLBACK_NAME: &str = "Modpack";
+static NAMING: Mutex<()> = Mutex::new(());
 const USAGE: &str = "usage: manycraft mrpack import <file.mrpack|prism.zip|prism folder>
        manycraft mrpack export <batch> <file.mrpack>";
 
@@ -145,6 +147,7 @@ struct Placement {
 
 struct Slot {
     name: String,
+    orig: String,
     sha1: String,
     found: Option<ModRef>,
     source: Source,
@@ -180,7 +183,7 @@ pub fn peek(path: &Path) -> Result<String> {
     }
     let Some(prefix) = prism::export_prefix(&zip) else { bail!(Refused::Unknown) };
     let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
-    peek(&prism::unpack_export(&mut zip, &prefix, staging.path())?)
+    peek(&prism::unpack_export(&mut zip, &prefix, staging.path(), &AtomicBool::new(false), &|_, _| {})?)
 }
 
 /// A batch name for `base` that no batch in `taken` uses: `base`, `base (2)`, … within the name length limit.
@@ -207,22 +210,35 @@ pub fn free_name(base: &str, taken: &[String]) -> String {
 pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<Batch> {
     let taken: Vec<String> = batch::load_all()?.into_iter().map(|b| b.name).collect();
     let root = batch::batches_dir();
-    if path.is_dir() {
-        return import_prism_dir(path, &root, &taken, &modrinth::match_hashes, cancel);
-    }
-    let file = File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let Ok(mut zip) = ZipArchive::new(file) else { bail!(Refused::Unknown) };
-    if zip.index_for_name(INDEX).is_some() {
-        return import_pack(&mut zip, &root, &taken, &modrinth::match_hashes, &download, cancel, progress);
-    }
-    match prism::export_prefix(&zip) {
-        Some(prefix) => {
+    let made = if path.is_dir() {
+        import_prism_dir(path, &root, &taken, &modrinth::match_hashes, cancel)?
+    } else {
+        let file = File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+        let Ok(mut zip) = ZipArchive::new(file) else { bail!(Refused::Unknown) };
+        if zip.index_for_name(INDEX).is_some() {
+            import_pack(&mut zip, &root, &taken, &modrinth::match_hashes, &download, cancel, progress)?
+        } else {
+            let Some(prefix) = prism::export_prefix(&zip) else { bail!(Refused::Unknown) };
             let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
-            let dir = prism::unpack_export(&mut zip, &prefix, staging.path())?;
-            import_prism_dir(&dir, &root, &taken, &modrinth::match_hashes, cancel)
+            let dir = prism::unpack_export(&mut zip, &prefix, staging.path(), cancel, progress)?;
+            import_prism_dir(&dir, &root, &taken, &modrinth::match_hashes, cancel)?
         }
-        None => bail!(Refused::Unknown),
+    };
+    Ok(claim_name(&root, made))
+}
+
+fn claim_name(root: &Path, mut made: Batch) -> Batch {
+    let _naming = NAMING.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(all) = batch::load_all_in(root) else { return made };
+    let taken: Vec<String> = all.into_iter().filter(|b| b.id != made.id).map(|b| b.name).collect();
+    let name = free_name(&made.name, &taken);
+    if name != made.name {
+        let renamed = Batch { name, ..made.clone() };
+        if batch::save_in(root, &renamed).is_ok() {
+            made = renamed;
+        }
     }
+    made
 }
 
 /// Writes `batch` as a `.mrpack` to `out`: Modrinth mods as downloads with their hashes; the batch's own jars,
@@ -272,10 +288,10 @@ fn reserved(part: &str) -> bool {
     RESERVED.contains(&stem.as_str()) || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit())
 }
 
-/// `path` from a pack as a relative path, refusing anything absolute, with `..`, drive letters, backslashes or names Windows reserves.
+/// `path` from a pack as a relative path, refusing anything absolute, with `..`, drive letters, or characters and names Windows forbids.
 pub(super) fn safe_rel(path: &str) -> Result<PathBuf> {
     let bad = || Refused::Path(path.to_owned());
-    if path.is_empty() || path.starts_with('/') || path.contains(['\\', ':']) || path.chars().any(char::is_control) {
+    if path.is_empty() || path.starts_with('/') || path.contains(['\\', ':', '<', '>', '"', '|', '?', '*']) || path.chars().any(char::is_control) {
         bail!(bad());
     }
     let mut out = PathBuf::new();
@@ -307,7 +323,7 @@ fn target(rel: &Path) -> Option<PathBuf> {
 fn mod_name(rel: &Path) -> Option<String> {
     let parts: Vec<&str> = rel.iter().map(|p| p.to_str()).collect::<Option<_>>()?;
     match parts.as_slice() {
-        [top, name] if top.eq_ignore_ascii_case("mods") && name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(".jar") => Some((*name).to_owned()),
+        [top, name] if top.eq_ignore_ascii_case("mods") && prism::is_jar(name) => Some((*name).to_owned()),
         _ => None,
     }
 }
@@ -427,7 +443,7 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
     let mut placements = Vec::new();
     for (n, wanted) in pack.files.iter().enumerate() {
         match mod_name(&wanted.rel) {
-            Some(name) => place_mod(&mut slots, Slot { name, sha1: wanted.sha1.clone(), found: matched.get(&wanted.sha1).cloned(), source: Source::Download(n) })?,
+            Some(name) => place_mod(&mut slots, Slot { orig: name.clone(), name, sha1: wanted.sha1.clone(), found: matched.get(&wanted.sha1).cloned(), source: Source::Download(n) })?,
             None => placements.extend(target(&wanted.rel).map(|dest| Placement { source: Source::Download(n), dest })),
         }
     }
@@ -435,8 +451,8 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
     for o in &extra {
         match jar_of.get(&o.index) {
             Some((_, name, sha1)) => {
-                slots.retain(|s| !s.name.eq_ignore_ascii_case(name) || s.sha1 == *sha1);
-                place_mod(&mut slots, Slot { name: name.clone(), sha1: sha1.clone(), found: matched.get(sha1).cloned(), source: Source::Entry(o.index) })?;
+                slots.retain(|s| !(s.name.eq_ignore_ascii_case(name) || s.orig.eq_ignore_ascii_case(name)) || s.sha1 == *sha1);
+                place_mod(&mut slots, Slot { orig: name.clone(), name: name.clone(), sha1: sha1.clone(), found: matched.get(sha1).cloned(), source: Source::Entry(o.index) })?;
             }
             None => placements.extend(target(&o.rel).map(|dest| Placement { source: Source::Entry(o.index), dest })),
         }
@@ -759,13 +775,16 @@ mod tests {
         let mut idx = index(vec![file_entry("mods/a.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
         idx["files"][0]["hashes"]["sha1"] = "zz".into();
         assert_eq!(parse(&idx), Some(Refused::Hash("mods/a.jar".into())));
+        let mut idx = index(vec![file_entry("mods/a.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
+        idx["files"][0]["hashes"]["sha1"] = "ab".into();
+        assert_eq!(parse(&idx), Some(Refused::Hash("mods/a.jar".into())));
         let idx = index(vec![file_entry("../evil.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
         assert_eq!(parse(&idx), Some(Refused::Path("../evil.jar".into())));
     }
 
     #[test]
     fn unsafe_paths_are_refused() {
-        for bad in ["", "/etc/passwd", "../x", "mods/../../x", "a/./b", "C:/x", "mods\\..\\x", "a//b", "mods/", "con", "config/NUL.txt", "lpt1", "x.", "x ", "a\u{0}b"] {
+        for bad in ["", "/etc/passwd", "../x", "mods/../../x", "a/./b", "C:/x", "mods\\..\\x", "a//b", "mods/", "con", "config/NUL.txt", "lpt1", "x.", "x ", "a\u{0}b", "config/what?.json", "a<b", "a>b", "a|b", "a*b", "a\"b"] {
             assert!(safe_rel(bad).is_err(), "{bad:?}");
         }
         assert_eq!(safe_rel("config/sodium/a.json").unwrap(), Path::new("config").join("sodium").join("a.json"));
@@ -789,6 +808,8 @@ mod tests {
         assert_eq!(mod_name(&safe_rel("mods/a.JAR").unwrap()).as_deref(), Some("a.JAR"));
         assert_eq!(mod_name(&safe_rel("mods/sub/a.jar").unwrap()), None);
         assert_eq!(mod_name(&safe_rel("mods/a.txt").unwrap()), None);
+        assert_eq!(mod_name(&safe_rel("mods/über").unwrap()), None);
+        assert_eq!(mod_name(&safe_rel("mods/größe.jar").unwrap()).as_deref(), Some("größe.jar"));
     }
 
     #[test]
@@ -847,6 +868,62 @@ mod tests {
         assert_eq!(saved, made);
         let steps = steps.into_inner().unwrap();
         assert_eq!((steps.first(), steps.last()), (Some(&(0, 4)), Some(&(4, 4))));
+    }
+
+    #[test]
+    fn an_override_replaces_a_download_of_the_same_path_even_when_modrinth_renamed_it() {
+        let out = tempfile::tempdir().unwrap();
+        let idx = index(vec![file_entry("mods/sodium.jar", b"sodium", "https://cdn.modrinth.com/sodium.jar")]);
+        let mut zip = pack_of(&idx, &[("overrides/mods/sodium.jar", b"patched")]);
+        let known = vec![modref(b"sodium", "sodium-fabric.jar", "Sodium")];
+        let fetch = served(vec![("https://cdn.modrinth.com/sodium.jar", b"sodium".to_vec())]);
+        let made = import_pack(&mut zip, out.path(), &[], &lookup_of(known), &fetch, &AtomicBool::new(false), &quiet()).unwrap();
+        assert!(made.mods.is_empty());
+        assert_eq!(made.local_mods, ["sodium.jar"]);
+        assert_eq!(names(&out.path().join(&made.id).join("mods")), ["sodium.jar"]);
+    }
+
+    #[test]
+    fn imports_that_started_with_the_same_name_end_with_different_names() {
+        let out = tempfile::tempdir().unwrap();
+        let empty = || import_pack(&mut pack_of(&index(Vec::new()), &[]), out.path(), &[], &lookup_of(Vec::new()), &served(Vec::new()), &AtomicBool::new(false), &quiet()).unwrap();
+        let (first, second) = (empty(), empty());
+        assert_eq!(first.name, second.name);
+        let first = claim_name(out.path(), first);
+        let second = claim_name(out.path(), second);
+        assert_ne!(first.name, second.name);
+        let mut saved: Vec<String> = batch::load_all_in(out.path()).unwrap().into_iter().map(|b| b.name).collect();
+        saved.sort();
+        assert_eq!(saved, ["Farm Pack", "Farm Pack (2)"]);
+    }
+
+    #[test]
+    fn peeking_checks_like_an_import_but_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, idx: &serde_json::Value, extra: &[(&str, &[u8])]| {
+            let mut entries: Vec<(&str, Vec<u8>)> = vec![(INDEX, serde_json::to_vec(idx).unwrap())];
+            entries.extend(extra.iter().map(|(n, b)| (*n, b.to_vec())));
+            let refs: Vec<(&str, &[u8])> = entries.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+            let path = dir.path().join(name);
+            fs::write(&path, zip_of(&refs)).unwrap();
+            path
+        };
+        assert_eq!(peek(&write("ok.mrpack", &index(Vec::new()), &[])).unwrap(), "Farm Pack");
+        let mut forge = index(Vec::new());
+        forge["dependencies"]["forge"] = "47".into();
+        assert_eq!(refused(&peek(&write("forge.mrpack", &forge, &[])).unwrap_err()), Some(Refused::Loader("Forge".into())));
+        let slip = write("slip.mrpack", &index(Vec::new()), &[("overrides/../evil.txt", b"x")]);
+        assert!(matches!(refused(&peek(&slip).unwrap_err()), Some(Refused::Path(_))));
+        let text = dir.path().join("note.txt");
+        fs::write(&text, b"hi").unwrap();
+        assert_eq!(refused(&peek(&text).unwrap_err()), Some(Refused::Unknown));
+        let empty = dir.path().join("folder");
+        fs::create_dir(&empty).unwrap();
+        assert_eq!(refused(&peek(&empty).unwrap_err()), Some(Refused::Unknown));
+        let out = tempfile::tempdir().unwrap();
+        let err = import_prism_dir(&empty, out.path(), &[], &lookup_of(Vec::new()), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(refused(&err), Some(Refused::Unknown));
+        assert!(names(out.path()).is_empty());
     }
 
     #[test]

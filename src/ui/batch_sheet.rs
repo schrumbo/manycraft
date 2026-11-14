@@ -1041,7 +1041,7 @@ impl BatchSheet {
             }
         };
         let file = self.prism_choice.is_none().then(|| {
-            let row = card("file-pick", "file-down", tr("Aus Datei importieren…"), tr("Modrinth-Modpack (.mrpack) oder Prism-Export (.zip)"));
+            let row = card("file-pick", "file-down", tr("Aus Datei importieren…"), tr("Modpack von Modrinth oder Export aus Prism"));
             let row = if blocked {
                 row.opacity(tint::DISABLED)
             } else {
