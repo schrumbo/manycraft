@@ -151,6 +151,12 @@ pub fn icon_button(id: impl Into<SharedString>, icon_name: &str, label: impl Int
         .child(icon(icon_name, iconsize::M, color))
 }
 
+/// The sidebar toggle for a page header without the grid toolbar.
+pub fn sidebar_toggle(id: &'static str, t: &Theme) -> Stateful<Div> {
+    let shortcut = if cfg!(target_os = "macos") { "⌘B".to_owned() } else { format!("{}+B", tr("Strg")) };
+    icon_button(id, "panel-left", format!("{} · {shortcut}", tr("Seitenleiste ein- oder ausblenden")), t.secondary, t).on_click(|_, window, cx| window.dispatch_action(Box::new(super::actions::ToggleSidebar), cx))
+}
+
 /// Title and an optional line under it, at the top of a sheet.
 pub fn header(title: impl Into<SharedString>, subtitle: Option<String>, t: &Theme) -> Div {
     let title: SharedString = title.into();

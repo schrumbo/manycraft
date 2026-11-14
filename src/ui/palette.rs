@@ -9,14 +9,14 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, AddMicrosoft, ClearSelection, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
-    StartSelected, StopAll, StopBatch, StopSelected, TileLarger, TileSmaller, ToggleSidebar,
+    StartSelected, StopAll, StopBatch, StopSelected, TileLarger, TileSmaller, ToggleSidebar, UndoRemoveAccount,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page, TileFit, TileLarge, TileMedium, TileSmall};
 use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
-use super::widgets::icon;
+use super::widgets::{TakeFocus, icon};
 
 actions!(palette, [PaletteNext, PalettePrevious]);
 use crate::core::i18n::{tr, trf};
@@ -117,7 +117,7 @@ pub fn toggle(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
     });
     let rows = Rc::new(rows(&entries, ""));
     let cursor = rows.iter().position(|r| matches!(r, Row::Entry(_))).unwrap_or(0);
-    input.update(cx, |s, cx| s.focus(window, cx));
+    input.update(cx, |s, cx| s.take_focus(window, cx));
     this.palette = Some(Palette { input, entries, rows, cursor, scroll: UniformListScrollHandle::new(), _typed: typed });
     cx.notify();
 }
@@ -318,6 +318,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("layout-grid", tr("Kachelgröße: Mittel"), Box::new(TileMedium), true),
         ("layout-grid", tr("Kachelgröße: Groß"), Box::new(TileLarge), true),
         ("layout-grid", tr("Kachelgröße: Einpassen"), Box::new(TileFit), true),
+        ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
         ("download", tr("Aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),

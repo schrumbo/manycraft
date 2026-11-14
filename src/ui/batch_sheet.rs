@@ -22,7 +22,7 @@ use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
-use super::widgets::{KeyNav, icon};
+use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon};
 use crate::core::account::{Account, AccountKind};
 use crate::core::batch::{Batch, ModRef};
 use crate::core::i18n::{tr, trf};
@@ -132,6 +132,9 @@ struct BatchSheet {
     rows_dirty: bool,
     skin_gen: u64,
     body_scroll: ScrollHandle,
+    account_scroll: UniformListScrollHandle,
+    mods_scroll: ScrollHandle,
+    local_scroll: ScrollHandle,
     saved_scroll: Option<Point<Pixels>>,
     prism_choice: Option<Instance>,
     prism_picking: bool,
@@ -257,6 +260,9 @@ impl BatchSheet {
             rows_dirty: true,
             skin_gen: 0,
             body_scroll: ScrollHandle::new(),
+            account_scroll: UniformListScrollHandle::new(),
+            mods_scroll: ScrollHandle::new(),
+            local_scroll: ScrollHandle::new(),
             saved_scroll: None,
             prism_choice: None,
             prism_picking: false,
@@ -323,7 +329,7 @@ impl BatchSheet {
         if open {
             self.prism_sel = self.first_supported(cx);
             if self.prism_list.len() > PRISM_FILTER_FROM {
-                self.prism_filter.update(cx, |q, cx| q.focus(window, cx));
+                self.prism_filter.update(cx, |q, cx| q.take_focus(window, cx));
             } else {
                 window.focus(&self.root, cx);
             }
@@ -653,7 +659,7 @@ impl BatchSheet {
         self.searching = open;
         self.add_error = None;
         if open {
-            self.query.update(cx, |q, cx| q.focus(window, cx));
+            self.query.update(cx, |q, cx| q.take_focus(window, cx));
         } else {
             window.focus(&self.root, cx);
         }
@@ -933,13 +939,14 @@ impl BatchSheet {
             }
             cx.notify();
         })));
-        let frame = div().rounded(px(radius::CONTROL)).border_1().border_color(t.separator);
+        let frame = div().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).contain_scroll(&self.account_scroll.0.borrow().base_handle);
         let list = if rows.is_empty() {
             frame.py(px(space::XS)).child(div().px(px(space::M)).py(px(space::S)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Kein Account passt zu „%@“.", &[&raw_filter])))
         } else {
             let count = rows.len();
             frame.child(
                 uniform_list("account-list", count, cx.processor(move |s, range: std::ops::Range<usize>, _, cx| rows[range].iter().map(|(id, name, kind, head)| s.pick_row(*id, name.clone(), kind.clone(), head.clone(), cx)).collect::<Vec<_>>()))
+                    .track_scroll(&self.account_scroll)
                     .with_sizing_behavior(ListSizingBehavior::Infer)
                     .px(px(space::XS))
                     .py(px(space::XS))
@@ -1002,7 +1009,7 @@ impl BatchSheet {
         if self.mods.is_empty() {
             col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Keine Mods. Der Batch startet mit Fabric allein.")));
         } else {
-            let mut list = div().id("mod-list").flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+            let mut list = div().id("mod-list").flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().track_scroll(&self.mods_scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
             for m in &self.mods {
                 let pid = m.project_id.clone();
                 list = list.child(
@@ -1017,7 +1024,7 @@ impl BatchSheet {
                         .child(sheet::icon_button(SharedString::from(format!("mod-remove-{pid}")), "x", trf("„%@“ entfernen", &[&m.title]), t.tertiary, t).on_click(cx.listener(move |s, _, _, cx| s.remove_mod(&pid, cx)))),
                 );
             }
-            col = col.child(list);
+            col = col.child(div().contain_scroll(&self.mods_scroll).child(list));
         }
         for n in &self.notes {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(n.clone()));
@@ -1025,7 +1032,7 @@ impl BatchSheet {
         if let Some(own) = self.original.as_ref().filter(|b| !b.local_mods.is_empty()) {
             col = col
                 .child(div().pt(px(space::S)).child(sheet::label(trf("Eigene Dateien (%lld)", &[&own.local_mods.len()]), t)))
-                .child(local_files("local-files", &own.local_mods, t))
+                .child(local_files("local-files", &own.local_mods, &self.local_scroll, t))
                 .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Diese Dateien bleiben unverändert im Batch und werden nicht aktualisiert.")));
         }
         if let Some(updates) = self.render_updates(cx, t) {
@@ -1231,7 +1238,7 @@ impl BatchSheet {
             .gap(px(space::M))
             .child(sheet::status("circle-check", t.success_text, trf("„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.", &[&batch.name, &matched, &local])))
             .child(sheet::label(tr("Nicht auf Modrinth"), t));
-        col = col.child(local_files("local-mods", &batch.local_mods, t)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
+        col = col.child(local_files("local-mods", &batch.local_mods, &self.local_scroll, t)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Diese Dateien bleiben unverändert im Batch. Sie werden nicht automatisch aktualisiert und beim Synchronisieren nie gelöscht.")));
         col
     }
 
@@ -1280,7 +1287,7 @@ impl BatchSheet {
                     let (title, description, downloads) = (hit.title.clone(), hit.description.clone(), hit.downloads);
                     let row = if added || adding { row } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| {
                         s.add_mod(&hit, cx);
-                        s.query.update(cx, |q, cx| q.focus(window, cx));
+                        s.query.update(cx, |q, cx| q.take_focus(window, cx));
                     })) };
                     list = list.child(
                         row.child(
@@ -1334,7 +1341,7 @@ impl BatchSheet {
         if std::mem::take(&mut self.focus_next) {
             self.name.update(cx, |s, cx| {
                 let end = s.value().len();
-                s.focus(window, cx);
+                s.take_focus(window, cx);
                 s.set_selected_range(0..end, cx);
             });
         }
@@ -1347,12 +1354,12 @@ const RESULTS_MAX: f32 = 340.;
 const PRISM_FILTER_FROM: usize = 6;
 const SNUG_PERCENT: u64 = 80;
 
-fn local_files(id: &'static str, names: &[String], t: &Theme) -> Stateful<Div> {
-    let mut list = div().id(id).flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
+fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, t: &Theme) -> Div {
+    let mut list = div().id(id).flex().flex_col().max_h(px(sheet::LIST_MAX)).overflow_y_scroll().track_scroll(scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
     for name in names {
         list = list.child(div().pl(px(space::M)).pr(px(space::XS)).py(px(space::XS)).flex().items_center().gap(px(space::S)).child(icon("package", iconsize::S, t.tertiary)).child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name.clone())));
     }
-    list
+    div().contain_scroll(scroll).child(list)
 }
 
 fn unsupported_text(reason: &str) -> String {

@@ -3,7 +3,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected, TileLarger, TileSmaller,
+    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected, TileLarger, TileSmaller,
     ToggleSidebar,
 };
 use super::drive::Mark;
@@ -12,7 +12,7 @@ use super::model;
 use super::motion::Soft;
 use super::native::{self, Rect};
 use super::theme::{self, Theme, control, font, iconsize, shell, space, tint};
-use super::widgets::{KeyNav, icon, primary_button};
+use super::widgets::{KeyNav, TakeFocus, icon, primary_button};
 use crate::core::i18n::{tr, trf};
 
 actions!(main_window, [FocusSearch, ClearSearch, TileSmall, TileMedium, TileLarge, TileFit, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
@@ -407,7 +407,7 @@ impl Render for MainWindow {
                 if !matches!(this.page, Page::Grid(_)) {
                     this.page = Page::Grid(None);
                 }
-                this.search.update(cx, |s, cx| s.focus(window, cx));
+                this.search.update(cx, |s, cx| s.take_focus(window, cx));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
@@ -516,6 +516,7 @@ fn bind_keys(cx: &mut App) {
     let k = |key: &str| -> &'static str { Box::leak(format!("{m}-{key}").into_boxed_str()) };
     cx.bind_keys([
         KeyBinding::new(k("b"), ToggleSidebar, Some("MainWindow")),
+        KeyBinding::new(k("z"), UndoRemoveAccount, Some("MainWindow")),
         KeyBinding::new(k("="), TileLarger, Some("MainWindow")),
         KeyBinding::new(k("+"), TileLarger, Some("MainWindow")),
         KeyBinding::new(k("-"), TileSmaller, Some("MainWindow")),

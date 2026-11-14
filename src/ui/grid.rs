@@ -18,7 +18,7 @@ use super::model::{self, Instance, Model, Phase};
 use super::motion::{SLOW, Soft};
 use super::theme::{Theme, control, font, iconsize, radius, selection, shell, space, tile, tint, with_alpha};
 use super::tile::{Geometry, TileData};
-use super::widgets::{KeyNav, icon, primary_button, tip};
+use super::widgets::{KeyNav, TakeFocus, icon, primary_button, tip};
 use crate::core::i18n::{tr, trf};
 
 /// One line of the grid: a batch heading, or a row of the shown tiles `from..to`.
@@ -820,7 +820,7 @@ pub fn open_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context
         return;
     }
     if let Some(msg) = &this.grid.message {
-        msg.input.update(cx, |s, cx| s.focus(window, cx));
+        msg.input.update(cx, |s, cx| s.take_focus(window, cx));
         return;
     }
     let on = on_server(this, cx).len();
@@ -835,7 +835,7 @@ pub fn open_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context
             cx.notify();
         }
     });
-    input.update(cx, |s, cx| s.focus(window, cx));
+    input.update(cx, |s, cx| s.take_focus(window, cx));
     this.grid.message = Some(Message { input, _typed: typed });
     cx.notify();
 }
@@ -858,7 +858,7 @@ fn send_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
     input.update(cx, |s, cx| {
         s.set_value("", window, cx);
         s.set_placeholder(trf("An %lld Accounts gesendet · noch eine Nachricht…", &[&sent]), window, cx);
-        s.focus(window, cx);
+        s.take_focus(window, cx);
     });
     cx.notify();
 }

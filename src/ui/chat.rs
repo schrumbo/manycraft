@@ -13,14 +13,14 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{Broadcast, OpenSettings, SendChat, ToggleSidebar};
+use super::actions::{Broadcast, OpenSettings, SendChat};
 use super::drive::Mark;
 use super::main_window::{self, MainWindow, Page};
 use super::model::{self, ChatLine, Model};
 use super::motion::Soft;
 use super::sheet::{self, Look};
 use super::theme::{Theme, chat, control, font, iconsize, radius, shell, space, tint, with_alpha};
-use super::widgets::{KeyNav, icon};
+use super::widgets::{KeyNav, TakeFocus, icon};
 use crate::core::batch::MAX_CHAT_CHARS;
 use crate::core::i18n::{tr, trf};
 use crate::core::settings;
@@ -340,8 +340,7 @@ impl ChatPage {
     }
 
     fn header(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
-        let shortcut = if cfg!(target_os = "macos") { "⌘B".to_owned() } else { format!("{}+B", tr("Strg")) };
-        let toggle = sheet::icon_button("chat-sidebar", "panel-left", format!("{} · {shortcut}", tr("Seitenleiste ein- oder ausblenden")), t.secondary, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx));
+        let toggle = sheet::sidebar_toggle("chat-sidebar", t);
         let whispers = self.scope.whispers;
         let on = settings::active().merged_chat;
         let title = tr("Chat");
@@ -555,7 +554,7 @@ impl Render for ChatPage {
             cx.remove_global::<FocusInput>();
             if merged && broadcast {
                 let input = self.input.clone();
-                window.on_next_frame(move |window, cx| input.update(cx, |s, cx| s.focus(window, cx)));
+                window.on_next_frame(move |window, cx| input.update(cx, |s, cx| s.take_focus(window, cx)));
             }
         }
         div()
