@@ -5,10 +5,11 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::OpenSettings;
+use super::actions::{OpenSettings, PreviousVersion};
 use super::drive::Mark;
 use super::motion::Soft;
-use super::sheet;
+use super::model::{self, UpdateStatus};
+use super::sheet::{self, Look};
 use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
@@ -78,10 +79,13 @@ struct SettingsView {
 
 impl SettingsView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let subs = vec![cx.observe_window_appearance(window, |_, window, cx| {
-            theme::refresh(window, cx);
-            cx.notify();
-        })];
+        let subs = vec![
+            cx.observe_window_appearance(window, |_, window, cx| {
+                theme::refresh(window, cx);
+                cx.notify();
+            }),
+            cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
+        ];
         let focus = cx.focus_handle();
         let first = focus.clone();
         window.on_next_frame(move |window, cx| window.focus(&first, cx));
@@ -89,9 +93,14 @@ impl SettingsView {
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        let mut next = settings::active().clone();
+        let before = settings::active().clone();
+        let mut next = before.clone();
         edit(&mut next);
+        let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         settings::set(next);
+        if recheck {
+            super::updates::check(false, cx);
+        }
         let task = cx.background_executor().spawn(async { settings::persist() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -231,12 +240,19 @@ impl Render for SettingsView {
         super::theme::follow_focus(window, cx);
         let t = Theme::get(cx);
         let s = settings::active().clone();
-        let general = group(
-            tr("Allgemein"),
-            vec![self.toggle("set-update-check", tr("Nach Updates suchen"), tr("Fragt einmal am Tag bei GitHub nach einer neueren Version. Installiert wird nie von selbst."), s.update_check, |st, on| st.update_check = on, &t, cx)],
-            None,
-            &t,
-        );
+        let updates = model::get(cx).read(cx).updates.clone();
+        let searching = matches!(updates.status, UpdateStatus::Checking) || (updates.asked && matches!(updates.status, UpdateStatus::Downloading { .. }));
+        let search = sheet::button("set-update-now", tr("Nach Updates suchen"), None, Look::Secondary, false, searching, &t).when(!searching, |b| b.on_click(|_, _, cx| super::updates::check(true, cx)));
+        let mut rows = vec![
+            row(trf("Manycraft %@", &[&env!("CARGO_PKG_VERSION")]), Some(super::updates::status_line(&updates)), search, &t),
+            self.toggle("set-auto-update", tr("Updates automatisch laden"), tr("Lädt neue Versionen im Hintergrund und installiert sie beim Beenden."), s.auto_update, |st, on| st.auto_update = on, &t, cx),
+            self.toggle("set-prereleases", tr("Vorabversionen"), tr("Bietet auch Testversionen an, bevor sie veröffentlicht sind."), s.prereleases, |st, on| st.prereleases = on, &t, cx),
+        ];
+        if let Some(previous) = updates.previous.clone() {
+            let back = sheet::button("set-previous", tr("Zurückkehren"), Some("undo-2"), Look::Secondary, false, false, &t).on_click(|_, window, cx| window.dispatch_action(Box::new(PreviousVersion), cx));
+            rows.push(row(tr("Vorherige Version"), Some(trf("Version %@ ist noch da, falls die neue Probleme macht.", &[&previous])), back, &t));
+        }
+        let general = group(tr("Updates"), rows, super::updates::trouble_line(&updates), &t);
         let chat = group(
             tr("Chat"),
             vec![

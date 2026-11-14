@@ -24,6 +24,7 @@ pub mod state;
 pub mod stills;
 pub mod tile;
 pub mod toolbar;
+pub mod updates;
 #[allow(dead_code)]
 pub mod theme;
 #[allow(dead_code)]

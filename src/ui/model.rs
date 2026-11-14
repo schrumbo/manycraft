@@ -125,8 +125,37 @@ pub struct Model {
     pub history: HashMap<String, history::Log>,
     /// Skin faces by account id, for tiles of instances without a still.
     pub faces: HashMap<Uuid, Arc<RenderImage>>,
-    /// Version and page of a newer release, when the daily check found one.
-    pub update: Option<(String, String)>,
+    /// What the updater has found, downloaded and kept.
+    pub updates: Updates,
+}
+
+/// Where the updater is, as the sidebar footer and Settings show it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum UpdateStatus {
+    #[default]
+    Idle,
+    Checking,
+    Current,
+    /// A newer release; `installs` when this install can take it by itself, otherwise its page is the way.
+    Available { version: String, page: String, installs: bool },
+    Downloading { version: String, percent: Option<u8> },
+    /// Downloaded and verified; it goes in when the app quits.
+    Ready { version: String },
+}
+
+/// The updater's part of the model.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Updates {
+    pub status: UpdateStatus,
+    /// Version and first line of the notes of the update just installed, until dismissed.
+    pub news: Option<(String, String)>,
+    /// The version kept for going back.
+    pub previous: Option<String>,
+    pub trouble: Option<crate::core::updater::Trouble>,
+    /// The check the user asked for could not reach GitHub.
+    pub offline: bool,
+    /// The user asked for the running check or download, so its progress shows in the sidebar too.
+    pub asked: bool,
 }
 
 impl Model {

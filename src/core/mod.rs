@@ -32,4 +32,4 @@ pub mod settings;
 pub mod skin;
 pub mod still;
 pub mod store;
-pub mod update;
+pub mod updater;
