@@ -32,7 +32,7 @@ final class Protocol {
 
 		record Badge(boolean visible) implements Incoming {}
 
-		record Level(BackgroundLevel level) implements Incoming {}
+		record Level(BackgroundLevel level, BackgroundLevel.Custom custom) implements Incoming {}
 	}
 
 	private Protocol() {}
@@ -106,7 +106,7 @@ final class Protocol {
 				case "hotkeys" -> new Incoming.Hotkeys(string(o, "next"), string(o, "prev"), string(o, "next_attention"), string(o, "grid"));
 				case "identity" -> string(o, "name") == null || string(o, "batch") == null ? null : new Incoming.Identity(string(o, "name"), string(o, "batch"), requireInt(o, "rgb") & 0xFFFFFF, string(o, "icon"));
 				case "badge" -> bool(o, "visible") == null ? null : new Incoming.Badge(bool(o, "visible"));
-				case "level" -> BackgroundLevel.parse(string(o, "level")).map(Incoming.Level::new).orElse(null);
+				case "level" -> BackgroundLevel.parse(string(o, "level")).map(l -> new Incoming.Level(l, BackgroundLevel.Custom.of(integer(o, "fps"), integer(o, "render_distance")))).orElse(null);
 				default -> null;
 			});
 		} catch (RuntimeException e) {

@@ -360,7 +360,7 @@ pub fn identity_messages(batch: &Batch, account: &Account, badge: bool) -> Vec<i
     vec![
         ipc::ToMod::Identity { name: account.name.clone(), batch: batch.name.clone(), rgb: account.rgb(), icon: Some(icon_path(batch, account.id).display().to_string()) },
         ipc::ToMod::Badge { visible: badge },
-        ipc::ToMod::Level { level: batch.background },
+        ipc::ToMod::Level(batch.background.into()),
     ]
 }
 

@@ -215,6 +215,17 @@ pub fn memory_step(mb: u32, steps: i32, max: u32) -> u32 {
     value as u32
 }
 
+/// Frames per second a custom background level steps through.
+pub const FPS_STEPS: [u8; 10] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
+/// Sight in chunks a custom background level steps through.
+pub const SIGHT_STEPS: [u8; 10] = [2, 3, 4, 6, 8, 10, 12, 16, 24, 32];
+
+/// The next value of `steps` above `value` (`up`) or below it, or `value` when there is none.
+pub fn ladder_step(value: u8, up: bool, steps: &[u8]) -> u8 {
+    let next = if up { steps.iter().find(|&&s| s > value) } else { steps.iter().rev().find(|&&s| s < value) };
+    next.copied().unwrap_or(value)
+}
+
 /// Downloads as a compact count: `950`, `1,2 Tsd.`, `12 Tsd.`, `1,2 Mio.` (English: `1.2K`, `12K`, `1.2M`).
 pub fn downloads_short(n: u64) -> String {
     if n < 1000 {
@@ -345,6 +356,18 @@ mod tests {
         assert_eq!(unique_name("Farm", &["Other"]), "Farm");
         assert_eq!(unique_name("Farm", &["farm"]), "Farm (2)");
         assert_eq!(unique_name("Farm", &["Farm", "Farm (2)"]), "Farm (3)");
+    }
+
+    #[test]
+    fn ladder_steps_to_the_neighbours_and_stops_at_the_ends() {
+        assert_eq!(ladder_step(5, true, &FPS_STEPS), 10);
+        assert_eq!(ladder_step(5, false, &FPS_STEPS), 3);
+        assert_eq!(ladder_step(7, true, &FPS_STEPS), 10);
+        assert_eq!(ladder_step(7, false, &FPS_STEPS), 5);
+        assert_eq!(ladder_step(60, true, &FPS_STEPS), 60);
+        assert_eq!(ladder_step(1, false, &FPS_STEPS), 1);
+        assert_eq!(ladder_step(32, true, &SIGHT_STEPS), 32);
+        assert_eq!(ladder_step(2, false, &SIGHT_STEPS), 2);
     }
 
     #[test]

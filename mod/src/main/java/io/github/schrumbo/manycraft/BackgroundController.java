@@ -33,12 +33,13 @@ final class BackgroundController {
 		}
 	}
 
-	record Values(int renderDistance, int simulationDistance, ParticleStatus particles, CloudStatus clouds, double masterVolume) {
-		Values reduced(BackgroundLevel level, int savingRenderDistance, int savingSimulationDistance) {
+	record Values(int renderDistance, int simulationDistance, ParticleStatus particles, CloudStatus clouds, double masterVolume, int framerateLimit) {
+		Values reduced(BackgroundLevel level, int hiddenRenderDistance, int hiddenSimulationDistance, int hiddenFramerateLimit) {
 			return switch (level) {
-				case SAVING -> new Values(savingRenderDistance, savingSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0);
-				case BALANCED -> new Values(renderDistance, simulationDistance, ParticleStatus.MINIMAL, clouds, 0.0);
-				case FULL -> new Values(renderDistance, simulationDistance, particles, clouds, 0.0);
+				case SAVING -> new Values(hiddenRenderDistance, hiddenSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, framerateLimit);
+				case BALANCED -> new Values(renderDistance, simulationDistance, ParticleStatus.MINIMAL, clouds, 0.0, framerateLimit);
+				case FULL -> new Values(renderDistance, simulationDistance, particles, clouds, 0.0, framerateLimit);
+				case CUSTOM -> new Values(hiddenRenderDistance, hiddenSimulationDistance, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, hiddenFramerateLimit);
 			};
 		}
 	}
@@ -49,6 +50,7 @@ final class BackgroundController {
 	private final BackgroundMode<Values> mode;
 	private volatile Profile profile = Profile.DEFAULT;
 	private volatile BackgroundLevel level = BackgroundLevel.SAVING;
+	private volatile BackgroundLevel.Custom custom = BackgroundLevel.Custom.DEFAULT;
 	private volatile boolean visible = true;
 	private boolean lastFocused = true;
 
@@ -65,14 +67,17 @@ final class BackgroundController {
 					o.simulationDistance().get(),
 					o.particles().get(),
 					o.cloudStatus().get(),
-					o.getSoundSourceOptionInstance(SoundSource.MASTER).get()
+					o.getSoundSourceOptionInstance(SoundSource.MASTER).get(),
+					o.framerateLimit().get()
 				);
 			}
 
 			@Override
 			public Values background(Values saved) {
 				Options o = mc.options;
-				return saved.reduced(level, clamp(o.renderDistance(), profile.renderDistance()), clamp(o.simulationDistance(), 0));
+				BackgroundLevel.Custom c = custom;
+				int sight = level == BackgroundLevel.CUSTOM ? c.renderDistance() : profile.renderDistance();
+				return saved.reduced(level, clamp(o.renderDistance(), sight), clamp(o.simulationDistance(), 0), BackgroundLevel.optionFramerate(c.fps()));
 			}
 
 			@Override
@@ -86,6 +91,7 @@ final class BackgroundController {
 					o.simulationDistance().set(v.simulationDistance());
 					o.particles().set(v.particles());
 					o.cloudStatus().set(v.clouds());
+					o.framerateLimit().set(v.framerateLimit());
 				} finally {
 					accessor.manycraft$setApplyingGraphicsPreset(false);
 				}
@@ -111,15 +117,17 @@ final class BackgroundController {
 			case SAVING -> profile.fps();
 			case BALANCED -> Math.min(BackgroundLevel.BALANCED_FPS, mc.options.framerateLimit().get());
 			case FULL -> mc.options.framerateLimit().get();
+			case CUSTOM -> custom.fps();
 		};
 	}
 
-	void applyLevel(BackgroundLevel next) {
-		if (next == level) {
+	void applyLevel(BackgroundLevel next, BackgroundLevel.Custom nextCustom) {
+		if (next == level && (next != BackgroundLevel.CUSTOM || nextCustom.equals(custom))) {
 			return;
 		}
+		custom = nextCustom;
 		level = next;
-		LOGGER.info("background level {}", next);
+		LOGGER.info("background level {} {}", next, nextCustom);
 		if (!visible) {
 			mode.enter();
 		}
