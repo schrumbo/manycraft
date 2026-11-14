@@ -24,3 +24,5 @@ pub mod prism;
 pub mod reconnect;
 #[allow(dead_code)]
 pub mod settings;
+pub mod skin;
+pub mod still;

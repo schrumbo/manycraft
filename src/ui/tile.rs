@@ -31,6 +31,10 @@ pub struct TileData {
     pub stopping: bool,
     pub whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
+    /// Whether `preview` is the running game rather than the still of an earlier run.
+    pub live: bool,
+    /// The account's skin face, shown when there is no preview.
+    pub face: Option<Arc<RenderImage>>,
     pub selected: bool,
     pub playing: bool,
 }
@@ -46,11 +50,17 @@ impl TileData {
             && self.whispers == other.whispers
             && self.selected == other.selected
             && self.playing == other.playing
-            && match (&self.preview, &other.preview) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
+            && self.live == other.live
+            && same_image(&self.preview, &other.preview)
+            && same_image(&self.face, &other.face)
+    }
+}
+
+fn same_image(a: &Option<Arc<RenderImage>>, b: &Option<Arc<RenderImage>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -121,6 +131,7 @@ pub fn show_previews(previews: Vec<(String, Arc<RenderImage>)>, cx: &mut App) {
         let Some(entity) = cx.try_global::<TileViews>().and_then(|v| v.0.get(&key).cloned()) else { continue };
         entity.update(cx, |v, cx| {
             v.data.preview = Some(image);
+            v.data.live = true;
             cx.notify();
         });
     }
@@ -336,13 +347,20 @@ fn glyph(d: &TileData, t: &Theme) -> AnyElement {
 fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement {
     let attention = tone(d, t).is_some();
     let top = px(radius::CARD);
-    let content = match &d.preview {
-        Some(image) => img(ImageSource::Render(Arc::clone(image))).size_full().rounded_t(top).object_fit(ObjectFit::Cover).when(attention, |i| i.opacity(tile::DIMMED)).into_any_element(),
-        None => match placeholder(d, t) {
-            Some((name, color)) => icon(name, if g.dense { iconsize::M } else { iconsize::L }, color).into_any_element(),
-            None => Empty.into_any_element(),
-        },
-    };
+    let live = d.preview.as_ref().filter(|_| d.live).map(|image| img(ImageSource::Render(Arc::clone(image))).size_full().rounded_t(top).object_fit(ObjectFit::Cover).when(attention, |i| i.opacity(tile::DIMMED)));
+    let still = d.preview.as_ref().filter(|_| !d.live).map(|image| {
+        let fade = linear_gradient(180., linear_color_stop(t.content.opacity(0.), 0.), linear_color_stop(t.content, 1.));
+        div()
+            .absolute()
+            .inset_0()
+            .child(img(ImageSource::Render(Arc::clone(image))).size_full().object_fit(ObjectFit::Cover).grayscale(true).opacity(tint::STILL))
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::FADE)).bg(fade))
+    });
+    let mark = placeholder(d, t).filter(|_| !d.live).map(|(name, color)| icon(name, if g.dense { iconsize::M } else { iconsize::L }, color));
+    let face = (d.preview.is_none() && mark.is_none()).then(|| match &d.face {
+        Some(face) => img(ImageSource::Render(Arc::clone(face))).size(px(tile::FACE)).flex_none().opacity(tint::FACE).into_any_element(),
+        None => icon("user", iconsize::L, with_alpha(t.secondary, tint::FACE)).into_any_element(),
+    });
     let running = d.phase.is_running() && !d.stopping;
     let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || g.small);
     let stop = (running && main != Some(Primary::Start)).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
@@ -390,7 +408,7 @@ fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement 
             .child(n.to_string())
             .tooltip(tip(if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) }))
     });
-    div().relative().w_full().h(px(g.preview)).flex_none().rounded_t(top).overflow_hidden().bg(t.well).flex().items_center().justify_center().child(content).children(actions).children(whispers).into_any_element()
+    div().relative().w_full().h(px(g.preview)).flex_none().rounded_t(top).overflow_hidden().bg(t.well).flex().items_center().justify_center().children(live).children(still).children(mark).children(face).children(actions).children(whispers).into_any_element()
 }
 
 fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {

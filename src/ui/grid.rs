@@ -262,6 +262,8 @@ fn data(i: &Instance, m: &Model, selected: &Option<String>, terse: bool) -> Tile
         stopping: i.stopping,
         whispers: i.unread_whispers,
         preview: i.preview.clone(),
+        live: i.live,
+        face: m.faces.get(&i.account_id).cloned(),
         selected: selected.as_deref() == Some(i.key.as_str()),
         playing: m.playing.as_deref() == Some(i.key.as_str()),
     }
@@ -659,7 +661,7 @@ mod tests {
     }
 
     fn mk(phase: Phase) -> Instance {
-        Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
+        Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     #[test]

@@ -44,6 +44,10 @@ pub enum Update {
     Seed { key: String, phase: Phase, attempts: u32 },
     /// Whether the saved sign-in of an account still works, from a token refresh.
     SignIn { account: uuid::Uuid, valid: bool },
+    /// The saved still of an instance, read from the cache.
+    Still { key: String, image: Arc<RenderImage> },
+    /// The skin face of an account.
+    Face { account: uuid::Uuid, image: Arc<RenderImage> },
 }
 
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
@@ -326,6 +330,7 @@ impl Global for Runtime {}
 /// Loads saved data into the model, starts the fleet and registers the action handlers.
 pub fn init(cx: &mut App) {
     let (out, updates) = async_channel::unbounded::<Update>();
+    super::stills::init(out.clone(), cx);
     let shared_visible: Arc<Mutex<HashSet<String>>> = Arc::default();
     let backend: Arc<dyn Backend> = if drive::on() {
         Arc::new(super::fake::Fake::new(out, Arc::clone(&shared_visible)))
@@ -469,6 +474,11 @@ pub fn reload(cx: &mut App) {
                 let m = model.read(cx);
                 m.accounts.iter().filter(|a| first || m.instances.values().any(|i| i.account_id == a.id && i.phase == Phase::LoginNeeded)).cloned().collect()
             };
+            let (bare, faceless): (Vec<String>, Vec<Account>) = {
+                let m = model.read(cx);
+                (m.instances.values().filter(|i| i.preview.is_none()).map(|i| i.key.clone()).collect(), m.accounts.iter().filter(|a| !m.faces.contains_key(&a.id)).cloned().collect())
+            };
+            super::stills::load(bare, faceless, cx);
             if let Some(rt) = cx.try_global::<Runtime>() {
                 rt.backend.known(known);
                 rt.backend.refresh(to_check);
@@ -511,6 +521,7 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
                 unread_whispers: 0,
                 preview: None,
                 preview_seq: 0,
+                live: false,
                 stopping: false,
             });
             instance.name = account.name.clone();
@@ -816,6 +827,7 @@ struct Effects {
     retired: Vec<Arc<RenderImage>>,
     changed_history: Vec<String>,
     stop: Vec<String>,
+    stills: Vec<(String, Arc<RenderImage>, bool)>,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -827,8 +839,8 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     update_model(cx, |m, rt, _| {
         for update in updates {
             let key = match &update {
-                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } => None,
-                Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } => Some(key.clone()),
+                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } => None,
+                Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
             };
             let before = key.as_ref().and_then(|k| m.instances.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
@@ -847,6 +859,9 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     });
     for image in fx.retired {
         cx.drop_image(image, None);
+    }
+    for (key, image, last) in fx.stills {
+        super::stills::save(&key, &image, last, cx);
     }
     save_histories(&fx.changed_history, cx);
     if !fx.stop.is_empty()
@@ -900,12 +915,16 @@ fn apply_previews(updates: Vec<Update>, cx: &mut App) {
                         retired.push(old);
                     }
                     i.preview_seq = seq;
+                    i.live = true;
                     shown.push((key, image));
                 }
                 _ => retired.push(image),
             }
         }
     });
+    for (key, image) in &shown {
+        super::stills::save(key, image, false, cx);
+    }
     super::tile::show_previews(shown, cx);
     for image in retired {
         cx.drop_image(image, None);
@@ -977,13 +996,24 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         Update::Exited { key, code } => on_exit(m, rt, fx, key, code),
         Update::Preview { key, seq, image } => match m.instances.get_mut(&key) {
             Some(i) if i.phase.is_running() => {
+                fx.stills.push((key, Arc::clone(&image), false));
                 if let Some(old) = i.preview.replace(image) {
                     fx.retired.push(old);
                 }
                 i.preview_seq = seq;
+                i.live = true;
             }
             _ => fx.retired.push(image),
         },
+        Update::Still { key, image } => match m.instances.get_mut(&key) {
+            Some(i) if i.preview.is_none() && !i.live => i.preview = Some(image),
+            _ => fx.retired.push(image),
+        },
+        Update::Face { account, image } => {
+            if let Some(old) = m.faces.insert(account, image) {
+                fx.retired.push(old);
+            }
+        }
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
             rt.pids.insert(instance.clone(), pid);
             if let Some(i) = m.instances.get_mut(&instance)
@@ -1006,9 +1036,12 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
     i.stopping = false;
-    if let Some(old) = i.preview.take() {
-        fx.retired.push(old);
+    if i.live
+        && let Some(image) = &i.preview
+    {
+        fx.stills.push((key.clone(), Arc::clone(image), true));
     }
+    i.live = false;
     if m.playing.as_deref() == Some(key.as_str()) {
         fx.exited_playing = true;
     }
@@ -1347,7 +1380,7 @@ mod tests {
     use super::{AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, Instance, Instant, Kind, Model, Phase, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
-        Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
+        Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     #[test]
@@ -1421,7 +1454,7 @@ mod tests {
         let key = fleet::instance_key(&batch, id);
         let mut m = Model::default();
         m.accounts.push(Account { id, name: "AltOne".into(), kind, proxy: None });
-        m.instances.insert(key.clone(), Instance { key: key.clone(), batch_id: batch.id.clone(), account_id: id, name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false });
+        m.instances.insert(key.clone(), Instance { key: key.clone(), batch_id: batch.id.clone(), account_id: id, name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false });
         m.batches.push(batch);
         (m, runtime(), key)
     }

@@ -61,6 +61,8 @@ pub struct Instance {
     pub unread_whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
     pub preview_seq: u32,
+    /// Whether `preview` came from the running game; otherwise it is the still of an earlier run.
+    pub live: bool,
     pub stopping: bool,
 }
 
@@ -88,6 +90,8 @@ pub struct Model {
     pub order_seq: u64,
     /// Last events of every instance by key, oldest first, at most `history::KEPT` each.
     pub history: HashMap<String, history::Log>,
+    /// Skin faces by account id, for tiles of instances without a still.
+    pub faces: HashMap<Uuid, Arc<RenderImage>>,
 }
 
 impl Model {
@@ -159,7 +163,7 @@ mod tests {
     use super::*;
 
     fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Instance {
-        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
+        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     #[test]

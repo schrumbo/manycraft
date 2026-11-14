@@ -103,6 +103,10 @@ pub mod tile {
     pub const HEADING: f32 = 40.;
     /// Blur of the soft shadow under a tile in the light appearance.
     pub const SHADOW_BLUR: f32 = 3.;
+    /// Height of the fade at the bottom of a still, so the strip below stays apart from it.
+    pub const FADE: f32 = 2.;
+    /// Side of the skin face on a tile without a still.
+    pub const FACE: f32 = 32.;
     /// How far past the visible rows the grid lays out, so the wheel always knows the next row's height.
     pub const OVERDRAW: f32 = 8.;
 }
@@ -141,6 +145,10 @@ pub mod tint {
     pub const SCRIM: f32 = 0.28;
     /// The bottom of the shade under a hovered preview's actions.
     pub const PREVIEW_SHADE: f32 = 0.55;
+    /// How much of a stopped instance's last frame shows through.
+    pub const STILL: f32 = 0.4;
+    /// How much of the skin face shows on a tile that never ran.
+    pub const FACE: f32 = 0.5;
     /// The soft shadow under a card in the light appearance.
     pub const CARD_SHADOW: f32 = 0.08;
     /// Controls floating over a preview.
