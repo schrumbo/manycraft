@@ -306,7 +306,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount), true),
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
-        ("search", tr("Suchen"), Box::new(FocusSearch), true),
+        ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
         ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.instances.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
         ("gamepad-2", tr("Vorherigen Account spielen"), Box::new(PreviousInstance), playable),

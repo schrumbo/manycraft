@@ -1,3 +1,4 @@
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -11,7 +12,7 @@ use super::grid::Grid;
 use super::model;
 use super::motion::Soft;
 use super::native::{self, Rect};
-use super::theme::{self, Theme, control, font, iconsize, shell, space, tint};
+use super::theme::{self, Theme, chat, control, font, iconsize, selection, shell, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button};
 use crate::core::i18n::{tr, trf};
 
@@ -67,7 +68,6 @@ impl TileSize {
 
 pub struct MainWindow {
     pub(super) focus: FocusHandle,
-    focused_once: bool,
     pub(super) page: Page,
     pub(super) filter: Filter,
     pub(super) size: TileSize,
@@ -125,7 +125,6 @@ impl MainWindow {
         Self::look_for_prism(cx);
         Self {
             focus: cx.focus_handle(),
-            focused_once: false,
             page: Page::Grid(None),
             filter: Filter::All,
             size: TileSize::Medium,
@@ -168,15 +167,17 @@ impl MainWindow {
             self.grid.forget();
             self.grid.reset_scroll();
         }
-        if matches!(self.page, Page::Grid(_)) {
-            window.focus(&self.grid.focus, cx);
-        }
+        self.focus_page(window, cx);
+        cx.defer_in(window, |this, window, cx| this.focus_page(window, cx));
         cx.notify();
     }
 
     /// Hands the keyboard to the page: the grid when it shows, the window otherwise.
     pub(super) fn focus_page(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.page, Page::Grid(_)) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        if matches!(self.page, Page::Grid(_)) && !self.onboarding_shown(cx) {
             window.focus(&self.grid.focus, cx);
         } else {
             window.focus(&self.focus, cx);
@@ -277,6 +278,29 @@ impl MainWindow {
         window.set_window_title(&title);
     }
 
+    /// Whether the current page has a search or filter for Ctrl+F to reach.
+    pub fn can_search(&self, cx: &App) -> bool {
+        match self.page {
+            Page::Grid(_) => !self.onboarding_shown(cx),
+            Page::Accounts => super::accounts::has_filter(cx),
+            Page::Chat => super::chat::has_filter(cx),
+        }
+    }
+
+    /// How far above the content's bottom edge the undo notices sit, so they clear what the page keeps there.
+    fn toast_lift(&self, _cx: &App) -> f32 {
+        match self.page {
+            Page::Chat => chat::COMPOSER + space::S,
+            Page::Grid(_) if self.grid.picks.set.len() > 1 => selection::BOTTOM + selection::BAR + space::S,
+            _ => space::XL,
+        }
+    }
+
+    fn onboarding_shown(&self, cx: &App) -> bool {
+        let m = model::get(cx).read(cx);
+        m.accounts.is_empty() || m.batches.is_empty()
+    }
+
     fn onboarding(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let t = Theme::get(cx);
         let m = model::get(cx);
@@ -330,8 +354,8 @@ impl Render for MainWindow {
         super::perf::frame_start();
         super::theme::follow_focus(window, cx);
         self.narrow_now = Self::narrow(window);
-        if !std::mem::replace(&mut self.focused_once, true) && window.focused(cx).is_none() {
-            window.focus(&self.grid.focus, cx);
+        if window.focused(cx).is_none() || (matches!(self.page, Page::Grid(_)) && !self.onboarding_shown(cx) && self.focus.is_focused(window)) {
+            self.focus_page(window, cx);
         }
         self.update_title(window, cx);
         let t = Theme::get(cx);
@@ -404,11 +428,15 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &TileLarge, window, cx| this.set_size(TileSize::Large, window, cx)))
             .on_action(cx.listener(|this, _: &TileFit, window, cx| this.set_size(TileSize::Fit, window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                if !matches!(this.page, Page::Grid(_)) {
-                    this.page = Page::Grid(None);
+                match this.page {
+                    Page::Grid(_) if this.can_search(cx) => {
+                        this.search.update(cx, |s, cx| s.take_focus(window, cx));
+                        cx.notify();
+                    }
+                    Page::Accounts => super::accounts::focus_filter(window, cx),
+                    Page::Chat => super::chat::focus_filter(window, cx),
+                    Page::Grid(_) => {}
                 }
-                this.search.update(cx, |s, cx| s.take_focus(window, cx));
-                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
                 this.search.update(cx, |s, cx| s.set_value("", window, cx));
@@ -465,7 +493,7 @@ impl Render for MainWindow {
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE))
             .when(show_sidebar, |d| d.child(super::sidebar::render(self, window, cx)))
-            .child(div().flex_1().min_w_0().h_full().bg(t.window).child(content))
+            .child(div().relative().flex_1().min_w_0().h_full().bg(t.window).child(content).when(!(narrow && self.overlay), |d| d.child(super::toolbar::toggle(self, &t, cx))).children(super::accounts::toasts(cx).map(|toasts| div().absolute().left_0().right_0().bottom(px(self.toast_lift(cx))).child(toasts))))
             .when(narrow && self.overlay, |d| {
                 d.child(
                     div()
@@ -495,6 +523,7 @@ impl Render for MainWindow {
                         .child(super::sidebar::render(self, window, cx)),
                 )
             })
+            .when(narrow && self.overlay, |d| d.child(super::toolbar::toggle(self, &t, cx)))
             .children(palette);
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, &t)

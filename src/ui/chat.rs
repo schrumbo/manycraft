@@ -19,7 +19,8 @@ use super::main_window::{self, MainWindow, Page};
 use super::model::{self, ChatLine, Model};
 use super::motion::Soft;
 use super::sheet::{self, Look};
-use super::theme::{Theme, chat, control, font, iconsize, radius, shell, space, tint, with_alpha};
+use super::toolbar;
+use super::theme::{Theme, chat, control, font, iconsize, radius, shell, space, tile, tint, with_alpha};
 use super::widgets::{KeyNav, TakeFocus, icon};
 use crate::core::batch::MAX_CHAT_CHARS;
 use crate::core::i18n::{tr, trf};
@@ -57,6 +58,22 @@ pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
     let view = cx.new(|cx| ChatPage::new(window, cx));
     cx.set_global(Shared(view.clone()));
     view
+}
+
+/// Whether the Chat page shows a filter to focus: the batch picker, while the shared chat is on.
+pub fn has_filter(cx: &App) -> bool {
+    settings::active().merged_chat && cx.try_global::<Shared>().is_some()
+}
+
+/// Moves the Chat page's batch picker into focus.
+pub fn focus_filter(window: &mut Window, cx: &mut App) {
+    if !has_filter(cx) {
+        return;
+    }
+    let Some(page) = cx.try_global::<Shared>().map(|s| s.0.clone()) else { return };
+    let select = page.read(cx).batch_select.clone();
+    let handle = Focusable::focus_handle(select.read(cx), cx);
+    window.focus(&handle, cx);
 }
 
 struct Shared(Entity<ChatPage>);
@@ -340,7 +357,6 @@ impl ChatPage {
     }
 
     fn header(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
-        let toggle = sheet::sidebar_toggle("chat-sidebar", t);
         let whispers = self.scope.whispers;
         let on = settings::active().merged_chat;
         let title = tr("Chat");
@@ -364,13 +380,14 @@ impl ChatPage {
         div()
             .h(px(shell::TOOLBAR))
             .flex_none()
-            .px(px(space::M))
+            .pl(px(toolbar::lead()))
+            .pr(px(tile::INSET))
             .flex()
             .items_center()
             .gap(px(space::S))
             .border_b_1()
             .border_color(t.separator)
-            .child(toggle)
+            .child(toolbar::slot())
             .child(div().id("chat-title").mark("heading", title.clone()).min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
             .child(div().w(px(space::S)).flex_none())
             .children(on.then_some(segments))
