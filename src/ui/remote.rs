@@ -14,7 +14,7 @@ use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
-use crate::core::{drive, fleet, install};
+use crate::core::{browser, drive, fleet, install, webauth};
 
 use super::forms::{self, Plain, Problem};
 
@@ -49,11 +49,36 @@ fn gone(what: String) -> anyhow::Error {
 
 /// Steps of a Microsoft sign-in as the sheet shows them.
 pub enum SignIn {
-    Code { user_code: String, uri: String, expires_in: u64 },
+    /// The sign-in window is on screen.
+    Window,
+    Code(CodeStep),
     Approved,
     /// Signed in; carries the account name as Minecraft knows it.
     Done(String),
     Failed(SignInError),
+}
+
+/// A device code to enter in the browser, with what the sheet needs to say about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeStep {
+    pub user_code: String,
+    /// The Microsoft page with the code filled in.
+    pub link: String,
+    pub expires_in: u64,
+    /// Whether the default browser can open the page in a private window.
+    pub private: bool,
+    /// The sign-in window could not be shown, so the sign-in went on in the browser.
+    pub fallback: bool,
+    /// The person asked for the browser in the sign-in window, so the page opens at once.
+    pub open: bool,
+}
+
+/// Where a Microsoft sign-in happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    /// Manycraft's own sign-in window, or the browser when that is not possible.
+    Window,
+    Browser,
 }
 
 /// Why a sign-in stopped, sorted by what the person can do about it.
@@ -61,6 +86,7 @@ pub enum SignIn {
 pub enum SignInError {
     Expired,
     Declined,
+    Closed,
     NoClientId,
     NotOwned,
     WrongAccount(String),
@@ -68,26 +94,49 @@ pub enum SignInError {
     Other(Problem),
 }
 
-/// Runs a device-code sign-in through `proxy` and sends each step to `tx`. Once `cancel` is set nothing more is
-/// stored or sent. With `expected` only that account may sign in.
-pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: Arc<AtomicBool>, tx: async_channel::Sender<SignIn>) {
+#[derive(Debug)]
+struct WindowClosed;
+
+impl std::fmt::Display for WindowClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the sign-in window was closed")
+    }
+}
+
+impl std::error::Error for WindowClosed {}
+
+static NO_WINDOW: AtomicBool = AtomicBool::new(false);
+
+/// Whether a sign-in through `proxy` asked for `via` starts in the sign-in window rather than the browser.
+pub fn uses_window(proxy: Option<&str>, via: Via) -> bool {
+    via == Via::Window && proxy.is_none() && !NO_WINDOW.load(Ordering::SeqCst)
+}
+
+enum Next {
+    Tokens(auth::Tokens),
+    Browser { open: bool, fallback: bool },
+}
+
+/// Runs a Microsoft sign-in through `proxy` and sends each step to `tx`. Once `cancel` is set nothing more is
+/// stored or sent and the sign-in window closes. With `expected` only that account may sign in. The sign-in window is used
+/// only without a proxy, since it cannot route through one; after it failed to open once, the browser is used.
+pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, via: Via, cancel: Arc<AtomicBool>, tx: async_channel::Sender<SignIn>) {
     let send = |step: SignIn| {
         if !cancel.load(Ordering::SeqCst) {
             let _ = tx.send_blocking(step);
         }
     };
     if drive::on() {
-        return canned_sign_in(proxy, expected, &cancel, send);
+        return canned_sign_in(proxy, expected, via, &cancel, send);
     }
     let run = || -> Result<Account> {
         let flow = auth::Flow::new(proxy.as_deref())?;
-        let code = flow.start()?;
-        send(SignIn::Code { user_code: code.user_code.clone(), uri: code.verification_uri.clone(), expires_in: code.expires_in });
-        let tokens = flow.poll_cancellable(&code, &cancel)?;
-        if cancel.load(Ordering::SeqCst) {
-            bail!("cancelled");
-        }
-        send(SignIn::Approved);
+        let windowed = uses_window(proxy.as_deref(), via) && flow.has_window();
+        let next = if windowed { in_window(&flow, &cancel, &send)? } else { Next::Browser { open: false, fallback: false } };
+        let tokens = match next {
+            Next::Tokens(tokens) => tokens,
+            Next::Browser { open, fallback } => in_browser(&flow, &cancel, &send, open, fallback)?,
+        };
         let replace = if expected.is_some() { None } else { proxy.as_deref() };
         let mut held = None;
         auth::save_sign_in(&flow, tokens, replace, expected, &mut || {
@@ -106,6 +155,51 @@ pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: Arc<Atomic
     }
 }
 
+fn window_request() -> webauth::Request {
+    use crate::core::i18n::tr;
+    webauth::Request { url: webauth::authorize_url(), title: tr("Mit Microsoft anmelden"), browser_label: tr("Im Browser öffnen"), quiet: drive::dir().is_some() }
+}
+
+fn in_window(flow: &auth::Flow, cancel: &AtomicBool, send: &impl Fn(SignIn)) -> Result<Next> {
+    let Ok(mut window) = webauth::Window::open(&window_request()) else {
+        NO_WINDOW.store(true, Ordering::SeqCst);
+        return Ok(Next::Browser { open: false, fallback: true });
+    };
+    let outcome = window.wait(cancel, || send(SignIn::Window));
+    std::thread::spawn(move || drop(window));
+    match outcome {
+        webauth::Outcome::Code(code) => {
+            if cancel.load(Ordering::SeqCst) {
+                bail!("cancelled");
+            }
+            send(SignIn::Approved);
+            flow.redeem(&code).map(Next::Tokens)
+        }
+        webauth::Outcome::Denied { error, .. } if error == "access_denied" => Err(AuthError::Declined.into()),
+        webauth::Outcome::Denied { error, description } => bail!("Microsoft sign-in failed: {error}: {description}"),
+        webauth::Outcome::Browser => Ok(Next::Browser { open: true, fallback: false }),
+        webauth::Outcome::Closed => Err(WindowClosed.into()),
+        webauth::Outcome::NoWindow(_) => {
+            NO_WINDOW.store(true, Ordering::SeqCst);
+            Ok(Next::Browser { open: false, fallback: true })
+        }
+        webauth::Outcome::Cancelled => Err(AuthError::Cancelled.into()),
+    }
+}
+
+fn in_browser(flow: &auth::Flow, cancel: &AtomicBool, send: &impl Fn(SignIn), open: bool, fallback: bool) -> Result<auth::Tokens> {
+    let code = flow.start()?;
+    let link = webauth::link_with_code(&code.verification_uri, &code.user_code);
+    let private = browser::default().is_some_and(|b| b.private());
+    send(SignIn::Code(CodeStep { user_code: code.user_code.clone(), link, expires_in: code.expires_in, private, fallback, open }));
+    let tokens = flow.poll_cancellable(&code, cancel)?;
+    if cancel.load(Ordering::SeqCst) {
+        bail!("cancelled");
+    }
+    send(SignIn::Approved);
+    Ok(tokens)
+}
+
 fn classify(e: &anyhow::Error) -> SignInError {
     if let Some(auth) = e.downcast_ref::<AuthError>() {
         return match auth {
@@ -115,6 +209,9 @@ fn classify(e: &anyhow::Error) -> SignInError {
             AuthError::GameNotOwned => SignInError::NotOwned,
             other => SignInError::Other(Problem::plain(auth_text(other))),
         };
+    }
+    if e.downcast_ref::<WindowClosed>().is_some() {
+        return SignInError::Closed;
     }
     if let Some(WrongAccount(name)) = e.downcast_ref::<WrongAccount>() {
         return SignInError::WrongAccount(name.clone());
@@ -146,7 +243,7 @@ fn auth_text(e: &AuthError) -> String {
     }
 }
 
-fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &AtomicBool, send: impl Fn(SignIn)) {
+fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, via: Via, cancel: &AtomicBool, send: impl Fn(SignIn)) {
     let outcome = drive::dir().and_then(|d| std::fs::read_to_string(d.join("auth")).ok()).unwrap_or_default().trim().to_string();
     drive::note(format!("sign-in canned {}", if outcome.is_empty() { "ok" } else { &outcome }));
     auth::sleep_unless(cancel, CANNED_DELAY);
@@ -158,11 +255,45 @@ fn canned_sign_in(proxy: Option<String>, expected: Option<Uuid>, cancel: &Atomic
     if let Some(f) = failure {
         return send(SignIn::Failed(f));
     }
-    send(SignIn::Code { user_code: "DRV4-2K9Q".into(), uri: "https://www.microsoft.com/link".into(), expires_in: 900 });
-    auth::sleep_unless(cancel, Duration::from_millis(if outcome == "wait" { 600_000 } else { 2500 }));
-    if cancel.load(Ordering::SeqCst) {
-        drive::note("sign-in stopped".into());
-        return;
+    let windowed = uses_window(proxy.as_deref(), via) && outcome != "nowindow";
+    let (mut open, mut fallback) = (false, outcome == "nowindow");
+    if windowed && outcome == "realwindow" {
+        drive::note("sign-in window real".into());
+        let ended = match webauth::Window::open(&window_request()) {
+            Ok(mut window) => window.wait(cancel, || send(SignIn::Window)),
+            Err(e) => webauth::Outcome::NoWindow(e.to_string()),
+        };
+        drive::note(format!("sign-in window ended {ended:?}"));
+        match ended {
+            webauth::Outcome::Closed => return send(SignIn::Failed(SignInError::Closed)),
+            webauth::Outcome::Denied { .. } => return send(SignIn::Failed(SignInError::Declined)),
+            webauth::Outcome::Browser => open = true,
+            webauth::Outcome::NoWindow(_) => fallback = true,
+            webauth::Outcome::Cancelled => return drive::note("sign-in stopped".into()),
+            webauth::Outcome::Code(_) => {}
+        }
+    } else if windowed {
+        drive::note("sign-in window".into());
+        send(SignIn::Window);
+        auth::sleep_unless(cancel, Duration::from_millis(if outcome == "wait" { 600_000 } else { 2500 }));
+        if cancel.load(Ordering::SeqCst) {
+            drive::note("sign-in stopped".into());
+            return;
+        }
+        match outcome.as_str() {
+            "closed" => return send(SignIn::Failed(SignInError::Closed)),
+            "browser" => open = true,
+            _ => {}
+        }
+    }
+    if !windowed || open || fallback {
+        let code = "DRV4-2K9Q";
+        send(SignIn::Code(CodeStep { user_code: code.into(), link: webauth::link_with_code("https://www.microsoft.com/link", code), expires_in: 900, private: outcome != "noprivate", fallback, open }));
+        auth::sleep_unless(cancel, Duration::from_millis(if outcome == "wait" || outcome == "browser" { 600_000 } else { 2500 }));
+        if cancel.load(Ordering::SeqCst) {
+            drive::note("sign-in stopped".into());
+            return;
+        }
     }
     let failure = match outcome.as_str() {
         "expired" => Some(SignInError::Expired),
@@ -657,6 +788,7 @@ mod tests {
         assert_eq!(classify(&AuthError::InvalidClientId.into()), SignInError::NoClientId);
         assert_eq!(classify(&AuthError::GameNotOwned.into()), SignInError::NotOwned);
         assert_eq!(classify(&WrongAccount("X".into()).into()), SignInError::WrongAccount("X".into()));
+        assert_eq!(classify(&WindowClosed.into()), SignInError::Closed);
         let io: anyhow::Error = anyhow::Error::from(std::io::Error::other("reset")).context("cannot reach Microsoft");
         assert_eq!(classify(&io), SignInError::Network);
         assert!(matches!(classify(&AuthError::ChildAccount.into()), SignInError::Other(_)));

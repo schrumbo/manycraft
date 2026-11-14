@@ -2,6 +2,7 @@ pub mod account;
 pub mod auth;
 #[allow(dead_code)]
 pub mod batch;
+pub mod browser;
 pub mod cli;
 #[allow(dead_code)]
 pub mod companion;
@@ -32,7 +33,9 @@ pub mod scrub;
 pub mod skins;
 #[allow(dead_code)]
 pub mod settings;
+pub mod signin_window;
 pub mod skin;
 pub mod still;
 pub mod store;
 pub mod updater;
+pub mod webauth;

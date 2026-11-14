@@ -37,7 +37,7 @@ jobs:
         run: echo "MANYCRAFT_COMPANION_JAR=$(ls "$RUNNER_TEMP"/companion/*.jar | head -1)" >> "$GITHUB_ENV"
       - name: Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libdbus-1-dev libasound2-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libdbus-1-dev libasound2-dev libwebkit2gtk-4.1-dev libgtk-3-dev pkg-config
       - name: Build
         run: cargo build --locked
       - name: Test
