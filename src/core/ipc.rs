@@ -2,6 +2,7 @@
 //! plus a preview file the mod writes and the manager reads.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
@@ -315,6 +316,22 @@ pub fn read_preview(path: &Path) -> Option<Preview> {
     (u32::from_le_bytes(header[4..8].try_into().ok()?) == preview.seq).then_some(preview)
 }
 
+/// Remembers the last frame shown per instance, so a frame that repeats the last one is not drawn again.
+#[derive(Default)]
+pub struct PreviewChanges(HashMap<String, (u32, u64)>);
+
+impl PreviewChanges {
+    /// Whether `preview` differs from the last frame passed for `key`. A `seq` that did not rise means a new game process or a read again and counts as a change.
+    pub fn changed(&mut self, key: &str, preview: &Preview) -> bool {
+        let mut hasher = std::hash::DefaultHasher::new();
+        (preview.width, preview.height, &preview.rgba).hash(&mut hasher);
+        let print = hasher.finish();
+        let fresh = self.0.get(key).is_none_or(|&(seq, last)| last != print || preview.seq <= seq);
+        self.0.insert(key.to_owned(), (preview.seq, print));
+        fresh
+    }
+}
+
 fn parse_preview(bytes: &[u8]) -> Option<Preview> {
     let word = |i: usize| bytes.get(i..i + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
     if word(0)? != PREVIEW_MAGIC {
@@ -480,5 +497,21 @@ mod tests {
         writing[4..8].copy_from_slice(&9u32.to_le_bytes());
         assert!(parse_preview(&writing).is_none());
         assert!(read_preview(&dir.path().join("missing")).is_none());
+    }
+
+    #[test]
+    fn a_repeated_frame_is_no_change_until_the_game_restarts() {
+        let frame = |seq, rgba: &[u8]| Preview { seq, width: 1, height: 1, rgba: rgba.to_vec() };
+        let mut changes = PreviewChanges::default();
+        assert!(changes.changed("a", &frame(2, &[1, 2, 3, 4])));
+        assert!(!changes.changed("a", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("a", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("b", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("a", &frame(6, &[1, 2, 3, 5])));
+        assert!(!changes.changed("a", &frame(8, &[1, 2, 3, 5])));
+        assert!(changes.changed("a", &frame(2, &[1, 2, 3, 5])));
+        assert!(!changes.changed("a", &frame(4, &[1, 2, 3, 5])));
+        let wide = Preview { seq: 6, width: 2, height: 1, rgba: vec![1, 2, 3, 5] };
+        assert!(changes.changed("a", &wide));
     }
 }

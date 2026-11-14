@@ -396,6 +396,8 @@ def start(opts):
     env["MANYCRAFT_LANG"] = opts["lang"] or "de"
     if opts["live"]:
         env["MANYCRAFT_DRIVE_LIVE"] = "1"
+    if opts["still"]:
+        env["MANYCRAFT_FAKE_STILL"] = "1"
     if WIN and not opts["visible"]:
         env["MANYCRAFT_DRIVE_AWAY"] = "1"
     (d / "drive.json").unlink(missing_ok=True)
@@ -597,12 +599,13 @@ def perf_measure(inst, scenario):
 
 
 HELP = """\
-app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH] [--debug] [--no-build] [--visible] [--live-modrinth]
+app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH] [--debug] [--no-build] [--visible] [--live-modrinth] [--still]
                                  build, then start a new private instance: own MANYCRAFT_HOME with N fake offline accounts (default 3),
                                  one batch, a temp folder; never starts Minecraft;
                                  --name N restarts your instance N (e.g. after a rebuild);
                                  on Windows its windows open outside every screen unless --visible;
-                                 --live-modrinth lets mod search, defaults and icons read the real Modrinth (read only)
+                                 --live-modrinth lets mod search, defaults and icons read the real Modrinth (read only);
+                                 --still: the fake games repeat one picture and nobody whispers, for measuring idle frames
 app ps | app gc                  instances of this worktree | remove dead ones
 app stop [--all]                 quit the selected instance (or all of yours)
 app windows                      window id, size, position, scale, theme, title (alias: list)
@@ -669,7 +672,7 @@ def main(argv):
         print(HELP)
         return
     if cmd == "start":
-        opts = {"name": None, "theme": None, "lang": None, "instances": 3, "size": (1280, 800), "debug": False, "build": True, "timeout": 90, "ttl": 1800, "visible": False, "live": False}
+        opts = {"name": None, "theme": None, "lang": None, "instances": 3, "size": (1280, 800), "debug": False, "build": True, "timeout": 90, "ttl": 1800, "visible": False, "live": False, "still": False}
         a = iter(args)
         for x in a:
             if x == "--name":
@@ -693,6 +696,8 @@ def main(argv):
                 opts["visible"] = True
             elif x == "--live-modrinth":
                 opts["live"] = True
+            elif x == "--still":
+                opts["still"] = True
             elif x == "--timeout":
                 opts["timeout"] = float(next(a))
             elif x == "--ttl":

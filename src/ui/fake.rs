@@ -12,7 +12,7 @@ use super::state::{Backend, Update, render_image};
 use crate::core::account::Account;
 use crate::core::batch::Batch;
 use crate::core::fleet;
-use crate::core::ipc::{ChatKind, Event, FromMod, StateKind, ToMod};
+use crate::core::ipc::{ChatKind, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
 
 const PREVIEW_W: u32 = 192;
 const PREVIEW_H: u32 = 108;
@@ -93,6 +93,8 @@ struct Sim {
     reconnects: u64,
     chat_at: Instant,
     chat_n: u64,
+    still: bool,
+    changes: PreviewChanges,
 }
 
 fn hash(text: &str) -> u64 {
@@ -109,7 +111,7 @@ fn connected(instance: &str) -> Update {
 
 impl Sim {
     fn new(out: async_channel::Sender<Update>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
-        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0 }
+        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default() }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Cmd>) {
@@ -297,7 +299,7 @@ impl Sim {
             keys.sort();
             if !keys.is_empty() {
                 let key = keys[(hash(&self.chat_n.to_string()) as usize) % keys.len()].clone();
-                let line = self.chat_line(&key, (self.chat_n + 1).is_multiple_of(WHISPER_EVERY), false);
+                let line = self.chat_line(&key, !self.still && (self.chat_n + 1).is_multiple_of(WHISPER_EVERY), false);
                 let lines = match &line {
                     Update::Ipc(Event::Message { message: FromMod::Chat { kind: ChatKind::Player, from, text }, .. }) => keys
                         .iter()
@@ -319,7 +321,11 @@ impl Sim {
             }
             run.seq += 2;
             run.next_preview = now + PREVIEW_EVERY + Duration::from_millis(hash(key) % 1500);
-            let Some(image) = render_image(PREVIEW_W, PREVIEW_H, frame(hash(key), run.seq)) else { continue };
+            let preview = Preview { seq: run.seq, width: PREVIEW_W, height: PREVIEW_H, rgba: frame(hash(key), if self.still { 2 } else { run.seq }) };
+            if !self.changes.changed(key, &preview) {
+                continue;
+            }
+            let Some(image) = render_image(preview.width, preview.height, preview.rgba) else { continue };
             if self.out.send_blocking(Update::Preview { key: key.clone(), seq: run.seq, image }).is_err() {
                 return false;
             }
