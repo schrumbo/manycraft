@@ -50,6 +50,7 @@ fn main() {
         ui::state::init(cx);
         ui::accounts::init(cx);
         ui::batch_sheet::init(cx);
+        ui::transfer::init(cx);
         ui::settings_window::init(cx);
         ui::main_window::open(cx);
         ui::drive::init(cx);

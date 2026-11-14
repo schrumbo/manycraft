@@ -158,9 +158,28 @@ pub fn allowed(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some_and(|h| HOSTS.contains(&h)))
 }
 
-/// Whether `path` looks like something [`import`] takes: a `.mrpack` or `.zip` file, or a folder.
-pub fn importable(path: &Path) -> bool {
-    path.is_dir() || path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION) || e.eq_ignore_ascii_case("zip"))
+/// The name [`import`] would start from, after the same checks but without downloading or writing anything.
+pub fn peek(path: &Path) -> Result<String> {
+    if path.is_dir() {
+        if !prism::is_instance(path) {
+            bail!(Refused::Unknown);
+        }
+        let instance = prism::instance_at(path)?;
+        return match instance.unsupported {
+            Some(reason) => bail!(Refused::Prism(reason)),
+            None => Ok(instance.name),
+        };
+    }
+    let file = File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let Ok(mut zip) = ZipArchive::new(file) else { bail!(Refused::Unknown) };
+    if zip.index_for_name(INDEX).is_some() {
+        let pack = read_index(&mut zip)?;
+        overrides(&mut zip)?;
+        return Ok(pack.name);
+    }
+    let Some(prefix) = prism::export_prefix(&zip) else { bail!(Refused::Unknown) };
+    let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
+    peek(&prism::unpack_export(&mut zip, &prefix, staging.path())?)
 }
 
 /// A batch name for `base` that no batch in `taken` uses: `base`, `base (2)`, … within the name length limit.

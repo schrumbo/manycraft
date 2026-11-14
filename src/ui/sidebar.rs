@@ -1,10 +1,10 @@
 //! The sidebar: all instances, one row per batch with what needs attention, accounts and chat.
 
-use gpui_kit::component::menu::ContextMenuExt;
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{DismissNews, EditBatch, NewBatch, OpenSettings, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{CancelImport, DismissNews, EditBatch, ExportBatch, ImportBatch, NewBatch, OpenBatchFolder, OpenSettings, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -190,6 +190,62 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
     }
 }
 
+/// The menu of a batch, in the sidebar and over its tiles.
+pub fn batch_menu(menu: PopupMenu, id: &str, running: usize, stopped: usize, exporting: bool) -> PopupMenu {
+    menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(id.to_owned())), stopped == 0)
+        .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), running == 0)
+        .separator()
+        .menu(tr("Batch bearbeiten"), Box::new(EditBatch(id.to_owned())))
+        .menu(tr("Batch-Ordner öffnen"), Box::new(OpenBatchFolder(id.to_owned())))
+        .when(!exporting, |menu| menu.menu(tr("Als .mrpack exportieren…"), Box::new(ExportBatch(id.to_owned()))))
+        .separator()
+        .menu(tr("Batch importieren…"), Box::new(ImportBatch))
+}
+
+fn import_row(import: &model::Import, t: &Theme) -> Stateful<Div> {
+    let stopping = import.cancel.load(std::sync::atomic::Ordering::SeqCst);
+    let state = if stopping {
+        tr("Bricht ab …")
+    } else {
+        import.percent.map_or_else(|| tr("Prüft …"), |p| format!("{p} %"))
+    };
+    let cancel = tr("Import abbrechen");
+    let id = import.id;
+    div()
+        .id(SharedString::from(format!("nav-import-{id}")))
+        .mark("row", import.name.clone())
+        .h(px(shell::ROW))
+        .px(px(space::S))
+        .rounded(px(radius::INNER))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(space::S))
+        .child(icon("download", iconsize::M, t.tertiary))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.secondary).child(import.name.clone()))
+        .child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(state))
+        .tooltip(tip(trf("„%@“ wird als Batch importiert.", &[&import.name])))
+        .when(!stopping, |d| {
+            d.child(
+                div()
+                    .id(SharedString::from(format!("nav-import-cancel-{id}")))
+                    .mark("button", cancel.clone())
+                    .size(px(shell::PILL))
+                    .flex_none()
+                    .rounded(px(radius::INNER))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                    .child(icon("x", iconsize::S, t.tertiary))
+                    .tooltip(tip(cancel))
+                    .on_click(move |_, window, cx| window.dispatch_action(Box::new(CancelImport(id)), cx)),
+            )
+        })
+}
+
 fn heading(text: String, t: &Theme) -> Div {
     div().px(px(space::S)).pt(px(space::M)).pb(px(space::XS)).text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(t.tertiary).child(text)
 }
@@ -209,7 +265,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         unread: 0,
         hint: None,
     };
-    let batches: Vec<(Row, String, usize, usize)> = m
+    let batches: Vec<(Row, String, usize, usize, bool)> = m
         .batches
         .iter()
         .map(|b| {
@@ -224,23 +280,24 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 _ => trf("%lld von %lld laufen", &[&fine, &total]),
             };
             let stopped = total - running;
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{fine}/{total}")), attention, unread: 0, hint: Some(hint) }, b.id.clone(), running, stopped)
+            let exporting = m.exporting.contains(&b.id);
+            let trailing = if exporting { tr("Exportiert …") } else { format!("{fine}/{total}") };
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint) }, b.id.clone(), running, stopped, exporting)
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None };
     let updates = m.updates.clone();
     let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None };
+    let imports: Vec<AnyElement> = m.imports.iter().map(|import| {
+        let id = import.id;
+        import_row(import, &t).context_menu(move |menu, _, _| menu.menu(tr("Import abbrechen"), Box::new(CancelImport(id)))).into_any_element()
+    }).collect();
     let mut batch_rows = Vec::new();
-    for (r, id, running, stopped) in batches {
-        let (start, stop, edit) = (id.clone(), id.clone(), id);
-        let element = row(this, r, &t, cx).context_menu(move |menu, _, _| {
-            menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(start.clone())), stopped == 0)
-                .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(stop.clone())), running == 0)
-                .separator()
-                .menu(tr("Batch bearbeiten"), Box::new(EditBatch(edit.clone())))
-        });
+    for (r, id, running, stopped, exporting) in batches {
+        let element = row(this, r, &t, cx).context_menu(move |menu, _, _| batch_menu(menu, &id, running, stopped, exporting));
         batch_rows.push(element.into_any_element());
     }
+    batch_rows.extend(imports);
     let new_batch = tr("Neuer Batch");
     let settings = tr("Einstellungen");
     let shortcut = super::palette::shortcut(&OpenSettings, cx).unwrap_or_default();

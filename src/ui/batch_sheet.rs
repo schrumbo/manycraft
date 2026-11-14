@@ -1006,11 +1006,11 @@ impl BatchSheet {
     }
 
     fn render_prism_entry(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
-        if self.prism_list.is_empty() || self.original.is_some() {
+        if self.original.is_some() {
             return None;
         }
         let blocked = self.mods_busy.is_some() || self.saving;
-        let card = |id: &'static str, title: String, subtitle: String| {
+        let card = |id: &'static str, glyph: &'static str, title: String, subtitle: String| {
             div()
                 .id(id)
                 .mark("option", title.clone())
@@ -1023,23 +1023,40 @@ impl BatchSheet {
                 .rounded(px(radius::CONTROL))
                 .border_1()
                 .border_color(t.separator)
-                .child(div().size(px(control::M)).flex_none().rounded(px(radius::INNER)).bg(with_alpha(t.accent, tint::ATTENTION)).flex().items_center().justify_center().child(icon("download", iconsize::M, t.accent_text)))
+                .child(div().size(px(control::M)).flex_none().rounded(px(radius::INNER)).bg(with_alpha(t.accent, tint::ATTENTION)).flex().items_center().justify_center().child(icon(glyph, iconsize::M, t.accent_text)))
                 .child(div().flex_1().min_w_0().flex().flex_col().child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title)).child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)))
         };
         let entry = match self.prism_choice.clone() {
+            None if self.prism_list.is_empty() => None,
             None => {
-                let row = card("prism-pick", tr("Aus Prism-Instanz übernehmen"), tr("Version, Mods und Einstellungen aus Prism Launcher"));
+                let row = card("prism-pick", "download", tr("Aus Prism-Instanz übernehmen"), tr("Version, Mods und Einstellungen aus Prism Launcher"));
                 let row = if blocked { row.opacity(tint::DISABLED) } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))) };
-                row.child(icon("chevron-right", iconsize::M, t.tertiary))
+                Some(row.child(icon("chevron-right", iconsize::M, t.tertiary)))
             }
             Some(instance) => {
                 let subtitle = trf("Aus Prism · Minecraft %@ · %lld Mods", &[&instance.game_version.clone().unwrap_or_default(), &instance.mods]);
-                card("prism-chosen", instance.name.clone(), subtitle)
+                Some(card("prism-chosen", "download", instance.name.clone(), subtitle)
                     .child(sheet::icon_button("prism-change", "list", tr("Andere Instanz wählen"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))))
-                    .child(sheet::icon_button("prism-drop", "x", tr("Nicht aus Prism übernehmen"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.drop_prism(cx))))
+                    .child(sheet::icon_button("prism-drop", "x", tr("Nicht aus Prism übernehmen"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.drop_prism(cx)))))
             }
         };
-        Some(div().child(entry))
+        let file = self.prism_choice.is_none().then(|| {
+            let row = card("file-pick", "file-down", tr("Aus Datei importieren…"), tr("Modrinth-Modpack (.mrpack) oder Prism-Export (.zip)"));
+            let row = if blocked {
+                row.opacity(tint::DISABLED)
+            } else {
+                row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|_, _, _, cx| {
+                    let sheet = cx.weak_entity();
+                    super::transfer::pick(cx, move |cx| {
+                        cx.defer(move |cx| {
+                            let _ = sheet.update(cx, |_, cx| cx.emit(Dismissed));
+                        })
+                    });
+                }))
+            };
+            row.child(icon("chevron-right", iconsize::M, t.tertiary))
+        });
+        Some(div().flex().flex_col().gap(px(space::S)).children(entry).children(file))
     }
 
     fn render_prism_mods(&self, instance: &Instance, t: &Theme) -> Div {

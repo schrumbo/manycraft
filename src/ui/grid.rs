@@ -11,7 +11,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopBatch, StopSelected};
+use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
 use super::model::{self, Instance, Model, Phase};
@@ -511,7 +511,8 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
     let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
     let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-    let (start, stop, edit) = (batch.to_owned(), batch.to_owned(), batch.to_owned());
+    let id = batch.to_owned();
+    let exporting = m.exporting.contains(batch);
     let stopped = total - running;
     div()
         .id(SharedString::from(format!("heading-{batch}")))
@@ -541,12 +542,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                     .child(attention.to_string()),
             )
         })
-        .context_menu(move |menu, _, _| {
-            menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(start.clone())), stopped == 0)
-                .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(stop.clone())), running == 0)
-                .separator()
-                .menu(tr("Batch bearbeiten"), Box::new(EditBatch(edit.clone())))
-        })
+        .context_menu(move |menu, _, _| super::sidebar::batch_menu(menu, &id, running, stopped, exporting))
         .into_any_element()
 }
 

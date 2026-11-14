@@ -205,6 +205,8 @@ pub mod tint {
     pub const ATTENTION: f32 = 0.12;
     /// The aqua fill behind a selected row.
     pub const SELECTED: f32 = 0.22;
+    /// The accent wash over the window while files are dragged onto it.
+    pub const DROP: f32 = 0.1;
     /// The shade behind the floating sidebar.
     pub const SCRIM: f32 = 0.28;
     /// The bottom of the shade under a hovered preview's actions, and the top of the shade behind a tile's overlay strip.
