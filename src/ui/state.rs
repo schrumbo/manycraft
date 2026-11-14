@@ -932,15 +932,19 @@ pub fn play(key: &str, cx: &mut App) {
 
 fn swap_to(key: &str, place: Place, cx: &mut App) {
     let key = key.to_owned();
-    let mut previous = None;
+    let mut skipped = None;
     let mut client = place.frame;
     update_model(cx, |m, rt, _| {
         rt.place = Some(place);
         let before = m.playing.replace(key.clone());
-        previous = before.clone().filter(|p| *p != key);
-        let mut reveal = rt.reveal.take().unwrap_or(Reveal { key: key.clone(), hide: Vec::new(), manager: before.is_none() });
-        reveal.key = key.clone();
-        reveal.hide.extend(previous.clone());
+        let mut reveal = match rt.reveal.take() {
+            Some(r) if r.key != key => {
+                skipped = Some(r.key);
+                Reveal { key: key.clone(), hide: r.hide, manager: r.manager }
+            }
+            Some(r) => r,
+            None => Reveal { key: key.clone(), manager: before.is_none(), hide: before.into_iter().collect() },
+        };
         reveal.hide.retain(|k| *k != key);
         rt.reveal = Some(reveal);
         if let Some(i) = m.instances.get_mut(&key) {
@@ -957,6 +961,9 @@ fn swap_to(key: &str, place: Place, cx: &mut App) {
     drive::note(format!("play {key}"));
     if let Some(backend) = backend(cx) {
         backend.send(&key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
+        if let Some(skipped) = skipped {
+            backend.send(&skipped, ToMod::Hide);
+        }
     }
 }
 
@@ -1582,7 +1589,7 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             }
         }
         FromMod::Hotkey { action } => {
-            if playing {
+            if playing || rt.reveal.as_ref().is_some_and(|r| r.hide.contains(&key)) {
                 fx.hotkeys.push(action);
             } else if action == HotkeyAction::Grid {
                 rt.backend.send(&key, ToMod::Hide);
@@ -1948,6 +1955,16 @@ mod tests {
         let shown = fx.revealed.expect("no reveal");
         assert_eq!((shown.key, shown.hide, shown.manager), (key, vec!["before".to_owned()], true));
         assert!(rt.reveal.is_none());
+    }
+
+    #[test]
+    fn hotkeys_from_the_game_still_covering_count() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some("next".into());
+        rt.reveal = Some(Reveal { key: "next".into(), hide: vec![key.clone()], manager: false });
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key, message: FromMod::Hotkey { action: HotkeyAction::Grid } }), &mut fx);
+        assert_eq!(fx.hotkeys, [HotkeyAction::Grid]);
     }
 
     struct Quiet;

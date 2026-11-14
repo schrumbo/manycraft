@@ -155,10 +155,8 @@ final class BackgroundController {
 	void show(int x, int y, int w, int h, String windowMode) {
 		mode.exit();
 		mc.getFramerateLimitTracker().onInputReceived();
-		GameWindow.show(mc, x, y, w, h, windowMode, () -> {
-			visible = true;
-			reportWindow();
-		});
+		visible = true;
+		GameWindow.show(mc, x, y, w, h, windowMode, this::reportWindow);
 	}
 
 	void startHidden() {
@@ -168,7 +166,8 @@ final class BackgroundController {
 	}
 
 	String windowLine() {
-		return Protocol.window(visible, visible && mc.getWindow().isFocused());
+		boolean shown = visible && !GameWindow.revealing();
+		return Protocol.window(shown, shown && mc.getWindow().isFocused());
 	}
 
 	void tick() {

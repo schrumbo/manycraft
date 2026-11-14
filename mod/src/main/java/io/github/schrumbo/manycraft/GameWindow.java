@@ -111,6 +111,10 @@ final class GameWindow {
 		}
 	}
 
+	static boolean revealing() {
+		return pending != null;
+	}
+
 	static void cancel() {
 		pending = null;
 	}
