@@ -81,7 +81,7 @@ pub mod tile {
     /// Height of the dark gradient that carries the overlay strip.
     pub const BAR_SHADE: f32 = 44.;
     /// The account chip in the overlay strip.
-    pub const CHIP: f32 = 18.;
+    pub const CHIP: f32 = 20.;
     /// The colour around a skin face on an account chip.
     pub const CHIP_RIM: f32 = 2.;
     /// Above this brightness (0–255) a chip's letter is dark, below it light.

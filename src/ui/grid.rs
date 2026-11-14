@@ -402,7 +402,7 @@ fn word(i: &Instance, preparing: Option<u8>, banned: bool) -> String {
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt %lld %%", &[&preparing.unwrap_or(0)]),
         Phase::Starting { done, total } if *total > 1 => trf("Wartet %lld/%lld", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
-        Phase::Restarting { .. } => tr("Neustart"),
+        Phase::Restarting { .. } => tr("Startet neu…"),
         Phase::Menu => tr("Hauptmenü"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Versuch %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } => tr("Verbindet…"),
@@ -412,7 +412,7 @@ fn word(i: &Instance, preparing: Option<u8>, banned: bool) -> String {
         Phase::Dead { .. } => tr("Gestorben"),
         Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::Banned { .. } => tr("Gesperrt"),
-        Phase::LoginNeeded => tr("Anmeldung"),
+        Phase::LoginNeeded => tr("Anmelden nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
     }
 }
@@ -577,7 +577,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         super::state::set_visible(HashSet::new(), cx);
         if !in_scope {
             let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
-            return empty("no-accounts", "users", tr("Keine Accounts in diesem Batch"), tr("Füge dem Batch Accounts hinzu, um sie hier zu starten."), edit, &t);
+            return empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &t);
         }
         if !this.query.is_empty() {
             let clear = primary_button("clear-search", tr("Suche löschen"), "x", false, &t)
@@ -588,18 +588,18 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                     cx.notify();
                 }))
                 .into_any_element();
-            return empty("no-match", "search", tr("Keine Treffer"), trf("Kein Account passt zu „%@“.", &[&this.query]), Some(clear), &t);
+            return empty("no-match", "search", tr("Nichts gefunden."), trf("Zu „%@“ passt keiner.", &[&this.query]), Some(clear), &t);
         }
         return match this.filter {
-            Filter::Attention => empty("all-good", "circle-check", tr("Alles in Ordnung"), tr("Kein Account braucht dich gerade."), None, &t),
-            Filter::Stopped => empty("none-stopped", "circle-check", tr("Alles läuft"), tr("Kein Account ist gestoppt."), None, &t),
+            Filter::Attention => empty("all-good", "circle-check", tr("Alles ruhig."), tr("Gerade braucht dich keiner."), None, &t),
+            Filter::Stopped => empty("none-stopped", "circle-check", tr("Alle sind wach."), tr("Keiner ist gestoppt."), None, &t),
             Filter::Running | Filter::All => {
                 let start: Box<dyn Action> = match batch {
                     Some(b) => Box::new(StartBatch(b.to_owned())),
                     None => Box::new(StartAll),
                 };
                 let label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
-                empty("none-running", "play", tr("Nichts läuft"), tr("Starte die Accounts, um sie hier zu sehen."), Some(action("start-empty", label, "play", start, &t)), &t)
+                empty("none-running", "play", tr("Alle schlummern."), tr("Starte sie, dann siehst du sie hier."), Some(action("start-empty", label, "play", start, &t)), &t)
             }
         };
     }
@@ -615,7 +615,8 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let (width, height) = if area.width > px(0.) { (f32::from(area.width), f32::from(area.height)) } else { (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height) - shell::TOOLBAR) };
     let width = width.max(1.);
     let counts: Vec<usize> = sections.iter().map(|(_, from, to)| to - from).collect();
-    let Layout { columns, height: tile_h, scrolls } = layout(&counts, width, height.max(1.), headed);
+    let bar = if this.grid.picks.set.len() >= 2 { selection::BAR + selection::BOTTOM } else { 0. };
+    let Layout { columns, height: tile_h, .. } = layout(&counts, width, (height - bar).max(1.), headed);
     let row_h = tile_h + tile::HAIRLINE;
     let mut items = Vec::new();
     for (n, (_, from, to)) in sections.iter().enumerate() {
@@ -657,7 +658,6 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     this.grid.row_h = row_h;
     this.grid.tops = tops.clone();
     this.grid.headed = headed;
-    let bar = if this.grid.picks.set.len() >= 2 && scrolls { selection::BAR + selection::BOTTOM } else { 0. };
     this.grid.padding = bar;
     if std::mem::take(&mut this.grid.reveal)
         && let Some(row) = this.grid.selected.as_ref().and_then(|s| keys.iter().position(|k| k == s)).and_then(|at| this.grid.row_at(at))
@@ -1131,7 +1131,7 @@ mod tests {
         assert_eq!(word(&again, None, false), "Versuch 2/5");
         assert_eq!(word(&mk(Phase::Starting { done: 12, total: 50 }), None, false), "Wartet 12/50");
         assert_eq!(word(&mk(Phase::Stopped), None, true), "Gesperrt", "a stop after a ban says so");
-        assert_eq!(word(&mk(Phase::LoginNeeded), None, false), "Anmeldung");
+        assert_eq!(word(&mk(Phase::LoginNeeded), None, false), "Anmelden nötig");
     }
     #[test]
     fn filters_split_attention_running_and_stopped() {

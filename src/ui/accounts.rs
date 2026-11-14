@@ -1185,7 +1185,7 @@ impl AccountsPage {
             .ghost()
             .focus_ring(super::theme::rings(cx))
             .p(px(space::XXS))
-            .rounded(px(radius::SMALL))
+            .rounded(px(radius::SMALL + space::XXS))
             .child(identity::chip(&account.name, color, skins::head(account).map(ImageSource::from), control::M - space::XXS * 2., font::CALLOUT))
             .tooltip(tr("Farbe"))
             .dropdown_menu(move |menu, _, _| identity::colors(menu, ids.clone(), Some(color)))

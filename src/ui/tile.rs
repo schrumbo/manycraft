@@ -515,7 +515,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         .children(mark)
         .children(face)
         .child(strip(d, g, t))
-        .children(actions(d, g, t).filter(|_| hovered || d.selected))
+        .children(actions(d, g, t).filter(|_| hovered || d.selected || d.phase == Phase::LoginNeeded))
         .children(ring.map(|c| div().absolute().inset_0().border(px(tile::RING)).border_color(c)))
         .on_hover(hover)
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
