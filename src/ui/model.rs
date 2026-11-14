@@ -163,9 +163,9 @@ pub fn set_hint(key: &str, change: impl FnOnce(&mut Hint)) {
 pub fn fit_line(count: u32, each_mb: u32, fit: &Fit) -> String {
     let label = |mb: u64| forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX));
     if count == 1 {
-        return trf("Eine Instanz braucht %@, dein PC hat %@ frei", &[&label(fit.needed_mb), &label(fit.free_mb)]);
+        return trf("Ein Account braucht %@, dein PC hat %@ frei", &[&label(fit.needed_mb), &label(fit.free_mb)]);
     }
-    trf("%lld Instanzen × %@ = %@, dein PC hat %@ frei", &[&count, &label(u64::from(each_mb)), &label(fit.needed_mb), &label(fit.free_mb)])
+    trf("%lld Accounts × %@ = %@, dein PC hat %@ frei", &[&count, &label(u64::from(each_mb)), &label(fit.needed_mb), &label(fit.free_mb)])
 }
 
 /// Tile status line of a proxy that failed its check.
@@ -215,9 +215,9 @@ mod tests {
     fn the_fit_line_names_what_is_needed_and_what_is_free() {
         crate::core::i18n::init("de");
         let fit = |needed_mb, free_mb| Fit { needed_mb, free_mb, suggested_count: 0 };
-        assert_eq!(fit_line(50, 2048, &fit(102_400, 32_768)), "50 Instanzen × 2 GB = 100 GB, dein PC hat 32 GB frei");
-        assert_eq!(fit_line(3, 2560, &fit(7680, 4096)), "3 Instanzen × 2,5 GB = 7,5 GB, dein PC hat 4 GB frei");
-        assert_eq!(fit_line(1, 8192, &fit(8192, 4096)), "Eine Instanz braucht 8 GB, dein PC hat 4 GB frei");
+        assert_eq!(fit_line(50, 2048, &fit(102_400, 32_768)), "50 Accounts × 2 GB = 100 GB, dein PC hat 32 GB frei");
+        assert_eq!(fit_line(3, 2560, &fit(7680, 4096)), "3 Accounts × 2,5 GB = 7,5 GB, dein PC hat 4 GB frei");
+        assert_eq!(fit_line(1, 8192, &fit(8192, 4096)), "Ein Account braucht 8 GB, dein PC hat 4 GB frei");
     }
 
     fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Instance {

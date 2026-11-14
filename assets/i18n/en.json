@@ -275,8 +275,8 @@
   "Proxy nicht erreichbar": "Proxy unreachable",
   "Proxy lehnt die Anmeldung ab": "Proxy rejects the sign-in",
   "Keine Verbindung zum Spiel": "No connection to the game",
-  "Eine Instanz braucht %@, dein PC hat %@ frei": "One instance needs %@, your PC has %@ free",
-  "%lld Instanzen × %@ = %@, dein PC hat %@ frei": "%lld instances × %@ = %@, your PC has %@ free",
+  "Ein Account braucht %@, dein PC hat %@ frei": "One account needs %@, your PC has %@ free",
+  "%lld Accounts × %@ = %@, dein PC hat %@ frei": "%lld accounts × %@ = %@, your PC has %@ free",
   "Die Einstellungen waren beschädigt. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.bak).": "The settings were damaged. The defaults apply; a copy is next to the file (settings.json.bak).",
   "Die Einstellungen waren beschädigt. Es gelten die Standardwerte; die Datei bleibt unverändert, bis du etwas änderst.": "The settings were damaged. The defaults apply; the file stays as it is until you change something."
 }
