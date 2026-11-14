@@ -134,7 +134,7 @@ pub mod ring {
     /// Width of the ring outside the control.
     pub const WIDTH: f32 = 3.;
 
-    static ACCENT: RwLock<Hsla> = RwLock::new(Hsla { h: 0.58, s: 1., l: 0.5, a: 1. });
+    static ACCENT: RwLock<Hsla> = RwLock::new(Hsla { h: 0.49, s: 0.83, l: 0.26, a: 1. });
 
     /// Remembers the accent of the theme now drawn, so `color` follows it.
     pub fn set(accent: Hsla) {
@@ -230,8 +230,8 @@ impl Theme {
             secondary: ink.opacity(0.62),
             tertiary: ink.opacity(if dark { 0.47 } else { 0.56 }),
             separator: ink.opacity(if dark { 0.14 } else { 0.12 }),
-            accent: if dark { c(0x0A6FE8) } else { c(0x0071E3) },
-            accent_text: if dark { c(0x6CB3FF) } else { c(0x0053B4) },
+            accent: if dark { c(0x0E7C77) } else { c(0x0B7A75) },
+            accent_text: if dark { c(0x4FD1C5) } else { c(0x0A6560) },
             on_accent: c(0xFFFFFF),
             attention: if dark { c(0xFF9F0A) } else { c(0xFF9500) },
             attention_text: if dark { c(0xFFB340) } else { c(0x824800) },
