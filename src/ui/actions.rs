@@ -64,6 +64,11 @@ pub struct EditBatch(pub String);
 #[action(namespace = manycraft)]
 pub struct SignInAgain(pub String);
 
+/// Opens the skin sheet of this Microsoft account (id).
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ChangeSkin(pub String);
+
 /// Sends a chat line or command to every running instance of a batch.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

@@ -191,6 +191,24 @@ pub mod chat {
     pub const SHOWN_CHARS: usize = 600;
 }
 
+/// The skin sheet.
+pub mod wardrobe {
+    /// Points per skin pixel in the front and back preview.
+    pub const PREVIEW: f32 = 5.;
+    /// Points per skin pixel in a recent skin.
+    pub const RECENT: f32 = 2.;
+    /// Points per cape pixel in a cape.
+    pub const CAPE: f32 = 2.5;
+    /// Image pixels per point, so the pixel art stays sharp on high-density screens.
+    pub const DENSITY: f32 = 2.;
+    /// Width of a cape choice.
+    pub const CHOICE: f32 = 72.;
+    /// Width of the column with the preview.
+    pub const COLUMN: f32 = 200.;
+    /// Height of the body while the profile loads or failed, so the sheet keeps its size.
+    pub const BODY: f32 = 260.;
+}
+
 /// Opacities that tint states.
 pub mod tint {
     /// A control that waits for something.
