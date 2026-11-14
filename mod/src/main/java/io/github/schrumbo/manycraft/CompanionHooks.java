@@ -32,9 +32,8 @@ public final class CompanionHooks {
 		return ProxyInstaller.remoteName(host, port);
 	}
 
-	public static boolean hidden() {
-		Companion c = Companion.get();
-		return c != null && c.hidden();
+	public static boolean managed() {
+		return Companion.get() != null;
 	}
 
 	public static int hiddenFramerate() {

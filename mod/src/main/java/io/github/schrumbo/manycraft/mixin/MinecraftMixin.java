@@ -27,8 +27,8 @@ abstract class MinecraftMixin {
 	}
 
 	@Inject(method = "pauseIfInactive", at = @At("HEAD"), cancellable = true)
-	private void manycraft$noPauseWhileHidden(CallbackInfo ci) {
-		if (CompanionHooks.hidden()) {
+	private void manycraft$noPauseWhileManaged(CallbackInfo ci) {
+		if (CompanionHooks.managed()) {
 			ci.cancel();
 		}
 	}
