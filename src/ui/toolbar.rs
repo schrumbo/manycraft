@@ -126,6 +126,35 @@ fn action_button(id: &'static str, label: String, name: &'static str, prominent:
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
+fn text_w(text: &str, size: f32) -> f32 {
+    text.chars().count() as f32 * size * shell::GLYPH
+}
+
+struct Widths {
+    fixed: f32,
+    segments: f32,
+    menu: f32,
+    labelled: f32,
+    icons: f32,
+}
+
+#[derive(Debug, PartialEq)]
+struct Plan {
+    search: f32,
+    menu: bool,
+    icons: bool,
+}
+
+fn plan(room: f32, w: &Widths) -> Plan {
+    for (menu, icons) in [(false, false), (true, false), (true, true)] {
+        let rest = w.fixed + if menu { w.menu } else { w.segments } + if icons { w.icons } else { w.labelled };
+        if let Some(search) = [shell::SEARCH, shell::SEARCH_MID, shell::SEARCH_MIN].into_iter().find(|s| rest + s <= room) {
+            return Plan { search, menu, icons };
+        }
+    }
+    Plan { search: shell::SEARCH_MIN, menu: true, icons: true }
+}
+
 /// Draws the toolbar for the grid of `batch`, or of all batches.
 pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = Theme::get(cx);
@@ -142,7 +171,6 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         Some(b) => (Box::new(StartBatch(b.to_owned())), Box::new(StopBatch(b.to_owned()))),
         None => (Box::new(StartAll), Box::new(StopAll)),
     };
-    let compact = this.content_width(window) < shell::COMPACT;
     let filters = [(Filter::All, tr("Alle")), (Filter::Attention, tr("Brauchen dich")), (Filter::Running, tr("Läuft")), (Filter::Stopped, tr("Gestoppt"))];
     let picked_label = filters.iter().find(|(f, _)| *f == this.filter).map(|(_, l)| l.clone()).unwrap_or_default();
     let picked_count = count(this.filter);
@@ -158,7 +186,24 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         })
         .collect();
     let picks = [Filter::All, Filter::Attention, Filter::Running, Filter::Stopped];
-    let filter = if compact {
+    let start_label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
+    let stop_label = if batch.is_some() { tr("Stoppen") } else { tr("Alle stoppen") };
+    let segment_w = |label: &str, n: usize, counted: bool| space::S * 2. + text_w(label, font::CALLOUT) + if counted { space::XS + text_w(&n.to_string(), font::CAPTION) } else { 0. };
+    let segments = space::XXS * 2.
+        + space::XXS * (counts.len() - 1) as f32
+        + counts.iter().map(|(f, label, n)| segment_w(label, *n, *n > 0 || *f != Filter::Attention)).sum::<f32>();
+    let suffix = if attention > 0 && this.filter != Filter::Attention { space::XS + text_w(&trf("%lld brauchen dich", &[&attention]), font::CAPTION) } else { 0. };
+    let menu = space::S * 2. + text_w(&picked_label, font::CALLOUT) + space::XS + text_w(&picked_count.to_string(), font::CAPTION) + suffix + space::XS + iconsize::XS;
+    let labelled = |label: &str| space::M * 2. + iconsize::S + space::XS + text_w(label, font::BODY);
+    let widths = Widths {
+        fixed: lead() + tile::INSET + control::M + shell::TITLE.min(title_w) + space::S + space::XS + (space::XS * 2. + iconsize::M + space::XXS + iconsize::XS) + space::S + space::S * 9.,
+        segments,
+        menu,
+        labelled: labelled(&start_label) + labelled(&stop_label) + space::S,
+        icons: control::M * 2. + space::S,
+    };
+    let Plan { search: search_w, menu: compact_filter, icons: compact } = plan(this.content_width(window), &widths);
+    let filter = if compact_filter {
         let current = this.filter;
         let grid_focus = this.grid.focus.clone();
         Button::new("filter")
@@ -236,7 +281,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 .separator()
                 .menu_element_with_check(current == TileSize::Fit, Box::new(TileFit), fit)
         });
-    let roomy = this.content_width(window) >= shell::SEARCH_ROOM;
+    let roomy = search_w >= shell::SEARCH;
     if this.search_roomy != roomy {
         this.search_roomy = roomy;
         let hint = if roomy { tr("Name, Batch, Server, Status") } else { tr("Suchen") };
@@ -244,11 +289,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     }
     let search = div()
         .key_context("Toolbar")
-        .when(roomy, |d| d.w(px(shell::SEARCH)).flex_none())
-        .when(!roomy, |d| d.w(px(shell::SEARCH * 0.75)).min_w(px(shell::SEARCH / 2.)))
+        .w(px(search_w))
+        .min_w(px(shell::SEARCH_FLOOR))
         .child(Input::new(&this.search).small().cleanable(true).prefix(icon("search", iconsize::S, t.tertiary)));
-    let start_label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
-    let stop_label = if batch.is_some() { tr("Stoppen") } else { tr("Alle stoppen") };
     div()
         .h(px(shell::TOOLBAR))
         .flex_none()
@@ -280,4 +323,64 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(action_button("stop-scope", stop_label.clone(), "square", false, running == 0, compact, stop, &t).tooltip(tip(format!("{stop_label} · {}", if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) }))))
         .child(action_button("start-scope", start_label.clone(), "play", true, startable == 0, compact, start, &t).tooltip(tip(format!("{start_label} · {}", if startable == 0 { tr("Alle laufen schon") } else { trf("%lld gestoppte starten", &[&startable]) }))))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Plan, Widths, plan};
+    use crate::ui::theme::{font, shell, space};
+
+    fn widths(filter_digits: usize, wide_labels: bool) -> Widths {
+        let digits = filter_digits as f32 * font::CAPTION * shell::GLYPH;
+        let label = if wide_labels { 14. } else { 8. };
+        Widths {
+            fixed: 200.,
+            segments: 4. * (space::S * 2. + label * font::CALLOUT * shell::GLYPH + space::XS + digits) + 10.,
+            menu: 120. + digits * 2.,
+            labelled: 2. * (space::M * 2. + 18. + label * font::BODY * shell::GLYPH),
+            icons: 64.,
+        }
+    }
+
+    fn need(w: &Widths, p: &Plan) -> f32 {
+        w.fixed + if p.menu { w.menu } else { w.segments } + if p.icons { w.icons } else { w.labelled } + p.search
+    }
+
+    #[test]
+    fn what_the_plan_picks_always_fits() {
+        for digits in 1..=5 {
+            for wide in [false, true] {
+                let w = widths(digits, wide);
+                let smallest = Plan { search: shell::SEARCH_MIN, menu: true, icons: true };
+                for room in (400..2000).step_by(7) {
+                    let p = plan(room as f32, &w);
+                    assert!(need(&w, &p) <= room as f32 || p == smallest, "room {room} digits {digits}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn it_degrades_in_order() {
+        let w = widths(3, true);
+        let mut last = 0;
+        for room in (400..2000).rev() {
+            let p = plan(room as f32, &w);
+            let stage = p.menu as u8 + p.icons as u8;
+            assert!(stage >= last, "a stage never comes back while shrinking, room {room}");
+            assert!(!p.icons || p.menu, "the filter collapses before the buttons become icons");
+            last = stage;
+        }
+        assert_eq!(plan(2000., &w), Plan { search: shell::SEARCH, menu: false, icons: false });
+    }
+
+    #[test]
+    fn the_search_field_shrinks_before_the_filter_collapses() {
+        let w = widths(3, false);
+        let full = w.fixed + w.segments + w.labelled;
+        assert_eq!(plan(full + shell::SEARCH, &w).search, shell::SEARCH);
+        assert_eq!(plan(full + shell::SEARCH_MID, &w), Plan { search: shell::SEARCH_MID, menu: false, icons: false });
+        assert_eq!(plan(full + shell::SEARCH_MIN, &w), Plan { search: shell::SEARCH_MIN, menu: false, icons: false });
+        assert!(plan(full + shell::SEARCH_MIN - 1., &w).menu);
+    }
 }

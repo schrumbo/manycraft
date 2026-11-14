@@ -120,14 +120,19 @@ pub mod shell {
     /// Height of the quiet notice line under the toolbar.
     pub const NOTICE: f32 = 32.;
     pub const ROW: f32 = 28.;
+    /// Widths the toolbar's search field steps down through as room shrinks; only the first keeps the full placeholder.
     pub const SEARCH: f32 = 240.;
-    /// Content width from which the search field keeps its full width and full placeholder.
-    pub const SEARCH_ROOM: f32 = 1040.;
+    pub const SEARCH_MID: f32 = 180.;
+    pub const SEARCH_MIN: f32 = 120.;
+    /// The narrowest the search field squeezes to when even the smallest toolbar does not fit.
+    pub const SEARCH_FLOOR: f32 = 80.;
+    /// Average glyph width in em, used to estimate toolbar text without shaping it.
+    pub const GLYPH: f32 = 0.55;
     /// The attention dot in a sidebar row.
     pub const DOT: f32 = 6.;
     /// The attention count in a sidebar row.
     pub const BADGE: f32 = 19.;
-    /// Below this content width the toolbar shows its buttons as icons and its filter as a pop-up button.
+    /// Below this content width the selection bar shows its buttons as icons.
     pub const COMPACT: f32 = 860.;
     /// Width the toolbar title keeps before anything else shrinks.
     pub const TITLE: f32 = 96.;
