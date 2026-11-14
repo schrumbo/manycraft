@@ -1189,7 +1189,9 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             }
             if settings::active().merged_chat {
                 let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-                m.push_chat(ChatLine { instance: key, account, batch, at, whisper, from, text }, KEPT_CHAT);
+                let server = m.instances.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
+                let shared = !whisper && !(from.is_none() && text.contains(&account));
+                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at, whisper, from, text }, server.as_deref(), shared, Instant::now(), KEPT_CHAT);
             }
         }
         FromMod::Preview { .. } => {

@@ -599,7 +599,19 @@ fn line_row(id: u64, line: &ChatLine, batch: Option<String>, day: Option<String>
         .flex_none()
         .flex()
         .flex_col()
-        .child(div().truncate().text_size(px(font::CALLOUT)).font_weight(FontWeight::MEDIUM).text_color(t.secondary).child(line.account.clone()))
+        .child(
+            div()
+                .id(SharedString::from(format!("chat-from-{id}")))
+                .truncate()
+                .text_size(px(font::CALLOUT))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.secondary)
+                .child(if line.also.is_empty() { line.account.clone() } else { format!("{} +{}", line.account, line.also.len()) })
+                .when(!line.also.is_empty(), |d| {
+                    let names = std::iter::once(line.account.as_str()).chain(line.also.iter().map(|(_, name, _)| name.as_str())).collect::<Vec<_>>().join(", ");
+                    d.tooltip(super::widgets::tip(names))
+                }),
+        )
         .children(batch.map(|batch| div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(batch)));
     let text = clip(&line.text);
     let (prefix, color) = match (&line.from, line.whisper) {
@@ -683,7 +695,7 @@ fn clip(text: &str) -> String {
 }
 
 fn in_scope(line: &ChatLine, scope: &Scope) -> bool {
-    scope.batch.as_ref().is_none_or(|b| line.batch == *b) && (!scope.whispers || line.whisper)
+    scope.batch.as_ref().is_none_or(|b| line.batch == *b || line.also.iter().any(|(_, _, other)| other == b)) && (!scope.whispers || line.whisper)
 }
 
 fn line_problem(text: &str) -> Option<String> {
@@ -801,7 +813,7 @@ mod tests {
     use super::{ChatLine, MAX_CHAT_CHARS, Scope, chat, clip, clock, day_title, in_scope, line_problem, now, recall_step, same_day, unique};
 
     fn line(batch: &str, whisper: bool) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), at: 0, whisper, from: None, text: "x".into() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, whisper, from: None, text: "x".into() }
     }
 
     #[test]
@@ -812,6 +824,9 @@ mod tests {
         let farm_whispers = Scope { batch: Some("farm".into()), whispers: true };
         assert!(in_scope(&line("a", false), &all));
         assert!(in_scope(&line("farm", false), &farm) && !in_scope(&line("a", false), &farm));
+        let mut shared = line("a", false);
+        shared.also.push(("k".into(), "n".into(), "farm".into()));
+        assert!(in_scope(&shared, &farm));
         assert!(in_scope(&line("a", true), &whispers) && !in_scope(&line("a", false), &whispers));
         assert!(in_scope(&line("farm", true), &farm_whispers) && !in_scope(&line("farm", false), &farm_whispers) && !in_scope(&line("a", true), &farm_whispers));
     }

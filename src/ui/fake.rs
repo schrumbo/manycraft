@@ -192,7 +192,7 @@ impl Sim {
         }
     }
 
-    fn chat_line(&mut self, key: &str, whisper: bool) -> Update {
+    fn chat_line(&mut self, key: &str, whisper: bool, unique: bool) -> Update {
         self.chat_n += 1;
         let h = hash(&format!("{key}{}", self.chat_n));
         let name = self.names.get(key).cloned().unwrap_or_default();
@@ -200,7 +200,10 @@ impl Sim {
             0 => (ChatKind::Whisper, Some(SPEAKERS[(h >> 8) as usize % 2].to_owned()), WHISPERS[(h >> 16) as usize % WHISPERS.len()].to_owned()),
             1 => (ChatKind::System, None, format!("{name} joined the game")),
             2 => (ChatKind::System, None, format!("{name} was slain by Zombie")),
-            _ => (ChatKind::Player, Some(SPEAKERS[(h >> 8) as usize % SPEAKERS.len()].to_owned()), SAYINGS[(h >> 16) as usize % SAYINGS.len()].to_owned()),
+            _ => {
+                let said = SAYINGS[(h >> 16) as usize % SAYINGS.len()];
+                (ChatKind::Player, Some(SPEAKERS[(h >> 8) as usize % SPEAKERS.len()].to_owned()), if unique { format!("{said} ({})", self.chat_n) } else { said.to_owned() })
+            }
         };
         Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind, from, text } })
     }
@@ -214,7 +217,7 @@ impl Sim {
         }
         for n in 0..wanted {
             let key = keys[(hash(&n.to_string()) as usize) % keys.len()].clone();
-            let line = self.chat_line(&key, true);
+            let line = self.chat_line(&key, true, true);
             self.at(Duration::ZERO, None, line);
         }
     }
@@ -228,10 +231,12 @@ impl Sim {
             let seed = |phase: Phase, attempts: u32| Update::Seed { key: key.clone(), phase, attempts };
             match kind {
                 0..=27 => {
+                    self.at(Duration::ZERO, None, seed(Phase::Menu, 0));
                     self.at(Duration::ZERO, None, connected(&key));
                     self.at(Duration::ZERO, None, state(&key, StateKind::Playing, None));
                 }
                 28 | 29 => {
+                    self.at(Duration::ZERO, None, seed(Phase::Menu, 0));
                     self.at(Duration::ZERO, None, connected(&key));
                     self.at(Duration::ZERO, None, state(&key, StateKind::Menu, None));
                 }
@@ -288,13 +293,22 @@ impl Sim {
         }
         if now >= self.chat_at {
             self.chat_at = now + CHAT_EVERY;
-            let mut keys: Vec<&String> = self.running.keys().collect();
+            let mut keys: Vec<String> = self.running.keys().cloned().collect();
             keys.sort();
             if !keys.is_empty() {
                 let key = keys[(hash(&self.chat_n.to_string()) as usize) % keys.len()].clone();
-                let line = self.chat_line(&key, (self.chat_n + 1).is_multiple_of(WHISPER_EVERY));
-                if self.out.send_blocking(line).is_err() {
-                    return false;
+                let line = self.chat_line(&key, (self.chat_n + 1).is_multiple_of(WHISPER_EVERY), false);
+                let lines = match &line {
+                    Update::Ipc(Event::Message { message: FromMod::Chat { kind: ChatKind::Player, from, text }, .. }) => keys
+                        .iter()
+                        .map(|k| Update::Ipc(Event::Message { instance: k.clone(), message: FromMod::Chat { kind: ChatKind::Player, from: from.clone(), text: text.clone() } }))
+                        .collect(),
+                    _ => vec![line],
+                };
+                for line in lines {
+                    if self.out.send_blocking(line).is_err() {
+                        return false;
+                    }
                 }
             }
         }
