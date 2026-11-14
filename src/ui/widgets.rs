@@ -10,17 +10,27 @@ use super::theme::{Theme, control, edge, font, iconsize, radius, ring, space, ti
 /// Call it after the element's fill: a control without an opaque one gets its ring inside, since a ring outside would show through.
 pub trait KeyNav {
     fn key_nav(self) -> Self;
+    /// Like `key_nav`, with the ring always inside, for controls packed so tightly that a ring outside would be covered.
+    fn key_nav_inside(self) -> Self;
 }
 
 impl KeyNav for Stateful<Div> {
     fn key_nav(mut self) -> Self {
-        let color = ring::color();
         let filled = self.style().background.as_ref().and_then(Fill::color).and_then(|c| c.as_solid()).is_some_and(|c| c.a >= 1.);
-        let (spread, inset) = if filled { (ring::WIDTH, false) } else { (ring::INSET, true) };
-        super::drive::marked(self, "clickable")
-            .tab_index(0)
-            .focus_visible(move |s| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset }]))
+        focus_ring(self, !filled)
     }
+
+    fn key_nav_inside(self) -> Self {
+        focus_ring(self, true)
+    }
+}
+
+fn focus_ring(element: Stateful<Div>, inset: bool) -> Stateful<Div> {
+    let color = ring::color();
+    let spread = if inset { ring::INSET } else { ring::WIDTH };
+    super::drive::marked(element, "clickable")
+        .tab_index(0)
+        .focus_visible(move |s| s.shadow(vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset }]))
 }
 
 /// The edge that keeps a small badge readable over a bright preview: a ring in the window colour and a soft shadow.
@@ -71,9 +81,10 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
 }
 
-/// The frame of one segment, raised when selected, with hover and keyboard focus; add its content and wrap it in [`segmented`].
-pub fn segment_frame(id: impl Into<ElementId>, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
-    div()
+/// The frame of one segment, raised when selected, with hover and keyboard focus unless `enabled` is false;
+/// add its content and wrap it in [`segmented`].
+pub fn segment_frame(id: impl Into<ElementId>, label: String, selected: bool, enabled: bool, t: &Theme) -> Stateful<Div> {
+    let frame = div()
         .id(id)
         .mark("segment", label)
         .h(px(control::S))
@@ -84,15 +95,16 @@ pub fn segment_frame(id: impl Into<ElementId>, label: String, selected: bool, t:
         .items_center()
         .text_size(px(font::CALLOUT))
         .when(selected, |d| d.bg(t.segment).shadow_xs().text_color(t.primary))
-        .when(!selected, |d| d.bg(t.raised).text_color(t.secondary))
-        .cursor_pointer()
-        .key_nav()
-        .soft(if selected { transparent_black() } else { t.segment.opacity(tint::SEGMENT_HOVER) }, radius::INNER)
+        .when(!selected, |d| d.bg(t.raised).text_color(t.secondary));
+    if !enabled {
+        return frame.cursor_not_allowed();
+    }
+    frame.cursor_pointer().key_nav_inside().soft(if selected { transparent_black() } else { t.segment.opacity(tint::SEGMENT_HOVER) }, radius::INNER)
 }
 
 /// One choice of a segmented control with a plain label; the selected one is raised.
-pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, t: &Theme) -> Stateful<Div> {
-    segment_frame(id, label.clone(), selected, t).child(
+pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, enabled: bool, t: &Theme) -> Stateful<Div> {
+    segment_frame(id, label.clone(), selected, enabled, t).child(
             div()
                 .flex()
                 .flex_col()

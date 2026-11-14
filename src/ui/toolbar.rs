@@ -65,9 +65,9 @@ struct Segment {
 
 fn segmented(id: &'static str, segments: Vec<Segment>, on_pick: impl Fn(usize, &mut MainWindow, &mut Window, &mut Context<MainWindow>) + 'static, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let items = segments.into_iter().map(|s| {
-        let count = if s.loud { t.attention_text } else if s.selected { t.secondary } else { t.tertiary };
+        let count = if s.loud { t.attention_text } else if s.selected { t.primary } else { t.tertiary };
         let counted = s.count > 0 || s.id != "filter-attention";
-        segment_frame(SharedString::from(s.id), s.label.clone(), s.selected, t)
+        segment_frame(SharedString::from(s.id), s.label.clone(), s.selected, true, t)
             .gap(px(space::XS))
             .when(s.selected, |d| d.font_weight(FontWeight::MEDIUM))
             .child(s.label)

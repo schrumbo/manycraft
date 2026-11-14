@@ -731,7 +731,8 @@ impl BatchSheet {
             Background::Balanced => tr("Kostet spürbar mehr: Das Spiel läuft flüssig weiter und sieht so weit wie sonst."),
             Background::Full => tr("Kostet so viel wie ein offenes Spiel."),
         };
-        let segments = Background::ALL.into_iter().enumerate().map(|(n, level)| segment(("background", n), name(level), self.background == level, t));
+        let busy = self.saving || self.mods_busy.is_some();
+        let segments = Background::ALL.into_iter().enumerate().map(|(n, level)| segment(("background", n), name(level), self.background == level, !busy, t));
         let pick = cx.listener(|s, n: &usize, _, cx| {
             if s.saving || s.mods_busy.is_some() {
                 return;
@@ -740,7 +741,7 @@ impl BatchSheet {
             s.save_error = None;
             cx.notify();
         });
-        let control = segmented("batch-background", segments, move |n, window, cx| pick(&n, window, cx), t).when(self.saving || self.mods_busy.is_some(), |d| d.opacity(tint::DISABLED));
+        let control = segmented("batch-background", segments, move |n, window, cx| pick(&n, window, cx), t).when(busy, |d| d.opacity(tint::DISABLED));
         let hint = if running { format!("{cost} {}", tr("Gilt sofort, auch für die laufenden Spiele.")) } else { cost };
         div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Im Hintergrund"), t)).child(div().flex().child(control)).child(sheet::note(Some(hint), None, t).line_height(px(font::CAPTION * font::LINE)).min_h(px(font::CAPTION * font::LINE * 2.)))
     }

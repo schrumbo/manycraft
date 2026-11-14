@@ -86,26 +86,29 @@ fn load(dir: &Path, id: &str, url: &str, fetch: Fetch) -> Result<PathBuf> {
         return Ok(path);
     }
     let old = EXTENSIONS.iter().map(|ext| dir.join(format!("{stem}.{ext}"))).find(|p| p.is_file());
-    let bytes = match &old {
-        Some(old) => std::fs::read(old)?,
-        None => fetch(url)?,
-    };
-    extension(&bytes).context("not a supported image")?;
-    net::write_atomic(&path, &shrink(&bytes)?)?;
+    let kept = old.as_ref().and_then(|old| std::fs::read(old).ok()).and_then(|bytes| shrink(&bytes).ok());
     if let Some(old) = old {
         let _ = std::fs::remove_file(old);
     }
+    let small = match kept {
+        Some(small) => small,
+        None => shrink(&fetch(url)?)?,
+    };
+    net::write_atomic(&path, &small)?;
     Ok(path)
 }
 
 fn shrink(bytes: &[u8]) -> Result<Vec<u8>> {
+    extension(bytes).context("not a supported image")?;
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
     limits.max_alloc = Some(MAX_DECODED);
     let mut reader = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     reader.limits(limits);
-    let small = reader.decode()?.resize_to_fill(SIDE, SIDE, FilterType::Triangle);
+    let full = reader.decode()?;
+    let side = full.width().min(full.height());
+    let small = full.crop_imm((full.width() - side) / 2, (full.height() - side) / 2, side, side).resize_exact(SIDE, SIDE, FilterType::Triangle);
     let mut out = std::io::Cursor::new(Vec::new());
     small.write_to(&mut out, ImageFormat::Png)?;
     Ok(out.into_inner())
@@ -216,6 +219,27 @@ mod tests {
         let path = lock(&icons.ready).get("p1").cloned().unwrap();
         assert_eq!(image::image_dimensions(&path).unwrap(), (SIDE, SIDE));
         assert!(!old.exists());
+    }
+
+    #[test]
+    fn an_old_cached_icon_that_no_longer_decodes_is_fetched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://cdn.modrinth.com/data/p1/icon.png";
+        let digest = Sha1::digest(url.as_bytes());
+        let old = dir.path().join(format!("p1-{:02x}{:02x}{:02x}{:02x}.png", digest[0], digest[1], digest[2], digest[3]));
+        std::fs::write(&old, PNG).unwrap();
+        let icons = Icons::default();
+        assert!(prepare_in(dir.path(), &wanted("p1", url), &icons, &|_| Ok(png(64, 64))));
+        assert!(!old.exists());
+        assert_eq!(image::image_dimensions(lock(&icons.ready).get("p1").unwrap()).unwrap(), (SIDE, SIDE));
+    }
+
+    #[test]
+    fn a_long_thin_icon_is_cropped_before_it_is_scaled() {
+        let started = std::time::Instant::now();
+        let small = shrink(&png(MAX_SIDE, 1)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+        assert_eq!(image::load_from_memory(&small).unwrap().width(), SIDE);
     }
 
     #[test]

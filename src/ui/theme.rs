@@ -232,8 +232,8 @@ pub mod tint {
     pub const FLOAT_SHADOW: f32 = 0.24;
     /// The soft shadow that lifts a small badge off a preview.
     pub const BADGE_SHADOW: f32 = 0.35;
-    /// How much of the selected segment's fill a hovered segment shows.
-    pub const SEGMENT_HOVER: f32 = 0.5;
+    /// How much of the selected segment's fill a hovered segment shows; pressing doubles it, still short of selected.
+    pub const SEGMENT_HOVER: f32 = 0.4;
 }
 
 /// The edge that keeps a small badge readable over any preview.
@@ -650,6 +650,7 @@ mod tests {
                 ("switch track on content", contrast(t.track, t.content), 3.),
                 ("switch track on raised", contrast(t.track, t.raised), 3.),
                 ("primary on segment", contrast(t.primary, t.segment), 4.5),
+                ("attention text on segment", contrast(t.attention_text, t.segment), 4.5),
                 ("secondary on hovered segment", contrast(t.secondary, hovered(&t)), 4.5),
                 ("accent ring on window", contrast(ring_on(&t), t.window), 3.),
             ];

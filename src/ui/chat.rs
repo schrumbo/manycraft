@@ -363,7 +363,7 @@ impl ChatPage {
             s.scope.whispers = *n == 1;
             cx.notify();
         });
-        let segments = segmented("chat-scope", [segment("scope-all", tr("Alles"), !whispers, t), segment("scope-whispers", tr("Nur Flüstern"), whispers, t)], move |n, window, cx| pick(&n, window, cx), t);
+        let segments = segmented("chat-scope", [segment("scope-all", tr("Alles"), !whispers, true, t), segment("scope-whispers", tr("Nur Flüstern"), whispers, true, t)], move |n, window, cx| pick(&n, window, cx), t);
         div()
             .h(px(shell::TOOLBAR))
             .flex_none()

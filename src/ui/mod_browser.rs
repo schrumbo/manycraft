@@ -536,8 +536,19 @@ impl BatchSheet {
         let dim = !installed && support != Support::Fits;
         let selected = ix == self.browser.sel && self.browser.fresh();
         let face = match modicons::icon(&pid) {
-            Some(path) => img(path).image_cache(&self.browser.icons).size(px(control::L)).flex_none().rounded(px(radius::INNER)).object_fit(ObjectFit::Cover).into_any_element(),
-            None => div().size(px(control::L)).flex_none().rounded(px(radius::INNER)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::M, t.tertiary)).into_any_element(),
+            Some(path) => {
+                let (shown, failed) = (*t, *t);
+                img(path)
+                    .image_cache(&self.browser.icons)
+                    .size(px(control::L))
+                    .flex_none()
+                    .rounded(px(radius::INNER))
+                    .object_fit(ObjectFit::Cover)
+                    .with_loading(move || placeholder(&shown).into_any_element())
+                    .with_fallback(move || placeholder(&failed).into_any_element())
+                    .into_any_element()
+            }
+            None => placeholder(t).into_any_element(),
         };
         let author = (!hit.author.is_empty()).then(|| div().min_w_0().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(trf("von %@", &[&hit.author])));
         let line = div()
@@ -669,7 +680,7 @@ impl BatchSheet {
                     s.browse_focus(window, cx);
                 }
             });
-            segmented("mods-sort", [segment("sort-relevance", tr("Relevanz"), sort == Sort::Relevance, t), segment("sort-downloads", tr("Downloads"), sort == Sort::Downloads, t)], move |n, window, cx| pick(&n, window, cx), t)
+            segmented("mods-sort", [segment("sort-relevance", tr("Relevanz"), sort == Sort::Relevance, true, t), segment("sort-downloads", tr("Downloads"), sort == Sort::Downloads, true, t)], move |n, window, cx| pick(&n, window, cx), t)
         });
         let all = self.browser.all;
         let toggle = |s: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
@@ -698,7 +709,7 @@ impl BatchSheet {
                     .key_nav()
                     .soft(t.ink.opacity(tint::HOVER), radius::INNER)
                     .on_click(cx.listener(move |s, _, window, cx| toggle(s, window, cx)))
-                    .child(Checkbox::new("mods-all-check").checked(all).on_click(cx.listener(move |s, _: &bool, window, cx| {
+                    .child(Checkbox::new("mods-all-check").checked(all).tab_stop(false).on_click(cx.listener(move |s, _: &bool, window, cx| {
                         toggle(s, window, cx);
                         cx.stop_propagation();
                     })))
@@ -799,6 +810,10 @@ impl BatchSheet {
             None => line,
         }
     }
+}
+
+fn placeholder(t: &Theme) -> Div {
+    div().size(px(control::L)).flex_none().rounded(px(radius::INNER)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::M, t.tertiary))
 }
 
 fn skeleton_row(t: &Theme) -> Div {
