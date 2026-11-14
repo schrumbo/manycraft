@@ -129,6 +129,31 @@ pub mod shell {
     pub const NARROW: f32 = 880.;
 }
 
+/// The command palette.
+pub mod palette {
+    pub const WIDTH: f32 = 560.;
+    /// Distance from the top of the window.
+    pub const TOP: f32 = 72.;
+    /// Height of the search field row.
+    pub const FIELD: f32 = 44.;
+    /// Height of one entry or group heading.
+    pub const ROW: f32 = 32.;
+    /// How many rows show before the list scrolls.
+    pub const ROWS: f32 = 9.5;
+}
+
+/// Several selected tiles and the bar that acts on them.
+pub mod selection {
+    /// Height of the floating bar.
+    pub const BAR: f32 = 44.;
+    /// Space between the bar and the bottom of the grid.
+    pub const BOTTOM: f32 = 16.;
+    /// The check mark on a selected tile.
+    pub const CHECK: f32 = 20.;
+    /// Width of the message field in the bar.
+    pub const FIELD: f32 = 300.;
+}
+
 /// The Chat page.
 pub mod chat {
     /// Width of the column naming the account and batch of a line.

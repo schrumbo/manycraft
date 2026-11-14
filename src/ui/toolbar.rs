@@ -20,23 +20,6 @@ fn shortcut(key: &str) -> String {
     if cfg!(target_os = "macos") { format!("⌘{key}") } else { format!("{}+{key}", tr("Strg")) }
 }
 
-/// A toolbar with only the sidebar toggle and `title`, for pages without grid controls.
-pub fn bar(this: &MainWindow, title: String, t: &Theme) -> AnyElement {
-    div()
-        .h(px(shell::TOOLBAR))
-        .flex_none()
-        .pl(px(lead()))
-        .pr(px(tile::INSET))
-        .flex()
-        .items_center()
-        .gap(px(space::S))
-        .border_b_1()
-        .border_color(t.separator)
-        .child(toggle(this, t))
-        .child(div().min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
-        .into_any_element()
-}
-
 /// The toolbar's leading padding that puts the sidebar symbol on the grid's edge.
 fn lead() -> f32 {
     tile::INSET - (control::M - iconsize::M) / 2.

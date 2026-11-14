@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, Reload, Respawn, SendChat, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
+use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, ChatLine, Instance, Model, Phase, rank};
 use super::native::{self, Rect};
 use crate::core::account::{self, Account, AccountKind};
@@ -344,6 +344,7 @@ struct Runtime {
     refreshed: bool,
     alerts: HashMap<String, Vec<(String, Alert)>>,
     pids: HashMap<String, u32>,
+    restarts: HashSet<String>,
     rect: Option<Rect>,
     badge: usize,
     notice: Option<String>,
@@ -388,6 +389,7 @@ pub fn init(cx: &mut App) {
         refreshed: false,
         alerts: HashMap::new(),
         pids: HashMap::new(),
+        restarts: HashSet::new(),
         rect: None,
         badge: 0,
         notice: None,
@@ -458,6 +460,19 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenChat, cx| cx.defer(super::chat::open));
     cx.on_action(|a: &Broadcast, cx| broadcast(&a.batch, &a.text, cx));
     cx.on_action(|a: &SendChat, cx| send_chat(&a.key, &a.text, cx));
+    cx.on_action(|a: &StartMany, cx| start_keys(&a.0, cx));
+    cx.on_action(|a: &StopMany, cx| stop_keys(a.0.clone(), cx));
+    cx.on_action(|a: &RestartMany, cx| restart_keys(&a.0, cx));
+    cx.on_action(|a: &ReconnectMany, cx| {
+        for key in &a.0 {
+            reconnect(key, cx);
+        }
+    });
+    cx.on_action(|a: &SendChatMany, cx| {
+        for key in &a.keys {
+            send_chat(key, &a.text, cx);
+        }
+    });
     cx.on_system_notification_response(|response, cx| {
         let batch = response.tag.strip_prefix("attention-").map(str::to_owned);
         let whisper = response.tag.as_ref() == WHISPER_TAG;
@@ -703,6 +718,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
     let mut running = Vec::new();
     update_model(cx, |m, rt, _| {
         for key in &keys {
+            rt.restarts.remove(key);
             rt.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.crash_restarts.remove(key);
@@ -728,6 +744,26 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
     {
         backend.stop(running);
     }
+}
+
+fn restart_keys(keys: &[String], cx: &mut App) {
+    let running: Vec<String> = {
+        let pids: HashSet<&String> = cx.try_global::<Runtime>().map(|rt| rt.pids.keys().collect()).unwrap_or_default();
+        let m = model::get(cx).read(cx);
+        keys.iter().filter(|k| pids.contains(k) || m.instances.get(*k).is_some_and(|i| i.phase.is_running())).cloned().collect()
+    };
+    stop_keys(running.clone(), cx);
+    let mut start: Vec<String> = keys.iter().filter(|k| !running.contains(k)).cloned().collect();
+    update_model(cx, |m, rt, _| {
+        for key in running {
+            if m.instances.get(&key).is_some_and(|i| i.stopping) {
+                rt.restarts.insert(key);
+            } else {
+                start.push(key);
+            }
+        }
+    });
+    start_keys(&start, cx);
 }
 
 fn stop_batch(batch: &str, cx: &mut App) {
@@ -920,6 +956,7 @@ enum Deferred {
     Reconnect { key: String, delay: Duration, generation: u64 },
     Restart { key: String, delay: Duration, generation: u64 },
     Join { key: String, generation: u64, lines: Vec<String>, delay: Duration },
+    Start { key: String },
 }
 
 #[derive(Default)]
@@ -984,6 +1021,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             Deferred::Reconnect { key, delay, generation } => schedule_reconnect(key, delay, generation, cx),
             Deferred::Restart { key, delay, generation } => schedule_restart(key, delay, generation, cx),
             Deferred::Join { key, generation, lines, delay } => schedule_join(key, generation, lines, delay, cx),
+            Deferred::Start { key } => start_keys(&[key], cx),
         }
     }
     for (batch, name, kind) in fresh {
@@ -1155,6 +1193,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     *rt.joins.entry(key.clone()).or_default() += 1;
     let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
+    let restart = i.stopping && rt.restarts.remove(&key);
     i.stopping = false;
     if i.live
         && let Some(image) = &i.preview
@@ -1173,6 +1212,9 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     if !crashed {
         if !matches!(i.phase, Phase::LoginNeeded | Phase::Restarting { .. }) {
             i.phase = Phase::Stopped;
+        }
+        if restart {
+            fx.later.push(Deferred::Start { key });
         }
         return;
     }
@@ -1541,6 +1583,15 @@ fn refresh_badge(cx: &mut App) {
 }
 
 /// The phase of an instance as one line of German for its tile.
+/// The ban that is still the latest event of a stopped instance, as its status line, so a stop does not hide it.
+pub fn stopped_ban(i: &Instance, m: &Model) -> Option<String> {
+    if i.phase != Phase::Stopped || i.stopping {
+        return None;
+    }
+    let last = m.history.get(&i.key)?.back()?;
+    (last.kind == Kind::Banned).then(|| format!("{} · {}", tr("Gestoppt"), model::banned_status(&last.reason)))
+}
+
 pub fn status(i: &Instance, preparing: Option<u8>) -> String {
     if i.stopping {
         return tr("Wird gestoppt…");
@@ -1649,6 +1700,7 @@ mod tests {
             refreshed: false,
             alerts: HashMap::new(),
             pids: HashMap::new(),
+            restarts: HashSet::new(),
             rect: None,
             badge: 0,
             notice: None,
@@ -1891,6 +1943,37 @@ mod tests {
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
         assert_eq!(m.instances[&key].phase, Phase::Stopped);
         assert!(fx.later.is_empty() && m.history.is_empty());
+    }
+
+    #[test]
+    fn a_requested_restart_starts_again_only_after_a_stop_exit() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        rt.restarts.insert(key.clone());
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
+        assert!(fx.later.is_empty() && rt.restarts.contains(&key), "an exit the user did not ask for is no restart");
+        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.instances.get_mut(&key).unwrap().stopping = true;
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        assert!(matches!(fx.later.as_slice(), [Deferred::Start { key: k }] if *k == key));
+        assert!(rt.restarts.is_empty());
+    }
+
+    #[test]
+    fn a_stopped_banned_account_keeps_its_ban_in_the_status() {
+        crate::core::i18n::init("de");
+        let (_, _, mut m) = dropped(DisconnectCause::Banned);
+        let key = m.instances.keys().next().unwrap().clone();
+        let mut rt = runtime();
+        let mut fx = Effects::default();
+        m.instances.get_mut(&key).unwrap().stopping = true;
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
+        let i = &m.instances[&key];
+        assert_eq!(i.phase, Phase::Stopped);
+        assert_eq!(super::stopped_ban(i, &m).as_deref(), Some("Gestoppt · Gesperrt · why"));
+        crate::core::history::push(m.history.get_mut(&key).unwrap(), crate::core::history::Entry::now(Kind::Connected, None, ""));
+        assert!(super::stopped_ban(&m.instances[&key], &m).is_none());
     }
 
     #[test]
