@@ -468,6 +468,7 @@ pub fn reload(cx: &mut App) {
             }
             let present: HashSet<String> = model.read(cx).instances.keys().cloned().collect();
             super::tile::forget_except(&|k| present.contains(k), cx);
+            super::stills::forget_except(&|k| present.contains(k), cx);
             let known: Vec<(String, String)> = model.read(cx).instances.values().map(|i| (i.key.clone(), i.name.clone())).collect();
             let first = cx.try_global::<Runtime>().is_some_and(|rt| !rt.refreshed);
             let to_check: Vec<Account> = {
@@ -537,6 +538,14 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
     });
     let instances = &m.instances;
     m.history.retain(|k, _| instances.contains_key(k));
+    let accounts = &m.accounts;
+    m.faces.retain(|id, image| {
+        let stays = accounts.iter().any(|a| a.id == *id);
+        if !stays {
+            retired.push(Arc::clone(image));
+        }
+        stays
+    });
     m.order_seq += 1;
     retired
 }
@@ -1010,7 +1019,9 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             _ => fx.retired.push(image),
         },
         Update::Face { account, image } => {
-            if let Some(old) = m.faces.insert(account, image) {
+            if m.account(account).is_none() {
+                fx.retired.push(image);
+            } else if let Some(old) = m.faces.insert(account, image) {
                 fx.retired.push(old);
             }
         }

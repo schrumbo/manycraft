@@ -239,6 +239,7 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         super::perf::frame_start();
+        super::theme::follow_focus(window, cx);
         self.narrow_now = Self::narrow(window);
         if !std::mem::replace(&mut self.focused_once, true) && window.focused(cx).is_none() {
             window.focus(&self.grid.focus, cx);
@@ -269,6 +270,8 @@ impl Render for MainWindow {
             .id("main")
             .key_context("MainWindow")
             .track_focus(&self.focus)
+            .capture_any_mouse_down(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
+            .capture_any_mouse_up(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 if !this.overlay {
                     return;
@@ -453,7 +456,9 @@ pub fn select_batch(batch: &str, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
     let batch = batch.to_owned();
     let _ = h.update(cx, |view, window, cx| {
-        if let Ok(view) = view.downcast::<MainWindow>() {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
             view.update(cx, |this, cx| {
                 this.filter = Filter::Attention;
                 this.grid.reset_scroll();

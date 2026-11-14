@@ -77,19 +77,50 @@ pub struct TileView {
 impl Render for TileView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let me = cx.entity().downgrade();
+        let (me, key) = (cx.entity(), self.data.key.clone());
         let hover = move |hovered: &bool, _: &mut Window, cx: &mut App| {
-            let hovered = *hovered;
+            if *hovered {
+                unhover_except(Some(&key), cx);
+                cx.set_global(Hovered(Some((key.clone(), me.downgrade()))));
+            } else if cx.try_global::<Hovered>().and_then(|h| h.0.as_ref()).is_some_and(|(k, _)| *k == key) {
+                cx.set_global(Hovered(None));
+            }
             me.update(cx, |v, cx| {
-                if v.hovered != hovered {
-                    v.hovered = hovered;
+                if v.hovered != *hovered {
+                    v.hovered = *hovered;
                     cx.notify();
                 }
-            })
-            .ok();
+            });
         };
         render(&self.data, &self.geometry, self.offset, self.focused, self.hovered, hover, self.main.clone(), &t)
     }
+}
+
+/// The tile under the pointer, if any.
+#[derive(Default)]
+struct Hovered(Option<(String, WeakEntity<TileView>)>);
+
+impl Global for Hovered {}
+
+/// The key of the tile under the pointer.
+pub fn hovered(cx: &App) -> Option<String> {
+    cx.try_global::<Hovered>().and_then(|h| h.0.as_ref()).map(|(k, _)| k.clone())
+}
+
+/// Drops the hover of the tile under the pointer unless it is `key`, for tiles that left the grid without the pointer leaving them.
+pub fn unhover_except(key: Option<&str>, cx: &mut App) {
+    let Some((hovered, view)) = cx.try_global::<Hovered>().and_then(|h| h.0.clone()) else { return };
+    if key == Some(hovered.as_str()) {
+        return;
+    }
+    cx.set_global(Hovered(None));
+    view.update(cx, |v, cx| {
+        if v.hovered {
+            v.hovered = false;
+            cx.notify();
+        }
+    })
+    .ok();
 }
 
 /// The tile views by instance key.
@@ -361,9 +392,9 @@ fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement 
         Some(face) => img(ImageSource::Render(Arc::clone(face))).size(px(tile::FACE)).flex_none().opacity(tint::FACE).into_any_element(),
         None => icon("user", iconsize::L, with_alpha(t.secondary, tint::FACE)).into_any_element(),
     });
-    let running = d.phase.is_running() && !d.stopping;
+    let active = d.phase.is_active() && !d.stopping;
     let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || g.small);
-    let stop = (running && main != Some(Primary::Start)).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
+    let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
     let actions = (controls && (main.is_some() || stop.is_some())).then(|| {
         let shade = linear_gradient(180., linear_color_stop(black().opacity(0.), 0.), linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 1.));
         div()
@@ -527,6 +558,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         .when(!shadows.is_empty(), |s| s.shadow(shadows))
         .cursor_pointer()
         .when(hovered, |s| s.child(div().absolute().inset_0().bg(t.ink.opacity(tint::HOVER))))
+        .active(|s| s.opacity(tint::PRESSED))
         .child(preview(d, g, hovered || (d.selected && grid_focused), t))
         .on_hover(hover)
         .child(strip(d, g, t))

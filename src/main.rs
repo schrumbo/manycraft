@@ -41,6 +41,7 @@ fn main() {
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
+        ui::theme::watch_focus(cx);
         ui::model::init(cx);
         ui::state::init(cx);
         ui::accounts::init(cx);

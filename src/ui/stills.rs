@@ -99,8 +99,8 @@ pub fn load(keys: Vec<String>, accounts: Vec<Account>, cx: &mut App) {
     if accounts.is_empty() {
         return;
     }
-    let (out, seeking) = (s.out.clone(), Arc::clone(&s.seeking));
-    let _ = std::thread::Builder::new().name("faces".into()).spawn(move || {
+    let (out, seeking, ids) = (s.out.clone(), Arc::clone(&s.seeking), accounts.iter().map(|a| a.id).collect::<Vec<_>>());
+    let spawned = std::thread::Builder::new().name("faces".into()).spawn(move || {
         skin::faces(&accounts, |account, face| match render_image(FACE, FACE, upscale(&face)) {
             Some(image) => out.send_blocking(Update::Face { account, image }).is_ok(),
             None => true,
@@ -110,6 +110,19 @@ pub fn load(keys: Vec<String>, accounts: Vec<Account>, cx: &mut App) {
             seeking.remove(&account.id);
         }
     });
+    if spawned.is_err() {
+        let mut seeking = s.seeking.lock().unwrap_or_else(|e| e.into_inner());
+        for id in ids {
+            seeking.remove(&id);
+        }
+    }
+}
+
+/// Forgets which stills were loaded for instances that are gone, so they load again if the instance comes back.
+pub fn forget_except(keep: &dyn Fn(&str) -> bool, cx: &mut App) {
+    if cx.has_global::<Stills>() {
+        cx.global_mut::<Stills>().loaded.retain(|k| keep(k));
+    }
 }
 
 fn upscale(face: &[u8]) -> Vec<u8> {

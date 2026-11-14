@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use gpui_kit::component::{Theme as ComponentTheme, ThemeMode};
-use gpui_kit::{App, Global, Hsla, Window, WindowAppearance, black, px, rgb, white};
+use gpui_kit::{App, FocusHandle, Global, Hsla, WeakFocusHandle, Window, WindowAppearance, black, px, rgb, white};
 
 /// Spacing scale for padding, margins and gaps.
 pub mod space {
@@ -145,6 +145,8 @@ pub mod tint {
     pub const SCRIM: f32 = 0.28;
     /// The bottom of the shade under a hovered preview's actions.
     pub const PREVIEW_SHADE: f32 = 0.55;
+    /// How bright a tile stays while it is pressed.
+    pub const PRESSED: f32 = 0.85;
     /// How much of a stopped instance's last frame shows through.
     pub const STILL: f32 = 0.4;
     /// How much of the skin face shows on a tile that never ran.
@@ -342,6 +344,52 @@ pub fn choose(choice: Choice, window: &mut Window, cx: &mut App) {
     start_with(choice);
     refresh(window, cx);
     cx.refresh_windows();
+}
+
+#[derive(Default)]
+struct FocusSeen(Option<WeakFocusHandle>, bool);
+
+impl Global for FocusSeen {}
+
+/// Shows the component library's focus rings only on controls the keyboard moved focus to, like focus-visible:
+/// a control focused by a click, a theme change or a resize looks like an unfocused one. Call it from the render of every window's root view.
+pub fn follow_focus(window: &Window, cx: &mut App) {
+    if !window.is_window_active() {
+        return;
+    }
+    note_focus(window, window.last_input_was_keyboard(), cx);
+    show_rings(cx);
+}
+
+/// Lets every keystroke in any window, including Tab and arrows that controls consume, count as the keyboard moving focus.
+pub fn watch_focus(cx: &mut App) {
+    cx.intercept_keystrokes(|_, window, cx| window.defer(cx, |window, cx| focus_moved(window, true, cx))).detach();
+}
+
+/// Notes whether the keyboard moved focus, right after an input event in `window`, then updates the rings like `follow_focus`.
+pub fn focus_moved(window: &mut Window, keyboard: bool, cx: &mut App) {
+    note_focus(window, keyboard, cx);
+    show_rings(cx);
+}
+
+fn show_rings(cx: &mut App) {
+    let keyboard = cx.default_global::<FocusSeen>().1;
+    let ct = ComponentTheme::global(cx);
+    let wanted = if keyboard { ring::color() } else { ct.colors.input };
+    if ct.focus_ring == keyboard && ct.colors.ring == wanted {
+        return;
+    }
+    let ct = ComponentTheme::global_mut(cx);
+    ct.focus_ring = keyboard;
+    ct.colors.ring = wanted;
+}
+
+fn note_focus(window: &Window, keyboard: bool, cx: &mut App) {
+    let focused = window.focused(cx);
+    let seen = cx.default_global::<FocusSeen>();
+    if seen.0.as_ref().and_then(WeakFocusHandle::upgrade) != focused {
+        *seen = FocusSeen(focused.as_ref().map(FocusHandle::downgrade), keyboard);
+    }
 }
 
 /// Sets the palette and maps it onto the component library so its controls match.

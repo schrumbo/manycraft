@@ -147,7 +147,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let m = model.read(cx);
     let title = batch.and_then(|b| m.batch(b)).map(|b| b.name.clone()).unwrap_or_else(|| tr("Alle"));
     let scope: Vec<_> = m.instances.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
-    let running = scope.iter().filter(|i| i.phase.is_running() && !i.stopping).count();
+    let running = scope.iter().filter(|i| i.phase.is_active() && !i.stopping).count();
     let startable = scope.iter().filter(|i| !i.phase.is_active()).count();
     let attention = m.attention_count(batch);
     let count = |f: Filter| scope.iter().filter(|i| super::grid::matches(i, None, f, "")).count();

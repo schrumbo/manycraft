@@ -373,6 +373,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let model = model::get(cx);
     let m = model.read(cx);
     let resorted = this.grid.sort(m);
+    if resorted && this.grid.focus.is_focused(window) && window.last_input_was_keyboard() {
+        this.grid.reveal = true;
+    }
     let scope = (batch.map(str::to_owned), this.filter, this.query.clone());
     let same_scope = this.grid.scope.as_ref() == Some(&scope);
     this.grid.scope = Some(scope);
@@ -389,6 +392,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         this.grid.shown.clear();
         this.grid.rows.clear();
         let in_scope = m.instances.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
+        super::tile::unhover_except(None, cx);
         super::state::set_visible(HashSet::new(), cx);
         if !in_scope {
             let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
@@ -489,7 +493,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     }
     let ease = progress.filter(|p| *p < 1.).map(|p| 1. - (1. - p).powi(3));
     let moves = Rc::new(this.grid.moves.clone());
-    let focused = this.grid.focus.is_focused(window);
+    let focused = this.grid.focus.is_focused(window) && window.last_input_was_keyboard();
     let view = cx.entity().downgrade();
     let (shown, items, tops, places) = (Rc::new(keys), Rc::new(items), Rc::new(tops), Rc::new(places));
     let section_batches: Rc<Vec<String>> = Rc::new(sections.iter().map(|(b, _, _)| b.clone()).collect());
@@ -525,6 +529,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             .child(heading(&section_batches[n], true, m, &t))
     });
     let can_play: HashMap<String, bool> = shown.iter().filter_map(|k| m.instances.get(k)).map(|i| (i.key.clone(), super::tile::playable(&i.phase))).collect();
+    if super::tile::hovered(cx).is_some_and(|k| !visible.contains(&k)) {
+        super::tile::unhover_except(None, cx);
+    }
     super::state::set_visible(visible, cx);
     let (list_items, list_shown, list_batches) = (Rc::clone(&items), Rc::clone(&shown), Rc::clone(&section_batches));
     let list = list(this.grid.list.clone(), move |ix, _, cx| {
@@ -589,6 +596,10 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             }
         }))
         .on_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| {
+            let m = &e.keystroke.modifiers;
+            if matches!(e.keystroke.key.as_str(), "enter" | "space" | "delete") && (!this.grid.focus.is_focused(window) || m.control || m.alt || m.platform) {
+                return;
+            }
             let page = (f32::from(this.grid.area.get().height) / this.grid.row_h).floor().max(1.) as usize;
             let step = match e.keystroke.key.as_str() {
                 "left" => Move::Back,
