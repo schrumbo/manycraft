@@ -417,6 +417,38 @@ mod tests {
     }
 
     #[test]
+    fn the_default_margin_is_two_weeks() {
+        assert_eq!(MARGIN, Duration::from_secs(1_209_600));
+    }
+
+    #[test]
+    fn the_planned_size_adds_up_the_files_of_removed_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        version(root, "26.3", "delta", &[], NOW_AGE);
+        version(root, "26.2", "gamma", &[], NOW_AGE);
+        library(root, "orphan.jar", NOW_AGE);
+        std::fs::write(root.join("libraries/orphan.jar"), [0u8; 700]).unwrap();
+        touch(&root.join("libraries/orphan.jar"), NOW_AGE);
+        let found = plan(root, &[batch("26.3", None)], MARGIN, SystemTime::now()).unwrap();
+        let folder: u64 = ["26.2.json", "26.2.jar"].iter().map(|f| root.join("versions/26.2").join(f).metadata().unwrap().len()).sum();
+        assert_eq!(found.bytes, 700 + folder);
+        assert!(found.bytes > 700);
+    }
+
+    #[test]
+    fn a_pinned_loader_of_another_game_version_keeps_nothing_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        version(root, "26.3", "delta", &[], NOW_AGE);
+        version(root, "26.2", "delta", &[], NOW_AGE);
+        version(root, "fabric-loader-0.19-26.3", "delta", &[], NOW_AGE * 2);
+        version(root, "fabric-loader-0.20-26.3", "delta", &[], NOW_AGE);
+        let found = plan(root, &[batch("26.3", Some("0.19")), batch("26.2", None)], MARGIN, SystemTime::now()).unwrap();
+        assert_eq!(names(root, &found), ["versions/fabric-loader-0.20-26.3"]);
+    }
+
+    #[test]
     fn the_command_line_rejects_what_it_does_not_know() {
         assert_eq!(cli(&["--wat".into()]), 2);
         assert_eq!(cli(&["--keep-days".into(), "x".into()]), 2);

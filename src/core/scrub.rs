@@ -132,6 +132,14 @@ mod tests {
     }
 
     #[test]
+    fn only_long_jwt_shaped_strings_go() {
+        let body = |n: usize| format!("eyJ{}", "a".repeat(n));
+        assert_eq!(redact(&body(10)), body(10));
+        assert_eq!(redact(&body(26)), body(26));
+        assert_eq!(redact(&body(27)), "<redacted>");
+    }
+
+    #[test]
     fn manycraft_variables_lose_their_values() {
         assert_eq!(redact("MANYCRAFT_TOKEN=abc123 PATH=/bin MANYCRAFT_PROXY=socks5://u:p@h:1"), "MANYCRAFT_TOKEN=<redacted> PATH=/bin MANYCRAFT_PROXY=<redacted>");
     }
