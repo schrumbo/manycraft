@@ -9,6 +9,11 @@ const TOKEN_FLAG: &str = "--accessToken";
 const ENV_NAMES: [&str; 2] = ["MANYCRAFT_TOKEN=", "MANYCRAFT_PROXY="];
 const JWT_START: &str = "eyJ";
 const JWT_MIN: usize = 30;
+const MARKERS: [&str; 4] = [TOKEN_FLAG, "MANYCRAFT_", "://", JWT_START];
+
+fn may_hold_secrets(text: &str) -> bool {
+    MARKERS.iter().any(|m| text.contains(m))
+}
 
 /// Whether `name` is a file the JVM writes when it dies.
 pub fn is_crash_file(name: &str) -> bool {
@@ -17,6 +22,9 @@ pub fn is_crash_file(name: &str) -> bool {
 
 /// `text` with the access token after `--accessToken`, JWT-shaped tokens, `MANYCRAFT_*` values and the `user:pass@` of URLs replaced.
 pub fn redact(text: &str) -> String {
+    if !may_hold_secrets(text) {
+        return text.to_owned();
+    }
     let mut out = String::with_capacity(text.len());
     let mut after_flag = false;
     let mut rest = text;
@@ -73,6 +81,9 @@ fn redact_word(word: &str) -> String {
 pub fn scrub_file(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else { return false };
     let text = String::from_utf8_lossy(&bytes);
+    if !may_hold_secrets(&text) {
+        return false;
+    }
     let clean = redact(&text);
     clean != text && net::write_atomic(path, clean.as_bytes()).is_ok()
 }
