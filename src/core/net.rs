@@ -32,6 +32,15 @@ pub fn get_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str) 
     serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))
 }
 
+/// Posts `body` as JSON to `url` and parses the response as JSON, retrying transient failures.
+pub fn post_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str, body: &serde_json::Value) -> Result<T> {
+    let bytes = retrying(url, || {
+        let mut res = agent.post(url).send_json(body).map_err(Failure::from)?;
+        res.body_mut().with_config().limit(MAX_JSON).read_to_vec().map_err(Failure::from)
+    })?;
+    serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))
+}
+
 /// Downloads `url` to `path` unless a file with the expected SHA-1 is already there.
 /// Without a hash, an existing file is kept. Streams to a unique temporary file and renames it into place.
 pub fn fetch_verified(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<&str>) -> Result<()> {
