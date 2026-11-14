@@ -71,22 +71,40 @@ pub mod tile {
     pub const LARGE: f32 = 340.;
     /// Smallest tile width "Einpassen" goes down to before it scrolls after all.
     pub const FIT_MIN: f32 = 96.;
+    /// Below this width the status line keeps only its first words.
+    pub const DENSE: f32 = 150.;
+    /// Below this width a tile shows only its name under the preview; the status moves into a tooltip.
+    pub const TINY: f32 = 110.;
     /// Height of the strip under the preview.
     pub const STRIP: f32 = 44.;
     /// Height of the strip on small tiles, where only the name and status fit.
     pub const STRIP_SMALL: f32 = 38.;
+    /// Height of the one-line strip on tiny tiles.
+    pub const STRIP_TINY: f32 = 26.;
+    /// Space between tiles, by tile size.
+    pub const GAP: f32 = 16.;
+    pub const GAP_SMALL: f32 = 12.;
+    pub const GAP_TINY: f32 = 8.;
+    /// Space around the grid, the same as the toolbar's edges.
+    pub const INSET: f32 = 16.;
     /// Width of the attention and focus ring.
     pub const RING: f32 = 2.;
     /// How bright the preview stays behind an account that needs work.
     pub const DIMMED: f32 = 0.7;
-    /// The account's initial on a tile without a preview.
-    pub const INITIAL: f32 = 28.;
+    /// The status mark in front of the status line.
+    pub const GLYPH: f32 = 7.;
+    /// Height of the shade that carries the actions at the bottom of a hovered preview.
+    pub const SHADE: f32 = 56.;
     /// The skin head in the strip.
     pub const HEAD: f32 = 22.;
     /// Unread whispers badge.
     pub const BADGE: f32 = 18.;
-    /// The initial on a small tile.
-    pub const INITIAL_SMALL: f32 = 21.;
+    /// Height of a batch heading in the grid of all batches.
+    pub const HEADING: f32 = 40.;
+    /// Blur of the soft shadow under a tile in the light appearance.
+    pub const SHADOW_BLUR: f32 = 3.;
+    /// How far past the visible rows the grid lays out, so scrolling always knows the next row.
+    pub const OVERDRAW: f32 = 360.;
 }
 
 /// The sidebar and toolbar around the grid.
@@ -117,8 +135,12 @@ pub mod tint {
     pub const RING: f32 = 0.8;
     /// The wash behind an account that needs work.
     pub const ATTENTION: f32 = 0.12;
-    /// The shade over a preview that shows its actions.
+    /// The shade behind the floating sidebar.
     pub const SCRIM: f32 = 0.28;
+    /// The bottom of the shade under a hovered preview's actions.
+    pub const PREVIEW_SHADE: f32 = 0.55;
+    /// The soft shadow under a card in the light appearance.
+    pub const CARD_SHADOW: f32 = 0.08;
     /// Controls floating over a preview.
     pub const FLOATING: f32 = 0.92;
     /// An outline in a status color.
@@ -178,6 +200,8 @@ pub struct Theme {
     pub content: Hsla,
     /// Grouped areas and inset fields on the window.
     pub raised: Hsla,
+    /// A recessed area inside a card, like a tile with no picture yet.
+    pub well: Hsla,
     pub primary: Hsla,
     pub secondary: Hsla,
     pub tertiary: Hsla,
@@ -226,6 +250,7 @@ impl Theme {
             window: if dark { c(0x1E1E1E) } else { c(0xF2F2F7) },
             content: if dark { c(0x2C2C2E) } else { c(0xFFFFFF) },
             raised: if dark { c(0x3A3A3C) } else { c(0xE8E8ED) },
+            well: if dark { c(0x242426) } else { c(0xECECF1) },
             primary: ink.opacity(0.88),
             secondary: ink.opacity(0.62),
             tertiary: ink.opacity(if dark { 0.47 } else { 0.56 }),
@@ -413,6 +438,8 @@ mod tests {
                 ("secondary on window", contrast(t.secondary, t.window), 4.5),
                 ("secondary on content", contrast(t.secondary, t.content), 4.5),
                 ("tertiary on window", contrast(t.tertiary, t.window), 3.),
+                ("tertiary on well", contrast(t.tertiary, t.well), 3.),
+                ("secondary on well", contrast(t.secondary, t.well), 4.5),
                 ("on accent", contrast(t.on_accent, t.accent), 4.5),
                 ("on danger", contrast(t.on_danger, t.danger), 3.),
                 ("accent text on window", contrast(t.accent_text, t.window), 4.5),

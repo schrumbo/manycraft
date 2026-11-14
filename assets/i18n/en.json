@@ -271,5 +271,19 @@
   "Nicht übernommen: %@": "Not imported: %@",
   "Aus Prism · Minecraft %@ · %lld Mods": "From Prism · Minecraft %@ · %lld mods",
   "Minecraft %@ · %lld Mods": "Minecraft %@ · %lld mods",
-  "„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.": "“%@” is created: %lld mods from Modrinth, %lld own files."
+  "„%@“ ist angelegt: %lld Mods von Modrinth, %lld eigene Dateien.": "“%@” is created: %lld mods from Modrinth, %lld own files.",
+  "Die Account-Verwaltung erscheint hier.": "Account management appears here.",
+  "Stoppt…": "Stopping…",
+  "Lädt %lld %%": "Loading %lld %%",
+  "Wartet %lld/%lld": "Waiting %lld/%lld",
+  "Hauptmenü": "Main menu",
+  "Neu %lld/%lld": "Retry %lld/%lld",
+  "Verbindet neu · %lld/%lld": "Reconnecting · %lld/%lld",
+  "Warteschlange": "Queue",
+  "Fehlgeschlagen": "Failed",
+  "Kachelgröße": "Tile size",
+  "Klein": "Small",
+  "Mittel": "Medium",
+  "Groß": "Large",
+  "Alle einpassen": "Fit all"
 }

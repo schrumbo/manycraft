@@ -90,9 +90,10 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             let total = m.instances.values().filter(|i| i.batch_id == b.id).count();
             let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_running()).count();
             let attention = m.attention_count(Some(&b.id));
-            let hint = trf("%lld von %lld laufen", &[&running, &total]);
+            let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_running() && !i.phase.needs_attention()).count();
+            let hint = trf("%lld von %lld laufen", &[&fine, &total]);
             let stopped = total - running;
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{running}/{total}")), attention, hint: Some(hint) }, b.id.clone(), running, stopped)
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{fine}/{total}")), attention, hint: Some(hint) }, b.id.clone(), running, stopped)
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, hint: None };

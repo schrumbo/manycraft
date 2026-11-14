@@ -1,16 +1,18 @@
 //! The toolbar over the grid: sidebar toggle, filter, tile size, search, and starting or stopping what is shown.
 
 use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{StartAll, StartBatch, StopAll, StopBatch, ToggleSidebar};
 use super::drive::Mark;
-use super::main_window::{Filter, MainWindow, TileSize};
+use super::main_window::{Filter, MainWindow, TileFit, TileLarge, TileMedium, TileSize, TileSmall};
 use super::model;
 use super::motion::Soft;
-use super::theme::{Theme, control, font, iconsize, radius, shell, space, tint};
+use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::widgets::{KeyNav, icon, tip};
 use crate::core::i18n::{tr, trf};
 
@@ -23,7 +25,8 @@ pub fn bar(this: &MainWindow, title: String, t: &Theme) -> AnyElement {
     div()
         .h(px(shell::TOOLBAR))
         .flex_none()
-        .px(px(space::M))
+        .pl(px(lead()))
+        .pr(px(tile::INSET))
         .flex()
         .items_center()
         .gap(px(space::S))
@@ -32,6 +35,15 @@ pub fn bar(this: &MainWindow, title: String, t: &Theme) -> AnyElement {
         .child(toggle(this, t))
         .child(div().min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
         .into_any_element()
+}
+
+/// The toolbar's leading padding that puts the sidebar symbol on the grid's edge.
+fn lead() -> f32 {
+    tile::INSET - (control::M - iconsize::M) / 2.
+}
+
+fn tabular() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
 fn toggle(this: &MainWindow, t: &Theme) -> Stateful<Div> {
@@ -59,10 +71,9 @@ fn icon_button(id: &'static str, name: &'static str, hint: String, t: &Theme) ->
 
 struct Segment {
     id: String,
-    label: Option<String>,
-    icon: Option<&'static str>,
-    count: Option<usize>,
-    hint: Option<String>,
+    label: String,
+    count: usize,
+    loud: bool,
     selected: bool,
 }
 
@@ -70,10 +81,10 @@ fn segmented(id: &'static str, segments: Vec<Segment>, on_pick: impl Fn(usize, &
     let on_pick = std::rc::Rc::new(on_pick);
     let items = segments.into_iter().enumerate().map(|(n, s)| {
         let pick = std::rc::Rc::clone(&on_pick);
-        let label = s.label.clone().or(s.hint.clone()).unwrap_or_default();
+        let count = if s.loud { t.attention_text } else if s.selected { t.secondary } else { t.tertiary };
         div()
             .id(SharedString::from(s.id))
-            .mark("segment", label)
+            .mark("segment", s.label.clone())
             .h(px(control::S))
             .px(px(space::S))
             .rounded(px(radius::INNER))
@@ -87,10 +98,8 @@ fn segmented(id: &'static str, segments: Vec<Segment>, on_pick: impl Fn(usize, &
             .cursor_pointer()
             .key_nav()
             .soft(t.ink.opacity(if s.selected { 0. } else { tint::HOVER }), radius::INNER)
-            .when_some(s.icon, |d, name| d.child(icon(name, iconsize::S, if s.selected { t.primary } else { t.secondary })))
-            .when_some(s.label, |d, label| d.child(label))
-            .when_some(s.count.filter(|n| *n > 0), |d, n| d.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(t.attention_text).child(n.to_string())))
-            .when_some(s.hint, |d, hint| d.tooltip(tip(hint)))
+            .child(s.label)
+            .child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(count).child(s.count.to_string()))
             .on_click(cx.listener(move |this, _, window, cx| {
                 pick(n, this, window, cx);
                 cx.notify();
@@ -140,6 +149,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let running = scope.iter().filter(|i| i.phase.is_running() && !i.stopping).count();
     let startable = scope.iter().filter(|i| !i.phase.is_running()).count();
     let attention = m.attention_count(batch);
+    let count = |f: Filter| scope.iter().filter(|i| super::grid::matches(i, None, f, "")).count();
     let (start, stop): (Box<dyn Action>, Box<dyn Action>) = match batch {
         Some(b) => (Box::new(StartBatch(b.to_owned())), Box::new(StopBatch(b.to_owned()))),
         None => (Box::new(StartAll), Box::new(StopAll)),
@@ -150,10 +160,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .iter()
         .map(|(f, label)| Segment {
             id: format!("filter-{f:?}").to_lowercase(),
-            label: Some(label.clone()),
-            icon: None,
-            count: (*f == Filter::Attention).then_some(attention),
-            hint: None,
+            label: label.clone(),
+            count: count(*f),
+            loud: *f == Filter::Attention && attention > 0,
             selected: this.filter == *f,
         })
         .collect();
@@ -168,30 +177,29 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         &t,
         cx,
     );
-    let sizes = [
-        (TileSize::Small, "S", tr("Kleine Kacheln")),
-        (TileSize::Medium, "M", tr("Mittlere Kacheln")),
-        (TileSize::Large, "L", tr("Große Kacheln")),
-    ];
-    let mut size_segments: Vec<Segment> = sizes
-        .iter()
-        .map(|(s, label, hint)| Segment { id: format!("size-{label}").to_lowercase(), label: Some((*label).into()), icon: None, count: None, hint: Some(format!("{hint} · {} / {}", shortcut("−"), shortcut("+"))), selected: this.size == *s })
-        .collect();
-    size_segments.push(Segment { id: "size-fit".into(), label: None, icon: Some("scan"), count: None, hint: Some(tr("Einpassen: so groß, dass möglichst alle Kacheln sichtbar sind")), selected: this.size == TileSize::Fit });
-    let size_picks = [TileSize::Small, TileSize::Medium, TileSize::Large, TileSize::Fit];
-    let size = segmented(
-        "tile-size",
-        size_segments,
-        move |n, this, _, _| {
-            this.size = size_picks[n];
-            this.grid.reset_scroll();
-        },
-        &t,
-        cx,
-    );
+    let current = this.size;
+    let grid_focus = this.focus.clone();
+    let size = Button::new("tile-size")
+        .ghost()
+        .small()
+        .h(px(control::M))
+        .px(px(space::XS))
+        .gap(px(space::XXS))
+        .child(icon("layout-grid", iconsize::M, t.secondary))
+        .child(icon("chevron-down", iconsize::XS, t.tertiary))
+        .tooltip(tr("Kachelgröße"))
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            menu.action_context(grid_focus.clone())
+                .label(tr("Kachelgröße"))
+                .menu_with_check(tr("Klein"), current == TileSize::Small, Box::new(TileSmall))
+                .menu_with_check(tr("Mittel"), current == TileSize::Medium, Box::new(TileMedium))
+                .menu_with_check(tr("Groß"), current == TileSize::Large, Box::new(TileLarge))
+                .separator()
+                .menu_with_check(tr("Alle einpassen"), current == TileSize::Fit, Box::new(TileFit))
+        });
     let search = div()
         .key_context("Toolbar")
-        .w(px(shell::SEARCH))
+        .w(px(if compact { shell::SEARCH * 0.75 } else { shell::SEARCH }))
         .min_w(px(shell::SEARCH / 2.))
         .child(Input::new(&this.search).small().cleanable(true).prefix(icon("search", iconsize::S, t.tertiary)));
     let start_label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
@@ -199,7 +207,8 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     div()
         .h(px(shell::TOOLBAR))
         .flex_none()
-        .px(px(space::M))
+        .pl(px(lead()))
+        .pr(px(tile::INSET))
         .flex()
         .items_center()
         .gap(px(space::S))
@@ -220,8 +229,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(div().w(px(space::S)).flex_none())
         .child(filter)
         .child(div().flex_1().min_w(px(space::S)))
-        .when(!compact, |d| d.child(size))
+        .child(size)
         .child(search)
+        .child(div().w(px(space::XS)).flex_none())
         .child(action_button("stop-scope", stop_label.clone(), "square", false, running == 0, compact, stop, &t).tooltip(tip(format!("{stop_label} · {}", if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) }))))
         .child(action_button("start-scope", start_label.clone(), "play", true, startable == 0, compact, start, &t).tooltip(tip(format!("{start_label} · {}", if startable == 0 { tr("Alle laufen schon") } else { trf("%lld gestoppte starten", &[&startable]) }))))
         .into_any_element()
