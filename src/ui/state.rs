@@ -11,15 +11,17 @@ use gpui_kit::*;
 use super::actions::{Broadcast, NextAttention, NextInstance, Play, PreviousInstance, Reconnect, Reload, Respawn, ShowGrid, Start, StartAll, StartBatch, Stop, StopAll, StopBatch};
 use super::model::{self, ChatLine, Instance, Model, Phase};
 use super::native::{self, Rect};
-use crate::core::account::{self, Account};
-use crate::core::auth::AuthError;
+use crate::core::account::{self, Account, AccountKind};
+use crate::core::auth::{self, AuthError};
 use crate::core::batch::{self, Batch};
 use crate::core::fleet::{self, Fleet};
+use crate::core::history::{self, Kind};
 use crate::core::i18n::{tr, trf};
-use crate::core::ipc::{ChatKind, Event, FromMod, HotkeyAction, StateKind, ToMod};
+use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, HotkeyAction, StateKind, ToMod};
+use crate::core::reconnect::{self, Decision, Reaction};
+use crate::core::settings;
 use crate::core::{companion, drive, install, ipc};
 
-const BACKOFF: [Duration; 3] = [Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(45)];
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
 const ALERT_AFTER: Duration = Duration::from_secs(3);
@@ -40,6 +42,8 @@ pub enum Update {
     Exited { key: String, code: Option<i32> },
     Preview { key: String, seq: u32, image: Arc<RenderImage> },
     Seed { key: String, phase: Phase, attempts: u32 },
+    /// Whether the saved sign-in of an account still works, from a token refresh.
+    SignIn { account: uuid::Uuid, valid: bool },
 }
 
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
@@ -56,6 +60,8 @@ pub trait Backend: Send + Sync {
     fn quit(&self);
     /// Learns the instances the model holds, by key and account name.
     fn known(&self, _instances: Vec<(String, String)>) {}
+    /// Refreshes the sign-in of `accounts` one after another and reports each that works or needs a new sign-in.
+    fn refresh(&self, _accounts: Vec<Account>) {}
 }
 
 struct Real {
@@ -66,6 +72,7 @@ struct Real {
     runs: AtomicU64,
     sends: mpsc::Sender<(String, ToMod)>,
     previews: mpsc::Sender<(String, PathBuf)>,
+    refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
 }
 
 impl Real {
@@ -118,7 +125,7 @@ impl Real {
                 }
             }
         })?;
-        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews })
+        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default() })
     }
 }
 
@@ -215,6 +222,31 @@ impl Backend for Real {
         let _ = self.previews.send((key, path));
     }
 
+    fn refresh(&self, accounts: Vec<Account>) {
+        let todo: Vec<Account> = {
+            let mut busy = lock(&self.refreshing);
+            accounts.into_iter().filter(|a| a.kind == AccountKind::Microsoft && busy.insert(a.id)).collect()
+        };
+        if todo.is_empty() {
+            return;
+        }
+        let (out, busy) = (self.out.clone(), Arc::clone(&self.refreshing));
+        let _ = std::thread::Builder::new().name("token-refresh".into()).spawn(move || {
+            for account in todo {
+                let outcome = auth::refresh_account(&account);
+                lock(&busy).remove(&account.id);
+                let valid = match &outcome {
+                    Ok(()) => true,
+                    Err(e) if needs_sign_in(e) => false,
+                    Err(_) => continue,
+                };
+                if out.send_blocking(Update::SignIn { account: account.id, valid }).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
     fn quit(&self) {
         self.fleet.close();
         let until = Instant::now() + QUIT_WAIT;
@@ -251,6 +283,7 @@ pub fn render_image(width: u32, height: u32, mut rgba: Vec<u8>) -> Option<Arc<Re
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Alert {
     Disconnected,
+    Banned,
     Crashed,
     Login,
     Other,
@@ -260,6 +293,7 @@ impl Alert {
     fn of(phase: &Phase) -> Self {
         match phase {
             Phase::Disconnected { .. } => Self::Disconnected,
+            Phase::Banned { .. } => Self::Banned,
             Phase::Crashed { .. } => Self::Crashed,
             Phase::LoginNeeded => Self::Login,
             _ => Self::Other,
@@ -275,6 +309,12 @@ struct Runtime {
     stale: HashMap<String, Instant>,
     read_at: HashMap<String, Instant>,
     reconnects: HashMap<String, u64>,
+    joins: HashMap<String, u64>,
+    crash_restarts: HashMap<String, u32>,
+    started: HashMap<String, Instant>,
+    joined: HashSet<String>,
+    history: Option<history::Writer>,
+    refreshed: bool,
     alerts: HashMap<String, Vec<(String, Alert)>>,
     pids: HashMap<String, u32>,
     rect: Option<Rect>,
@@ -310,11 +350,20 @@ pub fn init(cx: &mut App) {
         stale: HashMap::new(),
         read_at: HashMap::new(),
         reconnects: HashMap::new(),
+        joins: HashMap::new(),
+        crash_restarts: HashMap::new(),
+        started: HashMap::new(),
+        joined: HashSet::new(),
+        history: history::Writer::start().ok(),
+        refreshed: false,
         alerts: HashMap::new(),
         pids: HashMap::new(),
         rect: None,
         badge: 0,
     });
+    if let Err(e) = settings::activate() {
+        eprintln!("settings: {e:#}");
+    }
     reload(cx);
     cx.spawn(async move |cx| {
         while let Ok(first) = updates.recv().await {
@@ -384,13 +433,20 @@ fn backend(cx: &App) -> Option<Arc<dyn Backend>> {
 
 /// Reads accounts and batches from disk again and rebuilds the instance list, keeping what runs.
 pub fn reload(cx: &mut App) {
-    let task = cx.background_spawn(async { (account::load(), batch::load_all()) });
+    let task = cx.background_spawn(async {
+        let (accounts, batches) = (account::load(), batch::load_all());
+        let logs = batches.as_ref().map(|batches| saved_history(batches)).unwrap_or_default();
+        (accounts, batches, logs)
+    });
     cx.spawn(async move |cx| {
-        let (accounts, batches) = task.await;
+        let (accounts, batches, logs) = task.await;
         cx.update(|cx| {
             let model = model::get(cx);
             let mut retired = Vec::new();
             model.update(cx, |m, cx| {
+                for (key, log) in logs {
+                    m.history.entry(key).or_insert(log);
+                }
                 match (accounts, batches) {
                     (Ok(accounts), Ok(batches)) => {
                         m.accounts = accounts;
@@ -408,12 +464,34 @@ pub fn reload(cx: &mut App) {
             let present: HashSet<String> = model.read(cx).instances.keys().cloned().collect();
             super::tile::forget_except(&|k| present.contains(k), cx);
             let known: Vec<(String, String)> = model.read(cx).instances.values().map(|i| (i.key.clone(), i.name.clone())).collect();
+            let first = cx.try_global::<Runtime>().is_some_and(|rt| !rt.refreshed);
+            let to_check: Vec<Account> = {
+                let m = model.read(cx);
+                m.accounts.iter().filter(|a| first || m.instances.values().any(|i| i.account_id == a.id && i.phase == Phase::LoginNeeded)).cloned().collect()
+            };
             if let Some(rt) = cx.try_global::<Runtime>() {
                 rt.backend.known(known);
+                rt.backend.refresh(to_check);
+            }
+            if first && cx.has_global::<Runtime>() {
+                cx.global_mut::<Runtime>().refreshed = true;
             }
         });
     })
     .detach();
+}
+
+fn saved_history(batches: &[Batch]) -> Vec<(String, history::Log)> {
+    let mut logs = Vec::new();
+    for batch in batches {
+        for id in &batch.accounts {
+            let log = history::load(&history::path(batch, *id));
+            if !log.is_empty() {
+                logs.push((fleet::instance_key(batch, *id), log));
+            }
+        }
+    }
+    logs
 }
 
 fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
@@ -446,6 +524,8 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
         }
         stays
     });
+    let instances = &m.instances;
+    m.history.retain(|k, _| instances.contains_key(k));
     m.order_seq += 1;
     retired
 }
@@ -473,15 +553,15 @@ fn start_keys(keys: &[String], cx: &mut App) {
         }
     }
     for (batch, keys) in by_batch {
-        launch(&batch, Some(&keys), cx);
+        launch(&batch, Some(&keys), false, cx);
     }
 }
 
 fn start_batch(batch: &str, cx: &mut App) {
-    launch(batch, None, cx);
+    launch(batch, None, false, cx);
 }
 
-fn launch(batch_id: &str, only: Option<&[String]>, cx: &mut App) {
+fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) {
     let model = model::get(cx);
     let (batch, accounts) = {
         let m = model.read(cx);
@@ -492,7 +572,7 @@ fn launch(batch_id: &str, only: Option<&[String]>, cx: &mut App) {
             .filter_map(|id| m.account(*id).cloned())
             .filter(|a| {
                 let key = fleet::instance_key(&batch, a.id);
-                only.is_none_or(|o| o.contains(&key)) && m.instances.get(&key).is_some_and(|i| !i.phase.is_running())
+                only.is_none_or(|o| o.contains(&key)) && m.instances.get(&key).is_some_and(|i| !i.phase.is_running() )
             })
             .collect();
         (batch, accounts)
@@ -507,7 +587,12 @@ fn launch(batch_id: &str, only: Option<&[String]>, cx: &mut App) {
         runs.push(Arc::clone(&cancel));
         let total = accounts.len();
         for account in &accounts {
-            if let Some(i) = m.instances.get_mut(&fleet::instance_key(&batch, account.id)) {
+            let key = fleet::instance_key(&batch, account.id);
+            if !restart {
+                rt.crash_restarts.remove(&key);
+                *rt.reconnects.entry(key.clone()).or_default() += 1;
+            }
+            if let Some(i) = m.instances.get_mut(&key) {
                 i.phase = Phase::Starting { done: 0, total };
                 i.reconnect_attempts = 0;
                 i.stopping = false;
@@ -525,6 +610,9 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
     update_model(cx, |m, rt, _| {
         for key in &keys {
             rt.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
+            rt.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
+            rt.crash_restarts.remove(key);
+            rt.joined.remove(key);
             let Some(i) = m.instances.get_mut(key) else { continue };
             match i.phase {
                 Phase::Starting { .. } if !rt.pids.contains_key(key) => {
@@ -535,7 +623,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
                     i.stopping = true;
                     running.push(key.clone());
                 }
-                Phase::Crashed { .. } | Phase::Failed { .. } => i.phase = Phase::Stopped,
+                Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } => i.phase = Phase::Stopped,
                 _ => {}
             }
         }
@@ -569,6 +657,7 @@ fn reconnect(key: &str, cx: &mut App) {
             return;
         }
         *rt.reconnects.entry(key.clone()).or_default() += 1;
+        *rt.joins.entry(key.clone()).or_default() += 1;
         i.reconnect_attempts = 0;
         i.phase = Phase::Connecting { server: server_of(&i.phase).unwrap_or_default() };
         m.order_seq += 1;
@@ -589,7 +678,7 @@ fn respawn(key: &str, cx: &mut App) {
 fn server_of(phase: &Phase) -> Option<String> {
     match phase {
         Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } => Some(server.clone()),
-        Phase::Disconnected { server, .. } | Phase::Dead { server, .. } => server.clone(),
+        Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.clone(),
         _ => None,
     }
 }
@@ -712,25 +801,38 @@ fn preview_path(m: &Model, key: &str) -> Option<PathBuf> {
     Some(fleet::preview_path(m.batch(&i.batch_id)?, i.account_id))
 }
 
+enum Deferred {
+    Reconnect { key: String, delay: Duration, generation: u64 },
+    Restart { key: String, delay: Duration, generation: u64 },
+    Join { key: String, generation: u64, lines: Vec<String>, delay: Duration },
+}
+
+#[derive(Default)]
+struct Effects {
+    later: Vec<Deferred>,
+    hotkeys: Vec<HotkeyAction>,
+    exited_playing: bool,
+    retired: Vec<Arc<RenderImage>>,
+    changed_history: Vec<String>,
+    stop: Vec<String>,
+}
+
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
     if updates.iter().all(|u| matches!(u, Update::Preview { .. })) {
         return apply_previews(updates, cx);
     }
     let mut fresh: Vec<(String, String, Alert)> = Vec::new();
-    let mut later: Vec<(String, Duration, u64)> = Vec::new();
-    let mut hotkeys: Vec<HotkeyAction> = Vec::new();
-    let mut exited_playing = false;
-    let mut retired: Vec<Arc<RenderImage>> = Vec::new();
+    let mut fx = Effects::default();
     update_model(cx, |m, rt, _| {
         for update in updates {
             let key = match &update {
-                Update::Preparing { .. } | Update::Progress { .. } => None,
+                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } => None,
                 Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
             };
             let before = key.as_ref().and_then(|k| m.instances.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
             let seeded = matches!(update, Update::Seed { .. });
-            apply(m, rt, update, &mut later, &mut hotkeys, &mut exited_playing, &mut retired);
+            apply(m, rt, update, &mut fx);
             let Some(key) = key else { continue };
             let Some(i) = m.instances.get(&key) else { continue };
             let after = (rank(&i.phase), i.phase.needs_attention());
@@ -742,20 +844,45 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             }
         }
     });
-    for image in retired {
+    for image in fx.retired {
         cx.drop_image(image, None);
     }
-    for (key, delay, generation) in later {
-        schedule_reconnect(key, delay, generation, cx);
+    save_histories(&fx.changed_history, cx);
+    if !fx.stop.is_empty()
+        && let Some(backend) = backend(cx)
+    {
+        backend.stop(fx.stop);
+    }
+    for deferred in fx.later {
+        match deferred {
+            Deferred::Reconnect { key, delay, generation } => schedule_reconnect(key, delay, generation, cx),
+            Deferred::Restart { key, delay, generation } => schedule_restart(key, delay, generation, cx),
+            Deferred::Join { key, generation, lines, delay } => schedule_join(key, generation, lines, delay, cx),
+        }
     }
     for (batch, name, kind) in fresh {
         queue_alert(batch, name, kind, cx);
     }
-    if exited_playing {
+    if fx.exited_playing {
         show_grid(cx);
     }
-    for action in hotkeys {
+    for action in fx.hotkeys {
         step(action, cx);
+    }
+}
+
+fn save_histories(keys: &[String], cx: &mut App) {
+    if keys.is_empty() || !cx.has_global::<Runtime>() {
+        return;
+    }
+    let model = model::get(cx);
+    let m = model.read(cx);
+    let rt = cx.global::<Runtime>();
+    let Some(writer) = &rt.history else { return };
+    for key in keys {
+        let Some(i) = m.instances.get(key) else { continue };
+        let (Some(batch), Some(log)) = (m.batch(&i.batch_id), m.history.get(key)) else { continue };
+        writer.save(history::path(batch, i.account_id), log.clone());
     }
 }
 
@@ -794,7 +921,14 @@ fn rank(phase: &Phase) -> u8 {
     }
 }
 
-fn apply(m: &mut Model, rt: &mut Runtime, update: Update, later: &mut Vec<(String, Duration, u64)>, hotkeys: &mut Vec<HotkeyAction>, exited_playing: &mut bool, retired: &mut Vec<Arc<RenderImage>>) {
+fn note(m: &mut Model, fx: &mut Effects, key: &str, kind: Kind, server: Option<String>, reason: &str) {
+    history::push(m.history.entry(key.to_owned()).or_default(), history::Entry::now(kind, server, reason));
+    if !fx.changed_history.iter().any(|k| k == key) {
+        fx.changed_history.push(key.to_owned());
+    }
+}
+
+fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
     match update {
         Update::Preparing { batch, percent } => {
             m.preparing.insert(batch, percent);
@@ -829,26 +963,25 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, later: &mut Vec<(Strin
                 i.reconnect_attempts = attempts;
             }
         }
-        Update::Exited { key, code } => {
-            rt.pids.remove(&key);
-            let Some(i) = m.instances.get_mut(&key) else { return };
-            i.phase = if i.stopping || code == Some(0) || i.phase == Phase::Stopped { Phase::Stopped } else { Phase::Crashed { code } };
-            i.stopping = false;
-            if let Some(old) = i.preview.take() {
-                retired.push(old);
+        Update::SignIn { account, valid } => {
+            for i in m.instances.values_mut().filter(|i| i.account_id == account) {
+                if !valid && matches!(i.phase, Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. }) {
+                    i.phase = Phase::LoginNeeded;
+                } else if valid && i.phase == Phase::LoginNeeded && !rt.pids.contains_key(&i.key) {
+                    i.phase = Phase::Stopped;
+                }
             }
-            if m.playing.as_deref() == Some(key.as_str()) {
-                *exited_playing = true;
-            }
+            m.order_seq += 1;
         }
+        Update::Exited { key, code } => on_exit(m, rt, fx, key, code),
         Update::Preview { key, seq, image } => match m.instances.get_mut(&key) {
             Some(i) if i.phase.is_running() => {
                 if let Some(old) = i.preview.replace(image) {
-                    retired.push(old);
+                    fx.retired.push(old);
                 }
                 i.preview_seq = seq;
             }
-            _ => retired.push(image),
+            _ => fx.retired.push(image),
         },
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
             rt.pids.insert(instance.clone(), pid);
@@ -859,50 +992,146 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, later: &mut Vec<(Strin
             }
         }
         Update::Ipc(Event::Disconnected { .. }) => {}
-        Update::Ipc(Event::Message { instance, message }) => on_message(m, rt, instance, message, later, hotkeys),
+        Update::Ipc(Event::Message { instance, message }) => on_message(m, rt, instance, message, fx),
     }
 }
 
-fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, later: &mut Vec<(String, Duration, u64)>, hotkeys: &mut Vec<HotkeyAction>) {
+fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code: Option<i32>) {
+    rt.pids.remove(&key);
+    rt.joined.remove(&key);
+    let ran = rt.started.remove(&key).map(|t| t.elapsed());
+    let Some(i) = m.instances.get_mut(&key) else { return };
+    *rt.joins.entry(key.clone()).or_default() += 1;
+    let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
+    i.stopping = false;
+    if let Some(old) = i.preview.take() {
+        fx.retired.push(old);
+    }
+    if m.playing.as_deref() == Some(key.as_str()) {
+        fx.exited_playing = true;
+    }
+    if !crashed {
+        if !matches!(i.phase, Phase::LoginNeeded | Phase::Restarting { .. }) {
+            i.phase = Phase::Stopped;
+        }
+        return;
+    }
+    let server = server_of(&i.phase);
+    let policy = &settings::active().crash_restart;
+    if ran.is_some_and(|r| r >= STABLE) {
+        rt.crash_restarts.remove(&key);
+    }
+    let tried = rt.crash_restarts.get(&key).copied().unwrap_or(0);
+    let reason = tr("Unerwartet beendet");
+    let banned = matches!(i.phase, Phase::Banned { .. });
+    match reconnect::restart(tried, policy, reconnect::unit()) {
+        Decision::Retry(_) if banned => i.phase = Phase::Crashed { code },
+        Decision::Retry(delay) => {
+            rt.crash_restarts.insert(key.clone(), tried + 1);
+            let generation = rt.reconnects.entry(key.clone()).or_default();
+            *generation += 1;
+            fx.later.push(Deferred::Restart { key: key.clone(), delay, generation: *generation });
+            i.phase = Phase::Restarting { attempt: tried + 1, of: policy.max_attempts };
+        }
+        Decision::Stop => i.phase = Phase::Crashed { code },
+    }
+    note(m, fx, &key, Kind::Crashed, server, &reason);
+}
+
+fn join_lines_of(m: &Model, key: &str) -> Option<(Vec<String>, Duration)> {
+    let batch = m.batch(&m.instances.get(key)?.batch_id)?;
+    let lines = batch.join_lines();
+    (!lines.is_empty()).then(|| (lines, Duration::from_millis(u64::from(batch.join_delay_ms))))
+}
+
+fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind: StateKind, server: Option<String>, reason: Option<String>, cause: Option<DisconnectCause>) {
+    if kind != StateKind::Playing {
+        *rt.joins.entry(key.clone()).or_default() += 1;
+    }
+    let offline = m.instances.get(&key).and_then(|i| m.account(i.account_id)).is_some_and(|a| a.kind == AccountKind::Offline);
+    let join = if kind == StateKind::Playing { join_lines_of(m, &key) } else { None };
+    let Some(i) = m.instances.get_mut(&key) else { return };
+    if i.stopping || i.phase == Phase::Stopped {
+        return;
+    }
+    let policy = &settings::active().reconnect;
+    let server_text = server.clone().unwrap_or_default();
+    let reason_text = reason.clone().unwrap_or_default();
+    let mut event: Option<(Kind, Option<String>, String)> = None;
+    i.phase = match kind {
+        StateKind::Menu => Phase::Menu,
+        StateKind::Connecting => Phase::Connecting { server: server_text },
+        StateKind::Queue => Phase::Queue { server: server_text },
+        StateKind::Playing => {
+            if let Phase::Playing { since, .. } = i.phase {
+                Phase::Playing { server: server_text, since }
+            } else {
+                rt.started.entry(key.clone()).or_insert_with(Instant::now);
+                if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() && rt.joined.insert(key.clone()) {
+                    event = Some((Kind::Connected, server.clone(), String::new()));
+                    if let Some((lines, delay)) = join {
+                        let generation = *rt.joins.entry(key.clone()).or_default();
+                        fx.later.push(Deferred::Join { key: key.clone(), generation, lines, delay });
+                    }
+                }
+                Phase::Playing { server: server_text, since: Instant::now() }
+            }
+        }
+        StateKind::Dead => Phase::Dead { server, reason: reason_text },
+        StateKind::Disconnected => {
+            rt.joined.remove(&key);
+            if let Phase::Playing { since, .. } = i.phase
+                && since.elapsed() >= STABLE
+            {
+                i.reconnect_attempts = 0;
+            }
+            let cause = cause.unwrap_or(DisconnectCause::Unknown);
+            let generation = rt.reconnects.entry(key.clone()).or_default();
+            *generation += 1;
+            let reaction = match reconnect::react(cause, i.reconnect_attempts, policy, reconnect::unit()) {
+                Reaction::Retry(_) if server.is_none() => Reaction::GiveUp,
+                Reaction::SignInAgain if offline => Reaction::NotAllowed,
+                other => other,
+            };
+            let kind = match cause {
+                DisconnectCause::Banned => Kind::Banned,
+                DisconnectCause::Kicked => Kind::Kicked,
+                _ => Kind::Disconnected,
+            };
+            event = Some((kind, server.clone(), reason_text.clone()));
+            match reaction {
+                Reaction::Retry(delay) => {
+                    i.reconnect_attempts += 1;
+                    fx.later.push(Deferred::Reconnect { key: key.clone(), delay, generation: *generation });
+                    Phase::Connecting { server: server_text }
+                }
+                Reaction::GiveUp | Reaction::NotAllowed => Phase::Disconnected { server, reason: reason_text },
+                Reaction::Banned => Phase::Banned { server, reason: reason_text },
+                Reaction::SignInAgain => {
+                    fx.stop.push(key.clone());
+                    let crash = &settings::active().crash_restart;
+                    let tried = rt.crash_restarts.get(&key).copied().unwrap_or(0);
+                    match reconnect::restart(tried, crash, 0.0) {
+                        Decision::Retry(_) => {
+                            rt.crash_restarts.insert(key.clone(), tried + 1);
+                            fx.later.push(Deferred::Restart { key: key.clone(), delay: Duration::from_secs(5), generation: *generation });
+                            Phase::Restarting { attempt: tried + 1, of: crash.max_attempts }
+                        }
+                        Decision::Stop => Phase::LoginNeeded,
+                    }
+                }
+            }
+        }
+    };
+    if let Some((kind, server, reason)) = event {
+        note(m, fx, &key, kind, server, &reason);
+    }
+}
+
+fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx: &mut Effects) {
     let playing = m.playing.as_deref() == Some(key.as_str());
     match message {
-        FromMod::State { kind, server, reason } => {
-            let Some(i) = m.instances.get_mut(&key) else { return };
-            if i.stopping || i.phase == Phase::Stopped {
-                return;
-            }
-            let server_text = server.clone().unwrap_or_default();
-            i.phase = match kind {
-                StateKind::Menu => Phase::Menu,
-                StateKind::Connecting => Phase::Connecting { server: server_text },
-                StateKind::Queue => Phase::Queue { server: server_text },
-                StateKind::Playing => {
-                    if let Phase::Playing { since, .. } = i.phase {
-                        Phase::Playing { server: server_text, since }
-                    } else {
-                        Phase::Playing { server: server_text, since: Instant::now() }
-                    }
-                }
-                StateKind::Dead => Phase::Dead { server, reason: reason.unwrap_or_default() },
-                StateKind::Disconnected => {
-                    if let Phase::Playing { since, .. } = i.phase
-                        && since.elapsed() >= STABLE
-                    {
-                        i.reconnect_attempts = 0;
-                    }
-                    let attempt = i.reconnect_attempts as usize;
-                    if attempt < BACKOFF.len() && server.is_some() {
-                        i.reconnect_attempts += 1;
-                        let generation = rt.reconnects.entry(key.clone()).or_default();
-                        *generation += 1;
-                        later.push((key.clone(), BACKOFF[attempt], *generation));
-                        Phase::Connecting { server: server_text }
-                    } else {
-                        Phase::Disconnected { server, reason: reason.unwrap_or_default() }
-                    }
-                }
-            };
-        }
+        FromMod::State { kind, server, reason, cause } => on_state(m, rt, fx, key, kind, server, reason, cause),
         FromMod::Chat { kind, from, text } => {
             let whisper = kind == ChatKind::Whisper;
             if whisper
@@ -931,7 +1160,7 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, la
         }
         FromMod::Hotkey { action } => {
             if playing || action == HotkeyAction::Grid {
-                hotkeys.push(action);
+                fx.hotkeys.push(action);
             }
         }
         FromMod::Window { .. } | FromMod::Hello { .. } => {}
@@ -951,6 +1180,51 @@ fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut Ap
                 rt.backend.send(&key, ToMod::Reconnect);
             }
         });
+    })
+    .detach();
+}
+
+fn schedule_restart(key: String, delay: Duration, generation: u64, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(|cx| {
+            let Some(rt) = cx.try_global::<Runtime>() else { return };
+            if rt.reconnects.get(&key) != Some(&generation) {
+                return;
+            }
+            let model = model::get(cx);
+            let batch = {
+                let m = model.read(cx);
+                m.instances.get(&key).filter(|i| matches!(i.phase, Phase::Restarting { .. }) && !i.stopping).map(|i| i.batch_id.clone())
+            };
+            if let Some(batch) = batch {
+                launch(&batch, Some(std::slice::from_ref(&key)), true, cx);
+            }
+        });
+    })
+    .detach();
+}
+
+fn schedule_join(key: String, generation: u64, lines: Vec<String>, delay: Duration, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        for line in lines {
+            cx.background_executor().timer(delay).await;
+            let sent = cx.update(|cx| {
+                let Some(rt) = cx.try_global::<Runtime>() else { return false };
+                if rt.joins.get(&key) != Some(&generation) {
+                    return false;
+                }
+                let model = model::get(cx);
+                if !model.read(cx).instances.get(&key).is_some_and(|i| matches!(i.phase, Phase::Playing { .. }) && !i.stopping) {
+                    return false;
+                }
+                rt.backend.send(&key, ToMod::ChatSend { text: line });
+                true
+            });
+            if !sent {
+                return;
+            }
+        }
     })
     .detach();
 }
@@ -993,6 +1267,7 @@ fn flush_alert(batch_id: &str, cx: &mut App) {
     let n = names.len();
     let what = match (kinds.len(), kinds.iter().next()) {
         (1, Some(Alert::Disconnected)) => trf(if n == 1 { "%lld Account getrennt" } else { "%lld Accounts getrennt" }, &[&n]),
+        (1, Some(Alert::Banned)) => trf(if n == 1 { "%lld Account gesperrt" } else { "%lld Accounts gesperrt" }, &[&n]),
         (1, Some(Alert::Crashed)) => trf(if n == 1 { "%lld Account abgestürzt" } else { "%lld Accounts abgestürzt" }, &[&n]),
         (1, Some(Alert::Login)) => trf(if n == 1 { "%lld Account muss sich anmelden" } else { "%lld Accounts müssen sich anmelden" }, &[&n]),
         _ => trf(if n == 1 { "%lld Account braucht dich" } else { "%lld Accounts brauchen dich" }, &[&n]),
@@ -1032,10 +1307,11 @@ pub fn status(i: &Instance, preparing: Option<u8>) -> String {
     match &i.phase {
         Phase::Stopped => tr("Gestoppt"),
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
+        Phase::Restarting { attempt, of } => model::restart_status(*attempt, *of),
         Phase::Starting { done, total } if *total > 1 => trf("Wartet · %lld/%lld gestartet", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Menu => tr("Im Hauptmenü"),
-        Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &BACKOFF.len()]),
+        Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &settings::active().reconnect.max_attempts]),
         Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
         Phase::Connecting { server } => trf("Verbindet mit %@…", &[server]),
         Phase::Queue { .. } => tr("In der Warteschlange"),
@@ -1045,6 +1321,7 @@ pub fn status(i: &Instance, preparing: Option<u8>) -> String {
         Phase::Disconnected { reason, .. } => trf("Getrennt · %@", &[reason]),
         Phase::Dead { .. } => tr("Gestorben"),
         Phase::Crashed { .. } => tr("Abgestürzt"),
+        Phase::Banned { reason, .. } => model::banned_status(reason),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
     }
@@ -1052,7 +1329,13 @@ pub fn status(i: &Instance, preparing: Option<u8>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthError, Instance, Instant, Phase, needs_sign_in, render_image, status};
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use super::{AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, Instance, Instant, Kind, Model, Phase, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
         Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false }
@@ -1069,7 +1352,7 @@ mod tests {
         assert_eq!(status(&instance(Phase::Crashed { code: Some(1) }), None), "Abgestürzt");
         let mut again = instance(Phase::Connecting { server: "s".into() });
         again.reconnect_attempts = 2;
-        assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 3");
+        assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 5");
         let mut stopping = instance(Phase::Menu);
         stopping.stopping = true;
         assert_eq!(status(&stopping, None), "Wird gestoppt…");
@@ -1087,5 +1370,264 @@ mod tests {
         let e = anyhow::Error::from(AuthError::SignInAgain).context("cannot start AltOne");
         assert!(needs_sign_in(&e));
         assert!(!needs_sign_in(&anyhow::anyhow!("no java")));
+    }
+
+    struct Quiet;
+
+    impl Backend for Quiet {
+        fn start(&self, _: Batch, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn stop(&self, _: Vec<String>) {}
+        fn send(&self, _: &str, _: ToMod) {}
+        fn read_preview(&self, _: String, _: PathBuf) {}
+        fn quit(&self) {}
+    }
+
+    fn runtime() -> Runtime {
+        Runtime {
+            backend: Arc::new(Quiet),
+            cancel: HashMap::new(),
+            visible: HashSet::new(),
+            shared_visible: Arc::default(),
+            stale: HashMap::new(),
+            read_at: HashMap::new(),
+            reconnects: HashMap::new(),
+            joins: HashMap::new(),
+            crash_restarts: HashMap::new(),
+            started: HashMap::new(),
+            joined: HashSet::new(),
+            history: None,
+            refreshed: false,
+            alerts: HashMap::new(),
+            pids: HashMap::new(),
+            rect: None,
+            badge: 0,
+        }
+    }
+
+    fn setup(phase: Phase, kind: AccountKind, join: &[&str]) -> (Model, Runtime, String) {
+        let id = uuid::Uuid::from_u128(7);
+        let mut batch = Batch::new("b", "26.3");
+        batch.accounts = vec![id];
+        batch.join_commands = join.iter().map(|s| (*s).to_owned()).collect();
+        let key = fleet::instance_key(&batch, id);
+        let mut m = Model::default();
+        m.accounts.push(Account { id, name: "AltOne".into(), kind, proxy: None });
+        m.instances.insert(key.clone(), Instance { key: key.clone(), batch_id: batch.id.clone(), account_id: id, name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, stopping: false });
+        m.batches.push(batch);
+        (m, runtime(), key)
+    }
+
+    fn send_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: &str, kind: StateKind, cause: Option<DisconnectCause>) {
+        let message = FromMod::State { kind, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause };
+        apply(m, rt, Update::Ipc(Event::Message { instance: key.to_owned(), message }), fx);
+    }
+
+    fn dropped(cause: DisconnectCause) -> (Phase, Effects, Model) {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(cause));
+        (m.instances[&key].phase.clone(), fx, m)
+    }
+
+    #[test]
+    fn a_ban_stops_for_good_and_is_remembered() {
+        let (phase, fx, m) = dropped(DisconnectCause::Banned);
+        assert_eq!(phase, Phase::Banned { server: Some("mc.example:25565".into()), reason: "why".into() });
+        assert!(fx.later.is_empty() && fx.stop.is_empty());
+        assert!(phase.needs_attention());
+        let log = m.history.values().next().unwrap();
+        assert_eq!(log.back().unwrap().kind, Kind::Banned);
+        assert_eq!(fx.changed_history.len(), 1);
+    }
+
+    #[test]
+    fn server_down_backs_off_five_times_then_needs_attention() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=5 {
+            let mut fx = Effects::default();
+            send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+            assert!(matches!(m.instances[&key].phase, Phase::Connecting { .. }));
+            assert_eq!(m.instances[&key].reconnect_attempts, attempt);
+            let Some(Deferred::Reconnect { delay, .. }) = fx.later.pop() else { panic!("no reconnect scheduled") };
+            let base = [10.0, 30.0, 90.0, 300.0, 300.0][attempt as usize - 1];
+            assert!(delay.as_secs_f64() >= base * 0.75 - 0.01 && delay.as_secs_f64() <= base * 1.25 + 0.01, "{delay:?} for try {attempt}");
+        }
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.instances[&key].phase, Phase::Disconnected { .. }) && fx.later.is_empty());
+        assert_eq!(m.history[&key].len(), 6);
+    }
+
+    #[test]
+    fn a_kick_waits_longer_than_a_server_that_is_down() {
+        let (phase, mut fx, _) = dropped(DisconnectCause::Kicked);
+        assert!(matches!(phase, Phase::Connecting { .. }));
+        let Some(Deferred::Reconnect { delay, .. }) = fx.later.pop() else { panic!("no reconnect scheduled") };
+        assert!(delay.as_secs() >= 45);
+    }
+
+    #[test]
+    fn a_whitelist_refusal_is_left_alone() {
+        let (phase, fx, _) = dropped(DisconnectCause::Whitelist);
+        assert!(matches!(phase, Phase::Disconnected { .. }) && fx.later.is_empty());
+    }
+
+    #[test]
+    fn a_rejected_sign_in_restarts_to_refresh_then_asks_for_a_new_one() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=3 {
+            let mut fx = Effects::default();
+            send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert_eq!(fx.stop.len(), 1);
+            assert!(matches!(fx.later.pop(), Some(Deferred::Restart { .. })));
+            apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut Effects::default());
+            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+        assert!(fx.later.is_empty());
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert!(matches!(m.instances[&key].phase, Phase::Disconnected { .. }) && fx.stop.is_empty());
+    }
+
+    #[test]
+    fn the_same_account_signed_in_elsewhere_is_left_alone() {
+        let (phase, fx, _) = dropped(DisconnectCause::Duplicate);
+        assert!(matches!(phase, Phase::Disconnected { .. }) && fx.later.is_empty());
+    }
+
+    #[test]
+    fn a_banned_instance_that_dies_stays_crashed_and_does_not_rejoin() {
+        let (mut m, mut rt, key) = setup(Phase::Banned { server: None, reason: "x".into() }, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Crashed { code: Some(1) });
+        assert!(fx.later.is_empty());
+    }
+
+    #[test]
+    fn a_server_switch_does_not_send_the_join_commands_again() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &["/login pw"]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.len(), 1);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Connecting, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.len(), 1);
+        assert_eq!(m.history[&key].len(), 1);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.later.iter().filter(|d| matches!(d, Deferred::Join { .. })).count(), 2);
+    }
+
+    #[test]
+    fn stability_counts_from_the_first_join_not_from_the_start() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 1, mod_version: String::new() }), &mut Effects::default());
+        assert!(!rt.started.contains_key(&key));
+        send_state(&mut m, &mut rt, &mut Effects::default(), &key, StateKind::Playing, None);
+        assert!(rt.started.contains_key(&key));
+    }
+
+    #[test]
+    fn a_manual_exit_after_a_rejected_sign_in_keeps_the_login_state() {
+        let (mut m, mut rt, key) = setup(Phase::LoginNeeded, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut Effects::default());
+        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+    }
+
+    #[test]
+    fn join_commands_go_out_once_per_join_and_not_after_a_respawn() {
+        let (mut m, mut rt, key) = setup(Phase::Connecting { server: "mc.example:25565".into() }, AccountKind::Offline, &["/login pw", "  ", "/home"]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        let Some(Deferred::Join { lines, delay, generation, .. }) = fx.later.pop() else { panic!("no join scheduled") };
+        assert_eq!(lines, ["/login pw", "/home"]);
+        assert_eq!(delay, Duration::from_millis(2000));
+        assert_eq!(rt.joins[&key], generation);
+        assert_eq!(m.history[&key].back().unwrap().kind, Kind::Connected);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Dead, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(fx.later.is_empty());
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
+        assert_ne!(rt.joins[&key], generation);
+    }
+
+    #[test]
+    fn no_join_commands_means_nothing_is_scheduled() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(fx.later.is_empty());
+    }
+
+    #[test]
+    fn a_crash_restarts_three_times_then_stays_crashed() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=3 {
+            let mut fx = Effects::default();
+            apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert!(!m.instances[&key].phase.needs_attention());
+            assert!(matches!(fx.later.pop(), Some(Deferred::Restart { .. })));
+            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Crashed { code: Some(1) });
+        assert!(fx.later.is_empty());
+        assert_eq!(m.history[&key].iter().filter(|e| e.kind == Kind::Crashed).count(), 4);
+    }
+
+    #[test]
+    fn a_long_run_resets_the_crash_count() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        rt.crash_restarts.insert(key.clone(), 3);
+        rt.started.insert(key.clone(), Instant::now() - Duration::from_secs(120));
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut Effects::default());
+        assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+    }
+
+    #[test]
+    fn clean_and_requested_exits_do_not_restart() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.instances.get_mut(&key).unwrap().stopping = true;
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
+        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        assert!(fx.later.is_empty() && m.history.is_empty());
+    }
+
+    #[test]
+    fn a_refresh_result_moves_idle_instances_in_and_out_of_login_needed() {
+        let (mut m, mut rt, key) = setup(Phase::Stopped, AccountKind::Microsoft, &[]);
+        let id = uuid::Uuid::from_u128(7);
+        apply(&mut m, &mut rt, Update::SignIn { account: id, valid: false }, &mut Effects::default());
+        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+        apply(&mut m, &mut rt, Update::SignIn { account: id, valid: true }, &mut Effects::default());
+        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        apply(&mut m, &mut rt, Update::SignIn { account: id, valid: false }, &mut Effects::default());
+        assert_eq!(m.instances[&key].phase, Phase::Menu);
+    }
+
+    #[test]
+    fn the_status_line_counts_tries_against_the_policy_and_names_a_ban() {
+        crate::core::i18n::init("de");
+        let mut again = instance(Phase::Connecting { server: "s".into() });
+        again.reconnect_attempts = 2;
+        assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 5");
+        assert_eq!(status(&instance(Phase::Banned { server: None, reason: "Cheating".into() }), None), "Gesperrt · Cheating");
+        assert_eq!(status(&instance(Phase::Restarting { attempt: 1, of: 3 }), None), "Startet neu · Versuch 1 von 3");
     }
 }

@@ -33,6 +33,21 @@ pub enum StateKind {
     Dead,
 }
 
+/// Why a connection dropped, as the mod's classifier read the disconnect screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisconnectCause {
+    Banned,
+    Whitelist,
+    ServerFull,
+    Kicked,
+    ServerDown,
+    Auth,
+    Duplicate,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Kind of a chat line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,7 +72,7 @@ pub enum HotkeyAction {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum FromMod {
     Hello { instance: String, token: String, pid: u32, mod_version: String },
-    State { kind: StateKind, server: Option<String>, reason: Option<String> },
+    State { kind: StateKind, server: Option<String>, reason: Option<String>, #[serde(default)] cause: Option<DisconnectCause> },
     Chat { kind: ChatKind, from: Option<String>, text: String },
     Preview { seq: u32, w: u32, h: u32 },
     Hotkey { action: HotkeyAction },
@@ -290,7 +305,13 @@ mod tests {
     #[test]
     fn wire_format_matches_the_mod_protocol() {
         let line = r#"{"t":"state","kind":"disconnected","server":"127.0.0.1:25565","reason":"Kicked"}"#;
-        assert_eq!(serde_json::from_str::<FromMod>(line).unwrap(), FromMod::State { kind: StateKind::Disconnected, server: Some("127.0.0.1:25565".into()), reason: Some("Kicked".into()) });
+        assert_eq!(serde_json::from_str::<FromMod>(line).unwrap(), FromMod::State { kind: StateKind::Disconnected, server: Some("127.0.0.1:25565".into()), reason: Some("Kicked".into()), cause: None });
+        let classified = r#"{"t":"state","kind":"disconnected","server":null,"reason":"x","cause":"server_full"}"#;
+        assert!(matches!(serde_json::from_str::<FromMod>(classified).unwrap(), FromMod::State { cause: Some(DisconnectCause::ServerFull), .. }));
+        let newer = r#"{"t":"state","kind":"disconnected","server":null,"reason":"x","cause":"something_new"}"#;
+        assert!(matches!(serde_json::from_str::<FromMod>(newer).unwrap(), FromMod::State { cause: Some(DisconnectCause::Unknown), .. }));
+        let none = r#"{"t":"state","kind":"menu","server":null,"reason":null,"cause":null}"#;
+        assert!(matches!(serde_json::from_str::<FromMod>(none).unwrap(), FromMod::State { cause: None, .. }));
         let chat = r#"{"t":"chat","kind":"whisper","from":"Alex","text":"hi"}"#;
         assert!(matches!(serde_json::from_str::<FromMod>(chat).unwrap(), FromMod::Chat { kind: ChatKind::Whisper, .. }));
         let hotkey = r#"{"t":"hotkey","action":"next_attention"}"#;

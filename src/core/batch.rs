@@ -10,6 +10,9 @@ use super::{net, paths};
 
 const FILE: &str = "batch.json";
 const DEFAULT_MEMORY_MB: u32 = 2048;
+const DEFAULT_JOIN_DELAY_MS: u32 = 2000;
+const MAX_JOIN_LINES: usize = 20;
+const MAX_CHAT_CHARS: usize = 256;
 
 /// One mod pinned to an exact file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,10 +46,20 @@ pub struct Batch {
     pub accounts: Vec<Uuid>,
     #[serde(default)]
     pub jvm_args: Vec<String>,
+    /// Chat lines or commands every instance sends once after each successful join, in order.
+    #[serde(default)]
+    pub join_commands: Vec<String>,
+    /// Pause before the first join command and between two of them.
+    #[serde(default = "default_join_delay")]
+    pub join_delay_ms: u32,
 }
 
 fn default_memory() -> u32 {
     DEFAULT_MEMORY_MB
+}
+
+fn default_join_delay() -> u32 {
+    DEFAULT_JOIN_DELAY_MS
 }
 
 impl Batch {
@@ -63,6 +76,8 @@ impl Batch {
             memory_mb: DEFAULT_MEMORY_MB,
             accounts: Vec::new(),
             jvm_args: Vec::new(),
+            join_commands: Vec::new(),
+            join_delay_ms: DEFAULT_JOIN_DELAY_MS,
         }
     }
 
@@ -84,6 +99,11 @@ impl Batch {
     /// Game options every instance starts from.
     pub fn options_template(&self) -> PathBuf {
         self.dir().join("options.txt")
+    }
+
+    /// The join commands as they are sent: trimmed, without empty lines or lines longer than a chat message, at most 20.
+    pub fn join_lines(&self) -> Vec<String> {
+        self.join_commands.iter().map(|l| l.trim()).filter(|l| !l.is_empty() && l.chars().count() <= MAX_CHAT_CHARS).take(MAX_JOIN_LINES).map(str::to_owned).collect()
     }
 
     /// Game folder of `account` in this batch.
@@ -173,6 +193,27 @@ mod tests {
         let batch: Batch = serde_json::from_str(r#"{"id":"a1","name":"A","game_version":"26.3"}"#).unwrap();
         assert_eq!(batch.memory_mb, DEFAULT_MEMORY_MB);
         assert!(batch.mods.is_empty() && batch.accounts.is_empty() && batch.server.is_none());
+        assert!(batch.join_commands.is_empty());
+        assert_eq!(batch.join_delay_ms, DEFAULT_JOIN_DELAY_MS);
+    }
+
+    #[test]
+    fn join_commands_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("a", "26.3");
+        b.join_commands = vec!["/login x".into(), "/server survival".into()];
+        b.join_delay_ms = 500;
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
+    }
+
+    #[test]
+    fn join_lines_are_trimmed_and_bounded() {
+        let mut b = Batch::new("a", "26.3");
+        b.join_commands = vec!["  /login x ".into(), String::new(), "   ".into(), "y".repeat(257), "hello".into()];
+        assert_eq!(b.join_lines(), vec!["/login x".to_owned(), "hello".to_owned()]);
+        b.join_commands = (0..50).map(|n| format!("/c{n}")).collect();
+        assert_eq!(b.join_lines().len(), MAX_JOIN_LINES);
     }
 
     #[test]

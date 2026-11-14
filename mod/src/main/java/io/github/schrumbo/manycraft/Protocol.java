@@ -40,11 +40,12 @@ final class Protocol {
 		return GSON.toJson(o);
 	}
 
-	static String state(String kind, String server, String reason) {
+	static String state(String kind, String server, String reason, String cause) {
 		JsonObject o = message("state");
 		o.addProperty("kind", kind);
 		o.addProperty("server", server);
 		o.addProperty("reason", reason);
+		o.addProperty("cause", cause);
 		return GSON.toJson(o);
 	}
 
