@@ -9,7 +9,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditBatch, Play, StartAll, StartBatch, StopBatch};
+use super::actions::{EditBatch, Play, StartAll, StartBatch, Stop, StopBatch};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow, TileSize};
 use super::model::{self, Instance, Model, Phase};
@@ -177,8 +177,8 @@ pub fn matches(i: &Instance, batch: Option<&str>, filter: Filter, query: &str) -
         && match filter {
             Filter::All => true,
             Filter::Attention => i.phase.needs_attention(),
-            Filter::Running => i.phase.is_running() && !i.phase.needs_attention(),
-            Filter::Stopped => !i.phase.is_running() && !i.phase.needs_attention(),
+            Filter::Running => i.phase.is_active() && !i.phase.needs_attention(),
+            Filter::Stopped => !i.phase.is_active() && !i.phase.needs_attention(),
         }
         && (query.is_empty() || i.name.to_lowercase().contains(&query.to_lowercase()))
 }
@@ -321,10 +321,11 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     let name = m.batch(batch).map(|b| b.name.clone()).unwrap_or_default();
     let server = m.batch(batch).and_then(|b| b.server.clone()).filter(|s| !s.is_empty());
     let mine = || m.instances.values().filter(|i| i.batch_id == batch);
-    let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_running()).count());
+    let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
     let attention = m.attention_count(Some(batch));
-    let fine = mine().filter(|i| i.phase.is_running() && !i.phase.needs_attention()).count();
-    let summary = [server, Some(trf("%lld von %lld laufen", &[&fine, &total]))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
+    let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
+    let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let (start, stop, edit) = (batch.to_owned(), batch.to_owned(), batch.to_owned());
     let stopped = total - running;
     div()
@@ -607,6 +608,17 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                     cx.stop_propagation();
                     return;
                 }
+                "space" | "delete" => {
+                    if let Some(key) = this.grid.selected.clone().filter(|k| this.grid.shown.contains(k)) {
+                        if e.keystroke.key == "delete" || e.keystroke.modifiers.shift {
+                            window.dispatch_action(Box::new(Stop(key)), cx);
+                        } else {
+                            super::tile::primary_action(&key, window, cx);
+                        }
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 _ => return,
             };
             cx.stop_propagation();
@@ -659,6 +671,8 @@ mod tests {
         assert!(matches(&menu, None, Filter::Running, "") && !matches(&menu, None, Filter::Stopped, ""));
         assert!(matches(&off, Some("b"), Filter::Stopped, "alt") && !matches(&off, Some("c"), Filter::All, ""));
         assert!(!matches(&off, None, Filter::All, "two"));
+        let again = mk(Phase::Restarting { attempt: 1, of: 3 });
+        assert!(matches(&again, None, Filter::Running, "") && !matches(&again, None, Filter::Stopped, ""));
     }
 
     #[test]

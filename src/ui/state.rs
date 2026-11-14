@@ -573,7 +573,7 @@ fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) 
             .filter_map(|id| m.account(*id).cloned())
             .filter(|a| {
                 let key = fleet::instance_key(&batch, a.id);
-                only.is_none_or(|o| o.contains(&key)) && !alive.contains(&key) && m.instances.get(&key).is_some_and(|i| !i.phase.is_running() )
+                only.is_none_or(|o| o.contains(&key)) && !alive.contains(&key) && m.instances.get(&key).is_some_and(|i| if only.is_some() { !i.phase.is_running() } else { !i.phase.is_active() })
             })
             .collect();
         (batch, accounts)
@@ -915,7 +915,7 @@ fn apply_previews(updates: Vec<Update>, cx: &mut App) {
 fn rank(phase: &Phase) -> u8 {
     if phase.needs_attention() {
         0
-    } else if phase.is_running() {
+    } else if phase.is_active() {
         1
     } else {
         2

@@ -82,6 +82,7 @@ fn segmented(id: &'static str, segments: Vec<Segment>, on_pick: impl Fn(usize, &
     let items = segments.into_iter().enumerate().map(|(n, s)| {
         let pick = std::rc::Rc::clone(&on_pick);
         let count = if s.loud { t.attention_text } else if s.selected { t.secondary } else { t.tertiary };
+        let counted = s.count > 0 || s.id != "filter-attention";
         div()
             .id(SharedString::from(s.id))
             .mark("segment", s.label.clone())
@@ -99,7 +100,7 @@ fn segmented(id: &'static str, segments: Vec<Segment>, on_pick: impl Fn(usize, &
             .key_nav()
             .soft(t.ink.opacity(if s.selected { 0. } else { tint::HOVER }), radius::INNER)
             .child(s.label)
-            .child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(count).child(s.count.to_string()))
+            .when(counted, |d| d.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(count).child(s.count.to_string())))
             .on_click(cx.listener(move |this, _, window, cx| {
                 pick(n, this, window, cx);
                 cx.notify();
@@ -147,7 +148,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let title = batch.and_then(|b| m.batch(b)).map(|b| b.name.clone()).unwrap_or_else(|| tr("Alle"));
     let scope: Vec<_> = m.instances.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
     let running = scope.iter().filter(|i| i.phase.is_running() && !i.stopping).count();
-    let startable = scope.iter().filter(|i| !i.phase.is_running()).count();
+    let startable = scope.iter().filter(|i| !i.phase.is_active()).count();
     let attention = m.attention_count(batch);
     let count = |f: Filter| scope.iter().filter(|i| super::grid::matches(i, None, f, "")).count();
     let (start, stop): (Box<dyn Action>, Box<dyn Action>) = match batch {
@@ -195,7 +196,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 .menu_with_check(tr("Mittel"), current == TileSize::Medium, Box::new(TileMedium))
                 .menu_with_check(tr("Groß"), current == TileSize::Large, Box::new(TileLarge))
                 .separator()
-                .menu_with_check(tr("Alle einpassen"), current == TileSize::Fit, Box::new(TileFit))
+                .menu_with_check(tr("Einpassen"), current == TileSize::Fit, Box::new(TileFit))
         });
     let search = div()
         .key_context("Toolbar")

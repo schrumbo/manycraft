@@ -88,9 +88,9 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         .iter()
         .map(|b| {
             let total = m.instances.values().filter(|i| i.batch_id == b.id).count();
-            let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_running()).count();
+            let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active()).count();
             let attention = m.attention_count(Some(&b.id));
-            let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_running() && !i.phase.needs_attention()).count();
+            let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
             let hint = trf("%lld von %lld laufen", &[&fine, &total]);
             let stopped = total - running;
             (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{fine}/{total}")), attention, hint: Some(hint) }, b.id.clone(), running, stopped)

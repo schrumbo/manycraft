@@ -60,13 +60,25 @@ pub struct TileView {
     geometry: Geometry,
     offset: (f32, f32),
     focused: bool,
+    hovered: bool,
     main: WeakEntity<MainWindow>,
 }
 
 impl Render for TileView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        render(&self.data, &self.geometry, self.offset, self.focused, self.main.clone(), &t)
+        let me = cx.entity().downgrade();
+        let hover = move |hovered: &bool, _: &mut Window, cx: &mut App| {
+            let hovered = *hovered;
+            me.update(cx, |v, cx| {
+                if v.hovered != hovered {
+                    v.hovered = hovered;
+                    cx.notify();
+                }
+            })
+            .ok();
+        };
+        render(&self.data, &self.geometry, self.offset, self.focused, self.hovered, hover, self.main.clone(), &t)
     }
 }
 
@@ -84,7 +96,7 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: boo
         Some(entity) => {
             entity.update(cx, |v, cx| {
                 if !v.data.same(&data) || v.geometry != geometry || v.offset != offset || v.focused != focused {
-                    *v = TileView { data, geometry, offset, focused, main };
+                    *v = TileView { data, geometry, offset, focused, hovered: v.hovered, main };
                     cx.notify();
                 }
             });
@@ -94,7 +106,7 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), focused: boo
             let key = data.key.clone();
             let entity = cx.new(|cx: &mut Context<TileView>| {
                 cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
-                TileView { data, geometry, offset, focused, main }
+                TileView { data, geometry, offset, focused, hovered: false, main }
             });
             cx.global_mut::<TileViews>().0.insert(key, entity.clone());
             entity
@@ -281,7 +293,7 @@ fn round_button(id: String, icon_name: &'static str, hint: String, action: Box<d
     div()
         .id(SharedString::from(id))
         .mark("button", hint.clone())
-        .size(px(control::S))
+        .size(px(control::M))
         .rounded(px(radius::FULL))
         .bg(with_alpha(t.material, tint::FLOATING))
         .flex()
@@ -307,11 +319,10 @@ fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
 }
 
 fn glyph(d: &TileData, t: &Theme) -> AnyElement {
-    let slot = div().size(px(iconsize::XS)).flex_none().flex().items_center().justify_center();
     if let Some((_, text, name)) = tone(d, t) {
-        return slot.child(icon(name, iconsize::XS, text)).into_any_element();
+        return icon(name, iconsize::XS, text).into_any_element();
     }
-    let dot = div().size(px(tile::GLYPH)).rounded(px(radius::FULL));
+    let dot = div().size(px(tile::GLYPH)).mx(px((iconsize::XS - tile::GLYPH) / 2.)).flex_none().rounded(px(radius::FULL));
     let dot = match d.phase {
         _ if d.stopping => dot.border_1().border_color(t.secondary),
         Phase::Playing { .. } => dot.bg(t.success),
@@ -319,34 +330,27 @@ fn glyph(d: &TileData, t: &Theme) -> AnyElement {
         Phase::Stopped => dot.border_1().border_color(t.tertiary),
         _ => dot.border_1().border_color(t.secondary),
     };
-    slot.child(dot).into_any_element()
+    dot.into_any_element()
 }
 
-fn preview(d: &TileData, g: &Geometry, group: &SharedString, focused: bool, t: &Theme) -> AnyElement {
+fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement {
     let attention = tone(d, t).is_some();
     let top = px(radius::CARD);
     let content = match &d.preview {
         Some(image) => img(ImageSource::Render(Arc::clone(image))).size_full().rounded_t(top).object_fit(ObjectFit::Cover).when(attention, |i| i.opacity(tile::DIMMED)).into_any_element(),
-        None => div()
-            .size_full()
-            .rounded_t(top)
-            .bg(t.well)
-            .flex()
-            .items_center()
-            .justify_center()
-            .children(placeholder(d, t).map(|(name, color)| icon(name, if g.dense { iconsize::M } else { iconsize::L }, color)))
-            .into_any_element(),
+        None => match placeholder(d, t) {
+            Some((name, color)) => icon(name, if g.dense { iconsize::M } else { iconsize::L }, color).into_any_element(),
+            None => Empty.into_any_element(),
+        },
     };
     let running = d.phase.is_running() && !d.stopping;
     let main = primary(&d.phase, d.stopping).filter(|p| *p != Primary::SignIn || g.small);
     let stop = (running && main != Some(Primary::Start)).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
-    let actions = (main.is_some() || stop.is_some()).then(|| {
+    let actions = (controls && (main.is_some() || stop.is_some())).then(|| {
         let shade = linear_gradient(180., linear_color_stop(black().opacity(0.), 0.), linear_color_stop(black().opacity(tint::PREVIEW_SHADE), 1.));
         div()
             .absolute()
             .inset_0()
-            .opacity(if d.selected && focused { 1. } else { 0. })
-            .group_hover(group.clone(), |s| s.opacity(1.))
             .child(div().absolute().left_0().right_0().bottom_0().h(px(tile::SHADE.min(g.preview))).bg(shade))
             .child(
                 div()
@@ -386,7 +390,7 @@ fn preview(d: &TileData, g: &Geometry, group: &SharedString, focused: bool, t: &
             .child(n.to_string())
             .tooltip(tip(if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) }))
     });
-    div().relative().w_full().h(px(g.preview)).flex_none().rounded_t(top).overflow_hidden().bg(t.well).child(content).children(actions).children(whispers).into_any_element()
+    div().relative().w_full().h(px(g.preview)).flex_none().rounded_t(top).overflow_hidden().bg(t.well).flex().items_center().justify_center().child(content).children(actions).children(whispers).into_any_element()
 }
 
 fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
@@ -408,7 +412,7 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
             .items_center()
             .gap(px(space::XS))
             .child(glyph(d, t))
-            .child(div().flex_1().min_w_0().truncate().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(tone.map_or(t.primary, |(_, text, _)| text)).child(d.name.clone()))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(d.name.clone()))
             .tooltip(tip(format!("{} · {}", d.name, d.detail)))
             .into_any_element();
     }
@@ -466,8 +470,8 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> AnyElement {
 }
 
 /// Draws one tile at `offset` from its slot, which animates a re-sort.
-pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
-    let group: SharedString = format!("tile-{}", d.key).into();
+#[allow(clippy::too_many_arguments)]
+pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool, hovered: bool, hover: impl Fn(&bool, &mut Window, &mut App) + 'static, view: WeakEntity<MainWindow>, t: &Theme) -> AnyElement {
     let tone = tone(d, t);
     let edge = match (tone, d.playing) {
         (Some((ring, _, _)), _) => Some(ring),
@@ -489,10 +493,8 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. }) && !stopping;
-    let tile = div()
-        .id(SharedString::from(format!("tile-{}", d.key)))
+    let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
-        .group(group.clone())
         .relative()
         .left(px(offset.0))
         .top(px(offset.1))
@@ -506,8 +508,9 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), grid_focused: bool
         .bg(t.content)
         .when(!shadows.is_empty(), |s| s.shadow(shadows))
         .cursor_pointer()
-        .soft(t.ink.opacity(tint::HOVER), radius::CARD)
-        .child(preview(d, g, &group, grid_focused, t))
+        .when(hovered, |s| s.child(div().absolute().inset_0().bg(t.ink.opacity(tint::HOVER))))
+        .child(preview(d, g, hovered || (d.selected && grid_focused), t))
+        .on_hover(hover)
         .child(strip(d, g, t))
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
             let _ = pick.update(cx, |this, cx| {

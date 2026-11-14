@@ -111,6 +111,8 @@ pub mod tile {
 pub mod shell {
     pub const SIDEBAR: f32 = 220.;
     pub const TOOLBAR: f32 = 48.;
+    /// Height of the quiet notice line under the toolbar.
+    pub const NOTICE: f32 = 32.;
     pub const ROW: f32 = 28.;
     pub const SEARCH: f32 = 180.;
     /// The attention dot in a sidebar row.

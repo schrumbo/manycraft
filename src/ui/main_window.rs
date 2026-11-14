@@ -6,9 +6,10 @@ use super::actions::{AddAccount, NewBatch, TileLarger, TileSmaller, ToggleSideba
 use super::drive::Mark;
 use super::grid::Grid;
 use super::model;
+use super::motion::Soft;
 use super::native::{self, Rect};
 use super::theme::{self, Theme, control, font, iconsize, shell, space, tint};
-use super::widgets::{icon, primary_button};
+use super::widgets::{KeyNav, icon, primary_button};
 use crate::core::i18n::tr;
 
 actions!(main_window, [FocusSearch, ClearSearch, TileSmall, TileMedium, TileLarge, TileFit]);
@@ -258,6 +259,7 @@ impl Render for MainWindow {
                     .flex()
                     .flex_col()
                     .child(super::toolbar::render(self, batch.as_deref(), window, cx))
+                    .children(model::get(cx).read(cx).error.clone().map(|e| notice(e, &t, cx)))
                     .child(div().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)))
                     .into_any_element(),
             },
@@ -459,4 +461,47 @@ pub fn select_batch(batch: &str, cx: &mut App) {
             });
         }
     });
+}
+
+/// A quiet line under the toolbar for a problem the app could not handle on its own, with a way to dismiss it.
+fn notice(text: String, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
+    div()
+        .id("notice")
+        .mark("notice", text.clone())
+        .h(px(shell::NOTICE))
+        .flex_none()
+        .pl(px(theme::tile::INSET))
+        .pr(px(space::S))
+        .flex()
+        .items_center()
+        .gap(px(space::S))
+        .bg(theme::with_alpha(t.attention, tint::ATTENTION))
+        .border_b_1()
+        .border_color(t.separator)
+        .child(icon("triangle-alert", iconsize::S, t.attention_text))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.primary).child(text.clone()))
+        .tooltip(super::widgets::tip(text))
+        .child(
+            div()
+                .id("notice-close")
+                .mark("button", tr("Hinweis ausblenden"))
+                .size(px(control::S))
+                .rounded(px(theme::radius::INNER))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .key_nav()
+                .soft(t.ink.opacity(tint::HOVER), theme::radius::INNER)
+                .child(icon("x", iconsize::S, t.secondary))
+                .tooltip(super::widgets::tip(tr("Hinweis ausblenden")))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    model::get(cx).update(cx, |m, cx| {
+                        m.error = None;
+                        cx.notify();
+                    });
+                })),
+        )
+        .into_any_element()
 }

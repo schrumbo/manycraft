@@ -38,6 +38,11 @@ impl Phase {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 
+    /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash is due.
+    pub fn is_active(&self) -> bool {
+        self.is_running() || matches!(self, Phase::Restarting { .. })
+    }
+
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
         !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. })
@@ -127,7 +132,7 @@ pub fn restart_status(attempt: u32, of: u32) -> String {
 fn rank(phase: &Phase) -> u8 {
     if phase.needs_attention() {
         0
-    } else if phase.is_running() {
+    } else if phase.is_active() {
         1
     } else {
         2
