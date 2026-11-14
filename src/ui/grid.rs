@@ -49,6 +49,7 @@ pub struct Grid {
     heights: (f32, f32),
     to_top: bool,
     reveal: bool,
+    selected_in_view: bool,
     area: Rc<Cell<Size<Pixels>>>,
     shown: Vec<String>,
     rows: Vec<(usize, usize, usize)>,
@@ -76,6 +77,7 @@ impl Grid {
             heights: (0., 0.),
             to_top: false,
             reveal: false,
+            selected_in_view: false,
             area: Rc::default(),
             shown: Vec::new(),
             rows: Vec::new(),
@@ -373,7 +375,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let model = model::get(cx);
     let m = model.read(cx);
     let resorted = this.grid.sort(m);
-    if resorted && this.grid.focus.is_focused(window) && window.last_input_was_keyboard() {
+    if resorted && this.grid.selected_in_view && this.grid.focus.is_focused(window) && window.last_input_was_keyboard() {
         this.grid.reveal = true;
     }
     let scope = (batch.map(str::to_owned), this.filter, this.query.clone());
@@ -509,6 +511,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             Item::Heading(_) => Vec::new(),
         })
         .collect();
+    this.grid.selected_in_view = this.grid.selected.as_ref().is_some_and(|s| visible.contains(s));
     let pinned = headed.then(|| {
         let top = scrolled;
         let at_heading = matches!(items.get(top.item_ix), Some(Item::Heading(_))) && top.offset_in_item <= px(0.);
