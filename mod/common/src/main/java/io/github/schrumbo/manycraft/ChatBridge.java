@@ -3,7 +3,6 @@ package io.github.schrumbo.manycraft;
 import com.mojang.authlib.GameProfile;
 import java.time.Instant;
 import java.util.function.Consumer;
-import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.network.chat.ChatType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.PlayerChatMessage;
@@ -22,12 +21,7 @@ final class ChatBridge {
 		this.queue = queue;
 	}
 
-	void register() {
-		ClientReceiveMessageEvents.GAME.register(this::onGame);
-		ClientReceiveMessageEvents.CHAT.register(this::onChat);
-	}
-
-	private void onGame(Component message, boolean overlay) {
+	void onGame(Component message, boolean overlay) {
 		try {
 			String text = message.getString();
 			queue.onSystemMessage(text, System.currentTimeMillis());
@@ -56,7 +50,7 @@ final class ChatBridge {
 		return stripDecoration(decorated, bound.decorate(Component.literal(MARKER)).getString());
 	}
 
-	private void onChat(Component message, PlayerChatMessage signed, GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
+	void onChat(Component message, PlayerChatMessage signed, GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
 		try {
 			var key = bound.chatType().unwrapKey().orElse(null);
 			if (key == null || key.equals(ChatType.MSG_COMMAND_OUTGOING) || key.equals(ChatType.TEAM_MSG_COMMAND_OUTGOING)) {

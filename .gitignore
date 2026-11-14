@@ -3,7 +3,7 @@
 .claude/settings.local.json
 .claude/worktrees/
 mod/.gradle/
-mod/build/
-mod/run/
-mod/logs/
+mod/**/build/
+mod/**/run/
+mod/**/logs/
 /mutants.out*/

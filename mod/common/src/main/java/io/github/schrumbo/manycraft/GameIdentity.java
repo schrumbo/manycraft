@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -27,6 +26,8 @@ final class GameIdentity {
 	private static final int BACKDROP = 0x80000000;
 	private static final int TEXT = 0xE6FFFFFF;
 
+	static final Identifier BADGE = Identifier.fromNamespaceAndPath("manycraft", "badge");
+
 	private volatile Protocol.Incoming.Identity identity;
 	private volatile boolean badge = true;
 
@@ -37,10 +38,6 @@ final class GameIdentity {
 	String title() {
 		Protocol.Incoming.Identity id = identity;
 		return id == null ? null : title(id.name(), id.batch());
-	}
-
-	void register() {
-		HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("manycraft", "badge"), this::extractBadge);
 	}
 
 	void apply(Minecraft mc, Protocol.Incoming.Identity next) {
@@ -56,7 +53,7 @@ final class GameIdentity {
 		badge = visible;
 	}
 
-	private void extractBadge(GuiGraphicsExtractor g, DeltaTracker delta) {
+	void extractBadge(GuiGraphicsExtractor g, DeltaTracker delta) {
 		Protocol.Incoming.Identity id = identity;
 		Minecraft mc = Minecraft.getInstance();
 		if (!badge || id == null || mc.gui.hud.isHidden() || mc.getDebugOverlay().showDebugScreen()) {

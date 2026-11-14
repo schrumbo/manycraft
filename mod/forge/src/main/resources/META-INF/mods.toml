@@ -1,0 +1,24 @@
+modLoader = "javafml"
+loaderVersion = "[66,)"
+license = "AGPL-3.0-only"
+clientSideOnly = true
+
+[[mods]]
+modId = "manycraft"
+version = "${version}"
+displayName = "Manycraft Companion"
+description = "Connects this instance to the Manycraft window."
+
+[[dependencies.manycraft]]
+modId = "forge"
+mandatory = true
+versionRange = "[66,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.manycraft]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[26.3,26.4)"
+ordering = "NONE"
+side = "CLIENT"

@@ -1,55 +1,27 @@
 plugins {
-	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'net.fabricmc.fabric-loom' version "${loom_version}" apply false
+	id 'net.neoforged.moddev' version "${moddev_version}" apply false
+	id 'net.minecraftforge.gradle' version "${forgegradle_version}" apply false
+	id 'net.minecraftforge.jarjar' version "${forge_jarjar_version}" apply false
 }
 
-def nettyVersion = '4.2.16.Final'
+subprojects {
+	apply plugin: 'java'
 
-dependencies {
-	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
-
-	implementation "io.netty:netty-codec-socks:${nettyVersion}"
-	implementation "io.netty:netty-handler-proxy:${nettyVersion}"
-	include("io.netty:netty-codec-socks:${nettyVersion}") { transitive = false }
-	include("io.netty:netty-handler-proxy:${nettyVersion}") { transitive = false }
-
-	testImplementation platform('org.junit:junit-bom:5.11.4')
-	testImplementation 'org.junit.jupiter:junit-jupiter'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-}
-
-test {
-	useJUnitPlatform()
-}
-
-processResources {
-	def version = project.version
-	inputs.property "version", version
-
-	filesMatching("fabric.mod.json") {
-		expand "version": version
-	}
-}
-
-tasks.withType(JavaCompile).configureEach {
-	it.options.release = 25
-}
-
-java {
-	sourceCompatibility = JavaVersion.VERSION_25
-	targetCompatibility = JavaVersion.VERSION_25
-}
-
-tasks.matching { it.name == 'runClient' }.configureEach { task ->
-	['ipc', 'instance', 'preview', 'proxy', 'hidden'].each { key ->
-		def value = project.findProperty("manycraft.${key}")
-		if (value != null) {
-			task.systemProperty "manycraft.${key}", value.toString()
+	repositories {
+		mavenCentral()
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
 		}
 	}
-	def token = project.findProperty('manycraft.token')
-	if (token != null) {
-		task.environment 'MANYCRAFT_TOKEN', token.toString()
+
+	java {
+		sourceCompatibility = JavaVersion.VERSION_25
+		targetCompatibility = JavaVersion.VERSION_25
+	}
+
+	tasks.withType(JavaCompile).configureEach {
+		it.options.release = 25
 	}
 }
