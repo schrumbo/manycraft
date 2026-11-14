@@ -152,6 +152,7 @@ pub struct Grid {
     pub message: Option<Message>,
     order: Order,
     hovered: bool,
+    goal: Option<f32>,
     list: ListState,
     items: Vec<Item>,
     heights: (f32, f32),
@@ -181,6 +182,7 @@ impl Grid {
             message: None,
             order: Order::default(),
             hovered: false,
+            goal: None,
             list: ListState::new(0, ListAlignment::Top, px(tile::OVERDRAW)),
             items: Vec::new(),
             heights: (0., 0.),
@@ -220,6 +222,7 @@ impl Grid {
     /// Selects `key` as a click does: alone, toggled in or out with `toggle`, or with `range` from the anchor to it.
     pub fn click(&mut self, key: &str, range: bool, toggle: bool) {
         self.selected = Some(self.picks.click(&self.shown, self.selected.as_ref(), key, range, toggle));
+        self.goal = None;
         self.settle();
     }
 
@@ -459,6 +462,7 @@ fn move_selection(this: &mut MainWindow, step: Move, extend: bool, cx: &mut Cont
         n => n - 1,
     };
     let at = g.selected.as_ref().and_then(|s| g.shown.iter().position(|k| k == s));
+    let mut goal = None;
     let next = match (at, step) {
         (None, Move::Last) => last,
         (None, _) | (Some(_), Move::First) => 0,
@@ -470,20 +474,23 @@ fn move_selection(this: &mut MainWindow, step: Move, extend: bool, cx: &mut Cont
             let (_, start, stop) = g.rows[row];
             let to = if matches!(step, Move::Up(_)) { row.saturating_sub(n) } else { (row + n).min(g.rows.len() - 1) };
             let (_, from, end) = g.rows[to];
-            from + column_below(a - start, stop - start, end - from)
+            let fraction = g.goal.unwrap_or((((a - start) as f32) + 0.5) / (stop - start) as f32);
+            goal = Some(fraction);
+            from + column_at(fraction, end - from)
         }
     };
     let key = g.shown[next].clone();
     g.click(&key, extend, false);
+    g.goal = goal;
     if let Some(row) = g.row_at(next) {
         g.reveal_row(row);
     }
     cx.notify();
 }
 
-/// The column in a row of `to` tiles under the centre of column `column` in a row of `from` tiles.
-fn column_below(column: usize, from: usize, to: usize) -> usize {
-    (((column as f32 + 0.5) * to as f32 / from.max(1) as f32) as usize).min(to.saturating_sub(1))
+/// The column in a row of `count` tiles at `fraction` of the width.
+fn column_at(fraction: f32, count: usize) -> usize {
+    ((fraction * count as f32) as usize).min(count.saturating_sub(1))
 }
 
 fn action(id: &'static str, label: String, icon_name: &str, action: Box<dyn Action>, t: &Theme) -> AnyElement {
@@ -1041,7 +1048,7 @@ pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<Ma
 
 #[cfg(test)]
 mod tests {
-    use super::{Filter, Instance, Model, Order, Phase, Picks, arrange, chosen, column_below, found, layout, matches, tile, tile_width, word, words};
+    use super::{Filter, Instance, Model, Order, Phase, Picks, arrange, chosen, column_at, found, layout, matches, tile, tile_width, word, words};
 
     fn rows(sections: &[usize], columns: usize) -> usize {
         sections.iter().map(|n| n.div_ceil(columns)).sum()
@@ -1145,11 +1152,15 @@ mod tests {
 
     #[test]
     fn up_and_down_keep_the_column_under_the_tile_centre() {
-        assert_eq!(column_below(2, 3, 2), 1);
-        assert_eq!(column_below(1, 2, 3), 2);
-        assert_eq!(column_below(0, 3, 2), 0);
-        assert_eq!(column_below(1, 3, 3), 1);
-        assert_eq!(column_below(4, 5, 1), 0);
+        let centre = |column: usize, count: usize| (column as f32 + 0.5) / count as f32;
+        for from in [1, 2, 3, 5] {
+            for column in 0..from {
+                assert_eq!(column_at(centre(column, from), from), column, "the kept goal brings Up/Down back to column {column} of {from}");
+            }
+        }
+        assert_eq!(column_at(centre(2, 3), 2), 1);
+        assert_eq!(column_at(centre(0, 5), 2), 0);
+        assert_eq!(column_at(1., 4), 3);
     }
 
     #[test]
