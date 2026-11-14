@@ -4,7 +4,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditBatch, NewBatch, StartBatch, StopBatch};
+use super::actions::{EditBatch, NewBatch, OpenSettings, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model;
@@ -20,6 +20,7 @@ struct Row {
     label: String,
     trailing: Option<String>,
     attention: usize,
+    unread: u32,
     hint: Option<String>,
 }
 
@@ -60,6 +61,23 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
                     .child(r.attention.to_string()),
             )
         })
+        .when(r.unread > 0, |d| {
+            d.child(
+                div()
+                    .h(px(shell::BADGE))
+                    .min_w(px(shell::BADGE))
+                    .px(px(space::XS))
+                    .rounded(px(radius::FULL))
+                    .bg(t.accent)
+                    .text_color(t.on_accent)
+                    .text_size(px(font::CAPTION2))
+                    .font_weight(FontWeight::BOLD)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(r.unread.to_string()),
+            )
+        })
         .when_some(r.trailing, |d, text| d.child(div().flex_none().text_size(px(font::CAPTION)).text_color(t.tertiary).child(text)))
         .when_some(r.hint, |d, hint| d.tooltip(tip(hint)))
         .on_click(cx.listener(move |this, _, window, cx| this.go(page.clone(), window, cx)))
@@ -81,6 +99,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         label: tr("Alle"),
         trailing: None,
         attention: m.attention_count(None),
+        unread: 0,
         hint: None,
     };
     let batches: Vec<(Row, String, usize, usize)> = m
@@ -93,11 +112,11 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             let fine = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
             let hint = trf("%lld von %lld laufen", &[&fine, &total]);
             let stopped = total - running;
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{fine}/{total}")), attention, hint: Some(hint) }, b.id.clone(), running, stopped)
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(format!("{fine}/{total}")), attention, unread: 0, hint: Some(hint) }, b.id.clone(), running, stopped)
         })
         .collect();
-    let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, hint: None };
-    let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, hint: None };
+    let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None };
+    let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None };
     let mut batch_rows = Vec::new();
     for (r, id, running, stopped) in batches {
         let (start, stop, edit) = (id.clone(), id.clone(), id);
@@ -110,6 +129,8 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         batch_rows.push(element.into_any_element());
     }
     let new_batch = tr("Neuer Batch");
+    let settings = tr("Einstellungen");
+    let shortcut = if cfg!(target_os = "macos") { "⌘,".to_owned() } else { format!("{}+,", tr("Strg")) };
     div()
         .id("sidebar")
         .w(px(shell::SIDEBAR))
@@ -154,6 +175,26 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 .child(div().h(px(space::M)))
                 .child(row(this, accounts, &t, cx))
                 .child(row(this, chat, &t, cx)),
+        )
+        .child(
+            div().flex_none().px(px(space::S)).pb(px(space::S)).child(
+                div()
+                    .id("nav-settings")
+                    .mark("button", settings.clone())
+                    .h(px(shell::ROW))
+                    .px(px(space::S))
+                    .rounded(px(radius::INNER))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S))
+                    .cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                    .child(icon("settings", iconsize::M, t.secondary))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.primary).child(settings))
+                    .tooltip(tip(shortcut))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
+            ),
         )
         .into_any_element()
 }

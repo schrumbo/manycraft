@@ -102,6 +102,11 @@ impl Model {
         list
     }
 
+    /// Whispers not yet seen, over all instances.
+    pub fn unread_whispers_total(&self) -> u32 {
+        self.instances.values().map(|i| i.unread_whispers).sum()
+    }
+
     /// How many instances of `batch_id` (all when `None`) need attention.
     pub fn attention_count(&self, batch_id: Option<&str>) -> usize {
         self.instances.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && i.phase.needs_attention()).count()
