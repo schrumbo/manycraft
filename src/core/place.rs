@@ -122,13 +122,23 @@ pub fn follow(before: Option<Place>, frame: Rect, mode: Mode, works: &[Rect]) ->
     Place { frame, mode }
 }
 
-/// The mode of a window seen at `frame` on `monitor`: maximized when the system says so, fullscreen when it has no title bar and covers the monitor.
+/// Where a hidden window of `size` waits for the place `frame`: at its corner, on the work area the place is on, so that it opens there without costing the place's size while hidden.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub fn mode_of(titled: bool, zoomed: bool, frame: Rect, monitor: Rect) -> Mode {
-    let covers = frame.x <= monitor.x + 4 && frame.y <= monitor.y + 4 && frame.right() >= monitor.right() - 4 && frame.bottom() >= monitor.bottom() - 4;
+pub fn parked(frame: Rect, size: Rect, works: &[Rect]) -> Rect {
+    let at = Rect { x: frame.x, y: frame.y, w: size.w, h: size.h };
+    match home(frame, works) {
+        Some(work) => at.fit(work),
+        None => at,
+    }
+}
+
+/// The mode of a window whose client area is `client` on `monitor`: maximized when the system says so, fullscreen when its client area covers the monitor.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn mode_of(zoomed: bool, client: Rect, monitor: Rect) -> Mode {
+    let covers = client.x <= monitor.x + 4 && client.y <= monitor.y + 4 && client.right() >= monitor.right() - 4 && client.bottom() >= monitor.bottom() - 4;
     if zoomed {
         Mode::Maximized
-    } else if !titled && covers {
+    } else if covers {
         Mode::Fullscreen
     } else {
         Mode::Normal
@@ -208,12 +218,21 @@ mod tests {
     }
 
     #[test]
+    fn hidden_windows_park_small_at_the_corner() {
+        let size = r(5, 5, 876, 536);
+        assert_eq!(parked(r(318, 159, 1924, 1202), size, &[LAPTOP, LEFT]), r(318, 159, 876, 536));
+        assert_eq!(parked(r(-500, 600, 480, 400), size, &[LAPTOP, LEFT]), r(-876, 496, 876, 536));
+        assert_eq!(parked(r(2400, 100, 100, 100), size, &[LAPTOP]), r(1684, 100, 876, 536));
+        assert_eq!(parked(r(10, 10, 100, 100), size, &[]), r(10, 10, 876, 536));
+    }
+
+    #[test]
     fn modes_are_read_from_the_window() {
         let monitor = r(0, 0, 2560, 1600);
-        assert_eq!(mode_of(true, true, r(0, 0, 2560, 1552), monitor), Mode::Maximized);
-        assert_eq!(mode_of(false, false, r(-1, -1, 2562, 1602), monitor), Mode::Fullscreen);
-        assert_eq!(mode_of(false, false, r(0, 0, 2560, 1600), monitor), Mode::Fullscreen);
-        assert_eq!(mode_of(true, false, r(0, 0, 2560, 1600), monitor), Mode::Normal);
-        assert_eq!(mode_of(false, false, r(10, 10, 800, 600), monitor), Mode::Normal);
+        assert_eq!(mode_of(true, r(0, 23, 2560, 1529), monitor), Mode::Maximized);
+        assert_eq!(mode_of(false, r(-1, -1, 2562, 1602), monitor), Mode::Fullscreen);
+        assert_eq!(mode_of(false, r(0, 0, 2561, 1600), monitor), Mode::Fullscreen);
+        assert_eq!(mode_of(false, r(2, 45, 2556, 1553), monitor), Mode::Normal);
+        assert_eq!(mode_of(false, r(10, 10, 800, 600), monitor), Mode::Normal);
     }
 }

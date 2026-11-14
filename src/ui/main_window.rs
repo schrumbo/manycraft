@@ -496,8 +496,11 @@ fn driven_size() -> Option<(f32, f32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
+const FULLSCREEN_SETTLES: Duration = Duration::from_millis(150);
+
 fn bind_keys(cx: &mut App) {
     let m = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+    let fullscreen = if cfg!(target_os = "macos") { "ctrl-cmd-f" } else { "f11" };
     let k = |key: &str| -> &'static str { Box::leak(format!("{m}-{key}").into_boxed_str()) };
     cx.bind_keys([
         KeyBinding::new(k("b"), ToggleSidebar, Some("MainWindow")),
@@ -507,8 +510,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
-        KeyBinding::new("f11", ToggleFullscreen, Some("MainWindow")),
-        KeyBinding::new("escape", ClearSelection, Some("MainWindow")),
+        KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-down", NextAttention, Some("MainWindow")),
@@ -589,8 +591,12 @@ pub fn show(place: Option<Place>, cx: &mut App) {
         }
         if fullscreen && place.mode != Mode::Fullscreen {
             cx.spawn(async move |cx| {
-                cx.background_executor().timer(Duration::from_millis(150)).await;
-                let _ = h.update(cx, |_, window, _| native::put(window, place));
+                cx.background_executor().timer(FULLSCREEN_SETTLES).await;
+                let _ = h.update(cx, |_, window, cx| {
+                    if model::get(cx).read(cx).playing.is_none() {
+                        native::put(window, place);
+                    }
+                });
             })
             .detach();
         }

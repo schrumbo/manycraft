@@ -1,5 +1,7 @@
 package io.github.schrumbo.manycraft.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import io.github.schrumbo.manycraft.CompanionHooks;
 import net.minecraft.client.Options;
 import org.spongepowered.asm.mixin.Mixin;
@@ -14,5 +16,10 @@ abstract class OptionsMixin {
 		if (CompanionHooks.blocksSave()) {
 			ci.cancel();
 		}
+	}
+
+	@WrapMethod(method = "save")
+	private void manycraft$keepFullscreen(Operation<Void> original) {
+		CompanionHooks.saveOptions((Options) (Object) this, () -> original.call());
 	}
 }

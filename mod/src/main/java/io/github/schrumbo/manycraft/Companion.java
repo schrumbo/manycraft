@@ -81,6 +81,7 @@ final class Companion {
 	}
 
 	void render(GameRenderer renderer, Runnable body) {
+		GameWindow.frame(Minecraft.getInstance());
 		BackgroundController bg = background;
 		if (bg == null) {
 			body.run();
@@ -140,6 +141,7 @@ final class Companion {
 			try {
 				link.ensureRunning();
 				state.tick(mc);
+				GameWindow.tick();
 				BackgroundController bg = background;
 				if (bg != null) {
 					bg.tick();

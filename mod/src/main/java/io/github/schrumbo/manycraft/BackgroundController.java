@@ -137,6 +137,7 @@ final class BackgroundController {
 	}
 
 	void hide() {
+		GameWindow.cancel();
 		mode.enter();
 		SDLVideo.SDL_HideWindow(mc.getWindow().handle());
 		visible = false;
@@ -145,10 +146,11 @@ final class BackgroundController {
 
 	void show(int x, int y, int w, int h, String windowMode) {
 		mode.exit();
-		GameWindow.show(mc, x, y, w, h, windowMode);
-		visible = true;
 		mc.getFramerateLimitTracker().onInputReceived();
-		reportWindow();
+		GameWindow.show(mc, x, y, w, h, windowMode, () -> {
+			visible = true;
+			reportWindow();
+		});
 	}
 
 	void startHidden() {

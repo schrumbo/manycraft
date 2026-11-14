@@ -356,9 +356,16 @@ struct Runtime {
     badge: usize,
     notice: Option<String>,
     whispers: Vec<Whisper>,
+    reveal: Option<Reveal>,
 }
 
-impl Global for Runtime {}
+
+/// What a game that was asked to show covers once it appears.
+struct Reveal {
+    key: String,
+    hide: Vec<String>,
+    manager: bool,
+}impl Global for Runtime {}
 
 /// Loads saved data into the model, starts the fleet and registers the action handlers.
 pub fn init(cx: &mut App) {
@@ -403,6 +410,7 @@ pub fn init(cx: &mut App) {
         insets: HashMap::new(),
         unplaced: HashSet::new(),
         spread: None,
+        reveal: None,
         badge: 0,
         notice: None,
         whispers: Vec::new(),
@@ -919,9 +927,6 @@ pub fn play(key: &str, cx: &mut App) {
     let place = if shown { follow_shown(cx) } else { manager_place(cx) };
     let Some(place) = place else { return };
     swap_to(key, place, cx);
-    if !shown {
-        super::main_window::hide(cx);
-    }
     spread(cx);
 }
 
@@ -931,7 +936,13 @@ fn swap_to(key: &str, place: Place, cx: &mut App) {
     let mut client = place.frame;
     update_model(cx, |m, rt, _| {
         rt.place = Some(place);
-        previous = m.playing.replace(key.clone()).filter(|p| *p != key);
+        let before = m.playing.replace(key.clone());
+        previous = before.clone().filter(|p| *p != key);
+        let mut reveal = rt.reveal.take().unwrap_or(Reveal { key: key.clone(), hide: Vec::new(), manager: before.is_none() });
+        reveal.key = key.clone();
+        reveal.hide.extend(previous.clone());
+        reveal.hide.retain(|k| *k != key);
+        rt.reveal = Some(reveal);
         if let Some(i) = m.instances.get_mut(&key) {
             i.unread_whispers = 0;
         }
@@ -946,9 +957,19 @@ fn swap_to(key: &str, place: Place, cx: &mut App) {
     drive::note(format!("play {key}"));
     if let Some(backend) = backend(cx) {
         backend.send(&key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
-        if let Some(previous) = previous {
-            backend.send(&previous, ToMod::Hide);
+    }
+}
+
+/// Hides what the game that is now shown covers: the manager and the games shown before it. Waiting for the game keeps the screen from flashing while it resizes on its first show.
+fn reveal(reveal: Reveal, cx: &mut App) {
+    let playing = model::get(cx).read(cx).playing.clone();
+    if let Some(backend) = backend(cx) {
+        for key in reveal.hide.iter().filter(|k| playing.as_ref() != Some(*k)) {
+            backend.send(key, ToMod::Hide);
         }
+    }
+    if reveal.manager && playing.is_some() {
+        super::main_window::hide(cx);
     }
 }
 
@@ -956,7 +977,16 @@ fn swap_to(key: &str, place: Place, cx: &mut App) {
 pub fn show_grid(cx: &mut App) {
     let place = follow_shown(cx);
     let mut previous = None;
-    update_model(cx, |m, _, _| previous = m.playing.take());
+    let mut pending = Vec::new();
+    update_model(cx, |m, rt, _| {
+        previous = m.playing.take();
+        pending = rt.reveal.take().map(|r| r.hide).unwrap_or_default();
+    });
+    if let Some(backend) = backend(cx) {
+        for key in pending.iter().filter(|k| previous.as_ref() != Some(*k)) {
+            backend.send(key, ToMod::Hide);
+        }
+    }
     if let Some(previous) = &previous {
         drive::note(format!("grid {previous}"));
         if let Some(backend) = backend(cx) {
@@ -1039,7 +1069,10 @@ fn place_new(key: &str, cx: &mut App) {
 
 fn step(action: HotkeyAction, cx: &mut App) {
     if action == HotkeyAction::Grid {
-        return show_grid(cx);
+        if model::get(cx).read(cx).playing.is_some() {
+            show_grid(cx);
+        }
+        return;
     }
     let model = model::get(cx);
     let target = {
@@ -1109,6 +1142,7 @@ struct Effects {
     whispers: Vec<Whisper>,
     placed: Vec<String>,
     game_focused: bool,
+    revealed: Option<Reveal>,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -1171,6 +1205,9 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     }
     for key in fx.placed {
         place_new(&key, cx);
+    }
+    if let Some(r) = fx.revealed {
+        reveal(r, cx);
     }
     if fx.game_focused {
         super::main_window::hide(cx);
@@ -1310,7 +1347,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         Update::Ipc(Event::Connected { instance, pid, .. }) => {
             model::set_hint(&instance, |h| h.link_lost = false);
             rt.pids.insert(instance.clone(), pid);
-            if cfg!(target_os = "windows") {
+            if cfg!(target_os = "windows") && !drive::on() {
                 rt.unplaced.insert(instance.clone());
             }
             for message in game_identity(m, &instance) {
@@ -1545,8 +1582,10 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             }
         }
         FromMod::Hotkey { action } => {
-            if playing || action == HotkeyAction::Grid {
+            if playing {
                 fx.hotkeys.push(action);
+            } else if action == HotkeyAction::Grid {
+                rt.backend.send(&key, ToMod::Hide);
             }
         }
         FromMod::Window { visible: true, focused } => {
@@ -1554,6 +1593,9 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
                 tint(m, &key, *pid);
             }
             fx.game_focused |= playing && focused;
+            if rt.reveal.as_ref().is_some_and(|r| r.key == key) {
+                fx.revealed = rt.reveal.take();
+            }
         }
         FromMod::Window { .. } | FromMod::Hello { .. } => {}
     }
@@ -1831,7 +1873,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, Instance, Instant, Kind, Model, Phase, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
+    use super::{model, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Reveal, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
         Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -1868,6 +1910,46 @@ mod tests {
         assert!(!needs_sign_in(&anyhow::anyhow!("no java")));
     }
 
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<(String, ToMod)>>);
+
+    impl Backend for Recorder {
+        fn start(&self, _: Batch, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn stop(&self, _: Vec<String>) {}
+        fn send(&self, key: &str, message: ToMod) {
+            self.0.lock().unwrap().push((key.to_owned(), message));
+        }
+        fn read_preview(&self, _: String, _: PathBuf) {}
+        fn quit(&self) {}
+    }
+
+    #[test]
+    fn closing_a_game_that_is_not_played_hides_only_it() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let recorder = Arc::new(Recorder::default());
+        rt.backend = recorder.clone();
+        m.playing = Some("other".into());
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key.clone(), message: FromMod::Hotkey { action: HotkeyAction::Grid } }), &mut fx);
+        assert!(fx.hotkeys.is_empty());
+        assert_eq!(*recorder.0.lock().unwrap(), [(key, ToMod::Hide)]);
+        assert_eq!(m.playing.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn the_shown_game_reveals_once() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some(key.clone());
+        rt.reveal = Some(Reveal { key: key.clone(), hide: vec!["before".into()], manager: true });
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: "before".into(), message: FromMod::Window { visible: true, focused: false } }), &mut fx);
+        assert!(fx.revealed.is_none() && rt.reveal.is_some());
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key.clone(), message: FromMod::Window { visible: true, focused: false } }), &mut fx);
+        let shown = fx.revealed.expect("no reveal");
+        assert_eq!((shown.key, shown.hide, shown.manager), (key, vec!["before".to_owned()], true));
+        assert!(rt.reveal.is_none());
+    }
+
     struct Quiet;
 
     impl Backend for Quiet {
@@ -1902,6 +1984,7 @@ mod tests {
             insets: HashMap::new(),
             unplaced: HashSet::new(),
             spread: None,
+            reveal: None,
             badge: 0,
             notice: None,
             whispers: Vec::new(),

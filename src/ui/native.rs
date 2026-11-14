@@ -57,6 +57,14 @@ pub fn put(window: &Window, place: Place) {
         wp.flags = if maximized { WPF_RESTORETOMAXIMIZED } else { 0 };
         wp.showCmd = (if maximized { SW_SHOWMAXIMIZED } else { SW_RESTORE }) as u32;
         unsafe { SetWindowPlacement(hwnd, &wp) };
+        if !maximized
+            && win::frame(hwnd).is_some_and(|f| f != place.frame)
+            && let Some(fresh) = win::margins(hwnd)
+        {
+            *MARGINS.lock().unwrap_or_else(|e| e.into_inner()) = Some(fresh);
+            wp.rcNormalPosition = win::workspace(win::grown(place.frame, fresh));
+            unsafe { SetWindowPlacement(hwnd, &wp) };
+        }
     }
     #[cfg(not(target_os = "windows"))]
     let _ = (window, place);

@@ -23,7 +23,7 @@ pub fn seen(pid: u32) -> Option<Seen> {
     }
 }
 
-/// Moves the hidden main window of process `pid` so that its frame covers `frame`, without showing or activating it and without waiting for the game.
+/// Moves the hidden main window of process `pid` to the corner of `frame`, keeping its size, without showing or activating it and without waiting for the game.
 pub fn place_hidden(pid: u32, frame: Rect) {
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = win::main_window(pid) {
@@ -74,8 +74,8 @@ pub mod win {
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
     use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GW_OWNER, GWL_STYLE, GetClassNameW, GetClientRect, GetWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-        SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos, WS_CAPTION,
+        EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+        SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos,
     };
 
     const EMPTY: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -145,20 +145,20 @@ pub mod win {
             ClientToScreen(hwnd, &mut origin);
         }
         let client = Rect { x: origin.x, y: origin.y, w: client.right.max(0) as u32, h: client.bottom.max(0) as u32 };
-        let titled = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32 & WS_CAPTION == WS_CAPTION;
         let monitor = monitor_info(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })?;
-        let mode = place::mode_of(titled, unsafe { IsZoomed(hwnd) } != 0, frame, rect(monitor.rcMonitor));
+        let mode = place::mode_of(unsafe { IsZoomed(hwnd) } != 0, client, rect(monitor.rcMonitor));
         Some(Seen { frame, insets: place::insets(frame, client), mode, visible: unsafe { IsWindowVisible(hwnd) } != 0 })
     }
 
     /// Moves `hwnd` while hidden so that its frame covers `frame`; a shown, minimized, maximized or fullscreen window stays.
     pub fn place_hidden(hwnd: HWND, frame: Rect) {
         let Some(seen) = seen(hwnd) else { return };
-        if seen.visible || !seen.mode.is_normal() || seen.frame == frame {
+        let target = place::parked(frame, seen.frame, &work_areas());
+        if seen.visible || !seen.mode.is_normal() || seen.frame == target {
             return;
         }
         let Some(margins) = margins(hwnd) else { return };
-        let r = grown(frame, margins);
+        let r = grown(target, margins);
         unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS) };
     }
 
