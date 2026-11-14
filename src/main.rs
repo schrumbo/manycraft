@@ -34,6 +34,7 @@ fn main() {
     if let Some(code) = core::cli::run(&args) {
         std::process::exit(code);
     }
+    log_panics();
     core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
     ui::theme::start_with(ui::theme::Choice::parse(&std::env::var("MANYCRAFT_THEME").unwrap_or_default()));
     let app = gpui_kit::application().with_assets(Assets);
@@ -50,4 +51,21 @@ fn main() {
         ui::main_window::open(cx);
         ui::drive::init(cx);
     });
+}
+
+fn log_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let dir = core::paths::data_dir().join("logs");
+        let text = format!("{info}
+{}
+", std::backtrace::Backtrace::force_capture());
+        if std::fs::create_dir_all(&dir).is_ok() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("manycraft-panic.log")) {
+                let _ = f.write_all(text.as_bytes());
+            }
+        }
+        previous(info);
+    }));
 }
