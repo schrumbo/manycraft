@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Macro, bot or automation requests
+    url: https://github.com/schrumbo/manycraft/blob/main/CODE_OF_CONDUCT.md#what-manycraft-is-not
+    about: Manycraft never plays for you. Requests for macros, bots or ways around server limits get closed.

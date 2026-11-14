@@ -1,0 +1,12 @@
+name: Feature idea
+description: Suggest something Manycraft should do
+body:
+  - type: markdown
+    attributes:
+      value: Requests for macros, bots, automation or ways around server limits get closed, see the Code of Conduct.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to do, and why?
+    validations:
+      required: true
