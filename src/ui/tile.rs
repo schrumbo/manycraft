@@ -433,6 +433,7 @@ fn preview(d: &TileData, g: &Geometry, controls: bool, t: &Theme) -> AnyElement 
             .px(px(space::XS))
             .rounded(px(radius::FULL))
             .bg(t.accent)
+            .shadow(super::widgets::badge_edge(t))
             .text_color(t.on_accent)
             .text_size(px(font::CAPTION2))
             .font_weight(FontWeight::BOLD)
