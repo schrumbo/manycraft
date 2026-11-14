@@ -18,7 +18,7 @@ base64 = "0.22"
 dirs = "6"
 gpui-kit = "0.8.1"
 hickory-resolver = "0.26"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 md-5 = "0.10"
 raw-window-handle = "0.6"

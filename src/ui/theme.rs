@@ -225,6 +225,18 @@ pub mod tint {
     pub const RIM: f32 = 0.12;
     /// The shadow under a floating bar.
     pub const FLOAT_SHADOW: f32 = 0.24;
+    /// The soft shadow that lifts a small badge off a preview.
+    pub const BADGE_SHADOW: f32 = 0.35;
+    /// How much of the selected segment's fill a hovered segment shows; pressing doubles it, still short of selected.
+    pub const SEGMENT_HOVER: f32 = 0.4;
+}
+
+/// The edge that keeps a small badge readable over any preview.
+pub mod edge {
+    /// Width of the ring in the window colour.
+    pub const RING: f32 = 1.;
+    /// Blur of the soft shadow under it.
+    pub const BLUR: f32 = 3.;
 }
 
 /// The ring the keyboard focus draws around a control.
@@ -235,6 +247,8 @@ pub mod ring {
 
     /// Width of the ring outside the control.
     pub const WIDTH: f32 = 3.;
+    /// Width of the ring inside a control without a fill, where a ring outside would fill it.
+    pub const INSET: f32 = 2.;
 
     static ACCENT: RwLock<Hsla> = RwLock::new(Hsla { h: 0.57, s: 1., l: 0.31, a: 1. });
 
@@ -310,6 +324,10 @@ pub struct Theme {
     pub shade: Hsla,
     /// Popovers and menus.
     pub material: Hsla,
+    /// The track of a switch that is off.
+    pub track: Hsla,
+    /// The selected segment of a segmented control, raised above the bar.
+    pub segment: Hsla,
 }
 
 impl Global for Theme {}
@@ -358,6 +376,8 @@ impl Theme {
             ink,
             shade: black().opacity(tint::SHADE),
             material: if dark { c(0x1B365D) } else { c(0xFFFFFF) },
+            track: if dark { c(0xE8F1F8).opacity(0.4) } else { c(0x0E1B2C).opacity(0.5) },
+            segment: if dark { c(0x2C4F7C) } else { c(0xFFFFFF) },
         }
     }
 
@@ -534,7 +554,7 @@ pub fn apply(t: Theme, window: Option<&mut Window>, cx: &mut App) {
     k.link = t.accent_text;
     k.link_hover = t.accent_text.opacity(0.85);
     k.link_active = t.accent_text.opacity(0.7);
-    k.switch = t.ink.opacity(if dark { 0.22 } else { 0.15 });
+    k.switch = t.track;
     k.switch_thumb = white();
     k.list_active = t.highlight.opacity(tint::SELECTED);
     k.list_hover = t.ink.opacity(0.06);
@@ -579,6 +599,14 @@ mod tests {
         Hsla::from(r)
     }
 
+    fn hovered(t: &Theme) -> Hsla {
+        Hsla::from(over(with_alpha(t.segment, tint::SEGMENT_HOVER), t.raised))
+    }
+
+    fn ring_on(t: &Theme) -> Hsla {
+        with_alpha(t.accent, tint::RING)
+    }
+
     fn contrast(text: Hsla, background: Hsla) -> f32 {
         let (a, b) = (luminance(over(text, background)), luminance(Rgba::from(background)));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
@@ -597,7 +625,7 @@ mod tests {
                 ("tertiary on well", contrast(t.tertiary, t.well), 3.),
                 ("secondary on well", contrast(t.secondary, t.well), 4.5),
                 ("on accent", contrast(t.on_accent, t.accent), 4.5),
-                                ("accent text on window", contrast(t.accent_text, t.window), 4.5),
+                ("accent text on window", contrast(t.accent_text, t.window), 4.5),
                 ("attention text on window", contrast(t.attention_text, t.window), 4.5),
                 ("success text on window", contrast(t.success_text, t.window), 4.5),
                 ("danger text on window", contrast(t.danger_text, t.window), 4.5),
@@ -619,10 +647,26 @@ mod tests {
                 ("on danger", contrast(t.on_danger, t.danger), 4.5),
                 ("accent text on selected", contrast(t.accent_text, selected(&t, t.window)), 4.5),
                 ("accent text on selected material", contrast(t.accent_text, selected(&t, t.material)), 4.5),
+                ("switch track on window", contrast(t.track, t.window), 3.),
+                ("switch track on content", contrast(t.track, t.content), 3.),
+                ("switch track on raised", contrast(t.track, t.raised), 3.),
+                ("primary on segment", contrast(t.primary, t.segment), 4.5),
+                ("attention text on segment", contrast(t.attention_text, t.segment), 4.5),
+                ("secondary on hovered segment", contrast(t.secondary, hovered(&t)), 4.5),
+                ("accent ring on window", contrast(ring_on(&t), t.window), 3.),
             ];
             for (name, ratio, least) in checks {
                 assert!(ratio >= least, "{name} ({}): {ratio:.2} < {least}", if dark { "dark" } else { "light" });
             }
+        }
+    }
+
+    #[test]
+    fn segments_rise_from_selected_over_hovered_to_the_bar() {
+        for dark in [false, true] {
+            let t = Theme::plain(dark);
+            let (bar, hover, selected) = (luminance(Rgba::from(t.raised)), luminance(Rgba::from(hovered(&t))), luminance(Rgba::from(t.segment)));
+            assert!(bar < hover && hover < selected, "{}: bar {bar:.3} hover {hover:.3} selected {selected:.3}", if dark { "dark" } else { "light" });
         }
     }
 

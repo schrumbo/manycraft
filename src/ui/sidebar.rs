@@ -40,7 +40,7 @@ fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> St
         .gap(px(space::S))
         .bg(if selected { t.highlight.opacity(tint::SELECTED) } else { t.window })
         .cursor_pointer()
-        .key_nav()
+        .key_nav_inside()
         .soft(t.ink.opacity(tint::HOVER), radius::INNER)
         .child(icon(r.icon, iconsize::M, if selected { t.accent_text } else { t.secondary }))
         .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(ink).when(selected, |d| d.font_weight(FontWeight::MEDIUM)).child(r.label))

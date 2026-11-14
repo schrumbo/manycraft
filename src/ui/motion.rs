@@ -25,21 +25,27 @@ pub fn follow(id: impl Into<ElementId>, target: f32, duration: Duration, window:
 pub trait Soft {
     /// Paints `color` behind the children on hover and twice as strong on press. Call it before adding children.
     fn soft(self, color: Hsla, radius: f32) -> Self;
+    /// Like `soft`, with its own radius per corner, for rows at the top or bottom of a rounded group.
+    fn soft_corners(self, color: Hsla, corners: Corners<f32>) -> Self;
 }
 
 impl Soft for Stateful<Div> {
-    fn soft(mut self, color: Hsla, radius: f32) -> Self {
+    fn soft(self, color: Hsla, radius: f32) -> Self {
+        self.soft_corners(color, Corners::all(radius))
+    }
+
+    fn soft_corners(mut self, color: Hsla, corners: Corners<f32>) -> Self {
         if self.style().position.is_none() {
             self = self.relative();
         }
-        super::drive::marked(self, "clickable").child(HoverLayer { color, radius })
+        super::drive::marked(self, "clickable").child(HoverLayer { color, corners })
     }
 }
 
 #[derive(IntoElement)]
 struct HoverLayer {
     color: Hsla,
-    radius: f32,
+    corners: Corners<f32>,
 }
 
 impl RenderOnce for HoverLayer {
@@ -59,7 +65,10 @@ impl RenderOnce for HoverLayer {
             .id("soft")
             .absolute()
             .inset_0()
-            .rounded(px(self.radius))
+            .rounded_tl(px(self.corners.top_left))
+            .rounded_tr(px(self.corners.top_right))
+            .rounded_br(px(self.corners.bottom_right))
+            .rounded_bl(px(self.corners.bottom_left))
             .when(level > 0., |d| d.bg(Hsla { a: (self.color.a * level).min(1.), ..self.color }))
             .on_hover(move |hovered, _, cx| {
                 on_hover.update(cx, |s, cx| {

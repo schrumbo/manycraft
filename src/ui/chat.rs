@@ -20,7 +20,7 @@ use super::model::{self, ChatLine, Model};
 use super::sheet::{self, Look};
 use super::toolbar;
 use super::theme::{Theme, chat, control, font, iconsize, radius, shell, space, tile, with_alpha};
-use super::widgets::{TakeFocus, icon, segment};
+use super::widgets::{TakeFocus, icon, segment, segmented};
 use crate::core::batch::MAX_CHAT_CHARS;
 use crate::core::i18n::{tr, trf};
 use crate::core::settings;
@@ -359,23 +359,11 @@ impl ChatPage {
         let whispers = self.scope.whispers;
         let on = settings::active().merged_chat;
         let title = tr("Chat");
-        let segments = div()
-            .id("chat-scope")
-            .p(px(space::XXS))
-            .rounded(px(radius::CONTROL))
-            .bg(t.raised)
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(space::XXS))
-            .child(segment("scope-all", tr("Alles"), !whispers, t).on_click(cx.listener(|s, _, _, cx| {
-                s.scope.whispers = false;
-                cx.notify();
-            })))
-            .child(segment("scope-whispers", tr("Nur Flüstern"), whispers, t).on_click(cx.listener(|s, _, _, cx| {
-                s.scope.whispers = true;
-                cx.notify();
-            })));
+        let pick = cx.listener(|s, n: &usize, _, cx| {
+            s.scope.whispers = *n == 1;
+            cx.notify();
+        });
+        let segments = segmented("chat-scope", [segment("scope-all", tr("Alles"), !whispers, true, t), segment("scope-whispers", tr("Nur Flüstern"), whispers, true, t)], move |n, window, cx| pick(&n, window, cx), t);
         div()
             .h(px(shell::TOOLBAR))
             .flex_none()
