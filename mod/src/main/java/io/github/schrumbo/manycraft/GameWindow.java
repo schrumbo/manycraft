@@ -5,11 +5,13 @@ import net.minecraft.client.Minecraft;
 import io.github.schrumbo.manycraft.mixin.OptionInstanceAccessor;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
+import org.lwjgl.sdl.SDLProperties;
 import org.lwjgl.sdl.SDLVideo;
 import java.nio.IntBuffer;
 import org.lwjgl.system.JNI;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.Platform;
+import org.lwjgl.system.windows.User32;
 import org.lwjgl.system.windows.WindowsLibrary;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,7 +77,11 @@ final class GameWindow {
 			shown.run();
 		};
 		if (!fullscreen.get()) {
-			if ((SDLVideo.SDL_GetWindowFlags(handle) & SDLVideo.SDL_WINDOW_MAXIMIZED) != 0) {
+			WindowSteps steps = WindowSteps.of(!shown(mc), (SDLVideo.SDL_GetWindowFlags(handle) & SDLVideo.SDL_WINDOW_MAXIMIZED) != 0, mode);
+			if (steps.unzoom()) {
+				unzoom(handle);
+			}
+			if (steps.restore()) {
 				SDLVideo.SDL_RestoreWindow(handle);
 			}
 			int width = window.getWidth();
@@ -138,6 +144,19 @@ final class GameWindow {
 			pending = null;
 			reveal.run();
 		}
+	}
+
+	private static void unzoom(long handle) {
+		if (Platform.get() != Platform.WINDOWS) {
+			return;
+		}
+		long hwnd = SDLProperties.SDL_GetPointerProperty(SDLVideo.SDL_GetWindowProperties(handle), SDLVideo.SDL_PROP_WINDOW_WIN32_HWND_POINTER, 0);
+		if (hwnd == 0) {
+			return;
+		}
+		long style = User32.GetWindowLongPtr(null, hwnd, User32.GWL_STYLE);
+		User32.SetWindowLongPtr(null, hwnd, User32.GWL_STYLE, style & ~(long) User32.WS_MAXIMIZE);
+		User32.SetWindowPos(null, hwnd, 0, 0, 0, 0, 0, User32.SWP_NOMOVE | User32.SWP_NOSIZE | User32.SWP_NOZORDER | User32.SWP_NOACTIVATE | User32.SWP_FRAMECHANGED);
 	}
 
 	private static boolean resizes(long handle, int width, int height) {

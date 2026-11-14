@@ -566,13 +566,13 @@ pub fn place(cx: &mut App) -> Option<(Rect, Mode)> {
     handle(cx)?.update(cx, |_, window, _| native::place_of(window)).ok().flatten()
 }
 
-/// Gets the main window out of the way of the game that takes its place. A driven window stays, so agents keep seeing it.
-pub fn hide(cx: &mut App) {
+/// Gets the main window out of the way of the game that takes its place, ready to come back at `place`. A driven window stays, so agents keep seeing it.
+pub fn hide(place: Option<Place>, cx: &mut App) {
     if crate::core::drive::fenced("hide", "main window") {
         return;
     }
     if let Some(h) = handle(cx) {
-        let _ = h.update(cx, |_, window, _| native::hide(window));
+        let _ = h.update(cx, |_, window, _| native::hide(window, place));
     }
 }
 

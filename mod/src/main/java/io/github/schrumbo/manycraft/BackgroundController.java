@@ -53,6 +53,7 @@ final class BackgroundController {
 	private volatile BackgroundLevel.Custom custom = BackgroundLevel.Custom.DEFAULT;
 	private volatile boolean visible = true;
 	private boolean lastFocused = true;
+	private boolean lastMaximized;
 
 	BackgroundController(Minecraft mc, SaveGuard guard, Consumer<String> sink) {
 		this.mc = mc;
@@ -172,14 +173,19 @@ final class BackgroundController {
 
 	void tick() {
 		boolean focused = visible && mc.getWindow().isFocused();
-		if (focused != lastFocused) {
-			lastFocused = focused;
+		boolean maximized = visible && maximized();
+		if (focused != lastFocused || maximized != lastMaximized) {
 			reportWindow();
 		}
 	}
 
+	private boolean maximized() {
+		return (SDLVideo.SDL_GetWindowFlags(mc.getWindow().handle()) & SDLVideo.SDL_WINDOW_MAXIMIZED) != 0;
+	}
+
 	private void reportWindow() {
 		lastFocused = visible && mc.getWindow().isFocused();
+		lastMaximized = visible && maximized();
 		sink.accept(windowLine());
 	}
 
