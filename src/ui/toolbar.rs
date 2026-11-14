@@ -178,7 +178,18 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                         Filter::Running => Box::new(FilterRunning),
                         Filter::Stopped => Box::new(FilterStopped),
                     };
-                    menu = menu.menu_element_with_check(current == f, action, menu_row(label, Some(n.to_string()), false));
+                    let loud = f == Filter::Attention && n > 0;
+                    menu = menu.menu_element_with_check(current == f, action, move |_, cx| {
+                        let t = Theme::get(cx);
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::L))
+                            .child(div().flex_1().child(label.clone()))
+                            .child(div().flex_none().font_features(tabular()).when(loud, |d| d.font_weight(FontWeight::SEMIBOLD)).text_color(if loud { t.attention_text } else { t.tertiary }).child(n.to_string()))
+                            .into_any_element()
+                    });
                 }
                 menu
             })
@@ -219,10 +230,16 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 .separator()
                 .menu_element_with_check(current == TileSize::Fit, Box::new(TileFit), fit)
         });
+    let roomy = this.content_width(window) >= shell::SEARCH_ROOM;
+    if this.search_roomy != roomy {
+        this.search_roomy = roomy;
+        let hint = if roomy { tr("Name, Batch, Server, Status") } else { tr("Suchen") };
+        this.search.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
+    }
     let search = div()
         .key_context("Toolbar")
-        .w(px(if compact { shell::SEARCH * 0.75 } else { shell::SEARCH }))
-        .min_w(px(shell::SEARCH / 2.))
+        .when(roomy, |d| d.w(px(shell::SEARCH)).flex_none())
+        .when(!roomy, |d| d.w(px(shell::SEARCH * 0.75)).min_w(px(shell::SEARCH / 2.)))
         .child(Input::new(&this.search).small().cleanable(true).prefix(icon("search", iconsize::S, t.tertiary)));
     let start_label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
     let stop_label = if batch.is_some() { tr("Stoppen") } else { tr("Alle stoppen") };

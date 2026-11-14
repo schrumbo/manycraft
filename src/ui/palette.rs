@@ -381,11 +381,11 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                         Row::Entry(n) => {
                             let e = entries.get(n)?;
                             let on = ix == cursor;
-                            div()
+                            let row = div()
                                 .id(("palette-row", ix))
                                 .mark("row", e.label.clone())
+                                .w_full()
                                 .h(px(palette::ROW))
-                                .mx(px(space::XS))
                                 .px(px(space::S))
                                 .rounded(px(radius::INNER))
                                 .flex()
@@ -397,7 +397,7 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                                 .child(icon(e.icon, iconsize::M, if on { t.accent_text } else { t.secondary }))
                                 .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if on { t.accent_text } else { t.primary }).child(e.label.clone()))
                                 .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).children(e.detail.clone()))
-                                .children(e.keys.clone().map(|k| div().flex_none().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(k)))
+                                .children(e.keys.clone().map(|k| div().flex_none().min_w(px(palette::KEYS)).text_right().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(k)))
                                 .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
                                     if let Some(p) = this.palette.as_mut()
                                         && p.cursor != ix
@@ -411,8 +411,8 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                                         p.cursor = ix;
                                     }
                                     run(this, window, cx);
-                                }))
-                                .into_any_element()
+                                }));
+                            div().w_full().px(px(space::XS)).child(row).into_any_element()
                         }
                     })
                 })

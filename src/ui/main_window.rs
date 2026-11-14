@@ -81,6 +81,7 @@ pub struct MainWindow {
     fit: Option<(FitScope, Option<String>)>,
     /// Prism Launcher instances that can become a batch, and accounts Prism lists, as found at startup.
     pub(super) prism: (usize, usize),
+    pub(super) search_roomy: bool,
     title_count: Option<usize>,
     last_playing: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -137,6 +138,7 @@ impl MainWindow {
             palette: None,
             fit: None,
             prism: (0, 0),
+            search_roomy: true,
             title_count: None,
             last_playing: None,
             _subscriptions: subscriptions,

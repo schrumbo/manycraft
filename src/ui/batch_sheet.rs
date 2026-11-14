@@ -889,7 +889,7 @@ impl BatchSheet {
         } else {
             sheet::note(Some(tr("Pro Account.")), None, t)
         };
-        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(line))
+        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(line.min_h(px(font::CAPTION * font::LINE * 2.))))
     }
 
     fn refresh_rows(&mut self, cx: &App) {

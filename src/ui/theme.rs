@@ -121,6 +121,8 @@ pub mod shell {
     pub const NOTICE: f32 = 32.;
     pub const ROW: f32 = 28.;
     pub const SEARCH: f32 = 240.;
+    /// Content width from which the search field keeps its full width and full placeholder.
+    pub const SEARCH_ROOM: f32 = 1040.;
     /// The attention dot in a sidebar row.
     pub const DOT: f32 = 6.;
     /// The attention count in a sidebar row.
@@ -148,6 +150,8 @@ pub mod palette {
     pub const LABEL: f32 = 0.6;
     /// Height of the line that says nothing matches.
     pub const EMPTY: f32 = 48.;
+    /// Width of the shortcut column, so shortcuts line up on the right.
+    pub const KEYS: f32 = 96.;
 }
 
 /// Several selected tiles and the bar that acts on them.
@@ -160,6 +164,9 @@ pub mod selection {
     pub const CHECK: f32 = 20.;
     /// Width of the message field in the bar.
     pub const FIELD: f32 = 300.;
+    /// Blur and drop of the bar's shadow, a little deeper than a menu's.
+    pub const SHADOW_BLUR: f32 = 24.;
+    pub const SHADOW_Y: f32 = 8.;
 }
 
 /// The Chat page.
@@ -208,6 +215,10 @@ pub mod tint {
     pub const FLOATING: f32 = 0.92;
     /// An outline in a status color.
     pub const OUTLINE: f32 = 0.5;
+    /// The light edge along the top of a floating bar.
+    pub const RIM: f32 = 0.12;
+    /// The shadow under a floating bar.
+    pub const FLOAT_SHADOW: f32 = 0.24;
 }
 
 /// The ring the keyboard focus draws around a control.

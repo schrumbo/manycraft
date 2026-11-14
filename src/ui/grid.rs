@@ -943,7 +943,10 @@ pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<Ma
         .bg(with_alpha(t.material, tint::FLOATING))
         .border_1()
         .border_color(t.separator)
-        .shadow_lg()
+        .shadow(vec![
+            BoxShadow { color: white().opacity(tint::RIM), offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true },
+            BoxShadow { color: black().opacity(tint::FLOAT_SHADOW), offset: point(px(0.), px(selection::SHADOW_Y)), blur_radius: px(selection::SHADOW_BLUR), spread_radius: px(0.), inset: false },
+        ])
         .occlude()
         .child(div().flex_none().pr(px(space::S)).text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).child(trf("%lld ausgewählt", &[&count])));
     match &this.grid.message {
