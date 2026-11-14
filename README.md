@@ -38,7 +38,7 @@ Java is downloaded automatically. Add an account, create a batch, press Start.
 
 ## Fair use
 
-Manycraft is a window manager for your own game clients, not a bot. Check your server's rules before running several accounts. It has no anti-AFK or automation features and will not get any.
+Manycraft is a window manager for your own game clients, not a bot. Check your server's rules before running several accounts. It has no anti-AFK or automation features and will not get any. See the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Repository
 

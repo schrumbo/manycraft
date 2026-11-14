@@ -20,7 +20,7 @@ Thanks for helping. Manycraft is early, so open an issue before larger changes t
 
 ## Scope
 
-Manycraft supports Fabric on Windows, macOS and Linux. Features that would break a server's rules for everyone, such as automation that plays for you, are out of scope.
+Manycraft supports Fabric on Windows, macOS and Linux. Features that would break a server's rules for everyone, such as automation that plays for you, are out of scope. The [Code of Conduct](CODE_OF_CONDUCT.md) applies to every issue and pull request.
 
 ## License
 
