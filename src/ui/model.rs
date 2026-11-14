@@ -1,6 +1,7 @@
 //! What the views show: accounts, batches and the live status of every instance, held in one entity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -127,6 +128,20 @@ pub struct Model {
     pub faces: HashMap<Uuid, Arc<RenderImage>>,
     /// What the updater has found, downloaded and kept.
     pub updates: Updates,
+    /// Packs and Prism instances being imported, oldest first.
+    pub imports: Vec<Import>,
+    /// Batches being written as a `.mrpack`, by id.
+    pub exporting: HashSet<String>,
+}
+
+/// An import as the sidebar shows it.
+#[derive(Clone, Debug)]
+pub struct Import {
+    pub id: u64,
+    pub name: String,
+    pub percent: Option<u8>,
+    /// Set to stop the import; the row stays until it stopped.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Where the updater is, as the sidebar footer and Settings show it.

@@ -13,6 +13,7 @@ use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
+use crate::core::mrpack;
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
 
@@ -23,6 +24,7 @@ const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CANNED_DELAY: Duration = Duration::from_millis(450);
 const CANNED_SEARCH_DELAY: Duration = Duration::from_millis(300);
 const CANNED_PAGE: usize = 6;
+const CANNED_STEPS: usize = 8;
 
 static SAVING: Mutex<()> = Mutex::new(());
 
@@ -616,6 +618,42 @@ pub fn import_prism(instance: &Instance, edit: BatchEdit) -> Result<Batch> {
         }
         Ok(b)
     })
+}
+
+/// Imports a `.mrpack`, Prism export or Prism instance folder as a new batch; see `mrpack::import`.
+/// A driven instance runs the same checks, then makes an empty batch of the pack's name without downloading.
+pub fn import_batch(path: &std::path::Path, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<Batch> {
+    if !drive::fenced("mrpack import", path.display()) {
+        return mrpack::import(path, cancel, progress);
+    }
+    let name = mrpack::peek(path)?;
+    for step in 0..=CANNED_STEPS {
+        if cancel.load(Ordering::SeqCst) {
+            bail!(mrpack::Refused::Cancelled);
+        }
+        progress(step, CANNED_STEPS);
+        std::thread::sleep(CANNED_DELAY);
+    }
+    saved(|| {
+        let taken: Vec<String> = batch::load_all()?.into_iter().map(|b| b.name).collect();
+        let made = Batch::new(&mrpack::free_name(&name, &taken), "1.21.1");
+        batch::save(&made)?;
+        Ok(made)
+    })
+}
+
+/// Deletes a batch an import made after it was cancelled too late to stop.
+pub fn drop_import(b: &Batch) -> Result<()> {
+    batch::delete(b)
+}
+
+/// Writes `b` as a `.mrpack` to `out`; a driven instance only records it.
+pub fn export_batch(b: &Batch, out: &std::path::Path) -> Result<()> {
+    if drive::fenced("mrpack export", out.display()) {
+        std::thread::sleep(CANNED_DELAY);
+        return Ok(());
+    }
+    mrpack::export(b, out)
 }
 
 /// Newer files for the mods of the saved batch `batch`.

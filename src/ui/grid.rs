@@ -11,7 +11,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopBatch, StopSelected};
+use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
 use super::model::{self, Instance, Model, Phase};
@@ -484,9 +484,11 @@ fn action(id: &'static str, label: String, icon_name: &str, action: Box<dyn Acti
     primary_button(id, label, icon_name, false, t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)).into_any_element()
 }
 
-fn empty(id: &'static str, symbol: &str, title: String, text: String, button: Option<AnyElement>, t: &Theme) -> AnyElement {
+fn empty(id: &'static str, symbol: &str, title: String, text: String, button: Option<AnyElement>, focus: &FocusHandle, t: &Theme) -> AnyElement {
     div()
         .id(id)
+        .key_context("InstanceGrid")
+        .track_focus(focus)
         .size_full()
         .flex()
         .flex_col()
@@ -511,7 +513,8 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
     let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
     let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-    let (start, stop, edit) = (batch.to_owned(), batch.to_owned(), batch.to_owned());
+    let id = batch.to_owned();
+    let exporting = m.exporting.contains(batch);
     let stopped = total - running;
     div()
         .id(SharedString::from(format!("heading-{batch}")))
@@ -541,12 +544,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                     .child(attention.to_string()),
             )
         })
-        .context_menu(move |menu, _, _| {
-            menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(start.clone())), stopped == 0)
-                .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(stop.clone())), running == 0)
-                .separator()
-                .menu(tr("Batch bearbeiten"), Box::new(EditBatch(edit.clone())))
-        })
+        .context_menu(move |menu, _, _| super::sidebar::batch_menu(menu, &id, running, stopped, exporting))
         .into_any_element()
 }
 
@@ -594,7 +592,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         super::state::set_visible(HashSet::new(), cx);
         if !in_scope {
             let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
-            return empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &t);
+            return empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &this.grid.focus, &t);
         }
         if !this.query.is_empty() {
             let clear = primary_button("clear-search", tr("Suche löschen"), "x", false, &t)
@@ -605,11 +603,11 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                     cx.notify();
                 }))
                 .into_any_element();
-            return empty("no-match", "search", tr("Nichts gefunden."), trf("Zu „%@“ passt keiner.", &[&this.query]), Some(clear), &t);
+            return empty("no-match", "search", tr("Nichts gefunden."), trf("Zu „%@“ passt keiner.", &[&this.query]), Some(clear), &this.grid.focus, &t);
         }
         return match this.filter {
-            Filter::Attention => empty("all-good", "circle-check", tr("Alles ruhig."), tr("Gerade braucht dich keiner."), None, &t),
-            Filter::Stopped => empty("none-stopped", "circle-check", tr("Nichts gestoppt."), tr("Alle laufen oder brauchen dich."), None, &t),
+            Filter::Attention => empty("all-good", "circle-check", tr("Alles ruhig."), tr("Gerade braucht dich keiner."), None, &this.grid.focus, &t),
+            Filter::Stopped => empty("none-stopped", "circle-check", tr("Nichts gestoppt."), tr("Alle laufen oder brauchen dich."), None, &this.grid.focus, &t),
             Filter::Running | Filter::All => {
                 let start: Box<dyn Action> = match batch {
                     Some(b) => Box::new(StartBatch(b.to_owned())),
@@ -617,7 +615,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 };
                 let label = if batch.is_some() { tr("Starten") } else { tr("Alle starten") };
                 let title = if resting { tr("Alle schlummern.") } else { tr("Gerade läuft keiner.") };
-                empty("none-running", "play", title, tr("Starte sie, dann siehst du sie hier."), Some(action("start-empty", label, "play", start, &t)), &t)
+                empty("none-running", "play", title, tr("Starte sie, dann siehst du sie hier."), Some(action("start-empty", label, "play", start, &t)), &this.grid.focus, &t)
             }
         };
     }

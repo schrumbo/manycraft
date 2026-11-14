@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -352,6 +352,7 @@ impl Render for MainWindow {
         };
         let show_sidebar = self.sidebar && !narrow;
         let palette = super::palette::render(self, window, cx);
+        let dropping = cx.has_active_drag().then(|| drop_hint(&t));
         let root = div()
             .id("main")
             .key_context("MainWindow")
@@ -399,6 +400,15 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_drag_move::<ExternalPaths>(|_, window, cx| {
+                if window.last_input_was_keyboard() {
+                    let position = window.mouse_position();
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }), cx);
+                    });
+                }
+            })
+            .on_drop(|paths: &ExternalPaths, _, cx| super::transfer::drop_paths(paths, cx))
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|this, _: &ImportPrismAccounts, window, cx| {
                 this.go(Page::Accounts, window, cx);
@@ -480,6 +490,7 @@ impl Render for MainWindow {
                 )
             })
             .when(narrow && self.overlay, |d| d.child(super::toolbar::toggle(self, &t, cx)))
+            .children(dropping)
             .children(palette);
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, &t)
@@ -510,6 +521,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
+        KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
         KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
@@ -618,6 +630,47 @@ pub fn select_batch(batch: &str, cx: &mut App) {
             });
         }
     });
+}
+
+/// Shows the grid of `batch` with the window's filter, as after importing it; stays put while the palette or a sheet is open.
+pub fn show_batch(batch: &str, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let batch = batch.to_owned();
+    let _ = h.update(cx, |view, window, cx| {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
+            view.update(cx, |this, cx| {
+                if this.palette.is_some() || window.has_active_dialog(cx) {
+                    return;
+                }
+                this.grid.reset_scroll();
+                this.go(Page::Grid(Some(batch)), window, cx);
+            });
+        }
+    });
+}
+
+/// What the window says while files are dragged onto it.
+fn drop_hint(t: &Theme) -> AnyElement {
+    let text = tr("Zum Importieren loslassen");
+    div()
+        .id("drop-hint")
+        .mark("notice", text.clone())
+        .absolute()
+        .inset_0()
+        .bg(t.accent.opacity(tint::DROP))
+        .border_2()
+        .border_color(t.accent)
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(space::XS))
+        .child(icon("download", iconsize::L, t.accent_text))
+        .child(div().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(text))
+        .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Modpack von Modrinth, Export oder Instanz aus Prism")))
+        .into_any_element()
 }
 
 /// A quiet line under the toolbar that says the accounts in view need more memory than is free; it goes once one runs.

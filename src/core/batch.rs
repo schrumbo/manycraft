@@ -229,13 +229,17 @@ pub fn save(batch: &Batch) -> Result<()> {
 /// Deletes the batch's folder including its shared mods and config. Use `fleet::delete_batch` to keep those.
 pub fn delete(batch: &Batch) -> Result<()> {
     let dir = batch.dir();
+    match std::fs::remove_file(dir.join(FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
+        _ => {}
+    }
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("cannot delete {}", dir.display()))?;
     }
     Ok(())
 }
 
-fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
+pub(super) fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
 };
 use super::drive::Mark;
@@ -290,6 +290,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             ("refresh-cw", tr("Ausgewählte neu verbinden"), Box::new(ReconnectSelected), n[3] > 0),
             ("message-square", tr("Nachricht senden…"), Box::new(MessageSelected), several && n[4] > 0),
             ("x", tr("Auswahl aufheben"), Box::new(ClearSelection), true),
+            ("folder-open", tr("Spielordner öffnen"), Box::new(OpenGameFolder(chosen[0].clone())), !several),
         ] {
             if able {
                 out.push(entry(Group::Selection, icon, label, detail.clone(), action, cx));
@@ -332,6 +333,10 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
         }
     }
+    out.push(entry(Group::Commands, "download", tr("Batch importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
+    for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+        out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
+    }
     let waiting = super::accounts::waiting(cx);
     if waiting.len() > 1 {
         let detail = trf("%lld Accounts", &[&waiting.len()]);
@@ -345,7 +350,11 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Batches, "boxes", b.name.clone(), server.clone(), Box::new(ShowBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "play", trf("%@ starten", &[&b.name]), server.clone(), Box::new(StartBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "square", trf("%@ stoppen", &[&b.name]), server.clone(), Box::new(StopBatch(b.id.clone())), cx));
-        out.push(entry(Group::Batches, "pencil", trf("%@ bearbeiten", &[&b.name]), server, Box::new(EditBatch(b.id.clone())), cx));
+        out.push(entry(Group::Batches, "pencil", trf("%@ bearbeiten", &[&b.name]), server.clone(), Box::new(EditBatch(b.id.clone())), cx));
+        out.push(entry(Group::Batches, "folder-open", trf("Batch-Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
+        if !m.exporting.contains(&b.id) {
+            out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server, Box::new(ExportBatch(b.id.clone())), cx));
+        }
     }
     for a in m.accounts.iter().filter(|a| a.kind == crate::core::account::AccountKind::Microsoft) {
         out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));
