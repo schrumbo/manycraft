@@ -1,8 +1,6 @@
 package io.github.schrumbo.manycraft;
 
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.loader.api.FabricLoader;
+import java.util.function.Consumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.ConnectScreen;
@@ -31,6 +29,7 @@ final class Companion {
 	}
 
 	private final Config config;
+	private final String version;
 	private final SaveGuard guard = new SaveGuard();
 	private final QueueDetector queue = new QueueDetector();
 	private final ManagerLink link;
@@ -42,8 +41,9 @@ final class Companion {
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 
-	private Companion(Config config) {
+	private Companion(Config config, String version) {
 		this.config = config;
+		this.version = version;
 		this.link = new ManagerLink(config, this::handshake, this::onInbound);
 		this.state = new StateReporter(this::send, queue);
 		this.chat = new ChatBridge(this::send, queue);
@@ -54,12 +54,30 @@ final class Companion {
 		return instance;
 	}
 
-	static void start(Config config) {
+	static void start(String version, Consumer<Companion> events) {
+		Config config;
+		try {
+			config = Config.read(System::getProperty, System::getenv);
+		} catch (RuntimeException e) {
+			LOGGER.error("invalid manycraft launch properties, companion disabled", e);
+			return;
+		}
+		if (config == null) {
+			return;
+		}
 		ProxyInstaller.installDefaults();
-		Companion companion = new Companion(config);
+		Companion companion = new Companion(config, version);
 		instance = companion;
-		companion.register();
+		events.accept(companion);
 		companion.link.start();
+	}
+
+	ChatBridge chat() {
+		return chat;
+	}
+
+	GameIdentity identity() {
+		return identity;
 	}
 
 	boolean blocksSave() {
@@ -151,35 +169,29 @@ final class Companion {
 		return link.send(Protocol.hotkey("grid"));
 	}
 
-	private void register() {
-		ClientLifecycleEvents.CLIENT_STARTED.register(mc -> {
-			BackgroundController bg = new BackgroundController(mc, guard, this::send);
-			background = bg;
-			if (config.hidden()) {
-				bg.startHidden();
+	void started(Minecraft mc) {
+		BackgroundController bg = new BackgroundController(mc, guard, this::send);
+		background = bg;
+		if (config.hidden()) {
+			bg.startHidden();
+		}
+	}
+
+	void tick(Minecraft mc) {
+		try {
+			link.ensureRunning();
+			state.tick(mc);
+			GameWindow.tick();
+			BackgroundController bg = background;
+			if (bg != null) {
+				bg.tick();
 			}
-		});
-		ClientTickEvents.END_CLIENT_TICK.register(mc -> {
-			try {
-				link.ensureRunning();
-				state.tick(mc);
-				GameWindow.tick();
-				BackgroundController bg = background;
-				if (bg != null) {
-					bg.tick();
-				}
-			} catch (RuntimeException e) {
-				LOGGER.warn("tick failed", e);
-			}
-		});
-		chat.register();
-		identity.register();
+		} catch (RuntimeException e) {
+			LOGGER.warn("tick failed", e);
+		}
 	}
 
 	private String[] handshake() {
-		String version = FabricLoader.getInstance().getModContainer("manycraft")
-			.map(c -> c.getMetadata().getVersion().getFriendlyString())
-			.orElse("unknown");
 		BackgroundController bg = background;
 		return new String[] {
 			Protocol.hello(config.instance(), config.token(), ProcessHandle.current().pid(), version),

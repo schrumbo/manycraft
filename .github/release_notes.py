@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 
-USER_FACING = ("src/", "assets/", "mod/src/", "packaging/", "Cargo.toml")
+USER_FACING = ("src/", "assets/", "mod/common/src/", "mod/fabric/src/", "mod/neoforge/src/", "mod/forge/src/", "packaging/", "Cargo.toml")
 INTERNAL = re.compile(r"doc comments?", re.I)
 SKIP = re.compile(r"^(Merge |Bump version|herd\b|Drive\b|Workflow\b|Test\b|Tests\b|CI\b|gate\b|Agent tools\b)", re.I)
 

@@ -52,15 +52,40 @@ jobs:
         working-directory: mod
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check whether the mod changed
+        id: changes
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != push ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null || [ -n "$(git diff --name-only "$BEFORE" HEAD -- .)" ]; then
+            echo "loaders=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "loaders=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 25
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build
+      - name: Build all loaders
+        if: steps.changes.outputs.loaders == 'true'
         run: ./gradlew build
+      - name: Build the Fabric jar
+        if: steps.changes.outputs.loaders != 'true'
+        run: ./gradlew :fabric:build -PfabricOnly
       - uses: actions/upload-artifact@v4
         with:
           name: companion
-          path: mod/build/libs/*.jar
+          path: mod/fabric/build/libs/manycraft-companion-*.jar
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: steps.changes.outputs.loaders == 'true'
+        with:
+          name: companion-loaders
+          path: |
+            mod/neoforge/build/libs/manycraft-companion-neoforge-*.jar
+            mod/forge/build/libs/manycraft-companion-forge-*.jar
+            !mod/forge/build/libs/*-slim.jar
           if-no-files-found: error

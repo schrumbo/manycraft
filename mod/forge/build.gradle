@@ -1,0 +1,49 @@
+plugins {
+	id 'net.minecraftforge.gradle'
+	id 'net.minecraftforge.jarjar'
+}
+
+apply from: rootProject.file('gradle/loader.gradle')
+
+repositories {
+	minecraft.mavenizer(it)
+	maven fg.forgeMaven
+	maven fg.minecraftLibsMaven
+}
+
+minecraft {
+	runs {
+		register('client') {
+			workingDir = layout.projectDirectory.dir('run')
+		}
+	}
+}
+
+jarJar.register()
+
+dependencies {
+	implementation minecraft.dependency("net.minecraftforge:forge:${forge_version}")
+	compileOnly 'net.fabricmc:sponge-mixin:0.17.5+mixin.0.8.7'
+	compileOnly 'io.github.llamalad7:mixinextras-common:0.5.3'
+
+	implementation "io.netty:netty-codec-socks:${netty_version}"
+	implementation "io.netty:netty-handler-proxy:${netty_version}"
+	jarJar("io.netty:netty-codec-socks:${netty_version}") { transitive = false }
+	jarJar("io.netty:netty-handler-proxy:${netty_version}") { transitive = false }
+}
+
+processResources {
+	filesMatching('manycraft.mixins.json') {
+		filter { it.replace('"JAVA_25"', '"JAVA_21"') }
+	}
+}
+
+tasks.named('jar') {
+	archiveClassifier = 'slim'
+	manifest.attributes('MixinConfigs': 'manycraft.mixins.json,manycraft.forge.mixins.json')
+}
+
+tasks.named('jarJar') {
+	archiveClassifier = null
+	manifest.attributes('MixinConfigs': 'manycraft.mixins.json,manycraft.forge.mixins.json')
+}

@@ -1,0 +1,29 @@
+plugins {
+	id 'net.neoforged.moddev'
+}
+
+apply from: rootProject.file('gradle/loader.gradle')
+
+neoForge {
+	enable {
+		version = neoforge_version
+		disableRecompilation = true
+	}
+	runs {
+		client {
+			client()
+		}
+	}
+	mods {
+		manycraft {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+dependencies {
+	implementation "io.netty:netty-codec-socks:${netty_version}"
+	implementation "io.netty:netty-handler-proxy:${netty_version}"
+	jarJar("io.netty:netty-codec-socks:${netty_version}") { transitive = false }
+	jarJar("io.netty:netty-handler-proxy:${netty_version}") { transitive = false }
+}

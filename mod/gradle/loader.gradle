@@ -1,0 +1,28 @@
+sourceSets.main.java.srcDir rootProject.file('common/src/main/java')
+sourceSets.main.resources.srcDir rootProject.file('common/src/main/resources')
+
+base {
+	archivesName = project.name == 'fabric' ? 'manycraft-companion' : "manycraft-companion-${project.name}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching(['fabric.mod.json', 'META-INF/neoforge.mods.toml', 'META-INF/mods.toml']) {
+		expand "version": version
+	}
+}
+
+tasks.matching { it.name == 'runClient' }.configureEach { task ->
+	['ipc', 'instance', 'preview', 'proxy', 'hidden'].each { key ->
+		def value = project.findProperty("manycraft.${key}")
+		if (value != null) {
+			task.systemProperty "manycraft.${key}", value.toString()
+		}
+	}
+	def token = project.findProperty('manycraft.token')
+	if (token != null) {
+		task.environment 'MANYCRAFT_TOKEN', token.toString()
+	}
+}

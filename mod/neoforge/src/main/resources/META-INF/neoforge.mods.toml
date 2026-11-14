@@ -1,0 +1,26 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "AGPL-3.0-only"
+
+[[mods]]
+modId = "manycraft"
+version = "${version}"
+displayName = "Manycraft Companion"
+description = "Connects this instance to the Manycraft window."
+
+[[mixins]]
+config = "manycraft.mixins.json"
+
+[[dependencies.manycraft]]
+modId = "neoforge"
+type = "required"
+versionRange = "[26.3,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.manycraft]]
+modId = "minecraft"
+type = "required"
+versionRange = "[26.3,26.4)"
+ordering = "NONE"
+side = "CLIENT"

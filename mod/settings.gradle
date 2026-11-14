@@ -10,3 +10,7 @@ pluginManagement {
 }
 
 rootProject.name = 'manycraft-companion'
+include 'common', 'fabric'
+if (!providers.gradleProperty('fabricOnly').isPresent()) {
+	include 'neoforge', 'forge'
+}

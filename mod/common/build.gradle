@@ -1,0 +1,27 @@
+plugins {
+	id 'net.neoforged.moddev'
+}
+
+neoForge {
+	enable {
+		neoFormVersion = neo_form_version
+		disableRecompilation = true
+	}
+	addModdingDependenciesTo sourceSets.test
+}
+
+dependencies {
+	compileOnly 'net.fabricmc:sponge-mixin:0.17.5+mixin.0.8.7'
+	compileOnly 'io.github.llamalad7:mixinextras-common:0.5.3'
+
+	implementation "io.netty:netty-codec-socks:${netty_version}"
+	implementation "io.netty:netty-handler-proxy:${netty_version}"
+
+	testImplementation platform('org.junit:junit-bom:5.11.4')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+	useJUnitPlatform()
+}
