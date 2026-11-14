@@ -5,7 +5,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{OpenSettings, PreviousVersion};
+use super::actions::{OpenSettings, PreviousVersion, RestartToUpdate};
 use super::drive::Mark;
 use super::motion::Soft;
 use super::model::{self, UpdateStatus};
@@ -243,14 +243,19 @@ impl Render for SettingsView {
         let s = settings::active().clone();
         let updates = model::get(cx).read(cx).updates.clone();
         let searching = matches!(updates.status, UpdateStatus::Checking) || (updates.asked && matches!(updates.status, UpdateStatus::Downloading { .. }));
-        let search = sheet::button("set-update-now", tr("Nach Updates suchen"), None, Look::Secondary, false, searching, &t).when(!searching, |b| b.on_click(|_, _, cx| super::updates::check(true, cx)));
+        let launching = super::updates::counts(cx).0 > 0;
+        let search = if matches!(updates.status, UpdateStatus::Ready { .. }) {
+            let restart = sheet::button("set-update-restart", tr("Neu starten"), None, Look::Primary, launching, false, &t);
+            if launching { restart.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))) } else { restart.on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx)) }
+        } else {
+            sheet::button("set-update-now", tr("Nach Updates suchen"), None, Look::Secondary, false, searching, &t).when(!searching, |b| b.on_click(|_, _, cx| super::updates::check(true, cx)))
+        };
         let mut rows = vec![
             row(trf("Manycraft %@", &[&env!("CARGO_PKG_VERSION")]), Some(super::updates::status_line(&updates)), search, &t),
             self.toggle("set-auto-update", tr("Updates automatisch laden"), tr("Lädt neue Versionen im Hintergrund und installiert sie beim Beenden."), s.auto_update, |st, on| st.auto_update = on, &t, cx),
             self.toggle("set-prereleases", tr("Vorabversionen"), tr("Bietet auch Testversionen an, bevor sie veröffentlicht sind."), s.prereleases, |st, on| st.prereleases = on, &t, cx),
         ];
         if let Some(previous) = updates.previous.clone() {
-            let launching = super::updates::counts(cx).0 > 0;
             let back = sheet::button("set-previous", tr("Zurückkehren"), Some("rotate-ccw-clock"), Look::Secondary, launching, false, &t);
             let back = if launching {
                 back.tooltip(tip(tr("Geht, sobald keine Instanz mehr startet.")))

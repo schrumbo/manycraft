@@ -19,6 +19,7 @@ use super::{net, paths};
 
 const LIST: &str = "https://api.github.com/repos/schrumbo/manycraft/releases?per_page=20";
 const STATE: &str = "state.json";
+const DOWNLOADING: &str = "download.lock";
 const TIMEOUT: Duration = Duration::from_secs(10);
 const DAY: u64 = 24 * 3600;
 const MAX_SIZE: u64 = 1 << 30;
@@ -184,6 +185,7 @@ fn prepare_in(dir: &Path, release: &Release, kind: Kind, arch: &str, key: &str, 
         bail!(Skip::Waiting);
     }
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let Some(_downloading) = crate::core::lock::try_exclusive(&dir.join(DOWNLOADING))? else { bail!(Skip::Waiting) };
     let fail = |trouble: Trouble, e: anyhow::Error| {
         let _ = edit(dir, |s| {
             s.failed_at = now;
@@ -200,7 +202,7 @@ fn prepare_in(dir: &Path, release: &Release, kind: Kind, arch: &str, key: &str, 
     let part = dir.join(format!("{}.part", asset.name));
     let max = if asset.size > 0 { asset.size.min(MAX_SIZE) } else { MAX_SIZE };
     download::resumable(agent, &asset.url, &part, max, progress).map_err(|e| fail(Trouble::Download, e))?;
-    if let Err(e) = verify::file(&part, &sha, &sig, key) {
+    if let Err(e) = verify::file(&part, &sha, &sig, key, &verify::comment(&release.version, &asset.name)) {
         let _ = std::fs::remove_file(&part);
         return Err(fail(Trouble::Damaged, e));
     }
@@ -391,10 +393,22 @@ mod tests {
         let state = load(dir.path());
         assert_eq!(state.trouble, Some(Trouble::Damaged));
         assert_eq!(state.ready, None);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name() != STATE).count(), 0);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name() != STATE && e.file_name() != DOWNLOADING).count(), 0);
         let waiting = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100 + DAY - 1, &agent(), &mut |_, _| {}).unwrap_err();
         assert_eq!(waiting.downcast_ref::<Skip>(), Some(&Skip::Waiting));
         assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100 + DAY - 1, &agent(), &mut |_, _| {}).unwrap_err().downcast_ref::<Skip>().is_none());
+    }
+
+    #[test]
+    fn a_second_manycraft_waits_while_one_downloads() {
+        let (body, sha, sig, key) = fixture();
+        let hosted = host(body, sha, sig);
+        let dir = tempfile::tempdir().unwrap();
+        let held = crate::core::lock::try_exclusive(&dir.path().join(DOWNLOADING)).unwrap().unwrap();
+        let e = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100, &agent(), &mut |_, _| {}).unwrap_err();
+        assert_eq!(e.downcast_ref::<Skip>(), Some(&Skip::Waiting));
+        drop(held);
+        prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100, &agent(), &mut |_, _| {}).unwrap();
     }
 
     #[test]

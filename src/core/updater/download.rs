@@ -41,6 +41,10 @@ fn attempt(agent: &ureq::Agent, url: &str, part: &Path, max: u64, progress: &mut
         Err(e) => return Err(Fault::Fatal(e.into())),
     };
     let resumed = have > 0 && res.status() == 206 && res.headers().get("content-range").and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with(&format!("bytes {have}-")));
+    if res.status() == 206 && !resumed {
+        let _ = std::fs::remove_file(part);
+        return Err(Fault::Again(anyhow::anyhow!("the server sent the wrong part of the file")));
+    }
     let start = if resumed { have } else { 0 };
     let total = res.body().content_length().map(|n| n + start);
     if total.is_some_and(|t| t > max) {

@@ -37,6 +37,7 @@ enum Msg {
 /// Starts the daily check, counts this start as working after a while, and installs a ready update when the app quits.
 pub fn init(cx: &mut App) {
     cx.set_global(Flight::default());
+    cx.background_spawn(async { install::hold() }).detach();
     cx.on_action(|_: &CheckForUpdates, cx| check(true, cx));
     cx.on_action(|_: &RestartToUpdate, cx| sheet::in_window(cx, restart));
     cx.on_action(|_: &PreviousVersion, cx| sheet::in_window(cx, go_back));
@@ -261,7 +262,7 @@ fn restart(window: &mut Window, cx: &mut App) {
         quit(Quit::Install, cx);
         return;
     }
-    sheet::ask(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), |_, cx| quit(Quit::Install, cx));
+    sheet::ask(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), |_, cx| quit_unless_launching(Quit::Install, cx));
 }
 
 fn go_back(window: &mut Window, cx: &mut App) {
@@ -274,7 +275,13 @@ fn go_back(window: &mut Window, cx: &mut App) {
     if running > 0 {
         message = format!("{message} {}", stops(running));
     }
-    sheet::ask(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), |_, cx| quit(Quit::Back, cx));
+    sheet::ask(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), |_, cx| quit_unless_launching(Quit::Back, cx));
+}
+
+fn quit_unless_launching(how: Quit, cx: &mut App) {
+    if counts(cx).0 == 0 {
+        quit(how, cx);
+    }
 }
 
 fn quit(how: Quit, cx: &mut App) {

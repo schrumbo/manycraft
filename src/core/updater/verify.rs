@@ -3,21 +3,28 @@
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use minisign_verify::{PublicKey, Signature};
 use sha2::{Digest, Sha256};
 
 /// The public half of the key every release file is signed with in CI.
 pub const RELEASE_KEY: &str = "RWRbJqLBcsELLUfxnCzjjWf8RnLlRHGlZubizV3WPi+8fG39+E2P1znA";
 
-/// Fails unless the file at `path` has the SHA-256 in `sha256` (a `sha256sum` line) and a valid minisign signature `minisig` by `key`.
-pub fn file(path: &Path, sha256: &str, minisig: &str, key: &str) -> Result<()> {
+/// The trusted comment CI signs into every release file, which ties a signature to one version and file name.
+pub fn comment(version: &str, name: &str) -> String {
+    format!("Manycraft {version} {name}")
+}
+
+/// Fails unless the file at `path` has the SHA-256 in `sha256` (a `sha256sum` line) and a valid minisign signature `minisig`
+/// by `key` whose trusted comment is `comment`.
+pub fn file(path: &Path, sha256: &str, minisig: &str, key: &str, comment: &str) -> Result<()> {
     let expected = sha256.split_whitespace().next().unwrap_or_default();
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("the checksum file is not a SHA-256");
     }
     let key = PublicKey::from_base64(key).map_err(|e| anyhow::anyhow!("bad public key: {e}"))?;
     let signature = Signature::decode(minisig).map_err(|e| anyhow::anyhow!("unreadable signature: {e}"))?;
+    ensure!(signature.trusted_comment() == comment, "the signature belongs to another file or version");
     let mut stream = key.verify_stream(&signature).map_err(|e| anyhow::anyhow!("signature does not fit the release key: {e}"))?;
     let mut sha = Sha256::new();
     let mut file = std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
@@ -43,6 +50,7 @@ mod tests {
 
     const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/testdata/update");
     const SHA: &str = "bb0cabcbff009359250bafb84c7be5a7ac81f84340ffc6db268645997b17c308  asset.bin\n";
+    const FOR: &str = "Manycraft 0.9.0 Manycraft-Setup-0.9.0-windows-x64.exe";
 
     fn fixture_key() -> String {
         std::fs::read_to_string(format!("{DIR}/fixture.pub")).unwrap().lines().nth(1).unwrap().to_owned()
@@ -54,7 +62,7 @@ mod tests {
 
     #[test]
     fn a_signed_file_with_the_right_checksum_passes() {
-        file(Path::new(&format!("{DIR}/asset.bin")), SHA, &signature(), &fixture_key()).unwrap();
+        file(Path::new(&format!("{DIR}/asset.bin")), SHA, &signature(), &fixture_key(), FOR).unwrap();
     }
 
     #[test]
@@ -64,23 +72,32 @@ mod tests {
         let mut bytes = std::fs::read(format!("{DIR}/asset.bin")).unwrap();
         bytes[0] ^= 1;
         std::fs::write(&path, &bytes).unwrap();
-        assert!(file(&path, SHA, &signature(), &fixture_key()).unwrap_err().to_string().contains("SHA-256"));
+        assert!(file(&path, SHA, &signature(), &fixture_key(), FOR).unwrap_err().to_string().contains("SHA-256"));
         let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-        assert!(file(&path, &sha, &signature(), &fixture_key()).unwrap_err().to_string().contains("signature"));
+        assert!(file(&path, &sha, &signature(), &fixture_key(), FOR).unwrap_err().to_string().contains("signature"));
     }
 
     #[test]
     fn the_wrong_key_or_a_broken_sidecar_fails() {
         let path = format!("{DIR}/asset.bin");
         let path = Path::new(&path);
-        assert!(file(path, SHA, &signature(), RELEASE_KEY).is_err());
-        assert!(file(path, "nope", &signature(), &fixture_key()).is_err());
-        assert!(file(path, SHA, "garbage", &fixture_key()).is_err());
-        assert!(file(&path.with_extension("missing"), SHA, &signature(), &fixture_key()).is_err());
+        assert!(file(path, SHA, &signature(), RELEASE_KEY, FOR).is_err());
+        assert!(file(path, "nope", &signature(), &fixture_key(), FOR).is_err());
+        assert!(file(path, SHA, "garbage", &fixture_key(), FOR).is_err());
+        assert!(file(&path.with_extension("missing"), SHA, &signature(), &fixture_key(), FOR).is_err());
     }
 
     #[test]
     fn the_release_key_parses() {
         assert!(PublicKey::from_base64(RELEASE_KEY).is_ok());
+    }
+
+    #[test]
+    fn a_signature_for_another_version_or_file_fails() {
+        let path = format!("{DIR}/asset.bin");
+        let path = Path::new(&path);
+        assert_eq!(comment("0.9.0", "Manycraft-Setup-0.9.0-windows-x64.exe"), FOR);
+        assert!(file(path, SHA, &signature(), &fixture_key(), &comment("0.9.1", "Manycraft-Setup-0.9.0-windows-x64.exe")).is_err());
+        assert!(file(path, SHA, &signature(), &fixture_key(), &comment("0.9.0", "Manycraft-0.9.0-macos-universal.dmg")).is_err());
     }
 }

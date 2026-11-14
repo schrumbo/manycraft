@@ -16,6 +16,7 @@ const KEPT: &str = "previous";
 const KEEPING: &str = "previous-new";
 const HELPER: &str = "helper";
 const LOG: &str = "update.log";
+const RUNNING: &str = "running.lock";
 const WAIT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(100);
 /// Starts in a row that ended early before a fresh version is given up.
@@ -31,10 +32,11 @@ pub struct Here {
 /// How the running copy was installed.
 pub fn here() -> Here {
     let exe = std::env::current_exe().unwrap_or_default();
-    detect(std::env::consts::OS, &exe, std::env::var_os("APPIMAGE").map(PathBuf::from))
+    let image = std::env::var_os("APPIMAGE").map(PathBuf::from).zip(std::env::var_os("APPDIR").map(PathBuf::from));
+    detect(std::env::consts::OS, &exe, image)
 }
 
-fn detect(os: &str, exe: &Path, appimage: Option<PathBuf>) -> Here {
+fn detect(os: &str, exe: &Path, appimage: Option<(PathBuf, PathBuf)>) -> Here {
     let kind = |kind, target: &Path| Here { kind, target: target.to_path_buf() };
     match os {
         "windows" if exe.parent().is_some_and(|d| d.join("Uninstall.exe").is_file()) => kind(Kind::Installer, exe),
@@ -45,8 +47,8 @@ fn detect(os: &str, exe: &Path, appimage: Option<PathBuf>) -> Here {
                 None => kind(Kind::Unknown, exe),
             }
         }
-        "linux" => match appimage.filter(|p| p.is_file()) {
-            Some(image) => kind(Kind::AppImage, &image),
+        "linux" => match appimage.filter(|(image, appdir)| image.is_file() && exe.starts_with(appdir)) {
+            Some((image, _)) => kind(Kind::AppImage, &image),
             None if exe.starts_with("/usr/") => kind(Kind::Package, exe),
             None => kind(Kind::Unknown, exe),
         },
@@ -132,7 +134,14 @@ pub fn cli(args: &[String]) -> i32 {
     };
     let _ = std::fs::remove_file(&plan_path);
     let ended = pid.parse().is_ok_and(wait_gone);
-    let result = if ended { apply(&dir, &plan, verify::RELEASE_KEY) } else { Err(anyhow::anyhow!("Manycraft did not end")) };
+    let result = if !ended {
+        Err(anyhow::anyhow!("Manycraft did not end"))
+    } else {
+        match crate::core::lock::exclusive_within(&dir.join(RUNNING), WAIT) {
+            Ok(_alone) => apply(&dir, &plan, verify::RELEASE_KEY),
+            Err(_) => Err(anyhow::anyhow!("another Manycraft is still running")),
+        }
+    };
     if let Err(e) = &result {
         note(&dir, &format!("{} {} failed: {e:#}", if plan.rollback { "going back to" } else { "updating to" }, plan.version));
     }
@@ -191,10 +200,7 @@ pub fn apply(dir: &Path, plan: &Plan, key: &str) -> Result<()> {
     let name = plan.target.file_name().context("the install has no file name")?;
     remove_all(&dir.join(KEEPING));
     let result = install(dir, plan, key, &dir.join(KEEPING).join(name));
-    let kept = result.is_ok().then(|| {
-        remove_all(&dir.join(KEPT));
-        std::fs::rename(dir.join(KEEPING), dir.join(KEPT)).is_ok().then(|| Previous { version: plan.from.clone(), path: dir.join(KEPT).join(name) })
-    });
+    let kept = result.is_ok().then(|| keep_previous(dir).then(|| Previous { version: plan.from.clone(), path: dir.join(KEPT).join(name) }));
     remove_all(&dir.join(KEEPING));
     super::discard_ready(dir);
     edit(dir, |s| match &result {
@@ -215,12 +221,17 @@ pub fn apply(dir: &Path, plan: &Plan, key: &str) -> Result<()> {
 
 fn install(dir: &Path, plan: &Plan, key: &str, kept: &Path) -> Result<()> {
     let read = |ext| std::fs::read_to_string(super::sidecar_path(&plan.file, ext)).with_context(|| format!("no .{ext} next to the installer"));
-    verify::file(&plan.file, &read("sha256")?, &read("minisig")?, key)?;
+    let name = plan.file.file_name().context("the installer has no file name")?.to_string_lossy();
+    verify::file(&plan.file, &read("sha256")?, &read("minisig")?, key, &verify::comment(&plan.version, &name))?;
     ensure!(plan.target.exists(), "{} is gone", plan.target.display());
     match plan.kind {
         Kind::Installer => {
             keep_copy(&plan.target, kept)?;
-            run_installer(&plan.file, plan.target.parent().context("the install has no folder")?)
+            let result = run_installer(&plan.file, plan.target.parent().context("the install has no folder")?);
+            if result.is_err() {
+                let _ = place_file(kept, &plan.target);
+            }
+            result
         }
         Kind::AppImage => {
             keep_copy(&plan.target, kept)?;
@@ -251,6 +262,21 @@ fn run_installer(installer: &Path, folder: &Path) -> Result<()> {
 #[cfg(not(windows))]
 fn run_installer(_: &Path, _: &Path) -> Result<()> {
     bail!("the Windows installer runs only on Windows")
+}
+
+/// Makes the copy kept during this install the previous version, replacing the older one only once the new one is in place.
+fn keep_previous(dir: &Path) -> bool {
+    let (keeping, kept, older) = (dir.join(KEEPING), dir.join(KEPT), dir.join(format!("{KEPT}-old")));
+    remove_all(&older);
+    if kept.exists() && std::fs::rename(&kept, &older).is_err() {
+        return false;
+    }
+    if std::fs::rename(&keeping, &kept).is_err() {
+        let _ = std::fs::rename(&older, &kept);
+        return false;
+    }
+    remove_all(&older);
+    true
 }
 
 fn keep_copy(from: &Path, to: &Path) -> Result<()> {
@@ -391,7 +417,13 @@ pub fn boot(current: &str) -> bool {
     if !dir.join(super::STATE).is_file() {
         return false;
     }
-    let back = match edit(&dir, |s| starting(s, current).then(|| s.clone())) {
+    let back = match edit(&dir, |s| {
+        let back = starting(s, current);
+        if back && let Some(fresh) = s.fresh.as_mut() {
+            fresh.proven = true;
+        }
+        back.then(|| s.clone())
+    }) {
         Ok(back) => back,
         Err(e) => {
             eprintln!("update: cannot count the start: {e:#}");
@@ -418,7 +450,7 @@ pub fn on_exit(current: &str, back: bool, relaunch: bool, launching: bool) -> Re
     if !back {
         mark_proven(current);
     }
-    if launching {
+    if launching || !alone(&dir) {
         return Ok(false);
     }
     let state = super::load(&dir);
@@ -427,6 +459,21 @@ pub fn on_exit(current: &str, back: bool, relaunch: bool, launching: bool) -> Re
     let Some(plan) = plan else { return Ok(false) };
     spawn(&dir, &plan)?;
     Ok(true)
+}
+
+static HELD: std::sync::Mutex<Option<crate::core::lock::Guard>> = std::sync::Mutex::new(None);
+
+/// Marks this process as a running Manycraft, so a helper never installs under another one.
+pub fn hold() {
+    if let Ok(Some(guard)) = crate::core::lock::try_shared(&super::dir().join(RUNNING)) {
+        *HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(guard);
+    }
+}
+
+/// Lets go of this process's mark and tells whether any other Manycraft still runs.
+fn alone(dir: &Path) -> bool {
+    HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    crate::core::lock::try_exclusive(&dir.join(RUNNING)).is_ok_and(|g| g.is_some())
 }
 
 /// Records that the running `current` works.
@@ -500,14 +547,15 @@ mod tests {
         assert_eq!(detect("macos", &dir.path().join("manycraft"), None).kind, Kind::Unknown);
         let image = dir.path().join("Manycraft.AppImage");
         std::fs::write(&image, b"").unwrap();
-        assert_eq!(detect("linux", Path::new("/tmp/.mount_x/usr/bin/manycraft"), Some(image.clone())), Here { kind: Kind::AppImage, target: image });
-        assert_eq!(detect("linux", Path::new("/usr/bin/manycraft"), Some(dir.path().join("gone"))).kind, Kind::Package);
+        assert_eq!(detect("linux", Path::new("/tmp/.mount_x/usr/bin/manycraft"), Some((image.clone(), PathBuf::from("/tmp/.mount_x")))), Here { kind: Kind::AppImage, target: image.clone() });
+        assert_eq!(detect("linux", Path::new("/usr/bin/manycraft"), Some((image.clone(), PathBuf::from("/tmp/.mount_other")))).kind, Kind::Package);
+        assert_eq!(detect("linux", Path::new("/home/x/manycraft"), Some((image.clone(), PathBuf::from("/tmp/.mount_vscodium")))).kind, Kind::Unknown);
         assert_eq!(detect("linux", Path::new("/home/x/manycraft"), None).kind, Kind::Unknown);
     }
 
     fn signed(dir: &Path) -> (PathBuf, String) {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/testdata/update");
-        let file = dir.join("Manycraft-0.6.0-linux-x86_64.AppImage");
+        let file = dir.join("Manycraft-Setup-0.9.0-windows-x64.exe");
         std::fs::copy(fixtures.join("asset.bin"), &file).unwrap();
         std::fs::write(super::super::sidecar_path(&file, "sha256"), "bb0cabcbff009359250bafb84c7be5a7ac81f84340ffc6db268645997b17c308  asset.bin").unwrap();
         std::fs::copy(fixtures.join("asset.bin.minisig"), super::super::sidecar_path(&file, "minisig")).unwrap();
@@ -523,7 +571,7 @@ mod tests {
         let target = root.path().join("Manycraft.AppImage");
         std::fs::write(&target, b"old version").unwrap();
         let (file, key) = signed(&dir);
-        edit(&dir, |s| s.ready = Some(super::super::Ready { version: "0.6.0".into(), notes: "Faster.".into(), page: String::new(), file: file.file_name().unwrap().to_string_lossy().into_owned() })).unwrap();
+        edit(&dir, |s| s.ready = Some(super::super::Ready { version: "0.9.0".into(), notes: "Faster.".into(), page: String::new(), file: file.file_name().unwrap().to_string_lossy().into_owned() })).unwrap();
         let here = Here { kind: Kind::AppImage, target: target.clone() };
         let plan = install_plan(&super::super::load(&dir), &dir, &here, "0.5.0", false).unwrap();
         apply(&dir, &plan, &key).unwrap();
@@ -531,15 +579,15 @@ mod tests {
         assert!(!file.exists());
         let state = super::super::load(&dir);
         assert_eq!(state.ready, None);
-        assert_eq!(super::super::news(&state, "0.6.0"), Some(("0.6.0".into(), "Faster.".into())));
+        assert_eq!(super::super::news(&state, "0.9.0"), Some(("0.9.0".into(), "Faster.".into())));
         let kept = super::super::previous(&state).unwrap();
         assert_eq!(kept.version, "0.5.0");
         assert_eq!(std::fs::read(&kept.path).unwrap(), b"old version");
-        let back = rollback_plan(&state, &here, "0.6.0", false).unwrap();
+        let back = rollback_plan(&state, &here, "0.9.0", false).unwrap();
         apply(&dir, &back, &key).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"old version");
         let state = super::super::load(&dir);
-        assert_eq!(state.skipped.as_deref(), Some("0.6.0"));
+        assert_eq!(state.skipped.as_deref(), Some("0.9.0"));
         assert_eq!(state.previous, None);
         assert_eq!(state.fresh, None);
         assert!(!dir.join(KEPT).exists());
