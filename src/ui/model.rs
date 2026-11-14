@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use gpui_kit::{App, AppContext, Entity, Global, RenderImage};
+use gpui_kit::{App, AppContext, Entity, EventEmitter, Global, RenderImage};
 use uuid::Uuid;
 
 use crate::core::account::Account;
@@ -104,6 +104,11 @@ pub struct ChatLine {
     pub from: Option<String>,
     pub text: String,
 }
+
+/// Sent instead of a notify when only chat lines arrived, which nothing but the chat page shows.
+pub struct ChatArrived;
+
+impl EventEmitter<ChatArrived> for Model {}
 
 /// Everything the views read. Only `ui::state` changes it.
 #[derive(Default)]

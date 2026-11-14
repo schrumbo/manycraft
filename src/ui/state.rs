@@ -128,11 +128,15 @@ impl Real {
         let (previews, wanted) = mpsc::channel::<(String, PathBuf)>();
         let frames = out.clone();
         std::thread::Builder::new().name("previews".into()).spawn(move || {
+            let mut changes = ipc::PreviewChanges::default();
             while let Ok(first) = wanted.recv() {
                 let mut batch: HashMap<String, PathBuf> = HashMap::from([first]);
                 batch.extend(wanted.try_iter());
                 for (key, path) in batch {
                     let Some(preview) = ipc::read_preview(&path) else { continue };
+                    if !changes.changed(&key, &preview) {
+                        continue;
+                    }
                     let Some(image) = render_image(preview.width, preview.height, preview.rgba) else { continue };
                     if frames.send_blocking(Update::Preview { key, seq: preview.seq, image }).is_err() {
                         return;
@@ -649,6 +653,18 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
 }
 
 fn update_model(cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)) {
+    change_model(Redraw::All, cx, f);
+}
+
+/// What a change to the model redraws.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Redraw {
+    All,
+    Chat,
+    Nothing,
+}
+
+fn change_model(redraw: Redraw, cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)) {
     let model = model::get(cx);
     if !cx.has_global::<Runtime>() {
         return;
@@ -656,10 +672,27 @@ fn update_model(cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)
     cx.update_global::<Runtime, _>(|rt, cx| {
         model.update(cx, |m, cx| {
             f(m, rt, cx);
-            cx.notify();
+            match redraw {
+                Redraw::All => cx.notify(),
+                Redraw::Chat => cx.emit(model::ChatArrived),
+                Redraw::Nothing => {}
+            }
         });
     });
     refresh_badge(cx);
+}
+
+/// What applying `updates` redraws: a preview notice or a chat line that is not a whisper changes nothing the grid shows.
+fn redraw(updates: &[Update]) -> Redraw {
+    let mut chat = false;
+    for update in updates {
+        match update {
+            Update::Ipc(Event::Message { instance, message: FromMod::Preview { .. } }) if !model::hint(instance).link_lost => {}
+            Update::Ipc(Event::Message { instance, message: FromMod::Chat { kind, .. } }) if *kind != ChatKind::Whisper && !model::hint(instance).link_lost => chat = true,
+            _ => return Redraw::All,
+        }
+    }
+    if chat { Redraw::Chat } else { Redraw::Nothing }
 }
 
 fn start_keys(keys: &[String], cx: &mut App) {
@@ -1171,7 +1204,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     }
     let mut fresh: Vec<(String, String, Alert)> = Vec::new();
     let mut fx = Effects::default();
-    update_model(cx, |m, rt, _| {
+    change_model(redraw(&updates), cx, |m, rt, _| {
         for update in updates {
             let key = match &update {
                 Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } => None,
@@ -1900,7 +1933,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Reveal, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, redraw, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
         Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -1961,6 +1994,20 @@ mod tests {
         assert!(fx.hotkeys.is_empty());
         assert_eq!(*recorder.0.lock().unwrap(), [(key, ToMod::Hide)]);
         assert_eq!(m.playing.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn preview_notices_and_public_chat_redraw_at_most_the_chat() {
+        let message = |instance: &str, message| Update::Ipc(Event::Message { instance: instance.into(), message });
+        let chat = |instance: &str, kind| message(instance, FromMod::Chat { kind, from: None, text: "hi".into() });
+        let notice = |instance: &str| message(instance, FromMod::Preview { seq: 2, w: 1, h: 1 });
+        assert_eq!(redraw(&[notice("redraw-a"), notice("redraw-b")]), Redraw::Nothing);
+        assert_eq!(redraw(&[notice("redraw-a"), chat("redraw-b", ChatKind::Player), chat("redraw-a", ChatKind::System)]), Redraw::Chat);
+        assert_eq!(redraw(&[chat("redraw-a", ChatKind::Player), chat("redraw-a", ChatKind::Whisper)]), Redraw::All);
+        assert_eq!(redraw(&[notice("redraw-a"), message("redraw-a", FromMod::State { kind: StateKind::Playing, server: None, reason: None, cause: None })]), Redraw::All);
+        model::set_hint("redraw-lost", |h| h.link_lost = true);
+        assert_eq!(redraw(&[notice("redraw-lost")]), Redraw::All);
+        assert_eq!(redraw(&[chat("redraw-lost", ChatKind::Player)]), Redraw::All);
     }
 
     #[test]

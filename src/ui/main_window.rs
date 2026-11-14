@@ -90,6 +90,11 @@ impl MainWindow {
                 }
                 cx.notify();
             }),
+            cx.subscribe(&model, |this, _, _: &model::ChatArrived, cx| {
+                if this.page == Page::Chat {
+                    cx.notify();
+                }
+            }),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() && model::get(cx).read(cx).playing.is_some() {
                     cx.defer(super::state::show_grid);
