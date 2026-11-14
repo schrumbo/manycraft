@@ -35,7 +35,6 @@ const USAGE: &str = "usage: manycraft login [--proxy URL]\n       manycraft logi
 /// Why a sign-in failed, for the cases a person can act on. Found with `downcast_ref` on the returned error.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuthError {
-    MissingClientId,
     InvalidClientId,
     CodeExpired,
     Declined,
@@ -52,7 +51,6 @@ pub enum AuthError {
 impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingClientId => write!(f, "no Microsoft client id: set {CLIENT_ID_VAR} or build with it"),
             Self::InvalidClientId => write!(f, "Microsoft rejected the client id: check {CLIENT_ID_VAR} and that the app allows public client flows"),
             Self::CodeExpired => f.write_str("the sign-in code expired, start again"),
             Self::Declined => f.write_str("the sign-in was declined in the browser"),
@@ -325,17 +323,48 @@ fn login(proxy: Option<&str>) -> Result<()> {
     let code = flow.start()?;
     println!("Open {} and enter the code {}", code.verification_uri, code.user_code);
     println!("Waiting for sign-in, the code lasts {} min ...", code.expires_in / 60);
-    let mut tokens = flow.poll(&code)?;
-    let refresh = tokens.refresh_token.take().context("Microsoft granted no lasting sign-in")?;
-    let session = flow.session(&tokens)?;
-    account::store_token(session.uuid, &refresh)?;
-    let mut accounts = account::load()?;
-    let kept = accounts.iter().find(|a| a.id == session.uuid).and_then(|a| a.proxy.clone());
-    account::upsert(&mut accounts, Account { id: session.uuid, name: session.name.clone(), kind: AccountKind::Microsoft, proxy: proxy.map(str::to_owned).or(kept) });
-    account::save(&accounts)?;
-    println!("Signed in as {}", session.name);
+    let tokens = flow.poll(&code)?;
+    let account = save_sign_in(&flow, tokens, proxy, None, &mut || true)?;
+    println!("Signed in as {}", account.name);
     Ok(())
 }
+
+/// Finishes a device-code sign-in: fetches the profile, stores the refresh token in the keychain and saves the account,
+/// keeping its proxy unless `proxy` replaces it. With `expected`, a sign-in as anyone else is refused before anything is stored;
+/// when `proceed` says no right before storing, nothing is stored either.
+pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expected: Option<Uuid>, proceed: &mut dyn FnMut() -> bool) -> Result<Account> {
+    let refresh = tokens.refresh_token.take().context("Microsoft granted no lasting sign-in")?;
+    let session = flow.session(&tokens)?;
+    if expected.is_some_and(|id| id != session.uuid) {
+        return Err(WrongAccount(session.name).into());
+    }
+    if !proceed() {
+        bail!("sign-in was cancelled");
+    }
+    let mut accounts = account::load()?;
+    account::store_token(session.uuid, &refresh)?;
+    let account = signed_in(&accounts, session.uuid, &session.name, proxy);
+    account::upsert(&mut accounts, account.clone());
+    account::save(&accounts)?;
+    Ok(account)
+}
+
+fn signed_in(accounts: &[Account], id: Uuid, name: &str, proxy: Option<&str>) -> Account {
+    let kept = accounts.iter().find(|a| a.id == id).and_then(|a| a.proxy.clone());
+    Account { id, name: name.to_owned(), kind: AccountKind::Microsoft, proxy: proxy.map(str::to_owned).or(kept) }
+}
+
+/// A sign-in again that signed in a different Microsoft account, named here, than the one it was for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct WrongAccount(pub String);
+
+impl fmt::Display for WrongAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "signed in as {}, a different account", self.0)
+    }
+}
+
+impl std::error::Error for WrongAccount {}
 
 fn login_offline(name: &str) -> Result<()> {
     let account = Account::offline(name)?;
@@ -837,7 +866,6 @@ mod tests {
     #[test]
     fn every_error_has_a_message_naming_the_fix() {
         let all = [
-            AuthError::MissingClientId,
             AuthError::InvalidClientId,
             AuthError::CodeExpired,
             AuthError::Declined,
@@ -855,7 +883,7 @@ mod tests {
             assert!(!a.is_empty());
             assert!(texts.iter().skip(i + 1).all(|b| a != b));
         }
-        assert!(texts[9].contains('7'));
+        assert!(texts[8].contains('7'));
         assert!(texts[0].contains(CLIENT_ID_VAR));
     }
 
@@ -1034,6 +1062,39 @@ mod tests {
 
         let (headers, _) = &requests(&seen, "/mc/profile")[0];
         assert!(headers.contains(&format!("authorization: bearer {}", session.access_token.to_ascii_lowercase())), "{headers}");
+    }
+
+    #[test]
+    fn signing_in_as_someone_else_is_refused_before_anything_is_stored() {
+        let (base, seen) = serve(vec![
+            ("/xbl", vec![(200, fixture!("xbl_ok"))]),
+            ("/xsts", vec![(200, fixture!("xsts_ok"))]),
+            ("/mc/login", vec![(200, fixture!("mc_login_ok"))]),
+            ("/mc/profile", vec![(200, fixture!("profile_ok"))]),
+        ]);
+        let tokens = Tokens { access_token: "A".into(), refresh_token: Some("R".into()) };
+        let e = save_sign_in(&flow(&base), tokens, None, Some(Uuid::from_u128(1)), &mut || panic!("asked to store")).unwrap_err();
+        assert_eq!(e.downcast_ref::<WrongAccount>(), Some(&WrongAccount("TestPlayer".into())));
+        assert!(e.to_string().contains("TestPlayer"), "{e}");
+        assert_eq!(requests(&seen, "/mc/profile").len(), 1);
+        let tokens = Tokens { access_token: "A".into(), refresh_token: Some("R".into()) };
+        let cancelled = save_sign_in(&flow(&base), tokens, None, None, &mut || false).unwrap_err();
+        assert!(cancelled.to_string().contains("cancelled"), "{cancelled}");
+        let none = Tokens { access_token: "A".into(), refresh_token: None };
+        assert!(save_sign_in(&flow(&base), none, None, Some(Uuid::from_u128(1)), &mut || panic!("asked to store")).unwrap_err().downcast_ref::<WrongAccount>().is_none());
+    }
+
+    #[test]
+    fn signing_in_again_keeps_the_proxy_unless_a_new_one_is_given() {
+        let (me, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let saved = [
+            Account { id: other, name: "Other".into(), kind: AccountKind::Microsoft, proxy: Some("socks5://other:1".into()) },
+            Account { id: me, name: "Old".into(), kind: AccountKind::Microsoft, proxy: Some("socks5://mine:1".into()) },
+        ];
+        let again = signed_in(&saved, me, "New", None);
+        assert_eq!((again.name.as_str(), again.proxy.as_deref()), ("New", Some("socks5://mine:1")));
+        assert_eq!(signed_in(&saved, me, "New", Some("http://new:2")).proxy.as_deref(), Some("http://new:2"));
+        assert_eq!(signed_in(&saved, Uuid::from_u128(3), "Fresh", None).proxy, None);
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod batch_sheet;
 pub mod chrome;
 pub mod drive;
 pub mod fake;
+pub mod forms;
 pub mod grid;
 pub mod main_window;
 #[allow(dead_code)]
@@ -13,6 +14,8 @@ pub mod model;
 pub mod motion;
 pub mod native;
 pub mod perf;
+pub mod remote;
+pub mod sheet;
 pub mod sidebar;
 pub mod state;
 pub mod tile;
