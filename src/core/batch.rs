@@ -26,6 +26,15 @@ pub struct ModRef {
     pub sha1: String,
 }
 
+/// Frames per second a custom background level allows.
+pub const BACKGROUND_FPS: std::ops::RangeInclusive<u8> = 1..=60;
+/// Sight in chunks a custom background level allows.
+pub const BACKGROUND_SIGHT: std::ops::RangeInclusive<u8> = 2..=32;
+const SAVING_FPS: u8 = 3;
+const SAVING_SIGHT: u8 = 2;
+const BALANCED_FPS: u8 = 30;
+const GAME_SIGHT: u8 = 12;
+
 /// How much a hidden instance may cost. Every level mutes the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,11 +46,48 @@ pub enum Background {
     Balanced,
     /// Nothing reduced.
     Full,
+    /// At most these frames per second and this sight in chunks, never above the player's own; particles and clouds as in `Saving`.
+    Custom {
+        #[serde(default = "default_fps")]
+        fps: u8,
+        #[serde(default = "default_sight")]
+        sight: u8,
+    },
+}
+
+fn default_fps() -> u8 {
+    5
+}
+
+fn default_sight() -> u8 {
+    4
 }
 
 impl Background {
-    /// All levels, cheapest first.
-    pub const ALL: [Self; 3] = [Self::Saving, Self::Balanced, Self::Full];
+    /// The presets, cheapest first; `Custom` comes after them.
+    pub const PRESETS: [Self; 3] = [Self::Saving, Self::Balanced, Self::Full];
+
+    /// The custom level starting from the frames and sight this level allows.
+    pub fn to_custom(self) -> Self {
+        let (fps, sight) = match self {
+            Self::Saving => (SAVING_FPS, SAVING_SIGHT),
+            Self::Balanced => (BALANCED_FPS, GAME_SIGHT),
+            Self::Full => (*BACKGROUND_FPS.end(), GAME_SIGHT),
+            Self::Custom { fps, sight } => (fps, sight),
+        };
+        Self::Custom { fps, sight }.clamped()
+    }
+
+    /// The same level with custom values pulled into their ranges.
+    pub fn clamped(self) -> Self {
+        match self {
+            Self::Custom { fps, sight } => Self::Custom {
+                fps: fps.clamp(*BACKGROUND_FPS.start(), *BACKGROUND_FPS.end()),
+                sight: sight.clamp(*BACKGROUND_SIGHT.start(), *BACKGROUND_SIGHT.end()),
+            },
+            level => level,
+        }
+    }
 }
 
 /// A group of instances: every account in it runs the same version, mods and config.
@@ -78,7 +124,7 @@ pub struct Batch {
 
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value(value).unwrap_or_default())
+    Ok(serde_json::from_value::<Background>(value).map(Background::clamped).unwrap_or_default())
 }
 
 fn default_memory() -> u32 {
@@ -256,6 +302,31 @@ mod tests {
         assert_eq!(serde_json::from_str::<Batch>(&json(r#""balanced""#)).unwrap().background, Background::Balanced);
         assert_eq!(serde_json::from_str::<Batch>(&json(r#""turbo""#)).unwrap().background, Background::Saving);
         assert_eq!(serde_json::from_str::<Batch>(&json("7")).unwrap().background, Background::Saving);
+    }
+
+    #[test]
+    fn custom_background_round_trips_with_defaults_and_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("a", "26.3");
+        b.background = Background::Custom { fps: 10, sight: 6 };
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
+        let json = |level: &str| format!(r#"{{"id":"a1","name":"A","game_version":"26.3","background":{level}}}"#);
+        let read = |level: &str| serde_json::from_str::<Batch>(&json(level)).unwrap().background;
+        assert_eq!(read(r#"{"custom":{"fps":10,"sight":6}}"#), Background::Custom { fps: 10, sight: 6 });
+        assert_eq!(read(r#"{"custom":{}}"#), Background::Custom { fps: 5, sight: 4 });
+        assert_eq!(read(r#"{"custom":{"fps":0,"sight":200}}"#), Background::Custom { fps: 1, sight: 32 });
+        assert_eq!(read(r#"{"custom":{"fps":-3}}"#), Background::Saving);
+        assert_eq!(read(r#"{"custom":"x"}"#), Background::Saving);
+        assert_eq!(read(r#""custom""#), Background::Saving);
+    }
+
+    #[test]
+    fn custom_starts_from_the_previous_preset() {
+        assert_eq!(Background::Saving.to_custom(), Background::Custom { fps: 3, sight: 2 });
+        assert_eq!(Background::Balanced.to_custom(), Background::Custom { fps: 30, sight: 12 });
+        assert_eq!(Background::Full.to_custom(), Background::Custom { fps: 60, sight: 12 });
+        assert_eq!(Background::Custom { fps: 7, sight: 9 }.to_custom(), Background::Custom { fps: 7, sight: 9 });
     }
 
     #[test]

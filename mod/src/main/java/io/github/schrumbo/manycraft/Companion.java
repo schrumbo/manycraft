@@ -187,7 +187,7 @@ final class Companion {
 			case Protocol.Incoming.Show show -> bg.show(show.x(), show.y(), show.w(), show.h());
 			case Protocol.Incoming.Hide hide -> bg.hide();
 			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
-			case Protocol.Incoming.Level level -> bg.applyLevel(level.level());
+			case Protocol.Incoming.Level level -> bg.applyLevel(level.level(), level.custom());
 			case Protocol.Incoming.ChatSend chatSend -> sendChat(mc, chatSend.text());
 			case Protocol.Incoming.Reconnect reconnect -> reconnect(mc);
 			case Protocol.Incoming.Respawn respawn -> respawn(mc);
