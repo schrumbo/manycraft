@@ -131,7 +131,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     }
     let new_batch = tr("Neuer Batch");
     let settings = tr("Einstellungen");
-    let shortcut = if cfg!(target_os = "macos") { "⌘,".to_owned() } else { format!("{}+,", tr("Strg")) };
+    let shortcut = super::palette::shortcut(&OpenSettings, cx).unwrap_or_default();
     let update = release.map(|(version, url)| {
         let label = tr("Update verfügbar");
         div()

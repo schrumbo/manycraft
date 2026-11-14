@@ -14,6 +14,7 @@ pub mod model;
 #[allow(dead_code)]
 pub mod motion;
 pub mod native;
+pub mod palette;
 pub mod perf;
 pub mod remote;
 pub mod settings_window;

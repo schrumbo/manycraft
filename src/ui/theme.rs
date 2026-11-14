@@ -101,6 +101,8 @@ pub mod tile {
     pub const BADGE: f32 = 18.;
     /// Height of a batch heading in the grid of all batches.
     pub const HEADING: f32 = 40.;
+    /// Smallest tile width whose strip still carries a labelled sign-in button.
+    pub const SIGN_IN: f32 = 280.;
     /// Blur of the soft shadow under a tile in the light appearance.
     pub const SHADOW_BLUR: f32 = 3.;
     /// Height of the fade at the bottom of a still, so the strip below stays apart from it.
@@ -123,8 +125,10 @@ pub mod shell {
     pub const DOT: f32 = 6.;
     /// The attention count in a sidebar row.
     pub const BADGE: f32 = 19.;
-    /// Below this content width the toolbar shows its buttons as icons.
+    /// Below this content width the toolbar shows its buttons as icons and its filter as a pop-up button.
     pub const COMPACT: f32 = 860.;
+    /// Width the toolbar title keeps before anything else shrinks.
+    pub const TITLE: f32 = 96.;
     /// Below this window width the sidebar floats over the grid instead of beside it.
     pub const NARROW: f32 = 880.;
 }
