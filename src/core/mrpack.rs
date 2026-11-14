@@ -28,6 +28,7 @@ const OTHER_LOADERS: [(&str, &str); 3] = [("forge", "Forge"), ("neoforge", "NeoF
 const FABRIC: &str = "fabric-loader";
 const MINECRAFT: &str = "minecraft";
 const OPTIONS_FILE: &str = "options.txt";
+const SERVERS_FILE: &str = "servers.dat";
 const SKIPPED: [&str; 5] = ["saves", "logs", "crash-reports", "screenshots", "batch.json"];
 const SHARED: [&str; 3] = ["config", "resourcepacks", "shaderpacks"];
 const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
@@ -294,7 +295,7 @@ fn target(rel: &Path) -> Option<PathBuf> {
     let top = parts.next()?.to_str()?.to_ascii_lowercase();
     let rest: PathBuf = parts.collect();
     if rest.as_os_str().is_empty() {
-        return (top == OPTIONS_FILE).then(|| PathBuf::from(OPTIONS_FILE));
+        return [OPTIONS_FILE, SERVERS_FILE].into_iter().find(|f| *f == top).map(PathBuf::from);
     }
     if SKIPPED.contains(&top.as_str()) {
         return None;
@@ -781,7 +782,8 @@ mod tests {
         assert_eq!(t("resourcepacks/x.zip"), Some(Path::new("resourcepacks").join("x.zip")));
         assert_eq!(t("shaderpacks/x.zip"), Some(Path::new("shaderpacks").join("x.zip")));
         assert_eq!(t("kubejs/startup.js"), Some(Path::new("kubejs").join("startup.js")));
-        for skipped in ["servers.dat", "batch.json", "saves/w/level.dat", "logs/latest.log", "screenshots/a.png", "crash-reports/c.txt"] {
+        assert_eq!(t("servers.dat"), Some(PathBuf::from("servers.dat")));
+        for skipped in ["batch.json", "saves/w/level.dat", "logs/latest.log", "screenshots/a.png", "crash-reports/c.txt"] {
             assert_eq!(t(skipped), None, "{skipped}");
         }
         assert_eq!(mod_name(&safe_rel("mods/a.JAR").unwrap()).as_deref(), Some("a.JAR"));
@@ -839,7 +841,8 @@ mod tests {
         assert_eq!(fs::read(dest.join("resourcepacks").join("pack.zip")).unwrap(), b"rp");
         assert_eq!(fs::read(dest.join("shaderpacks").join("s.zip")).unwrap(), b"shader");
         let top: Vec<String> = names(&dest).into_iter().filter(|n| !n.ends_with(".lock")).collect();
-        assert_eq!(top, ["batch.json", "config", "mods", "options.txt", "resourcepacks", "shaderpacks"]);
+        assert_eq!(fs::read(dest.join("servers.dat")).unwrap(), b"servers");
+        assert_eq!(top, ["batch.json", "config", "mods", "options.txt", "resourcepacks", "servers.dat", "shaderpacks"]);
         let saved: Batch = serde_json::from_slice(&fs::read(dest.join("batch.json")).unwrap()).unwrap();
         assert_eq!(saved, made);
         let steps = steps.into_inner().unwrap();
