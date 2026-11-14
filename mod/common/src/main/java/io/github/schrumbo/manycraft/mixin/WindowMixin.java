@@ -11,11 +11,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Window.class)
 abstract class WindowMixin {
 	@ModifyArg(
-		method = "createWindow",
+		method = {"createWindow", "createWindowStatic"},
 		at = @At(value = "INVOKE", target = "Lcom/mojang/renderpearl/api/device/GpuBackend;createWindow(Ljava/lang/String;IIJ)J"),
 		index = 3
 	)
-	private long manycraft$startHidden(long flags) {
+	private static long manycraft$startHidden(long flags) {
 		return CompanionHooks.startHidden() ? flags | 8L : flags;
 	}
 
