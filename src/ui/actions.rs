@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, TileLarger, TileSmaller, NewBatch, AddAccount, AddMicrosoft, Reload]);
+actions!(manycraft, [ShowGrid, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, TileLarger, TileSmaller, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat]);
 
 /// Brings this instance's game window into the manager's place.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -56,5 +56,13 @@ pub struct SignInAgain(pub String);
 #[action(namespace = manycraft)]
 pub struct Broadcast {
     pub batch: String,
+    pub text: String,
+}
+
+/// Sends a chat line or command to one running instance.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct SendChat {
+    pub key: String,
     pub text: String,
 }

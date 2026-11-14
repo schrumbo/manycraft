@@ -12,7 +12,8 @@ const FILE: &str = "batch.json";
 const DEFAULT_MEMORY_MB: u32 = 2048;
 const DEFAULT_JOIN_DELAY_MS: u32 = 2000;
 const MAX_JOIN_LINES: usize = 20;
-const MAX_CHAT_CHARS: usize = 256;
+/// Longest line a chat message can hold.
+pub const MAX_CHAT_CHARS: usize = 256;
 
 /// One mod pinned to an exact file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

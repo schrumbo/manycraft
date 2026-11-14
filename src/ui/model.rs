@@ -38,6 +38,11 @@ impl Phase {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 
+    /// Whether the instance is on a server, where a chat line can go out.
+    pub fn on_server(&self) -> bool {
+        matches!(self, Phase::Queue { .. } | Phase::Playing { .. })
+    }
+
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
         !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. })
@@ -63,6 +68,9 @@ pub struct Instance {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatLine {
     pub instance: String,
+    /// Name of the account whose game showed the line.
+    pub account: String,
+    pub batch: String,
     pub whisper: bool,
     pub from: Option<String>,
     pub text: String,
@@ -75,6 +83,8 @@ pub struct Model {
     pub batches: Vec<Batch>,
     pub instances: HashMap<String, Instance>,
     pub chat: Vec<ChatLine>,
+    /// How many lines were ever added to `chat`, so a view can tell new lines from dropped old ones.
+    pub chat_seq: u64,
     pub playing: Option<String>,
     pub error: Option<String>,
     /// Batches whose game is being installed, with the percent done.
@@ -106,6 +116,25 @@ impl Model {
     /// The batch with this id.
     pub fn batch(&self, id: &str) -> Option<&Batch> {
         self.batches.iter().find(|b| b.id == id)
+    }
+
+    /// Adds a chat line, dropping the oldest tenth once `kept` lines are held.
+    pub fn push_chat(&mut self, line: ChatLine, kept: usize) {
+        if self.chat.len() >= kept {
+            self.chat.drain(..(kept / 10).max(1));
+        }
+        self.chat.push(line);
+        self.chat_seq += 1;
+    }
+
+    /// Sequence number of the oldest line still in `chat`; line `n` is at index `n - chat_base()`.
+    pub fn chat_base(&self) -> u64 {
+        self.chat_seq - self.chat.len() as u64
+    }
+
+    /// Whispers not yet seen, over all instances.
+    pub fn unread_whispers_total(&self) -> u32 {
+        self.instances.values().map(|i| i.unread_whispers).sum()
     }
 
     /// The recorded events of instance `key`, newest first.
@@ -192,6 +221,34 @@ mod tests {
         assert_eq!(banned_status(""), "Gesperrt");
         assert_eq!(banned_status("Cheating"), "Gesperrt · Cheating");
         assert_eq!(restart_status(1, 3), "Startet neu · Versuch 1 von 3");
+    }
+
+    fn line(n: u64) -> ChatLine {
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), whisper: false, from: None, text: n.to_string() }
+    }
+
+    #[test]
+    fn chat_keeps_the_newest_lines_and_numbers_them() {
+        let mut m = Model::default();
+        for n in 0..25 {
+            m.push_chat(line(n), 20);
+        }
+        assert_eq!(m.chat_seq, 25);
+        assert_eq!(m.chat.len(), 19);
+        assert_eq!(m.chat_base(), 6);
+        assert_eq!(m.chat.first().map(|l| l.text.as_str()), Some("6"));
+        assert_eq!(m.chat.last().map(|l| l.text.as_str()), Some("24"));
+    }
+
+    #[test]
+    fn whispers_add_up_over_instances() {
+        let mut m = Model::default();
+        for (key, n) in [("1", 2), ("2", 0), ("3", 5)] {
+            let mut i = instance(key, key, "a", Phase::Stopped);
+            i.unread_whispers = n;
+            m.instances.insert(key.into(), i);
+        }
+        assert_eq!(m.unread_whispers_total(), 7);
     }
 
     #[test]

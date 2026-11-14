@@ -1,7 +1,8 @@
-//! App-wide settings in `settings.json`: how instances reconnect and restart. Missing keys take their defaults.
+//! App-wide settings in `settings.json`: chat, notifications, how instances reconnect and restart. Missing keys take their defaults.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -48,13 +49,43 @@ impl Default for CrashRestart {
     }
 }
 
+/// Which events raise an OS notification.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notifications {
+    /// One per batch when an account is disconnected, banned, crashed or needs to sign in.
+    pub attention: bool,
+    /// One for whispers that arrive while the window is not in front.
+    pub whispers: bool,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Self { attention: true, whispers: true }
+    }
+}
+
 /// Everything configurable app-wide.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub reconnect: Reconnect,
     pub crash_restart: CrashRestart,
+    /// Whether the chat of all instances is collected into the Chat page.
+    pub merged_chat: bool,
+    /// Whether the Chat page can send a line to one instance or a whole batch.
+    pub broadcast: bool,
+    pub notifications: Notifications,
 }
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default() }
+    }
+}
+
+/// The chords the companion mod listens for inside a game, as the mod's defaults have them.
+pub const HOTKEYS: [(&str, &str); 4] = [("Nächste Instanz", "ctrl+alt+right"), ("Vorherige Instanz", "ctrl+alt+left"), ("Nächste, die dich braucht", "ctrl+alt+down"), ("Zurück zum Raster", "ctrl+alt+g")];
 
 impl Settings {
     /// The same settings with values a hand-edited file could break put back in range: empty schedules, zero waits, huge counts.
@@ -84,11 +115,6 @@ pub fn load() -> Result<Settings> {
     load_from(&paths::data_dir())
 }
 
-/// Saves `settings` atomically.
-pub fn save(settings: &Settings) -> Result<()> {
-    save_to(&paths::data_dir(), settings)
-}
-
 fn load_from(dir: &Path) -> Result<Settings> {
     let path = dir.join(FILE);
     let bytes = match std::fs::read(&path) {
@@ -104,25 +130,63 @@ fn save_to(dir: &Path, settings: &Settings) -> Result<()> {
     net::write_atomic(&dir.join(FILE), &serde_json::to_vec_pretty(settings)?)
 }
 
-static ACTIVE: OnceLock<Settings> = OnceLock::new();
+static ACTIVE: RwLock<Option<&'static Settings>> = RwLock::new(None);
+static DAMAGED: AtomicBool = AtomicBool::new(false);
 
 /// Loads the settings once for the whole run. A damaged file leaves the defaults in force and is returned as the error.
 pub fn activate() -> Result<&'static Settings> {
-    if let Some(settings) = ACTIVE.get() {
+    if let Some(settings) = *ACTIVE.read().unwrap_or_else(|e| e.into_inner()) {
         return Ok(settings);
     }
     let (settings, error) = match load() {
         Ok(settings) => (settings, None),
         Err(e) => (Settings::default(), Some(e)),
     };
-    let active = ACTIVE.get_or_init(|| settings);
+    DAMAGED.store(error.is_some(), Ordering::SeqCst);
+    let active = install(settings);
     error.map_or(Ok(active), Err)
 }
 
 /// The settings in force: the loaded ones, or the defaults before `activate`.
 pub fn active() -> &'static Settings {
     static DEFAULT: OnceLock<Settings> = OnceLock::new();
-    ACTIVE.get().unwrap_or_else(|| DEFAULT.get_or_init(Settings::default))
+    let current = *ACTIVE.read().unwrap_or_else(|e| e.into_inner());
+    current.unwrap_or_else(|| DEFAULT.get_or_init(Settings::default))
+}
+
+fn install(settings: Settings) -> &'static Settings {
+    let leaked: &'static Settings = Box::leak(Box::new(settings.sanitized()));
+    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = Some(leaked);
+    leaked
+}
+
+/// Puts `settings` in force at once, for every reader. Settings change a handful of times in a run, so each old value is simply kept.
+pub fn set(settings: Settings) -> &'static Settings {
+    install(settings)
+}
+
+/// Saves the settings in force, atomically. Called after every `set`, it always writes the newest value, however saves are ordered.
+pub fn persist() -> Result<()> {
+    static SAVING: Mutex<()> = Mutex::new(());
+    let _one_at_a_time = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    save_keeping_damaged(&paths::data_dir(), active())
+}
+
+fn save_keeping_damaged(dir: &Path, settings: &Settings) -> Result<()> {
+    if DAMAGED.load(Ordering::SeqCst) {
+        let path = dir.join(FILE);
+        if path.exists() {
+            let mut kept = dir.join("settings.damaged.json");
+            let mut n = 1;
+            while kept.exists() {
+                n += 1;
+                kept = dir.join(format!("settings.damaged-{n}.json"));
+            }
+            std::fs::copy(&path, &kept).with_context(|| format!("cannot keep the damaged {} as {}", path.display(), kept.display()))?;
+        }
+        DAMAGED.store(false, Ordering::SeqCst);
+    }
+    save_to(dir, settings)
 }
 
 #[cfg(test)]
@@ -161,6 +225,32 @@ mod tests {
         std::fs::write(dir.path().join(FILE), b"{").unwrap();
         assert!(load_from(dir.path()).is_err());
         assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), b"{");
+    }
+
+    #[test]
+    fn new_keys_default_on_and_old_files_keep_working() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), r#"{"reconnect":{"enabled":false}}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert!(!s.reconnect.enabled);
+        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.notifications.whispers);
+        std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false,"notifications":{"whispers":false}}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert!(!s.merged_chat && !s.notifications.whispers && s.notifications.attention);
+    }
+
+    #[test]
+    fn a_damaged_file_is_kept_before_the_first_save_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), b"{ hand edited").unwrap();
+        DAMAGED.store(true, Ordering::SeqCst);
+        save_keeping_damaged(dir.path(), &Settings::default()).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("settings.damaged.json")).unwrap(), b"{ hand edited");
+        assert_eq!(load_from(dir.path()).unwrap(), Settings::default());
+        let mut changed = Settings::default();
+        changed.merged_chat = false;
+        save_keeping_damaged(dir.path(), &changed).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("settings.damaged.json")).unwrap(), b"{ hand edited");
     }
 
     #[test]
