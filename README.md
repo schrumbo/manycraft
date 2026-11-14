@@ -10,16 +10,17 @@ Built with Rust and [GPUI](https://www.gpui.rs). Runs on Windows, macOS and Linu
 
 ## Features
 
-- **Grid:** live previews of every instance; click or hotkey swaps the real game window in at full speed
+- **Grid:** live previews of every instance, edge to edge, filling the window; click or hotkey swaps the real game window in at full speed
 - **Batches:** groups of instances with identical Fabric mods and configs, mods from Modrinth with update checks; run several batches side by side
 - **Accounts:** Microsoft and offline accounts, a proxy per account for login and game connection
+- **Tell them apart:** every account has a colour and its face, on its tile, in its game window's title and icon, and as a small badge in the game
 - **Resilience:** auto-reconnect with polite backoff, ban detection, crash restart
 - **Attention:** instances that need work are highlighted in their tile and counted, with no popups or sound
 - **Chat:** one merged feed across instances, whispers highlighted, messages and commands broadcast to a whole batch
 - **Import:** accounts and instances from Prism Launcher
 - **Command palette:** every command by keyboard (Ctrl+K, Cmd+K on macOS)
-- **Light on resources:** shared game files exist once on disk
-- **Updates:** checks GitHub for new releases
+- **Light on resources:** hidden instances slow down by a level you pick per batch; shared game files exist once on disk
+- **Updates:** downloaded in the background, signature-checked, installed on restart, with a way back
 
 <p align="center"><img src="docs/screenshots/palette-dark.png" alt="Command palette" width="430"> <img src="docs/screenshots/batch-dark.png" alt="New batch" width="430"></p>
 <p align="center"><img src="docs/screenshots/grid-light.png" alt="Grid, light" width="430"> <img src="docs/screenshots/chat-light.png" alt="Merged chat, light" width="430"></p>
