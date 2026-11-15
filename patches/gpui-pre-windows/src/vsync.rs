@@ -37,9 +37,9 @@ pub(crate) const VSYNC_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) struct VSyncWaker(parking_lot::Mutex<Option<Thread>>);
 
 impl VSyncWaker {
-    /// Makes the calling thread the one [`Self::wake`] unparks.
-    pub(crate) fn register_current(&self) {
-        *self.0.lock() = Some(std::thread::current());
+    /// Makes `thread` the one [`Self::wake`] unparks.
+    pub(crate) fn register(&self, thread: Thread) {
+        *self.0.lock() = Some(thread);
     }
 
     pub(crate) fn wake(&self) {
@@ -76,6 +76,11 @@ impl FrameDemand {
         if let Some(waker) = self.waker.get() {
             waker.wake();
         }
+    }
+
+    /// Invalidates the window on the next vsync at least, without waking the vsync thread.
+    pub(crate) fn request_once(&self) {
+        self.frames.fetch_max(1, Ordering::AcqRel);
     }
 
     /// Invalidates the window on every vsync while held, e.g. during a touchpad gesture.
@@ -168,6 +173,19 @@ mod tests {
         assert!(!demand.take());
         demand.request();
         assert!(demand.take());
+    }
+
+    #[test]
+    fn frame_demand_once_keeps_a_longer_linger() {
+        let demand = FrameDemand::new();
+        demand.request_once();
+        for _ in 0..FRAME_DEMAND_LINGER {
+            assert!(demand.take());
+        }
+        assert!(!demand.take());
+        demand.request_once();
+        assert!(demand.take());
+        assert!(!demand.take());
     }
 
     #[test]

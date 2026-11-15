@@ -985,7 +985,9 @@ impl PlatformWindow for WindowsWindow {
         let frame_demand = self.state.frame_demand.clone();
         self.state.callbacks.input.set(Some(Box::new(move |input| {
             frame_demand.request();
-            callback(input)
+            let result = callback(input);
+            frame_demand.request();
+            result
         })));
     }
 

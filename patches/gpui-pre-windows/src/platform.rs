@@ -449,12 +449,10 @@ impl WindowsPlatform {
         let all_windows = Arc::downgrade(&self.raw_window_handles);
         let text_system = Arc::downgrade(direct_write_text_system);
         let invalidate_devices = self.invalidate_devices.clone();
-        let vsync_waker = self.vsync_waker.clone();
 
-        std::thread::Builder::new()
+        let vsync_thread = std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
-                vsync_waker.register_current();
                 let vsync_provider = VSyncProvider::new();
                 loop {
                     let signal_source = vsync_provider.wait_for_vsync();
@@ -501,12 +499,18 @@ impl WindowsPlatform {
                         }
                     }
                     if !wanted {
-                        drop(all_windows);
+                        let parked_at = std::time::Instant::now();
                         std::thread::park_timeout(VSYNC_IDLE_TIMEOUT);
+                        if parked_at.elapsed() >= VSYNC_IDLE_TIMEOUT {
+                            for hwnd in all_windows.read().iter() {
+                                hwnd.frame_demand.request_once();
+                            }
+                        }
                     }
                 }
             })
             .unwrap();
+        self.vsync_waker.register(vsync_thread.thread().clone());
     }
 }
 
