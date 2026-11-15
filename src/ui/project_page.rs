@@ -38,6 +38,8 @@ enum Section {
 const SECTIONS: [Section; 4] = [Section::About, Section::Gallery, Section::Versions, Section::Needs];
 
 /// One open project page: what was loaded for it and which part is shown.
+const LINE_STEP: f32 = 40.;
+
 pub(super) struct Project {
     hit: Hit,
     kind: Kind,
@@ -165,6 +167,15 @@ impl InstanceSheet {
         }
     }
 
+    /// Scrolls the open project page by `lines`, or by `pages` of its visible height.
+    pub(super) fn project_scroll(&mut self, lines: f32, pages: f32, cx: &mut Context<Self>) {
+        let Some(page) = &self.browser.project else { return };
+        let step = lines * LINE_STEP + pages * (page.scroll.bounds().size.height.as_f32() - LINE_STEP).max(LINE_STEP);
+        let (at, max) = (page.scroll.offset(), page.scroll.max_offset());
+        page.scroll.set_offset(point(at.x, (at.y - px(step)).clamp(-max.y, px(0.))));
+        cx.notify();
+    }
+
     pub(super) fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.browser.project = None;
         self.browse_focus(window, cx);
@@ -214,7 +225,7 @@ impl InstanceSheet {
             .child(div().flex().items_baseline().gap(px(space::S)).child(div().min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).child(hit.title.clone())).children(author))
             .child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(facts.join(" · ")));
         let trailing = self.browse_trailing(None, &hit, t, cx);
-        let back = sheet::button("project-back", tr("Ergebnisse"), Some("chevron-left"), Look::Plain, false, false, t).tooltip(super::widgets::tip(trf("Zurück zu den Ergebnissen · %@", &[&super::mod_browser::keys("escape")]))).on_click(cx.listener(|s, _, window, cx| s.close_project(window, cx)));
+        let back = sheet::button("project-back", tr("Ergebnisse"), Some("chevron-left"), Look::Plain, false, false, t).tooltip(super::widgets::tip(trf("Zurück zu den Ergebnissen · %@", &[&super::mod_browser::keys("escape", false)]))).on_click(cx.listener(|s, _, window, cx| s.close_project(window, cx)));
         let segments: Vec<Stateful<Div>> = SECTIONS.iter().map(|s| segment(SharedString::from(format!("project-{}", section_name(*s))), section_name(*s), *s == section, true, t)).collect();
         let pick = cx.listener(|s, n: &usize, _, cx| s.project_section(SECTIONS[*n], cx));
         let sections = segmented("project-sections", segments, move |n, window, cx| pick(&n, window, cx), t).w_full();
@@ -315,6 +326,7 @@ impl InstanceSheet {
         }
         let filter = self.browse_filter();
         let chosen = modrinth::newest_for(&list, &filter).map(|v| v.id.clone());
+        let have = self.installed_version(&page.hit.project_id);
         let rest = list.len().saturating_sub(MAX_VERSIONS);
         let rows = list.into_iter().take(MAX_VERSIONS).map(|v| {
             let badge = match v.version_type.as_str() {
@@ -327,8 +339,13 @@ impl InstanceSheet {
                 games.push("…".to_owned());
             }
             let detail = format!("{} · {} · {}", day(&v.date_published), games.join(", "), v.loaders.join(", "));
-            let picked = chosen.as_ref() == Some(&v.id);
-            let mark = picked.then(|| sheet::status("check", t.success_text, tr("Wird installiert")));
+            let mark = if have.as_ref() == Some(&v.id) {
+                Some(sheet::status("check", t.success_text, tr("Installiert")))
+            } else if chosen.as_ref() == Some(&v.id) {
+                Some(sheet::status("arrow-down", t.secondary, if have.is_some() { tr("Neueste passende") } else { tr("Wird installiert") }))
+            } else {
+                None
+            };
             div()
                 .h(px(VERSION_ROW))
                 .flex()
@@ -347,7 +364,16 @@ impl InstanceSheet {
                 )
                 .children(mark)
         });
-        let more = (rest > 0).then(|| quiet(trf("und %lld ältere", &[&rest]), t));
+        let link = format!("https://modrinth.com/{}/{}/versions", page.kind.project_type(), page.hit.slug);
+        let more = (rest > 0).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(space::M))
+                .child(quiet(trf("und %lld ältere", &[&rest]), t))
+                .child(sheet::button("project-all-versions", tr("Alle auf Modrinth"), Some("external-link"), Look::Secondary, false, false, t).on_click(move |_, _, cx| cx.open_url(&link)))
+        });
         div().flex().flex_col().children(rows).children(more).into_any_element()
     }
 

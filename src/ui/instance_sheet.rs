@@ -1350,6 +1350,7 @@ impl Render for InstanceSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_focus(window, cx);
         self.list_max = list_max(window.viewport_size().height.as_f32());
+        self.browser.body = body_max(window.viewport_size().height.as_f32());
         let t = Theme::get(cx);
         let creating = self.creating();
         let (title, subtitle) = if self.imported.is_some() {

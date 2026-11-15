@@ -1075,5 +1075,12 @@
   "Aktualisiert am %@": "Updated %@",
   "Gespeichert um %@": "Saved at %@",
   "Zurück zu den Ergebnissen · %@": "Back to results · %@",
-  "und %lld ältere": "and %lld older"
+  "und %lld ältere": "and %lld older",
+  "Neueste passende": "Newest that fits",
+  "„%@“ ist gerade in Benutzung. Schließe das Spiel und versuche es noch einmal.": "“%@” is in use right now. Close the game and try again.",
+  "Eine andere Änderung läuft noch.": "Another change is still running.",
+  "„%@“ wird gerade geändert.": "“%@” is being changed right now.",
+  "Alle auf Modrinth": "All on Modrinth",
+  "Erst muss klar sein, was schon installiert ist.": "First it must be clear what is already installed.",
+  "Was installiert ist, ließ sich nicht lesen.": "Could not read what is installed."
 }

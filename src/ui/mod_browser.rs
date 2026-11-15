@@ -48,6 +48,8 @@ const NAME_BAR: f32 = 120.;
 const TEXT_BAR: f32 = 220.;
 const BAR_HEIGHT: f32 = 10.;
 const MENU_MAX: f32 = 320.;
+const CHROME: f32 = 184.;
+const RESULTS_MIN: f32 = 216.;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
@@ -119,6 +121,7 @@ pub(super) struct Browser {
     target: Option<PathBuf>,
     shelves: HashMap<PathBuf, Shelf>,
     pub(super) project: Option<Project>,
+    pub(super) body: f32,
 }
 
 /// The decoded pictures the browser drew last, at most `KEPT_ICONS`; all of them leave memory when the browser closes.
@@ -269,6 +272,7 @@ impl Browser {
             target: None,
             shelves: HashMap::new(),
             project: None,
+            body: RESULTS_HEIGHT + CHROME,
         };
         (browser, sub)
     }
@@ -474,6 +478,11 @@ impl InstanceSheet {
         match key {
             "up" | "down" if !modifiers.modified() && self.browser.project.is_none() => {
                 self.browse_step(if key == "up" { -1 } else { 1 }, cx);
+                true
+            }
+            "up" | "down" | "pageup" | "pagedown" if !modifiers.modified() && self.browser.project.is_some() => {
+                let sign = if key.ends_with("up") { -1. } else { 1. };
+                if key.starts_with("page") { self.project_scroll(0., sign, cx) } else { self.project_scroll(sign, 0., cx) }
                 true
             }
             "f" if command => {
@@ -756,7 +765,8 @@ impl InstanceSheet {
             let _ = this.update(cx, |s, cx| {
                 let shelf = match result {
                     Ok((files, updates)) => Shelf { files: Load::Ready(files), updates },
-                    Err(e) => Shelf { files: Load::Failed(search_problem(&e)), updates: Vec::new() },
+                    Err(e) if remote::is_network(&e) => Shelf { files: Load::Failed(search_problem(&e)), updates: Vec::new() },
+                    Err(e) => Shelf { files: Load::Failed(forms::explain_as(tr("Was installiert ist, ließ sich nicht lesen."), &e)), updates: Vec::new() },
                 };
                 s.browser.shelves.insert(dir, shelf);
                 cx.notify();
@@ -832,7 +842,11 @@ impl InstanceSheet {
         let (Some(dir), Some(made)) = (self.pack_dir(), self.setup.as_ref()) else { return };
         let instance_dir = made.dir();
         let kind = self.browser.kind;
-        let pending = if update { self.browser.pack_update(&dir, &hit.project_id).cloned() } else { None };
+        let mut pending = if update { self.browser.pack_update(&dir, &hit.project_id).cloned() } else { None };
+        if let Some(u) = pending.as_mut() {
+            let Some(have) = self.browser.installed_in(&dir, &hit.project_id) else { return };
+            u.current.file_name = have.file.clone();
+        }
         let filter = self.browse_filter();
         let id = hit.project_id.clone();
         self.browser.adding.insert(id.clone());
@@ -1069,6 +1083,15 @@ impl InstanceSheet {
         }
     }
 
+    /// The Modrinth version id of the installed file of a project, when it is installed.
+    pub(super) fn installed_version(&self, project_id: &str) -> Option<String> {
+        match self.browser.kind {
+            Kind::Mod => self.mods.iter().find(|m| m.project_id == project_id).map(|m| m.version_id.clone()),
+            Kind::Modpack => None,
+            _ => self.pack_dir().and_then(|dir| self.browser.installed_in(&dir, project_id).map(|i| i.found.version_id.clone())),
+        }
+    }
+
     fn has_update(&self, project_id: &str) -> bool {
         match self.browser.kind {
             Kind::Mod => self.browse_update_for(project_id),
@@ -1095,8 +1118,8 @@ impl InstanceSheet {
         if self.is_installed(&pid) {
             let first = if self.has_update(&pid) || busy {
                 let update = hit.clone();
-                let blocked = kind == Kind::Mod && (!self.updating.is_empty() || self.saving);
-                sheet::button(SharedString::from(format!("mod-update-{pid}")), tr("Aktualisieren"), Some("refresh-cw"), Look::Primary, blocked, busy, t)
+                let blocked = (kind == Kind::Mod && !busy && (!self.updating.is_empty() || self.saving)).then(|| SharedString::from(tr("Eine andere Änderung läuft noch.")));
+                sheet::button_unless(SharedString::from(format!("mod-update-{pid}")), tr("Aktualisieren"), Some("refresh-cw"), Look::Primary, blocked, busy, t)
                     .on_click(cx.listener(move |s, _, window, cx| {
                         pick(s);
                         let act = s.browse_act(&update);
@@ -1115,8 +1138,16 @@ impl InstanceSheet {
             return row
                 .child(first)
                 .child(
-                    sheet::button(SharedString::from(format!("mod-remove-{pid}")), tr("Entfernen"), None, Look::Secondary, busy || self.saving, false, t)
-                        .tooltip(super::widgets::tip(trf("„%@“ entfernen", &[&title])))
+                    sheet::button_unless(
+                        SharedString::from(format!("mod-remove-{pid}")),
+                        tr("Entfernen"),
+                        None,
+                        Look::Secondary,
+                        (busy || self.saving).then(|| SharedString::from(if busy { trf("„%@“ wird gerade geändert.", &[&title]) } else { tr("Eine andere Änderung läuft noch.") })),
+                        false,
+                        t,
+                    )
+                    .when(!busy && !self.saving, |b| b.tooltip(super::widgets::tip(trf("„%@“ entfernen", &[&title]))))
                         .on_click(cx.listener(move |s, _, window, cx| {
                             pick(s);
                             s.browse_remove(&remove, cx);
@@ -1156,7 +1187,8 @@ impl InstanceSheet {
             _ if self.needs_global_packs() => Some(tr("Für neue Welten braucht es Global Packs.")),
             _ => match self.pack_dir().and_then(|d| self.browser.shelves.get(&d)).map(|s| &s.files) {
                 Some(Load::Loading) | None => Some(tr("Einen Moment, die Instanz wird gelesen …")),
-                _ => None,
+                Some(Load::Failed(_)) => Some(tr("Erst muss klar sein, was schon installiert ist.")),
+                Some(Load::Ready(_)) => None,
             },
         }
     }
@@ -1331,19 +1363,21 @@ impl InstanceSheet {
         let field = Input::new(&self.browser.query).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true);
         let hint = match (self.browser.project.is_some(), self.browse_selected()) {
             (false, Some((hit, act))) => {
-                let command = keys("secondary-enter");
+                let command = keys("enter", true);
                 let run = match act {
                     Act::Install if self.browser.kind == Kind::Modpack => trf("%@ legt es als Instanz an.", &[&command]),
                     Act::Install => trf("%@ installiert.", &[&command]),
                     Act::Update => trf("%@ aktualisiert.", &[&command]),
                     Act::Nothing => String::new(),
                 };
-                format!("{} {run}", trf("%@ öffnet „%@“.", &[&keys("enter"), &hit.title])).trim().to_owned()
+                format!("{} {run}", trf("%@ öffnet „%@“.", &[&keys("enter", false), &hit.title])).trim().to_owned()
             }
             _ => String::new(),
         };
         let hint = div().h(px(font::CAPTION * font::LINE)).truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(hint);
-        let region = div().h(px(RESULTS_HEIGHT)).flex().flex_col().overflow_hidden().rounded(px(radius::CONTROL)).border_1().border_color(t.separator);
+        let target_row = if self.browser.kind == Kind::DataPack && self.browser.project.is_none() { CONTROLS_HEIGHT + space::XS } else { 0. };
+        let height = (self.browser.body - CHROME - target_row).clamp(RESULTS_MIN, RESULTS_HEIGHT);
+        let region = div().h(px(height)).flex().flex_col().overflow_hidden().rounded(px(radius::CONTROL)).border_1().border_color(t.separator);
         let region = if self.browser.project.is_some() {
             region.child(self.render_project(cx, t))
         } else {
@@ -1449,6 +1483,16 @@ impl InstanceSheet {
         if let Some(e) = self.browser.error.clone() {
             return line.child(div().flex_1().min_w_0().child(self.problem("add-error", "circle-alert", t.danger_text, &e, cx, t)));
         }
+        if self.browser.notice.is_none()
+            && let Some(dir) = self.pack_dir()
+            && let Some(Load::Failed(e)) = self.browser.shelves.get(&dir).map(|s| &s.files)
+        {
+            let e = e.clone();
+            return line.child(div().flex_1().min_w_0().child(self.problem("shelf-error", "circle-alert", t.danger_text, &e, cx, t))).child(sheet::button("shelf-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Plain, false, false, t).on_click(cx.listener(move |s, _, _, cx| {
+                s.browser.shelves.remove(&dir);
+                s.browse_shelf(cx);
+            })));
+        }
         let undo = |cx: &mut Context<Self>, t: &Theme| {
             sheet::button("mod-undo", tr("Rückgängig"), Some("undo-2"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, window, cx| {
                 s.browse_undo(cx);
@@ -1480,9 +1524,11 @@ impl InstanceSheet {
     }
 }
 
-/// A shortcut such as `secondary-enter` as the platform writes it.
-pub(super) fn keys(source: &'static str) -> String {
-    Keystroke::parse(source).map(|k| super::palette::label(&k)).unwrap_or_default()
+/// `key`, with Cmd on the Mac or Ctrl elsewhere when `secondary`, as the platform writes it.
+pub(super) fn keys(key: &str, secondary: bool) -> String {
+    let mac = cfg!(target_os = "macos");
+    let modifiers = Modifiers { control: secondary && !mac, platform: secondary && mac, ..Modifiers::default() };
+    super::palette::label(&Keystroke { modifiers, key: key.to_owned(), key_char: None })
 }
 
 fn setup_dir(made: &crate::core::instance::Instance) -> PathBuf {

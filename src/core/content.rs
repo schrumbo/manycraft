@@ -195,11 +195,15 @@ pub fn place(found: &ModRef, dir: &Path, replacing: Option<&str>, download: impl
         bail!(super::instance::Final(i18n::trf("Dort liegt schon eine andere Datei „%@“.", &[&found.file_name])));
     }
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let fresh = !path.exists();
     download(found, &path)?;
-    if let Some(old) = replacing.filter(|_| !same_name) {
-        let old = dir.join(old);
-        if old.exists() {
-            std::fs::remove_file(&old).with_context(|| format!("cannot delete {}", old.display()))?;
+    if let Some(name) = replacing.filter(|_| !same_name) {
+        let old = dir.join(name);
+        if old.exists() && std::fs::remove_file(&old).is_err() {
+            if fresh {
+                let _ = std::fs::remove_file(&path);
+            }
+            bail!(super::instance::Final(i18n::trf("„%@“ ist gerade in Benutzung. Schließe das Spiel und versuche es noch einmal.", &[&name])));
         }
     }
     Ok(found.file_name.clone())
@@ -253,17 +257,22 @@ fn rewrite(path: &Path, change: impl Fn(&str) -> Option<String>) -> Result<()> {
 }
 
 fn renamed_packs(text: &str, old: &str, new: &str) -> Option<String> {
-    let (from, to) = (serde_json::json!(format!("file/{old}")).to_string(), serde_json::json!(format!("file/{new}")).to_string());
+    let (from, to) = (format!("file/{old}"), format!("file/{new}"));
     let mut changed = false;
     let lines: Vec<String> = text
         .split('\n')
         .map(|line| {
-            if OPTION_KEYS.iter().any(|k| line.starts_with(k)) && line.contains(&from) {
-                changed = true;
-                line.replace(&from, &to)
-            } else {
-                line.to_owned()
+            let body = line.trim_end_matches('\r');
+            let Some(key) = OPTION_KEYS.iter().find(|k| body.starts_with(*k)) else { return line.to_owned() };
+            let Ok(mut packs) = serde_json::from_str::<Vec<String>>(&body[key.len()..]) else { return line.to_owned() };
+            if !packs.contains(&from) {
+                return line.to_owned();
             }
+            changed = true;
+            for pack in packs.iter_mut().filter(|p| **p == from) {
+                pack.clone_from(&to);
+            }
+            format!("{key}{}{}", serde_json::to_string(&packs).unwrap_or_default(), &line[body.len()..])
         })
         .collect();
     changed.then(|| lines.join("\n"))
@@ -274,14 +283,64 @@ fn renamed_shader(text: &str, old: &str, new: &str) -> Option<String> {
     let lines: Vec<String> = text
         .split('\n')
         .map(|line| match line.trim_end_matches('\r').split_once('=') {
-            Some((key, value)) if key.trim() == "shaderPack" && value.trim() == old => {
+            Some((key, value)) if key.trim() == "shaderPack" && unescaped(value.trim_start()) == old => {
                 changed = true;
-                format!("shaderPack={new}{}", if line.ends_with('\r') { "\r" } else { "" })
+                format!("shaderPack={}{}", escaped(new), if line.ends_with('\r') { "\r" } else { "" })
             }
             _ => line.to_owned(),
         })
         .collect();
     changed.then(|| lines.join("\n"))
+}
+
+fn unescaped(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut units: Vec<u16> = Vec::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.clone().next() == Some('u') {
+            chars.next();
+            let hex: String = chars.by_ref().take(4).collect();
+            units.extend(u16::from_str_radix(&hex, 16).ok());
+            continue;
+        }
+        out.extend(char::decode_utf16(units.drain(..)).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)));
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('f') => out.push('\u{c}'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out.extend(char::decode_utf16(units).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)));
+    out
+}
+
+fn escaped(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for (i, c) in value.chars().enumerate() {
+        match c {
+            ':' | '=' | '#' | '!' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            ' ' if i == 0 => out.push_str("\\ "),
+            ' '..='~' => out.push(c),
+            _ => {
+                let mut units = [0u16; 2];
+                for unit in c.encode_utf16(&mut units) {
+                    out.push_str(&format!("\\u{unit:04X}"));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Downloads the `.mrpack` of a modpack to the cache folder for an import and returns its path.
@@ -479,6 +538,22 @@ mod tests {
         std::fs::write(dir.path().join("Keep.zip"), b"keep").unwrap();
         assert!(place(&found("p", "Next.zip", "00"), dir.path(), Some("Keep.zip"), failing).is_err());
         assert!(dir.path().join("Keep.zip").is_file());
+        std::fs::create_dir_all(dir.path().join("Busy.zip")).unwrap();
+        assert!(place(&found("p", "Later.zip", "00"), dir.path(), Some("Busy.zip"), write(b"new")).is_err());
+        assert!(dir.path().join("Busy.zip").is_dir() && !dir.path().join("Later.zip").exists());
+    }
+
+    #[test]
+    fn escaped_selections_are_renamed_too() {
+        let inst = tempfile::tempdir().unwrap();
+        std::fs::write(inst.path().join("options.txt"), "resourcePacks:[\"vanilla\",\"file/Xali\\u0027s Books.zip\"]\r\nincompatibleResourcePacks:[\"file/Xali\\u0027s Books.zip\"]\r\n").unwrap();
+        rename_selected(inst.path(), Kind::ResourcePack, "Xali's Books.zip", "Xali's Books 2.zip").unwrap();
+        assert_eq!(std::fs::read_to_string(inst.path().join("options.txt")).unwrap(), "resourcePacks:[\"vanilla\",\"file/Xali's Books 2.zip\"]\r\nincompatibleResourcePacks:[\"file/Xali's Books 2.zip\"]\r\n");
+        std::fs::create_dir_all(inst.path().join("config")).unwrap();
+        std::fs::write(inst.path().join("config").join("iris.properties"), "shaderPack=Sch\\u00F6ne\\: Shader.zip\n").unwrap();
+        rename_selected(inst.path(), Kind::Shader, "Schöne: Shader.zip", "Schöne: Shader 2.zip").unwrap();
+        assert_eq!(std::fs::read_to_string(inst.path().join("config").join("iris.properties")).unwrap(), "shaderPack=Sch\\u00F6ne\\: Shader 2.zip\n");
+        assert_eq!(unescaped(&escaped(" a=b#c!d\\é😀")), " a=b#c!d\\é😀");
     }
 
     #[test]
