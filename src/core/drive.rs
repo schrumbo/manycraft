@@ -7,9 +7,14 @@ static EVENTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static ANSWERS: Mutex<VecDeque<Option<Vec<PathBuf>>>> = Mutex::new(VecDeque::new());
 const KEPT_EVENTS: usize = 500;
 
-/// Whether an agent drives this instance; `MANYCRAFT_DRIVE` names its scratch folder. A driven instance never starts Minecraft.
+/// Whether an agent drives this instance; `MANYCRAFT_DRIVE` names its scratch folder. A driven instance never starts Minecraft unless [`real`].
 pub fn on() -> bool {
     DIR.is_some()
+}
+
+/// Whether a driven instance runs real games (`MANYCRAFT_DRIVE_REAL` is set), for live tests with offline accounts and a test server.
+pub fn real() -> bool {
+    on() && std::env::var_os("MANYCRAFT_DRIVE_REAL").is_some()
 }
 
 /// The driven instance's folder.
