@@ -152,6 +152,7 @@ struct PhoneForm {
     saved: [String; 5],
     savers: [Arc<Saver>; 5],
     shown: [bool; 5],
+    dirty: [bool; 5],
     errors: [Option<String>; 5],
     testing: bool,
     tested: Option<Result<String, String>>,
@@ -207,6 +208,7 @@ impl SettingsView {
             saved: [String::new(), String::new(), current.telegram_chat.clone(), current.ntfy_server.clone(), String::new()],
             savers: Field::ALL.map(|_| Arc::new(Saver::default())),
             shown: [false; 5],
+            dirty: [false; 5],
             errors: Default::default(),
             testing: false,
             tested: None,
@@ -244,11 +246,12 @@ impl SettingsView {
         }
         self.phone.tested = None;
         cx.notify();
-        if value == self.phone.saved[ix] {
-            return;
-        }
         let saver = Arc::clone(&self.phone.savers[ix]);
         let n = saver.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if value == self.phone.saved[ix] && !self.phone.dirty[ix] {
+            return;
+        }
+        self.phone.dirty[ix] = true;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
             if saver.generation.load(Ordering::SeqCst) != n {
@@ -259,8 +262,13 @@ impl SettingsView {
                 let _ = cx.update(|_| field.set(kept));
             }
             let kept = value.clone();
+            let latest = Arc::clone(&saver);
             let Some(result) = cx.background_spawn(async move { saver.save(field, n, kept) }).await else { return };
             let _ = this.update(cx, |s, cx| {
+                if latest.generation.load(Ordering::SeqCst) != n {
+                    return;
+                }
+                s.phone.dirty[ix] = result.is_err();
                 if result.is_ok() {
                     s.phone.saved[ix] = value;
                     super::state::set_phone_trouble(None, cx);
