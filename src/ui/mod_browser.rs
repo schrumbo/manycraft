@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -20,7 +20,7 @@ use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::modicons;
 use crate::core::modrinth::{Hit, Page, Sort, Support};
 
@@ -190,6 +190,18 @@ impl Browser {
         let (version, all) = self.shown.as_ref().map_or(("", true), |k| (k.version.as_str(), k.all));
         let visible = self.page().map_or_else(Vec::new, |p| p.hits.iter().enumerate().filter(|(_, h)| all || h.support(version) == Support::Fits).map(|(i, _)| i).collect());
         self.visible = visible;
+    }
+
+    pub(super) fn stale(&self) -> bool {
+        matches!(self.status, Status::Failed(_)) || self.page().is_some_and(|p| p.saved.is_some())
+    }
+
+    pub(super) fn forget_saved(&mut self) {
+        self.cache.retain(|_, p| p.saved.is_none());
+        if self.page().is_none() {
+            self.shown = None;
+            self.wanted = None;
+        }
     }
 
     fn forget(&mut self) {
@@ -812,9 +824,27 @@ impl InstanceSheet {
                     s.browse_undo(cx);
                     s.browser.query.update(cx, |q, cx| q.take_focus(window, cx));
                 }))),
-            None => line,
+            None => match self.browser.page().and_then(|p| p.saved) {
+                Some(at) => line.child(sheet::status("wifi-off", t.secondary, saved_text(at))).child(sheet::button("search-saved-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| {
+                    s.browser.forget_saved();
+                    s.browse_refresh(false, cx);
+                }))),
+                None => line,
+            },
         }
     }
+}
+
+fn saved_text(at: SystemTime) -> String {
+    let at = chrono::DateTime::<chrono::Local>::from(at);
+    let when = if at.date_naive() == chrono::Local::now().date_naive() {
+        at.format("%H:%M").to_string()
+    } else if lang() == Lang::En {
+        at.format("%b %-d").to_string()
+    } else {
+        at.format("%-d.%-m.").to_string()
+    };
+    trf("Keine Verbindung · Ergebnisse von %@", &[&when])
 }
 
 fn placeholder(t: &Theme) -> Div {

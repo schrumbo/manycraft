@@ -180,6 +180,11 @@ impl BatchSheet {
             }
         };
         let subs = vec![
+            cx.observe_global::<remote::Back>(|s, cx| {
+                if matches!(s.versions, Load::Failed(_)) {
+                    s.load_versions(cx);
+                }
+            }),
             cx.subscribe(&name, changed),
             cx.subscribe(&server, changed),
             cx.subscribe(&filter, changed),

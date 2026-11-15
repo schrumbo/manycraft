@@ -316,7 +316,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         }
     }
     let stopped = m.games.values().any(|i| !i.phase.is_active());
-    let active = m.games.values().any(|i| i.phase.is_active() && !i.stopping);
+    let active = m.games.values().any(|i| i.phase.stoppable() && !i.stopping);
     let playable = m.games.values().any(|i| super::tile::playable(&i.phase));
     let attention = m.attention_count(None) > 0;
     let ready = matches!(m.updates.status, model::UpdateStatus::Ready { .. }) && super::updates::counts(cx).0 == 0;

@@ -28,7 +28,7 @@ use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
 use crate::core::store::{self, Recovery};
-use crate::core::{adopt, companion, drive, install, ipc};
+use crate::core::{adopt, companion, drive, install, ipc, net, online};
 
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -39,6 +39,9 @@ const STAGGER_STEP: Duration = Duration::from_millis(100);
 const KEPT_CHAT: usize = 5000;
 const ALERT_NAMES: usize = 4;
 const QUIT_WAIT: Duration = Duration::from_secs(5);
+const BACK_STAGGER: Duration = Duration::from_secs(1);
+const BACK_WAIT_SECS: u64 = 2;
+const WAITING_RETRY_SECS: u64 = 60;
 const TRASH_KEPT: Duration = Duration::from_secs(600);
 
 /// What the fleet reports back to the UI thread.
@@ -46,7 +49,9 @@ pub enum Update {
     Preparing { batch: String, percent: u8 },
     Progress { batch: String, done: usize, total: usize },
     Launched { key: String },
-    Failed { key: String, reason: String, login: bool },
+    Failed { key: String, reason: String, login: bool, offline: bool },
+    /// Whether the connection came back (`true`) or is gone.
+    Reach { online: bool },
     Ipc(Event),
     Exited { key: String, code: Option<i32> },
     Preview { key: String, seq: u32, image: Arc<RenderImage> },
@@ -110,6 +115,10 @@ impl Real {
             (fleet, events, Vec::new())
         };
         let fleet = Arc::new(fleet);
+        let reach = out.clone();
+        online::subscribe(move |up| {
+            let _ = reach.send_blocking(Update::Reach { online: up });
+        });
         let forward = out.clone();
         std::thread::Builder::new().name("fleet-events".into()).spawn(move || {
             while let Ok(event) = events.recv() {
@@ -177,17 +186,20 @@ impl Backend for Real {
         }
         let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
             let mine = |key: &str| lock(&owners).get(key) == Some(&run);
-            let fail_all = |reason: String| {
+            let gone = std::cell::OnceCell::new();
+            let cut_off = |e: &anyhow::Error, account: &Account| account.proxy.is_none() && net::no_connection(e) && *gone.get_or_init(|| !online::reachable());
+            let fail_all = |e: anyhow::Error| {
+                let reason = format!("{e:#}");
                 for account in &accounts {
                     let key = target.key(account.id);
                     if mine(&key) {
-                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false });
+                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false, offline: cut_off(&e, account) });
                     }
                 }
             };
             let jar = match companion::jar() {
                 Ok(jar) => jar,
-                Err(e) => return fail_all(format!("{e:#}")),
+                Err(e) => return fail_all(e),
             };
             let last = Mutex::new(u8::MAX);
             let progress = |p: install::Progress| {
@@ -200,7 +212,7 @@ impl Backend for Real {
             };
             let prepared = match fleet.prepare_launch(&target, &accounts, Some(&jar), &progress) {
                 Ok(prepared) => prepared,
-                Err(e) => return fail_all(format!("{e:#}")),
+                Err(e) => return fail_all(e),
             };
             let total = accounts.len();
             let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: 0, total });
@@ -229,7 +241,7 @@ impl Backend for Real {
                     }
                     Err(_) if fleet.is_running(&key) => Some(Update::Launched { key }),
                     Err(_) if !mine(&key) => None,
-                    Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), reason: format!("{e:#}") }),
+                    Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), offline: cut_off(&e, account), reason: format!("{e:#}") }),
                 };
                 if let Some(update) = update {
                     let _ = out.send_blocking(update);
@@ -1071,7 +1083,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
                     i.stopping = true;
                     running.push(key.clone());
                 }
-                Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } => i.phase = Phase::Stopped,
+                Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } | Phase::NoNetwork => i.phase = Phase::Stopped,
                 _ => {}
             }
         }
@@ -1182,7 +1194,7 @@ fn respawn(key: &str, cx: &mut App) {
 
 fn server_of(phase: &Phase) -> Option<String> {
     match phase {
-        Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } => Some(server.clone()),
+        Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } => Some(server.clone()),
         Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.clone(),
         _ => None,
     }
@@ -1218,7 +1230,7 @@ fn broadcast(batch: &str, text: &str, cx: &mut App) {
 }
 
 fn playable(phase: &Phase) -> bool {
-    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
 /// Puts the game window of `key` in the manager's place and hides the manager.
@@ -1439,6 +1451,7 @@ enum Deferred {
     Restart { key: String, delay: Duration, generation: u64 },
     Join { key: String, generation: u64, lines: Vec<String>, delay: Duration },
     Start { keys: Vec<String> },
+    StartWaiting { key: String, delay: Duration },
 }
 
 #[derive(Default)]
@@ -1457,6 +1470,8 @@ struct Effects {
     game_focused: bool,
     revealed: Option<Reveal>,
     reopen: bool,
+    suspect_offline: bool,
+    network_back: bool,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -1468,7 +1483,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     change_model(redraw(&updates), cx, |m, rt, _| {
         for update in updates {
             let key = match &update {
-                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } => None,
+                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } | Update::Reach { .. } => None,
                 Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
                 Update::Ipc(Event::Reopen) => None,
@@ -1508,12 +1523,19 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             backend.check_proxy(key, url);
         }
     }
+    if fx.suspect_offline {
+        online::suspect();
+    }
+    if fx.network_back {
+        network_back(cx);
+    }
     for deferred in fx.later {
         match deferred {
             Deferred::Reconnect { key, delay, generation } => schedule_reconnect(key, delay, generation, cx),
             Deferred::Restart { key, delay, generation } => schedule_restart(key, delay, generation, cx),
             Deferred::Join { key, generation, lines, delay } => schedule_join(key, generation, lines, delay, cx),
             Deferred::Start { keys } => start_keys(&keys, cx),
+            Deferred::StartWaiting { key, delay } => start_waiting(key, delay, cx),
         }
     }
     for (batch, name, kind) in fresh {
@@ -1615,12 +1637,23 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 i.phase = Phase::Starting { done: 0, total: 0 };
             }
         }
-        Update::Failed { key, reason, login } => {
+        Update::Failed { key, reason, login, offline } => {
             if let Some(i) = m.games.get_mut(&key) {
                 m.preparing.remove(&i.batch_id);
-                i.phase = if login { Phase::LoginNeeded } else { Phase::Failed { reason } };
+                i.phase = if login {
+                    Phase::LoginNeeded
+                } else if offline {
+                    Phase::NoNetwork
+                } else {
+                    Phase::Failed { reason }
+                };
             }
+            if offline && !login {
+                fx.later.push(Deferred::StartWaiting { key, delay: waiting_retry() });
+            }
+            fx.suspect_offline |= offline;
         }
+        Update::Reach { online } => on_reach(m, rt, fx, online),
         Update::Seed { key, phase, attempts } => {
             if let Some(i) = m.games.get_mut(&key) {
                 i.phase = phase;
@@ -1780,7 +1813,11 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
     if kind != StateKind::Playing {
         *rt.joins.entry(key.clone()).or_default() += 1;
     }
-    let offline = m.games.get(&key).and_then(|i| m.account(i.account_id)).is_some_and(|a| a.kind == AccountKind::Offline);
+    let account = m.games.get(&key).and_then(|i| m.account(i.account_id));
+    let offline = account.is_some_and(|a| a.kind == AccountKind::Offline);
+    let direct = account.is_none_or(|a| a.proxy.is_none());
+    let nearby = server.as_deref().is_some_and(local_server);
+    let cut_off = m.offline && direct && !nearby;
     if matches!(kind, StateKind::Menu | StateKind::Playing) {
         model::set_hint(&key, |h| h.proxy = None);
     }
@@ -1833,8 +1870,9 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
             let cause = cause.unwrap_or(DisconnectCause::Unknown);
             let generation = rt.reconnects.entry(key.clone()).or_default();
             *generation += 1;
-            let reaction = match reconnect::react(cause, i.reconnect_attempts, policy, reconnect::unit()) {
-                Reaction::Retry(_) if server.is_none() => Reaction::GiveUp,
+            fx.suspect_offline |= direct && !nearby && matches!(cause, DisconnectCause::ServerDown | DisconnectCause::Unknown);
+            let reaction = match reconnect::react(cause, i.reconnect_attempts, policy, reconnect::unit(), cut_off) {
+                Reaction::Retry(_) | Reaction::WaitForNetwork if server.is_none() => Reaction::GiveUp,
                 Reaction::SignInAgain if offline => Reaction::NotAllowed,
                 other => other,
             };
@@ -1852,6 +1890,10 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
                     i.reconnect_attempts += 1;
                     fx.later.push(Deferred::Reconnect { key: key.clone(), delay, generation: *generation });
                     Phase::Connecting { server: server_text }
+                }
+                Reaction::WaitForNetwork => {
+                    fx.later.push(Deferred::Reconnect { key: key.clone(), delay: waiting_retry(), generation: *generation });
+                    Phase::NetworkLost { server: server_text }
                 }
                 Reaction::GiveUp | Reaction::NotAllowed => Phase::Disconnected { server, reason: reason_text },
                 Reaction::Banned => Phase::Banned { server, reason: reason_text },
@@ -1873,6 +1915,59 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
     if let Some((kind, server, reason)) = event {
         note(m, fx, &key, kind, server, &reason);
     }
+}
+
+fn on_reach(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, online: bool) {
+    m.offline = !online;
+    let (accounts, mut nth, mut start) = (&m.accounts, 0, Vec::new());
+    for i in m.games.values_mut().filter(|i| !i.stopping) {
+        let direct = accounts.iter().find(|a| a.id == i.account_id).is_none_or(|a| a.proxy.is_none());
+        match &i.phase {
+            Phase::Connecting { server } if !online && direct && i.reconnect_attempts > 0 && !local_server(server) => {
+                let generation = rt.reconnects.entry(i.key.clone()).or_default();
+                *generation += 1;
+                fx.later.push(Deferred::Reconnect { key: i.key.clone(), delay: waiting_retry(), generation: *generation });
+                i.reconnect_attempts -= 1;
+                i.phase = Phase::NetworkLost { server: server.clone() };
+            }
+            Phase::NetworkLost { server } if online => {
+                let generation = rt.reconnects.entry(i.key.clone()).or_default();
+                *generation += 1;
+                let delay = BACK_STAGGER * nth + reconnect::wait(&[BACK_WAIT_SECS], 0, 50, reconnect::unit());
+                nth += 1;
+                fx.later.push(Deferred::Reconnect { key: i.key.clone(), delay, generation: *generation });
+                i.phase = Phase::Connecting { server: server.clone() };
+            }
+            Phase::NoNetwork if online => start.push(i.key.clone()),
+            _ => {}
+        }
+    }
+    if !start.is_empty() {
+        fx.later.push(Deferred::Start { keys: start });
+    }
+    fx.network_back |= online;
+    m.order_seq += 1;
+}
+
+fn waiting_retry() -> Duration {
+    reconnect::wait(&[WAITING_RETRY_SECS], 0, 20, reconnect::unit())
+}
+
+fn local_server(server: &str) -> bool {
+    let host = match server.rsplit_once(':') {
+        Some((host, port)) if port.parse::<u16>().is_ok() && (!host.contains(':') || host.ends_with(']')) => host,
+        _ => server,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || ip.segments()[0] & 0xfe00 == 0xfc00 || ip.segments()[0] & 0xffc0 == 0xfe80,
+        Err(_) => host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local"),
+    }
+}
+
+fn network_back(cx: &mut App) {
+    super::remote::network_back(cx);
 }
 
 fn seed_state(m: &mut Model, rt: &mut Runtime, key: &str, kind: StateKind, server: Option<String>, reason: Option<String>, cause: Option<DisconnectCause>) {
@@ -2027,6 +2122,18 @@ pub fn tell_games(cx: &mut App) {
     }
 }
 
+fn start_waiting(key: String, delay: Duration, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(|cx| {
+            if model::get(cx).read(cx).games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
+                start_keys(std::slice::from_ref(&key), cx);
+            }
+        });
+    })
+    .detach();
+}
+
 fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(delay).await;
@@ -2036,7 +2143,7 @@ fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut Ap
                 return;
             }
             let model = model::get(cx);
-            if model.read(cx).games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. }) && !i.stopping) {
+            if model.read(cx).games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. } | Phase::NetworkLost { .. }) && !i.stopping) {
                 rt.backend.send(&key, ToMod::Reconnect);
             }
         });
@@ -2411,6 +2518,8 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Banned { reason, .. } => model::banned_status(reason),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
+        Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
+        Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
     }
 }
 
@@ -2422,7 +2531,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, adopt_games, apply, fleet, needs_sign_in, redraw, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, adopt_games, apply, fleet, local_server, needs_sign_in, playable, server_of, redraw, render_image, status};
 
     fn instance(phase: Phase) -> Game {
         Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -2623,6 +2732,104 @@ mod tests {
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
         assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && fx.later.is_empty());
         assert_eq!(m.history[&key].len(), 6);
+    }
+
+    #[test]
+    fn without_network_a_drop_waits_and_resumes_by_itself_when_it_is_back() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        for _ in 0..8 {
+            let mut fx = Effects::default();
+            send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+            assert_eq!(m.games[&key].phase, Phase::NetworkLost { server: "mc.example:25565".into() });
+            assert!(fx.suspect_offline);
+            let [Deferred::Reconnect { delay, .. }] = fx.later.as_slice() else { panic!("no slow retry while waiting") };
+            assert!(delay.as_secs() >= 48, "{delay:?}");
+        }
+        assert_eq!(m.games[&key].reconnect_attempts, 0);
+        assert!(m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Reach { online: true }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::Connecting { server: "mc.example:25565".into() });
+        assert!(fx.network_back);
+        let Some(Deferred::Reconnect { generation, .. }) = fx.later.pop() else { panic!("no reconnect scheduled") };
+        assert_eq!(rt.reconnects.get(&key), Some(&generation));
+    }
+
+    #[test]
+    fn losing_the_network_gives_back_the_try_a_pending_reconnect_spent() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        send_state(&mut m, &mut rt, &mut Effects::default(), &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(m.games[&key].reconnect_attempts, 1);
+        let before = rt.reconnects.get(&key).copied();
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        assert_eq!(m.games[&key].phase, Phase::NetworkLost { server: "mc.example:25565".into() });
+        assert_eq!(m.games[&key].reconnect_attempts, 0);
+        assert_ne!(rt.reconnects.get(&key).copied(), before);
+    }
+
+    #[test]
+    fn a_server_on_this_computer_or_in_the_home_network_does_not_wait_for_the_internet() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        let mut fx = Effects::default();
+        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("192.168.1.20:25565".into()), reason: None, cause: Some(DisconnectCause::ServerDown) };
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key.clone(), message }), &mut fx);
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !fx.suspect_offline);
+        assert_eq!(m.games[&key].reconnect_attempts, 1);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }));
+    }
+
+    #[test]
+    fn local_servers_are_told_apart_from_the_internet() {
+        for near in ["localhost", "localhost:25565", "127.0.0.1:25565", "10.0.0.5", "192.168.1.20:25565", "172.16.3.4:1", "[::1]:25565", "fd00::1", "minecraft.local"] {
+            assert!(local_server(near), "{near}");
+        }
+        for far in ["mc.example:25565", "8.8.8.8:25565", "[2001:db8::1]:25565", "localhost.example.com", ""] {
+            assert!(!local_server(far), "{far}");
+        }
+    }
+
+    #[test]
+    fn a_waiting_game_can_be_played_and_a_waiting_start_can_be_stopped() {
+        assert!(playable(&Phase::NetworkLost { server: "s".into() }));
+        assert_eq!(server_of(&Phase::NetworkLost { server: "s".into() }).as_deref(), Some("s"));
+        assert!(Phase::NoNetwork.stoppable() && !Phase::NoNetwork.is_active());
+    }
+
+    #[test]
+    fn a_ban_is_a_ban_even_without_network() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        send_state(&mut m, &mut rt, &mut Effects::default(), &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
+        assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
+    }
+
+    #[test]
+    fn a_proxied_account_does_not_wait_for_the_network() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        m.accounts[0].proxy = Some("socks5://127.0.0.1:1080".into());
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !fx.suspect_offline);
+    }
+
+    #[test]
+    fn a_start_without_connection_waits_and_starts_when_it_is_back_unless_stopped() {
+        let (mut m, mut rt, key) = setup(Phase::Starting { done: 0, total: 1 }, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::NoNetwork);
+        assert!(fx.suspect_offline && !m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let [Deferred::StartWaiting { key: waiting, delay }] = fx.later.as_slice() else { panic!("no slow retry for a waiting start") };
+        assert!(waiting == &key && delay.as_secs() >= 48);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Reach { online: true }, &mut fx);
+        assert!(matches!(fx.later.as_slice(), [Deferred::Start { keys }] if keys == &[key.clone()]));
+        apply(&mut m, &mut rt, Update::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false }, &mut Effects::default());
+        assert!(matches!(m.games[&key].phase, Phase::Failed { .. }));
     }
 
     #[test]

@@ -134,16 +134,37 @@ pub fn read_token(id: Uuid) -> Result<Option<String>> {
     }
 }
 
-/// Removes the refresh token for account `id`; a missing token is not an error.
+/// Removes the refresh token and the saved game session for account `id`; missing ones are not an error.
 pub fn delete_token(id: Uuid) -> Result<()> {
-    match entry(id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e).context("cannot remove the sign-in from the system keychain"),
+    for entry in [entry(id)?, session_entry(id)?] {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e).context("cannot remove the sign-in from the system keychain"),
+        }
+    }
+    Ok(())
+}
+
+/// Stores the game session of account `id` in the OS keychain, for starting while the sign-in cannot be refreshed.
+pub fn store_session(id: Uuid, session: &str) -> Result<()> {
+    session_entry(id)?.set_secret(session.as_bytes()).context("cannot save the game session in the system keychain")
+}
+
+/// Reads the game session of account `id`; `None` when the keychain has none.
+pub fn read_session(id: Uuid) -> Result<Option<String>> {
+    match session_entry(id)?.get_secret() {
+        Ok(bytes) => Ok(Some(String::from_utf8(bytes).context("the stored game session is unreadable")?)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e).context("cannot read the game session from the system keychain"),
     }
 }
 
 fn entry(id: Uuid) -> Result<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &id.to_string()).context("system keychain is not available")
+}
+
+fn session_entry(id: Uuid) -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("{id}.session")).context("system keychain is not available")
 }
 
 fn parse(bytes: &[u8], path: &Path) -> Result<Vec<Account>> {
