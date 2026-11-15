@@ -59,6 +59,16 @@ pub struct StartBatch(pub String);
 #[action(namespace = manycraft)]
 pub struct StopBatch(pub String);
 
+/// Cancels the bulk start of a batch, of every batch when `None`: what has not launched yet stops.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct CancelStart(pub Option<String>);
+
+/// Starts the games of a batch, of every batch when `None`, that wait for free memory, whether they fit or not.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct StartAnyway(pub Option<String>);
+
 /// Opens the batch sheet for an existing batch.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

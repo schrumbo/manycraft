@@ -12,6 +12,13 @@ pub fn on() -> bool {
     DIR.is_some()
 }
 
+/// The memory a driven instance pretends the machine has, from `MANYCRAFT_DRIVE_MEMORY` as `total/free` in MB.
+pub fn memory() -> Option<super::fit::Memory> {
+    let value = std::env::var("MANYCRAFT_DRIVE_MEMORY").ok().filter(|_| on())?;
+    let (total, free) = value.split_once('/')?;
+    Some(super::fit::Memory { total_mb: total.trim().parse().ok()?, free_mb: free.trim().parse().ok()? })
+}
+
 /// Whether a driven instance runs real games (`MANYCRAFT_DRIVE_REAL` is set), for live tests with offline accounts and a test server.
 pub fn real() -> bool {
     on() && std::env::var_os("MANYCRAFT_DRIVE_REAL").is_some()

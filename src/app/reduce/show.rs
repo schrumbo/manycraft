@@ -151,7 +151,7 @@ pub(super) fn play_instance(m: &mut Model, id: &str, account: Option<Uuid>, out:
     }
     m.order_seq += 1;
     out.push(Effect::Redraw(Redraw::All));
-    fleet::launch(m, &owner, Some(std::slice::from_ref(&key)), false, out);
+    fleet::launch(m, &owner, Some(std::slice::from_ref(&key)), fleet::Kick::Plain, out);
     out.push(Effect::RememberAccount { instance: id.to_owned(), account });
     Some(key)
 }

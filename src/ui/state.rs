@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{Broadcast, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
@@ -480,6 +480,8 @@ pub fn init(cx: &mut App) {
             show_grid(cx);
         })
     });
+    cx.on_action(|a: &CancelStart, cx| dispatch(AppEvent::CancelStart(a.0.clone()), cx));
+    cx.on_action(|a: &StartAnyway, cx| dispatch(AppEvent::StartAnyway(a.0.clone()), cx));
     cx.on_action(|a: &Reconnect, cx| dispatch(AppEvent::Reconnect(a.0.clone()), cx));
     cx.on_action(|a: &Respawn, cx| dispatch(AppEvent::Respawn(a.0.clone()), cx));
     cx.on_action(|a: &Play, cx| {
@@ -677,6 +679,14 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
                 backend.stop(keys);
             }
         }
+        Effect::Stopped(keys) => {
+            let name = match keys.as_slice() {
+                [one] => model::get(cx).read(cx).games.get(one).map(|g| g.name.clone()),
+                _ => None,
+            };
+            super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
+        }
+        Effect::ReadMemory => read_memory(cx),
         Effect::ReadPreview { key, path } => {
             if let Some(backend) = backend {
                 backend.read_preview(key, path);
@@ -988,6 +998,26 @@ pub fn delete_instance(id: &str, cx: &mut App) {
         });
     })
     .detach();
+}
+
+fn read_memory(cx: &mut App) {
+    if let Some(pretend) = drive::memory() {
+        let m = model::get(cx).read(cx);
+        let used: u64 = m.games.values().filter(|g| g.phase.has_process() && !matches!(g.phase, Phase::Starting { .. })).filter_map(|g| m.target(&g.batch_id)).map(|t| u64::from(t.memory_mb())).sum();
+        let memory = fit::Memory { total_mb: pretend.total_mb, free_mb: pretend.free_mb.saturating_sub(used) };
+        cx.defer(move |cx| dispatch(AppEvent::Memory(Some(memory)), cx));
+        return;
+    }
+    cx.spawn(async move |cx| {
+        let memory = cx.background_executor().spawn(async move { fit::system_memory() }).await;
+        cx.update(|cx| dispatch(AppEvent::Memory(memory), cx));
+    })
+    .detach();
+}
+
+/// Starts again the games a stop of many ended, staggered and as far as memory allows.
+pub(super) fn start_again(keys: Vec<String>, cx: &mut App) {
+    dispatch(AppEvent::StartAgain(keys), cx);
 }
 
 fn warn_if_too_big(count: u32, memory_mb: u32, cx: &mut App) {
@@ -1330,8 +1360,9 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
     }
     match &i.phase {
         Phase::Stopped => tr("Gestoppt"),
-        Phase::Starting { .. } if preparing.is_some() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
+        Phase::Starting { .. } if preparing.is_some() && i.memory_wait.is_none() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
         Phase::Restarting { attempt, of } => model::restart_status(*attempt, *of),
+        Phase::Starting { .. } if i.memory_wait.is_some() => tr("Wartet auf Arbeitsspeicher"),
         Phase::Starting { place, total } if *total > 1 && *place > 0 => trf("Wartet auf Start (%lld von %lld)", &[place, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),

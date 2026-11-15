@@ -9,6 +9,7 @@ use super::effect::Unshown;
 use super::model::Phase;
 use crate::core::account::Account;
 use crate::core::batch::Batch;
+use crate::core::fit::Memory;
 use crate::core::fleet::Adoption;
 use crate::core::history::Log;
 use crate::core::instance::Instance;
@@ -114,6 +115,16 @@ pub enum Event {
     Stop(Vec<String>),
     StopBatch(String),
     StopAll,
+    /// Starts again the games one stop of the user ended, those still on their way down once they are down.
+    StartAgain(Vec<String>),
+    /// Starts the games of `batch` (all when `None`) that wait for free memory now, whether they fit or not.
+    StartAnyway(Option<String>),
+    /// Cancels the bulk start of `batch` (all when `None`): every game of it that has not launched yet stops.
+    CancelStart(Option<String>),
+    /// The memory of the machine, read for the games that wait for it; `None` when the machine does not tell.
+    Memory(Option<Memory>),
+    /// The free memory is due to be read again for the games that wait for it.
+    MemoryDue,
     /// Stops the running ones of these games and starts them all again, those that ran once they are down.
     Restart(Vec<String>),
     Reconnect(String),

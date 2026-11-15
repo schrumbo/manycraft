@@ -74,6 +74,16 @@ impl Phase {
         matches!(self, Phase::Queue { .. } | Phase::Playing { .. })
     }
 
+    /// Whether the game waits in line for its turn to start and has no process yet.
+    pub fn waiting(&self) -> bool {
+        matches!(self, Phase::Starting { place, .. } if *place > 0)
+    }
+
+    /// Whether the game counts as running: it has a process, or its process is on its way after it waited in line.
+    pub fn has_process(&self) -> bool {
+        self.is_running() && !self.waiting()
+    }
+
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
         !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::NoNetwork)
@@ -83,6 +93,14 @@ impl Phase {
     pub fn playable(&self) -> bool {
         matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
     }
+}
+
+/// A bulk start under way: how many of its games launched, of how many, and how many wait for free memory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Run {
+    pub launched: usize,
+    pub total: usize,
+    pub memory: usize,
 }
 
 /// Extra facts about a live instance that its phase does not carry.
@@ -107,12 +125,14 @@ pub struct Game {
     pub unread_whispers: u32,
     pub stopping: bool,
     pub hint: Hint,
+    /// Its place in the line of bulk starts that wait for free memory, while it waits there.
+    pub memory_wait: Option<u64>,
 }
 
 impl Game {
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, hint: Hint::default() }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, hint: Hint::default(), memory_wait: None }
     }
 }
 
@@ -222,6 +242,28 @@ impl Model {
         let mut list: Vec<&Game> = self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b)).collect();
         list.sort_by_key(|i| (rank(&i.phase), i.name.to_lowercase(), i.key.clone()));
         list
+    }
+
+    /// Whether game `key` waits for free memory before it starts.
+    pub fn waits_for_memory(&self, key: &str) -> bool {
+        self.games.get(key).is_some_and(|g| g.memory_wait.is_some() && g.phase.waiting())
+    }
+
+    /// The bulk start of `owner` (of every batch when `None`) while some of its games still wait to launch.
+    pub fn run(&self, owner: Option<&str>) -> Option<Run> {
+        let mut run = Run::default();
+        for (_, keys) in self.session.runs.iter().filter(|(o, _)| owner.is_none_or(|w| w == o.as_str())) {
+            for g in keys.iter().filter_map(|k| self.games.get(k)) {
+                if g.phase.waiting() {
+                    run.total += 1;
+                    run.memory += usize::from(g.memory_wait.is_some());
+                } else if g.phase.is_running() {
+                    run.launched += 1;
+                    run.total += 1;
+                }
+            }
+        }
+        (run.total > run.launched).then_some(run)
     }
 
     /// How many instances of `batch_id` (all when `None`) need attention.

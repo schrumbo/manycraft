@@ -97,6 +97,14 @@ pub struct Session {
     pub adopted: HashSet<String>,
     /// Games an earlier manager launched; where the OS does not tell their exit code, an exit counts as clean.
     pub foreign: HashSet<String>,
+    /// The games of each batch's bulk start, while some of them still wait to launch.
+    pub runs: HashMap<String, Vec<String>>,
+    /// The last place given out in the line of games that wait for free memory.
+    pub memory_seq: u64,
+    /// Whether a reading of the free memory is on its way.
+    pub memory_asked: bool,
+    /// Whether a timer to read the free memory again waits.
+    pub memory_timer: bool,
     /// Plays asked for before the data was read, by instance and account.
     pub waiting_plays: Vec<(String, Option<String>)>,
 }

@@ -1289,5 +1289,17 @@
   "Beim nächsten Start findet Manycraft sie wieder.": "Manycraft finds them again the next time it starts.",
   "Beim nächsten Start findet Manycraft es wieder.": "Manycraft finds it again the next time it starts.",
   "Weiterlaufen lassen": "Keep Running",
-  "Deine Spiele laufen weiter und erscheinen danach wieder hier.": "Your games keep running and show up here again afterwards."
+  "Deine Spiele laufen weiter und erscheinen danach wieder hier.": "Your games keep running and show up here again afterwards.",
+  "Wartet auf Arbeitsspeicher": "Waiting for memory",
+  "Startet %lld/%lld": "Starting %lld/%lld",
+  "%lld warten auf Arbeitsspeicher": "%lld waiting for memory",
+  "Trotzdem alle starten": "Start all anyway",
+  "Start abbrechen": "Cancel start",
+  "„%@“ gestoppt.": "“%@” stopped.",
+  "„%@“ wurde nicht neu gestartet.": "“%@” was not restarted.",
+  "%lld Spiele": "%lld games",
+  "%lld Spiele gestoppt.": "%lld games stopped.",
+  "%@ wurden nicht neu gestartet.": "%@ were not restarted.",
+  "1 wartet auf Arbeitsspeicher": "1 waiting for memory",
+  "Startet auch die Spiele, für die der Arbeitsspeicher gerade nicht reicht.": "Also starts the games there is not enough free memory for right now."
 }
