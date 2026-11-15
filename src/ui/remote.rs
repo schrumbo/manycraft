@@ -14,7 +14,7 @@ use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
 use crate::core::instance::{self as setup, Loader};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
-use crate::core::mrpack;
+use crate::core::{mrpack, origin};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
 
@@ -31,6 +31,18 @@ static SAVING: Mutex<()> = Mutex::new(());
 
 fn saving() -> MutexGuard<'static, ()> {
     SAVING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Counts how often the connection came back; views observe it to retry what failed without one.
+#[derive(Default)]
+pub struct Back(pub u64);
+
+impl gpui_kit::Global for Back {}
+
+/// Tells every observing view that the connection is back.
+pub fn network_back(cx: &mut gpui_kit::App) {
+    let next = cx.try_global::<Back>().map_or(0, |b| b.0) + 1;
+    cx.set_global(Back(next));
 }
 
 fn is_stale(e: &anyhow::Error) -> bool {
@@ -462,29 +474,46 @@ pub fn versions() -> Result<Vec<String>> {
     install::releases()
 }
 
+/// Versions of `loader` for Minecraft `game`, newest first, with the one an unpinned instance follows.
+pub fn loader_versions(loader: &Loader, game: &str) -> Result<install::Versions> {
+    if drive::fenced("loader-versions", format!("{} {game}", loader.name())) {
+        std::thread::sleep(CANNED_DELAY);
+        let list: Vec<String> = match loader {
+            Loader::Vanilla => Vec::new(),
+            Loader::Fabric(_) => ["0.18.0-beta.1", "0.17.3", "0.17.2", "0.16.14"].map(String::from).to_vec(),
+            Loader::Quilt(_) => ["0.31.0-beta.2", "0.30.2", "0.30.1"].map(String::from).to_vec(),
+            Loader::Forge(_) => ["66.1.8", "66.1.7", "66.0.2"].map(String::from).to_vec(),
+            Loader::NeoForge(_) => ["26.3.1-beta", "26.3.0.103", "26.3.0.99"].map(String::from).to_vec(),
+        };
+        let default = list.iter().find(|v| !v.contains('-')).cloned();
+        return Ok(install::Versions { list, default });
+    }
+    install::loader_versions(loader, game)
+}
+
 /// One page of Modrinth mods matching `query` (the most downloaded ones when it is empty) from result `offset` on.
-/// Unless `all`, only Fabric mods with a version for `game_version`.
-pub fn search_page(query: &str, game_version: &str, sort: Sort, all: bool, offset: usize) -> Result<Page> {
+/// Unless `all`, only mods for `loader` with a version for `game_version`.
+pub fn search_page(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> Result<Page> {
     if drive::fenced("modrinth search", query) && !drive::live() {
         std::thread::sleep(CANNED_SEARCH_DELAY);
         if query.contains("offline") {
             bail!("failed to lookup address");
         }
         let q = query.to_lowercase();
-        let mut hits: Vec<Hit> = canned_hits(game_version).into_iter().filter(|h| h.title.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q)).filter(|h| all || h.support(game_version) == Support::Fits).collect();
+        let mut hits: Vec<Hit> = canned_hits(game_version).into_iter().filter(|h| h.title.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q)).filter(|h| all || h.support(game_version, loader) == Support::Fits).collect();
         if sort == Sort::Downloads {
             hits.sort_by_key(|h| std::cmp::Reverse(h.downloads));
         } else {
             hits.sort_by_key(|h| !h.title.to_lowercase().starts_with(&q));
         }
         let total = hits.len();
-        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total });
+        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total, saved: None });
     }
-    modrinth::search_page(query, game_version, sort, all, offset)
+    modrinth::search_page(query, game_version, loader, sort, all, offset)
 }
 
-/// `project_ids` resolved for `game_version`, with their required dependencies.
-pub fn resolve(project_ids: &[String], game_version: &str) -> Result<Vec<ModRef>> {
+/// `project_ids` resolved for `game_version` and `loader`, with their required dependencies.
+pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
     if drive::fenced("modrinth resolve", project_ids.join(",")) && !drive::live() {
         std::thread::sleep(CANNED_DELAY);
         let hits = canned_hits(game_version);
@@ -500,15 +529,18 @@ pub fn resolve(project_ids: &[String], game_version: &str) -> Result<Vec<ModRef>
         out.retain(|m| seen.insert(m.project_id.clone()));
         return Ok(out);
     }
-    modrinth::resolve_with_dependencies(project_ids, game_version)
+    modrinth::resolve_with_dependencies(project_ids, game_version, loader)
 }
 
 /// The mods every new batch starts with, and why any is missing for `game_version`.
-pub fn defaults(game_version: &str) -> Result<Defaults> {
+pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
     if drive::fenced("modrinth defaults", game_version) && !drive::live() {
         std::thread::sleep(CANNED_DELAY);
         let mut mods = vec![canned_ref("fabric-api", "Fabric API", game_version), canned_ref("lithium", "Lithium", game_version), canned_ref("ferrite-core", "FerriteCore", game_version), canned_ref("modernfix", "ModernFix", game_version)];
         let mut notes = Vec::new();
+        if !matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
+            mods.remove(0);
+        }
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
             notes.push(format!("skipped lithium: no Fabric version for {game_version}"));
@@ -517,21 +549,21 @@ pub fn defaults(game_version: &str) -> Result<Defaults> {
         }
         return Ok(Defaults { mods, notes });
     }
-    modrinth::default_mods(game_version)
+    modrinth::default_mods(game_version, loader)
 }
 
 /// The mods of a batch moved to `game_version`: each mod that exists there, with dependencies, and the titles of those that do not.
-pub fn move_mods(mods: &[ModRef], game_version: &str) -> Result<(Vec<ModRef>, Vec<String>)> {
+pub fn move_mods(mods: &[ModRef], game_version: &str, loader: &Loader) -> Result<(Vec<ModRef>, Vec<String>)> {
     let mut kept = Vec::new();
     let mut missing = Vec::new();
     for m in mods {
-        match resolve(std::slice::from_ref(&m.project_id), game_version) {
+        match resolve(std::slice::from_ref(&m.project_id), game_version, loader) {
             Ok(_) => kept.push(m.project_id.clone()),
             Err(e) if is_network(&e) => return Err(e),
             Err(_) => missing.push(m.title.clone()),
         }
     }
-    let moved = if kept.is_empty() { Vec::new() } else { resolve(&kept, game_version)? };
+    let moved = if kept.is_empty() { Vec::new() } else { resolve(&kept, game_version, loader)? };
     Ok((moved, missing))
 }
 
@@ -701,6 +733,59 @@ pub fn clone_instance(id: &str) -> Result<setup::Instance> {
         let taken: Vec<String> = setup::load_all()?.into_iter().map(|i| i.name).collect();
         setup::clone(&source, &setup::free_name(&crate::core::i18n::trf("%@ Kopie", &[&source.name]), &taken))
     })
+}
+
+/// What `reset_instance` changed: the instance before and after, the trash entry that holds what was taken away, and
+/// the titles of the mods that do not exist for the instance's version and were left out.
+pub struct Reverted {
+    pub before: setup::Instance,
+    pub after: setup::Instance,
+    pub entry: String,
+    pub missing: Vec<String>,
+}
+
+/// Sets the saved instance `id` back to the mods, config and packs it was created with; worlds, screenshots, servers and options stay.
+/// The mods it was created with are looked up again when the instance moved to another version since.
+pub fn reset_instance(id: &str) -> Result<Reverted> {
+    let seen = find_instance(id)?;
+    let origin = origin::load(&seen)?;
+    let (mods, missing) = match origin.plan(&seen.game_version, &seen.loader) {
+        origin::Plan::Ready(mods) => (mods, Vec::new()),
+        origin::Plan::Move(mods) => move_mods(&mods, &seen.game_version, &seen.loader)?,
+    };
+    saved(|| {
+        let made = find_instance(id)?;
+        if made.game_version != seen.game_version || !made.loader.same_kind(&seen.loader) {
+            return Err(gone(crate::core::i18n::tr("Die Instanz wurde inzwischen anders geändert. Sieh nach und versuch es noch einmal.")));
+        }
+        let (after, entry) = origin::reset(&made, mods.clone())?;
+        Ok(Reverted { before: made, after, entry, missing: missing.clone() })
+    })
+}
+
+/// Puts back what `reset_instance` took away into trash entry `entry`, when the instance still is `after` as far as its mods, version and loader go.
+pub fn restore_reset(id: &str, before: &setup::Instance, after: &setup::Instance, entry: &str) -> Result<setup::Instance> {
+    saved(|| {
+        let now = find_instance(id)?;
+        if !same_files(&now, after) {
+            return Err(gone(crate::core::i18n::tr("Die Instanz wurde inzwischen anders geändert. Sieh nach und versuch es noch einmal.")));
+        }
+        origin::unreset(&now, before, entry)
+    })
+}
+
+/// Whether `a` and `b` have the same version, loader, mods and own files.
+pub fn same_files(a: &setup::Instance, b: &setup::Instance) -> bool {
+    a.game_version == b.game_version && a.loader == b.loader && a.mods == b.mods && a.local_mods == b.local_mods
+}
+
+/// The newest stable loader of the kind `loader` is, for `game_version`; `None` when there is none.
+pub fn newest_loader(loader: &Loader, game_version: &str) -> Result<Option<String>> {
+    if drive::fenced("loader newest", game_version) {
+        std::thread::sleep(CANNED_DELAY);
+        return Ok(loader.takes_mods().then(|| "0.99.0".to_owned()));
+    }
+    install::newest_loader(loader, game_version)
 }
 
 /// Moves the saved instance `id` with its games to the trash and returns its trash entry; refused while a batch plays it or a game runs.
@@ -1026,6 +1111,30 @@ mod tests {
         let mut added = base.clone();
         added.mods.push(mod_ref("c"));
         assert!(merge(&base, &added, &back).is_none());
+    }
+
+    #[test]
+    fn undoing_a_rename_or_a_switch_writes_the_old_fields_back_unless_they_moved_since() {
+        let made = setup::Instance::new("Farm", "26.2", Loader::Fabric(Some("0.17.2".into())));
+        let before = InstanceEdit::of(&made);
+        let mut renamed = before.clone();
+        renamed.name = "Technik".into();
+        assert_eq!(merge(&renamed, &renamed, &before).unwrap().name, "Farm");
+        let mut other_name = renamed.clone();
+        other_name.name = "Anders".into();
+        assert!(merge(&renamed, &other_name, &before).is_none());
+        let mut switched = before.clone();
+        switched.game_version = "26.3".into();
+        switched.loader = Loader::Quilt(Some("0.30.0".into()));
+        let back = merge(&switched, &switched, &before).unwrap();
+        assert_eq!((back.game_version.as_str(), back.loader.clone()), ("26.2", Loader::Fabric(Some("0.17.2".into()))));
+        let mut renamed_since = switched.clone();
+        renamed_since.name = "Technik".into();
+        let kept = merge(&switched, &renamed_since, &before).unwrap();
+        assert_eq!((kept.name.as_str(), kept.game_version.as_str()), ("Technik", "26.2"));
+        let mut switched_again = switched.clone();
+        switched_again.game_version = "26.4".into();
+        assert!(merge(&switched, &switched_again, &before).is_none());
     }
 
     #[test]

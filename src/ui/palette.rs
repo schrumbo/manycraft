@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::actions::{
     AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
-    CloneInstance, DeleteInstance, EditMods, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
+    AddMods, CloneInstance, DeleteInstance, EditMods, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -18,10 +18,10 @@ use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
 use super::widgets::{TakeFocus, icon};
-use crate::core::instance::Loader;
 
 actions!(palette, [PaletteNext, PalettePrevious]);
 use crate::core::i18n::{tr, trf};
+use crate::core::instance::Loader;
 
 /// Where an entry belongs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -319,7 +319,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.extend(super::instance_files::palette(id, cx));
     }
     let stopped = m.games.values().any(|i| !i.phase.is_active());
-    let active = m.games.values().any(|i| i.phase.is_active() && !i.stopping);
+    let active = m.games.values().any(|i| i.phase.stoppable() && !i.stopping);
     let playable = m.games.values().any(|i| super::tile::playable(&i.phase));
     let attention = m.attention_count(None) > 0;
     let ready = matches!(m.updates.status, model::UpdateStatus::Ready { .. }) && super::updates::counts(cx).0 == 0;
@@ -381,20 +381,26 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         let detail = Some(made.version_line());
         let name = &made.name;
         out.push(entry(Group::Instances, "package", trf("Instanz %@ öffnen", &[name]), detail.clone(), Box::new(ShowInstance(id.clone())), cx));
-        if made.loader.launchable() {
-            out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
-        }
+        out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
         out.push(entry(Group::Instances, "boxes", trf("Neuer Batch mit %@…", &[name]), detail.clone(), Box::new(NewBatchFor(id.clone())), cx));
-        if matches!(made.loader, Loader::Fabric(_)) {
-            out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
+        if made.loader.takes_mods() {
+            out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(AddMods(id.clone())), cx));
+            out.push(entry(Group::Instances, "package", trf("Mods von %@ verwalten…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
         }
+        if matches!(made.loader, Loader::Fabric(Some(_)) | Loader::Quilt(Some(_))) {
+            out.push(entry(Group::Instances, "refresh-cw", trf("Loader von %@ aktualisieren…", &[name]), detail.clone(), Box::new(UpdateLoader(id.clone())), cx));
+        }
+        let mut reset = entry(Group::Instances, "rotate-ccw", trf("%@ zurücksetzen…", &[name]), detail.clone(), Box::new(ResetInstance(id.clone())), cx);
+        if m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active()) {
+            reset.detail = Some(tr("Stoppe zuerst die laufenden Spiele."));
+            reset.enabled = false;
+        }
+        out.push(reset);
         out.push(entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
         out.extend(super::instance_files::tab_entries(made, cx));
-        if matches!(made.loader, Loader::Fabric(_)) {
-            out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
-        }
+        out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
         let mut delete = entry(Group::Instances, "trash", trf("%@ löschen…", &[name]), detail, Box::new(DeleteInstance(id)), cx);
         let users: Vec<String> = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| b.name.clone()).collect();
         if !users.is_empty() {

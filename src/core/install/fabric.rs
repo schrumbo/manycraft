@@ -1,10 +1,12 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use super::Versions;
 use super::meta::VersionJson;
 use crate::core::net;
 
 const LOADERS_URL: &str = "https://meta.fabricmc.net/v2/versions/loader";
+const QUILT_URL: &str = "https://meta.quiltmc.org/v3/versions/loader";
 
 #[derive(Deserialize)]
 struct Entry {
@@ -14,6 +16,7 @@ struct Entry {
 #[derive(Deserialize)]
 struct Loader {
     version: String,
+    #[serde(default)]
     stable: bool,
 }
 
@@ -21,6 +24,32 @@ struct Loader {
 pub fn latest_loader(agent: &ureq::Agent, game: &str) -> Result<String> {
     let entries: Vec<Entry> = net::get_json(agent, &format!("{LOADERS_URL}/{game}"))?;
     pick_loader(entries).with_context(|| format!("Fabric does not support Minecraft {game}"))
+}
+
+/// Fabric loaders for `game`, newest first, with the newest stable one as default.
+pub fn versions(agent: &ureq::Agent, game: &str) -> Result<Versions> {
+    let entries: Vec<Entry> = net::get_json(agent, &format!("{LOADERS_URL}/{game}"))?;
+    if entries.is_empty() {
+        bail!("Fabric does not support Minecraft {game}");
+    }
+    Ok(listed(entries))
+}
+
+fn listed(entries: Vec<Entry>) -> Versions {
+    let default = entries.iter().find(|e| e.loader.stable).or(entries.first()).map(|e| e.loader.version.clone());
+    Versions { list: entries.into_iter().map(|e| e.loader.version).collect(), default }
+}
+
+/// Newest stable Fabric loader for `game`, `None` when it has only unstable ones.
+pub fn stable_loader(agent: &ureq::Agent, game: &str) -> Result<Option<String>> {
+    let entries: Vec<Entry> = net::get_json(agent, &format!("{LOADERS_URL}/{game}"))?;
+    Ok(entries.into_iter().find(|e| e.loader.stable).map(|e| e.loader.version))
+}
+
+/// Newest Quilt loader for `game` that is not a pre-release.
+pub fn stable_quilt(agent: &ureq::Agent, game: &str) -> Result<Option<String>> {
+    let entries: Vec<Entry> = net::get_json(agent, &format!("{QUILT_URL}/{game}"))?;
+    Ok(entries.into_iter().map(|e| e.loader.version).find(|v| !v.contains('-')))
 }
 
 fn pick_loader(entries: Vec<Entry>) -> Option<String> {
@@ -55,6 +84,13 @@ mod tests {
     fn newest_unstable_loader_is_the_fallback() {
         let e = entries(r#"[{"loader":{"version":"0.21.0-beta","stable":false}}]"#);
         assert_eq!(pick_loader(e).unwrap(), "0.21.0-beta");
+    }
+
+    #[test]
+    fn versions_keep_meta_order_and_default_to_stable() {
+        let e = entries(r#"[{"loader":{"version":"0.21.0-beta","stable":false}},{"loader":{"version":"0.20.1","stable":true}}]"#);
+        let v = listed(e);
+        assert_eq!((v.list.as_slice(), v.default.as_deref()), (&["0.21.0-beta".to_owned(), "0.20.1".to_owned()][..], Some("0.20.1")));
     }
 
     #[test]

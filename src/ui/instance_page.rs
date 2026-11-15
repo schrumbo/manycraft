@@ -15,14 +15,16 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, CloneInstance, DeleteInstance, EditMods, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
+use super::actions::{AddAccount, AddMods, CloneInstance, DeleteInstance, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
 use super::batch_sheet::Load;
 use super::drive::Mark;
 use super::forms::{self, Problem};
-use super::model::{self, Game};
+use super::loader_version::{self, LoaderVersion, Picked};
+use super::model::{self, Game, Phase};
 use super::motion::Soft;
 use super::remote::{self, InstanceEdit};
 use super::sheet::{self, Look};
+use super::undo::Edit;
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::toolbar;
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented, tip};
@@ -292,6 +294,10 @@ struct Busy {
     text: String,
 }
 
+fn loader_key(made: &Instance) -> LoaderKey {
+    (made.id.clone(), made.game_version.clone(), made.loader.name().to_owned(), made.loader.version().map(str::to_owned))
+}
+
 fn mods_after_loader(from: &Loader, to: &Loader, mods: Vec<ModRef>) -> Vec<ModRef> {
     let fabric_like = |l: &Loader| matches!(l, Loader::Fabric(_) | Loader::Quilt(_));
     if fabric_like(from) && fabric_like(to) { mods } else { Vec::new() }
@@ -301,9 +307,7 @@ fn split_args(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_owned).collect()
 }
 
-fn loader_version_of(text: &str) -> Option<String> {
-    Some(text.trim().to_owned()).filter(|v| !v.is_empty())
-}
+type LoaderKey = (String, String, String, Option<String>);
 
 struct Facts {
     made: Instance,
@@ -312,6 +316,7 @@ struct Facts {
     solo: Option<Uuid>,
     shown: Option<String>,
     running: bool,
+    plain: Vec<Uuid>,
 }
 
 struct InstancePage {
@@ -326,13 +331,16 @@ struct InstancePage {
     select_target: Option<String>,
     select_applied: Option<(String, u64)>,
     jvm: Entity<InputState>,
-    loader_version: Entity<InputState>,
+    loader_version: Entity<LoaderVersion>,
     name: Entity<InputState>,
     renaming: bool,
     rename_saving: bool,
     loader_focus: FocusHandle,
     focus_name: bool,
     removing: Option<(ModRef, usize)>,
+    changing: Option<(InstanceEdit, Option<Edit>)>,
+    loader_news: Option<(LoaderKey, Option<String>)>,
+    loader_asked: Option<LoaderKey>,
     synced: Option<(String, String, String)>,
     queue: VecDeque<(String, Job)>,
     in_flight: Option<(String, Job)>,
@@ -352,7 +360,7 @@ impl InstancePage {
     fn new(id: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
         let jvm = cx.new(|cx| InputState::new(window, cx));
-        let loader_version = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Neueste")));
+        let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let name = cx.new(|cx| InputState::new(window, cx));
         let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
             if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
@@ -360,9 +368,19 @@ impl InstancePage {
             }
         };
         let subs = vec![
+            cx.observe_global::<remote::Back>(|s, cx| {
+                if matches!(s.versions, Load::Failed(_)) {
+                    s.load_versions(cx);
+                }
+            }),
             cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
             cx.subscribe(&jvm, committed),
-            cx.subscribe(&loader_version, committed),
+            cx.subscribe(&loader_version, |s: &mut Self, picker, _: &Picked, cx| {
+                if s.instance(cx).is_some_and(|made| made.loader.takes_mods()) {
+                    let pinned = picker.read(cx).pinned();
+                    s.enqueue(Job::Save(Change::LoaderVersion(pinned)), cx);
+                }
+            }),
             cx.subscribe_in(&name, window, |s: &mut Self, _, e: &InputEvent, window, cx| match e {
                 InputEvent::PressEnter { .. } => {
                     s.commit_rename(cx);
@@ -405,6 +423,9 @@ impl InstancePage {
             loader_focus: cx.focus_handle().tab_stop(true),
             focus_name: false,
             removing: None,
+            changing: None,
+            loader_news: None,
+            loader_asked: None,
             synced: None,
             queue: VecDeque::new(),
             in_flight: None,
@@ -435,6 +456,8 @@ impl InstancePage {
         self.advanced = false;
         self.select_target = None;
         self.select_applied = None;
+        self.loader_asked = None;
+        self.loader_news = None;
         self.notes.clear();
         self.error = None;
         self.details.clear();
@@ -506,11 +529,13 @@ impl InstancePage {
         let made = m.instance(&self.id)?.clone();
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
-        let solo = super::state::solo_account(m, &made);
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
+        let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
+        let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
+        let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
         let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-        Some(Facts { made, batches, accounts, solo, shown, running })
+        Some(Facts { made, batches, accounts, solo, shown, running, plain })
     }
 
     fn instance(&self, cx: &App) -> Option<Instance> {
@@ -570,26 +595,21 @@ impl InstancePage {
         }
         let shown = (made.id.clone(), made.jvm_args.join(" "), made.loader.version().unwrap_or_default().to_owned());
         if self.synced.as_ref() != Some(&shown) {
-            let (jvm, version) = (shown.1.clone(), shown.2.clone());
+            let jvm = shown.1.clone();
             self.synced = Some(shown);
             self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
-            self.loader_version.update(cx, |s, cx| s.set_value(version, window, cx));
         }
+        self.loader_version.update(cx, |p, cx| p.show(&made.loader, &made.game_version, cx));
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {
-        let Some((id, jvm, version)) = self.synced.clone() else { return };
+        let Some((id, jvm, _)) = self.synced.clone() else { return };
         if id != self.id {
             return;
         }
         let args = split_args(&self.jvm.read(cx).value());
         if args != split_args(&jvm) {
             self.enqueue(Job::Save(Change::JvmArgs(args)), cx);
-        }
-        let Some(made) = self.instance(cx).filter(|made| !matches!(made.loader, Loader::Vanilla)) else { return };
-        let pinned = loader_version_of(&self.loader_version.read(cx).value());
-        if pinned != loader_version_of(&version) && made.loader.version() == loader_version_of(&version).as_deref() {
-            self.enqueue(Job::Save(Change::LoaderVersion(pinned)), cx);
         }
     }
 
@@ -612,6 +632,7 @@ impl InstancePage {
             self.in_flight = Some((id.clone(), job.clone()));
             match job {
                 Job::Save(change) => {
+                    self.changing = Some((InstanceEdit::of(&made), matches!(change, Change::Name(_)).then_some(Edit::Renamed)));
                     self.removing = match &change {
                         Change::RemoveMod(project) => made.mods.iter().position(|m| m.project_id == *project).map(|at| (made.mods[at].clone(), at)),
                         _ => None,
@@ -627,6 +648,11 @@ impl InstancePage {
                 }
                 Job::Switch(switch) => {
                     self.removing = None;
+                    let to = match &switch {
+                        Switch::Version(v) => trf("Minecraft %@", &[v]),
+                        Switch::Loader(l) => l.name().to_owned(),
+                    };
+                    self.changing = Some((InstanceEdit::of(&made), Some(Edit::Switched(to))));
                     let text = match &switch {
                         Switch::Version(v) => trf("Mods werden für %@ angepasst …", &[v]),
                         Switch::Loader(l) => trf("Auf %@ wird umgestellt …", &[&l.name()]),
@@ -659,12 +685,17 @@ impl InstancePage {
     fn finished(&mut self, id: &str, switched: bool, result: anyhow::Result<(Instance, Vec<String>)>, cx: &mut Context<Self>) {
         let renamed = matches!(self.in_flight.take(), Some((_, Job::Save(Change::Name(_)))));
         let removed = self.removing.take();
+        let changed = self.changing.take();
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
         }
         match result {
             Ok((saved, notes)) => {
                 let kept = removed.is_some().then(|| InstanceEdit::of(&saved));
+                let edited = changed.and_then(|(before, what)| {
+                    let after = InstanceEdit::of(&saved);
+                    what.filter(|_| before != after).map(|what| super::undo::Kind::Edited { instance_id: id.to_owned(), name: saved.name.clone(), what, before, after })
+                });
                 model::get(cx).update(cx, |m, cx| {
                     if let Some(slot) = m.instances.iter_mut().find(|made| made.id == saved.id) {
                         *slot = saved;
@@ -679,6 +710,9 @@ impl InstancePage {
                 }
                 if let (Some((mod_ref, index)), Some(base)) = (removed, kept) {
                     super::undo::offer(super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index, base }, cx);
+                }
+                if let Some(kind) = edited {
+                    super::undo::offer(kind, cx);
                 }
                 cx.dispatch_action(&Reload);
             }
@@ -817,8 +851,8 @@ impl InstancePage {
                 }))
                 .child(made.name.clone())
                 .context_menu({
-                    let (id, launchable) = (made.id.clone(), made.loader.launchable());
-                    move |menu, window, cx| super::widgets::menu_of("instance-title", super::sidebar::instance_menu(menu, &id, launchable, cx), window, cx)
+                    let id = made.id.clone();
+                    move |menu, window, cx| super::widgets::menu_of("instance-title", super::sidebar::instance_menu(menu, &id, cx), window, cx)
                 })
                 .into_any_element()
         };
@@ -865,15 +899,17 @@ impl InstancePage {
             (None, Some(name)) => (trf("Spielen als %@", &[name]), Some(Box::new(PlayInstance { instance: made.id.clone(), account: f.solo.map(|a| a.to_string()) }))),
             (None, None) => (tr("Spielen"), None),
         };
-        if !made.loader.launchable() {
-            return sheet::button_unless("play", label, None, Look::Primary, Some(trf("Manycraft kann %@ noch nicht starten.", &[&made.loader.name()]).into()), false, t).into_any_element();
-        }
         let rings = super::theme::rings(cx);
-        let (instance, accounts, current) = (made.id.clone(), f.accounts.clone(), f.solo);
+        let (instance, accounts, current, plain) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone());
         let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
             for (account, name) in &accounts {
-                menu = menu.menu_with_check(name.clone(), current == Some(*account), Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) }));
+                let action = Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) });
+                menu = if plain.contains(account) {
+                    menu.menu_element_with_disabled(action, true, super::palette::menu_row(name.clone(), Some(tr("Läuft · ohne Vorschau")), true))
+                } else {
+                    menu.menu_with_check(name.clone(), current == Some(*account), action)
+                };
             }
             menu
         };
@@ -990,7 +1026,7 @@ impl InstancePage {
             .when(!switching, |b| {
                 b.on_click({
                     let id = made.id.clone();
-                    move |_, window, cx| window.dispatch_action(Box::new(EditMods(id.clone())), cx)
+                    move |_, window, cx| window.dispatch_action(Box::new(AddMods(id.clone())), cx)
                 })
             });
         let mut col = col;
@@ -1066,6 +1102,8 @@ impl InstancePage {
         let busy = self.switching_now();
         let blocked = busy || f.running;
         let why = if busy { Some(tr("Warte, bis die Umstellung fertig ist.")) } else { f.running.then(|| tr("Stoppe zuerst die laufenden Spiele.")) };
+        let lock = why.clone();
+        self.loader_version.update(cx, |p, cx| p.lock(lock, cx));
         let locked = |id: &'static str, control: AnyElement| match &why {
             Some(why) => sheet::unavailable_over(id, control, why.clone()).into_any_element(),
             None => control,
@@ -1092,7 +1130,11 @@ impl InstancePage {
             .gap(px(space::L))
             .child(field("instance-version-field", tr("Minecraft-Version"), version_control, Some(VERSION_WIDTH)))
             .child(field("instance-loader-field", tr("Loader"), loader_control, None));
-        let busy_line = div().min_h(px(font::CALLOUT * font::LINE)).flex().items_center().children(self.switching.as_ref().filter(|b| b.id == self.id).map(|b| sheet::waiting(b.text.clone(), t)));
+        let news = self.loader_update(made);
+        let busy_line = div().min_h(px(control::M)).flex().items_center().children(match self.switching.as_ref().filter(|b| b.id == self.id) {
+            Some(b) => Some(sheet::waiting(b.text.clone(), t).into_any_element()),
+            None => news.map(|newest| self.loader_news_line(made, &newest, t)),
+        });
         let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).child(busy_line));
         if let Load::Failed(why) = &self.versions {
             let retry = sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)));
@@ -1105,6 +1147,54 @@ impl InstancePage {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(note.clone()));
         }
         col.child(self.render_memory(made, busy, cx, t)).child(self.render_advanced(made, cx, t)).child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."))).child(self.render_actions(f, t))
+    }
+
+    fn loader_update(&self, made: &Instance) -> Option<String> {
+        let current = made.loader.version()?;
+        match &self.loader_news {
+            Some((key, Some(newest))) if *key == loader_key(made) && crate::core::install::is_newer(newest, current) => Some(newest.clone()),
+            _ => None,
+        }
+    }
+
+    fn loader_news_line(&self, made: &Instance, newest: &str, t: &Theme) -> AnyElement {
+        let (id, to) = (made.id.clone(), newest.to_owned());
+        let update = sheet::button("loader-update", tr("Aktualisieren"), None, Look::Plain, false, false, t).on_click(move |_, window, cx| super::maintenance::ask_loader(&id, &to, window, cx));
+        div()
+            .id("loader-news")
+            .mark("status", trf("%@ %@ ist verfügbar.", &[&made.loader.name(), &newest]))
+            .flex()
+            .items_center()
+            .gap(px(space::XS))
+            .text_size(px(font::CALLOUT))
+            .text_color(t.secondary)
+            .child(trf("%@ %@ ist verfügbar.", &[&made.loader.name(), &newest]))
+            .child(update)
+            .into_any_element()
+    }
+
+    fn check_loader(&mut self, made: &Instance, cx: &mut Context<Self>) {
+        let key = loader_key(made);
+        if self.loader_asked.as_ref() == Some(&key) {
+            return;
+        }
+        self.loader_asked = Some(key.clone());
+        if made.loader.version().is_none() || !matches!(made.loader, Loader::Fabric(_) | Loader::Quilt(_)) {
+            self.loader_news = None;
+            return;
+        }
+        let (loader, version) = (made.loader.clone(), made.game_version.clone());
+        let task = cx.background_executor().spawn(async move { remote::newest_loader(&loader, &version) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.loader_asked.as_ref() == Some(&key) {
+                    s.loader_news = Some((key, result.ok().flatten()));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn render_memory(&self, made: &Instance, busy: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -1165,7 +1255,7 @@ impl InstancePage {
                 .flex_col()
                 .gap(px(space::M))
                 .child(labelled(tr("Java-Argumente"), &self.jvm))
-                .when(!matches!(made.loader, Loader::Vanilla), |d| d.child(labelled(tr("Loader-Version"), &self.loader_version))),
+                .when(made.loader.takes_mods(), |d| d.child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(loader_version::label(&made.loader), t)).child(self.loader_version.clone()))),
         )
     }
 
@@ -1179,11 +1269,13 @@ impl InstancePage {
             let id = id.clone();
             move |_, window, cx| window.dispatch_action(Box::new(CloneInstance(id.clone())), cx)
         });
+        let reset = sheet::button_unless("instance-reset", tr("Zurücksetzen…"), None, Look::Secondary, f.running.then(|| tr("Stoppe zuerst die laufenden Spiele.").into()), false, t);
+        let reset = if f.running { reset } else { reset.on_click({ let id = id.clone(); move |_, window, cx| window.dispatch_action(Box::new(ResetInstance(id.clone())), cx) }) };
         let used = !f.batches.is_empty();
         let names: Vec<String> = f.batches.iter().map(|(_, name)| name.clone()).collect();
         let delete = sheet::button_unless("instance-delete", tr("Löschen…"), None, Look::Danger, used.then(|| crate::core::fleet::used_by(&names).into()), false, t);
         let delete = if used { delete } else { delete.on_click(move |_, window, cx| window.dispatch_action(Box::new(DeleteInstance(id.clone())), cx)) };
-        div().flex().items_center().gap(px(space::S)).child(open).child(clone).child(delete)
+        div().flex().flex_wrap().items_center().gap(px(space::S)).child(open).child(clone).child(reset).child(delete)
     }
 
     fn render_gone(&self, root: Stateful<Div>, t: &Theme) -> Stateful<Div> {
@@ -1209,7 +1301,7 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
             edit.game_version.clone_from(version);
             edit.loader = edit.loader.with_version(None);
             if edit.loader.takes_mods() && !edit.mods.is_empty() {
-                let (mods, gone) = remote::move_mods(&edit.mods, version)?;
+                let (mods, gone) = remote::move_mods(&edit.mods, version, &edit.loader)?;
                 edit.mods = mods;
                 missing = gone.into_iter().map(|title| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&title, version])).collect();
             }
@@ -1235,6 +1327,7 @@ impl Render for InstancePage {
             cx.remove_global::<WantsTab>();
         }
         self.sync(&f.made, window, cx);
+        self.check_loader(&f.made, cx);
         if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {
             cx.remove_global::<WantsRename>();
             self.begin_rename(window, cx);
@@ -1250,7 +1343,7 @@ impl Render for InstancePage {
             });
         }
         let header = self.header(&f, cx, &t);
-        let hint = (!f.made.loader.has_companion()).then(|| sheet::status("info", t.secondary, trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&f.made.loader.name()])));
+        let hint = super::instance_sheet::companion_hint(&f.made.loader, &f.made.game_version).map(|hint| sheet::status("info", t.secondary, hint));
         let fresh = std::mem::take(&mut self.entered);
         let files = match self.tab {
             Tab::Worlds => Some(super::instance_worlds::view(&self.id, fresh, window, cx)),
@@ -1274,7 +1367,7 @@ impl Render for InstancePage {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, InstanceEdit, Loader, ModRef, after, loader_version_of, mods_after_loader, split_args};
+    use super::{Change, InstanceEdit, Loader, ModRef, after, mods_after_loader, split_args};
     use crate::core::instance::Instance;
 
     fn mod_ref(id: &str) -> ModRef {
@@ -1341,12 +1434,6 @@ mod tests {
         assert_eq!(split_args("  -Xss1m \t -XX:+UseZGC\n"), ["-Xss1m", "-XX:+UseZGC"]);
         assert!(split_args("   ").is_empty());
         assert_eq!(split_args("-Dname=Müller"), ["-Dname=Müller"]);
-    }
-
-    #[test]
-    fn an_empty_loader_version_means_the_newest() {
-        assert_eq!(loader_version_of("  "), None);
-        assert_eq!(loader_version_of(" 0.17.2 "), Some("0.17.2".into()));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Undo history and its notices: one offer per account removal, deleted or cloned instance and removed mod. A notice
+//! Undo history and its notices: one offer per account removal, deleted, cloned, reset or changed instance and removed mod. A notice
 //! hides after a while; its offer stays reachable with Ctrl+Z and the palette until Manycraft quits.
 
 use std::time::Instant;
@@ -10,6 +10,7 @@ use super::accounts::{self, Pending};
 use super::actions::Undo;
 use super::drive::Mark;
 use super::remote::InstanceEdit;
+use crate::core::instance::Instance;
 use super::sheet::{self, Look};
 use super::theme::{Theme, font, radius, shell, space, tint, with_alpha};
 use super::{forms, main_window, model, remote, state};
@@ -19,12 +20,24 @@ use crate::core::i18n::{tr, trf};
 const MAX_TOASTS: usize = 3;
 const MAX_OFFERS: usize = 50;
 
+/// What a change of an instance's name, version or loader was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Edit {
+    Renamed,
+    /// Moved to another game version or loader; carries what it moved to, like "Minecraft 26.3" or "Quilt".
+    Switched(String),
+    /// Moved to a newer loader; carries it, like "Fabric 0.18.1".
+    Updated(String),
+}
+
 /// What an undo notice brings back.
 pub enum Kind {
     Deleted { id: String, name: String, entry: String },
     Cloned { id: String, name: String, source: String },
     ModRemoved { instance_id: String, mod_ref: ModRef, index: usize, base: InstanceEdit },
     Files { name: String, undo: super::instance_files::FileUndo },
+    Edited { instance_id: String, name: String, what: Edit, before: InstanceEdit, after: InstanceEdit },
+    Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
 }
 
 struct Offer {
@@ -150,7 +163,7 @@ fn slot(ats: impl Iterator<Item = Instant>, at: Instant) -> usize {
 }
 
 fn evict(items: &[(u64, Offer)]) -> Option<usize> {
-    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. });
+    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. } | Kind::Reset { .. });
     if items.iter().filter(|(_, o)| capped(o)).count() <= MAX_OFFERS {
         return None;
     }
@@ -259,6 +272,16 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::Files { name, undo: super::instance_files::FileUndo::Deleted { .. } } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Files { name, undo: super::instance_files::FileUndo::Restored { .. } } => (name.clone(), trf("„%@“ wiederhergestellt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Files { name, undo: super::instance_files::FileUndo::Copied { .. } } => (name.clone(), trf("„%@“ kopiert.", &[name]), trf("Die Kopie von „%@“ wurde nicht entfernt.", &[name])),
+            Kind::Reset { name, .. } => (name.clone(), trf("„%@“ zurückgesetzt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Edited { name, what, .. } => {
+                let done = match what {
+                    Edit::Renamed => trf("Umbenannt in „%@“.", &[name]),
+                    Edit::Switched(to) => trf("„%@“ auf %@ umgestellt.", &[name, to]),
+                    Edit::Updated(to) => trf("„%@“ auf %@ aktualisiert.", &[name, to]),
+                };
+                let undone = if *what == Edit::Renamed { trf("„%@“ wurde nicht zurückbenannt.", &[name]) } else { trf("„%@“ wurde nicht zurückgestellt.", &[name]) };
+                (name.clone(), done, undone)
+            }
         };
         let text = if offer.failed { undone } else { done };
         lines.push(Line { at: offer.at, target: Target::Instance(*id), key: format!("offer-{id}"), text, name, failed: offer.failed, shown: offer.shown, hovered: offer.hovered });
@@ -305,6 +328,8 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
         Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, at, cx),
         Kind::Files { name, undo } => super::instance_files::undo(name, undo, at, cx),
+        Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
+        Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
     }
 }
 
@@ -480,6 +505,22 @@ mod tests {
         assert_eq!(evict(&items), Some(2));
         items.retain(|(_, o)| matches!(o.kind, Kind::Deleted { .. }));
         items.extend((0..MAX_OFFERS * 2).map(|_| (0, deleted())));
+        assert_eq!(evict(&items), None);
+    }
+
+    fn reset() -> Offer {
+        let made = crate::core::instance::Instance::new("A", "26.2", crate::core::instance::Loader::Vanilla);
+        offer_of(Kind::Reset { instance_id: "a".into(), name: "A".into(), entry: "a-1.reset".into(), before: made.clone(), after: made }).1
+    }
+
+    #[test]
+    fn a_reset_is_kept_like_a_deletion_while_edits_count_against_the_cap() {
+        let mut items: Vec<(u64, Offer)> = vec![(0, reset())];
+        items.extend((0..MAX_OFFERS).map(|i| (i as u64 + 1, cloned())));
+        items.push((99, cloned()));
+        assert_eq!(evict(&items), Some(1));
+        items.retain(|(_, o)| matches!(o.kind, Kind::Reset { .. }));
+        items.extend((0..MAX_OFFERS * 2).map(|_| (0, reset())));
         assert_eq!(evict(&items), None);
     }
 

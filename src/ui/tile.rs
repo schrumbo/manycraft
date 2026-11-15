@@ -214,7 +214,7 @@ impl Geometry {
 
 /// Whether the game of an instance in `phase` has a window to show.
 pub fn playable(phase: &Phase) -> bool {
-    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -223,6 +223,7 @@ enum Primary {
     Reconnect,
     Respawn,
     Start,
+    Retry,
     SignIn,
 }
 
@@ -235,8 +236,9 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         Phase::Dead { .. } => Some(Primary::Respawn),
         Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
         Phase::LoginNeeded => Some(Primary::SignIn),
-        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } => Some(Primary::Play),
-        Phase::Starting { .. } => None,
+        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
+        Phase::NoNetwork => Some(Primary::Retry),
+        Phase::Starting { .. } | Phase::Plain => None,
         Phase::Banned { .. } => Some(Primary::Reconnect),
         Phase::Restarting { .. } => Some(Primary::Start),
     }
@@ -249,6 +251,7 @@ impl Primary {
             Self::Reconnect => tr("Neu verbinden"),
             Self::Respawn => tr("Wiederbeleben"),
             Self::Start => tr("Starten"),
+            Self::Retry => tr("Erneut versuchen"),
             Self::SignIn => tr("Anmelden"),
         }
     }
@@ -259,6 +262,7 @@ impl Primary {
             Self::Reconnect => "refresh-cw",
             Self::Respawn => "heart-pulse",
             Self::Start => "play",
+            Self::Retry => "refresh-cw",
             Self::SignIn => "log-in",
         }
     }
@@ -268,7 +272,7 @@ impl Primary {
             Self::Play => Box::new(Play(key.to_owned())),
             Self::Reconnect => Box::new(Reconnect(key.to_owned())),
             Self::Respawn => Box::new(Respawn(key.to_owned())),
-            Self::Start => Box::new(Start(key.to_owned())),
+            Self::Start | Self::Retry => Box::new(Start(key.to_owned())),
             Self::SignIn => Box::new(SignInAgain(account.to_string())),
         }
     }
@@ -349,7 +353,9 @@ fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
     }
     match d.phase {
         Phase::Stopped if !d.stopping => None,
+        _ if cut_off(d) => Some(("wifi-off", t.tertiary)),
         Phase::Starting { .. } if !d.stopping => Some(("hourglass", t.tertiary)),
+        Phase::Plain if !d.stopping => Some(("app-window", t.tertiary)),
         _ => Some(("loader-circle", t.tertiary)),
     }
 }
@@ -358,14 +364,21 @@ fn glyph(d: &TileData, neutral: Hsla, t: &Theme) -> AnyElement {
     if let Some((fill, _, name)) = tone(d, t) {
         return icon(name, iconsize::XS, fill).into_any_element();
     }
+    if cut_off(d) {
+        return icon("wifi-off", iconsize::XS, neutral).into_any_element();
+    }
     let dot = div().size(px(tile::GLYPH)).mx(px((iconsize::XS - tile::GLYPH) / 2.)).flex_none().rounded(px(radius::FULL));
     let dot = match d.phase {
         _ if d.stopping => dot.border_1().border_color(neutral),
         Phase::Playing { .. } => dot.bg(t.success),
-        Phase::Menu | Phase::Queue { .. } => dot.bg(neutral),
+        Phase::Menu | Phase::Queue { .. } | Phase::Plain => dot.bg(neutral),
         _ => dot.border_1().border_color(neutral),
     };
     dot.into_any_element()
+}
+
+fn cut_off(d: &TileData) -> bool {
+    !d.stopping && matches!(d.phase, Phase::NetworkLost { .. } | Phase::NoNetwork)
 }
 
 fn aspect(image: &RenderImage) -> f32 {
@@ -382,7 +395,7 @@ fn picture(d: &TileData, g: &Geometry, t: &Theme) -> Option<AnyElement> {
 }
 
 fn actions(d: &TileData, g: &Geometry, t: &Theme) -> Option<Div> {
-    let active = d.phase.is_active() && !d.stopping;
+    let active = d.phase.stoppable() && !d.stopping;
     let main = primary(&d.phase, d.stopping);
     let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
     if main.is_none() && stop.is_none() {
@@ -505,7 +518,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let menu_batch = d.batch_id.clone();
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
-    let reconnectable = running && !matches!(d.phase, Phase::Starting { .. }) && !stopping;
+    let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
     let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
         .relative()
@@ -549,7 +562,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
                 window.dispatch_action(Box::new(Play(key.clone())), cx);
             }
         });
-    let (account, login) = (d.account_id, d.phase == Phase::LoginNeeded);
+    let (account, login, waits) = (d.account_id, d.phase == Phase::LoginNeeded, d.phase == Phase::NoNetwork);
     tile.context_menu(move |menu, window, cx| {
         let chosen = menu_view.upgrade().map(|v| v.read(cx).grid.chosen()).unwrap_or_default();
         let several = chosen.len() > 1 && chosen.contains(&menu_key);
@@ -574,7 +587,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         let menu = if can_play { menu.menu(tr("Spielen"), Box::new(Play(menu_key.clone()))) } else { menu };
         let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
         let menu = menu.menu_with_disabled(tr("Neu verbinden"), Box::new(Reconnect(menu_key.clone())), !reconnectable);
-        let menu = if running || stopping {
+        let menu = if running || stopping || waits {
             menu.menu_with_disabled(tr("Stoppen"), Box::new(Stop(menu_key.clone())), stopping)
         } else if login {
             menu.menu(tr("Anmelden"), Box::new(SignInAgain(account.to_string())))

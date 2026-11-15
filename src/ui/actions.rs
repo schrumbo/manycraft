@@ -190,3 +190,18 @@ pub struct OpenInstanceFolder(pub String);
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
 pub struct ExportInstance(pub String);
+
+/// Opens the mod browser of an instance (id) with the search focused.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct AddMods(pub String);
+
+/// Asks, then sets an instance (id) back to its mods, config and packs from when it was created. Worlds stay.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ResetInstance(pub String);
+
+/// Looks for a newer stable loader for an instance (id), asks, then switches to it.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct UpdateLoader(pub String);

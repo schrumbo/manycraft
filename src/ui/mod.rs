@@ -15,7 +15,9 @@ pub mod instance_page;
 mod instance_shots;
 mod instance_worlds;
 pub mod instance_sheet;
+pub mod loader_version;
 pub mod main_window;
+pub mod maintenance;
 pub mod mod_browser;
 #[allow(dead_code)]
 pub mod model;

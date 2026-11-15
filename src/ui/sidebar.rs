@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -93,7 +93,7 @@ fn row_body(r: Row, selected: bool, t: &Theme) -> Stateful<Div> {
 }
 
 struct InstanceRows {
-    rows: Vec<(Row, String, bool)>,
+    rows: Vec<(Row, String)>,
     selected: Page,
     main: WeakEntity<MainWindow>,
 }
@@ -106,7 +106,7 @@ impl Global for InstanceRowsView {}
 impl Render for InstanceRows {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let rows = self.rows.iter().cloned().map(|(mut r, id, launchable)| {
+        let rows = self.rows.iter().cloned().map(|(mut r, id)| {
             if menu_open(&r.id, cx) {
                 r.hint = None;
             }
@@ -115,13 +115,13 @@ impl Render for InstanceRows {
             let key = r.id.clone();
             row_body(r, self.selected == page, &t)
                 .on_click(move |_, window, cx| drop(main.update(cx, |this, cx| this.go(page.clone(), window, cx))))
-                .context_menu(move |menu, window, cx| menu_of(&key, instance_menu(menu, &id, launchable, cx), window, cx))
+                .context_menu(move |menu, window, cx| menu_of(&key, instance_menu(menu, &id, cx), window, cx))
         });
         div().size_full().flex().flex_col().gap(px(space::XXS)).children(rows)
     }
 }
 
-fn instance_list(rows: Vec<(Row, String, bool)>, selected: Page, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+fn instance_list(rows: Vec<(Row, String)>, selected: Page, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let count = rows.len() as f32;
     if rows.is_empty() {
         return None;
@@ -273,9 +273,9 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
 }
 
 /// The menu of a batch, in the sidebar and over its tiles.
-pub fn batch_menu(menu: PopupMenu, id: &str, running: usize, stopped: usize, exporting: bool) -> PopupMenu {
+pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, exporting: bool) -> PopupMenu {
     menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(id.to_owned())), stopped == 0)
-        .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), running == 0)
+        .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), stoppable == 0)
         .separator()
         .menu(tr("Batch bearbeiten"), Box::new(EditBatch(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenBatchFolder(id.to_owned())))
@@ -349,15 +349,31 @@ fn new_row(id: &'static str, label: String, action: Box<dyn Action>, t: &Theme) 
 }
 
 /// The menu of an instance, in the sidebar and over the tiles it plays alone.
-pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool, cx: &App) -> PopupMenu {
-    let users: Vec<String> = model::get(cx).read(cx).batches.iter().filter(|b| b.instance_id == id).map(|b| b.name.clone()).collect();
-    let menu = menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
-        .menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
+pub fn instance_menu(menu: PopupMenu, id: &str, cx: &App) -> PopupMenu {
+    let m = model::get(cx).read(cx);
+    let users: Vec<String> = m.batches.iter().filter(|b| b.instance_id == id).map(|b| b.name.clone()).collect();
+    let made = m.instance(id);
+    let takes_mods = made.is_some_and(|made| made.loader.takes_mods());
+    let pinned = made.is_some_and(|made| matches!(made.loader, crate::core::instance::Loader::Fabric(Some(_)) | crate::core::instance::Loader::Quilt(Some(_))));
+    let running = m.games.values().any(|g| g.instance_id == id && g.phase.is_active());
+    let mut menu = menu.menu(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None })).menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())));
+    if takes_mods {
+        menu = menu.menu(tr("Mods hinzufügen…"), Box::new(AddMods(id.to_owned()))).menu(tr("Mods verwalten…"), Box::new(EditMods(id.to_owned())));
+    }
+    if pinned {
+        menu = menu.menu(tr("Loader aktualisieren…"), Box::new(UpdateLoader(id.to_owned())));
+    }
+    let menu = menu
         .menu(tr("Klonen"), Box::new(CloneInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenInstanceFolder(id.to_owned())))
         .menu(tr("Als .mrpack exportieren…"), Box::new(ExportInstance(id.to_owned())))
         .separator();
+    let menu = if running {
+        menu.menu_element_with_disabled(Box::new(ResetInstance(id.to_owned())), true, super::palette::menu_row(tr("Zurücksetzen…"), Some(tr("Stoppe zuerst die laufenden Spiele.")), true))
+    } else {
+        menu.menu(tr("Zurücksetzen…"), Box::new(ResetInstance(id.to_owned())))
+    };
     if users.is_empty() {
         menu.menu(tr("Löschen…"), Box::new(DeleteInstance(id.to_owned())))
     } else {
@@ -400,14 +416,15 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 _ => trf("%lld von %lld laufen", &[&fine, &total]),
             };
             let stopped = total - running;
+            let stoppable = m.games.values().filter(|i| i.batch_id == b.id && i.phase.stoppable()).count();
             let exporting = m.exporting.contains(&b.instance_id);
             let trailing = if exporting { tr("Wird exportiert …") } else { format!("{fine}/{total}") };
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false }, b.id.clone(), running, stopped, exporting)
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false }, b.id.clone(), stoppable, stopped, exporting)
         })
         .collect();
     let mut instances: Vec<&Instance> = m.instances.iter().collect();
     instances.sort_by_cached_key(|i| i.name.to_lowercase());
-    let instances: Vec<(Row, String, bool)> = instances
+    let instances: Vec<(Row, String)> = instances
         .into_iter()
         .map(|made| {
             let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
@@ -422,7 +439,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 hint: running.then(|| tr("Läuft gerade")),
                 running,
             };
-            (r, made.id.clone(), made.loader.launchable())
+            (r, made.id.clone())
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None, running: false };
@@ -434,9 +451,9 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         import_row(import, &t).context_menu(move |menu, _, _| menu.menu_with_disabled(tr("Import abbrechen"), Box::new(CancelImport(id)), stopping)).into_any_element()
     }).collect();
     let mut batch_rows = Vec::new();
-    for (r, id, running, stopped, exporting) in batches {
+    for (r, id, stoppable, stopped, exporting) in batches {
         let key = r.id.clone();
-        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, running, stopped, exporting), window, cx));
+        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, stoppable, stopped, exporting), window, cx));
         batch_rows.push(element.into_any_element());
     }
     batch_rows.extend(imports);

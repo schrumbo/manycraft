@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -20,7 +20,8 @@ use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{Lang, lang, tr, trf};
+use crate::core::instance::Loader;
 use crate::core::modicons;
 use crate::core::modrinth::{Hit, Page, Sort, Support};
 
@@ -42,6 +43,7 @@ const BAR_HEIGHT: f32 = 10.;
 struct Key {
     query: String,
     version: String,
+    loader: Loader,
     sort: Sort,
     all: bool,
 }
@@ -167,10 +169,10 @@ impl Browser {
         (browser, sub)
     }
 
-    fn key(&self, version: &str, cx: &App) -> Key {
+    fn key(&self, version: &str, loader: &Loader, cx: &App) -> Key {
         let query = self.query.read(cx).value().trim().to_lowercase();
         let sort = if query.is_empty() { Sort::Downloads } else { self.sort };
-        Key { query, version: version.to_owned(), sort, all: self.all }
+        Key { query, version: version.to_owned(), loader: loader.with_version(None), sort, all: self.all }
     }
 
     fn fresh(&self) -> bool {
@@ -187,9 +189,21 @@ impl Browser {
     }
 
     fn reindex(&mut self) {
-        let (version, all) = self.shown.as_ref().map_or(("", true), |k| (k.version.as_str(), k.all));
-        let visible = self.page().map_or_else(Vec::new, |p| p.hits.iter().enumerate().filter(|(_, h)| all || h.support(version) == Support::Fits).map(|(i, _)| i).collect());
+        let (version, loader, all) = self.shown.as_ref().map_or(("", &Loader::Vanilla, true), |k| (k.version.as_str(), &k.loader, k.all));
+        let visible = self.page().map_or_else(Vec::new, |p| p.hits.iter().enumerate().filter(|(_, h)| all || h.support(version, loader) == Support::Fits).map(|(i, _)| i).collect());
         self.visible = visible;
+    }
+
+    pub(super) fn stale(&self) -> bool {
+        matches!(self.status, Status::Failed(_)) || self.page().is_some_and(|p| p.saved.is_some())
+    }
+
+    pub(super) fn forget_saved(&mut self) {
+        self.cache.retain(|_, p| p.saved.is_none());
+        if self.page().is_none() {
+            self.shown = None;
+            self.wanted = None;
+        }
     }
 
     fn forget(&mut self) {
@@ -267,9 +281,13 @@ impl InstanceSheet {
         cx.notify();
     }
 
+    pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.browser.query.update(cx, |q, cx| q.take_focus(window, cx));
+    }
+
     pub(super) fn browse_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.browser.query.read(cx).value().is_empty() {
-            self.open_search(false, window, cx);
+            self.leave_search(window, cx);
         } else {
             self.browser.query.update(cx, |q, cx| q.set_value("", window, cx));
             self.browse_refresh(false, cx);
@@ -347,11 +365,11 @@ impl InstanceSheet {
         if self.mods.iter().any(|m| m.project_id == hit.project_id) {
             return if self.browse_update_for(&hit.project_id) && self.updating.is_empty() && !self.saving { Act::Update } else { Act::Nothing };
         }
-        if hit.support(&self.version) == Support::Fits { Act::Install } else { Act::Nothing }
+        if hit.support(&self.version, &self.loader) == Support::Fits { Act::Install } else { Act::Nothing }
     }
 
     pub(super) fn browse_refresh(&mut self, debounce: bool, cx: &mut Context<Self>) {
-        let key = self.browser.key(&self.version, cx);
+        let key = self.browser.key(&self.version, &self.loader, cx);
         if debounce && self.browser.wanted.as_ref() == Some(&key) {
             return;
         }
@@ -386,7 +404,7 @@ impl InstanceSheet {
                 }
             }
             let asked = key.clone();
-            let result = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, asked.sort, asked.all, 0) }).await;
+            let result = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, &asked.loader, asked.sort, asked.all, 0) }).await;
             let _ = this.update(cx, |s, cx| {
                 let current = s.browser.generation == generation;
                 match result {
@@ -419,7 +437,7 @@ impl InstanceSheet {
         let generation = self.browser.generation;
         cx.notify();
         let asked = key.clone();
-        let task = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, asked.sort, asked.all, offset) });
+        let task = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, &asked.loader, asked.sort, asked.all, offset) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
@@ -472,12 +490,14 @@ impl InstanceSheet {
         let version = self.version.clone();
         let ids = vec![id.clone()];
         let asked = version.clone();
-        let task = cx.background_executor().spawn(async move { remote::resolve(&ids, &asked) });
+        let loader = self.loader.clone();
+        let asked_loader = loader.clone();
+        let task = cx.background_executor().spawn(async move { remote::resolve(&ids, &asked, &asked_loader) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.browser.adding.remove(&id);
-                if s.version != version {
+                if s.version != version || !s.loader.same_kind(&loader) {
                     return;
                 }
                 match result {
@@ -533,7 +553,7 @@ impl InstanceSheet {
     fn browse_row(&mut self, ix: usize, hit: Hit, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let pid = hit.project_id.clone();
         let installed = self.mods.iter().any(|m| m.project_id == pid);
-        let support = hit.support(&self.version);
+        let support = hit.support(&self.version, &self.loader);
         let dim = !installed && support != Support::Fits;
         let selected = ix == self.browser.sel && self.browser.fresh();
         let face = match modicons::icon(&pid) {
@@ -808,9 +828,27 @@ impl InstanceSheet {
                     s.browse_undo(cx);
                     s.browser.query.update(cx, |q, cx| q.take_focus(window, cx));
                 }))),
-            None => line,
+            None => match self.browser.page().and_then(|p| p.saved) {
+                Some(at) => line.child(sheet::status("wifi-off", t.secondary, saved_text(at))).child(sheet::button("search-saved-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| {
+                    s.browser.forget_saved();
+                    s.browse_refresh(false, cx);
+                }))),
+                None => line,
+            },
         }
     }
+}
+
+fn saved_text(at: SystemTime) -> String {
+    let at = chrono::DateTime::<chrono::Local>::from(at);
+    let when = if at.date_naive() == chrono::Local::now().date_naive() {
+        at.format("%H:%M").to_string()
+    } else if lang() == Lang::En {
+        at.format("%b %-d").to_string()
+    } else {
+        at.format("%-d.%-m.").to_string()
+    };
+    trf("Keine Verbindung · Ergebnisse von %@", &[&when])
 }
 
 fn placeholder(t: &Theme) -> Div {

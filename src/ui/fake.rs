@@ -56,7 +56,7 @@ impl Fake {
 }
 
 impl Backend for Fake {
-    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
+    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, _home: Option<crate::core::place::Rect>) {
         let _ = self.tx.send(Cmd::Start(target, accounts, cancel));
     }
 
@@ -134,10 +134,14 @@ impl Sim {
     }
 
     fn launch(&mut self, key: &str, after: Duration, cancel: Option<&Arc<AtomicBool>>) {
-        self.at(after, cancel, Update::Launched { key: key.to_owned() });
+        self.at(after, cancel, Update::Launched { key: key.to_owned(), plain: false });
         self.at(after + Duration::from_millis(1500), cancel, connected(key));
         self.at(after + Duration::from_millis(2500), cancel, state(key, StateKind::Connecting, None));
         self.at(after + Duration::from_millis(3500), cancel, state(key, StateKind::Playing, None));
+    }
+
+    fn launch_plain(&mut self, key: &str, after: Duration, cancel: Option<&Arc<AtomicBool>>) {
+        self.at(after, cancel, Update::Launched { key: key.to_owned(), plain: true });
     }
 
     fn command(&mut self, cmd: Cmd) {
@@ -151,10 +155,15 @@ impl Sim {
             }
             Cmd::Start(target, accounts, cancel) => {
                 let total = accounts.len();
+                let plain = !crate::core::companion::available(&target.instance.loader, &target.instance.game_version);
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
                     let after = STAGGER * n as u32;
-                    self.launch(&key, after, Some(&cancel));
+                    if plain {
+                        self.launch_plain(&key, after, Some(&cancel));
+                    } else {
+                        self.launch(&key, after, Some(&cancel));
+                    }
                     self.at(after, Some(&cancel), Update::Progress { batch: target.owner(), done: n + 1, total });
                 }
             }
@@ -335,9 +344,9 @@ impl Sim {
 
 fn touches(update: &Update, key: &str) -> bool {
     match update {
-        Update::Launched { key: k } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
+        Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
-        Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Ipc(Event::Reopen) => false,
+        Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen) => false,
     }
 }
 
