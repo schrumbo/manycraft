@@ -179,8 +179,7 @@ fn legacy_jvm(os: Os) -> Vec<String> {
     let mut out = vec!["-Dminecraft.launcher.brand=${launcher_name}".to_owned(), "-Dminecraft.launcher.version=${launcher_version}".to_owned()];
     match os {
         Os::Windows => out.push("-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump".to_owned()),
-        Os::Osx => out.push("-XstartOnFirstThread".to_owned()),
-        Os::Linux => {}
+        Os::Osx | Os::Linux => {}
     }
     out
 }

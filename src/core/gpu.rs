@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::options::Gpu;
@@ -39,19 +39,26 @@ struct Entry {
 
 /// Asks for `choice` for `program` on behalf of `instance`. Without a choice, the instance lets go of the program, and
 /// what was there before comes back once no instance asks any more.
+/// Any other program the instance asked for before is let go of, so a Java it no longer starts gets its old value back.
 pub fn apply_to(prefs: &mut dyn Preferences, ledger: &mut Ledger, program: &str, instance: &str, choice: Option<Gpu>) -> Result<()> {
-    let Some(choice) = choice else {
-        if ledger.0.get_mut(program).is_some_and(|e| e.by.remove(instance)) {
-            restore_unused(prefs, ledger)?;
+    let Some(choice) = choice else { return release_from(prefs, ledger, instance) };
+    for (other, entry) in &mut ledger.0 {
+        if other != program {
+            entry.by.remove(instance);
         }
-        return Ok(());
-    };
-    let entry = ledger.0.entry(program.to_owned()).or_insert_with(|| Entry { before: prefs.get(program), by: BTreeSet::new() });
-    entry.by.insert(instance.to_owned());
+    }
+    record(prefs, ledger, program);
+    if let Some(entry) = ledger.0.get_mut(program) {
+        entry.by.insert(instance.to_owned());
+    }
     if prefs.get(program).as_deref() != Some(value(choice)) {
         prefs.set(program, value(choice))?;
     }
-    Ok(())
+    restore_unused(prefs, ledger)
+}
+
+fn record(prefs: &dyn Preferences, ledger: &mut Ledger, program: &str) {
+    ledger.0.entry(program.to_owned()).or_insert_with(|| Entry { before: prefs.get(program), by: BTreeSet::new() });
 }
 
 /// Lets `instance` go of every program it asked a graphics card for.
@@ -80,7 +87,11 @@ fn with_ledger(change: impl FnOnce(&mut dyn Preferences, &mut Ledger) -> Result<
         return Ok(());
     }
     let path = super::paths::data_dir().join(LEDGER);
-    let mut ledger: Ledger = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut ledger: Ledger = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ledger::default(),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
     if skip_when_empty && ledger.0.is_empty() {
         return Ok(());
     }
@@ -94,8 +105,18 @@ fn with_ledger(change: impl FnOnce(&mut dyn Preferences, &mut Ledger) -> Result<
 }
 
 /// Applies the graphics card choice of `instance` to the Java launcher it starts with. Does nothing outside Windows.
+/// What stood in the registry is saved before the registry changes, so a crash in between loses nothing.
 pub fn apply(java: &Path, instance: &str, choice: Option<Gpu>) -> Result<()> {
     let program = java.to_string_lossy().into_owned();
+    if choice.is_some() {
+        with_ledger(
+            |prefs, ledger| {
+                record(prefs, ledger, &program);
+                Ok(())
+            },
+            false,
+        )?;
+    }
     with_ledger(|prefs, ledger| apply_to(prefs, ledger, &program, instance, choice), choice.is_none())
 }
 
@@ -200,6 +221,7 @@ mod tests {
     }
 
     const JAVA: &str = r"C:\mc\runtimes\epsilon\bin\javaw.exe";
+    const OTHER: &str = r"C:\mc\runtimes\delta\bin\javaw.exe";
 
     #[test]
     fn the_registry_values_are_windows_own() {
@@ -239,6 +261,29 @@ mod tests {
         release_from(&mut prefs, &mut ledger, "a").unwrap();
         assert_eq!(prefs.get(JAVA).as_deref(), Some("GpuPreference=0;"));
         assert_eq!(ledger, Ledger::default());
+    }
+
+    #[test]
+    fn moving_to_another_java_gives_the_old_one_back() {
+        let (mut prefs, mut ledger) = (Fake::default(), Ledger::default());
+        prefs.0.insert(JAVA.into(), "GpuPreference=1;".into());
+        apply_to(&mut prefs, &mut ledger, JAVA, "a", Some(Gpu::HighPerformance)).unwrap();
+        apply_to(&mut prefs, &mut ledger, OTHER, "a", Some(Gpu::HighPerformance)).unwrap();
+        assert_eq!(prefs.0.get(JAVA).map(String::as_str), Some("GpuPreference=1;"));
+        assert_eq!(prefs.0.get(OTHER).map(String::as_str), Some("GpuPreference=2;"));
+        apply_to(&mut prefs, &mut ledger, OTHER, "a", None).unwrap();
+        assert_eq!(prefs.0.get(OTHER), None);
+        assert_eq!(ledger, Ledger::default());
+    }
+
+    #[test]
+    fn a_recorded_but_unclaimed_program_gets_its_value_back() {
+        let (mut prefs, mut ledger) = (Fake::default(), Ledger::default());
+        prefs.0.insert(JAVA.into(), "GpuPreference=1;".into());
+        record(&prefs, &mut ledger, JAVA);
+        prefs.0.insert(JAVA.into(), "GpuPreference=2;".into());
+        apply_to(&mut prefs, &mut ledger, OTHER, "a", Some(Gpu::HighPerformance)).unwrap();
+        assert_eq!(prefs.0.get(JAVA).map(String::as_str), Some("GpuPreference=1;"));
     }
 
     #[test]

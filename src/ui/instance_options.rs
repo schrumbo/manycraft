@@ -203,11 +203,11 @@ impl InstancePage {
         if self.advanced && self.opts.javas.is_none() && !self.opts.detecting {
             self.detect_javas(cx);
         }
-        let key = (made.id.clone(), made.options.clone());
-        if self.opts.synced.as_ref() != Some(&key) {
-            let options = &made.options;
+        let options = &made.options;
+        let current = self.opts.synced.as_ref().is_some_and(|(id, saved)| *id == made.id && saved.game_args == options.game_args && saved.window == options.window);
+        if !current {
             let (args, width, height) = (options.game_args.join(" "), options.window.map(|w| w.width.to_string()).unwrap_or_default(), options.window.map(|w| w.height.to_string()).unwrap_or_default());
-            self.opts.synced = Some(key);
+            self.opts.synced = Some((made.id.clone(), options.clone()));
             self.opts.game_args.update(cx, |s, cx| s.set_value(args, window, cx));
             self.opts.width.update(cx, |s, cx| s.set_value(width, window, cx));
             self.opts.height.update(cx, |s, cx| s.set_value(height, window, cx));

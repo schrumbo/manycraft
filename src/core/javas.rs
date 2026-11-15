@@ -35,6 +35,15 @@ pub fn parse_version_output(text: &str) -> Option<String> {
     line.split('"').nth(1).filter(|v| !v.is_empty()).map(str::to_owned)
 }
 
+/// `path` without the `\\?\` prefix `canonicalize` puts before a drive path on Windows, as the file picker and Windows'
+/// own graphics settings write it.
+pub fn plain(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(rest) if !rest.starts_with(r"UNC\") => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
 /// The major version of a Java version string: 8 for `1.8.0_402`, 21 for `21.0.1`, 25 for `25`.
 pub fn major(version: &str) -> Option<u32> {
     let mut parts = version.split(['.', '_', '-', '+']);
@@ -42,9 +51,10 @@ pub fn major(version: &str) -> Option<u32> {
     if first == 1 { parts.next()?.parse().ok() } else { Some(first) }
 }
 
-/// Why Java `major` cannot start a game that needs Java `required`; versions before 17 run only on their own Java.
+/// Why Java `major` cannot start a game that needs Java `required`; games that need Java before 16 run only on their own
+/// Java, newer ones on that Java or later.
 pub fn mismatch(required: u32, major: u32, game: &str) -> Option<String> {
-    let fits = if required < 17 { major == required } else { major >= required };
+    let fits = if required < 16 { major == required } else { major >= required };
     (!fits).then(|| trf("Minecraft %@ braucht Java %@, gewählt ist Java %@.", &[&game, &required, &major]))
 }
 
@@ -137,7 +147,7 @@ pub fn detect() -> Vec<Java> {
     let own = super::paths::data_dir();
     let mut found: BTreeMap<PathBuf, Java> = BTreeMap::new();
     for home in homes {
-        let Ok(home) = home.canonicalize() else { continue };
+        let Ok(home) = home.canonicalize().map(plain) else { continue };
         if home.starts_with(&own) || found.contains_key(&home) {
             continue;
         }
@@ -283,11 +293,20 @@ mod tests {
     }
 
     #[test]
+    fn a_canonical_windows_path_loses_its_verbatim_prefix() {
+        assert_eq!(plain(PathBuf::from(r"\\?\C:\Java\jdk-21")), PathBuf::from(r"C:\Java\jdk-21"));
+        assert_eq!(plain(PathBuf::from(r"\\?\UNC\host\share")), PathBuf::from(r"\\?\UNC\host\share"));
+        assert_eq!(plain(PathBuf::from("/usr/lib/jvm/java-21")), PathBuf::from("/usr/lib/jvm/java-21"));
+    }
+
+    #[test]
     fn old_games_need_their_own_java_and_new_ones_at_least_theirs() {
         assert!(mismatch(8, 8, "1.8.9").is_none());
         assert!(mismatch(8, 17, "1.8.9").unwrap().contains("Java 8"));
         assert!(mismatch(21, 25, "1.21.5").is_none());
         assert!(mismatch(21, 17, "1.21.5").is_some());
+        assert!(mismatch(16, 17, "1.17.1").is_none());
+        assert!(mismatch(16, 8, "1.17.1").is_some());
         assert_eq!(required_major(Some(17), Some("java-runtime-delta")), 17);
         assert_eq!(required_major(None, Some("jre-legacy")), 8);
         assert_eq!(required_major(None, None), 8);

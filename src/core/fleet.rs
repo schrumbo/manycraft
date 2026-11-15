@@ -1470,14 +1470,26 @@ fn check_unused(doomed: &Instance) -> Result<()> {
 pub fn remove_instance(doomed: &Instance) -> Result<String> {
     check_unused(doomed)?;
     let _quiet = lock::try_exclusive(&paths::data_dir().join(install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))?;
-    instance::trash(doomed)
+    let entry = instance::trash(doomed)?;
+    release_gpu(doomed);
+    Ok(entry)
+}
+
+fn release_gpu(gone: &Instance) {
+    if gone.options.gpu.is_some()
+        && let Err(e) = super::gpu::release(&gone.id)
+    {
+        eprintln!("graphics card preference of {} not released: {e:#}", gone.id);
+    }
 }
 
 /// Moves `doomed` to the trash and returns its trash entry like [`remove_instance`], but without waiting for every game
 /// to stop; refused only while a batch plays it. Callers check first that no game of it runs.
 pub fn discard_instance(doomed: &Instance) -> Result<String> {
     check_unused(doomed)?;
-    instance::trash(doomed)
+    let entry = instance::trash(doomed)?;
+    release_gpu(doomed);
+    Ok(entry)
 }
 
 /// Brings the trash entry `entry` back out of the trash.

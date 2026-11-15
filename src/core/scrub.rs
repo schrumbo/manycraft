@@ -1,4 +1,5 @@
-//! Keeps secrets out of the crash files the JVM writes: it prints its whole command line, access token included.
+//! Keeps secrets out of the crash files the JVM writes, which print its whole command line, access token included, and
+//! out of the game logs, where clients up to 1.12 print their session as `token:<access token>:<uuid>`.
 
 use std::path::Path;
 
@@ -10,6 +11,7 @@ const ENV_NAMES: [&str; 2] = ["MANYCRAFT_TOKEN=", "MANYCRAFT_PROXY="];
 const JWT_START: &str = "eyJ";
 const JWT_MIN: usize = 30;
 const MARKERS: [&str; 4] = [TOKEN_FLAG, "MANYCRAFT_", "://", JWT_START];
+const GAME_LOGS: [&str; 2] = ["latest.log", "manycraft-launch.log"];
 
 fn may_hold_secrets(text: &str) -> bool {
     MARKERS.iter().any(|m| text.contains(m))
@@ -88,10 +90,17 @@ pub fn scrub_file(path: &Path) -> bool {
     clean != text && net::write_atomic(path, clean.as_bytes()).is_ok()
 }
 
-/// Redacts every crash file in `logs`; returns how many it changed.
+/// Redacts every crash file and game log in `logs`; returns how many it changed.
 pub fn scrub_logs(logs: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(logs) else { return 0 };
-    entries.filter_map(Result::ok).filter(|e| is_crash_file(&e.file_name().to_string_lossy())).filter(|e| scrub_file(&e.path())).count()
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            is_crash_file(&name) || GAME_LOGS.contains(&name.as_str())
+        })
+        .filter(|e| scrub_file(&e.path()))
+        .count()
 }
 
 /// Redacts the crash files of every game folder under `instances` (`<instance>/games/<account>/logs`).
@@ -117,6 +126,24 @@ mod tests {
         let clean = redact(&line);
         assert!(!clean.contains("eyJ"), "{clean}");
         assert_eq!(clean, "java_command: net.fabricmc.KnotClient --username Alt --accessToken <redacted> --xuid 1");
+    }
+
+    #[test]
+    fn an_old_clients_session_line_loses_its_token() {
+        let clean = redact(&format!("[08:36:38] [Client thread/INFO]: (Session ID is token:{JWT}:380df991f603344ca090369bad2a924a)"));
+        assert_eq!(clean, "[08:36:38] [Client thread/INFO]: (Session ID is token:<redacted>:380df991f603344ca090369bad2a924a)");
+    }
+
+    #[test]
+    fn game_logs_are_scrubbed_with_the_crash_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = format!("(Session ID is token:{JWT}:1)");
+        for name in ["latest.log", "manycraft-launch.log", "hs_err_pid1.log", "other.log"] {
+            std::fs::write(dir.path().join(name), &line).unwrap();
+        }
+        assert_eq!(scrub_logs(dir.path()), 3);
+        assert_eq!(std::fs::read_to_string(dir.path().join("other.log")).unwrap(), line);
+        assert!(!std::fs::read_to_string(dir.path().join("latest.log")).unwrap().contains("eyJ"));
     }
 
     #[test]
@@ -163,10 +190,10 @@ mod tests {
         let logs = dir.path().join("b").join("games").join("a").join("logs");
         std::fs::create_dir_all(&logs).unwrap();
         std::fs::write(logs.join("hs_err_pid42.log"), format!("java_command: X --accessToken {JWT}\n")).unwrap();
-        std::fs::write(logs.join("latest.log"), format!("--accessToken {JWT}\n")).unwrap();
+        std::fs::write(logs.join("debug.log"), format!("--accessToken {JWT}\n")).unwrap();
         assert_eq!(scrub_instances(dir.path()), 1);
         assert_eq!(std::fs::read_to_string(logs.join("hs_err_pid42.log")).unwrap(), "java_command: X --accessToken <redacted>\n");
-        assert!(std::fs::read_to_string(logs.join("latest.log")).unwrap().contains("eyJ"));
+        assert!(std::fs::read_to_string(logs.join("debug.log")).unwrap().contains("eyJ"));
         assert_eq!(scrub_instances(dir.path()), 0);
     }
 
