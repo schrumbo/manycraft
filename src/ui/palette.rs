@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::actions::{
     AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
-    AddMods, CloneInstance, DeleteInstance, EditMods, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -330,6 +330,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
         ("plus", tr("Neue Instanz"), Box::new(NewInstance), true),
+        ("search", tr("Modpacks suchen…"), Box::new(FindModpacks), true),
         ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
         ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.games.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
@@ -387,6 +388,8 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(AddMods(id.clone())), cx));
             out.push(entry(Group::Instances, "package", trf("Mods von %@ verwalten…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
         }
+        out.push(entry(Group::Instances, "image", tr("Ressourcenpakete suchen…"), Some(name.clone()), Box::new(FindResourcePacks(id.clone())), cx));
+        out.push(entry(Group::Instances, "sun", tr("Shader suchen…"), Some(name.clone()), Box::new(FindShaders(id.clone())), cx));
         if matches!(made.loader, Loader::Fabric(Some(_)) | Loader::Quilt(Some(_))) {
             out.push(entry(Group::Instances, "refresh-cw", trf("Loader von %@ aktualisieren…", &[name]), detail.clone(), Box::new(UpdateLoader(id.clone())), cx));
         }

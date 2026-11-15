@@ -8,6 +8,7 @@ pub mod browser;
 pub mod cli;
 #[allow(dead_code)]
 pub mod companion;
+pub mod content;
 #[allow(dead_code)]
 pub mod drive;
 #[allow(dead_code)]
