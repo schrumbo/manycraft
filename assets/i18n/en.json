@@ -907,5 +907,11 @@
   "Vorabversion": "Pre-release",
   "Alte Beta": "Old beta",
   "Alte Alpha": "Old alpha",
-  "Snapshots und alte Versionen zeigen": "Show snapshots and old versions"
+  "Snapshots und alte Versionen zeigen": "Show snapshots and old versions",
+  "Arbeitsspeicher einstellen": "Set memory",
+  "Java-Argumente bearbeiten": "Edit Java arguments",
+  "Spielargumente bearbeiten": "Edit game arguments",
+  "Fenstergröße einstellen": "Set window size",
+  "Grafikkarte wählen": "Choose graphics card",
+  "Grafikschnittstelle wählen": "Choose graphics API"
 }
