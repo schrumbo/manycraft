@@ -109,3 +109,27 @@ fn adopt(m: &mut Model, env: &Env, adopted: Vec<Adoption>, out: &mut Vec<Effect>
     m.order_seq += 1;
     out.push(Effect::Redraw(Redraw::All));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::effect::Effect;
+    use super::super::super::model::Phase;
+    use super::super::testing::*;
+    use crate::core::account::AccountKind;
+    use crate::core::fleet::Adoption;
+
+    #[test]
+    fn adopted_games_without_a_tile_are_let_go_and_the_rest_may_talk() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let game = &m.games[&key];
+        let (batch, instance, account) = (game.batch_id.clone(), game.instance_id.clone(), game.account_id);
+        let gone = Adoption { key: "removed-member".into(), batch: Some(batch.clone()), instance: instance.clone(), account, pid: 2 };
+        let stranger = Adoption { key: "solo-of-deleted-account".into(), batch: None, instance: instance.clone(), account: uuid::Uuid::from_u128(99), pid: 3 };
+        let fx = adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 1 }, gone, stranger]);
+        let Some(Effect::Settle { placed, dropped }) = fx.iter().find(|e| matches!(e, Effect::Settle { .. })) else { panic!("no settle") };
+        assert_eq!(placed, &[key.clone()]);
+        assert_eq!(dropped, &["removed-member", "solo-of-deleted-account"]);
+        assert!(!m.games.contains_key("removed-member") && !m.session.pids.contains_key("removed-member"));
+    }
+}

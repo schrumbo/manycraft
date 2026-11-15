@@ -227,6 +227,23 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_account_leaves_its_restart_group_and_the_rest_still_starts() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        m.session.restarts.insert("a".into(), 1);
+        m.session.restarts.insert("b".into(), 1);
+        m.session.restart_ready.insert(1, vec!["c".into()]);
+        m.session.restarts.remove("a");
+        m.session.restart_ready.get_mut(&1).unwrap().push("a".into());
+        assert!(super::drop_restart(&mut m, "a").is_empty(), "b is still going down");
+        assert_eq!(super::drop_restart(&mut m, "b"), vec!["c".to_string()], "a user stop never starts a, and c goes on once b is down");
+        m.session.restarts.insert("gone".into(), 2);
+        m.session.restart_ready.insert(2, vec![key.clone()]);
+        let fx = report(&mut m, &s, super::super::super::event::Report::Exited { key: "gone".into(), code: Some(0) });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1 && accounts[0].id == account(&m))), "a removed instance does not hold up its group");
+    }
+
+    #[test]
     fn a_running_game_is_not_started_twice() {
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);

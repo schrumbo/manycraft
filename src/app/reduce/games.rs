@@ -661,3 +661,562 @@ pub(super) fn visible(m: &mut Model, env: &Env, keys: HashSet<String>, out: &mut
         out.push(Effect::ReadPreview { key, path });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::super::super::effect::Effect;
+    use super::super::super::event::{Event, Report};
+    use super::super::super::model::{Hint, Model, Phase};
+    use super::super::testing::*;
+    use super::{local_server, server_of};
+    use crate::core::account::AccountKind;
+    use crate::core::fleet::{self, Adoption};
+    use crate::core::history::{self, Entry, Kind};
+    use crate::core::ipc::{DisconnectCause, FromMod, StateKind};
+    use crate::core::phone::{Incident, What};
+    use crate::core::proxy::Fault;
+    use crate::core::settings::Settings;
+
+    fn timers(fx: &[Effect]) -> Vec<(Duration, &Event)> {
+        later(fx).into_iter().filter(|(_, e)| !matches!(e, Event::AlertDue { .. } | Event::WhispersDue | Event::PhoneDue { .. })).collect()
+    }
+
+    fn joins(fx: &[Effect]) -> usize {
+        timers(fx).iter().filter(|(_, e)| matches!(e, Event::JoinDue { .. })).count()
+    }
+
+    fn stops(fx: &[Effect]) -> usize {
+        fx.iter().filter(|e| matches!(e, Effect::Stop(_))).count()
+    }
+
+    fn checks(fx: &[Effect]) -> usize {
+        fx.iter().filter(|e| matches!(e, Effect::CheckProxy { .. })).count()
+    }
+
+    fn suspects(fx: &[Effect]) -> bool {
+        fx.iter().any(|e| matches!(e, Effect::SuspectOffline))
+    }
+
+    fn phoned() -> Settings {
+        let mut s = settings();
+        s.phone.enabled = true;
+        s
+    }
+
+    fn incidents(m: &mut Model) -> Vec<Incident> {
+        m.session.phone.take_due(Instant::now() + Duration::from_secs(3600), |_| true).into_iter().flat_map(|(_, list)| list).collect()
+    }
+
+    fn send_state(m: &mut Model, s: &Settings, key: &str, kind: StateKind, cause: Option<DisconnectCause>) -> Vec<Effect> {
+        let message = FromMod::State { kind, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause };
+        report(m, s, Report::Mod { key: key.to_owned(), message })
+    }
+
+    fn exited(m: &mut Model, s: &Settings, key: &str, code: Option<i32>) -> Vec<Effect> {
+        report(m, s, Report::Exited { key: key.to_owned(), code })
+    }
+
+    fn dropped(cause: DisconnectCause) -> (Phase, Vec<Effect>, Model) {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(cause));
+        (m.games[&key].phase.clone(), fx, m)
+    }
+
+    fn adopted(phase: Phase) -> (Model, String) {
+        let s = settings();
+        let (mut m, key) = setup(phase, AccountKind::Offline, &["/login pw"]);
+        let (account, batch, instance) = (m.games[&key].account_id, m.games[&key].batch_id.clone(), m.games[&key].instance_id.clone());
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41 }]);
+        (m, key)
+    }
+
+    #[test]
+    fn a_ban_stops_for_good_and_is_remembered() {
+        let (phase, fx, m) = dropped(DisconnectCause::Banned);
+        assert_eq!(phase, Phase::Banned { server: Some("mc.example:25565".into()), reason: "why".into() });
+        assert!(timers(&fx).is_empty() && stops(&fx) == 0);
+        assert!(phase.needs_attention());
+        let log = m.history.values().next().unwrap();
+        assert_eq!(log.back().unwrap().kind, Kind::Banned);
+        assert_eq!(fx.iter().filter(|e| matches!(e, Effect::SaveHistory { .. })).count(), 1);
+    }
+
+    #[test]
+    fn server_down_backs_off_five_times_then_needs_attention() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=5 {
+            let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+            assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }));
+            assert_eq!(m.games[&key].reconnect_attempts, attempt);
+            let Some((delay, Event::ReconnectDue { .. })) = timers(&fx).pop() else { panic!("no reconnect scheduled") };
+            let base = [10.0, 30.0, 90.0, 300.0, 300.0][attempt as usize - 1];
+            assert!(delay.as_secs_f64() >= base * 0.75 - 0.01 && delay.as_secs_f64() <= base * 1.25 + 0.01, "{delay:?} for try {attempt}");
+        }
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && timers(&fx).is_empty());
+        assert_eq!(m.history[&key].len(), 6);
+    }
+
+    #[test]
+    fn without_network_a_drop_waits_and_resumes_by_itself_when_it_is_back() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::Reach { online: false });
+        for _ in 0..8 {
+            let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+            assert_eq!(m.games[&key].phase, Phase::NetworkLost { server: "mc.example:25565".into() });
+            assert!(suspects(&fx));
+            let waits = timers(&fx);
+            let [(delay, Event::ReconnectDue { .. })] = waits.as_slice() else { panic!("no slow retry while waiting") };
+            assert!(delay.as_secs() >= 48, "{delay:?}");
+        }
+        assert_eq!(m.games[&key].reconnect_attempts, 0);
+        assert!(m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let fx = report(&mut m, &s, Report::Reach { online: true });
+        assert_eq!(m.games[&key].phase, Phase::Connecting { server: "mc.example:25565".into() });
+        assert!(fx.iter().any(|e| matches!(e, Effect::NetworkBack)));
+        let Some((_, Event::ReconnectDue { generation, .. })) = timers(&fx).pop() else { panic!("no reconnect scheduled") };
+        assert_eq!(m.session.reconnects.get(&key), Some(generation));
+    }
+
+    #[test]
+    fn losing_the_network_gives_back_the_try_a_pending_reconnect_spent() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(m.games[&key].reconnect_attempts, 1);
+        let before = m.session.reconnects.get(&key).copied();
+        report(&mut m, &s, Report::Reach { online: false });
+        assert_eq!(m.games[&key].phase, Phase::NetworkLost { server: "mc.example:25565".into() });
+        assert_eq!(m.games[&key].reconnect_attempts, 0);
+        assert_ne!(m.session.reconnects.get(&key).copied(), before);
+    }
+
+    #[test]
+    fn a_server_on_this_computer_or_in_the_home_network_does_not_wait_for_the_internet() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        report(&mut m, &s, Report::Reach { online: false });
+        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("192.168.1.20:25565".into()), reason: None, cause: Some(DisconnectCause::ServerDown) };
+        let fx = report(&mut m, &s, Report::Mod { key: key.clone(), message });
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !suspects(&fx));
+        assert_eq!(m.games[&key].reconnect_attempts, 1);
+        report(&mut m, &s, Report::Reach { online: false });
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }));
+    }
+
+    #[test]
+    fn local_servers_are_told_apart_from_the_internet() {
+        for near in ["localhost", "localhost:25565", "127.0.0.1:25565", "10.0.0.5", "192.168.1.20:25565", "172.16.3.4:1", "[::1]:25565", "fd00::1", "minecraft.local"] {
+            assert!(local_server(near), "{near}");
+        }
+        for far in ["mc.example:25565", "8.8.8.8:25565", "[2001:db8::1]:25565", "localhost.example.com", ""] {
+            assert!(!local_server(far), "{far}");
+        }
+    }
+
+    #[test]
+    fn a_waiting_game_can_be_played_and_a_waiting_start_can_be_stopped() {
+        assert!(Phase::NetworkLost { server: "s".into() }.playable());
+        assert_eq!(server_of(&Phase::NetworkLost { server: "s".into() }).as_deref(), Some("s"));
+        assert!(Phase::NoNetwork.stoppable() && !Phase::NoNetwork.is_active());
+    }
+
+    #[test]
+    fn a_ban_is_a_ban_even_without_network() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::Reach { online: false });
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
+        assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
+    }
+
+    #[test]
+    fn a_proxied_account_does_not_wait_for_the_network() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        m.accounts[0].proxy = Some("socks5://127.0.0.1:1080".into());
+        report(&mut m, &s, Report::Reach { online: false });
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !suspects(&fx));
+    }
+
+    #[test]
+    fn a_start_without_connection_waits_and_starts_when_it_is_back_unless_stopped() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Microsoft, &[]);
+        let fx = report(&mut m, &s, Report::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true });
+        assert_eq!(m.games[&key].phase, Phase::NoNetwork);
+        assert!(suspects(&fx) && !m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let waits = timers(&fx);
+        let [(delay, Event::WaitingStartDue { key: waiting })] = waits.as_slice() else { panic!("no slow retry for a waiting start") };
+        assert!(waiting == &key && delay.as_secs() >= 48);
+        let fx = report(&mut m, &s, Report::Reach { online: true });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1 && accounts[0].id == account(&m))));
+        report(&mut m, &s, Report::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false });
+        assert!(matches!(m.games[&key].phase, Phase::Failed { .. }));
+    }
+
+    #[test]
+    fn a_kick_waits_longer_than_a_server_that_is_down() {
+        let (phase, fx, _) = dropped(DisconnectCause::Kicked);
+        assert!(matches!(phase, Phase::Connecting { .. }));
+        let Some((delay, Event::ReconnectDue { .. })) = timers(&fx).pop() else { panic!("no reconnect scheduled") };
+        assert!(delay.as_secs() >= 45);
+    }
+
+    #[test]
+    fn a_drop_that_reconnects_tells_the_phone_and_so_does_the_return() {
+        let s = phoned();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Kicked));
+        let list = incidents(&mut m);
+        let [kicked] = list.as_slice() else { panic!("{} phone incidents", list.len()) };
+        assert_eq!((kicked.what, kicked.name.as_str(), kicked.reason.as_str(), kicked.server.as_deref()), (What::Kicked, "AltOne", "why", Some("mc.example:25565")));
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        let list = incidents(&mut m);
+        assert_eq!(list.first().map(|i| (i.what, i.healed)), Some((What::Dropped, true)));
+    }
+
+    #[test]
+    fn a_whitelist_refusal_is_left_alone() {
+        let (phase, fx, _) = dropped(DisconnectCause::Whitelist);
+        assert!(matches!(phase, Phase::Disconnected { .. }) && timers(&fx).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_sign_in_restarts_to_refresh_then_asks_for_a_new_one() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=3 {
+            let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+            assert_eq!(m.games[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert_eq!(stops(&fx), 1);
+            assert!(timers(&fx).is_empty());
+            let exit = exited(&mut m, &s, &key, Some(1));
+            assert_eq!(m.games[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert!(matches!(timers(&exit).pop(), Some((_, Event::RestartDue { .. }))));
+            m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
+        assert!(timers(&fx).is_empty());
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && stops(&fx) == 0);
+    }
+
+    #[test]
+    fn the_same_account_signed_in_elsewhere_is_left_alone() {
+        let (phase, fx, _) = dropped(DisconnectCause::Duplicate);
+        assert!(matches!(phase, Phase::Disconnected { .. }) && timers(&fx).is_empty());
+    }
+
+    #[test]
+    fn a_banned_instance_that_dies_stays_crashed_and_does_not_rejoin() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Banned { server: None, reason: "x".into() }, AccountKind::Microsoft, &[]);
+        let fx = exited(&mut m, &s, &key, Some(1));
+        assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(1) });
+        assert!(timers(&fx).is_empty());
+    }
+
+    #[test]
+    fn a_server_switch_does_not_send_the_join_commands_again() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &["/login pw"]);
+        let mut fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert_eq!(timers(&fx).len(), 1);
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Connecting, None));
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Playing, None));
+        assert_eq!(timers(&fx).len(), 1);
+        assert_eq!(m.history[&key].len(), 1);
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown)));
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Playing, None));
+        assert_eq!(joins(&fx), 2);
+    }
+
+    #[test]
+    fn leaving_to_the_menu_and_rejoining_sends_the_join_commands_again() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &["/login pw"]);
+        let mut fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        for kind in [StateKind::Menu, StateKind::Connecting, StateKind::Playing] {
+            fx.extend(send_state(&mut m, &s, &key, kind, None));
+        }
+        assert_eq!(joins(&fx), 2);
+        assert_eq!(m.history[&key].iter().filter(|e| e.kind == Kind::Connected).count(), 2);
+    }
+
+    #[test]
+    fn a_late_exit_relaunches_only_after_the_old_process_ended() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if *k == [key.clone()])));
+        assert!(timers(&fx).is_empty());
+        assert!(m.session.pids.contains_key(&key));
+        let exit = exited(&mut m, &s, &key, Some(1));
+        assert!(!m.session.pids.contains_key(&key));
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        let mut waits = timers(&exit);
+        let Some((delay, Event::RestartDue { generation, .. })) = waits.pop() else { panic!("no restart scheduled") };
+        assert_eq!(delay, Duration::ZERO);
+        assert_eq!(*generation, m.session.reconnects[&key]);
+        assert!(waits.is_empty());
+    }
+
+    #[test]
+    fn stability_counts_from_the_first_join_not_from_the_start() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 1 });
+        assert!(!m.session.started.contains_key(&key));
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert!(m.session.started.contains_key(&key));
+    }
+
+    #[test]
+    fn a_manual_exit_after_a_rejected_sign_in_keeps_the_login_state() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::LoginNeeded, AccountKind::Microsoft, &[]);
+        exited(&mut m, &s, &key, Some(0));
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
+    }
+
+    #[test]
+    fn join_commands_go_out_once_per_join_and_not_after_a_respawn() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Connecting { server: "mc.example:25565".into() }, AccountKind::Offline, &["/login pw", "  ", "/home"]);
+        let fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        let Some((delay, Event::JoinDue { lines, delay: wait, generation, .. })) = timers(&fx).pop() else { panic!("no join scheduled") };
+        assert_eq!(lines, &["/login pw", "/home"]);
+        assert_eq!((delay, *wait), (Duration::from_millis(2000), Duration::from_millis(2000)));
+        assert_eq!(m.session.joins[&key], *generation);
+        let generation = *generation;
+        assert_eq!(m.history[&key].back().unwrap().kind, Kind::Connected);
+        let mut fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Dead, None));
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Playing, None));
+        assert!(timers(&fx).is_empty());
+        send_state(&mut m, &s, &key, StateKind::Menu, None);
+        assert_ne!(m.session.joins[&key], generation);
+    }
+
+    #[test]
+    fn an_adopted_game_runs_without_contact_until_its_mod_reports() {
+        let s = settings();
+        let (m, key) = adopted(Phase::Stopped);
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+        assert!(m.games[&key].phase.is_running());
+        assert_eq!(m.session.pids[&key], 41);
+        assert!(m.hint(&key).link_lost);
+        let (mut m, solo) = adopted(Phase::Stopped);
+        let account = m.games[&solo].account_id;
+        let made = m.instances[0].clone();
+        let key = fleet::solo_key(&made, account);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42 }]);
+        assert_eq!(m.games[&key].batch_id, fleet::solo_owner(&made.id));
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+    }
+
+    #[test]
+    fn an_adopted_game_that_plays_on_sends_no_join_commands_and_no_news() {
+        let s = phoned();
+        let (mut m, key) = adopted(Phase::Stopped);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 41 });
+        assert!(!m.hint(&key).link_lost);
+        let mut fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert!(matches!(m.games[&key].phase, Phase::Playing { .. }));
+        assert!(timers(&fx).is_empty() && incidents(&mut m).is_empty());
+        assert!(m.history.get(&key).is_none_or(|h| h.is_empty()));
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Playing, None));
+        assert!(timers(&fx).is_empty());
+        send_state(&mut m, &s, &key, StateKind::Menu, None);
+        let fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert_eq!(joins(&fx), 1, "a real rejoin later sends them again");
+    }
+
+    #[test]
+    fn an_adopted_game_on_a_disconnect_screen_is_not_reconnected_by_the_restart() {
+        let s = phoned();
+        let (mut m, key) = adopted(Phase::Stopped);
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }));
+        assert!(timers(&fx).is_empty() && incidents(&mut m).is_empty());
+        let (mut m, key) = adopted(Phase::Stopped);
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
+        assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
+        assert!(timers(&fx).is_empty());
+    }
+
+    #[test]
+    fn an_adopted_game_that_quits_without_an_exit_code_is_not_a_crash() {
+        let s = settings();
+        let (mut m, key) = adopted(Phase::Stopped);
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        let fx = exited(&mut m, &s, &key, None);
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(timers(&fx).is_empty());
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        exited(&mut m, &s, &key, None);
+        assert!(matches!(m.games[&key].phase, Phase::Crashed { .. } | Phase::Restarting { .. }), "a launched game still crashes");
+    }
+
+    #[test]
+    fn no_join_commands_means_nothing_is_scheduled() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let fx = send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert!(timers(&fx).is_empty());
+    }
+
+    #[test]
+    fn a_crash_restarts_three_times_then_stays_crashed() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for attempt in 1..=3 {
+            let fx = exited(&mut m, &s, &key, Some(1));
+            assert_eq!(m.games[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert!(!m.games[&key].phase.needs_attention());
+            assert!(matches!(timers(&fx).pop(), Some((_, Event::RestartDue { .. }))));
+            m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        let fx = exited(&mut m, &s, &key, Some(1));
+        assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(1) });
+        assert!(timers(&fx).is_empty());
+        assert_eq!(m.history[&key].iter().filter(|e| e.kind == Kind::Crashed).count(), 4);
+    }
+
+    #[test]
+    fn a_long_run_resets_the_crash_count() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        m.session.crash_restarts.insert(key.clone(), 3);
+        m.session.started.insert(key.clone(), Instant::now() - Duration::from_secs(120));
+        exited(&mut m, &s, &key, Some(1));
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+    }
+
+    #[test]
+    fn clean_and_requested_exits_do_not_restart() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let mut fx = exited(&mut m, &s, &key, Some(0));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.games.get_mut(&key).unwrap().stopping = true;
+        fx.extend(exited(&mut m, &s, &key, Some(1)));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(timers(&fx).is_empty() && m.history.is_empty());
+    }
+
+    #[test]
+    fn a_stopped_banned_account_keeps_its_ban_in_the_status() {
+        let s = settings();
+        let (_, _, mut m) = dropped(DisconnectCause::Banned);
+        let key = m.games.keys().next().unwrap().clone();
+        m.games.get_mut(&key).unwrap().stopping = true;
+        exited(&mut m, &s, &key, Some(0));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        let last = m.history[&key].back().unwrap();
+        assert_eq!((last.kind, last.reason.as_str()), (Kind::Banned, "why"));
+        history::push(m.history.get_mut(&key).unwrap(), Entry::now(Kind::Connected, None, ""));
+        assert_eq!(m.history[&key].back().unwrap().kind, Kind::Connected);
+    }
+
+    #[test]
+    fn a_refresh_result_moves_idle_instances_in_and_out_of_login_needed() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Stopped, AccountKind::Microsoft, &[]);
+        let id = account(&m);
+        report(&mut m, &s, Report::SignIn { account: id, valid: false });
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
+        report(&mut m, &s, Report::SignIn { account: id, valid: true });
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        report(&mut m, &s, Report::SignIn { account: id, valid: false });
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+    }
+
+    #[test]
+    fn a_dropped_link_on_a_living_game_shows_until_it_talks_again() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        assert!(!m.hint(&key).link_lost, "no process known yet");
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        assert!(m.hint(&key).link_lost);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        assert!(!m.hint(&key).link_lost);
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert!(!m.hint(&key).link_lost);
+    }
+
+    #[test]
+    fn a_link_that_drops_because_the_game_is_closing_is_not_news() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        m.games.get_mut(&key).unwrap().stopping = true;
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        assert!(!m.hint(&key).link_lost);
+        m.games.get_mut(&key).unwrap().stopping = false;
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        assert!(m.hint(&key).link_lost);
+        exited(&mut m, &s, &key, Some(0));
+        assert_eq!(m.hint(&key), Hint::default());
+    }
+
+    #[test]
+    fn a_connection_failure_on_a_proxied_account_asks_for_a_proxy_check() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let proxy = "socks5://u:p@10.0.0.1:1080";
+        m.accounts[0].proxy = Some(proxy.into());
+        let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(checks(&fx), 1);
+        assert!(fx.iter().any(|e| matches!(e, Effect::CheckProxy { key: k, url } if *k == key && url == proxy)));
+        for fault in [Some(Fault::Unreachable), Some(Fault::Rejected), None, Some(Fault::Unreachable)] {
+            report(&mut m, &s, Report::ProxyChecked { key: key.clone(), fault });
+            assert_eq!(m.hint(&key).proxy, fault);
+        }
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        assert_eq!(m.hint(&key).proxy, None);
+    }
+
+    #[test]
+    fn proxy_checks_only_follow_connection_failures_of_proxied_accounts() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let mut fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(checks(&fx), 0, "no proxy, no check");
+        m.accounts[0].proxy = Some("socks5://10.0.0.1".into());
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        for cause in [DisconnectCause::Banned, DisconnectCause::Kicked, DisconnectCause::Whitelist, DisconnectCause::ServerFull, DisconnectCause::Duplicate] {
+            fx.extend(send_state(&mut m, &s, &key, StateKind::Disconnected, Some(cause)));
+            m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        }
+        assert_eq!(checks(&fx), 0, "the server answered, the proxy works");
+        fx.extend(send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::Auth)));
+        assert_eq!(checks(&fx), 1);
+    }
+
+    #[test]
+    fn a_late_proxy_result_for_a_running_game_is_ignored() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Playing { server: "s".into(), since: Instant::now() }, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) });
+        assert_eq!(m.hint(&key).proxy, None);
+    }
+}

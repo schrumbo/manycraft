@@ -1240,7 +1240,13 @@ mod tests {
 
     use std::time::Instant;
 
-    use super::{AuthError, Game, Phase, needs_sign_in, render_image, status};
+    use super::{AuthError, Game, Phase, needs_sign_in, render_image, status, stopped_ban};
+    use crate::app::event::Report;
+    use crate::app::reduce::testing::{report, settings, setup, state};
+    use crate::core::account::AccountKind;
+    use crate::core::history::{self, Entry, Kind};
+    use crate::core::ipc::{DisconnectCause, FromMod, StateKind};
+    use crate::core::proxy::Fault;
 
     fn instance(phase: Phase) -> Game {
         Game { phase, ..Game::new("k".into(), "b".into(), "b".into(), uuid::Uuid::nil(), "Alex".into()) }
@@ -1288,5 +1294,60 @@ mod tests {
         assert_eq!(recovered_notice(&[at("i1/instance.json", Recovery::Restored)]), Some(crate::core::i18n::tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.")));
         let mixed = [at("accounts.json", Recovery::Restored), at("settings.json", Recovery::Lost), at("b1/batch.json", Recovery::Restored)];
         assert_eq!(recovered_notice(&mixed), Some(crate::core::i18n::trf("%lld Dateien waren beschädigt: %lld aus der Sicherung wiederhergestellt, die übrigen nicht. Kopien liegen jeweils daneben (Endung .damaged).", &[&3, &2])));
+    }
+
+    #[test]
+    fn the_status_line_counts_tries_against_the_policy_and_names_a_ban() {
+        crate::core::i18n::init("de");
+        let mut again = instance(Phase::Connecting { server: "s".into() });
+        again.reconnect_attempts = 2;
+        assert_eq!(status(&again, None), "Verbindet neu · Versuch 2 von 5");
+        assert_eq!(status(&instance(Phase::Banned { server: None, reason: "Cheating".into() }), None), "Gesperrt · Cheating");
+        assert_eq!(status(&instance(Phase::Restarting { attempt: 1, of: 3 }), None), "Startet neu · Versuch 1 von 3");
+    }
+
+    #[test]
+    fn a_stopped_banned_account_keeps_its_ban_in_the_status() {
+        crate::core::i18n::init("de");
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause: Some(DisconnectCause::Banned) };
+        report(&mut m, &s, Report::Mod { key: key.clone(), message });
+        m.games.get_mut(&key).unwrap().stopping = true;
+        report(&mut m, &s, Report::Exited { key: key.clone(), code: Some(0) });
+        let mut ui = crate::ui::model::Model { app: m, ..Default::default() };
+        assert_eq!(ui.games[&key].phase, Phase::Stopped);
+        assert_eq!(stopped_ban(&ui.games[&key], &ui).as_deref(), Some("Gestoppt · Gesperrt · why"));
+        history::push(ui.app.history.get_mut(&key).unwrap(), Entry::now(Kind::Connected, None, ""));
+        assert!(stopped_ban(&ui.games[&key], &ui).is_none());
+    }
+
+    #[test]
+    fn a_dropped_link_on_a_living_game_shows_until_it_talks_again() {
+        crate::core::i18n::init("de");
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        assert_eq!(status(&m.games[&key], None), "Keine Verbindung zum Spiel");
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        let message = FromMod::State { kind: StateKind::Playing, server: Some("mc.example:25565".into()), reason: None, cause: None };
+        report(&mut m, &s, Report::Mod { key: key.clone(), message });
+        assert_eq!(status(&m.games[&key], None), "Auf mc.example:25565");
+    }
+
+    #[test]
+    fn a_connection_failure_on_a_proxied_account_asks_for_a_proxy_check() {
+        crate::core::i18n::init("de");
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        m.accounts[0].proxy = Some("socks5://u:p@10.0.0.1:1080".into());
+        report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example:25565"), Some(DisconnectCause::ServerDown)));
+        assert_eq!(status(&m.games[&key], None), "Verbindet neu · Versuch 1 von 5");
+        for (fault, line) in [(Some(Fault::Unreachable), "Proxy nicht erreichbar"), (Some(Fault::Rejected), "Proxy lehnt die Anmeldung ab"), (None, "Verbindet neu · Versuch 1 von 5")] {
+            report(&mut m, &s, Report::ProxyChecked { key: key.clone(), fault });
+            assert_eq!(status(&m.games[&key], None), line);
+        }
     }
 }

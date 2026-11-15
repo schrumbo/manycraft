@@ -171,3 +171,76 @@ pub(super) fn show_ready(m: &mut Model, env: &Env, out: &mut Vec<Effect>) {
         play(m, &key, out);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::effect::Effect;
+    use super::super::super::event::Report;
+    use super::super::super::model::Phase;
+    use super::super::super::session::Reveal;
+    use super::super::testing::*;
+    use crate::core::account::AccountKind;
+    use crate::core::ipc::{FromMod, HotkeyAction, ToMod};
+
+    fn hides(fx: &[Effect]) -> Vec<&str> {
+        fx.iter().filter_map(|e| if let Effect::Send { key, message: ToMod::Hide } = e { Some(key.as_str()) } else { None }).collect()
+    }
+
+    fn message(key: &str, message: FromMod) -> Report {
+        Report::Mod { key: key.to_owned(), message }
+    }
+
+    #[test]
+    fn closing_a_game_that_is_not_played_hides_only_it() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some("other".into());
+        let fx = report(&mut m, &s, message(&key, FromMod::Hotkey { action: HotkeyAction::Grid }));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::ShowManager | Effect::Follow(_))));
+        assert_eq!(hides(&fx), [key.as_str()]);
+        assert_eq!(fx.iter().filter(|e| matches!(e, Effect::Send { .. })).count(), 1);
+        assert_eq!(m.playing.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn the_shown_game_reveals_once() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some(key.clone());
+        m.session.reveal = Some(Reveal { key: key.clone(), hide: vec!["before".into()], manager: true });
+        let fx = report(&mut m, &s, message("before", FromMod::Window { visible: true, focused: false }));
+        assert!(hides(&fx).is_empty() && !fx.iter().any(|e| matches!(e, Effect::HideManager)) && m.session.reveal.is_some());
+        let fx = report(&mut m, &s, message(&key, FromMod::Window { visible: true, focused: false }));
+        assert_eq!(hides(&fx), ["before"]);
+        assert!(fx.iter().any(|e| matches!(e, Effect::HideManager)));
+        assert!(m.session.reveal.is_none());
+    }
+
+    #[test]
+    fn hotkeys_from_the_game_still_covering_count() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.playing = Some("next".into());
+        m.session.reveal = Some(Reveal { key: "next".into(), hide: vec![key.clone()], manager: false });
+        let fx = report(&mut m, &s, message(&key, FromMod::Hotkey { action: HotkeyAction::Grid }));
+        assert!(fx.iter().any(|e| matches!(e, Effect::ShowManager)));
+        assert!(m.playing.is_none());
+    }
+
+    #[test]
+    fn a_play_request_from_another_start_is_kept_for_the_manager() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let fx = report(&mut m, &s, Report::PlayRequest { instance: "abc".into(), account: Some("acc".into()) });
+        assert_eq!(m.session.waiting_plays, vec![("abc".to_owned(), Some("acc".to_owned()))]);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::ShowManager)));
+    }
+
+    #[test]
+    fn a_second_start_brings_the_manager_back() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let fx = report(&mut m, &s, Report::Reopen);
+        assert!(fx.iter().any(|e| matches!(e, Effect::ShowManager)));
+    }
+}

@@ -200,11 +200,12 @@ pub(crate) mod testing {
     use uuid::Uuid;
 
     use super::super::effect::Effect;
-    use super::super::event::{Event, Report};
+    use super::super::event::{Event, Loaded, Report};
     use super::super::model::{Game, Model, Phase};
     use super::{Env, reduce};
     use crate::core::account::{Account, AccountKind};
     use crate::core::batch::Batch;
+    use crate::core::fleet::Adoption;
     use crate::core::instance::Instance;
     use crate::core::ipc::{DisconnectCause, FromMod, StateKind};
     use crate::core::settings::Settings;
@@ -254,6 +255,12 @@ pub(crate) mod testing {
     pub fn account(m: &Model) -> Uuid {
         m.accounts[0].id
     }
+
+    /// Loads the model's own data again with `adopted` games still running.
+    pub fn adopt(m: &mut Model, s: &Settings, adopted: Vec<Adoption>) -> Vec<Effect> {
+        let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
+        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted })))
+    }
 }
 
 #[cfg(test)]
@@ -269,5 +276,27 @@ mod tests {
         assert_eq!(draws, (0..4).map(|_| b.unit()).collect::<Vec<_>>());
         assert!(draws.iter().all(|u| (0.0..1.0).contains(u)));
         assert_ne!(draws[0], draws[1]);
+    }
+
+    #[test]
+    fn preview_notices_and_public_chat_redraw_at_most_the_chat() {
+        use super::testing::{setup, settings};
+        use crate::core::account::AccountKind;
+
+        let s = settings();
+        let env = Env::new(Instant::now(), 0, 7, &s, false);
+        let (mut m, lost) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.set_hint(&lost, |h| h.link_lost = true);
+        let message = |instance: &str, message: FromMod| Report::Mod { key: instance.into(), message };
+        let chat = |instance: &str, kind: ChatKind| message(instance, FromMod::Chat { kind, from: None, text: "hi".into() });
+        let notice = |instance: &str| message(instance, FromMod::Preview { seq: 2, w: 1, h: 1 });
+        let drawn = |reports: &[Report]| redraw(&m, &env, reports);
+        assert_eq!(drawn(&[notice("redraw-a"), notice("redraw-b")]), Redraw::Nothing);
+        assert_eq!(drawn(&[notice("redraw-a"), chat("redraw-b", ChatKind::Player), chat("redraw-a", ChatKind::System)]), Redraw::Chat);
+        assert_eq!(drawn(&[chat("redraw-a", ChatKind::Player), chat("redraw-a", ChatKind::Whisper)]), Redraw::All);
+        let playing = message("redraw-a", FromMod::State { kind: crate::core::ipc::StateKind::Playing, server: None, reason: None, cause: None });
+        assert_eq!(drawn(&[notice("redraw-a"), playing]), Redraw::All);
+        assert_eq!(drawn(&[notice(&lost)]), Redraw::All);
+        assert_eq!(drawn(&[chat(&lost, ChatKind::Player)]), Redraw::All);
     }
 }
