@@ -74,10 +74,11 @@ impl SearchableListItem for JavaItem {
         let t = Theme::get(cx);
         div()
             .flex()
-            .flex_col()
+            .items_baseline()
+            .gap(px(space::S))
             .min_w_0()
-            .child(div().truncate().child(self.title.clone()))
-            .when(!self.line.is_empty(), |d| d.child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(self.line.clone())))
+            .child(div().flex_none().child(self.title.clone()))
+            .when(!self.line.is_empty(), |d| d.child(div().min_w_0().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(self.line.clone())))
     }
 
     fn value(&self) -> &Self::Value {
@@ -208,11 +209,19 @@ impl InstancePage {
             self.detect_javas(cx);
         }
         let options = &made.options;
-        let current = self.opts.synced.as_ref().is_some_and(|(id, saved)| *id == made.id && saved.game_args == options.game_args && saved.window == options.window);
-        if !current {
-            let (args, width, height) = (options.game_args.join(" "), options.window.map(|w| w.width.to_string()).unwrap_or_default(), options.window.map(|w| w.height.to_string()).unwrap_or_default());
+        let saved = self.opts.synced.as_ref().filter(|(id, _)| *id == made.id).map(|(_, saved)| saved);
+        let (args_stale, window_stale, stale) = (saved.is_none_or(|s| s.game_args != options.game_args), saved.is_none_or(|s| s.window != options.window), saved != Some(options));
+        if stale {
             self.opts.synced = Some((made.id.clone(), options.clone()));
+        }
+        if args_stale {
+            let args = options.game_args.join(" ");
+            self.opts.game_problem = None;
             self.opts.game_args.update(cx, |s, cx| s.set_value(args, window, cx));
+        }
+        if window_stale {
+            let (width, height) = (options.window.map(|w| w.width.to_string()).unwrap_or_default(), options.window.map(|w| w.height.to_string()).unwrap_or_default());
+            self.opts.window_problem = None;
             self.opts.width.update(cx, |s, cx| s.set_value(width, window, cx));
             self.opts.height.update(cx, |s, cx| s.set_value(height, window, cx));
         }

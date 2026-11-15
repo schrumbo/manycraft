@@ -81,8 +81,8 @@ fn redact_word(word: &str) -> String {
     out
 }
 
-/// `bytes` with every line that is text and holds a secret redacted; lines that are not UTF-8 stay byte for byte.
-/// `None` when nothing changed.
+/// `bytes` with every line that holds a secret redacted. Lines that are not UTF-8, as the JVM writes them in the ANSI code
+/// page, are read as Latin-1, so every byte but the secret comes back unchanged. `None` when nothing changed.
 pub fn redact_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut changed = false;
@@ -93,7 +93,17 @@ pub fn redact_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
                 changed |= clean != text;
                 out.extend_from_slice(clean.as_bytes());
             }
-            _ => out.extend_from_slice(line),
+            Ok(_) => out.extend_from_slice(line),
+            Err(_) => {
+                let text: String = line.iter().map(|&b| char::from(b)).collect();
+                if may_hold_secrets(&text) {
+                    let clean = redact(&text);
+                    changed |= clean != text;
+                    out.extend(clean.chars().map(|c| u8::try_from(c).unwrap_or(b'?')));
+                } else {
+                    out.extend_from_slice(line);
+                }
+            }
         }
     }
     changed.then_some(out)
@@ -183,6 +193,14 @@ mod tests {
         assert!(clean.starts_with(b"chat: gr\xfc\xdfe\n"));
         assert!(!String::from_utf8_lossy(&clean).contains("eyJ"));
         assert_eq!(redact_bytes(b"nothing \xff here\n"), None);
+    }
+
+    #[test]
+    fn a_secret_on_an_ansi_line_goes_too() {
+        let mut bytes = b"java_command: X --gameDir C:\\Users\\J\xfcrgen --accessToken ".to_vec();
+        bytes.extend_from_slice(JWT.as_bytes());
+        bytes.extend_from_slice(b" --xuid 1\n");
+        assert_eq!(redact_bytes(&bytes).unwrap(), b"java_command: X --gameDir C:\\Users\\J\xfcrgen --accessToken <redacted> --xuid 1\n".to_vec());
     }
 
     #[test]
