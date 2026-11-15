@@ -45,6 +45,8 @@ impl Rect {
     }
 }
 
+const TITLE_BAR: u32 = 40;
+
 /// How the place fills its monitor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,6 +110,16 @@ pub fn clamp(frame: Rect, works: &[Rect]) -> Rect {
     }
 }
 
+/// Where a window remembered at `frame` opens: as it was when it fits one work area with its whole title bar on it, else moved and shrunk onto the work area it is on, `prefer`red first. Also which work area that is; `None` without any. The units are the caller's, as long as `frame` and `works` share them.
+pub fn restore(frame: Rect, works: &[Rect], prefer: Option<usize>) -> Option<(Rect, usize)> {
+    let nearest = works.iter().enumerate().max_by_key(|(_, w)| (frame.overlap(**w), -frame.center_distance(**w))).map(|(i, _)| i)?;
+    let at = prefer.filter(|&i| works.get(i).is_some_and(|w| frame.overlap(*w) > 0)).unwrap_or(nearest);
+    let area = works[at];
+    let bar = frame.h.min(TITLE_BAR) as i32;
+    let fits = frame.w <= area.w && frame.h <= area.h && frame.x >= area.x && frame.right() <= area.right() && frame.y >= area.y && frame.y + bar <= area.bottom();
+    Some((if fits { frame } else { frame.fit(area) }, at))
+}
+
 /// The place after its shown window was seen at `frame` in `mode`. A maximized or fullscreen window keeps the frame it had before, moved onto the work area the window is on.
 pub fn follow(before: Option<Place>, frame: Rect, mode: Mode, works: &[Rect]) -> Place {
     if mode.is_normal() {
@@ -155,6 +167,50 @@ mod tests {
 
     const LAPTOP: Rect = r(0, 0, 2560, 1552);
     const LEFT: Rect = r(-1920, 0, 1920, 1032);
+
+    #[test]
+    fn restore_keeps_a_window_that_fits() {
+        let works = [LAPTOP, LEFT];
+        assert_eq!(restore(r(200, 100, 1280, 800), &works, Some(0)), Some((r(200, 100, 1280, 800), 0)));
+        assert_eq!(restore(r(-1700, 200, 1280, 800), &works, Some(1)), Some((r(-1700, 200, 1280, 800), 1)));
+        assert_eq!(restore(r(-1700, 200, 1280, 800), &works, None), Some((r(-1700, 200, 1280, 800), 1)));
+        assert_eq!(restore(r(-1920, 0, 1920, 1032), &works, Some(1)), Some((r(-1920, 0, 1920, 1032), 1)));
+    }
+
+    #[test]
+    fn restore_without_monitors_says_so() {
+        assert_eq!(restore(r(0, 0, 800, 600), &[], None), None);
+    }
+
+    #[test]
+    fn restore_after_the_left_monitor_is_unplugged() {
+        assert_eq!(restore(r(-1700, 200, 1280, 800), &[LAPTOP], Some(1)), Some((r(0, 200, 1280, 800), 0)));
+        assert_eq!(restore(r(-1700, 200, 1280, 800), &[LAPTOP], None), Some((r(0, 200, 1280, 800), 0)));
+        assert_eq!(restore(r(-40, 139, 1000, 700), &[LAPTOP], None), Some((r(0, 139, 1000, 700), 0)));
+    }
+
+    #[test]
+    fn restore_on_a_smaller_resolution_shrinks_onto_the_screen() {
+        let small = r(0, 0, 1024, 728);
+        assert_eq!(restore(r(300, 200, 1280, 800), &[small], Some(0)), Some((r(0, 0, 1024, 728), 0)));
+        assert_eq!(restore(r(900, 500, 800, 600), &[small], Some(0)), Some((r(224, 128, 800, 600), 0)));
+    }
+
+    #[test]
+    fn restore_brings_the_whole_title_bar_back() {
+        assert_eq!(restore(r(300, -30, 1200, 800), &[LAPTOP], Some(0)), Some((r(300, 0, 1200, 800), 0)));
+        assert_eq!(restore(r(2000, 300, 1200, 800), &[LAPTOP], Some(0)), Some((r(1360, 300, 1200, 800), 0)));
+        assert_eq!(restore(r(-100, 300, 1200, 800), &[LAPTOP], None), Some((r(0, 300, 1200, 800), 0)));
+        assert_eq!(restore(r(-1900, -60, 1200, 800), &[LAPTOP, LEFT], Some(1)), Some((r(-1900, 0, 1200, 800), 1)));
+    }
+
+    #[test]
+    fn restore_prefers_the_saved_monitor_only_while_the_window_is_on_it() {
+        let works = [LAPTOP, LEFT];
+        assert_eq!(restore(r(100, 200, 1280, 800), &works, Some(1)), Some((r(100, 200, 1280, 800), 0)));
+        assert_eq!(restore(r(100, 200, 1280, 800), &works, Some(7)), Some((r(100, 200, 1280, 800), 0)));
+        assert_eq!(restore(r(-300, 200, 1280, 800), &works, Some(0)), Some((r(0, 200, 1280, 800), 0)));
+    }
 
     #[test]
     fn client_and_insets_round_trip() {

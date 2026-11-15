@@ -160,7 +160,7 @@ pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, via: Via, cancel: 
 
 fn window_request() -> webauth::Request {
     use crate::core::i18n::tr;
-    webauth::Request { url: webauth::authorize_url(), title: tr("Mit Microsoft anmelden"), browser_label: tr("Im Browser öffnen"), quiet: drive::dir().is_some() }
+    webauth::Request { url: webauth::authorize_url(), title: tr("Mit Microsoft anmelden"), browser_label: tr("Im Browser öffnen"), quiet: drive::dir().is_some(), near: super::native::center() }
 }
 
 fn in_window(flow: &auth::Flow, cancel: &AtomicBool, send: &impl Fn(SignIn)) -> Result<Next> {

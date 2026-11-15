@@ -118,6 +118,8 @@ impl EventEmitter<ChatArrived> for Model {}
 pub struct Model {
     pub accounts: Vec<Account>,
     pub batches: Vec<Batch>,
+    /// Whether accounts and batches were read from disk at least once.
+    pub loaded: bool,
     pub instances: Vec<Instance>,
     pub games: HashMap<String, Game>,
     pub chat: Vec<ChatLine>,

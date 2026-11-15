@@ -38,6 +38,20 @@ pub fn place_of(window: &Window) -> Option<(Rect, Mode)> {
     Some((rect_of(window), if fullscreen { Mode::Fullscreen } else { Mode::Normal }))
 }
 
+static CENTER: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
+
+/// Remembers the middle of `window`, for windows that should open on its monitor.
+pub fn note_center(window: &Window) {
+    if let Some((frame, _)) = place_of(window) {
+        *CENTER.lock().unwrap_or_else(|e| e.into_inner()) = Some((frame.x + (frame.w / 2) as i32, frame.y + (frame.h / 2) as i32));
+    }
+}
+
+/// The middle of the manager window as it was last seen, in screen pixels.
+pub fn center() -> Option<(i32, i32)> {
+    *CENTER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Moves `window` to `place`'s frame, maximized when it says so; a minimized window comes back there in one step.
 pub fn put(window: &Window, place: Place) {
     #[cfg(target_os = "windows")]
