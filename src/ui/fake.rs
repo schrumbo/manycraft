@@ -154,7 +154,6 @@ impl Sim {
                 }
             }
             Cmd::Start(target, accounts, cancel) => {
-                let total = accounts.len();
                 let plain = !crate::core::companion::available(&target.instance.loader, &target.instance.game_version);
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
@@ -164,7 +163,6 @@ impl Sim {
                     } else {
                         self.launch(&key, after, Some(&cancel));
                     }
-                    self.at(after, Some(&cancel), Update::Progress { batch: target.owner(), done: n + 1, total });
                 }
             }
             Cmd::Stop(keys) => {
@@ -251,7 +249,7 @@ impl Sim {
                     self.at(Duration::ZERO, None, state(&key, StateKind::Menu, None));
                 }
                 30..=32 => {
-                    self.at(Duration::ZERO, None, seed(Phase::Starting { done: 12, total: 50 }, 0));
+                    self.at(Duration::ZERO, None, seed(Phase::Starting { place: 12, total: 50 }, 0));
                     let after = Duration::from_millis(4000 + hash(&key) % 12_000);
                     self.launch(&key, after, None);
                 }
@@ -346,7 +344,7 @@ fn touches(update: &Update, key: &str) -> bool {
     match update {
         Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
-        Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen) => false,
+        Update::Preparing { .. } | Update::Prepared { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen) => false,
     }
 }
 

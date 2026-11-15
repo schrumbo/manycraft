@@ -2,6 +2,7 @@
 //! A driven instance never touches the keychain or the network: it gets canned answers instead.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -13,6 +14,9 @@ use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
 use crate::core::instance::{self as setup, Loader};
+use crate::core::javas::Java;
+use crate::core::options::LaunchOptions;
+use crate::core::versions::{GameVersion, Kind};
 use crate::core::modrinth::{self, Defaults, Hit, Support, Update};
 use crate::core::{mrpack, origin};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
@@ -465,11 +469,72 @@ pub fn test_proxy(proxy: &str) -> Result<()> {
 
 /// Minecraft release versions, newest first.
 pub fn versions() -> Result<Vec<String>> {
+    Ok(catalog()?.into_iter().filter(|v| v.kind == Kind::Release).map(|v| v.id).collect())
+}
+
+/// Every Minecraft version Mojang lists, newest first, with its kind.
+pub fn catalog() -> Result<Vec<GameVersion>> {
     if drive::fenced("versions", "canned") {
         std::thread::sleep(CANNED_DELAY);
-        return Ok(["26.3", "26.2", "26.1", "1.21.10", "1.21.9", "1.21.8", "1.21.4", "1.20.6", "1.20.4", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2", "1.8.9"].map(String::from).to_vec());
+        let canned = [
+            ("26.4-snapshot-8", Kind::Snapshot),
+            ("26.3", Kind::Release),
+            ("26.3-rc-3", Kind::PreRelease),
+            ("26.2", Kind::Release),
+            ("26.1", Kind::Release),
+            ("1.21.10", Kind::Release),
+            ("1.21.9", Kind::Release),
+            ("1.21.8", Kind::Release),
+            ("1.21.4", Kind::Release),
+            ("1.20.6", Kind::Release),
+            ("1.20.4", Kind::Release),
+            ("1.20.1", Kind::Release),
+            ("1.19.4", Kind::Release),
+            ("1.18.2", Kind::Release),
+            ("1.16.5", Kind::Release),
+            ("1.12.2", Kind::Release),
+            ("1.8.9", Kind::Release),
+            ("b1.7.3", Kind::OldBeta),
+            ("a1.2.6", Kind::OldAlpha),
+        ];
+        return Ok(canned.into_iter().map(|(id, kind)| GameVersion { id: id.to_owned(), kind }).collect());
     }
-    install::releases()
+    crate::core::versions::catalog()
+}
+
+/// The game versions `loader` supports, or `None` for every version. Unknown when the list cannot be loaded, so
+/// nothing is hidden then.
+pub fn supported_versions(loader: &Loader) -> Option<HashSet<String>> {
+    if drive::fenced("loader versions", loader.name()) {
+        return (!matches!(loader, Loader::Vanilla)).then(|| ["26.3", "26.2", "26.1", "1.21.10", "1.21.4", "1.20.1", "1.16.5", "26.4-snapshot-8"].map(String::from).into());
+    }
+    crate::core::versions::supported(loader).ok().flatten()
+}
+
+/// The Java `game_version` needs, when known before it is installed.
+pub fn expected_java(game_version: &str) -> Option<u32> {
+    crate::core::javas::expected_major(game_version)
+}
+
+/// Java installations on this computer, newest first.
+pub fn detect_javas() -> Vec<Java> {
+    if drive::fenced("java detection", "canned") {
+        return [(21, "21.0.5", "Eclipse Adoptium"), (17, "17.0.13", "Microsoft"), (8, "1.8.0_432", "Azul Systems")]
+            .map(|(major, version, vendor)| Java { path: PathBuf::from(format!("C:/Java/jdk-{major}/bin/javaw.exe")), version: version.to_owned(), major, vendor: Some(vendor.to_owned()) })
+            .into();
+    }
+    crate::core::javas::detect()
+}
+
+/// The Java at a file or folder the user picked.
+pub fn probe_java(picked: &Path) -> Result<Java> {
+    if drive::fenced("java probe", picked.display()) {
+        let major = picked.to_string_lossy().split("jdk-").nth(1).and_then(|rest| rest.split(['/', '\\']).next()).and_then(|n| n.parse::<u32>().ok());
+        let Some(major) = major else { bail!(crate::core::i18n::tr("Dort ist kein Java. Wähle die Datei „java“ im Ordner „bin“ eines Java.")) };
+        return Ok(Java { path: picked.to_path_buf(), version: major.to_string(), major, vendor: None });
+    }
+    let home = crate::core::javas::home_of(picked).ok_or_else(|| gone(crate::core::i18n::tr("Dort ist kein Java. Wähle die Datei „java“ im Ordner „bin“ eines Java.")))?;
+    crate::core::javas::probe(&home)
 }
 
 /// Versions of `loader` for Minecraft `game`, newest first, with the one an unpinned instance follows.
@@ -526,7 +591,7 @@ pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
             notes.push(format!("skipped lithium: no Fabric version for {game_version}"));
-        } else {
+        } else if matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
             notes.push(format!("skipped krypton: no Fabric version for {game_version}"));
         }
         return Ok(Defaults { mods, notes });
@@ -567,6 +632,8 @@ pub struct BatchEdit {
     pub memory_override: Option<u32>,
     pub accounts: Vec<Uuid>,
     pub background: Background,
+    /// How many games may load at once; 0 lets the machine decide.
+    pub launch_parallel: u32,
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`, and returns it.
@@ -614,6 +681,7 @@ fn apply(b: &mut Batch, instance_id: String, edit: BatchEdit, known: &HashSet<Uu
     let unseen: Vec<Uuid> = b.accounts.iter().copied().filter(|id| !known.contains(id)).collect();
     b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).chain(unseen).collect();
     b.background = edit.background;
+    b.launch_parallel = edit.launch_parallel;
 }
 
 /// What the instance sheet and page change on an instance; everything else stays as saved.
@@ -624,13 +692,14 @@ pub struct InstanceEdit {
     pub loader: Loader,
     pub memory_mb: u32,
     pub jvm_args: Vec<String>,
+    pub options: LaunchOptions,
     pub mods: Vec<ModRef>,
 }
 
 impl InstanceEdit {
     /// What `made` holds now.
     pub fn of(made: &setup::Instance) -> Self {
-        Self { name: made.name.clone(), game_version: made.game_version.clone(), loader: made.loader.clone(), memory_mb: made.memory_mb, jvm_args: made.jvm_args.clone(), mods: made.mods.clone() }
+        Self { name: made.name.clone(), game_version: made.game_version.clone(), loader: made.loader.clone(), memory_mb: made.memory_mb, jvm_args: made.jvm_args.clone(), options: made.options.clone(), mods: made.mods.clone() }
     }
 }
 
@@ -651,6 +720,7 @@ fn edited(made: &mut setup::Instance, edit: InstanceEdit) {
     made.loader = edit.loader;
     made.memory_mb = edit.memory_mb;
     made.jvm_args = edit.jvm_args;
+    made.options = edit.options;
     if made.loader.takes_mods() {
         made.mods = edit.mods;
     } else {
@@ -679,8 +749,12 @@ pub fn save_instance(id: &str, base: &InstanceEdit, edit: InstanceEdit) -> Resul
         if !merged.name.trim().eq_ignore_ascii_case(made.name.trim()) {
             taken_name(&merged.name, Some(id))?;
         }
+        let gpu_before = made.options.gpu;
         edited(&mut made, merged);
         setup::save(&made)?;
+        if gpu_before.is_some() && made.options.gpu.is_none() {
+            let _ = crate::core::gpu::release(&made.id);
+        }
         Ok(made)
     })
 }
@@ -702,6 +776,7 @@ fn merge(base: &InstanceEdit, now: &InstanceEdit, edit: &InstanceEdit) -> Option
         && take(&base.loader, &now.loader, &edit.loader, &mut out.loader)
         && take(&base.memory_mb, &now.memory_mb, &edit.memory_mb, &mut out.memory_mb)
         && take(&base.jvm_args, &now.jvm_args, &edit.jvm_args, &mut out.jvm_args)
+        && take(&base.options, &now.options, &edit.options, &mut out.options)
         && take(&base.mods, &now.mods, &edit.mods, &mut out.mods);
     let moved_under = edit.mods != base.mods && (now.game_version != base.game_version || !now.loader.same_kind(&base.loader));
     let moved_over = (edit.game_version != base.game_version || !edit.loader.same_kind(&base.loader)) && now.mods != base.mods;
@@ -962,7 +1037,12 @@ fn canned_import(instance: &Instance, name: &str) -> Result<setup::Instance> {
 
 fn canned_update(m: &ModRef) -> Update {
     let latest = ModRef { version_id: format!("{}-new", m.version_id), file_name: m.file_name.replace(".jar", "-b.jar"), sha1: "1".repeat(40), ..m.clone() };
-    Update { current: m.clone(), latest }
+    let notes = "## Fixes
+- **Crash** when joining a server
+- `render()` is faster
+  - fewer allocations
+See [the issue](https://example.invalid/1).";
+    Update { current: m.clone(), latest, changelog: vec![("1.1.0".into(), notes.into()), ("1.0.1".into(), String::new())] }
 }
 
 pub(super) fn canned_hits(game_version: &str) -> Vec<Hit> {
@@ -1024,11 +1104,11 @@ mod tests {
         let mut b = Batch::new("Farm", "i1");
         b.join_commands = vec!["/home".into()];
         b.memory_override = Some(3000);
-        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced };
+        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4 };
         apply(&mut b, "i2".into(), edit(None), &HashSet::from([me]));
         assert_eq!((b.name.as_str(), b.instance_id.as_str(), b.memory_override, b.accounts.as_slice()), ("Lobby", "i2", None, &[me][..]));
         assert_eq!(b.join_commands, ["/home"]);
-        assert_eq!(b.background, Background::Balanced);
+        assert_eq!((b.background, b.launch_parallel), (Background::Balanced, 4));
         apply(&mut b, "i2".into(), edit(Some(2048)), &HashSet::from([me]));
         assert_eq!(b.memory_override, Some(2048));
     }
@@ -1125,7 +1205,7 @@ mod tests {
         let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut b = Batch::new("Farm", "i1");
         b.accounts = vec![shown, unseen];
-        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving };
+        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0 };
         apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
         assert_eq!(b.accounts, [unseen]);
     }

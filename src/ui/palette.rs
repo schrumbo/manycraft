@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::actions::{
     AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
-    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -354,6 +354,13 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     if let Some(newest) = super::undo::newest(cx) {
         out.push(entry(Group::Commands, "undo-2", tr("Rückgängig"), Some(newest), Box::new(Undo), cx));
     }
+    if matches!(this.page, Page::Instance(_)) {
+        for c in super::mod_list::commands(cx) {
+            let mut e = entry(Group::Commands, c.icon, c.label, c.blocked.clone(), c.action, cx);
+            e.enabled = c.blocked.is_none();
+            out.push(e);
+        }
+    }
     out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
         out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
@@ -375,6 +382,24 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Batches, "folder-open", trf("Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
         if !m.exporting.contains(&b.instance_id) {
             out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server, Box::new(ExportBatch(b.id.clone())), cx));
+        }
+    }
+    if let Page::Instance(shown) = &this.page
+        && let Some(made) = m.instances.iter().find(|i| &i.id == shown)
+    {
+        let settings = [
+            ("memory-stick", tr("Arbeitsspeicher einstellen"), "memory", true),
+            ("coffee", tr("Java wählen"), "java", true),
+            ("terminal", tr("Java-Argumente bearbeiten"), "jvm_args", true),
+            ("terminal", tr("Spielargumente bearbeiten"), "game_args", true),
+            ("app-window", tr("Fenstergröße einstellen"), "window", true),
+            ("cpu", tr("Grafikkarte wählen"), "gpu", cfg!(windows)),
+            ("monitor", tr("Grafikschnittstelle wählen"), "renderer", crate::core::options::renderer_choice(&made.game_version)),
+        ];
+        for (icon, label, setting, able) in settings {
+            if able {
+                out.push(entry(Group::Instances, icon, label, Some(made.name.clone()), Box::new(OpenInstanceSetting { instance: made.id.clone(), setting: setting.to_owned() }), cx));
+            }
         }
     }
     for made in &m.instances {

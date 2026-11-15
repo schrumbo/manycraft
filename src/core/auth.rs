@@ -11,7 +11,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
-use super::{net, online, webauth};
+use super::ratelimit::Cooldown;
+use super::{net, online, reconnect, webauth};
 
 const CLIENT_ID_VAR: &str = "MANYCRAFT_MSA_CLIENT_ID";
 pub(super) const LIVE_CLIENT_ID: &str = "00000000402b5328";
@@ -31,6 +32,7 @@ const MAX_BODY: u64 = 1 << 20;
 const DEFAULT_INTERVAL: u64 = 5;
 const SLOW_DOWN_STEP: u64 = 5;
 const TRANSPORT_FAILURES: u32 = 3;
+const RATE_ATTEMPTS: u32 = 5;
 const CANCEL_SLICE: Duration = Duration::from_millis(100);
 const OFFLINE_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 const SESSION_MARGIN: Duration = Duration::from_secs(10 * 60);
@@ -186,13 +188,20 @@ pub struct Flow {
     agent: ureq::Agent,
     ep: Endpoints,
     client_id: String,
+    pause: fn(Duration),
+}
+
+static COOLDOWN: Mutex<Cooldown> = Mutex::new(Cooldown::new());
+
+fn cooldown() -> std::sync::MutexGuard<'static, Cooldown> {
+    COOLDOWN.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Flow {
     /// Prepares a flow whose every request goes through `proxy`, or the environment's proxy without one.
     pub fn new(proxy: Option<&str>) -> Result<Self> {
         let client_id = client_id();
-        Ok(Self { agent: net::agent(proxy)?, ep: Endpoints::for_client(&client_id), client_id })
+        Ok(Self { agent: net::agent(proxy)?, ep: Endpoints::for_client(&client_id), client_id, pause: std::thread::sleep })
     }
 
     /// Asks Microsoft for a device code.
@@ -273,25 +282,47 @@ impl Flow {
     /// Trades a saved refresh token for fresh Microsoft tokens; the new refresh token replaces the old one.
     pub fn refresh(&self, refresh_token: &str) -> Result<Tokens> {
         let form = [("grant_type", "refresh_token"), ("client_id", &self.client_id), ("refresh_token", refresh_token), ("scope", self.ep.scope)];
-        token_refresh(&post_form(&self.agent, &self.ep.token_url, &form)?)
+        token_refresh(&self.paced(|| post_form(&self.agent, &self.ep.token_url, &form))?)
+    }
+
+    /// Sends a request to Microsoft, Xbox or Minecraft services that are known to throttle bursts: when one answers
+    /// "too many requests", all requests wait, longer each time, and this one is sent again, up to five times.
+    fn paced(&self, send: impl Fn() -> Result<Reply>) -> Result<Reply> {
+        let mut limited = 0;
+        loop {
+            let wait = cooldown().wait(Instant::now());
+            if !wait.is_zero() {
+                (self.pause)(wait);
+            }
+            let reply = send()?;
+            if reply.status != 429 {
+                cooldown().answered();
+                return Ok(reply);
+            }
+            cooldown().limited(Instant::now(), reply.retry_after, reconnect::unit());
+            limited += 1;
+            if limited >= RATE_ATTEMPTS {
+                return Ok(reply);
+            }
+        }
     }
 
     /// Runs the Xbox Live → XSTS → Minecraft chain and fetches the profile.
     pub fn session(&self, tokens: &Tokens) -> Result<Session> {
-        let xbl = xbox_token("Xbox Live", &post_json(&self.agent, &self.ep.xbl, &json!({
+        let xbl = xbox_token("Xbox Live", &self.paced(|| post_json(&self.agent, &self.ep.xbl, &json!({
             "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": format!("{}{}", self.ep.rps_prefix, tokens.access_token)},
             "RelyingParty": "http://auth.xboxlive.com",
             "TokenType": "JWT",
-        }))?)?;
-        let xsts = xbox_token("Xbox security service", &post_json(&self.agent, &self.ep.xsts, &json!({
+        })))?)?;
+        let xsts = xbox_token("Xbox security service", &self.paced(|| post_json(&self.agent, &self.ep.xsts, &json!({
             "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl.token]},
             "RelyingParty": XSTS_RELYING_PARTY,
             "TokenType": "JWT",
-        }))?)?;
-        let mc = minecraft_login(&post_json(&self.agent, &self.ep.mc_login, &json!({
+        })))?)?;
+        let mc = minecraft_login(&self.paced(|| post_json(&self.agent, &self.ep.mc_login, &json!({
             "identityToken": format!("XBL3.0 x={};{}", xsts.uhs, xsts.token),
-        }))?)?;
-        let profile = profile(&get_bearer(&self.agent, &self.ep.mc_profile, &mc.access_token)?)?;
+        })))?)?;
+        let profile = profile(&self.paced(|| get_bearer(&self.agent, &self.ep.mc_profile, &mc.access_token))?)?;
         Ok(assemble(profile, mc, SystemTime::now()))
     }
 }
@@ -536,6 +567,7 @@ fn pick_client_id(runtime: Option<&str>, built: Option<&str>) -> String {
 struct Reply {
     status: u16,
     body: Vec<u8>,
+    retry_after: Option<Duration>,
 }
 
 impl Reply {
@@ -570,8 +602,9 @@ fn get_bearer(agent: &ureq::Agent, url: &str, token: &str) -> Result<Reply> {
 fn reply(url: &str, res: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Reply> {
     let mut res = res.with_context(|| format!("cannot reach {}", host(url)))?;
     let status = res.status().as_u16();
+    let retry_after = res.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()).map(Duration::from_secs);
     let body = res.body_mut().with_config().limit(MAX_BODY).read_to_vec().with_context(|| format!("cannot read the answer from {}", host(url)))?;
-    Ok(Reply { status, body })
+    Ok(Reply { status, body, retry_after })
 }
 
 #[derive(Deserialize)]
@@ -816,7 +849,7 @@ mod tests {
     const NOTCH_ID: &str = "0e9e3a6c-6a1f-4b2b-9d57-2b1ac6f3c1d4";
 
     fn reply(status: u16, body: &str) -> Reply {
-        Reply { status, body: body.as_bytes().to_vec() }
+        Reply { status, body: body.as_bytes().to_vec(), retry_after: None }
     }
 
     fn fail<T>(result: Result<T>) -> anyhow::Error {
@@ -1129,6 +1162,7 @@ mod tests {
                 mc_profile: format!("{base}/mc/profile"),
             },
             client_id: "test-client".into(),
+            pause: |_| {},
         }
     }
 
@@ -1187,7 +1221,7 @@ mod tests {
             ("/mc/profile", vec![(200, fixture!("profile_ok"))]),
         ]);
         let local = flow(&base);
-        let flow = Flow { ep: Endpoints { scope: LIVE_SCOPE, rps_prefix: "t=", ..local.ep }, client_id: LIVE_CLIENT_ID.into(), agent: local.agent };
+        let flow = Flow { ep: Endpoints { scope: LIVE_SCOPE, rps_prefix: "t=", ..local.ep }, client_id: LIVE_CLIENT_ID.into(), agent: local.agent, pause: local.pause };
         assert!(flow.has_window());
         assert!(!self::flow(&base).has_window());
         let tokens = flow.redeem("M.C540_BAY.2.U.code+/=").unwrap();
@@ -1417,6 +1451,27 @@ mod tests {
         let tokens = Tokens { access_token: "T".into(), refresh_token: None };
         assert_eq!(kind(&fail(flow(&base).session(&tokens))), Some(&AuthError::NoXboxProfile));
         assert!(requests(&seen, "/mc/login").is_empty());
+    }
+
+    #[test]
+    fn a_throttled_request_is_sent_again_and_the_chain_goes_on() {
+        let (base, seen) = serve(vec![
+            ("/xbl", vec![(200, fixture!("xbl_ok"))]),
+            ("/xsts", vec![(429, "{}"), (429, "{}"), (200, fixture!("xsts_ok"))]),
+            ("/mc/login", vec![(200, fixture!("mc_login_ok"))]),
+            ("/mc/profile", vec![(200, fixture!("profile_ok"))]),
+        ]);
+        let tokens = Tokens { access_token: "T".into(), refresh_token: None };
+        assert!(flow(&base).session(&tokens).is_ok());
+        assert_eq!(requests(&seen, "/xsts").len(), 3);
+    }
+
+    #[test]
+    fn a_request_that_stays_throttled_gives_up_after_five_tries() {
+        let (base, seen) = serve(vec![("/xbl", vec![(429, "{}")])]);
+        let tokens = Tokens { access_token: "T".into(), refresh_token: None };
+        assert!(flow(&base).session(&tokens).is_err());
+        assert_eq!(requests(&seen, "/xbl").len(), RATE_ATTEMPTS as usize);
     }
 
     #[test]

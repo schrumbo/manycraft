@@ -27,7 +27,7 @@ use super::sheet::{self, Look};
 use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
-use crate::core::content::{self, Installed};
+use crate::core::packs::{self, Installed};
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::instance::Loader;
 use crate::core::modicons;
@@ -131,7 +131,7 @@ pub(super) struct IconCache {
 }
 
 impl IconCache {
-    fn new(cx: &mut App) -> Entity<Self> {
+    pub(super) fn new(cx: &mut App) -> Entity<Self> {
         let cache = cx.new(|_| Self { items: HashMap::new(), tick: 0 });
         cx.observe_release(&cache, |cache, cx| {
             for (_, (item, _)) in cache.items.drain() {
@@ -566,12 +566,12 @@ impl InstanceSheet {
     /// The folder packs of the open tab go into, when the tab has one.
     pub(super) fn pack_dir(&self) -> Option<PathBuf> {
         let made = self.setup.as_ref().filter(|_| !self.creating())?;
-        content::pack_dir(&made.dir(), self.browser.kind, self.browser.target.as_deref())
+        packs::pack_dir(&made.dir(), self.browser.kind, self.browser.target.as_deref())
     }
 
     fn global_packs(&self) -> bool {
         let local = self.setup.as_ref().map_or(&[][..], |m| m.local_mods.as_slice());
-        content::loads_global_packs(&self.mods, local)
+        packs::loads_global_packs(&self.mods, local)
     }
 
     fn needs_global_packs(&self) -> bool {
@@ -885,10 +885,10 @@ impl InstanceSheet {
 
     fn offer_shader_mod(&mut self) {
         let local = self.setup.as_ref().map_or(&[][..], |m| m.local_mods.as_slice());
-        if content::shader_loader(&self.mods, local).is_some() || matches!(self.browser.notice, Some(Notice::Removed(..) | Notice::Trashed { .. })) {
+        if packs::shader_loader(&self.mods, local).is_some() || matches!(self.browser.notice, Some(Notice::Removed(..) | Notice::Trashed { .. })) {
             return;
         }
-        self.browser.notice = Some(match content::shader_mod(&self.loader) {
+        self.browser.notice = Some(match packs::shader_mod(&self.loader) {
             Some((id, name)) => Notice::NeedsShaderMod { id, name },
             None => Notice::NoShaderMod,
         });
@@ -1349,9 +1349,9 @@ impl InstanceSheet {
             let text = if self.loader.takes_mods() { tr("Dafür braucht es den Mod Global Packs.") } else { tr("Vanilla lädt Datenpakete nur pro Welt.") };
             row = row.child(div().flex_1().min_w_0().text_size(px(font::CALLOUT)).text_color(t.secondary).child(text));
             if self.loader.takes_mods() {
-                let busy = self.browser.adding.contains(content::GLOBAL_PACKS);
+                let busy = self.browser.adding.contains(packs::GLOBAL_PACKS);
                 row = row.child(sheet::button("add-global-packs", tr("Global Packs hinzufügen"), Some("plus"), Look::Secondary, false, busy, t).on_click(cx.listener(|s, _, window, cx| {
-                    s.add_mod(content::GLOBAL_PACKS.to_owned(), "Global Packs".to_owned(), cx);
+                    s.add_mod(packs::GLOBAL_PACKS.to_owned(), "Global Packs".to_owned(), cx);
                     s.browse_focus(window, cx);
                 })));
             }
@@ -1370,8 +1370,8 @@ impl InstanceSheet {
                 let command = keys("enter", true);
                 let run = match act {
                     Act::Install if self.browser.kind == Kind::Modpack => trf("%@ legt es als Instanz an.", &[&command]),
-                    Act::Install => trf("%@ installiert.", &[&command]),
-                    Act::Update => trf("%@ aktualisiert.", &[&command]),
+                    Act::Install => trf("%@ installiert es.", &[&command]),
+                    Act::Update => trf("%@ aktualisiert es.", &[&command]),
                     Act::Nothing => String::new(),
                 };
                 format!("{} {run}", trf("%@ öffnet „%@“.", &[&keys("enter", false), &hit.title])).trim().to_owned()

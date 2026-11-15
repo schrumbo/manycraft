@@ -17,7 +17,7 @@ use super::mod_browser::{saved_when, skeleton_row};
 use super::sheet::{self, Look};
 use super::theme::{Theme, font, iconsize, radius, space, tint};
 use super::widgets::{TakeFocus, icon, segment, segmented};
-use crate::core::content;
+use crate::core::packs;
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::modrinth::{self, Details, Hit, Kind, Version};
 
@@ -90,7 +90,7 @@ impl InstanceSheet {
         page.versions = Load::Loading;
         let (id, kind, version) = (page.hit.project_id.clone(), page.kind, self.version.clone());
         let asked = id.clone();
-        let details = cx.background_executor().spawn(async move { catalog::details(&asked).map(|(d, saved)| (SharedString::from(content::readable(&d.body)), d, saved)) });
+        let details = cx.background_executor().spawn(async move { catalog::details(&asked).map(|(d, saved)| (SharedString::from(packs::readable(&d.body)), d, saved)) });
         let asked = id.clone();
         let versions = cx.background_executor().spawn(async move { catalog::versions(&asked, kind, &version) });
         cx.spawn(async move |this, cx| {

@@ -181,6 +181,15 @@ pub struct RenameInstance(pub String);
 #[action(namespace = manycraft)]
 pub struct DeleteInstance(pub String);
 
+/// Shows the settings of an instance with its advanced part open and one setting focused: `memory`, `java`,
+/// `jvm_args`, `game_args`, `window`, `gpu` or `renderer`.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct OpenInstanceSetting {
+    pub instance: String,
+    pub setting: String,
+}
+
 /// Opens an instance's folder (id) in the file manager.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

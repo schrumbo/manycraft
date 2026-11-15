@@ -588,7 +588,8 @@ fn export_with(batch: &Instance, dir: &Path, loader: &Loader, out: &Path, fetch:
     let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
     let mut files = Vec::new();
     let mut extra: Vec<(String, PathBuf)> = Vec::new();
-    for m in &batch.mods {
+    let off = |name: &str| batch.disabled.iter().any(|d| d.eq_ignore_ascii_case(name));
+    for m in batch.mods.iter().filter(|m| !off(&m.file_name)) {
         modrinth::safe_file_name(&m.file_name)?;
         let local = dir.join("mods").join(&m.file_name);
         let path = if local.is_file() && net::file_sha1(&local)?.eq_ignore_ascii_case(&m.sha1) {
@@ -607,7 +608,7 @@ fn export_with(batch: &Instance, dir: &Path, loader: &Loader, out: &Path, fetch:
             extra.push((format!("overrides/{name}"), path));
         }
     }
-    for name in &batch.local_mods {
+    for name in batch.local_mods.iter().filter(|n| !off(n)) {
         modrinth::safe_file_name(name)?;
         let path = dir.join("mods").join(name);
         if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
@@ -1112,6 +1113,31 @@ mod tests {
         assert_eq!(fs::read(dest.join("resourcepacks").join("rp.zip")).unwrap(), b"rp");
         assert_eq!(fs::read(dest.join("options.txt")).unwrap(), b"fov:1.0\n");
         assert_eq!(names(&dest.join("mods")), ["lithium.jar", "mine.jar", "sodium-fabric.jar"]);
+    }
+
+    #[test]
+    fn export_leaves_out_switched_off_mods() {
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("src");
+        fs::create_dir_all(src.join("mods")).unwrap();
+        fs::write(src.join("mods").join("sodium.jar"), b"sodium").unwrap();
+        fs::write(src.join("mods").join("lithium.jar.disabled"), b"lithium").unwrap();
+        fs::write(src.join("mods").join("mine.jar.disabled"), b"mine").unwrap();
+        fs::write(src.join("mods").join("own.jar"), b"own").unwrap();
+        let mut b = Instance::new("Off", "1.21.1", Loader::Fabric(Some("0.16.5".into())));
+        b.mods = vec![modref(b"sodium", "sodium.jar", "Sodium"), modref(b"lithium", "lithium.jar", "Lithium")];
+        b.local_mods = vec!["mine.jar".into(), "own.jar".into()];
+        b.disabled = vec!["LITHIUM.jar".into(), "mine.jar".into()];
+        let file = home.path().join("out.mrpack");
+        export_with(&b, &src, &Loader::Fabric(Some("0.16.5".into())), &file, &served(vec![("https://cdn.modrinth.com/data/Sodium/sodium.jar", b"sodium".to_vec())])).unwrap();
+        let mut zip = ZipArchive::new(File::open(&file).unwrap()).unwrap();
+        let mut inside: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
+        inside.sort();
+        assert_eq!(inside, ["modrinth.index.json", "overrides/mods/own.jar"]);
+        let mut raw = String::new();
+        zip.by_name(INDEX).unwrap().read_to_string(&mut raw).unwrap();
+        let pack = parse_index(raw.as_bytes()).unwrap();
+        assert_eq!(pack.files.len(), 1);
     }
 
     #[test]

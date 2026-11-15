@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::batch::ModRef;
+use super::options::LaunchOptions;
 use super::{paths, store};
 
 /// File holding an instance in its folder.
@@ -17,7 +18,7 @@ const IN_USE: &str = "in-use.lock";
 pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
 const TRASH: &str = ".trash";
-const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
+pub(super) const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
 const COPIED: [&str; 7] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks", "options.txt", "servers.dat"];
 
 /// The mod loader of an instance, with its pinned version; `None` follows the newest one.
@@ -100,10 +101,15 @@ pub struct Instance {
     /// File names in the shared mods folder that are not on Modrinth; syncing never deletes them.
     #[serde(default)]
     pub local_mods: Vec<String>,
+    /// File names (as listed in `mods` or `local_mods`) of mods that are switched off; in the shared mods folder their file ends in `.disabled`.
+    #[serde(default)]
+    pub disabled: Vec<String>,
     #[serde(default = "default_memory")]
     pub memory_mb: u32,
     #[serde(default)]
     pub jvm_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "LaunchOptions::is_default")]
+    pub options: LaunchOptions,
     /// The account that last played this instance alone.
     #[serde(default)]
     pub last_account: Option<Uuid>,
@@ -124,8 +130,10 @@ impl Instance {
             loader,
             mods: Vec::new(),
             local_mods: Vec::new(),
+            disabled: Vec::new(),
             memory_mb: DEFAULT_MEMORY_MB,
             jvm_args: Vec::new(),
+            options: LaunchOptions::default(),
             last_account: None,
         }
     }
@@ -269,7 +277,11 @@ pub fn valid_id(id: &str) -> bool {
 /// Deletes the instance with its mods, configs, worlds and game folders. Callers check first that no batch uses
 /// it and no game of it runs.
 pub fn delete(instance: &Instance) -> Result<()> {
-    delete_in(&instances_dir(), instance)
+    delete_in(&instances_dir(), instance)?;
+    if instance.options.gpu.is_some() {
+        let _ = super::gpu::release(&instance.id);
+    }
+    Ok(())
 }
 
 pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
@@ -415,7 +427,7 @@ pub(super) fn hold(id: &str) -> Option<super::lock::Guard> {
     hold_in(&instances_dir(), id)
 }
 
-fn hold_in(root: &Path, id: &str) -> Option<super::lock::Guard> {
+pub(super) fn hold_in(root: &Path, id: &str) -> Option<super::lock::Guard> {
     if !valid_id(id) {
         return None;
     }
@@ -439,7 +451,7 @@ pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn remove_dir(dir: &Path) -> Result<()> {
+pub(super) fn remove_dir(dir: &Path) -> Result<()> {
     match std::fs::remove_dir_all(dir) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("cannot delete {}", dir.display())),
         _ => Ok(()),
@@ -540,7 +552,7 @@ mod tests {
         let i: Instance = serde_json::from_str(r#"{"id":"a1","name":"A","game_version":"26.3"}"#).unwrap();
         assert_eq!(i.loader, Loader::Fabric(None));
         assert_eq!(i.memory_mb, DEFAULT_MEMORY_MB);
-        assert!(i.mods.is_empty() && i.local_mods.is_empty() && i.jvm_args.is_empty() && i.icon.is_none() && i.last_account.is_none());
+        assert!(i.mods.is_empty() && i.local_mods.is_empty() && i.disabled.is_empty() && i.jvm_args.is_empty() && i.icon.is_none() && i.last_account.is_none());
     }
 
     #[test]

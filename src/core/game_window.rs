@@ -1,7 +1,7 @@
 //! The game window seen from outside the game: its border tinted in the account's colour, where it sits and moving it while hidden.
 
 use std::time::Duration;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 use std::time::Instant;
 
 use super::account::Account;
@@ -30,6 +30,17 @@ pub fn seen(pid: u32) -> Option<Seen> {
     }
 }
 
+/// Whether the game of process `pid` has opened its window, which on platforms other than Windows nobody can tell.
+pub fn shown(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    return win::game_window(pid).is_some();
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// Moves the hidden main window of process `pid` to the corner of `frame`, keeping its size, without showing or activating it and without waiting for the game.
 pub fn place_hidden(pid: u32, frame: Rect) {
     #[cfg(target_os = "windows")]
@@ -40,27 +51,25 @@ pub fn place_hidden(pid: u32, frame: Rect) {
     let _ = (pid, frame);
 }
 
-/// Keeps the window of a game without Manycraft's mod, process `pid`, on the monitor of `home`: moves it into the middle
-/// of `home` without activating it whenever it shows up elsewhere, from its first frame until `settle` after the first
-/// move, or until `wait` passed without a window or the process ended. Returns whether it was moved.
+/// Keeps the window of a game without Manycraft's mod, process `pid`, on the monitor of `home`: moves each new window of
+/// the game into the middle of `home` without activating it, once. A window that was moved or already sat on `home` is
+/// never touched again, so dragging it is final. Stops `settle` after the first window, or when `wait` passed without
+/// a window or the process ended. Returns whether a window was moved.
 pub fn bring_home(pid: u32, home: Rect, wait: Duration, settle: Duration) -> bool {
     #[cfg(target_os = "windows")]
     {
         let Some(process) = win::Process::open(pid) else { return false };
         let start = Instant::now();
-        let mut moved: Option<Instant> = None;
+        let mut homing = Homing::new(settle);
         loop {
             let now = Instant::now();
-            match moved {
-                Some(at) if now.duration_since(at) > settle => return true,
-                None if now.duration_since(start) > wait => return false,
-                _ if process.ended() => return moved.is_some(),
-                _ => {}
+            if homing.done(now, start, wait) || process.ended() {
+                return homing.moved();
             }
             if let Some(hwnd) = win::game_window(pid)
-                && win::move_into(hwnd, home)
+                && homing.visit(now, hwnd as usize)
             {
-                moved.get_or_insert(now);
+                homing.record(hwnd as usize, win::move_into(hwnd, home));
             }
             std::thread::sleep(HOME_POLL);
         }
@@ -69,6 +78,57 @@ pub fn bring_home(pid: u32, home: Rect, wait: Duration, settle: Duration) -> boo
     {
         let _ = (pid, home, wait, settle);
         false
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Homed {
+    Moved,
+    Home,
+    NotYet,
+}
+
+#[cfg(any(target_os = "windows", test))]
+struct Homing {
+    settle: Duration,
+    handled: Vec<usize>,
+    first: Option<Instant>,
+    moved: bool,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl Homing {
+    fn new(settle: Duration) -> Self {
+        Self { settle, handled: Vec::new(), first: None, moved: false }
+    }
+
+    fn visit(&mut self, now: Instant, window: usize) -> bool {
+        if self.handled.contains(&window) {
+            return false;
+        }
+        self.handled.push(window);
+        self.first.get_or_insert(now);
+        true
+    }
+
+    fn record(&mut self, window: usize, homed: Homed) {
+        match homed {
+            Homed::Moved => self.moved = true,
+            Homed::Home => {}
+            Homed::NotYet => self.handled.retain(|w| *w != window),
+        }
+    }
+
+    fn moved(&self) -> bool {
+        self.moved
+    }
+
+    fn done(&self, now: Instant, start: Instant, wait: Duration) -> bool {
+        match self.first {
+            Some(first) => now.duration_since(first) > self.settle,
+            None => now.duration_since(start) > wait,
+        }
     }
 }
 
@@ -258,17 +318,21 @@ pub mod win {
     }
 
     /// Moves a normal `hwnd` into the middle of `home`, keeping its size, unless it is on that monitor already.
-    pub fn move_into(hwnd: HWND, home: Rect) -> bool {
-        let Some(seen) = seen(hwnd) else { return false };
-        let works = work_areas();
-        if !seen.mode.is_normal() || place::same_work_area(seen.frame, home, &works) {
-            return false;
+    pub fn move_into(hwnd: HWND, home: Rect) -> super::Homed {
+        use super::Homed;
+        let Some(seen) = seen(hwnd) else { return Homed::NotYet };
+        if !seen.mode.is_normal() {
+            return Homed::NotYet;
         }
-        let Some(margins) = margins(hwnd) else { return false };
+        let works = work_areas();
+        if place::same_work_area(seen.frame, home, &works) {
+            return Homed::Home;
+        }
+        let Some(margins) = margins(hwnd) else { return Homed::NotYet };
         let target = place::centered(home, seen.frame, &works);
         let r = grown(target, margins);
         unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS) };
-        true
+        Homed::Moved
     }
 
     /// Moves `hwnd` while hidden so that its frame covers `frame`; a shown, minimized, maximized or fullscreen window stays.
@@ -313,6 +377,52 @@ fn colorref(rgb: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_is_moved_once_and_a_new_window_gets_its_turn() {
+        let t0 = Instant::now();
+        let mut homing = Homing::new(Duration::from_secs(20));
+        assert!(homing.visit(t0, 1));
+        homing.record(1, Homed::Moved);
+        assert!(!homing.visit(t0 + Duration::from_secs(1), 1));
+        assert!(homing.visit(t0 + Duration::from_secs(2), 2));
+        assert!(!homing.visit(t0 + Duration::from_secs(3), 2));
+        assert!(homing.moved());
+    }
+
+    #[test]
+    fn a_window_already_home_is_left_alone_and_ends_the_watch_after_the_settle_time() {
+        let t0 = Instant::now();
+        let wait = Duration::from_secs(600);
+        let mut homing = Homing::new(Duration::from_secs(20));
+        assert!(!homing.done(t0 + Duration::from_secs(30), t0, wait));
+        assert!(homing.visit(t0 + Duration::from_secs(30), 7));
+        homing.record(7, Homed::Home);
+        assert!(!homing.visit(t0 + Duration::from_secs(31), 7));
+        assert!(!homing.done(t0 + Duration::from_secs(50), t0, wait));
+        assert!(homing.done(t0 + Duration::from_secs(51), t0, wait));
+        assert!(!homing.moved());
+    }
+
+    #[test]
+    fn a_window_that_was_not_ready_is_tried_again() {
+        let t0 = Instant::now();
+        let mut homing = Homing::new(Duration::from_secs(20));
+        assert!(homing.visit(t0, 3));
+        homing.record(3, Homed::NotYet);
+        assert!(homing.visit(t0 + Duration::from_secs(1), 3));
+        homing.record(3, Homed::Moved);
+        assert!(!homing.visit(t0 + Duration::from_secs(2), 3));
+        assert!(homing.moved());
+    }
+
+    #[test]
+    fn without_a_window_the_watch_ends_after_the_wait() {
+        let t0 = Instant::now();
+        let homing = Homing::new(Duration::from_secs(20));
+        assert!(!homing.done(t0 + Duration::from_secs(600), t0, Duration::from_secs(600)));
+        assert!(homing.done(t0 + Duration::from_secs(601), t0, Duration::from_secs(600)));
+    }
 
     #[test]
     fn colorref_swaps_red_and_blue() {

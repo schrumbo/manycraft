@@ -113,6 +113,9 @@ pub struct Batch {
     /// Memory each game of the batch gets instead of the instance's.
     #[serde(default)]
     pub memory_override: Option<u32>,
+    /// How many games of a start may load at once; 0 lets the machine's cores and free memory decide.
+    #[serde(default)]
+    pub launch_parallel: u32,
 }
 
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
@@ -146,6 +149,7 @@ impl Batch {
             join_delay_ms: DEFAULT_JOIN_DELAY_MS,
             background: Background::Saving,
             memory_override: None,
+            launch_parallel: 0,
         }
     }
 
@@ -308,6 +312,16 @@ mod tests {
         assert!(batch.join_commands.is_empty());
         assert_eq!(batch.join_delay_ms, DEFAULT_JOIN_DELAY_MS);
         assert_eq!(batch.background, Background::Saving);
+        assert_eq!(batch.launch_parallel, 0);
+    }
+
+    #[test]
+    fn launch_parallel_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("a", "i1");
+        b.launch_parallel = 4;
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
     }
 
     #[test]

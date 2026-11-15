@@ -42,6 +42,7 @@ struct PickRows {
 const FILTER_FROM: usize = 12;
 const CHROME_HEIGHT: f32 = 150.;
 const SNUG_PERCENT: u64 = 80;
+const LAUNCH_CHOICES: [u32; 5] = [0, 1, 2, 4, 8];
 const SAVE_ERROR_MAX: f32 = 220.;
 const LIST_MIN: f32 = 96.;
 const LIST_SHARE: f32 = 0.5;
@@ -119,6 +120,7 @@ struct BatchSheet {
     inherit: bool,
     memory: u32,
     background: Background,
+    launch_parallel: u32,
     advanced: bool,
     memory_max: u32,
     total_ram: u64,
@@ -204,6 +206,7 @@ impl BatchSheet {
             }),
         ];
         let original_background = original.as_ref().map_or_else(Background::default, |b| b.background);
+        let launch_parallel = original.as_ref().map_or(0, |b| b.launch_parallel);
         let free = cx.background_executor().spawn(async { crate::core::fit::system_memory().map(|m| m.free_mb) });
         cx.spawn(async move |this, cx| {
             let free_ram = free.await;
@@ -229,6 +232,7 @@ impl BatchSheet {
             inherit,
             memory,
             background: original_background,
+            launch_parallel,
             advanced: false,
             memory_max,
             total_ram,
@@ -339,6 +343,7 @@ impl BatchSheet {
             memory_override: (!self.inherit).then_some(self.memory),
             accounts: accounts.iter().map(|a| a.id).filter(|id| self.accounts.contains(id)).collect(),
             background: self.background,
+            launch_parallel: self.launch_parallel,
         };
         let id = self.original.as_ref().map(|b| b.id.clone());
         self.saving = true;
@@ -456,10 +461,10 @@ impl BatchSheet {
             .child(sheet::field(tr("Server"), Input::new(&self.server), Some(tr("Optional. Adresse mit oder ohne Port.")), server_problem, t))
             .child(self.render_accounts(cx, t))
             .child(self.render_background(active, cx, t))
-            .child(self.render_memory(cx, t))
+            .child(self.render_memory(active, cx, t))
     }
 
-    fn render_memory(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
+    fn render_memory(&mut self, active: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
         let count = self.accounts.len().max(1);
         let each = if self.inherit { self.instance_memory(cx) } else { self.memory };
         let total = u64::from(each) * count as u64;
@@ -470,7 +475,7 @@ impl BatchSheet {
         let tight = measured.filter(|f| !f.fits());
         let at_min = self.memory <= forms::MEMORY_MIN;
         let at_max = self.memory >= self.memory_max;
-        let open = self.advanced || !self.inherit || over || tight.is_some() || snug.is_some();
+        let open = self.advanced || !self.inherit || self.launch_parallel != 0 || over || tight.is_some() || snug.is_some();
         let label = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
         let disclosure = div()
             .id("batch-advanced")
@@ -557,7 +562,41 @@ impl BatchSheet {
             sheet::note(Some(tr("Pro Account.")), None, t)
         };
         let manual = (!self.inherit).then(|| div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper));
-        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(inherit).children(manual).child(line.min_h(px(font::CAPTION * font::LINE * 2.))))
+        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(inherit).children(manual).child(line.min_h(px(font::CAPTION * font::LINE * 2.)))).child(self.render_launch(active, cx, t))
+    }
+
+    fn render_launch(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
+        let busy = self.saving;
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let auto = crate::core::stagger::auto_parallel(cores, self.free_ram);
+        let hint = match self.launch_parallel {
+            0 => trf("Automatisch: höchstens %lld Spiele gleichzeitig, passend zu Prozessor und freiem Arbeitsspeicher. Die übrigen warten.", &[&auto]),
+            1 => tr("Ein Spiel startet nach dem anderen. Das schont den Rechner am meisten und dauert am längsten."),
+            n => trf("Höchstens %lld Spiele starten gleichzeitig. Mehr geht schneller, der Rechner reagiert dann aber träger. Die übrigen warten.", &[&n]),
+        };
+        let hint = if running { format!("{hint} {}", tr("Gilt beim nächsten Start.")) } else { hint };
+        let segments = LAUNCH_CHOICES.iter().enumerate().map(|(n, count)| {
+            let label = if *count == 0 { tr("Automatisch") } else { count.to_string() };
+            segment(("launch-parallel", n), label, *count == self.launch_parallel, !busy, t)
+        });
+        let pick = cx.listener(|s, n: &usize, _, cx| {
+            if s.saving {
+                return;
+            }
+            s.launch_parallel = LAUNCH_CHOICES.get(*n).copied().unwrap_or(0);
+            s.save_error = None;
+            cx.notify();
+        });
+        let control = segmented("batch-launch-parallel", segments, move |n, window, cx| pick(&n, window, cx), t).when(busy, |d| d.opacity(tint::DISABLED));
+        let control = if busy { sheet::unavailable_over("batch-launch-parallel-locked", control, tr("Wird gerade gesichert …")).into_any_element() } else { control.into_any_element() };
+        div()
+            .pl(px(space::L))
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(sheet::label(tr("Gleichzeitig starten"), t))
+            .child(div().flex().child(control))
+            .child(sheet::note(Some(hint), None, t).line_height(px(font::CAPTION * font::LINE)).min_h(px(font::CAPTION * font::LINE * 2.)))
     }
 
     fn render_background(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {

@@ -374,6 +374,8 @@ pub struct VersionDownloads {
 #[serde(rename_all = "camelCase")]
 pub struct JavaVersion {
     pub component: String,
+    #[serde(default)]
+    pub major_version: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

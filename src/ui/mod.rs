@@ -20,6 +20,8 @@ pub mod loader_version;
 pub mod main_window;
 pub mod maintenance;
 pub mod mod_browser;
+pub mod mod_list;
+pub mod mod_updates;
 #[allow(dead_code)]
 pub mod model;
 #[allow(dead_code)]
@@ -40,6 +42,7 @@ pub mod toolbar;
 pub mod transfer;
 pub mod undo;
 pub mod updates;
+pub mod versions;
 #[allow(dead_code)]
 pub mod theme;
 #[allow(dead_code)]

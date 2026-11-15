@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu};
-use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::base::input::Escape;
 use gpui_kit::component::{FocusableExt, IndexPath, Sizable, WindowExt};
@@ -15,8 +15,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMods, CloneInstance, DeleteInstance, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
+use super::actions::{AddAccount, AddMods, CloneInstance, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
 use super::batch_sheet::Load;
+use super::mod_list::ModList;
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::loader_version::{self, LoaderVersion, Picked};
@@ -25,12 +26,20 @@ use super::motion::Soft;
 use super::remote::{self, InstanceEdit};
 use super::sheet::{self, Look};
 use super::undo::Edit;
+use super::versions::{self as picker, VersionItem};
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::toolbar;
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented, tip};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, LOADERS, Loader};
+use crate::core::options::check_jvm_args;
+use crate::core::versions::GameVersion;
+
+#[path = "instance_options.rs"]
+mod options;
+
+use options::{OptionChange, Options};
 
 const PAGE_MAX: f32 = 760.;
 const VERSION_WIDTH: f32 = 168.;
@@ -46,6 +55,10 @@ pub fn init(cx: &mut App) {
         let id = a.0.clone();
         cx.defer(move |cx| rename(&id, cx));
     });
+    cx.on_action(|a: &OpenInstanceSetting, cx| {
+        let (id, setting) = (a.instance.clone(), a.setting.clone());
+        cx.defer(move |cx| open_setting(&id, &setting, cx));
+    });
     cx.bind_keys([KeyBinding::new("f2", RenameCurrent, Some(PAGE_CONTEXT))]);
 }
 
@@ -60,6 +73,22 @@ pub fn rename(id: &str, cx: &mut App) {
         page.update(cx, |_, cx| cx.notify());
     }
 }
+
+/// Shows the settings of instance `id` with "Erweitert" open and `setting` focused.
+pub fn open_setting(id: &str, setting: &str, cx: &mut App) {
+    cx.set_global(WantsSetting(id.to_owned(), setting.to_owned()));
+    if !super::main_window::show_instance(id, cx) {
+        cx.remove_global::<WantsSetting>();
+        return;
+    }
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
+}
+
+struct WantsSetting(String, String);
+
+impl Global for WantsSetting {}
 
 /// Moves the keyboard to the instance page, where F2 renames.
 pub fn focus(window: &mut Window, cx: &mut App) -> bool {
@@ -112,72 +141,18 @@ fn after(instances: &[Instance], id: &str) -> Option<String> {
     order.get(at + 1).or_else(|| at.checked_sub(1).and_then(|before| order.get(before))).map(|made| made.id.clone())
 }
 
-/// Puts removed mod `mod_ref` back into instance `id` at `index`. `base` is the instance as it was right after the
-/// removal, so a change of the mods, version or loader since then is refused for good instead of merged. Says why when
-/// it cannot, and offers a retry in its old place only when that may help.
-pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, base: InstanceEdit, at: Instant, cx: &mut App) {
-    let again = |mod_ref: ModRef, base: InstanceEdit| super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index, base };
-    let (made, running) = {
-        let m = model::get(cx).read(cx);
-        (m.instance(id).cloned(), m.games.values().any(|g| g.instance_id == id && g.phase.is_active()))
-    };
-    let Some(made) = made else {
-        super::undo::note(tr("Diese Instanz gibt es nicht mehr."), cx);
-        super::state::reload(cx);
-        return;
-    };
-    if made.mods.iter().any(|m| m.project_id == mod_ref.project_id) {
-        super::undo::note(trf("„%@“ ist schon wieder da.", &[&mod_ref.title]), cx);
-        super::state::reload(cx);
-        return;
-    }
-    if made.game_version != base.game_version || !made.loader.same_kind(&base.loader) {
-        super::undo::note(trf("„%@“ passt nicht mehr zu dieser Version.", &[&mod_ref.title]), cx);
-        super::state::reload(cx);
-        return;
-    }
-    if made.mods != base.mods {
-        super::undo::note(trf("„%@“ lässt sich nicht mehr zurückholen: Die Mods wurden inzwischen geändert.", &[&mod_ref.title]), cx);
-        super::state::reload(cx);
-        return;
-    }
-    if running {
-        super::undo::note(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
-        super::undo::retry(again(mod_ref, base), at, cx);
-        super::state::reload(cx);
-        return;
-    }
-    let mut edit = base.clone();
-    edit.mods.insert(index.min(edit.mods.len()), mod_ref.clone());
-    let instance = id.to_owned();
-    let task = cx.background_spawn({
-        let (base, instance) = (base.clone(), instance.clone());
-        async move { remote::save_instance(&instance, &base, edit) }
-    });
-    cx.spawn(async move |cx| {
-        let result = task.await;
-        cx.update(|cx| {
-            match result {
-                Ok(saved) => model::get(cx).update(cx, |m, cx| {
-                    if let Some(slot) = m.instances.iter_mut().find(|made| made.id == saved.id) {
-                        *slot = saved;
-                    }
-                    cx.notify();
-                }),
-                Err(e) => {
-                    super::undo::note(forms::explain_as(tr("Nicht gespeichert."), &e).text, cx);
-                    if !super::undo::permanent(&e) {
-                        super::undo::retry(super::undo::Kind::ModRemoved { instance_id: instance, mod_ref, index, base }, at, cx);
-                    }
-                }
-            }
-            super::state::reload(cx);
-        });
-    })
-    .detach();
-}
+pub(super) const PAGE_CONTEXT: &str = "InstancePage";
 
-const PAGE_CONTEXT: &str = "InstancePage";
+/// Shows the Mods tab of the instance page, if one is open.
+pub(super) fn show_mods(cx: &mut App) {
+    let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) else { return };
+    page.update(cx, |s, cx| {
+        if s.tab != Tab::Mods {
+            s.tab = Tab::Mods;
+            cx.notify();
+        }
+    });
+}
 
 struct Page(Entity<InstancePage>);
 
@@ -197,7 +172,7 @@ pub fn page(id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
             view
         }
     };
-    view.update(cx, |s, cx| s.bind(id, cx));
+    view.update(cx, |s, cx| s.bind(id, window, cx));
     view.into_any_element()
 }
 
@@ -262,7 +237,7 @@ enum Change {
     Memory(u32),
     JvmArgs(Vec<String>),
     LoaderVersion(Option<String>),
-    RemoveMod(String),
+    Option(OptionChange),
 }
 
 impl Change {
@@ -272,7 +247,7 @@ impl Change {
             Self::Memory(mb) => edit.memory_mb = *mb,
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
-            Self::RemoveMod(project) => edit.mods.retain(|m| m.project_id != *project),
+            Self::Option(change) => change.apply(&mut edit.options),
         }
     }
 }
@@ -325,11 +300,15 @@ struct InstancePage {
     entered: bool,
     advanced: bool,
     versions: Load<()>,
-    version_list: Vec<String>,
+    version_list: Vec<GameVersion>,
     list_gen: u64,
-    version_select: Entity<SelectState<SearchableVec<String>>>,
+    everything: bool,
+    supported: Option<(String, Option<HashSet<String>>)>,
+    supported_asked: Option<String>,
+    version_select: Entity<SelectState<SearchableVec<VersionItem>>>,
     select_target: Option<String>,
-    select_applied: Option<(String, u64)>,
+    select_applied: Option<(String, u64, bool, bool)>,
+    opts: Options,
     jvm: Entity<InputState>,
     loader_version: Entity<LoaderVersion>,
     name: Entity<InputState>,
@@ -337,7 +316,7 @@ struct InstancePage {
     rename_saving: bool,
     loader_focus: FocusHandle,
     focus_name: bool,
-    removing: Option<(ModRef, usize)>,
+    mods: Entity<ModList>,
     changing: Option<(InstanceEdit, Option<Edit>)>,
     loader_news: Option<(LoaderKey, Option<String>)>,
     loader_asked: Option<LoaderKey>,
@@ -358,7 +337,8 @@ struct InstancePage {
 
 impl InstancePage {
     fn new(id: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
+        let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<VersionItem>::new()), None, window, cx).searchable(true));
+        let (opts, opts_subs) = Options::new(window, cx);
         let jvm = cx.new(|cx| InputState::new(window, cx));
         let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let name = cx.new(|cx| InputState::new(window, cx));
@@ -399,11 +379,14 @@ impl InstancePage {
                 }
                 _ => {}
             }),
-            cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<String>>, window, cx| {
+            cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<VersionItem>>, window, cx| {
                 let SelectEvent::Confirm(Some(v)) = e else { return };
                 s.pick_version(v.clone(), window, cx);
             }),
-        ];
+        ]
+        .into_iter()
+        .chain(opts_subs)
+        .collect();
         let mut page = Self {
             id: id.to_owned(),
             tab: Tab::Mods,
@@ -412,9 +395,13 @@ impl InstancePage {
             versions: Load::Loading,
             version_list: Vec::new(),
             list_gen: 0,
+            everything: false,
+            supported: None,
+            supported_asked: None,
             version_select,
             select_target: None,
             select_applied: None,
+            opts,
             jvm,
             loader_version,
             name,
@@ -422,7 +409,7 @@ impl InstancePage {
             rename_saving: false,
             loader_focus: cx.focus_handle().tab_stop(true),
             focus_name: false,
-            removing: None,
+            mods: super::mod_list::new(id, window, cx),
             changing: None,
             loader_news: None,
             loader_asked: None,
@@ -444,16 +431,19 @@ impl InstancePage {
         page
     }
 
-    fn bind(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn bind(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.id == id {
             return;
         }
         self.id = id.to_owned();
+        self.mods.update(cx, |m, cx| m.bind(id, window, cx));
+        self.hold_mods(cx);
         self.entered = true;
         self.renaming = false;
         self.rename_saving = false;
         self.rename_error = None;
         self.advanced = false;
+        self.opts.rebind();
         self.select_target = None;
         self.select_applied = None;
         self.loader_asked = None;
@@ -550,6 +540,11 @@ impl InstancePage {
         self.switching.as_ref().is_some_and(|b| b.id == self.id)
     }
 
+    fn hold_mods(&mut self, cx: &mut Context<Self>) {
+        let hold = self.switching_now().then(|| tr("Warte, bis die Umstellung fertig ist."));
+        self.mods.update(cx, |m, cx| m.hold(hold, cx));
+    }
+
     fn blocked(&self, cx: &App) -> bool {
         self.switching_now() || self.running(cx)
     }
@@ -557,7 +552,7 @@ impl InstancePage {
     fn load_versions(&mut self, cx: &mut Context<Self>) {
         self.versions = Load::Loading;
         cx.notify();
-        let task = cx.background_executor().spawn(async { remote::versions() });
+        let task = cx.background_executor().spawn(async { remote::catalog() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
@@ -576,16 +571,35 @@ impl InstancePage {
         .detach();
     }
 
+    fn check_supported(&mut self, made: &Instance, cx: &mut Context<Self>) {
+        let kind = made.loader.name().to_owned();
+        if self.supported_asked.as_ref() == Some(&kind) {
+            return;
+        }
+        self.supported_asked = Some(kind.clone());
+        let loader = made.loader.clone();
+        let task = cx.background_executor().spawn(async move { remote::supported_versions(&loader) });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.supported_asked.as_ref() == Some(&kind) {
+                    s.supported = Some((kind, found));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn sync(&mut self, made: &Instance, window: &mut Window, cx: &mut Context<Self>) {
+        self.check_supported(made, cx);
         let want = self.select_target.clone().unwrap_or_else(|| made.game_version.clone());
-        let key = (want.clone(), self.list_gen);
+        let supported = self.supported.as_ref().filter(|(kind, _)| kind == made.loader.name()).and_then(|(_, s)| s.as_ref());
+        let key = (want.clone(), self.list_gen, self.everything, supported.is_some());
         if self.select_applied.as_ref() != Some(&key) {
             self.select_applied = Some(key);
-            let mut list = self.version_list.clone();
-            if !list.contains(&want) {
-                list.insert(0, want.clone());
-            }
-            let at = list.iter().position(|v| *v == want);
+            let list = picker::items(&self.version_list, self.everything, supported, &want);
+            let at = list.iter().position(|v| v.value() == &want);
             self.version_select.update(cx, |s, cx| {
                 s.set_items(SearchableVec::new(list), window, cx);
                 if let Some(at) = at {
@@ -600,6 +614,7 @@ impl InstancePage {
             self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
         }
         self.loader_version.update(cx, |p, cx| p.show(&made.loader, &made.game_version, cx));
+        self.sync_options(made, window, cx);
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {
@@ -608,9 +623,11 @@ impl InstancePage {
             return;
         }
         let args = split_args(&self.jvm.read(cx).value());
-        if args != split_args(&jvm) {
+        self.opts.jvm_problem = check_jvm_args(&args).err();
+        if self.opts.jvm_problem.is_none() && args != split_args(&jvm) {
             self.enqueue(Job::Save(Change::JvmArgs(args)), cx);
         }
+        cx.notify();
     }
 
     fn enqueue(&mut self, job: Job, cx: &mut Context<Self>) {
@@ -633,10 +650,6 @@ impl InstancePage {
             match job {
                 Job::Save(change) => {
                     self.changing = Some((InstanceEdit::of(&made), matches!(change, Change::Name(_)).then_some(Edit::Renamed)));
-                    self.removing = match &change {
-                        Change::RemoveMod(project) => made.mods.iter().position(|m| m.project_id == *project).map(|at| (made.mods[at].clone(), at)),
-                        _ => None,
-                    };
                     let base = InstanceEdit::of(&made);
                     let mut edit = base.clone();
                     change.apply(&mut edit);
@@ -647,7 +660,6 @@ impl InstancePage {
                     self.finish_with(id, task, None, cx);
                 }
                 Job::Switch(switch) => {
-                    self.removing = None;
                     let to = match &switch {
                         Switch::Version(v) => trf("Minecraft %@", &[v]),
                         Switch::Loader(l) => l.name().to_owned(),
@@ -658,6 +670,7 @@ impl InstancePage {
                         Switch::Loader(l) => trf("Auf %@ wird umgestellt …", &[&l.name()]),
                     };
                     self.switching = Some(Busy { id: id.clone(), text });
+                    self.hold_mods(cx);
                     let target = match &switch {
                         Switch::Version(v) => Some(v.clone()),
                         Switch::Loader(_) => None,
@@ -684,14 +697,13 @@ impl InstancePage {
 
     fn finished(&mut self, id: &str, switched: bool, result: anyhow::Result<(Instance, Vec<String>)>, cx: &mut Context<Self>) {
         let renamed = matches!(self.in_flight.take(), Some((_, Job::Save(Change::Name(_)))));
-        let removed = self.removing.take();
         let changed = self.changing.take();
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
         }
+        self.hold_mods(cx);
         match result {
             Ok((saved, notes)) => {
-                let kept = removed.is_some().then(|| InstanceEdit::of(&saved));
                 let edited = changed.and_then(|(before, what)| {
                     let after = InstanceEdit::of(&saved);
                     what.filter(|_| before != after).map(|what| super::undo::Kind::Edited { instance_id: id.to_owned(), name: saved.name.clone(), what, before, after })
@@ -707,9 +719,6 @@ impl InstancePage {
                 }
                 if renamed && self.rename_saving {
                     self.end_rename(cx);
-                }
-                if let (Some((mod_ref, index)), Some(base)) = (removed, kept) {
-                    super::undo::offer(super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index, base }, cx);
                 }
                 if let Some(kind) = edited {
                     super::undo::offer(kind, cx);
@@ -757,13 +766,6 @@ impl InstancePage {
         if next != now {
             self.enqueue(Job::Save(Change::Memory(next)), cx);
         }
-    }
-
-    fn remove_mod(&mut self, project: &str, cx: &mut Context<Self>) {
-        if self.blocked(cx) {
-            return;
-        }
-        self.enqueue(Job::Save(Change::RemoveMod(project.to_owned())), cx);
     }
 
     fn pick_version(&mut self, version: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -1014,87 +1016,11 @@ impl InstancePage {
         div().flex().child(segmented("instance-tabs", segments, move |n, window, cx| pick(&n, window, cx), t))
     }
 
-    fn render_mods(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let made = &f.made;
-        let col = div().flex().flex_col().gap(px(space::M));
-        if matches!(made.loader, Loader::Vanilla) {
-            return col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Vanilla lädt keine Mods.")));
+    fn render_mods(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> AnyElement {
+        if !f.made.loader.takes_mods() {
+            return div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Vanilla lädt keine Mods.")).into_any_element();
         }
-        let locked = self.blocked(cx);
-        let switching = self.switching_now();
-        let add = sheet::button_unless("mods-add", tr("Mods hinzufügen…"), Some("plus"), Look::Secondary, switching.then(|| tr("Warte, bis die Umstellung fertig ist.").into()), false, t)
-            .when(!switching, |b| {
-                b.on_click({
-                    let id = made.id.clone();
-                    move |_, window, cx| window.dispatch_action(Box::new(AddMods(id.clone())), cx)
-                })
-            });
-        let mut col = col;
-        if made.mods.is_empty() {
-            col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Noch keine Mods.")));
-        } else {
-            let mut list = div().flex().flex_col().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).overflow_hidden();
-            for (at, m) in made.mods.iter().enumerate() {
-                let project = m.project_id.clone();
-                let remove = if locked {
-                    sheet::unavailable(
-                        div()
-                            .id(SharedString::from(format!("mod-remove-{project}")))
-                            .size(px(control::M))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(radius::INNER)),
-                        icon("x", iconsize::M, t.tertiary),
-                        if self.switching_now() { tr("Warte, bis die Umstellung fertig ist.") } else { tr("Stoppe zuerst die laufenden Spiele.") },
-                    )
-                } else {
-                    sheet::icon_button(SharedString::from(format!("mod-remove-{project}")), "x", tr("Entfernen"), t.tertiary, t).on_click(cx.listener(move |s, _, _, cx| s.remove_mod(&project, cx)))
-                };
-                list = list.child(
-                    div()
-                        .when(at > 0, |d| d.border_t_1().border_color(t.separator))
-                        .pl(px(space::M))
-                        .pr(px(space::XS))
-                        .py(px(space::XS))
-                        .flex()
-                        .items_center()
-                        .gap(px(space::S))
-                        .child(icon("package", iconsize::S, t.tertiary))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().truncate().text_size(px(font::BODY)).child(m.title.clone()))
-                                .child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(m.file_name.clone())),
-                        )
-                        .child(remove),
-                );
-            }
-            col = col.child(list);
-        }
-        if !made.local_mods.is_empty() {
-            let mut own = div().flex().flex_col().rounded(px(radius::CONTROL)).border_1().border_color(t.separator).overflow_hidden();
-            for (at, name) in made.local_mods.iter().enumerate() {
-                own = own.child(
-                    div()
-                        .when(at > 0, |d| d.border_t_1().border_color(t.separator))
-                        .pl(px(space::M))
-                        .pr(px(space::S))
-                        .py(px(space::S))
-                        .flex()
-                        .items_center()
-                        .gap(px(space::S))
-                        .child(icon("package", iconsize::S, t.tertiary))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).child(name.clone())),
-                );
-            }
-            col = col.child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Eigene Dateien"), t)).child(own));
-        }
-        col.child(div().flex().child(add))
+        div().flex_1().min_h_0().child(self.mods.clone()).into_any_element()
     }
 
     fn render_settings(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -1108,11 +1034,20 @@ impl InstancePage {
             Some(why) => sheet::unavailable_over(id, control, why.clone()).into_any_element(),
             None => control,
         };
+        let listed = !self.version_list.is_empty() || !matches!(self.versions, Load::Failed(_) | Load::Loading);
         let version_control = match &self.versions {
             Load::Failed(_) if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.game_version.clone())).into_any_element(),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)).into_any_element(),
-            _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
+            _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_width(px(control::VERSION_MENU)).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
         };
+        let page = cx.entity().downgrade();
+        let everything = listed.then(|| picker::everything_toggle("instance-versions-all", self.everything, !blocked, move |_, cx| {
+            let _ = page.update(cx, |s, cx| {
+                s.everything = !s.everything;
+                cx.notify();
+            });
+        }, t));
+        let version_control = div().flex().flex_col().gap(px(space::XS)).child(version_control).children(everything).into_any_element();
         let loader_focus = self.loader_focus.clone();
         let segments = LOADERS.iter().enumerate().map(|(n, l)| {
             let selected = made.loader.same_kind(l);
@@ -1131,11 +1066,12 @@ impl InstancePage {
             .child(field("instance-version-field", tr("Minecraft-Version"), version_control, Some(VERSION_WIDTH)))
             .child(field("instance-loader-field", tr("Loader"), loader_control, None));
         let news = self.loader_update(made);
-        let busy_line = div().min_h(px(control::M)).flex().items_center().children(match self.switching.as_ref().filter(|b| b.id == self.id) {
+        let busy_line = match self.switching.as_ref().filter(|b| b.id == self.id) {
             Some(b) => Some(sheet::waiting(b.text.clone(), t).into_any_element()),
             None => news.map(|newest| self.loader_news_line(made, &newest, t)),
-        });
-        let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).child(busy_line));
+        }
+        .map(|line| div().min_h(px(control::M)).flex().items_center().child(line));
+        let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).children(busy_line));
         if let Load::Failed(why) = &self.versions {
             let retry = sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)));
             col = col.child(div().flex().items_start().gap(px(space::S)).child(div().flex_1().min_w_0().child(sheet::problem("versions-error", "circle-alert", t.danger_text, why, self.details.contains("versions-error"), cx.listener(|s, _, _, cx| s.toggle("versions-error", cx)), t))).child(retry));
@@ -1146,7 +1082,7 @@ impl InstancePage {
         for note in &self.notes {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(note.clone()));
         }
-        col.child(self.render_memory(made, busy, cx, t)).child(self.render_advanced(made, cx, t)).child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."))).child(self.render_actions(f, t))
+        col.child(self.render_advanced(made, busy, cx, t)).child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."))).child(self.render_actions(f, t))
     }
 
     fn loader_update(&self, made: &Instance) -> Option<String> {
@@ -1209,17 +1145,20 @@ impl InstancePage {
         let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
         let less = wait().or_else(|| (shown <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
         let more = wait().or_else(|| (shown >= self.memory_max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])));
+        let (less_focus, more_focus) = (self.opts.memory_less.clone(), self.opts.memory_more.clone());
+        let (less_on, more_on) = (less.is_none(), more.is_none());
+        self.opts.memory_less_off.set(!less_on);
         let stepper = div()
             .flex()
             .items_center()
             .gap(px(space::XS))
-            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx))
+            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx).when(less_on, |d| d.track_focus(&less_focus)))
             .child(div().id("memory-value").mark("value", value.clone()).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(value))
-            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx));
-        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(sheet::note(Some(tr("Pro Account.")), None, t))
+            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx).when(more_on, |d| d.track_focus(&more_focus)));
+        div().flex().child(stepper)
     }
 
-    fn render_advanced(&self, made: &Instance, cx: &mut Context<Self>, t: &Theme) -> Div {
+    fn render_advanced(&mut self, made: &Instance, busy: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
         let open = self.advanced;
         let disclosure = div()
             .id("instance-advanced")
@@ -1247,16 +1186,8 @@ impl InstancePage {
         if !open {
             return col;
         }
-        let labelled = |label: String, input: &Entity<InputState>| div().flex().flex_col().gap(px(space::XS)).child(sheet::label(label, t)).child(Input::new(input));
-        col.child(
-            div()
-                .pl(px(space::L))
-                .flex()
-                .flex_col()
-                .gap(px(space::M))
-                .child(labelled(tr("Java-Argumente"), &self.jvm))
-                .when(made.loader.takes_mods(), |d| d.child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(loader_version::label(&made.loader), t)).child(self.loader_version.clone()))),
-        )
+        let memory = self.render_memory(made, busy, cx, t);
+        col.child(div().pl(px(space::L)).child(self.render_options(made, memory, cx, t)))
     }
 
     fn render_actions(&self, f: &Facts, t: &Theme) -> Div {
@@ -1328,6 +1259,12 @@ impl Render for InstancePage {
         }
         self.sync(&f.made, window, cx);
         self.check_loader(&f.made, cx);
+        if let Some(setting) = cx.try_global::<WantsSetting>().filter(|w| w.0 == self.id).map(|w| w.1.clone()) {
+            cx.remove_global::<WantsSetting>();
+            self.tab = Tab::Settings;
+            self.advanced = true;
+            self.opts.reveal(&setting);
+        }
         if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {
             cx.remove_global::<WantsRename>();
             self.begin_rename(window, cx);
@@ -1340,6 +1277,12 @@ impl Render for InstancePage {
                     s.take_focus(window, cx);
                     s.set_selected_range(0..end, cx);
                 })
+            });
+        }
+        if self.opts.revealing() {
+            let page = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                let _ = page.update(cx, |s, cx| s.finish_reveal(window, cx));
             });
         }
         let header = self.header(&f, cx, &t);
@@ -1357,11 +1300,13 @@ impl Render for InstancePage {
             return root.flex().flex_col().child(header).child(div().id("instance-body").flex_1().min_h_0().flex().justify_center().child(body)).into_any_element();
         }
         let content = match self.tab {
-            Tab::Settings => self.render_settings(&f, cx, &t),
+            Tab::Settings => self.render_settings(&f, cx, &t).into_any_element(),
             _ => self.render_mods(&f, cx, &t),
         };
         let body = div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).py(px(space::L)).flex().flex_col().gap(px(space::M)).children(self.batch_links(&f, &t)).children(hint).child(self.tabs(cx, &t)).children(error).child(content);
-        root.flex().flex_col().child(header).child(div().id("instance-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(div().w_full().flex().justify_center().child(body))).into_any_element()
+        let scroller = div().id("instance-body").flex_1().min_h_0();
+        let scroller = if self.tab == Tab::Mods && f.made.loader.takes_mods() { scroller.flex().justify_center().child(body.h_full()) } else { scroller.overflow_y_scroll().track_scroll(&self.scroll).child(div().w_full().flex().justify_center().child(body)) };
+        root.flex().flex_col().child(header).child(scroller).into_any_element()
     }
 }
 
@@ -1379,15 +1324,6 @@ mod tests {
         made.mods = vec![mod_ref("a"), mod_ref("b")];
         made.jvm_args = vec!["-Xss1m".into()];
         InstanceEdit::of(&made)
-    }
-
-    #[test]
-    fn removing_a_mod_matches_its_project() {
-        let mut e = edit();
-        Change::RemoveMod("a".into()).apply(&mut e);
-        assert_eq!(e.mods, vec![mod_ref("b")]);
-        Change::RemoveMod("gone".into()).apply(&mut e);
-        assert_eq!(e.mods.len(), 1);
     }
 
     #[test]

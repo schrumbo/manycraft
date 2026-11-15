@@ -60,6 +60,12 @@ pub mod control {
     pub const STEPPER_VALUE: f32 = 64.;
     /// Width of a stepper value with a unit, like "32 Chunks".
     pub const STEPPER_VALUE_WIDE: f32 = 80.;
+    /// Width of a field for a number of up to five digits, like a window width.
+    pub const NUMBER: f32 = 80.;
+    /// Width of the version menu, enough for a snapshot id beside its kind.
+    pub const VERSION_MENU: f32 = 280.;
+    /// Width of the Java menu, enough for a version, vendor and path.
+    pub const JAVA_MENU: f32 = 360.;
 }
 
 /// Icon sizes.

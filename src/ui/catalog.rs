@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 
 use crate::core::batch::ModRef;
-use crate::core::content::{self, Catalog, Installed, Modrinth};
+use crate::core::packs::{self, Catalog, Installed, Modrinth};
 use crate::core::modrinth::{Dependency, Details, File, Filter, Hashes, Hit, Kind, Page, Search, Shot, Sort, Support, Update, Version};
 use crate::core::{drive, paths};
 
@@ -65,13 +65,13 @@ pub fn installed(dir: &Path) -> Result<Vec<Installed>> {
     if canned() {
         return Ok(canned_installed(dir));
     }
-    content::installed(&Modrinth, dir)
+    packs::installed(&Modrinth, dir)
 }
 
 /// Newer files for installed packs.
 pub fn updates(filter: &Filter, current: &[ModRef]) -> Result<Vec<Update>> {
     if canned() {
-        return Ok(current.iter().filter(|m| m.file_name.contains("-1.0")).map(|m| Update { current: m.clone(), latest: canned_file(&m.project_id, &m.title) }).collect());
+        return Ok(current.iter().filter(|m| m.file_name.contains("-1.0")).map(|m| Update { current: m.clone(), latest: canned_file(&m.project_id, &m.title), changelog: Vec::new() }).collect());
     }
     Modrinth.updates(filter, current)
 }
@@ -87,24 +87,24 @@ pub fn install(instance_dir: &Path, dir: &Path, project_id: &str, title: &str, f
     let replacing = update.map(|u| u.current.file_name.as_str());
     let file = if drive::fenced("pack install", &found.file_name) {
         std::thread::sleep(CANNED_DELAY);
-        content::place(&found, dir, replacing, |_, path| Ok(std::fs::write(path, b"canned")?))?
+        packs::place(&found, dir, replacing, |_, path| Ok(std::fs::write(path, b"canned")?))?
     } else {
-        content::place(&found, dir, replacing, content::download)?
+        packs::place(&found, dir, replacing, packs::download)?
     };
     if let Some(old) = replacing {
-        content::rename_selected(instance_dir, filter.kind, old, &file)?;
+        packs::rename_selected(instance_dir, filter.kind, old, &file)?;
     }
     Ok(Installed { file, found })
 }
 
 /// Moves a pack to the instance's trash and returns the entry to take it back.
 pub fn remove(instance_dir: &Path, dir: &Path, file: &str) -> Result<String> {
-    content::remove(instance_dir, dir, file)
+    packs::remove(instance_dir, dir, file)
 }
 
 /// Takes a removed pack back out of the trash.
 pub fn put_back(instance_dir: &Path, entry: &str) -> Result<PathBuf> {
-    content::put_back(instance_dir, entry)
+    packs::put_back(instance_dir, entry)
 }
 
 /// Downloads the newest `.mrpack` of a modpack `filter` takes and returns its path.
@@ -113,7 +113,7 @@ pub fn fetch_modpack(project_id: &str, title: &str, filter: &Filter) -> Result<P
         std::thread::sleep(CANNED_DELAY);
         return canned_modpack(project_id, title);
     }
-    content::fetch_modpack(&Modrinth.file_for(project_id, title, filter)?)
+    packs::fetch_modpack(&Modrinth.file_for(project_id, title, filter)?)
 }
 
 /// A gallery picture as a local file.
@@ -121,7 +121,7 @@ pub fn shot(url: &str) -> Result<PathBuf> {
     if canned() {
         return canned_shot(url);
     }
-    content::shot_file(url)
+    packs::shot_file(url)
 }
 
 fn canned_search(search: &Search, offset: usize) -> Result<Page> {
@@ -279,6 +279,7 @@ fn canned_versions(project_id: &str, kind: Kind, game: &str) -> Vec<Version> {
             loaders: loaders.clone(),
             files: vec![File { url: format!("https://cdn.modrinth.com/canned/{slug}-{number}.zip"), filename: format!("{slug}-{number}.zip"), primary: true, hashes: Hashes { sha1: "0".repeat(40) }, size: 1 << 20 }],
             dependencies: deps.clone(),
+            changelog: None,
         })
         .collect()
 }
