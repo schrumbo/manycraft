@@ -19,7 +19,7 @@ use super::motion::Soft;
 use super::sheet::{self, Dismissed, Look};
 use super::state::render_image;
 use super::theme::{Theme, font, iconsize, radius, space, tint, wardrobe};
-use super::widgets::{KeyNav, icon, segment, segmented, tip};
+use super::widgets::{KeyNav, arrows, icon, segment, segmented, tip};
 use crate::core::account::{Account, AccountKind};
 use crate::core::auth::{self, AuthError};
 use crate::core::i18n::{tr, trf};
@@ -541,6 +541,7 @@ impl SkinSheet {
         if let Load::Ready(ready) = &mut self.load {
             if let Some(skin) = outcome.skin {
                 ready.skin = Some(skin);
+                ready.wardrobe.model = self.model;
                 self.pick = None;
             }
             if let Some(w) = outcome.wardrobe {
@@ -621,9 +622,10 @@ impl SkinSheet {
         let chosen = self.pick.as_ref().and_then(|p| p.recent);
         let (w, h) = (change::VIEW_W as f32 * wardrobe::RECENT, change::VIEW_H as f32 * wardrobe::RECENT);
         let busy = self.applying;
+        let count = self.recent.len();
         let items = self.recent.iter().enumerate().map(|(n, (_, thumb))| {
             let selected = chosen == Some(n);
-            div()
+            let item = div()
                 .id(("recent-skin", n))
                 .mark("option", trf("Zuletzt verwendet %lld", &[&(n + 1)]))
                 .p(px(space::XS))
@@ -638,7 +640,8 @@ impl SkinSheet {
                         .tooltip(tip(tr("Diesen Skin wieder nehmen")))
                         .on_click(cx.listener(move |s, _, _, cx| s.use_recent(n, cx)))
                 })
-                .child(img(ImageSource::Render(Arc::clone(thumb))).w(px(w)).h(px(h)).object_fit(ObjectFit::Fill))
+                .child(img(ImageSource::Render(Arc::clone(thumb))).w(px(w)).h(px(h)).object_fit(ObjectFit::Fill));
+            if busy { item } else { arrows(item, n, count) }
         });
         Some(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Zuletzt verwendet"), t)).child(div().flex().flex_wrap().gap(px(space::XS)).when(busy, |d| d.opacity(tint::DISABLED)).children(items)))
     }
@@ -650,8 +653,9 @@ impl SkinSheet {
         }
         let (w, h) = (change::CAPE_W as f32 * wardrobe::CAPE, change::CAPE_H as f32 * wardrobe::CAPE);
         let busy = self.applying;
-        let choice = |id: SharedString, label: String, selected: bool, look: AnyElement, pick: Option<String>| {
-            div()
+        let count = ready.capes.len() + 1;
+        let choice = |n: usize, id: SharedString, label: String, selected: bool, look: AnyElement, pick: Option<String>| {
+            let item = div()
                 .id(id)
                 .mark("option", label.clone())
                 .w(px(wardrobe::CHOICE))
@@ -667,16 +671,17 @@ impl SkinSheet {
                 .items_center()
                 .gap(px(space::XS))
                 .child(div().w(px(w)).h(px(h)).flex().items_center().justify_center().child(look))
-                .child(div().w_full().text_center().truncate().text_size(px(font::CAPTION)).text_color(if selected { t.primary } else { t.secondary }).child(label))
+                .child(div().w_full().text_center().truncate().text_size(px(font::CAPTION)).text_color(if selected { t.primary } else { t.secondary }).child(label));
+            if busy { item } else { arrows(item, n, count) }
         };
-        let none = choice("cape-none".into(), tr("Kein Umhang"), self.cape.is_none(), icon("circle-off", iconsize::L, t.tertiary).into_any_element(), None);
-        let capes = ready.capes.iter().map(|(cape, image)| {
+        let none = choice(0, "cape-none".into(), tr("Kein Umhang"), self.cape.is_none(), icon("circle-off", iconsize::L, t.tertiary).into_any_element(), None);
+        let capes = ready.capes.iter().enumerate().map(|(n, (cape, image))| {
             let look = match image {
                 Some(image) => img(ImageSource::Render(Arc::clone(image))).w(px(w)).h(px(h)).object_fit(ObjectFit::Fill).into_any_element(),
                 None => icon("image-off", iconsize::L, t.tertiary).into_any_element(),
             };
             let label = if cape.alias.is_empty() { tr("Umhang") } else { cape.alias.clone() };
-            choice(SharedString::from(format!("cape-{}", cape.id)), label, self.cape.as_deref() == Some(cape.id.as_str()), look, Some(cape.id.clone()))
+            choice(n + 1, SharedString::from(format!("cape-{}", cape.id)), label, self.cape.as_deref() == Some(cape.id.as_str()), look, Some(cape.id.clone()))
         });
         section.child(div().flex().flex_wrap().gap(px(space::S)).when(busy, |d| d.opacity(tint::DISABLED)).child(none).children(capes))
     }
@@ -684,7 +689,7 @@ impl SkinSheet {
     fn render_body(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
         match &self.load {
             Load::Loading => div().h(px(wardrobe::BODY)).flex().items_center().justify_center().child(sheet::waiting(tr("Skin wird geladen …"), t)),
-            Load::Failed(why, _) => div().h(px(wardrobe::BODY)).flex().items_center().justify_center().child(div().max_w(px(wardrobe::BODY + wardrobe::COLUMN)).child(sheet::problem(
+            Load::Failed(why, _) => div().py(px(space::XL)).flex().items_center().justify_center().child(div().max_w(px(wardrobe::BODY + wardrobe::COLUMN)).child(sheet::problem(
                 "skin-load",
                 "circle-alert",
                 t.danger_text,
