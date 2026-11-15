@@ -1415,6 +1415,7 @@ enum Deferred {
     Restart { key: String, delay: Duration, generation: u64 },
     Join { key: String, generation: u64, lines: Vec<String>, delay: Duration },
     Start { keys: Vec<String> },
+    StartWaiting { key: String, delay: Duration },
 }
 
 #[derive(Default)]
@@ -1498,6 +1499,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             Deferred::Restart { key, delay, generation } => schedule_restart(key, delay, generation, cx),
             Deferred::Join { key, generation, lines, delay } => schedule_join(key, generation, lines, delay, cx),
             Deferred::Start { keys } => start_keys(&keys, cx),
+            Deferred::StartWaiting { key, delay } => start_waiting(key, delay, cx),
         }
     }
     for (batch, name, kind) in fresh {
@@ -1609,6 +1611,9 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 } else {
                     Phase::Failed { reason }
                 };
+            }
+            if offline && !login {
+                fx.later.push(Deferred::StartWaiting { key, delay: waiting_retry() });
             }
             fx.suspect_offline |= offline;
         }
@@ -2079,6 +2084,18 @@ pub fn tell_games(cx: &mut App) {
             rt.backend.send(key, message);
         }
     }
+}
+
+fn start_waiting(key: String, delay: Duration, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(|cx| {
+            if model::get(cx).read(cx).games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
+                start_keys(std::slice::from_ref(&key), cx);
+            }
+        });
+    })
+    .detach();
 }
 
 fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut App) {
@@ -2770,6 +2787,8 @@ mod tests {
         apply(&mut m, &mut rt, Update::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true }, &mut fx);
         assert_eq!(m.games[&key].phase, Phase::NoNetwork);
         assert!(fx.suspect_offline && !m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let [Deferred::StartWaiting { key: waiting, delay }] = fx.later.as_slice() else { panic!("no slow retry for a waiting start") };
+        assert!(waiting == &key && delay.as_secs() >= 48);
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Reach { online: true }, &mut fx);
         assert!(matches!(fx.later.as_slice(), [Deferred::Start { keys }] if keys == &[key.clone()]));

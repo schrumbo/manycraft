@@ -273,9 +273,9 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
 }
 
 /// The menu of a batch, in the sidebar and over its tiles.
-pub fn batch_menu(menu: PopupMenu, id: &str, running: usize, stopped: usize, exporting: bool) -> PopupMenu {
+pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, exporting: bool) -> PopupMenu {
     menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(id.to_owned())), stopped == 0)
-        .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), running == 0)
+        .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), stoppable == 0)
         .separator()
         .menu(tr("Batch bearbeiten"), Box::new(EditBatch(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenBatchFolder(id.to_owned())))
@@ -400,9 +400,10 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 _ => trf("%lld von %lld laufen", &[&fine, &total]),
             };
             let stopped = total - running;
+            let stoppable = m.games.values().filter(|i| i.batch_id == b.id && i.phase.stoppable()).count();
             let exporting = m.exporting.contains(&b.instance_id);
             let trailing = if exporting { tr("Wird exportiert …") } else { format!("{fine}/{total}") };
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false }, b.id.clone(), running, stopped, exporting)
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false }, b.id.clone(), stoppable, stopped, exporting)
         })
         .collect();
     let mut instances: Vec<&Instance> = m.instances.iter().collect();
@@ -434,9 +435,9 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         import_row(import, &t).context_menu(move |menu, _, _| menu.menu_with_disabled(tr("Import abbrechen"), Box::new(CancelImport(id)), stopping)).into_any_element()
     }).collect();
     let mut batch_rows = Vec::new();
-    for (r, id, running, stopped, exporting) in batches {
+    for (r, id, stoppable, stopped, exporting) in batches {
         let key = r.id.clone();
-        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, running, stopped, exporting), window, cx));
+        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, stoppable, stopped, exporting), window, cx));
         batch_rows.push(element.into_any_element());
     }
     batch_rows.extend(imports);

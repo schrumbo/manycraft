@@ -521,7 +521,12 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
     let attention = m.attention_count(Some(batch));
     let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
-    let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
+    let stoppable = mine().filter(|i| i.phase.stoppable()).count();
+    let state = if running == 0 && stoppable > 0 {
+        tr("Keine Verbindung")
+    } else if running == 0 {
+        tr("gestoppt")
+    } else { trf("%lld von %lld laufen", &[&fine, &total]) };
     let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let id = batch.to_owned();
     let exporting = m.batch(batch).is_some_and(|b| m.exporting.contains(&b.instance_id));
@@ -557,7 +562,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         .when_some(solo.as_ref().map(|(instance, _)| instance.clone()), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
         .context_menu(move |menu, _, cx| match &solo {
             Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable, cx),
-            None => super::sidebar::batch_menu(menu, &id, running, stopped, exporting),
+            None => super::sidebar::batch_menu(menu, &id, stoppable, stopped, exporting),
         })
         .into_any_element()
 }

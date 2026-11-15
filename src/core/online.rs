@@ -32,6 +32,7 @@ pub fn reachable() -> bool {
     if up {
         set(ONLINE);
     } else {
+        set(OFFLINE);
         suspect();
     }
     up
