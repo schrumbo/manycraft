@@ -6,6 +6,7 @@ pub mod clean;
 mod download;
 mod fabric;
 mod forge;
+pub use self::forge::neoforge_game;
 mod java;
 pub mod meta;
 mod natives;

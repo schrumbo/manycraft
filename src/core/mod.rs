@@ -39,6 +39,7 @@ pub mod origin;
 pub mod paths;
 pub mod phone;
 pub mod place;
+pub mod launchers;
 pub mod prism;
 pub mod proxy;
 pub mod ratelimit;

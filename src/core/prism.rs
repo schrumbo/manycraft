@@ -1,4 +1,4 @@
-//! Import from Prism Launcher: its Fabric instances become batches, its offline accounts become accounts.
+//! Import from Prism Launcher and MultiMC: their instances become instances, its offline accounts become accounts.
 //! Prism's files are only read, never moved or changed, and its sign-in tokens are never kept, logged or stored.
 
 use std::collections::{HashMap, HashSet};
@@ -12,24 +12,25 @@ use serde::Deserialize;
 use super::account::{self, Account, AccountKind};
 use super::batch::ModRef;
 use super::instance::{self as made, Loader};
-use super::{fleet, modrinth, mrpack, net};
+use super::{modrinth, mrpack, net, launchers};
 
 const CONFIG_FILE: &str = "prismlauncher.cfg";
 const INSTANCE_FILE: &str = "instance.cfg";
 const PACK_FILE: &str = "mmc-pack.json";
 const ACCOUNTS_FILE: &str = "accounts.json";
-const OPTIONS_FILE: &str = "options.txt";
+pub(super) const OPTIONS_FILE: &str = "options.txt";
 const DEFAULT_INSTANCE_DIR: &str = "instances";
 const GAME_DIRS: [&str; 2] = [".minecraft", "minecraft"];
 const FLATPAK: &str = ".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher";
 const MINECRAFT: &str = "net.minecraft";
-const FABRIC_LOADER: &str = "net.fabricmc.fabric-loader";
-const OTHER_LOADERS: [(&str, &str); 4] = [
-    ("net.minecraftforge", "Forge"),
-    ("net.neoforged", "NeoForge"),
-    ("org.quiltmc.quilt-loader", "Quilt"),
-    ("com.mumfrey.liteloader", "LiteLoader"),
+type MakeLoader = fn(Option<String>) -> Loader;
+const LOADERS: [(&str, MakeLoader); 4] = [
+    ("net.fabricmc.fabric-loader", Loader::Fabric),
+    ("org.quiltmc.quilt-loader", Loader::Quilt),
+    ("net.minecraftforge", Loader::Forge),
+    ("net.neoforged", Loader::NeoForge),
 ];
+const OTHER_LOADERS: [(&str, &str); 1] = [("com.mumfrey.liteloader", "LiteLoader")];
 const MAX_DEPTH: usize = 32;
 const USAGE: &str = "usage: manycraft prism list
        manycraft prism import <instance> [--name <name>]
@@ -45,11 +46,11 @@ pub struct Instance {
     /// The `.minecraft` (or older `minecraft`) folder holding mods, config and options.
     pub game_dir: PathBuf,
     pub game_version: Option<String>,
-    pub loader_version: Option<String>,
+    pub loader: Loader,
     /// Enabled mods: `.jar` files directly in the mods folder.
     pub mods: usize,
     pub icon: String,
-    /// Why the instance cannot be imported; `None` for a Fabric instance.
+    /// Why the instance cannot be imported; `None` when its game version and loader are known.
     pub unsupported: Option<String>,
 }
 
@@ -93,7 +94,7 @@ fn candidates(data: Option<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
     found
 }
 
-/// Every instance in every Prism data folder, sorted by name. Instances that are not Fabric are listed with a reason.
+/// Every instance in every Prism data folder, sorted by name. Instances without a game version are listed with a reason.
 pub fn instances() -> Result<Vec<Instance>> {
     let mut all = Vec::new();
     for data in data_dirs() {
@@ -224,84 +225,26 @@ fn wanted_in_export(rest: &str) -> bool {
     inner == OPTIONS_FILE || inner.starts_with("config/") || inner.strip_prefix("mods/").is_some_and(|jar| !jar.contains('/') && is_jar(jar))
 }
 
-struct Jar {
-    path: PathBuf,
-    name: String,
-    sha1: String,
+pub(super) struct Jar {
+    pub path: PathBuf,
+    pub name: String,
+    pub sha1: String,
 }
 
 fn import_to(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Result<made::Instance> {
-    if name.is_empty() {
-        bail!("a batch needs a name");
-    }
     if let Some(reason) = &instance.unsupported {
         bail!("{} cannot be imported: {reason}", instance.name);
     }
-    let game = instance.game_version.as_deref().with_context(|| format!("{} has no Minecraft version", instance.name))?;
-    let jars = jars_in(&instance.game_dir.join("mods"))?;
-    let hashes: Vec<String> = jars.iter().map(|j| j.sha1.clone()).collect();
-    let matched = lookup(&hashes).context("cannot look the mods up on Modrinth")?;
-
-    let mut batch = made::Instance::new(name, game, Loader::Fabric(instance.loader_version.clone()));
-    let mut copies: Vec<(&Jar, String)> = Vec::new();
-    let mut taken = HashSet::new();
-    let mut seen = HashSet::new();
-    for jar in &jars {
-        if jar.name.eq_ignore_ascii_case(fleet::COMPANION_FILE) || !seen.insert(jar.sha1.clone()) {
-            continue;
-        }
-        let dest = match matched.get(&jar.sha1) {
-            Some(found) => {
-                batch.mods.push(found.clone());
-                found.file_name.clone()
-            }
-            None => {
-                batch.local_mods.push(jar.name.clone());
-                jar.name.clone()
-            }
-        };
-        modrinth::safe_file_name(&dest)?;
-        if !taken.insert(dest.to_lowercase()) {
-            bail!("two mods would both be called {dest}");
-        }
-        copies.push((jar, dest));
-    }
-
-    let dest = root.join(&batch.id);
-    let copied = copy_into(instance, &dest, &copies).and_then(|()| made::save_in(root, &batch));
-    if let Err(e) = copied {
-        let _ = std::fs::remove_dir_all(&dest);
-        return Err(e);
-    }
-    Ok(batch)
+    let spec = launchers::Spec { name, label: &instance.name, game_version: instance.game_version.as_deref(), loader: instance.loader.clone(), game_dir: &instance.game_dir, take: launchers::Take { settings: true, worlds: false } };
+    launchers::copy_instance(&spec, root, lookup, &AtomicBool::new(false), &|_, _| {})
 }
 
-fn copy_into(instance: &Instance, dest: &Path, copies: &[(&Jar, String)]) -> Result<()> {
-    let mods = dest.join("mods");
-    std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
-    for (jar, name) in copies {
-        copy_file(&jar.path, &mods.join(name))?;
-    }
-    let config = dest.join("config");
-    let source = instance.game_dir.join("config");
-    if source.is_dir() {
-        copy_tree(&source, &config, 0)?;
-    } else {
-        std::fs::create_dir_all(&config).with_context(|| format!("cannot create {}", config.display()))?;
-    }
-    let options = instance.game_dir.join(OPTIONS_FILE);
-    if options.is_file() {
-        copy_file(&options, &dest.join(OPTIONS_FILE))?;
-    }
-    Ok(())
-}
-
-fn copy_file(from: &Path, to: &Path) -> Result<()> {
+pub(super) fn copy_file(from: &Path, to: &Path) -> Result<()> {
     std::fs::copy(from, to).with_context(|| format!("cannot copy {}", from.display()))?;
     Ok(())
 }
 
-fn copy_tree(from: &Path, to: &Path, depth: usize) -> Result<()> {
+pub(super) fn copy_tree(from: &Path, to: &Path, depth: usize) -> Result<()> {
     if depth > MAX_DEPTH {
         bail!("{} is nested too deeply", from.display());
     }
@@ -323,7 +266,7 @@ pub(super) fn is_jar(name: &str) -> bool {
     name.len() > 4 && name.get(name.len() - 4..).is_some_and(|ext| ext.eq_ignore_ascii_case(".jar"))
 }
 
-fn jar_names(mods: &Path) -> Result<Vec<(String, PathBuf)>> {
+pub(super) fn jar_names(mods: &Path) -> Result<Vec<(String, PathBuf)>> {
     let entries = match std::fs::read_dir(mods) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -343,7 +286,7 @@ fn jar_names(mods: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(found)
 }
 
-fn jars_in(mods: &Path) -> Result<Vec<Jar>> {
+pub(super) fn jars_in(mods: &Path) -> Result<Vec<Jar>> {
     jar_names(mods)?
         .into_iter()
         .map(|(name, path)| {
@@ -384,7 +327,7 @@ fn instances_in(root: &Path) -> Result<Vec<Instance>> {
             dir,
             game_dir,
             game_version: None,
-            loader_version: None,
+            loader: Loader::Vanilla,
             mods: 0,
             icon: "default".to_owned(),
             unsupported: Some(format!("{e:#}")),
@@ -413,35 +356,30 @@ fn read_instance(id: String, dir: PathBuf) -> Result<Instance> {
     let icon = ini_value(&cfg, "iconKey").unwrap_or_else(|| "default".to_owned());
     let game_dir = GAME_DIRS.iter().map(|d| dir.join(d)).find(|d| d.is_dir()).unwrap_or_else(|| dir.join(GAME_DIRS[0]));
     let mods = jar_names(&game_dir.join("mods"))?.len();
-    let (game_version, loader_version, unsupported) = match std::fs::read(dir.join(PACK_FILE)) {
-        Err(_) => (None, None, Some(format!("no {PACK_FILE}"))),
+    let (game_version, loader, unsupported) = match std::fs::read(dir.join(PACK_FILE)) {
+        Err(_) => (None, Loader::Vanilla, Some(format!("no {PACK_FILE}"))),
         Ok(bytes) => match serde_json::from_slice::<Pack>(&bytes) {
-            Err(_) => (None, None, Some(format!("{PACK_FILE} is unreadable"))),
+            Err(_) => (None, Loader::Vanilla, Some(format!("{PACK_FILE} is unreadable"))),
             Ok(pack) => versions_of(&pack),
         },
     };
-    Ok(Instance { id, name, dir, game_dir, game_version, loader_version, mods, icon, unsupported })
+    Ok(Instance { id, name, dir, game_dir, game_version, loader, mods, icon, unsupported })
 }
 
-fn versions_of(pack: &Pack) -> (Option<String>, Option<String>, Option<String>) {
+fn versions_of(pack: &Pack) -> (Option<String>, Loader, Option<String>) {
     let find = |uid: &str| pack.components.iter().find(|c| c.uid == uid);
     let game = find(MINECRAFT).and_then(|c| c.version.clone());
-    let fabric = find(FABRIC_LOADER);
-    let loader = fabric.and_then(|c| c.version.clone());
+    let loader = LOADERS.iter().find_map(|(uid, make)| find(uid).map(|c| make(c.version.clone())));
     let other = OTHER_LOADERS.iter().find(|(uid, _)| find(uid).is_some()).map(|(_, name)| *name);
-    let reason = if game.is_none() {
-        Some("no Minecraft version".to_owned())
-    } else if let Some(other) = other {
-        Some(format!("uses {other}, only Fabric is supported"))
-    } else if fabric.is_none() {
-        Some("no mod loader, only Fabric instances can be imported".to_owned())
-    } else {
-        None
+    let reason = match (&game, other) {
+        (None, _) => Some("no Minecraft version".to_owned()),
+        (_, Some(other)) if loader.is_none() => Some(format!("uses {other}, which is not supported")),
+        _ => None,
     };
-    (game, loader, reason)
+    (game, loader.unwrap_or(Loader::Vanilla), reason)
 }
 
-fn ini_value(text: &str, key: &str) -> Option<String> {
+pub(super) fn ini_value(text: &str, key: &str) -> Option<String> {
     let mut general = true;
     for line in text.trim_start_matches('\u{feff}').lines() {
         let line = line.trim();
@@ -553,7 +491,7 @@ fn list() -> Result<i32> {
         let game = i.game_version.as_deref().unwrap_or("?");
         match &i.unsupported {
             Some(reason) => println!("{}  {}  Minecraft {game}  unsupported: {reason}", i.id, i.name),
-            None => println!("{}  {}  Minecraft {game}  Fabric {}  {} mods", i.id, i.name, i.loader_version.as_deref().unwrap_or("?"), i.mods),
+            None => println!("{}  {}  Minecraft {game}  {}  {} mods", i.id, i.name, i.loader.name(), i.mods),
         }
     }
     Ok(0)
@@ -622,6 +560,7 @@ fn show_accounts(save: bool) -> Result<i32> {
 mod tests {
     use std::fs;
 
+    use super::super::fleet;
     use super::*;
 
     const PACK: &str = r#"{"components":[{"uid":"net.minecraft","version":"1.21.1","important":true},{"uid":"net.fabricmc.intermediary","version":"1.21.1"},{"uid":"net.fabricmc.fabric-loader","version":"0.16.5"}],"formatVersion":1}"#;
@@ -739,7 +678,7 @@ mod tests {
         assert_eq!(found.len(), 1);
         let i = &found[0];
         assert_eq!((i.id.as_str(), i.name.as_str(), i.icon.as_str()), ("fabric1", "Farm", "grass"));
-        assert_eq!((i.game_version.as_deref(), i.loader_version.as_deref()), (Some("1.21.1"), Some("0.16.5")));
+        assert_eq!((i.game_version.as_deref(), &i.loader), (Some("1.21.1"), &Loader::Fabric(Some("0.16.5".into()))));
         assert_eq!(i.mods, 2);
         assert_eq!(i.unsupported, None);
         assert_eq!(i.game_dir, dir.path().join("fabric1").join(".minecraft"));
@@ -759,33 +698,41 @@ mod tests {
     }
 
     #[test]
-    fn other_loaders_and_broken_packs_are_unsupported_with_a_reason() {
+    fn every_loader_is_read_and_broken_packs_are_unsupported_with_a_reason() {
         let dir = tempfile::tempdir().unwrap();
-        let cases: [(&str, Option<&str>, &str); 6] = [
-            ("forge", Some(r#"{"components":[{"uid":"net.minecraft","version":"1.20.1"},{"uid":"net.minecraftforge","version":"47.2"}]}"#), "Forge"),
-            ("neo", Some(r#"{"components":[{"uid":"net.minecraft","version":"1.21"},{"uid":"net.neoforged","version":"21"}]}"#), "NeoForge"),
-            ("quilt", Some(r#"{"components":[{"uid":"net.minecraft","version":"1.21"},{"uid":"org.quiltmc.quilt-loader","version":"0.2"}]}"#), "Quilt"),
-            ("vanilla", Some(r#"{"components":[{"uid":"net.minecraft","version":"1.21"}]}"#), "no mod loader"),
+        let loaders: [(&str, &str, Loader); 4] = [
+            ("forge", r#"{"components":[{"uid":"net.minecraft","version":"1.20.1"},{"uid":"net.minecraftforge","version":"47.2.0"}]}"#, Loader::Forge(Some("47.2.0".into()))),
+            ("neo", r#"{"components":[{"uid":"net.minecraft","version":"1.21.1"},{"uid":"net.neoforged","version":"21.1.77"}]}"#, Loader::NeoForge(Some("21.1.77".into()))),
+            ("quilt", r#"{"components":[{"uid":"net.minecraft","version":"1.21"},{"uid":"org.quiltmc.quilt-loader","version":"0.26.0"}]}"#, Loader::Quilt(Some("0.26.0".into()))),
+            ("vanilla", r#"{"components":[{"uid":"net.minecraft","version":"1.21"}]}"#, Loader::Vanilla),
+        ];
+        for (id, pack, _) in &loaders {
+            let (mut s, cfg) = spec(id, id);
+            s.pack = Some(pack);
+            make(dir.path(), &s, &cfg);
+        }
+        let cases: [(&str, Option<&str>, &str); 4] = [
+            ("lite", Some(r#"{"components":[{"uid":"net.minecraft","version":"1.7.10"},{"uid":"com.mumfrey.liteloader","version":"1"}]}"#), "LiteLoader"),
             ("nopack", None, "mmc-pack.json"),
             ("broken", Some("{"), "unreadable"),
+            ("nogame", Some(r#"{"components":[{"uid":"net.fabricmc.fabric-loader","version":"0.16"}]}"#), "Minecraft version"),
         ];
-        for (id, pack, reason) in cases {
+        for (id, pack, _) in cases {
             let (mut s, cfg) = spec(id, id);
             s.pack = pack;
             make(dir.path(), &s, &cfg);
         }
-        let (mut s, cfg) = spec("nogame", "nogame");
-        s.pack = Some(r#"{"components":[{"uid":"net.fabricmc.fabric-loader","version":"0.16"}]}"#);
-        make(dir.path(), &s, &cfg);
         let found = instances_in(dir.path()).unwrap();
-        assert_eq!(found.len(), 7);
+        assert_eq!(found.len(), 8);
+        for (id, _, loader) in loaders.iter() {
+            let i = found.iter().find(|i| i.id == *id).unwrap();
+            assert_eq!((&i.loader, &i.unsupported), (loader, &None), "{id}");
+        }
         for (id, _, reason) in cases {
             let i = found.iter().find(|i| i.id == id).unwrap();
             assert!(i.unsupported.as_deref().is_some_and(|r| r.contains(reason)), "{id}: {:?}", i.unsupported);
         }
-        let nogame = found.iter().find(|i| i.id == "nogame").unwrap();
-        assert!(nogame.unsupported.as_deref().is_some_and(|r| r.contains("Minecraft version")));
-        assert_eq!(nogame.game_version, None);
+        assert_eq!(found.iter().find(|i| i.id == "nogame").unwrap().game_version, None);
     }
 
     #[test]
@@ -902,9 +849,9 @@ mod tests {
         let inst = fabric(prism.path(), "farm", "Farm");
         let none = lookup_of(Vec::new());
         assert!(import_to(&inst, "", out.path(), &none).is_err());
-        let forge = Instance { unsupported: Some("uses Forge".into()), ..inst.clone() };
-        let err = import_to(&forge, "X", out.path(), &none).unwrap_err().to_string();
-        assert!(err.contains("Farm") && err.contains("Forge"), "{err}");
+        let lite = Instance { unsupported: Some("uses LiteLoader".into()), ..inst.clone() };
+        let err = import_to(&lite, "X", out.path(), &none).unwrap_err().to_string();
+        assert!(err.contains("Farm") && err.contains("LiteLoader"), "{err}");
         let nogame = Instance { game_version: None, ..inst.clone() };
         assert!(import_to(&nogame, "X", out.path(), &none).is_err());
         fs::create_dir_all(inst.game_dir.join("mods")).unwrap();

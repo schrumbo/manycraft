@@ -224,7 +224,7 @@ pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<In
     Ok(claim_name(&root, made))
 }
 
-fn claim_name(root: &Path, mut made: Instance) -> Instance {
+pub(super) fn claim_name(root: &Path, mut made: Instance) -> Instance {
     let _naming = NAMING.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(all) = instance::load_all_in(root) else { return made };
     let taken: Vec<String> = all.into_iter().filter(|b| b.id != made.id).map(|b| b.name).collect();

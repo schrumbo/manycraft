@@ -121,6 +121,7 @@ struct Shared {
     shaderpacks: PathBuf,
     options: PathBuf,
     servers: PathBuf,
+    saves: PathBuf,
 }
 
 impl Shared {
@@ -132,6 +133,7 @@ impl Shared {
             shaderpacks: instance.shaderpacks_dir(),
             options: instance.options_template(),
             servers: instance.servers_template(),
+            saves: instance.dir().join(super::launchers::SAVES_SEED),
         }
     }
 }
@@ -159,7 +161,16 @@ fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, sibling
     }
     sync::adopt_options(&shared.options, dir, siblings)?;
     copy_options(&shared.options, &dir.join(OPTIONS_FILE))?;
-    sync::copy_servers(&shared.servers, dir, siblings)
+    sync::copy_servers(&shared.servers, dir, siblings)?;
+    adopt_saves(&shared.saves, dir)
+}
+
+fn adopt_saves(seed: &Path, dir: &Path) -> Result<()> {
+    let target = dir.join("saves");
+    if !seed.is_dir() || fs::symlink_metadata(&target).is_ok() {
+        return Ok(());
+    }
+    fs::rename(seed, &target).with_context(|| format!("cannot move the imported worlds to {}", target.display()))
 }
 
 fn merge_into(path: &Path, target: &Path) -> Result<()> {
@@ -1717,12 +1728,36 @@ mod tests {
             shaderpacks: batch.join("shaderpacks"),
             options: batch.join(OPTIONS_FILE),
             servers: batch.join(sync::SERVERS_FILE),
+            saves: batch.join(super::super::launchers::SAVES_SEED),
         };
         Dirs { inst: base.join("inst"), mods: shared.mods.clone(), config: shared.config.clone(), template: shared.options.clone(), shared, _root: root }
     }
 
     fn prep(d: &Dirs, jar: Option<&Path>) -> Result<()> {
         prepare_in(&d.inst, &d.shared, jar, &[])
+    }
+
+    #[test]
+    fn imported_worlds_move_into_the_first_game_folder_once() {
+        let d = dirs();
+        fs::create_dir_all(d.shared.saves.join("World One")).unwrap();
+        fs::write(d.shared.saves.join("World One").join("level.dat"), b"w").unwrap();
+        prep(&d, None).unwrap();
+        assert_eq!(fs::read(d.inst.join("saves").join("World One").join("level.dat")).unwrap(), b"w");
+        assert!(!d.shared.saves.exists());
+        let second = d.inst.with_file_name("inst2");
+        prepare_in(&second, &d.shared, None, &[]).unwrap();
+        assert!(!second.join("saves").exists());
+    }
+
+    #[test]
+    fn imported_worlds_never_replace_saves_a_game_folder_has() {
+        let d = dirs();
+        fs::create_dir_all(d.shared.saves.join("Seed")).unwrap();
+        fs::create_dir_all(d.inst.join("saves").join("Mine")).unwrap();
+        prep(&d, None).unwrap();
+        assert!(d.inst.join("saves").join("Mine").is_dir() && !d.inst.join("saves").join("Seed").exists());
+        assert!(d.shared.saves.join("Seed").is_dir());
     }
 
     #[test]

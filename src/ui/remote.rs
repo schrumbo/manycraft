@@ -1023,7 +1023,7 @@ fn canned_instances() -> Vec<Instance> {
         dir: std::path::PathBuf::from("canned").join(id),
         game_dir: std::path::PathBuf::from("canned").join(id).join(".minecraft"),
         game_version: Some(game.into()),
-        loader_version: unsupported.is_none().then(|| "0.16.5".to_owned()),
+        loader: Loader::Fabric(Some("0.16.5".to_owned())),
         mods,
         icon: "default".into(),
         unsupported: unsupported.map(Into::into),
@@ -1044,7 +1044,7 @@ fn canned_import(instance: &Instance, name: &str) -> Result<setup::Instance> {
         return Err(gone(crate::core::i18n::trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name])));
     }
     let game = instance.game_version.clone().context("no Minecraft version")?;
-    let mut b = setup::Instance::new(name, &game, Loader::Fabric(instance.loader_version.clone()));
+    let mut b = setup::Instance::new(name, &game, instance.loader.clone());
     b.mods = vec![canned_ref("fabric-api", "Fabric API", &game), canned_ref("lithium", "Lithium", &game), canned_ref("sodium", "Sodium", &game)];
     if instance.mods > 0 {
         b.local_mods = vec!["my-private-mod-1.0.jar".into(), "friend-build-1.2.jar".into()];
