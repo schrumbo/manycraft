@@ -548,7 +548,7 @@ pub fn init(cx: &mut App) {
         let instance = a.instance.clone();
         let account = a.account.as_deref().and_then(|id| id.parse().ok());
         cx.defer(move |cx| {
-            play_instance(&instance, account, cx);
+            play_and_show(&instance, account, cx);
         });
     });
     cx.on_action(|a: &CloneInstance, cx| clone_instance(&a.0, cx));
@@ -837,14 +837,17 @@ pub fn request_play(instance: String, account: Option<String>, cx: &mut App) {
         return;
     }
     let account = account.as_deref().and_then(|id| id.parse().ok());
-    match play_instance(&instance, account, cx) {
-        Some(key) => {
-            if cx.has_global::<Runtime>() {
-                cx.global_mut::<Runtime>().show_when_ready = Some((key, Instant::now()));
-            }
-        }
-        None => show_grid(cx),
+    if play_and_show(&instance, account, cx).is_none() {
+        show_grid(cx);
     }
+}
+
+fn play_and_show(instance: &str, account: Option<uuid::Uuid>, cx: &mut App) -> Option<String> {
+    let key = play_instance(instance, account, cx)?;
+    if cx.has_global::<Runtime>() {
+        cx.global_mut::<Runtime>().show_when_ready = Some((key.clone(), Instant::now()));
+    }
+    Some(key)
 }
 
 fn run_waiting_plays(cx: &mut App) {
