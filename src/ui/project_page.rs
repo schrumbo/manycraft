@@ -37,9 +37,9 @@ enum Section {
 
 const SECTIONS: [Section; 4] = [Section::About, Section::Gallery, Section::Versions, Section::Needs];
 
-/// One open project page: what was loaded for it and which part is shown.
 const LINE_STEP: f32 = 40.;
 
+/// One open project page: what was loaded for it and which part is shown.
 pub(super) struct Project {
     hit: Hit,
     kind: Kind,

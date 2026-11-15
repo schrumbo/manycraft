@@ -1218,7 +1218,11 @@ impl InstanceSheet {
             return None;
         }
         let current = self.browser.kind;
-        let segments: Vec<Stateful<Div>> = kinds.iter().map(|k| segment(SharedString::from(format!("tab-{}", k.project_type())), kind_name(*k), *k == current, true, t)).collect();
+        let segments: Vec<Stateful<Div>> = kinds
+            .iter()
+            .enumerate()
+            .map(|(n, k)| segment(SharedString::from(format!("tab-{}", k.project_type())), kind_name(*k), *k == current, true, t).tooltip(super::widgets::tip(format!("{} · {}", kind_name(*k), keys(&(n + 1).to_string(), true)))))
+            .collect();
         let pick = cx.listener(move |s, n: &usize, window, cx| {
             if let Some(kind) = s.browse_kinds().get(*n).copied() {
                 s.browse_tab(kind, window, cx);
