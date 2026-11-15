@@ -259,6 +259,8 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
 
 fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>) {
     m.set_hint(&key, |h| *h = Default::default());
+    m.session.stale.remove(&key);
+    fx.now.push(Effect::ReleasePreview(key.clone()));
     if m.games.contains_key(&key)
         && let Some(f) = m.frames.get_mut(&key)
     {
@@ -731,6 +733,19 @@ mod tests {
         let (account, batch, instance) = (m.games[&key].account_id, m.games[&key].batch_id.clone(), m.games[&key].instance_id.clone());
         adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41 }]);
         (m, key)
+    }
+
+    #[test]
+    fn an_exit_releases_the_preview_file_and_forgets_a_stale_frame() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.session.stale.insert(key.clone(), Instant::now());
+        let fx = exited(&mut m, &s, &key, Some(0));
+        assert!(fx.iter().any(|e| matches!(e, Effect::ReleasePreview(k) if *k == key)));
+        assert!(!m.session.stale.contains_key(&key));
+        let mut out = Vec::new();
+        super::visible(&mut m, &super::Env::new(Instant::now(), 0, 7, &s, false), std::collections::HashSet::from([key.clone()]), &mut out);
+        assert!(!out.iter().any(|e| matches!(e, Effect::ReadPreview { .. })));
     }
 
     #[test]

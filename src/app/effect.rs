@@ -44,6 +44,8 @@ pub enum Effect {
     CheckFit { count: u32, memory_mb: u32 },
     Stop(Vec<String>),
     ReadPreview { key: String, path: PathBuf },
+    /// The game ended: its preview file is closed so the instance folder can be moved or deleted.
+    ReleasePreview(String),
     CheckProxy { key: String, url: String },
     /// The connection may be gone: check it now.
     SuspectOffline,

@@ -70,6 +70,8 @@ impl Backend for Fake {
 
     fn read_preview(&self, _key: String, _path: PathBuf) {}
 
+    fn release_preview(&self, _key: String) {}
+
     fn quit(&self) {}
 
     fn known(&self, instances: Vec<(String, String)>) {
