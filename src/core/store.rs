@@ -156,16 +156,19 @@ fn read_raw(path: &Path) -> Result<Option<Vec<u8>>> {
 fn replace_keeping_backup<T: DeserializeOwned>(path: &Path, current: Option<&[u8]>, bytes: &[u8]) -> Result<()> {
     if let Some(current) = current
         && current != bytes
-        && parse::<T>(current).is_some()
     {
-        net::write_atomic(&backup_path(path), current)?;
+        if parse::<T>(current).is_some() {
+            net::write_atomic(&backup_path(path), current)?;
+        } else if !current.is_empty() {
+            set_aside(path, &damaged_path(path))?;
+        }
     }
     net::write_atomic(path, bytes)
 }
 
 /// Replaces `path` with `bytes` atomically while holding its lock. `check` sees the current bytes first and may refuse.
 /// Fails when another window changed the file since this thread read it, so no save silently undoes another one.
-/// The current file becomes the backup when it parses as `T`; a damaged one never replaces the backup.
+/// The current file becomes the backup when it parses as `T`; one that does not is set aside, never made the backup.
 pub fn write<T: DeserializeOwned>(path: &Path, bytes: &[u8], check: impl FnOnce(Option<&[u8]>) -> Result<()>) -> Result<()> {
     let _held = lock::exclusive_within(&lock_path(path), LOCK_WAIT)?;
     let current = read_raw(path)?;
@@ -365,6 +368,8 @@ mod tests {
         replace::<Doc>(&path, b"[4]").unwrap();
         assert_eq!(std::fs::read(backup_path(&path)).unwrap(), b"[1]");
         assert_eq!(load::<Doc>(&path).unwrap(), Some(vec![4]));
+        assert_eq!(std::fs::read(damaged_path(&path)).unwrap(), b"{oops");
+        assert_eq!(std::fs::read(dir.path().join("a.json.damaged-2")).unwrap(), br#"{"a":1}"#);
     }
 
     #[test]

@@ -232,6 +232,8 @@ mod tests {
         std::fs::write(dir.path().join(FILE), br#"{"reconnect":5}"#).unwrap();
         assert!(format!("{:#}", load_from(dir.path()).unwrap_err()).contains("left untouched"));
         assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"reconnect":5}"#);
+        save_to(dir.path(), &Settings::default()).unwrap();
+        assert_eq!(std::fs::read(store::damaged_path(&dir.path().join(FILE))).unwrap(), br#"{"reconnect":5}"#);
     }
 
     #[test]
