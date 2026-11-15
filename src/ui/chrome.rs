@@ -21,8 +21,12 @@ pub fn window_options(options: WindowOptions, title: impl Into<SharedString>) ->
     }
 }
 
-/// Puts a window's content below the title bar, which draws the window buttons off macOS and carries the drag.
-pub fn frame(title: impl Into<SharedString>, content: impl IntoElement, t: &Theme) -> AnyElement {
+/// Puts a window's content below the title bar, which draws the window buttons off macOS and carries the drag; a full
+/// screen window shows its content alone.
+pub fn frame(title: impl Into<SharedString>, content: impl IntoElement, full: bool, t: &Theme) -> AnyElement {
+    if full {
+        return div().size_full().child(content).into_any_element();
+    }
     let bar = TitleBar::new().child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(title.into()));
     div().size_full().flex().flex_col().child(bar).child(div().flex_1().min_h_0().child(content)).into_any_element()
 }

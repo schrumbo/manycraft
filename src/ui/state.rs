@@ -563,7 +563,9 @@ pub fn init(cx: &mut App) {
         restart_keys(&keys, cx);
     });
     cx.on_action(|a: &ReconnectMany, cx| {
-        for key in &a.0 {
+        let banned: HashSet<&String> = model::get(cx).read(cx).games.iter().filter(|(_, i)| matches!(i.phase, Phase::Banned { .. })).map(|(k, _)| k).collect();
+        let keys: Vec<String> = a.0.iter().filter(|k| !banned.contains(k)).cloned().collect();
+        for key in &keys {
             reconnect(key, cx);
         }
     });
@@ -1168,7 +1170,23 @@ fn stop_batch(batch: &str, cx: &mut App) {
 
 fn set_color(a: &SetColor, cx: &mut App) {
     let ids: Vec<uuid::Uuid> = a.accounts.iter().filter_map(|id| id.parse().ok()).collect();
-    let color = a.color;
+    let before: Vec<(String, u8)> = {
+        let m = model::get(cx).read(cx);
+        ids.iter().filter_map(|id| m.account(*id)).filter(|account| account.color() != a.color).map(|account| (account.id.to_string(), account.color())).collect()
+    };
+    if before.is_empty() {
+        return;
+    }
+    let name = match before.as_slice() {
+        [(id, _)] => model::get(cx).read(cx).accounts.iter().find(|account| account.id.to_string() == *id).map(|account| account.name.clone()),
+        _ => None,
+    };
+    recolor(ids, a.color, cx);
+    super::undo::offer(super::undo::Kind::Colored { before, color: a.color, name }, cx);
+}
+
+/// Gives the accounts `ids` the colour `color` and saves it, without an undo offer.
+pub(super) fn recolor(ids: Vec<uuid::Uuid>, color: u8, cx: &mut App) {
     model::get(cx).update(cx, |m, cx| {
         for account in m.accounts.iter_mut().filter(|account| ids.contains(&account.id)) {
             account.color = Some(color);

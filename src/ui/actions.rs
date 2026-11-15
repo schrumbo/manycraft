@@ -14,6 +14,11 @@ pub struct SetColor {
     pub color: u8,
 }
 
+/// Shows the colours to pick from for this account (id) in the palette.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct PickColor(pub String);
+
 /// Opens the sign-in sheet for these Microsoft accounts one after another.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

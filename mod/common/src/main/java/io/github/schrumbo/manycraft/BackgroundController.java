@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 
 final class BackgroundController {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
+	private static final int SHRINK_TICKS = 600;
 	private static final String MASTER_VOLUME = "soundCategory_" + SoundSource.MASTER.getName();
 	static final Set<String> USER_KEYS = Set.of("renderDistance", "simulationDistance", "particles", "renderClouds", MASTER_VOLUME, "maxFps");
 
@@ -61,6 +62,7 @@ final class BackgroundController {
 	private volatile boolean visible = true;
 	private boolean lastFocused = true;
 	private boolean lastMaximized;
+	private int hiddenTicks;
 
 	BackgroundController(Minecraft mc, SaveGuard guard, Consumer<String> sink) {
 		this.mc = mc;
@@ -194,6 +196,7 @@ final class BackgroundController {
 		mode.enter();
 		SDLVideo.SDL_HideWindow(mc.getWindow().handle());
 		visible = false;
+		hiddenTicks = 0;
 		reportWindow();
 	}
 
@@ -216,6 +219,9 @@ final class BackgroundController {
 	}
 
 	void tick() {
+		if (!visible && hiddenTicks < SHRINK_TICKS && ++hiddenTicks == SHRINK_TICKS) {
+			GameWindow.shrink(mc);
+		}
 		boolean focused = visible && mc.getWindow().isFocused();
 		boolean maximized = visible && maximized();
 		if (focused != lastFocused || maximized != lastMaximized) {
