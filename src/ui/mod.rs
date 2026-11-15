@@ -10,6 +10,7 @@ pub mod fake;
 pub mod forms;
 pub mod grid;
 pub mod identity;
+pub mod import_sheet;
 pub mod instance_files;
 mod instance_logs;
 pub mod instance_page;

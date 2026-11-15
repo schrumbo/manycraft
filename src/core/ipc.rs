@@ -141,6 +141,8 @@ pub enum Event {
     Disconnected { instance: String },
     /// Another start of Manycraft asks this one to come to the front.
     Reopen,
+    /// Another start of Manycraft asks this one to play an instance, with an account when it names one.
+    Play { instance: String, account: Option<String> },
 }
 
 #[derive(Deserialize)]
@@ -148,6 +150,7 @@ pub enum Event {
 enum Opening {
     Hello { instance: String, token: String, pid: u32, mod_version: String },
     Reopen,
+    Play { instance: String, account: Option<String> },
 }
 
 struct Link {
@@ -272,6 +275,10 @@ impl Server {
             Some(Opening::Hello { instance, token, pid, mod_version }) => (instance, token, pid, mod_version),
             Some(Opening::Reopen) => {
                 let _ = tx.send(Event::Reopen);
+                return;
+            }
+            Some(Opening::Play { instance, account }) => {
+                let _ = tx.send(Event::Play { instance, account });
                 return;
             }
             None => return,
@@ -518,6 +525,18 @@ mod tests {
         stream.write_all(b"{\"t\":\"reopen\"}
 ").unwrap();
         assert_eq!(events.recv_timeout(Duration::from_secs(5)).unwrap(), Event::Reopen);
+        assert!(server.connected().is_empty());
+    }
+
+    #[test]
+    fn a_play_request_names_the_instance_and_account_without_a_token() {
+        let (server, events) = Server::start().unwrap();
+        for (account, want) in [(Some("acc-1"), Some("acc-1".to_owned())), (None, None)] {
+            let mut stream = TcpStream::connect(server.address()).unwrap();
+            let line = serde_json::json!({ "t": "play", "instance": "abc", "account": account });
+            stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+            assert_eq!(events.recv_timeout(Duration::from_secs(5)).unwrap(), Event::Play { instance: "abc".into(), account: want });
+        }
         assert!(server.connected().is_empty());
     }
 

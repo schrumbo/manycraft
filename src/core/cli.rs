@@ -12,6 +12,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "instance" => super::fleet::instance_cli,
         "mods" => super::modrinth::cli,
         "prism" => super::prism::cli,
+        "launchers" => super::launchers::cli,
         "mrpack" => super::mrpack::cli,
         "clean" => super::install::clean::cli,
         "apply-update" => super::updater::install::cli,

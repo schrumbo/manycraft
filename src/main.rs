@@ -41,7 +41,11 @@ fn main() {
     match core::adopt::claim() {
         Ok(core::adopt::Claim::Manager) => {}
         Ok(core::adopt::Claim::Taken) => {
-            if !core::adopt::reopen_first() {
+            let handed = match core::shortcut::Play::parse(&args) {
+                Some(play) => core::adopt::play_first(&play),
+                None => core::adopt::reopen_first(),
+            };
+            if !handed {
                 eprintln!("another Manycraft runs on this data folder and does not answer");
             }
             return;
@@ -50,6 +54,7 @@ fn main() {
     }
     core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
     ui::theme::start_with(ui::theme::Choice::parse(&std::env::var("MANYCRAFT_THEME").unwrap_or_default()));
+    let play = core::shortcut::Play::parse(&args);
     let app = gpui_kit::application().with_assets(Assets);
     app.on_reopen(ui::state::show_grid);
     app.run(|cx: &mut App| {
@@ -63,6 +68,7 @@ fn main() {
         ui::skin_sheet::init(cx);
         ui::batch_sheet::init(cx);
         ui::instance_sheet::init(cx);
+        ui::import_sheet::init(cx);
         ui::instance_page::init(cx);
         ui::mod_list::init(cx);
         ui::instance_files::init(cx);
@@ -72,6 +78,9 @@ fn main() {
         ui::main_window::open(cx);
         ui::drive::init(cx);
         ui::updates::init(cx);
+        if let Some(play) = play {
+            ui::state::request_play(play.instance, play.account, cx);
+        }
     });
 }
 

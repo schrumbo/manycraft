@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -388,7 +389,7 @@ def start(opts):
     if subprocess.run([sys.executable, "-I", str(TOOLS / "fixture.py"), str(home), str(opts["instances"])]).returncode:
         die("fixture failed")
     w, h = opts["size"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP")}
     env.update(MANYCRAFT_HOME=str(home), MANYCRAFT_DRIVE=str(d), MANYCRAFT_DRIVE_OWNER=str(owner), MANYCRAFT_DRIVE_TTL=str(opts["ttl"]),
                MANYCRAFT_DRIVE_SIZE=f"{w}x{h}", RUST_BACKTRACE="1", TMP=str(d / "tmp"), TEMP=str(d / "tmp"), TMPDIR=str(d / "tmp"))
     if opts["theme"]:
@@ -408,10 +409,10 @@ def start(opts):
             si = subprocess.STARTUPINFO()
             si.dwFlags = subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 4
-            proc = subprocess.Popen([str(inst.exe)], env=env, cwd=d, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen([str(inst.exe), *shlex.split(os.environ.get("APP_ARGS", ""))], env=env, cwd=d, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                     startupinfo=si, creationflags=0x08000000 | 0x00000200, close_fds=True)
         else:
-            proc = subprocess.Popen([str(inst.exe)], env=env, cwd=d, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            proc = subprocess.Popen([str(inst.exe), *shlex.split(os.environ.get("APP_ARGS", ""))], env=env, cwd=d, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     inst.meta = {"pid": proc.pid, "owner": owner, "started": time.time(), "profile": profile, "data": str(home), "instances": opts["instances"], "root": str(ROOT)}
     (d / "meta.json").write_text(json.dumps(inst.meta), encoding="utf-8")
     deadline = time.time() + opts["timeout"]

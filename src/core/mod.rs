@@ -44,6 +44,7 @@ pub mod packs;
 pub mod paths;
 pub mod phone;
 pub mod place;
+pub mod launchers;
 pub mod prism;
 pub mod proxy;
 pub mod ratelimit;
@@ -53,6 +54,7 @@ pub mod skins;
 pub mod stagger;
 #[allow(dead_code)]
 pub mod settings;
+pub mod shortcut;
 pub mod shots;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod signin_window;

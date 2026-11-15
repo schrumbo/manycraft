@@ -8,9 +8,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
-    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -161,11 +161,39 @@ fn close(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
     cx.notify();
 }
 
+fn pick_shortcut_instance(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let m = model::get(cx).read(cx);
+    let entries: Vec<Entry> = m
+        .instances
+        .iter()
+        .map(|made| Entry {
+            group: Group::Instances,
+            icon: "link",
+            label: made.name.clone(),
+            detail: Some(made.version_line()),
+            keys: None,
+            action: Box::new(CreateShortcut { instance: made.id.clone(), account: made.last_account.map(|a| a.to_string()) }),
+            enabled: true,
+        })
+        .collect();
+    let Some(p) = this.palette.as_mut() else { return };
+    p.rows = Rc::new(rows(&entries, ""));
+    p.entries = Rc::new(entries);
+    p.cursor = p.rows.iter().position(|r| matches!(r, Row::Entry(_))).unwrap_or(0);
+    p.scroll.scroll_to_item(0, ScrollStrategy::Top);
+    p.input.update(cx, |s, cx| s.set_value("", window, cx));
+    cx.notify();
+}
+
 fn run(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     if this.palette.as_ref().is_some_and(Palette::blocked) {
         return;
     }
     let action = this.palette.as_ref().and_then(Palette::chosen);
+    if action.as_ref().is_some_and(|a| a.as_any().is::<PickShortcutInstance>()) {
+        pick_shortcut_instance(this, window, cx);
+        return;
+    }
     close(this, window, cx);
     if let Some(action) = action {
         window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
@@ -367,7 +395,6 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
         ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
         ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),
-        ("download", tr("Instanz aus Prism übernehmen"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
         ("download", tr("Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
     ] {
         if able {
@@ -385,6 +412,19 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         }
     }
     out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
+    match &this.page {
+        Page::Instance(id) if m.instance(id).is_some() => {
+            let made = m.instance(id).map(|made| (made.name.clone(), made.last_account));
+            if let Some((name, account)) = made {
+                out.push(entry(Group::Commands, "link", trf("Verknüpfung für %@ erstellen", &[&name]), None, Box::new(CreateShortcut { instance: id.clone(), account: account.map(|a| a.to_string()) }), cx));
+            }
+        }
+        _ => {}
+    }
+    if !m.instances.is_empty() {
+        out.push(entry(Group::Commands, "link", tr("Verknüpfung erstellen…"), Some(tr("Instanz wählen")), Box::new(PickShortcutInstance), cx));
+    }
+    out.push(entry(Group::Commands, "download", tr("Aus anderem Launcher importieren…"), Some(tr("Prism, Modrinth, CurseForge und mehr")), Box::new(ImportFromLauncher), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
         out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
     }
