@@ -192,6 +192,18 @@ impl Browser {
         self.visible = visible;
     }
 
+    pub(super) fn stale(&self) -> bool {
+        matches!(self.status, Status::Failed(_)) || self.page().is_some_and(|p| p.saved.is_some())
+    }
+
+    pub(super) fn forget_saved(&mut self) {
+        self.cache.retain(|_, p| p.saved.is_none());
+        if self.page().is_none() {
+            self.shown = None;
+            self.wanted = None;
+        }
+    }
+
     fn forget(&mut self) {
         self.cache.clear();
         self.visible.clear();
@@ -808,8 +820,26 @@ impl InstanceSheet {
                     s.browse_undo(cx);
                     s.browser.query.update(cx, |q, cx| q.take_focus(window, cx));
                 }))),
-            None => line,
+            None => match self.browser.page().and_then(|p| p.saved) {
+                Some(at) => line.child(sheet::status("wifi-off", t.secondary, saved_text(at.elapsed().unwrap_or_default()))).child(sheet::button("search-saved-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| {
+                    s.browser.forget_saved();
+                    s.browse_refresh(false, cx);
+                }))),
+                None => line,
+            },
         }
+    }
+}
+
+fn saved_text(age: Duration) -> String {
+    let minutes = (age.as_secs() / 60).max(1);
+    let hours = minutes / 60;
+    if minutes < 60 {
+        trf("Keine Verbindung · Ergebnisse von vor %lld Min.", &[&minutes])
+    } else if hours < 48 {
+        trf("Keine Verbindung · Ergebnisse von vor %lld Std.", &[&hours])
+    } else {
+        trf("Keine Verbindung · Ergebnisse von vor %lld Tagen", &[&(hours / 24)])
     }
 }
 

@@ -26,6 +26,17 @@ pub fn subscribe(listener: impl Fn(bool) + Send + Sync + 'static) {
     LISTENERS.lock().unwrap_or_else(PoisonError::into_inner).push(Box::new(listener));
 }
 
+/// Probes right away, on the calling thread, at most a few seconds; starts watching when nothing answers.
+pub fn reachable() -> bool {
+    let up = probe(&targets(), PROBE_TIMEOUT);
+    if up {
+        set(ONLINE);
+    } else {
+        suspect();
+    }
+    up
+}
+
 /// A request got an answer, so the connection works.
 pub fn reached() {
     set(ONLINE);

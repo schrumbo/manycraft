@@ -223,6 +223,7 @@ enum Primary {
     Reconnect,
     Respawn,
     Start,
+    Retry,
     SignIn,
 }
 
@@ -235,7 +236,8 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         Phase::Dead { .. } => Some(Primary::Respawn),
         Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
         Phase::LoginNeeded => Some(Primary::SignIn),
-        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } => Some(Primary::Play),
+        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
+        Phase::NoNetwork => Some(Primary::Retry),
         Phase::Starting { .. } => None,
         Phase::Banned { .. } => Some(Primary::Reconnect),
         Phase::Restarting { .. } => Some(Primary::Start),
@@ -249,6 +251,7 @@ impl Primary {
             Self::Reconnect => tr("Neu verbinden"),
             Self::Respawn => tr("Wiederbeleben"),
             Self::Start => tr("Starten"),
+            Self::Retry => tr("Erneut versuchen"),
             Self::SignIn => tr("Anmelden"),
         }
     }
@@ -259,6 +262,7 @@ impl Primary {
             Self::Reconnect => "refresh-cw",
             Self::Respawn => "heart-pulse",
             Self::Start => "play",
+            Self::Retry => "refresh-cw",
             Self::SignIn => "log-in",
         }
     }
@@ -268,7 +272,7 @@ impl Primary {
             Self::Play => Box::new(Play(key.to_owned())),
             Self::Reconnect => Box::new(Reconnect(key.to_owned())),
             Self::Respawn => Box::new(Respawn(key.to_owned())),
-            Self::Start => Box::new(Start(key.to_owned())),
+            Self::Start | Self::Retry => Box::new(Start(key.to_owned())),
             Self::SignIn => Box::new(SignInAgain(account.to_string())),
         }
     }
@@ -349,6 +353,7 @@ fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
     }
     match d.phase {
         Phase::Stopped if !d.stopping => None,
+        _ if cut_off(d) => Some(("wifi-off", t.tertiary)),
         Phase::Starting { .. } if !d.stopping => Some(("hourglass", t.tertiary)),
         _ => Some(("loader-circle", t.tertiary)),
     }
@@ -358,6 +363,9 @@ fn glyph(d: &TileData, neutral: Hsla, t: &Theme) -> AnyElement {
     if let Some((fill, _, name)) = tone(d, t) {
         return icon(name, iconsize::XS, fill).into_any_element();
     }
+    if cut_off(d) {
+        return icon("wifi-off", iconsize::XS, neutral).into_any_element();
+    }
     let dot = div().size(px(tile::GLYPH)).mx(px((iconsize::XS - tile::GLYPH) / 2.)).flex_none().rounded(px(radius::FULL));
     let dot = match d.phase {
         _ if d.stopping => dot.border_1().border_color(neutral),
@@ -366,6 +374,10 @@ fn glyph(d: &TileData, neutral: Hsla, t: &Theme) -> AnyElement {
         _ => dot.border_1().border_color(neutral),
     };
     dot.into_any_element()
+}
+
+fn cut_off(d: &TileData) -> bool {
+    !d.stopping && matches!(d.phase, Phase::NetworkLost { .. } | Phase::NoNetwork)
 }
 
 fn aspect(image: &RenderImage) -> f32 {

@@ -321,6 +321,11 @@ impl InstancePage {
             }
         };
         let subs = vec![
+            cx.observe_global::<remote::Back>(|s, cx| {
+                if matches!(s.versions, Load::Failed(_)) {
+                    s.load_versions(cx);
+                }
+            }),
             cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
             cx.subscribe(&jvm, committed),
             cx.subscribe(&loader_version, committed),

@@ -417,6 +417,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Banned { .. } => tr("Gesperrt"),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
+        Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
     }
 }
 

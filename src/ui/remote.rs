@@ -33,6 +33,18 @@ fn saving() -> MutexGuard<'static, ()> {
     SAVING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Counts how often the connection came back; views observe it to retry what failed without one.
+#[derive(Default)]
+pub struct Back(pub u64);
+
+impl gpui_kit::Global for Back {}
+
+/// Tells every observing view that the connection is back.
+pub fn network_back(cx: &mut gpui_kit::App) {
+    let next = cx.try_global::<Back>().map_or(0, |b| b.0) + 1;
+    cx.set_global(Back(next));
+}
+
 fn is_stale(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.to_string().contains("changed by another Manycraft"))
 }
@@ -478,7 +490,7 @@ pub fn search_page(query: &str, game_version: &str, sort: Sort, all: bool, offse
             hits.sort_by_key(|h| !h.title.to_lowercase().starts_with(&q));
         }
         let total = hits.len();
-        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total });
+        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total, saved: None });
     }
     modrinth::search_page(query, game_version, sort, all, offset)
 }

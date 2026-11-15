@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use self::download::{Downloader, Job, join_safe, read_json};
 use self::meta::{Env, VersionJson};
@@ -23,6 +23,7 @@ const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manif
 const FALLBACK_JAVA_COMPONENT: &str = "jre-legacy";
 const LOADER_PREFIX: &str = "fabric-loader-";
 const QUICK_METADATA: Duration = Duration::from_secs(5);
+const RELEASES_CACHE: &str = "releases.json";
 
 /// What the installer is working on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,16 +99,39 @@ struct Plan {
     runtime: Option<java::Runtime>,
 }
 
-/// Newest release version Mojang lists.
-pub fn latest_release() -> Result<String> {
-    let manifest: Manifest = net::get_json(&net::agent(None)?, MANIFEST_URL)?;
-    Ok(manifest.latest.release)
+#[derive(Serialize, Deserialize)]
+struct Known {
+    latest: String,
+    releases: Vec<String>,
 }
 
-/// Release versions Mojang lists, newest first.
+/// Newest release version Mojang lists; without a connection, the newest from the last list that arrived.
+pub fn latest_release() -> Result<String> {
+    let agent = net::agent(None)?;
+    Ok(known(&paths::data_dir().join("cache"), || net::get_json(&agent, MANIFEST_URL), online::offline())?.latest)
+}
+
+/// Release versions Mojang lists, newest first; without a connection, the last list that arrived.
 pub fn releases() -> Result<Vec<String>> {
-    let manifest: Manifest = net::get_json(&net::agent(None)?, MANIFEST_URL)?;
-    Ok(release_ids(manifest))
+    let agent = net::agent(None)?;
+    Ok(known(&paths::data_dir().join("cache"), || net::get_json(&agent, MANIFEST_URL), online::offline())?.releases)
+}
+
+fn known(cache: &Path, fetch: impl FnOnce() -> Result<Manifest>, offline: bool) -> Result<Known> {
+    let path = cache.join(RELEASES_CACHE);
+    let saved = || std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<Known>(&bytes).ok());
+    if offline && let Some(known) = saved() {
+        return Ok(known);
+    }
+    match fetch() {
+        Ok(manifest) => {
+            let known = Known { latest: manifest.latest.release.clone(), releases: release_ids(manifest) };
+            let _ = serde_json::to_vec(&known).map_err(anyhow::Error::from).and_then(|bytes| net::write_atomic(&path, &bytes));
+            Ok(known)
+        }
+        Err(e) if net::no_connection(&e) => saved().ok_or(e),
+        Err(e) => Err(e),
+    }
 }
 
 fn release_ids(manifest: Manifest) -> Vec<String> {
@@ -301,6 +325,22 @@ mod tests {
         let dl = Downloader::new(agent).unwrap();
         let result = install_in(root, &dl, &quick, offline, "26.3", loader, &|_| {});
         (result, downloads.count(), metadata.count())
+    }
+
+    #[test]
+    fn the_release_list_is_kept_and_comes_back_without_a_connection() {
+        let manifest = || -> Result<Manifest> { Ok(serde_json::from_str(r#"{"latest":{"release":"26.3"},"versions":[{"id":"26.3","type":"release","url":"u","sha1":"s"},{"id":"26.4-pre1","type":"snapshot","url":"u","sha1":"s"}]}"#)?) };
+        let (none, lookups) = net::fake::agent(None, Duration::from_secs(5));
+        let unreachable = || net::get_json::<Manifest>(&none, "http://piston-meta.test/manifest.json");
+        let cache = tempfile::tempdir().unwrap();
+        assert!(net::no_connection(&known(cache.path(), unreachable, false).err().unwrap()));
+        let fresh = known(cache.path(), manifest, false).unwrap();
+        assert_eq!((fresh.latest.as_str(), fresh.releases.as_slice()), ("26.3", ["26.3".to_owned()].as_slice()));
+        assert_eq!(known(cache.path(), unreachable, false).unwrap().releases, ["26.3"]);
+        assert_eq!(lookups.count(), 2);
+        assert_eq!(known(cache.path(), || panic!("asked the network while offline"), true).unwrap().latest, "26.3");
+        let broken = || -> Result<Manifest> { anyhow::bail!("unexpected response") };
+        assert!(known(cache.path(), broken, false).is_err());
     }
 
     #[test]

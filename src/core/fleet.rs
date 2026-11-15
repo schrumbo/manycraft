@@ -779,7 +779,7 @@ impl Fleet {
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
         }
-        let server_addrs = server_addresses(target.server(), accounts, resolve_all)?;
+        let server_addrs = server_addresses(target.server(), accounts, resolve_all, || !super::online::reachable())?;
         let installed = install::install(&instance.game_version, loader_version.as_deref(), progress)?;
         Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
     }
@@ -1054,7 +1054,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
 /// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
 /// resolve the name through it, still clash across batches. The lookup is skipped when all accounts have a proxy and
 /// may fail when some do.
-fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>) -> Result<Vec<SocketAddr>> {
+fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>, offline: impl Fn() -> bool) -> Result<Vec<SocketAddr>> {
     let Some(server) = server else { return Ok(Vec::new()) };
     let name = name_stand_in(server)?;
     let proxied = accounts.iter().filter(|a| a.proxy.is_some()).count();
@@ -1062,7 +1062,7 @@ fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(
         return Ok(vec![name]);
     }
     let mut found = match lookup(server) {
-        Err(_) if proxied > 0 => Vec::new(),
+        Err(_) if proxied > 0 || offline() => Vec::new(),
         found => found.with_context(|| format!("cannot find the server {server}"))?,
     };
     found.push(name);
@@ -2253,18 +2253,20 @@ mod tests {
         let mut proxied = Account::offline("AltTwo").unwrap();
         proxied.proxy = Some("socks5://10.1.1.1:1080".into());
         let name = name_stand_in("s").unwrap();
-        assert_eq!(server_addresses(None, &[direct.clone()], found).unwrap(), []);
-        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr, name]);
-        assert!(server_addresses(Some("s"), &[direct.clone()], missing).is_err());
-        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr, name]);
-        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), [name]);
+        let online = || false;
+        assert_eq!(server_addresses(None, &[direct.clone()], found, online).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found, online).unwrap(), [addr, name]);
+        assert!(server_addresses(Some("s"), &[direct.clone()], missing, online).is_err());
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], missing, || true).unwrap(), [name]);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found, online).unwrap(), [addr, name]);
+        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing, online).unwrap(), [name]);
         let never = |_: &str| -> Result<Vec<SocketAddr>> { panic!("looked up on this machine") };
-        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never).unwrap(), [name]);
+        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never, online).unwrap(), [name]);
         assert_eq!(name_stand_in("S").unwrap(), name);
         assert_eq!(name_stand_in("s:25565").unwrap(), name);
         assert_ne!(name_stand_in("s:25566").unwrap(), name);
         assert_ne!(name_stand_in("t").unwrap(), name);
-        let other = server_addresses(Some("S"), &[proxied], never).unwrap();
+        let other = server_addresses(Some("S"), &[proxied], never, online).unwrap();
         let reserved = HashMap::from([("k".to_owned(), Reservation { account: Uuid::nil(), instance: "i".into(), server_addrs: vec![name] })]);
         let mut account = Account::offline("AltThree").unwrap();
         account.id = Uuid::nil();

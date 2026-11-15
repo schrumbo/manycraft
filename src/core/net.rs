@@ -88,11 +88,15 @@ pub fn note(outcome: &Result<impl Sized, ureq::Error>) {
 
 /// Fetches `url` and parses the body as JSON, retrying transient failures.
 pub fn get_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str) -> Result<T> {
-    let bytes = retrying(url, || {
+    serde_json::from_slice(&get_bytes(agent, url)?).with_context(|| format!("unexpected response from {url}"))
+}
+
+/// Fetches the body of `url`, at most 64 MB, retrying transient failures.
+pub fn get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
+    retrying(url, || {
         let mut res = called(agent.get(url).call())?;
         res.body_mut().with_config().limit(MAX_JSON).read_to_vec().map_err(Failure::from)
-    })?;
-    serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))
+    })
 }
 
 fn called<T>(outcome: Result<T, ureq::Error>) -> Result<T, Failure> {
