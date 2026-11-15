@@ -383,9 +383,19 @@ def cli(args):
     return 0
 
 
+def yield_to_owner():
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x40)
+    else:
+        with contextlib.suppress(OSError):
+            os.nice(19)
+
+
 def main():
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
+    yield_to_owner()
     parser = argparse.ArgumentParser(prog="gate")
     parser.add_argument("--base", default="HEAD")
     parser.add_argument("--deep", action="store_true")
