@@ -1,4 +1,5 @@
 pub mod account;
+pub mod adopt;
 pub mod auth;
 pub mod awake;
 #[allow(dead_code)]

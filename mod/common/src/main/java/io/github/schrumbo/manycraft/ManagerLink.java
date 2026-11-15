@@ -5,7 +5,6 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
-import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -62,7 +61,7 @@ final class ManagerLink {
 		while (!stopped) {
 			boolean everConnected = false;
 			try (Socket socket = new Socket()) {
-				socket.connect(new InetSocketAddress(config.host(), config.port()), 2000);
+				socket.connect(config.manager(), 2000);
 				socket.setTcpNoDelay(true);
 				everConnected = true;
 				session(socket);

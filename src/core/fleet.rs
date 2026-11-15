@@ -1,7 +1,7 @@
 //! Running games: preparing game folders from an instance, starting them staggered, tracking their processes.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -26,7 +26,7 @@ use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::proxy::{self, Kind};
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
-use super::{auth, ipc, lock, net, paths, scrub};
+use super::{adopt, auth, ipc, lock, net, paths, scrub};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
@@ -548,6 +548,35 @@ impl Process for Held {
     }
 }
 
+struct Adopted {
+    process: adopt::Process,
+    in_use: Option<lock::Guard>,
+}
+
+impl Process for Adopted {
+    fn id(&self) -> u32 {
+        self.process.id()
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<Option<i32>>> {
+        let exit = self.process.try_wait()?;
+        if exit.is_some() {
+            self.in_use = None;
+        }
+        Ok(exit)
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        self.process.kill()
+    }
+
+    fn wait(&mut self) -> io::Result<Option<i32>> {
+        let code = self.process.wait();
+        self.in_use = None;
+        code
+    }
+}
+
 trait Clock {
     fn now(&self) -> Instant;
     fn sleep(&self, duration: Duration);
@@ -606,6 +635,17 @@ pub struct Prepared {
     companion_jar: Option<PathBuf>,
 }
 
+/// A game an earlier manager launched that still runs and is tracked again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Adoption {
+    pub key: String,
+    /// The batch the game runs in; `None` when played alone.
+    pub batch: Option<String>,
+    pub instance: String,
+    pub account: Uuid,
+    pub pid: u32,
+}
+
 /// Outcome of starting one account: its instance key, or why it did not start.
 pub type Started = (Uuid, Result<String>);
 
@@ -617,6 +657,7 @@ pub struct Fleet {
     games: sync::Games,
     reaping: Arc<AtomicBool>,
     closing: AtomicBool,
+    ledger: Option<adopt::Ledger>,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -636,9 +677,54 @@ impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
         let (ipc, raw) = ipc::Server::start()?;
+        Self::with(ipc, raw, None)
+    }
+
+    /// The fleet of the manager: it listens where the last manager did, records every launch, and tracks again the
+    /// games the last manager launched that still run.
+    pub fn manager() -> Result<(Fleet, Receiver<ipc::Event>, Vec<Adoption>)> {
+        let ledger = adopt::Ledger::open();
+        let (ipc, raw) = ipc::Server::start_on(ledger.port())?;
+        ledger.set_port(ipc.port());
+        let (fleet, events) = Self::with(ipc, raw, Some(ledger.clone()))?;
+        let adopted = fleet.adopt(&ledger.games());
+        ledger.keep_only(&adopted.iter().map(|a| a.key.clone()).collect::<Vec<_>>());
+        Ok((fleet, events, adopted))
+    }
+
+    fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
         let events = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, stagger: DEFAULT_STAGGER }, events))
+    }
+
+    fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
+        let mut adopted = Vec::new();
+        for (key, run) in runs {
+            let Some(process) = adopt::Process::adopt(run) else { continue };
+            let pid = process.id();
+            sync::register(&self.games, key, &run.instance, run.account);
+            self.ipc.register_with(key, &run.token);
+            let instance = RunningInstance {
+                batch: run.batch.clone(),
+                instance: run.instance.clone(),
+                account: run.account,
+                child: Box::new(Adopted { process, in_use: install::clean::in_use().ok() }),
+                pid,
+                server_addr: run.server_addrs.first().copied(),
+                server_addrs: run.server_addrs.clone(),
+                started: Instant::now(),
+                exit: None,
+                logs: run.game_dir.join("logs"),
+            };
+            self.insert(key.clone(), instance);
+            adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid });
+        }
+        adopted
+    }
+
+    fn ipc_file(&self) -> Option<PathBuf> {
+        self.ledger.is_some().then(adopt::address_file)
     }
 
     /// Installs the target's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
@@ -646,8 +732,9 @@ impl Fleet {
     pub fn start_batch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
         let prepared = self.prepare_launch(target, accounts, companion_jar, progress)?;
         let ipc_address = self.ipc.address();
+        let ipc_file = self.ipc_file();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?)))
         };
         Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
@@ -672,8 +759,9 @@ impl Fleet {
     /// already on the same server in another batch.
     pub fn start_one(&self, prepared: &Prepared, account: &Account) -> Result<String> {
         let ipc_address = self.ipc.address();
+        let ipc_file = self.ipc_file();
         self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?)))
         })
     }
 
@@ -730,7 +818,24 @@ impl Fleet {
             bail!("Manycraft is quitting");
         }
         let pid = child.id();
-        let logs = target.instance.game_dir(account.id).join("logs");
+        let game_dir = target.instance.game_dir(account.id);
+        if let Some(ledger) = &self.ledger
+            && let Some(seen) = adopt::identify(pid)
+        {
+            let run = adopt::Run {
+                batch: target.batch.as_ref().map(|b| b.id.clone()),
+                instance: target.instance.id.clone(),
+                account: account.id,
+                pid,
+                started: seen.started,
+                exe: seen.exe,
+                game_dir: game_dir.clone(),
+                token,
+                server_addrs: server_addrs.to_vec(),
+            };
+            ledger.add(&key, run);
+        }
+        let logs = game_dir.join("logs");
         let instance = RunningInstance {
             batch: target.batch.as_ref().map(|b| b.id.clone()),
             instance: target.instance.id.clone(),
@@ -777,18 +882,25 @@ impl Fleet {
         let running = Arc::downgrade(&self.running);
         let reaping = Arc::clone(&self.reaping);
         let ipc = self.ipc.clone();
+        let ledger = self.ledger.clone();
         std::thread::Builder::new().name("fleet-reaper".into()).spawn(move || {
             loop {
                 std::thread::sleep(REAP_INTERVAL);
                 let Some(running) = running.upgrade() else { return };
-                let mut running = lock(&running);
                 let mut alive = false;
-                for (key, instance) in running.iter_mut() {
+                let mut ended = Vec::new();
+                for (key, instance) in lock(&running).iter_mut() {
                     if instance.poll() {
                         alive = true;
                     } else {
                         ipc.unregister(key);
+                        ended.push((key.clone(), instance.pid));
                     }
+                }
+                if let Some(ledger) = &ledger
+                    && !ended.is_empty()
+                {
+                    ledger.remove(&ended);
                 }
                 if !alive {
                     reaping.store(false, Ordering::SeqCst);
@@ -878,12 +990,16 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
     Ok(())
 }
 
-fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
+#[allow(clippy::too_many_arguments)]
+fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, ipc_file: Option<&Path>, key: &str, token: &str) -> Result<Child> {
     let instance = &target.instance;
     let game_dir = prepare(instance, account, companion_jar)?;
     require_companion_for_proxy(account, &instance.mods_dir())?;
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
-    let extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    let mut extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    if let Some(file) = ipc_file {
+        extra.jvm.push(format!("-Dmanycraft.ipcfile={}", file.display()));
+    }
     let session = match account.kind {
         AccountKind::Offline => {
             account::validate_offline_name(&account.name)?;
@@ -1346,6 +1462,7 @@ fn print_event(names: &HashMap<String, String>, event: &ipc::Event) {
         ipc::Event::Connected { instance, pid, mod_version } => println!("{} connected (pid {pid}, mod {mod_version})", name(instance)),
         ipc::Event::Message { instance, message } => println!("{}: {message:?}", name(instance)),
         ipc::Event::Disconnected { instance } => println!("{} disconnected", name(instance)),
+        ipc::Event::Reopen => {}
     }
 }
 

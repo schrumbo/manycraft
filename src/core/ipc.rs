@@ -139,6 +139,15 @@ pub enum Event {
     Connected { instance: String, pid: u32, mod_version: String },
     Message { instance: String, message: FromMod },
     Disconnected { instance: String },
+    /// Another start of Manycraft asks this one to come to the front.
+    Reopen,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+enum Opening {
+    Hello { instance: String, token: String, pid: u32, mod_version: String },
+    Reopen,
 }
 
 struct Link {
@@ -164,7 +173,15 @@ pub struct Server {
 impl Server {
     /// Binds to an ephemeral port on 127.0.0.1 and starts accepting. Events arrive on the returned receiver.
     pub fn start() -> Result<(Server, Receiver<Event>)> {
-        let listener = TcpListener::bind("127.0.0.1:0").context("cannot open the local instance port")?;
+        Self::start_on(None)
+    }
+
+    /// Like [`Server::start`], but takes `port` when it is free, so games launched by an earlier manager find this one.
+    pub fn start_on(port: Option<u16>) -> Result<(Server, Receiver<Event>)> {
+        let listener = match port.and_then(|p| TcpListener::bind(("127.0.0.1", p)).ok()) {
+            Some(listener) => listener,
+            None => TcpListener::bind("127.0.0.1:0").context("cannot open the local instance port")?,
+        };
         let port = listener.local_addr()?.port();
         let server = Server { port, shared: Arc::default(), next_id: Arc::default() };
         let (tx, rx) = channel();
@@ -194,6 +211,16 @@ impl Server {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.lock().tokens.insert(instance.to_owned(), token.clone());
         token
+    }
+
+    /// Allows `instance` to connect again with the `token` it was launched with.
+    pub fn register_with(&self, instance: &str, token: &str) {
+        self.lock().tokens.insert(instance.to_owned(), token.to_owned());
+    }
+
+    /// The port this server listens on.
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// Forgets `instance` and closes its connection.
@@ -241,7 +268,14 @@ impl Server {
         let stream = Arc::new(stream);
         let mut lines = BufReader::new(StreamReader(Arc::clone(&stream)).take(MAX_LINE));
         let mut line = String::new();
-        let Some(FromMod::Hello { instance, token, pid, mod_version }) = read_message(&mut lines, &mut line) else { return };
+        let (instance, token, pid, mod_version) = match read_message(&mut lines, &mut line) {
+            Some(Opening::Hello { instance, token, pid, mod_version }) => (instance, token, pid, mod_version),
+            Some(Opening::Reopen) => {
+                let _ = tx.send(Event::Reopen);
+                return;
+            }
+            None => return,
+        };
         if stream.set_read_timeout(None).is_err() {
             return;
         }
@@ -257,7 +291,7 @@ impl Server {
             }
             let _ = tx.send(Event::Connected { instance: instance.clone(), pid, mod_version });
         }
-        while let Some(message) = read_message(&mut lines, &mut line) {
+        while let Some(message) = read_message::<FromMod>(&mut lines, &mut line) {
             if matches!(message, FromMod::Hello { .. }) {
                 continue;
             }
@@ -283,7 +317,7 @@ impl Read for StreamReader {
     }
 }
 
-fn read_message(lines: &mut BufReader<std::io::Take<StreamReader>>, line: &mut String) -> Option<FromMod> {
+fn read_message<T: serde::de::DeserializeOwned>(lines: &mut BufReader<std::io::Take<StreamReader>>, line: &mut String) -> Option<T> {
     loop {
         line.clear();
         lines.get_mut().set_limit(MAX_LINE);
@@ -475,6 +509,30 @@ mod tests {
         drop(first);
         assert!(events.recv_timeout(Duration::from_millis(300)).is_err());
         assert!(server.is_connected("a"));
+    }
+
+    #[test]
+    fn a_reopen_request_is_passed_on_without_a_token() {
+        let (server, events) = Server::start().unwrap();
+        let mut stream = TcpStream::connect(server.address()).unwrap();
+        stream.write_all(b"{\"t\":\"reopen\"}
+").unwrap();
+        assert_eq!(events.recv_timeout(Duration::from_secs(5)).unwrap(), Event::Reopen);
+        assert!(server.connected().is_empty());
+    }
+
+    #[test]
+    fn a_restarted_server_takes_the_old_port_and_token() {
+        let (first, _first_events) = Server::start().unwrap();
+        let token = first.register("a");
+        let (busy, _busy_events) = Server::start_on(Some(first.port())).unwrap();
+        assert_ne!(busy.port(), first.port(), "a taken port falls back to a free one");
+        let free = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (server, events) = Server::start_on(Some(free)).unwrap();
+        assert_eq!(server.port(), free);
+        server.register_with("a", &token);
+        let _link = connect(&server, &hello("a", &token));
+        assert!(matches!(events.recv_timeout(Duration::from_secs(5)).unwrap(), Event::Connected { instance, .. } if instance == "a"));
     }
 
     #[test]
