@@ -26,7 +26,7 @@ use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::proxy::{self, Kind};
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
-use super::{adopt, auth, ipc, lock, net, paths, scrub};
+use super::{adopt, auth, ipc, lock, net, paths, scrub, stagger};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
@@ -41,6 +41,7 @@ const REAP_INTERVAL: Duration = Duration::from_millis(500);
 const QUIT_GRACE: Duration = Duration::from_secs(5);
 const CLOSE_GRACE: Duration = Duration::from_secs(30);
 const QUIT_POLL: Duration = Duration::from_millis(100);
+const TURN_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
 const MIN_MEMORY_MB: u32 = 512;
 const PREVIEW_FILE: &str = "manycraft-preview.bin";
@@ -721,6 +722,7 @@ pub struct Fleet {
     closing: AtomicBool,
     ledger: Option<adopt::Ledger>,
     adopted: Mutex<HashMap<String, String>>,
+    line: stagger::Line,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -758,7 +760,7 @@ impl Fleet {
     fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
         let events = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), stagger: DEFAULT_STAGGER }, events))
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), stagger: DEFAULT_STAGGER }, events))
     }
 
     fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
@@ -893,6 +895,52 @@ impl Fleet {
     /// Refuses every start from now on, so quitting can stop what runs without new instances appearing.
     pub fn close(&self) {
         self.closing.store(true, Ordering::SeqCst);
+        self.line.clear();
+    }
+
+    /// Puts `keys` in the line for a start, in order. Each of them later calls `wait_turn` and, when it did not start,
+    /// `stop_all` or `give_up`.
+    pub fn queue(&self, keys: &[String]) {
+        self.line.join(keys);
+    }
+
+    /// Takes `key` out of the line: its start failed or it was not wanted any more.
+    pub fn give_up(&self, key: &str) {
+        self.line.leave(key);
+    }
+
+    /// Frees the place of `key`, whose game reached its title screen, for the next one in line.
+    pub fn loaded(&self, key: &str) {
+        self.line.loaded(key);
+    }
+
+    /// Waits until `key` is first in line, `stagger` passed since the last start and fewer than `parallel` games load
+    /// (0 lets the machine's cores and free memory decide). A game without the companion mod counts as loaded when its
+    /// window shows. Returns false when `abandon` or quitting ends the wait first; quitting empties the line, whereas
+    /// after `abandon` the caller takes `key` out with `give_up` if the abandoning run still owns it, since a newer
+    /// run may have queued the same key.
+    pub fn wait_turn(&self, key: &str, parallel: u32, plain: bool, abandon: &dyn Fn() -> bool) -> bool {
+        loop {
+            if self.closing.load(Ordering::SeqCst) {
+                self.line.leave(key);
+                return false;
+            }
+            if abandon() {
+                return false;
+            }
+            if self.line.turn(key, plain, Instant::now(), self.stagger, || parallel_limit(parallel), |loading, plain| self.through_loading(loading, plain)) {
+                return true;
+            }
+            std::thread::sleep(TURN_POLL);
+        }
+    }
+
+    fn through_loading(&self, key: &str, plain: bool) -> bool {
+        let mut running = lock(&self.running);
+        match running.get_mut(key) {
+            Some(r) => !r.poll() || (plain && super::game_window::shown(r.pid)),
+            None => !lock(&self.reserved).contains_key(key),
+        }
     }
 
     fn launch_checked(&self, target: &Target, account: &Account, server_addrs: &[SocketAddr], started: Instant, launch: impl FnOnce(&Account, &str, &str) -> Result<Box<dyn Process>>) -> Result<String> {
@@ -1055,6 +1103,9 @@ impl Fleet {
     /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds. A game without
     /// Manycraft's mod is asked through its window and gets longer, so it can save its world.
     pub fn stop_all(&self, keys: &[String]) {
+        for key in keys {
+            self.line.leave(key);
+        }
         let mut closed = false;
         let asked: Vec<&String> = keys
             .iter()
@@ -1083,6 +1134,14 @@ impl Fleet {
             self.ipc.unregister(key);
         }
     }
+}
+
+fn parallel_limit(parallel: u32) -> usize {
+    if parallel > 0 {
+        return parallel as usize;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    stagger::auto_parallel(cores, super::fit::system_memory().map(|m| m.free_mb))
 }
 
 fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<String, Reservation>, key: &str, instance: &str, account: &Account, server_addrs: &[SocketAddr]) -> Result<()> {
@@ -2030,6 +2089,99 @@ mod tests {
             launcher(&exits, &tokens)(a, k, t)
         });
         assert_eq!(*clock.slept.borrow(), vec![Duration::from_secs(3)]);
+    }
+
+    fn keys_of(batch: &Target, alts: &[Account]) -> Vec<String> {
+        alts.iter().map(|a| batch.key(a.id)).collect()
+    }
+
+    #[test]
+    fn a_game_waits_for_a_free_place_and_a_crash_frees_it() {
+        let (mut fleet, _events) = Fleet::new().unwrap();
+        fleet.stagger = Duration::ZERO;
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let batch = target("A");
+        let alts = accounts(&["AltOne", "AltTwo"]);
+        let keys = keys_of(&batch, &alts);
+        fleet.queue(&keys);
+        let never = || false;
+        assert!(fleet.wait_turn(&keys[0], 1, false, &never));
+        fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), launcher(&exits, &tokens)).unwrap();
+        let exit = Arc::clone(&exits.borrow()[&alts[0].id]);
+        let through = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(fleet.wait_turn(&keys[1], 1, false, &never));
+                through.store(true, Ordering::SeqCst);
+            });
+            std::thread::sleep(Duration::from_millis(350));
+            assert!(!through.load(Ordering::SeqCst), "the first game still loads");
+            lock(&exit).replace(Some(1));
+        });
+        assert!(through.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_loaded_game_makes_room_and_more_places_let_more_load() {
+        let (mut fleet, _events) = Fleet::new().unwrap();
+        fleet.stagger = Duration::ZERO;
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let batch = target("A");
+        let alts = accounts(&["AltOne", "AltTwo", "AltThree"]);
+        let keys = keys_of(&batch, &alts);
+        fleet.queue(&keys);
+        let never = || false;
+        for (key, alt) in keys.iter().zip(&alts).take(2) {
+            assert!(fleet.wait_turn(key, 2, false, &never));
+            fleet.launch_checked(&batch, alt, &[], Instant::now(), launcher(&exits, &tokens)).unwrap();
+        }
+        let through = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(fleet.wait_turn(&keys[2], 2, false, &never));
+                through.store(true, Ordering::SeqCst);
+            });
+            std::thread::sleep(Duration::from_millis(350));
+            assert!(!through.load(Ordering::SeqCst));
+            fleet.loaded(&keys[0]);
+        });
+        assert!(through.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cancelling_a_waiting_game_lets_the_next_one_go_and_stopping_clears_the_line() {
+        let (mut fleet, _events) = Fleet::new().unwrap();
+        fleet.stagger = Duration::ZERO;
+        let batch = target("A");
+        let alts = accounts(&["AltOne", "AltTwo", "AltThree", "AltFour"]);
+        let keys = keys_of(&batch, &alts);
+        fleet.queue(&keys);
+        assert!(!fleet.wait_turn(&keys[0], 1, false, &|| true));
+        fleet.give_up(&keys[0]);
+        assert!(fleet.wait_turn(&keys[1], 1, false, &|| false));
+        fleet.stop_all(&keys[2..3]);
+        fleet.give_up(&keys[1]);
+        assert!(fleet.wait_turn(&keys[3], 1, false, &|| false));
+        fleet.queue(&keys[..1]);
+        fleet.close();
+        assert!(!fleet.wait_turn(&keys[0], 1, false, &|| false));
+    }
+
+    #[test]
+    fn a_game_abandoned_by_an_old_run_leaves_the_place_of_the_new_run_alone() {
+        let (mut fleet, _events) = Fleet::new().unwrap();
+        fleet.stagger = Duration::ZERO;
+        let batch = target("A");
+        let alts = accounts(&["AltOne", "AltTwo"]);
+        let keys = keys_of(&batch, &alts);
+        fleet.queue(&keys);
+        fleet.stop_all(&keys[1..]);
+        fleet.queue(&keys[1..]);
+        assert!(!fleet.wait_turn(&keys[1], 1, false, &|| true));
+        fleet.give_up(&keys[0]);
+        assert!(fleet.wait_turn(&keys[1], 1, false, &|| false));
     }
 
     #[test]

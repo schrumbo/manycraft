@@ -37,9 +37,11 @@ pub mod phone;
 pub mod place;
 pub mod prism;
 pub mod proxy;
+pub mod ratelimit;
 pub mod reconnect;
 pub mod scrub;
 pub mod skins;
+pub mod stagger;
 #[allow(dead_code)]
 pub mod settings;
 #[cfg(any(windows, target_os = "macos"))]

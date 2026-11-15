@@ -562,6 +562,7 @@ impl InstanceSheet {
             cx.notify();
             return;
         }
+        self.notes.clear();
         let version = self.version.clone();
         let touched = self.mods_touched;
         let mods = self.mods.clone();
@@ -617,6 +618,7 @@ impl InstanceSheet {
         }
         self.loader = loader.clone();
         self.save_error = None;
+        self.notes.clear();
         if self.has_mods() {
             self.load_mods(self.version.clone(), cx);
         }
@@ -954,7 +956,7 @@ impl InstanceSheet {
             col = col.child(self.problem("mods-error", "circle-alert", t.danger_text, e, cx, t));
         }
         if self.mods.is_empty() {
-            col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Keine Mods. Die Instanz startet mit Fabric allein.")));
+            col = col.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&self.loader.name()])));
         } else {
             let mut list = div().id("mod-list").flex().flex_col().max_h(px(self.list_max)).overflow_y_scroll().track_scroll(&self.mods_scroll).rounded(px(radius::CONTROL)).border_1().border_color(t.separator).py(px(space::XXS));
             for m in &self.mods {

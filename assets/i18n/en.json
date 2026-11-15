@@ -71,7 +71,7 @@
   "Suche löschen": "Clear search",
   "Nichts läuft": "Nothing is running",
   "Kein Account passt zu „%@“.": "No account matches “%@”.",
-  "Wartet · %lld/%lld gestartet": "Waiting · %lld/%lld started",
+  "Wartet auf Start (%lld von %lld)": "Waiting to start (%lld of %lld)",
   "Alle sind schon wach": "Everyone is awake already",
   "Proxy wird geprüft …": "Checking proxy …",
   "Der Proxy erreicht das Internet.": "The proxy reaches the internet.",
@@ -257,7 +257,6 @@
   "Die Account-Verwaltung erscheint hier.": "Account management appears here.",
   "Stoppt…": "Stopping…",
   "Lädt %lld %%": "Loading %lld %%",
-  "Wartet %lld/%lld": "Waiting %lld/%lld",
   "Hauptmenü": "Main menu",
   "Verbindet neu · %lld/%lld": "Reconnecting · %lld/%lld",
   "Warteschlange": "Queue",
@@ -709,7 +708,6 @@
   "z. B. Technik": "e.g. Tech",
   "Nicht angelegt.": "Not created.",
   "Diese Instanz läuft. Änderungen an den Mods gelten beim nächsten Start.": "This instance is running. Changes to the mods apply at the next start.",
-  "Keine Mods. Die Instanz startet mit Fabric allein.": "No mods. The instance starts with Fabric alone.",
   "Diese Dateien bleiben unverändert in der Instanz und werden nicht aktualisiert.": "These files stay unchanged in the instance and are not updated.",
   "Aus Prism importieren": "Import from Prism",
   "Datei importieren…": "Import from file…",
@@ -868,5 +866,12 @@
   "%@ zurücksetzen…": "Reset %@…",
   "%@ lädt keine Mods.": "%@ does not load mods.",
   "Mods verwalten…": "Manage mods…",
-  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open."
+  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open.",
+  "Gleichzeitig starten": "Start at the same time",
+  "Automatisch": "Automatic",
+  "Automatisch: höchstens %lld Spiele gleichzeitig, passend zu Prozessor und freiem Arbeitsspeicher. Die übrigen warten.": "Automatic: at most %lld games at once, matched to your processor and free memory. The rest wait.",
+  "Ein Spiel startet nach dem anderen. Das schont den Rechner am meisten und dauert am längsten.": "One game starts after the other. This is easiest on your computer and takes the longest.",
+  "Höchstens %lld Spiele starten gleichzeitig. Mehr geht schneller, der Rechner reagiert dann aber träger. Die übrigen warten.": "At most %lld games start at once. More is faster, but your computer gets less responsive. The rest wait.",
+  "Keine Mods. Die Instanz startet mit %@ allein.": "No mods. The instance starts with %@ alone.",
+  "Wartet %lld/%lld": "Waiting %lld/%lld"
 }

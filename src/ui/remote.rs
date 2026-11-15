@@ -544,7 +544,7 @@ pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
             notes.push(format!("skipped lithium: no Fabric version for {game_version}"));
-        } else {
+        } else if matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
             notes.push(format!("skipped krypton: no Fabric version for {game_version}"));
         }
         return Ok(Defaults { mods, notes });
@@ -585,6 +585,8 @@ pub struct BatchEdit {
     pub memory_override: Option<u32>,
     pub accounts: Vec<Uuid>,
     pub background: Background,
+    /// How many games may load at once; 0 lets the machine decide.
+    pub launch_parallel: u32,
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`, and returns it.
@@ -632,6 +634,7 @@ fn apply(b: &mut Batch, instance_id: String, edit: BatchEdit, known: &HashSet<Uu
     let unseen: Vec<Uuid> = b.accounts.iter().copied().filter(|id| !known.contains(id)).collect();
     b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).chain(unseen).collect();
     b.background = edit.background;
+    b.launch_parallel = edit.launch_parallel;
 }
 
 /// What the instance sheet and page change on an instance; everything else stays as saved.
@@ -1041,11 +1044,11 @@ mod tests {
         let mut b = Batch::new("Farm", "i1");
         b.join_commands = vec!["/home".into()];
         b.memory_override = Some(3000);
-        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced };
+        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4 };
         apply(&mut b, "i2".into(), edit(None), &HashSet::from([me]));
         assert_eq!((b.name.as_str(), b.instance_id.as_str(), b.memory_override, b.accounts.as_slice()), ("Lobby", "i2", None, &[me][..]));
         assert_eq!(b.join_commands, ["/home"]);
-        assert_eq!(b.background, Background::Balanced);
+        assert_eq!((b.background, b.launch_parallel), (Background::Balanced, 4));
         apply(&mut b, "i2".into(), edit(Some(2048)), &HashSet::from([me]));
         assert_eq!(b.memory_override, Some(2048));
     }
@@ -1142,7 +1145,7 @@ mod tests {
         let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut b = Batch::new("Farm", "i1");
         b.accounts = vec![shown, unseen];
-        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving };
+        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0 };
         apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
         assert_eq!(b.accounts, [unseen]);
     }
