@@ -365,6 +365,7 @@ struct Runtime {
     reveal: Option<Reveal>,
     phone: phone::Coalescer,
     outbox: Option<phone::Outbox>,
+    phone_at: Option<Instant>,
 }
 
 
@@ -424,6 +425,7 @@ pub fn init(cx: &mut App) {
         whispers: Vec::new(),
         phone: phone::Coalescer::default(),
         outbox: None,
+        phone_at: None,
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
@@ -1920,10 +1922,28 @@ fn queue_phone(incidents: Vec<(String, Incident)>, cx: &mut App) {
     }
     let now = Instant::now();
     let rt = cx.global_mut::<Runtime>();
-    let Some(due) = incidents.into_iter().filter_map(|(batch, incident)| rt.phone.push(&batch, incident, now)).max() else { return };
+    for (batch, incident) in incidents {
+        rt.phone.push(&batch, incident, now);
+    }
+    if let Some(due) = rt.phone.next_due() {
+        flush_phone_at(due, cx);
+    }
+}
+
+fn flush_phone_at(due: Instant, cx: &mut App) {
+    let rt = cx.global_mut::<Runtime>();
+    if rt.phone_at.is_some_and(|at| at <= due) {
+        return;
+    }
+    rt.phone_at = Some(due);
     cx.spawn(async move |cx| {
         cx.background_executor().timer(due.saturating_duration_since(Instant::now())).await;
-        cx.update(flush_phone);
+        cx.update(|cx| {
+            if cx.has_global::<Runtime>() && cx.global::<Runtime>().phone_at == Some(due) {
+                cx.global_mut::<Runtime>().phone_at = None;
+            }
+            flush_phone(cx);
+        });
     })
     .detach();
 }
@@ -1950,7 +1970,11 @@ fn flush_phone(cx: &mut App) {
         let batches = coalescer.take_due(Instant::now(), current);
         batches.into_iter().map(|(id, list)| (m.batch(&id).map(|b| b.name.clone()).unwrap_or_default(), list)).collect()
     };
+    let next = coalescer.next_due();
     cx.global_mut::<Runtime>().phone = coalescer;
+    if let Some(next) = next {
+        flush_phone_at(next, cx);
+    }
     let phone = settings::active().phone.clone();
     if !phone.enabled {
         return;
@@ -1985,9 +2009,9 @@ fn send_phone(text: String, cx: &mut App) {
         })
         .detach();
     }
-    if let Some(outbox) = &cx.global::<Runtime>().outbox {
-        outbox.send(text);
-    }
+    let Some(Err(text)) = cx.global::<Runtime>().outbox.as_ref().map(|o| o.send(text)) else { return };
+    cx.global_mut::<Runtime>().outbox = None;
+    send_phone(text, cx);
 }
 
 /// Sets or clears why the last message to the phone did not arrive, as Settings shows it.
@@ -2211,6 +2235,7 @@ mod tests {
             whispers: Vec::new(),
             phone: super::phone::Coalescer::default(),
             outbox: None,
+            phone_at: None,
         }
     }
 

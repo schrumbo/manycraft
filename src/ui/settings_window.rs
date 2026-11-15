@@ -1,6 +1,6 @@
 //! The settings window: the few options that rarely change, saved the moment they are touched.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -116,10 +116,7 @@ impl Field {
         }
     }
 
-    fn save(self, value: String) -> Result<(), String> {
-        if let Some(slot) = self.slot() {
-            return phone::store_secret(slot, &Secret::new(value));
-        }
+    fn set(self, value: String) {
         let mut next = settings::active().clone();
         if self == Field::Chat {
             next.phone.telegram_chat = value;
@@ -127,14 +124,35 @@ impl Field {
             next.phone.ntfy_server = value;
         }
         settings::set(next);
-        settings::persist().map_err(|e| trf("Die Einstellungen wurden nicht gespeichert: %@", &[&format!("{e:#}")]))
+    }
+}
+
+/// Orders the saves of one field: a slow keychain never lets an older value land after a newer one.
+#[derive(Default)]
+struct Saver {
+    generation: AtomicU64,
+    lock: Mutex<()>,
+}
+
+impl Saver {
+    fn save(&self, field: Field, generation: u64, value: String) -> Option<Result<(), String>> {
+        let _held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.generation.load(Ordering::SeqCst) != generation {
+            return None;
+        }
+        Some(match field.slot() {
+            Some(slot) => phone::store_secret(slot, &Secret::new(value)),
+            None => settings::persist().map_err(|e| trf("Die Einstellungen wurden nicht gespeichert: %@", &[&format!("{e:#}")])),
+        })
     }
 }
 
 struct PhoneForm {
     inputs: [Entity<InputState>; 5],
     saved: [String; 5],
-    typing: [Arc<AtomicU64>; 5],
+    savers: [Arc<Saver>; 5],
+    shown: [bool; 5],
+    errors: [Option<String>; 5],
     testing: bool,
     tested: Option<Result<String, String>>,
     finding: bool,
@@ -187,7 +205,9 @@ impl SettingsView {
         let phone = PhoneForm {
             inputs,
             saved: [String::new(), String::new(), current.telegram_chat.clone(), current.ntfy_server.clone(), String::new()],
-            typing: Field::ALL.map(|_| Arc::new(AtomicU64::new(0))),
+            savers: Field::ALL.map(|_| Arc::new(Saver::default())),
+            shown: [false; 5],
+            errors: Default::default(),
             testing: false,
             tested: None,
             finding: false,
@@ -199,10 +219,13 @@ impl SettingsView {
                 for (field, read) in secrets {
                     match read {
                         Some(Ok(secret)) => {
+                            if !s.phone.value(field, cx).is_empty() {
+                                continue;
+                            }
                             s.phone.saved[field as usize] = secret.expose().to_owned();
                             s.phone.input(field).update(cx, |i, cx| i.set_value(secret.expose().to_owned(), window, cx));
                         }
-                        Some(Err(e)) => s.error = Some(e),
+                        Some(Err(e)) => s.phone.errors[field as usize] = Some(e),
                         None => {}
                     }
                 }
@@ -224,21 +247,25 @@ impl SettingsView {
         if value == self.phone.saved[ix] {
             return;
         }
-        let counter = Arc::clone(&self.phone.typing[ix]);
-        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let saver = Arc::clone(&self.phone.savers[ix]);
+        let n = saver.generation.fetch_add(1, Ordering::SeqCst) + 1;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
-            if counter.load(Ordering::SeqCst) != n {
+            if saver.generation.load(Ordering::SeqCst) != n {
                 return;
             }
+            if field.slot().is_none() {
+                let kept = value.clone();
+                let _ = cx.update(|_| field.set(kept));
+            }
             let kept = value.clone();
-            let result = cx.background_spawn(async move { field.save(kept) }).await;
+            let Some(result) = cx.background_spawn(async move { saver.save(field, n, kept) }).await else { return };
             let _ = this.update(cx, |s, cx| {
                 if result.is_ok() {
                     s.phone.saved[ix] = value;
                     super::state::set_phone_trouble(None, cx);
                 }
-                s.error = result.err();
+                s.phone.errors[ix] = result.err();
                 cx.notify();
             });
         })
@@ -294,10 +321,26 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn field_row(&self, field: Field, label: String, trailing: Option<Stateful<Div>>, note: Div, t: &Theme) -> Row {
-        let masked = field.slot().is_some();
-        let input = Input::new(self.phone.input(field)).when(masked, |i| i.mask_toggle());
-        let line = div().flex().items_center().gap(px(space::S)).child(div().flex_1().min_w_0().child(input)).children(trailing);
+    fn reveal(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = field as usize;
+        self.phone.shown[ix] = !self.phone.shown[ix];
+        let masked = !self.phone.shown[ix];
+        self.phone.input(field).update(cx, |i, cx| i.set_masked(masked, window, cx));
+        cx.notify();
+    }
+
+    fn field_row(&self, field: Field, label: String, trailing: Option<Stateful<Div>>, note: Div, t: &Theme, cx: &mut Context<Self>) -> Row {
+        let ix = field as usize;
+        let reveal = field.slot().map(|_| {
+            let shown = self.phone.shown[ix];
+            sheet::button(SharedString::from(format!("set-phone-reveal-{ix}")), if shown { tr("Verbergen") } else { tr("Anzeigen") }, None, Look::Plain, false, false, t)
+                .on_click(cx.listener(move |s, _, window, cx| s.reveal(field, window, cx)))
+        });
+        let note = match &self.phone.errors[ix] {
+            Some(e) => sheet::note(None, Some(e.clone()), t),
+            None => note,
+        };
+        let line = div().flex().items_center().gap(px(space::S)).child(div().flex_1().min_w_0().child(Input::new(self.phone.input(field)))).children(reveal).children(trailing);
         let below = div().flex().flex_col().gap(px(space::XS)).child(line).child(note);
         Row { below: Some(below.into_any_element()), ..row(label, None, div(), t) }
     }
@@ -318,25 +361,30 @@ impl SettingsView {
         rows.push(row(tr("Dienst"), None, segmented("set-phone-service", segments, move |n, window, cx| pick(&n, window, cx), t), t));
         match service {
             Service::Discord => {
-                let url = self.phone.value(Field::Discord, cx);
-                let odd = (!url.is_empty() && !url.contains("/api/webhooks/")).then(|| tr("Das sieht nicht wie eine Webhook-Adresse aus. Sie enthält /api/webhooks/."));
+                let url = &self.phone.saved[Field::Discord as usize];
                 let hint = tr("In Discord: Servereinstellungen › Integrationen › Webhooks › Neuer Webhook › Webhook-URL kopieren.");
-                rows.push(self.field_row(Field::Discord, tr("Webhook-Adresse"), None, sheet::note(Some(hint), odd, t), t));
+                let note = if !url.is_empty() && !url.contains("/api/webhooks/") {
+                    sheet::status("triangle-alert", t.attention_text, tr("Das sieht nicht wie eine Discord-Webhook-URL aus. Die enthält /api/webhooks/.")).text_size(px(font::CAPTION))
+                } else {
+                    sheet::note(Some(hint), None, t)
+                };
+                rows.push(self.field_row(Field::Discord, tr("Webhook-URL"), None, note, t, cx));
             }
             Service::Telegram => {
-                rows.push(self.field_row(Field::Token, tr("Bot-Token"), None, sheet::note(Some(tr("Schreib @BotFather in Telegram /newbot und kopiere den Token hierher.")), None, t), t));
+                rows.push(self.field_row(Field::Token, tr("Bot-Token"), None, sheet::note(Some(tr("Schreib @BotFather in Telegram /newbot und kopiere den Token hierher.")), None, t), t, cx));
                 let finding = self.phone.finding;
-                let find = sheet::button("set-phone-find", tr("Chat-ID finden"), None, Look::Secondary, false, finding, t).when(!finding, |b| b.on_click(cx.listener(|s, _, window, cx| s.find_chat(window, cx))));
+                let no_token = self.phone.value(Field::Token, cx).is_empty();
+                let find = sheet::button("set-phone-find", tr("Chat-ID finden"), None, Look::Secondary, no_token, finding, t).when(!finding && !no_token, |b| b.on_click(cx.listener(|s, _, window, cx| s.find_chat(window, cx))));
                 let note = match &self.phone.found {
                     Some(Ok(found)) => sheet::status("circle-check", t.success_text, found.clone()).text_size(px(font::CAPTION)),
                     Some(Err(e)) => sheet::note(None, Some(e.clone()), t),
                     None => sheet::note(Some(tr("Schreib deinem Bot zuerst eine Nachricht, dann „Chat-ID finden“.")), None, t),
                 };
-                rows.push(self.field_row(Field::Chat, tr("Chat-ID"), Some(find), note, t));
+                rows.push(self.field_row(Field::Chat, tr("Chat-ID"), Some(find), note, t, cx));
             }
             Service::Ntfy => {
-                rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Nur ändern, wenn du einen eigenen ntfy-Server hast.")), None, t), t));
-                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.")), None, t), t));
+                rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Nur ändern, wenn du einen eigenen ntfy-Server hast.")), None, t), t, cx));
+                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.")), None, t), t, cx));
             }
         }
         let testing = self.phone.testing;
@@ -349,9 +397,9 @@ impl SettingsView {
             (None, None) => None,
         };
         rows.push(Row { below: outcome.map(IntoElement::into_any_element), ..row(tr("Testnachricht"), Some(tr("Prüft, ob Meldungen auf dem Handy ankommen.")), send, t) });
-        rows.push(self.toggle("set-phone-back", tr("Wieder verbunden"), tr("Meldet auch, wenn getrennte Accounts zurück auf dem Server sind."), current.reconnected, |st, on| st.phone.reconnected = on, t, cx));
-        rows.push(self.toggle("set-phone-whispers", tr("Flüstern"), tr("Schickt Flüsternachrichten weiter."), current.whispers, |st, on| st.phone.whispers = on, t, cx));
-        group(tr("Aufs Handy"), rows, Some(tr("Webhook-Adresse, Token und Thema liegen nur im Passwortspeicher des Systems.")), t)
+        rows.push(self.toggle("set-phone-back", tr("Auch wenn sie zurück sind"), tr("Meldet auch, wenn getrennte Accounts wieder auf dem Server sind."), current.reconnected, |st, on| st.phone.reconnected = on, t, cx));
+        rows.push(self.toggle("set-phone-whispers", tr("Auch Flüsternachrichten"), tr("Schickt Flüsternachrichten aufs Handy weiter."), current.whispers, |st, on| st.phone.whispers = on, t, cx));
+        group(tr("Aufs Handy"), rows, Some(tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems.")), t)
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {

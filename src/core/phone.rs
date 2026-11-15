@@ -202,7 +202,7 @@ impl Target {
     /// The target for `phone` with `secret`, or what is still missing.
     pub fn new(phone: &Phone, secret: Secret) -> Result<Self, String> {
         let missing = match phone.service {
-            Service::Discord if secret.is_empty() => Some(tr("Trag zuerst die Webhook-Adresse ein.")),
+            Service::Discord if secret.is_empty() => Some(tr("Trag zuerst die Webhook-URL ein.")),
             Service::Telegram if secret.is_empty() => Some(tr("Trag zuerst den Bot-Token ein.")),
             Service::Telegram if phone.telegram_chat.trim().is_empty() => Some(tr("Trag zuerst die Chat-ID ein.")),
             Service::Ntfy if secret.is_empty() => Some(tr("Trag zuerst ein Thema ein.")),
@@ -262,7 +262,7 @@ impl Failure {
     pub fn text(&self, service: Service) -> String {
         let name = service.name();
         match (self, service) {
-            (Failure::Refused(401 | 403 | 404), Service::Discord) => tr("Discord kennt diese Webhook-Adresse nicht. Kopiere sie in Discord neu."),
+            (Failure::Refused(401 | 403 | 404), Service::Discord) => tr("Discord kennt diese Webhook-URL nicht. Kopiere sie in Discord neu."),
             (Failure::Refused(401 | 404), Service::Telegram) => tr("Telegram kennt diesen Bot-Token nicht. Kopiere ihn bei @BotFather neu."),
             (Failure::Refused(400 | 403), Service::Telegram) => tr("Der Bot darf in diesen Chat nicht schreiben. Schreib dem Bot eine Nachricht und such die Chat-ID neu."),
             (Failure::Refused(401 | 403), Service::Ntfy) => tr("Dieses ntfy-Thema ist geschützt. Nimm ein anderes Thema."),
@@ -271,7 +271,7 @@ impl Failure {
             (Failure::Busy(_), _) => trf("%@ nimmt gerade keine Meldungen an. Versuche es später noch einmal.", &[&name]),
             (Failure::Down(_), _) => trf("%@ antwortet gerade nicht. Versuche es später noch einmal.", &[&name]),
             (Failure::Offline, _) => trf("Keine Verbindung zu %@. Prüfe das Internet.", &[&name]),
-            (Failure::BadAddress, Service::Discord) => tr("Diese Webhook-Adresse ist keine gültige Adresse. Kopiere sie in Discord neu."),
+            (Failure::BadAddress, Service::Discord) => tr("Diese Webhook-URL ist ungültig. Kopiere sie in Discord neu."),
             (Failure::BadAddress, _) => tr("Diese Server-Adresse ist ungültig. Sie beginnt mit https://."),
         }
     }
@@ -288,7 +288,7 @@ fn agent() -> ureq::Agent {
 }
 
 fn valid_url(url: &str) -> bool {
-    url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "https" | "http") && u.host_str().is_some() && (!drive::on() || local(&u)))
+    url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "https" | "http") && u.host_str().is_some() && (!fenced() || local(&u)))
 }
 
 fn local(url: &url::Url) -> bool {
@@ -320,7 +320,7 @@ pub fn post(request: &Request) -> Result<(), Failure> {
 fn failure(code: u16, header: Option<f64>, body: &serde_json::Value) -> Failure {
     match code {
         429 => {
-            let secs = header.or_else(|| body.get("retry_after").and_then(serde_json::Value::as_f64)).or_else(|| body.pointer("/parameters/retry_after").and_then(serde_json::Value::as_f64)).unwrap_or(5.0);
+            let secs = header.or_else(|| body.get("retry_after").and_then(serde_json::Value::as_f64)).or_else(|| body.pointer("/parameters/retry_after").and_then(serde_json::Value::as_f64)).filter(|s| s.is_finite()).unwrap_or(5.0);
             Failure::Busy(Duration::from_secs_f64(secs.clamp(0.5, MAX_WAIT.as_secs_f64())))
         }
         500.. => Failure::Down(code),
@@ -450,48 +450,71 @@ impl Outbox {
         Self { tx }
     }
 
-    /// Queues `text` for the phone.
-    pub fn send(&self, text: String) {
-        let _ = self.tx.send(text);
+    /// Queues `text` for the phone; gives it back when the sender is gone.
+    pub fn send(&self, text: String) -> Result<(), String> {
+        self.tx.send(text).map_err(|e| e.0)
     }
 }
 
+fn pack(queue: &VecDeque<String>, max: usize) -> (String, usize) {
+    let mut text = String::new();
+    let mut used = 0;
+    for next in queue {
+        if used > 0 && text.chars().count() + 2 + next.chars().count() > max {
+            break;
+        }
+        if used > 0 {
+            text.push_str("\n\n");
+        }
+        text.push_str(next);
+        used += 1;
+    }
+    (text, used)
+}
+
 fn run(rx: &mpsc::Receiver<String>, report: &dyn Fn(Outcome)) {
-    while let Ok(first) = rx.recv() {
-        let mut texts = vec![first];
-        let mut tries = 0usize;
-        loop {
-            let service = settings::active().phone.service;
-            std::thread::sleep(wait_for(service));
-            texts.extend(rx.try_iter());
-            let phone = settings::active().phone.clone();
-            if !phone.enabled {
-                break;
+    let mut queue: VecDeque<String> = VecDeque::new();
+    let mut tries = 0usize;
+    loop {
+        if queue.is_empty() {
+            let Ok(first) = rx.recv() else { return };
+            queue.push_back(first);
+            tries = 0;
+        }
+        let service = settings::active().phone.service;
+        std::thread::sleep(wait_for(service));
+        queue.extend(rx.try_iter());
+        let phone = settings::active().phone.clone();
+        if !phone.enabled {
+            queue.clear();
+            continue;
+        }
+        let target = match Target::load(&phone) {
+            Ok(target) => target,
+            Err(e) => {
+                report(Outcome::Lost(e));
+                queue.clear();
+                continue;
             }
-            let target = match Target::load(&phone) {
-                Ok(target) => target,
-                Err(e) => {
-                    report(Outcome::Lost(e));
-                    break;
+        };
+        let (text, used) = pack(&queue, target.service.max_chars());
+        let result = post(&request(&target, &text, &telegram_api()));
+        sent_to(target.service, result.as_ref().err());
+        match result {
+            Ok(()) => {
+                queue.drain(..used);
+                tries = 0;
+                report(Outcome::Arrived);
+            }
+            Err(f) if f.retry() && tries < RETRIES.len() => {
+                if !matches!(f, Failure::Busy(_)) {
+                    std::thread::sleep(Duration::from_secs(RETRIES[tries]));
                 }
-            };
-            let result = post(&request(&target, &texts.join("\n\n"), &telegram_api()));
-            sent_to(target.service, result.as_ref().err());
-            match result {
-                Ok(()) => {
-                    report(Outcome::Arrived);
-                    break;
-                }
-                Err(f) if f.retry() && tries < RETRIES.len() => {
-                    if !matches!(f, Failure::Busy(_)) {
-                        std::thread::sleep(Duration::from_secs(RETRIES[tries]));
-                    }
-                    tries += 1;
-                }
-                Err(f) => {
-                    report(Outcome::Lost(f.text(target.service)));
-                    break;
-                }
+                tries += 1;
+            }
+            Err(f) => {
+                report(Outcome::Lost(f.text(target.service)));
+                queue.clear();
             }
         }
     }
@@ -546,13 +569,17 @@ impl Incident {
 struct Bucket {
     opened: Instant,
     last: Instant,
-    entries: Vec<Incident>,
+    entries: Vec<(Instant, Incident)>,
+}
+
+fn ready((at, e): &(Instant, Incident)) -> Instant {
+    *at + if e.healed { Duration::ZERO } else { e.what.hold() }
 }
 
 impl Bucket {
     fn due(&self) -> Instant {
-        let hold = self.entries.iter().map(|e| if e.healed { Duration::ZERO } else { e.what.hold() }).max().unwrap_or_default();
-        (self.opened + hold).max(self.last + QUIET).min(self.opened + MAX_HOLD)
+        let first = self.entries.iter().map(ready).min().unwrap_or(self.opened);
+        first.max((self.last + QUIET).min(self.opened + MAX_HOLD))
     }
 }
 
@@ -567,18 +594,18 @@ impl Coalescer {
     /// Adds an incident of `batch` at `now`; gives the time its message is due, or `None` when it is no news.
     pub fn push(&mut self, batch: &str, incident: Incident, now: Instant) -> Option<Instant> {
         if incident.what == What::Back {
-            let Some(bucket) = self.buckets.get_mut(batch).filter(|b| b.entries.iter().any(|e| e.key == incident.key)) else {
+            let Some(bucket) = self.buckets.get_mut(batch).filter(|b| b.entries.iter().any(|(_, e)| e.key == incident.key)) else {
                 if !self.reported.remove(&incident.key) {
                     return None;
                 }
                 return self.add(batch, incident, now);
             };
             bucket.last = now;
-            if let Some(entry) = bucket.entries.iter_mut().find(|e| e.key == incident.key && e.what != What::Back) {
+            if let Some((_, entry)) = bucket.entries.iter_mut().find(|(_, e)| e.key == incident.key && e.what != What::Back) {
                 if entry.what.reconnecting() {
                     entry.healed = true;
                 } else {
-                    bucket.entries.retain(|e| e.key != incident.key);
+                    bucket.entries.retain(|(_, e)| e.key != incident.key);
                 }
             }
             let due = (!bucket.entries.is_empty()).then(|| bucket.due());
@@ -593,9 +620,14 @@ impl Coalescer {
     fn add(&mut self, batch: &str, incident: Incident, now: Instant) -> Option<Instant> {
         let bucket = self.buckets.entry(batch.to_owned()).or_insert_with(|| Bucket { opened: now, last: now, entries: Vec::new() });
         bucket.last = now;
-        bucket.entries.retain(|e| e.key != incident.key);
-        bucket.entries.push(incident);
+        bucket.entries.retain(|(_, e)| e.key != incident.key);
+        bucket.entries.push((now, incident));
         Some(bucket.due())
+    }
+
+    /// When the next message is due, if any is pending.
+    pub fn next_due(&self) -> Option<Instant> {
+        self.buckets.values().map(Bucket::due).min()
     }
 
     /// Takes the batches whose message is due at `now`, keeping only incidents `current` still confirms.
@@ -604,7 +636,11 @@ impl Coalescer {
         let mut out = Vec::new();
         for id in due {
             let Some(bucket) = self.buckets.remove(&id) else { continue };
-            let kept: Vec<Incident> = bucket.entries.into_iter().filter(|e| current(e)).collect();
+            let (now_due, later): (Vec<_>, Vec<_>) = bucket.entries.into_iter().partition(|e| ready(e) <= now + QUIET);
+            if let (Some(opened), Some(last)) = (later.iter().map(|(at, _)| *at).min(), later.iter().map(|(at, _)| *at).max()) {
+                self.buckets.insert(id.clone(), Bucket { opened, last, entries: later });
+            }
+            let kept: Vec<Incident> = now_due.into_iter().map(|(_, e)| e).filter(|e| current(e)).collect();
             for e in &kept {
                 if e.what == What::Back || e.healed {
                     self.reported.remove(&e.key);
@@ -623,7 +659,7 @@ impl Coalescer {
     pub fn forget(&mut self, key: &str) {
         self.reported.remove(key);
         for bucket in self.buckets.values_mut() {
-            bucket.entries.retain(|e| e.key != key);
+            bucket.entries.retain(|(_, e)| e.key != key);
         }
         self.buckets.retain(|_, b| !b.entries.is_empty());
     }
@@ -856,6 +892,46 @@ mod tests {
     }
 
     #[test]
+    fn a_late_drop_in_an_open_batch_still_waits_its_full_minute() {
+        let t0 = Instant::now();
+        let mut c = Coalescer::default();
+        c.push("farm", dropped("Alex"), t0);
+        c.push("farm", dropped("Bert"), at(t0, 30));
+        let first = c.take_due(at(t0, 60), |_| true);
+        assert_eq!(first[0].1.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Alex"]);
+        assert_eq!(c.next_due(), Some(at(t0, 90)));
+        c.push("farm", Incident::new("Bert", "", What::Back, "", None), at(t0, 75));
+        let healed = c.take_due(at(t0, 80), |_| true);
+        assert_eq!(format("Farm", &healed[0].1, false), None);
+        assert_eq!(c.next_due(), None);
+    }
+
+    #[test]
+    fn a_ban_is_not_held_back_by_a_pending_drop() {
+        let t0 = Instant::now();
+        let mut c = Coalescer::default();
+        c.push("farm", dropped("Alex"), t0);
+        assert_eq!(c.push("farm", Incident::new("Bert", "Bert", What::Banned, "", None), at(t0, 10)), Some(at(t0, 15)));
+        let due = c.take_due(at(t0, 15), |_| true);
+        assert_eq!(due[0].1.iter().map(|e| e.what).collect::<Vec<_>>(), [What::Banned]);
+        assert_eq!(c.next_due(), Some(at(t0, 60)));
+    }
+
+    #[test]
+    fn piled_up_messages_are_sent_in_parts_that_fit() {
+        let queue: VecDeque<String> = ["a".repeat(1500), "b".repeat(400), "c".repeat(200)].into_iter().collect();
+        assert_eq!(pack(&queue, 2000).1, 2);
+        assert_eq!(pack(&queue, 1000).1, 1);
+        assert_eq!(pack(&queue, 1000).0.len(), 1500);
+    }
+
+    #[test]
+    fn a_retry_after_that_is_not_a_number_falls_back_to_a_few_seconds() {
+        assert_eq!(failure(429, Some(f64::NAN), &serde_json::Value::Null), Failure::Busy(Duration::from_secs(5)));
+        assert_eq!(failure(429, Some(f64::INFINITY), &serde_json::Value::Null), Failure::Busy(Duration::from_secs(5)));
+    }
+
+    #[test]
     fn incidents_the_user_already_fixed_are_dropped_and_not_remembered() {
         let t0 = Instant::now();
         let mut c = Coalescer::default();
@@ -954,7 +1030,7 @@ mod tests {
 
     #[test]
     fn missing_fields_are_named() {
-        assert!(Target::new(&phone(Service::Discord), Secret::default()).unwrap_err().contains("Webhook-Adresse"));
+        assert!(Target::new(&phone(Service::Discord), Secret::default()).unwrap_err().contains("Webhook-URL"));
         let mut no_chat = phone(Service::Telegram);
         no_chat.telegram_chat = " ".into();
         assert!(Target::new(&no_chat, Secret::new("t")).unwrap_err().contains("Chat-ID"));
@@ -1086,7 +1162,7 @@ mod tests {
         let discord = Target::new(&phone(Service::Discord), Secret::new(format!("{base}/api/webhooks/1/abc"))).unwrap();
         let failure = post(&request(&discord, "x", TELEGRAM_API)).unwrap_err();
         assert_eq!(failure, Failure::Refused(404));
-        assert!(failure.text(Service::Discord).contains("Webhook-Adresse"));
+        assert!(failure.text(Service::Discord).contains("Webhook-URL"));
         let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let gone = Target::new(&phone(Service::Discord), Secret::new(format!("http://{closed}/api/webhooks/1/abc"))).unwrap();
         assert_eq!(post(&request(&gone, "x", TELEGRAM_API)), Err(Failure::Offline));
