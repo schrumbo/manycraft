@@ -117,7 +117,7 @@ final class BackgroundController {
 	}
 
 	boolean skipsRender() {
-		return !visible && level.skipsRender();
+		return !visible && level.skipsRender(custom);
 	}
 
 	int hiddenFramerate() {

@@ -80,6 +80,8 @@ pub struct State {
     pub trouble: Option<Trouble>,
     /// A version the user or a crash went back from; it is never offered again.
     pub skipped: Option<String>,
+    /// A version whose download the user cancelled; it is not fetched by itself again, only on request.
+    pub declined: Option<String>,
     pub fresh: Option<Fresh>,
     pub previous: Option<Previous>,
 }

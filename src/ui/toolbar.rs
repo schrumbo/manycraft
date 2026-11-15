@@ -35,7 +35,9 @@ pub fn slot() -> Div {
 /// The sidebar toggle, drawn once by the main window at the same place on every page.
 pub fn toggle(this: &MainWindow, t: &Theme, cx: &App) -> Div {
     let shown = if this.narrow_now { this.overlay } else { this.sidebar };
-    let note = if shown { None } else { super::updates::offer(&model::get(cx).read(cx).updates) };
+    let updates = &model::get(cx).read(cx).updates;
+    let fresh = super::updates::offer_key(updates).is_some_and(|key| this.seen_offer.as_deref() != Some(key.as_str()));
+    let note = if shown || !fresh { None } else { super::updates::offer(updates) };
     let hint = hint(if shown { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, &ToggleSidebar, cx);
     let hint = match &note {
         Some(note) => format!("{hint} · {note}"),

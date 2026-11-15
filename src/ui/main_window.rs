@@ -53,6 +53,7 @@ pub struct MainWindow {
     pub(super) sidebar: bool,
     pub(super) overlay: bool,
     pub(super) narrow_now: bool,
+    pub(super) seen_offer: Option<String>,
     pub(super) search: Entity<InputState>,
     pub(super) query: String,
     pub(super) grid: Grid,
@@ -153,6 +154,7 @@ impl MainWindow {
             filter: Filter::All,
             overlay: false,
             narrow_now: false,
+            seen_offer: None,
             search,
             query: String::new(),
             grid: Grid::new(cx),
@@ -428,6 +430,11 @@ impl Render for MainWindow {
         super::perf::frame_start();
         super::theme::follow_focus(window, cx);
         self.narrow_now = Self::narrow(window);
+        if if self.narrow_now { self.overlay } else { self.sidebar } {
+            if let Some(key) = super::updates::offer_key(&super::model::get(cx).read(cx).updates) {
+                self.seen_offer = Some(key);
+            }
+        }
         if window.focused(cx).is_none() || (matches!(self.page, Page::Grid(_)) && !self.onboarding_shown(cx) && self.focus.is_focused(window)) {
             self.focus_page(window, cx);
         }

@@ -200,6 +200,8 @@ pub struct Updates {
     pub asked: bool,
     /// The running download was stopped and is winding down.
     pub cancelling: bool,
+    /// The download just stopped; the sidebar says so for a moment instead of offering it again under the pointer.
+    pub cancelled: bool,
 }
 
 impl Model {

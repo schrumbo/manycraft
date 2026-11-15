@@ -131,6 +131,12 @@ pub fn unavailable(element: Stateful<Div>, content: impl IntoElement, reason: im
     dim(element, "disabled", reason.clone(), reason).child(div().opacity(tint::DISABLED).child(content))
 }
 
+/// Like [`unavailable`] for the end of a stepper that cannot go further: not-allowed cursor and `reason` as tooltip, but no Tab stop, since the value beside it already shows the limit.
+pub fn stepper_end(element: Stateful<Div>, content: impl IntoElement, reason: impl Into<SharedString>) -> Stateful<Div> {
+    let reason: SharedString = reason.into();
+    element.cursor_not_allowed().tooltip(tip(reason.clone())).mark("disabled", reason).child(div().opacity(tint::DISABLED).child(content))
+}
+
 fn dim(element: Stateful<Div>, role: &'static str, reason: SharedString, label: SharedString) -> Stateful<Div> {
     said(element.cursor_not_allowed().key_nav().tooltip(tip(reason.clone())).mark(role, label), reason)
 }

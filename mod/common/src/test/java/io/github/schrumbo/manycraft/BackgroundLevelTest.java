@@ -14,25 +14,32 @@ class BackgroundLevelTest {
 	@Test
 	void savingCutsEverything() {
 		assertEquals(new BackgroundController.Values(2, 5, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, 120), SAVED.reduced(BackgroundLevel.SAVING, 2, 5, 10));
-		assertTrue(BackgroundLevel.SAVING.skipsRender());
+		assertTrue(BackgroundLevel.SAVING.skipsRender(BackgroundLevel.Custom.DEFAULT));
 	}
 
 	@Test
 	void balancedKeepsSightAndCutsParticles() {
 		assertEquals(new BackgroundController.Values(12, 10, ParticleStatus.MINIMAL, CloudStatus.FANCY, 0.0, 120), SAVED.reduced(BackgroundLevel.BALANCED, 2, 5, 10));
-		assertFalse(BackgroundLevel.BALANCED.skipsRender());
+		assertFalse(BackgroundLevel.BALANCED.skipsRender(BackgroundLevel.Custom.DEFAULT));
 	}
 
 	@Test
 	void fullOnlyMutes() {
 		assertEquals(new BackgroundController.Values(12, 10, ParticleStatus.ALL, CloudStatus.FANCY, 0.0, 120), SAVED.reduced(BackgroundLevel.FULL, 2, 5, 10));
-		assertFalse(BackgroundLevel.FULL.skipsRender());
+		assertFalse(BackgroundLevel.FULL.skipsRender(BackgroundLevel.Custom.DEFAULT));
 	}
 
 	@Test
 	void customSetsSightAndFrameLimitAndCutsTheRest() {
 		assertEquals(new BackgroundController.Values(6, 5, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, 10), SAVED.reduced(BackgroundLevel.CUSTOM, 6, 5, 10));
-		assertFalse(BackgroundLevel.CUSTOM.skipsRender());
+	}
+
+	@Test
+	void customSkipsDrawingOnlyAtLowFrameRates() {
+		assertTrue(BackgroundLevel.CUSTOM.skipsRender(new BackgroundLevel.Custom(5, 4)));
+		assertTrue(BackgroundLevel.CUSTOM.skipsRender(new BackgroundLevel.Custom(10, 4)));
+		assertFalse(BackgroundLevel.CUSTOM.skipsRender(new BackgroundLevel.Custom(15, 4)));
+		assertFalse(BackgroundLevel.CUSTOM.skipsRender(new BackgroundLevel.Custom(60, 12)));
 	}
 
 	@Test

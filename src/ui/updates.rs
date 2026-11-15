@@ -16,6 +16,7 @@ use crate::core::updater::{self, Kind, Release, Skip, Trouble, install, release}
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EVERY: Duration = Duration::from_secs(3600);
 const PROVEN_AFTER: Duration = Duration::from_secs(10);
+const ACKNOWLEDGED_FOR: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Quit {
@@ -55,11 +56,12 @@ pub fn init(cx: &mut App) {
     let saved = cx.background_spawn(async {
         let dir = updater::dir();
         let state = updater::load(&dir);
-        (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION).map(|r| r.version))
+        (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION).map(|r| r.version), state.declined)
     });
     cx.spawn(async move |cx| {
-        let (news, previous, trouble, ready) = saved.await;
+        let (news, previous, trouble, ready, declined) = saved.await;
         cx.update(|cx| {
+            cx.global_mut::<Flight>().declined = declined;
             set(cx, |u| {
                 u.news = news;
                 u.previous = previous;
@@ -184,6 +186,7 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
         u.status = UpdateStatus::Downloading { version: version.clone(), percent: None };
         u.asked = asked;
         u.cancelling = false;
+        u.cancelled = false;
     });
     let stop = Arc::new(AtomicBool::new(false));
     cx.global_mut::<Flight>().cancel = Some(stop.clone());
@@ -222,12 +225,16 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
                     busy(cx, false);
                     let flight = cx.global_mut::<Flight>();
                     flight.cancel = None;
-                    if matches!(result, Err((Some(Skip::Cancelled), _))) {
+                    let cancelled = matches!(result, Err((Some(Skip::Cancelled), _)));
+                    if cancelled {
                         flight.declined = Some(version.clone());
+                        remember_declined(Some(version.clone()), cx);
+                        forget_cancelled(cx);
                     }
                     set(cx, |u| {
                         u.asked = false;
                         u.cancelling = false;
+                        u.cancelled = cancelled;
                         match result {
                             Ok(version) => {
                                 u.status = UpdateStatus::Ready { version };
@@ -248,6 +255,23 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
     .detach();
 }
 
+fn remember_declined(version: Option<String>, cx: &mut App) {
+    cx.background_spawn(async move {
+        if let Err(e) = updater::edit(&updater::dir(), |s| s.declined = version) {
+            eprintln!("update: {e:#}");
+        }
+    })
+    .detach();
+}
+
+fn forget_cancelled(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(ACKNOWLEDGED_FOR).await;
+        cx.update(|cx| set(cx, |u| u.cancelled = false));
+    })
+    .detach();
+}
+
 fn cancel(cx: &mut App) {
     let Some(stop) = cx.global::<Flight>().cancel.clone() else { return };
     stop.store(true, Ordering::SeqCst);
@@ -264,6 +288,15 @@ pub fn offer(u: &Updates) -> Option<String> {
     match &u.status {
         UpdateStatus::Ready { .. } => Some(tr("Update bereit")),
         UpdateStatus::Available { .. } => Some(tr("Update verfügbar")),
+        _ => None,
+    }
+}
+
+/// What the sidebar offers, by kind and version, so the toggle's dot comes back only for a new offer.
+pub fn offer_key(u: &Updates) -> Option<String> {
+    match &u.status {
+        UpdateStatus::Ready { version } => Some(format!("ready {version}")),
+        UpdateStatus::Available { version, .. } => Some(format!("available {version}")),
         _ => None,
     }
 }

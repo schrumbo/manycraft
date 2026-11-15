@@ -187,9 +187,9 @@ fn news_line(updates: &Updates, t: &Theme) -> Option<Stateful<Div>> {
 }
 
 fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<Div>> {
-    let base = |label: String, icon_name: &str| {
+    let base = |id: &'static str, label: String, icon_name: &str| {
         div()
-            .id("nav-update")
+            .id(id)
             .mark("button", label.clone())
             .h(px(shell::ROW))
             .px(px(space::S))
@@ -218,7 +218,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(t.accent_text)
                 .child(label);
-            let row = base(tr("Update bereit"), "download");
+            let row = base("nav-update-ready", tr("Update bereit"), "download");
             if launching {
                 return Some(row.opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(super::updates::launching_line())).child(trailing(tr("Wartet"))));
             }
@@ -231,8 +231,11 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                     .child(pill),
             )
         }
+        UpdateStatus::Available { version, installs: true, .. } if updates.cancelled => {
+            Some(base("nav-update-cancelled", tr("Abgebrochen"), "download").opacity(tint::DISABLED).child(trailing(version.clone())))
+        }
         UpdateStatus::Available { version, page, installs: false } if page.starts_with("https://github.com/") => Some(
-            base(tr("Update verfügbar"), "download")
+            base("nav-update-page", tr("Update verfügbar"), "download")
                 .cursor_pointer()
                 .key_nav()
                 .soft(t.ink.opacity(tint::HOVER), radius::INNER)
@@ -241,7 +244,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .on_click(move |_, _, cx| cx.open_url(&page)),
         ),
         UpdateStatus::Available { version, installs: true, .. } => Some(
-            base(tr("Update verfügbar"), "download")
+            base("nav-update-fetch", tr("Update verfügbar"), "download")
                 .cursor_pointer()
                 .key_nav()
                 .soft(t.ink.opacity(tint::HOVER), radius::INNER)
@@ -249,8 +252,8 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .tooltip(tip(trf("Version %@ laden", &[&version])))
                 .on_click(|_, _, cx| super::updates::fetch(cx)),
         ),
-        UpdateStatus::Checking if updates.asked => Some(base(tr("Sucht …"), "refresh-cw")),
-        UpdateStatus::Downloading { version, percent } if updates.asked => {
+        UpdateStatus::Checking if updates.asked => Some(base("nav-update-checking", tr("Sucht …"), "refresh-cw")),
+        UpdateStatus::Downloading { version, percent } => {
             let stopping = updates.cancelling;
             let done = if stopping { tr("Bricht ab …") } else { percent.map_or_else(|| version.clone(), |p| format!("{p} %")) };
             let cancel = tr("Laden abbrechen");
@@ -266,7 +269,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                     .tooltip(tip(cancel))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(CancelUpdate), cx))
             };
-            Some(base(tr("Update lädt"), "download").child(trailing(done)).child(button).tooltip(tip(if stopping { trf("Laden von Version %@ wird abgebrochen …", &[&version]) } else { trf("Version %@ wird geladen.", &[&version]) })))
+            Some(base("nav-update-downloading", tr("Update wird geladen"), "download").child(trailing(done)).child(button).tooltip(tip(if stopping { trf("Laden von Version %@ wird abgebrochen …", &[&version]) } else { trf("Version %@ wird geladen.", &[&version]) })))
         }
         _ => None,
     }
