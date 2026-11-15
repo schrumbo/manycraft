@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory;
 final class BackgroundController {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final int SHRINK_TICKS = 600;
+	private static final int TRIM_TICKS = 600;
 	private static final String MASTER_VOLUME = "soundCategory_" + SoundSource.MASTER.getName();
 	static final Set<String> USER_KEYS = Set.of("renderDistance", "simulationDistance", "particles", "renderClouds", MASTER_VOLUME, "maxFps");
 
@@ -56,6 +57,7 @@ final class BackgroundController {
 	private final SaveGuard guard;
 	private final Consumer<String> sink;
 	private final BackgroundMode<Values> mode;
+	private final HiddenMemory memory = HiddenMemory.create();
 	private volatile Profile profile = Profile.DEFAULT;
 	private volatile BackgroundLevel level = BackgroundLevel.SAVING;
 	private volatile BackgroundLevel.Custom custom = BackgroundLevel.Custom.DEFAULT;
@@ -63,6 +65,7 @@ final class BackgroundController {
 	private boolean lastFocused = true;
 	private boolean lastMaximized;
 	private int hiddenTicks;
+	private int settledTicks;
 
 	BackgroundController(Minecraft mc, SaveGuard guard, Consumer<String> sink) {
 		this.mc = mc;
@@ -140,6 +143,7 @@ final class BackgroundController {
 		LOGGER.info("background level {} {}", next, nextCustom);
 		if (!visible) {
 			mode.enter();
+			capWorkers();
 		}
 	}
 
@@ -159,6 +163,7 @@ final class BackgroundController {
 			load.accept(live);
 		}
 		mode.store(saved -> parse(saved, stored));
+		capWorkers();
 	}
 
 	private Values parse(Values saved, Map<String, String> raw) {
@@ -188,20 +193,27 @@ final class BackgroundController {
 		profile = profile.merge(update);
 		if (!visible) {
 			mode.enter();
+			capWorkers();
 		}
 	}
 
 	void hide() {
 		GameWindow.cancel();
 		mode.enter();
+		capWorkers();
 		SDLVideo.SDL_HideWindow(mc.getWindow().handle());
 		visible = false;
 		hiddenTicks = 0;
+		settledTicks = 0;
 		reportWindow();
 	}
 
 	void show(int x, int y, int w, int h, String windowMode) {
+		boolean released = memory.restore();
 		mode.exit();
+		if (released) {
+			rebuild();
+		}
 		mc.getFramerateLimitTracker().onInputReceived();
 		visible = true;
 		GameWindow.show(mc, x, y, w, h, windowMode, this::reportWindow);
@@ -209,6 +221,7 @@ final class BackgroundController {
 
 	void startHidden() {
 		mode.enter();
+		capWorkers();
 		SDLVideo.SDL_HideWindow(mc.getWindow().handle());
 		visible = false;
 	}
@@ -222,11 +235,27 @@ final class BackgroundController {
 		if (!visible && hiddenTicks < SHRINK_TICKS && ++hiddenTicks == SHRINK_TICKS) {
 			GameWindow.shrink(mc);
 		}
+		if (visible || mc.level == null) {
+			settledTicks = 0;
+		} else if (settledTicks < TRIM_TICKS && ++settledTicks == TRIM_TICKS) {
+			memory.trim();
+		}
 		boolean focused = visible && mc.getWindow().isFocused();
 		boolean maximized = visible && maximized();
 		if (focused != lastFocused || maximized != lastMaximized) {
 			reportWindow();
 		}
+	}
+
+	private void capWorkers() {
+		Values saved = mode.saved();
+		if (memory.capWorkers(saved != null && mc.options.renderDistance().get() < saved.renderDistance())) {
+			rebuild();
+		}
+	}
+
+	private void rebuild() {
+		mc.levelExtractor.allChanged();
 	}
 
 	private boolean maximized() {
