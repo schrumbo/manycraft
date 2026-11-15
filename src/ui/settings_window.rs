@@ -335,7 +335,7 @@ impl SettingsView {
                 rows.push(self.field_row(Field::Chat, tr("Chat-ID"), Some(find), note, t));
             }
             Service::Ntfy => {
-                rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Meistens passt https://ntfy.sh.")), None, t), t));
+                rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Nur ändern, wenn du einen eigenen ntfy-Server hast.")), None, t), t));
                 rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.")), None, t), t));
             }
         }

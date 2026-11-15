@@ -685,7 +685,7 @@
   "Chat-ID finden": "Find chat ID",
   "Schreib deinem Bot zuerst eine Nachricht, dann „Chat-ID finden“.": "Send your bot a message first, then Find chat ID.",
   "Chat-ID": "Chat ID",
-  "Meistens passt https://ntfy.sh.": "https://ntfy.sh fits in most cases.",
+  "Nur ändern, wenn du einen eigenen ntfy-Server hast.": "Change it only if you run your own ntfy server.",
   "Thema": "Topic",
   "Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.": "Subscribe to this topic in the ntfy app. Anyone who knows it can read along, so choose something long.",
   "Testnachricht senden": "Send test message",

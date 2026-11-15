@@ -388,7 +388,7 @@ def start(opts):
     if subprocess.run([sys.executable, "-I", str(TOOLS / "fixture.py"), str(home), str(opts["instances"])]).returncode:
         die("fixture failed")
     w, h = opts["size"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY")}
     env.update(MANYCRAFT_HOME=str(home), MANYCRAFT_DRIVE=str(d), MANYCRAFT_DRIVE_OWNER=str(owner), MANYCRAFT_DRIVE_TTL=str(opts["ttl"]),
                MANYCRAFT_DRIVE_SIZE=f"{w}x{h}", RUST_BACKTRACE="1", TMP=str(d / "tmp"), TEMP=str(d / "tmp"), TMPDIR=str(d / "tmp"))
     if opts["theme"]:

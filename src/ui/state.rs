@@ -2070,7 +2070,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, apply, fleet, needs_sign_in, redraw, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, apply, fleet, needs_sign_in, redraw, render_image, status};
 
     fn instance(phase: Phase) -> Instance {
         Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -2209,8 +2209,8 @@ mod tests {
             badge: 0,
             notice: None,
             whispers: Vec::new(),
-        phone: crate::core::phone::Coalescer::default(),
-        outbox: None,
+            phone: super::phone::Coalescer::default(),
+            outbox: None,
         }
     }
 
@@ -2274,6 +2274,19 @@ mod tests {
         assert!(matches!(phase, Phase::Connecting { .. }));
         let Some(Deferred::Reconnect { delay, .. }) = fx.later.pop() else { panic!("no reconnect scheduled") };
         assert!(delay.as_secs() >= 45);
+    }
+
+    #[test]
+    fn a_drop_that_reconnects_tells_the_phone_and_so_does_the_return() {
+        let (_, fx, _) = dropped(DisconnectCause::Kicked);
+        let [(_, kicked)] = fx.phone.as_slice() else { panic!("{} phone incidents", fx.phone.len()) };
+        assert_eq!((kicked.what, kicked.name.as_str(), kicked.reason.as_str(), kicked.server.as_deref()), (What::Kicked, "AltOne", "why", Some("mc.example:25565")));
+        let (_, fx, _) = dropped(DisconnectCause::ServerDown);
+        assert_eq!(fx.phone.first().map(|(_, i)| i.what), Some(What::Dropped));
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert_eq!(fx.phone.first().map(|(_, i)| i.what), Some(What::Back));
     }
 
     #[test]
