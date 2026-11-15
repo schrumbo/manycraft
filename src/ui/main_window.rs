@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -469,7 +469,7 @@ impl Render for MainWindow {
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE))
             .when(show_sidebar, |d| d.child(super::sidebar::render(self, window, cx)))
-            .child(div().relative().flex_1().min_w_0().h_full().bg(t.window).child(content).when(!(narrow && self.overlay), |d| d.child(super::toolbar::toggle(self, &t, cx))).children(super::accounts::toasts(cx).map(|toasts| div().absolute().left_0().right_0().bottom(px(self.toast_lift(cx))).child(toasts))))
+            .child(div().relative().flex_1().min_w_0().h_full().bg(t.window).child(content).when(!(narrow && self.overlay), |d| d.child(super::toolbar::toggle(self, &t, cx))).child(div().absolute().left_0().right_0().bottom(px(self.toast_lift(cx))).child(super::undo::toasts(cx))))
             .when(narrow && self.overlay, |d| {
                 d.child(
                     div()
@@ -525,7 +525,7 @@ fn bind_keys(cx: &mut App) {
     let k = |key: &str| -> &'static str { Box::leak(format!("{m}-{key}").into_boxed_str()) };
     cx.bind_keys([
         KeyBinding::new(k("b"), ToggleSidebar, Some("MainWindow")),
-        KeyBinding::new(k("z"), UndoRemoveAccount, Some("MainWindow")),
+        KeyBinding::new(k("z"), Undo, Some("MainWindow")),
         KeyBinding::new(k("f"), FocusSearch, Some("MainWindow")),
         KeyBinding::new(k("shift-c"), OpenChat, Some("MainWindow")),
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
@@ -656,6 +656,24 @@ pub fn show_instance(id: &str, cx: &mut App) {
                     return;
                 }
                 this.go(Page::Instance(id), window, cx);
+            });
+        }
+    });
+}
+
+/// Moves from the page of instance `gone` to the page of `to`, or to all games when `to` is gone too; any other page stays.
+pub fn leave_instance(gone: &str, to: &str, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let (gone, to) = (gone.to_owned(), to.to_owned());
+    let _ = h.update(cx, |view, window, cx| {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
+            view.update(cx, |this, cx| {
+                if matches!(&this.page, Page::Instance(id) if *id == gone) {
+                    let kept = model::get(cx).read(cx).instance(&to).is_some();
+                    this.go(if kept { Page::Instance(to) } else { Page::Grid(None) }, window, cx);
+                }
             });
         }
     });

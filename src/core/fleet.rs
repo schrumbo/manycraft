@@ -1197,14 +1197,20 @@ fn delete_instance(who: &str) -> Result<i32> {
     Ok(0)
 }
 
-/// Deletes `doomed` with its mods, configs and worlds; refused while a batch plays it or any game runs.
+/// Moves `doomed` with its mods, configs and worlds to the trash; refused while a batch plays it or any game runs.
+/// [`restore_instance`] brings it back until it is purged.
 pub fn remove_instance(doomed: &Instance) -> Result<()> {
     let users: Vec<String> = batch::load_all()?.into_iter().filter(|b| b.instance_id == doomed.id).map(|b| b.name).collect();
     if !users.is_empty() {
         bail!(super::i18n::trf("„%@“ wird noch von %@ gespielt. Gib ihnen zuerst eine andere Instanz.", &[&doomed.name, &users.join(", ")]));
     }
     let _quiet = lock::try_exclusive(&paths::data_dir().join(install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))?;
-    instance::delete(doomed)
+    instance::trash(doomed)
+}
+
+/// Brings instance `id` back out of the trash.
+pub fn restore_instance(id: &str) -> Result<Instance> {
+    instance::untrash(id)
 }
 
 fn start(who: &str, args: &[&str]) -> Result<i32> {

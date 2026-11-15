@@ -67,19 +67,24 @@ pub fn typing(window: &Window) -> bool {
 
 /// Asks before a change that cannot be taken back. Focus starts on Abbrechen, so Enter alone never runs `ok`.
 pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    alert(window, cx, title, message, ok_text, true, ok);
+    alert(window, cx, title, message, ok_text, true, false, ok);
 }
 
 /// Asks before a change that can be taken back or redone. Focus starts on the confirm button, so Enter confirms and Esc cancels.
 pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    alert(window, cx, title, message, ok_text, false, ok);
+    alert(window, cx, title, message, ok_text, false, true, ok);
 }
 
-fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, irreversible: bool, ok: impl Fn(&mut Window, &mut App) + 'static) {
+/// Like [`confirm`] with the red look, for a removal the user can take back right after.
+pub fn confirm_danger(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, true, true, ok);
+}
+
+fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, danger: bool, focus_confirm: bool, ok: impl Fn(&mut Window, &mut App) + 'static) {
     let ok = std::rc::Rc::new(ok);
     let cancel = cx.focus_handle();
     let accept = cx.focus_handle();
-    let first = if irreversible { cancel.clone() } else { accept.clone() };
+    let first = if focus_confirm { accept.clone() } else { cancel.clone() };
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let ok = ok.clone();
         let rings = super::theme::rings(cx);
@@ -87,7 +92,7 @@ fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_t
             window.close_dialog(cx);
             ok(window, cx);
         });
-        let confirm = if irreversible { confirm.danger() } else { confirm.primary() };
+        let confirm = if danger { confirm.danger() } else { confirm.primary() };
         alert.title(title.clone()).description(message.clone()).on_ok(pass_enter).footer(
             DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).focus_ring(rings).track_focus(&cancel).on_click(|_, window, cx| window.close_dialog(cx))).child(confirm),
         )

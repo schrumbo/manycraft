@@ -450,7 +450,6 @@
   "Der Account wurde nicht vollständig zurückgeholt.": "The account was not fully restored.",
   "Rückgängig": "Undo",
   "„%@“ entfernt.": "“%@” removed.",
-  "Entfernen rückgängig": "Undo remove",
   "„%@“ wurde nicht zurückgeholt.": "“%@” was not restored.",
   "+%lld weitere": "+%lld more",
   "Ein anderer Account heißt schon so.": "Another account already has that name.",
@@ -660,7 +659,6 @@
   "Nicht kopiert.": "Not copied.",
   "Noch nichts gestartet": "Nothing started yet",
   "Spiel eine Instanz allein oder schick mehrere Accounts als Batch los.": "Play an instance alone or send several accounts off as a batch.",
-  "Mods, Welten und Screenshots dieser Instanz werden gelöscht.": "This instance's mods, worlds and screenshots will be deleted.",
   "Mods": "Mods",
   "Neueste": "Latest",
   "Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben.": "Mods that do not exist for it are removed. Worlds stay.",
@@ -724,5 +722,11 @@
   "Neuer Batch mit %@…": "New batch with %@…",
   "Mods zu %@ hinzufügen…": "Add mods to %@…",
   "Instanz öffnen": "Open Instance",
-  "Accounts aus Prism übernehmen": "Import Accounts from Prism"
+  "Accounts aus Prism übernehmen": "Import Accounts from Prism",
+  "„%@“ gelöscht.": "“%@” deleted.",
+  "„%@“ angelegt.": "“%@” created.",
+  "Nicht zurückgeholt.": "Not restored.",
+  "Mods, Welten und Screenshots dieser Instanz werden gelöscht. Du kannst das gleich danach rückgängig machen.": "This instance's mods, worlds and screenshots will be deleted. You can undo this right after.",
+  "Es gibt schon eine Instanz mit dieser Kennung.": "An instance with this ID already exists.",
+  "Die Instanz liegt nicht mehr im Papierkorb.": "The instance is no longer in the trash."
 }

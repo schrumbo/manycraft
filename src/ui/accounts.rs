@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -31,8 +31,7 @@ use crate::core::prism::AccountImport;
 use crate::core::skins;
 
 const COPIED_FOR: Duration = Duration::from_secs(2);
-const UNDO_FOR: Duration = Duration::from_secs(10);
-const MAX_TOASTS: usize = 3;
+pub(super) const UNDO_FOR: Duration = Duration::from_secs(10);
 const ADDED_NOTES: f32 = font::BODY * font::LINE * 2. + font::CAPTION * font::LINE * 2. + space::XS * 2.;
 
 /// Registers the account actions.
@@ -82,9 +81,7 @@ pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
         return page.0.clone();
     }
     let view = cx.new(|cx| AccountsPage::new(window, cx));
-    let toasts = cx.new(|cx| UndoToasts::new(&view, cx));
     cx.set_global(Page(view.clone()));
-    cx.set_global(Toasts(toasts));
     view
 }
 
@@ -96,9 +93,25 @@ pub fn import_prism(window: &mut Window, cx: &mut App) {
     }
 }
 
-/// Whether a removed account can still be brought back.
-pub fn can_undo(cx: &App) -> bool {
-    cx.try_global::<Page>().is_some_and(|p| !p.0.read(cx).removed.is_empty())
+/// A removed account that can still be brought back.
+pub struct Removal {
+    pub id: u64,
+    pub at: Instant,
+    pub name: String,
+    pub failed: bool,
+}
+
+/// The removals that can still be undone, oldest first.
+pub fn removals(cx: &App) -> Vec<Removal> {
+    let Some(page) = cx.try_global::<Page>() else { return Vec::new() };
+    page.0.read(cx).removed.items.iter().map(|(id, o)| Removal { id: *id, at: o.at, name: o.removed.account.name.clone(), failed: o.failed }).collect()
+}
+
+/// Brings the removed account `id` back.
+pub fn undo_removal(id: u64, cx: &mut App) {
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |s, cx| s.undo_remove(id, cx));
+    }
 }
 
 /// The Microsoft accounts from the last Prism import that still have to sign in.
@@ -112,15 +125,6 @@ pub fn waiting(cx: &App) -> Vec<String> {
 struct Page(Entity<AccountsPage>);
 
 impl Global for Page {}
-
-struct Toasts(Entity<UndoToasts>);
-
-impl Global for Toasts {}
-
-/// The undo notices over the main window: one per removal, each with its own timer.
-pub fn toasts(cx: &App) -> Option<Entity<UndoToasts>> {
-    cx.try_global::<Toasts>().map(|t| t.0.clone())
-}
 
 /// Draws the Accounts page again, after an account's head changed.
 pub fn redraw(cx: &mut App) {
@@ -143,36 +147,34 @@ pub fn has_filter(cx: &App) -> bool {
 struct Offer {
     removed: remote::Removed,
     failed: bool,
+    at: Instant,
 }
 
-struct Pending<T> {
-    items: Vec<(u64, T)>,
+pub(super) struct Pending<T> {
+    pub(super) items: Vec<(u64, T)>,
     next: u64,
 }
 
 impl<T> Pending<T> {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self { items: Vec::new(), next: 0 }
     }
 
-    fn push(&mut self, item: T) -> u64 {
+    pub(super) fn push(&mut self, item: T) -> u64 {
         self.next += 1;
         self.items.push((self.next, item));
         self.next
     }
 
-    fn take(&mut self, id: u64) -> Option<T> {
+    pub(super) fn take(&mut self, id: u64) -> Option<T> {
         let at = self.items.iter().position(|(i, _)| *i == id)?;
         Some(self.items.remove(at).1)
     }
 
-    fn newest(&self) -> Option<u64> {
+    pub(super) fn newest(&self) -> Option<u64> {
         self.items.last().map(|(id, _)| *id)
     }
 
-    fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1224,17 +1226,19 @@ impl AccountsPage {
     }
 
     fn offer_undo(&mut self, removed: remote::Removed, failed: bool, cx: &mut Context<Self>) {
-        let id = self.removed.push(Offer { removed, failed });
+        let id = self.removed.push(Offer { removed, failed, at: Instant::now() });
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNDO_FOR).await;
             let _ = this.update(cx, |s, cx| {
                 if s.removed.take(id).is_some() {
                     cx.notify();
+                    super::undo::changed(cx);
                 }
             });
         })
         .detach();
         cx.notify();
+        super::undo::changed(cx);
     }
 
     fn undo_newest(&mut self, cx: &mut Context<Self>) {
@@ -1246,6 +1250,7 @@ impl AccountsPage {
     fn undo_remove(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(offer) = self.removed.take(id) else { return };
         cx.notify();
+        super::undo::changed(cx);
         let removed = Arc::new(offer.removed);
         let task = cx.background_executor().spawn({
             let removed = removed.clone();
@@ -1495,65 +1500,6 @@ impl AccountsPage {
     }
 }
 
-/// The undo notices: a stack above the content, bottom centre, that never moves the content under it.
-pub struct UndoToasts {
-    page: Entity<AccountsPage>,
-    _page: Subscription,
-}
-
-impl UndoToasts {
-    fn new(page: &Entity<AccountsPage>, cx: &mut Context<Self>) -> Self {
-        let _page = cx.observe(page, |_, _, cx| cx.notify());
-        Self { page: page.clone(), _page }
-    }
-
-    fn toast(&self, id: u64, name: &str, failed: bool, t: &Theme) -> Stateful<Div> {
-        let page = self.page.downgrade();
-        let label = if failed { tr("Erneut versuchen") } else { tr("Rückgängig") };
-        let undo = sheet::button(SharedString::from(format!("undo-remove-{id}")), label, Some("undo-2"), Look::Plain, false, false, t).on_click(move |_, _, cx| {
-            let _ = page.update(cx, |s, cx| s.undo_remove(id, cx));
-        });
-        let text = if failed { trf("„%@“ wurde nicht zurückgeholt.", &[&name]) } else { trf("„%@“ entfernt.", &[&name]) };
-        div()
-            .id(SharedString::from(format!("removed-note-{id}")))
-            .mark("status", name.to_owned())
-            .occlude()
-            .max_w(px(shell::TOAST))
-            .flex()
-            .items_center()
-            .gap(px(space::S))
-            .pl(px(space::M))
-            .pr(px(space::XS))
-            .py(px(space::XS))
-            .rounded(px(radius::CONTROL))
-            .bg(t.content)
-            .border_1()
-            .border_color(if failed { with_alpha(t.danger, tint::ATTENTION) } else { t.separator })
-            .shadow_md()
-            .child(div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if failed { t.danger_text } else { t.primary }).child(text))
-            .child(undo)
-    }
-}
-
-impl Render for UndoToasts {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = Theme::get(cx);
-        let items = &self.page.read(cx).removed.items;
-        let hidden = items.len().saturating_sub(MAX_TOASTS);
-        let shown: Vec<(u64, String, bool)> = items.iter().rev().take(MAX_TOASTS).rev().map(|(id, o)| (*id, o.removed.account.name.clone(), o.failed)).collect();
-        let toasts: Vec<Stateful<Div>> = shown.iter().map(|(id, name, failed)| self.toast(*id, name, *failed, &t)).collect();
-        div()
-            .w_full()
-            .px(px(space::XL))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(space::S))
-            .when(hidden > 0, |d| d.child(div().text_size(px(font::CAPTION)).text_color(t.secondary).child(trf("+%lld weitere", &[&hidden]))))
-            .children(toasts)
-    }
-}
-
 fn framed(child: impl IntoElement, top: bool, bottom: bool) -> Div {
     div().w_full().flex().justify_center().child(div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).when(top, |d| d.pt(px(space::XL))).when(bottom, |d| d.pb(px(space::XL))).child(child))
 }
@@ -1621,7 +1567,7 @@ mod tests {
         assert_eq!(p.newest(), Some(c));
         assert_eq!(p.take(c), Some(3));
         assert_eq!(p.newest(), Some(a));
-        assert!(!p.is_empty());
+        assert!(!p.items.is_empty());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, AddMicrosoft, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
-    StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
+    StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
     CloneInstance, DeleteInstance, EditMods, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
 };
 use super::drive::Mark;
@@ -325,7 +325,6 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("triangle-alert", tr("Nächsten, der dich braucht"), Box::new(NextAttention), attention),
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
         ("maximize", tr("Vollbild ein- oder ausschalten"), Box::new(ToggleFullscreen), true),
-        ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
@@ -337,6 +336,9 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         if able {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
         }
+    }
+    if let Some(newest) = super::undo::newest(cx) {
+        out.push(entry(Group::Commands, "undo-2", tr("Rückgängig"), Some(newest), Box::new(Undo), cx));
     }
     out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {

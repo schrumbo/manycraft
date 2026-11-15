@@ -433,6 +433,12 @@ pub fn init(cx: &mut App) {
             text
         });
     }
+    cx.background_spawn(async {
+        if let Err(e) = instance::purge_all() {
+            eprintln!("trash: {e:#}");
+        }
+    })
+    .detach();
     reload(cx);
     cx.observe(&model::get(cx), |_, cx| keep_awake(cx)).detach();
     cx.spawn(async move |cx| {
@@ -739,7 +745,8 @@ fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
     .detach();
 }
 
-fn tell(text: String, cx: &mut App) {
+/// Shows `text` as the notice after the next reload.
+pub fn tell(text: String, cx: &mut App) {
     if cx.has_global::<Runtime>() {
         cx.global_mut::<Runtime>().notice = Some(text);
     } else {
@@ -751,19 +758,23 @@ fn tell(text: String, cx: &mut App) {
 }
 
 fn clone_instance(id: &str, cx: &mut App) {
-    let id = id.to_owned();
-    let task = cx.background_spawn(async move { super::remote::clone_instance(&id) });
+    let source = id.to_owned();
+    let task = cx.background_spawn({
+        let id = source.clone();
+        async move { super::remote::clone_instance(&id) }
+    });
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| {
             match result {
                 Ok(made) => {
-                    let id = made.id.clone();
+                    let (id, name) = (made.id.clone(), made.name.clone());
                     model::get(cx).update(cx, |m, cx| {
                         m.instances.push(made);
                         cx.notify();
                     });
                     super::instance_page::rename(&id, cx);
+                    super::undo::offer(super::undo::Kind::Cloned { id, name, source }, cx);
                 }
                 Err(e) => tell(super::forms::explain_as(tr("Nicht kopiert."), &e).text, cx),
             }
@@ -773,10 +784,11 @@ fn clone_instance(id: &str, cx: &mut App) {
     .detach();
 }
 
-/// Deletes instance `id` with its games; says why when it was refused.
+/// Deletes instance `id` with its games and offers to bring it back; says why when it was refused.
 pub fn delete_instance(id: &str, cx: &mut App) {
     let id = id.to_owned();
     let gone = id.clone();
+    let name = model::get(cx).read(cx).instance(&id).map(|made| made.name.clone()).unwrap_or_default();
     let task = cx.background_spawn(async move { super::remote::delete_instance(&id) });
     cx.spawn(async move |cx| {
         let result = task.await;
@@ -787,6 +799,7 @@ pub fn delete_instance(id: &str, cx: &mut App) {
                         m.instances.retain(|made| made.id != gone);
                         cx.notify();
                     });
+                    super::undo::offer(super::undo::Kind::Deleted { id: gone, name }, cx);
                 }
                 Err(e) => tell(super::forms::explain_as(tr("Nicht gelöscht."), &e).text, cx),
             }

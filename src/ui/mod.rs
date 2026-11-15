@@ -30,6 +30,7 @@ pub mod stills;
 pub mod tile;
 pub mod toolbar;
 pub mod transfer;
+pub mod undo;
 pub mod updates;
 #[allow(dead_code)]
 pub mod theme;

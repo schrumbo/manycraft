@@ -14,7 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, CloneInstance, DeleteInstance, EditMods, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ShowAll, ShowBatch, StartBatch};
+use super::actions::{AddAccount, CloneInstance, DeleteInstance, EditMods, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
 use super::batch_sheet::Load;
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -90,10 +90,59 @@ fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let id = id.to_owned();
-    sheet::ask(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht."), tr("Löschen"), move |window, cx| {
-        window.dispatch_action(Box::new(ShowAll), cx);
+    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht. Du kannst das gleich danach rückgängig machen."), tr("Löschen"), move |window, cx| {
+        let next = after(&model::get(cx).read(cx).instances, &id);
+        match next {
+            Some(next) => window.dispatch_action(Box::new(ShowInstance(next)), cx),
+            None => window.dispatch_action(Box::new(ShowAll), cx),
+        }
         super::state::delete_instance(&id, cx);
     });
+}
+
+fn after(instances: &[Instance], id: &str) -> Option<String> {
+    let mut order: Vec<&Instance> = instances.iter().collect();
+    order.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
+    let at = order.iter().position(|made| made.id == id)?;
+    order.get(at + 1).or_else(|| at.checked_sub(1).and_then(|before| order.get(before))).map(|made| made.id.clone())
+}
+
+/// Puts removed mod `mod_ref` back into instance `id` at `index`, unless a mod of that project is there again.
+pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, cx: &mut App) {
+    let (made, running) = {
+        let m = model::get(cx).read(cx);
+        (m.instance(id).cloned(), m.games.values().any(|g| g.instance_id == id && g.phase.is_active()))
+    };
+    let Some(made) = made else { return };
+    if running {
+        super::state::tell(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+        super::state::reload(cx);
+        return;
+    }
+    let base = InstanceEdit::of(&made);
+    if base.mods.iter().any(|m| m.project_id == mod_ref.project_id) {
+        return;
+    }
+    let mut edit = base.clone();
+    edit.mods.insert(index.min(edit.mods.len()), mod_ref);
+    let id = id.to_owned();
+    let task = cx.background_spawn(async move { remote::save_instance(&id, &base, edit) });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(saved) => model::get(cx).update(cx, |m, cx| {
+                    if let Some(slot) = m.instances.iter_mut().find(|made| made.id == saved.id) {
+                        *slot = saved;
+                    }
+                    cx.notify();
+                }),
+                Err(e) => super::state::tell(forms::explain_as(tr("Nicht gespeichert."), &e).text, cx),
+            }
+            super::state::reload(cx);
+        });
+    })
+    .detach();
 }
 
 const PAGE_CONTEXT: &str = "InstancePage";
@@ -213,6 +262,7 @@ struct InstancePage {
     renaming: bool,
     rename_saving: bool,
     focus_name: bool,
+    removing: Option<(ModRef, usize)>,
     synced: Option<(String, String, String)>,
     queue: VecDeque<(String, Job)>,
     in_flight: Option<(String, Job)>,
@@ -272,6 +322,7 @@ impl InstancePage {
             renaming: false,
             rename_saving: false,
             focus_name: false,
+            removing: None,
             synced: None,
             queue: VecDeque::new(),
             in_flight: None,
@@ -466,6 +517,10 @@ impl InstancePage {
             self.in_flight = Some((id.clone(), job.clone()));
             match job {
                 Job::Save(change) => {
+                    self.removing = match &change {
+                        Change::RemoveMod(project) => made.mods.iter().position(|m| m.project_id == *project).map(|at| (made.mods[at].clone(), at)),
+                        _ => None,
+                    };
                     let base = InstanceEdit::of(&made);
                     let mut edit = base.clone();
                     change.apply(&mut edit);
@@ -476,6 +531,7 @@ impl InstancePage {
                     self.finish_with(id, task, None, cx);
                 }
                 Job::Switch(switch) => {
+                    self.removing = None;
                     let text = match &switch {
                         Switch::Version(v) => trf("Mods werden für %@ angepasst …", &[v]),
                         Switch::Loader(l) => trf("Auf %@ wird umgestellt …", &[&l.name()]),
@@ -507,6 +563,7 @@ impl InstancePage {
 
     fn finished(&mut self, id: &str, switched: bool, result: anyhow::Result<(Instance, Vec<String>)>, cx: &mut Context<Self>) {
         let renamed = matches!(self.in_flight.take(), Some((_, Job::Save(Change::Name(_)))));
+        let removed = self.removing.take();
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
         }
@@ -523,6 +580,9 @@ impl InstancePage {
                 }
                 if renamed && self.rename_saving {
                     self.end_rename(cx);
+                }
+                if let Some((mod_ref, index)) = removed {
+                    super::undo::offer(super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index }, cx);
                 }
                 cx.dispatch_action(&Reload);
             }
@@ -1086,7 +1146,7 @@ impl Render for InstancePage {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, InstanceEdit, Loader, ModRef, loader_version_of, mods_after_loader, split_args};
+    use super::{Change, InstanceEdit, Loader, ModRef, after, loader_version_of, mods_after_loader, split_args};
     use crate::core::instance::Instance;
 
     fn mod_ref(id: &str) -> ModRef {
@@ -1159,5 +1219,17 @@ mod tests {
     fn an_empty_loader_version_means_the_newest() {
         assert_eq!(loader_version_of("  "), None);
         assert_eq!(loader_version_of(" 0.17.2 "), Some("0.17.2".into()));
+    }
+
+    #[test]
+    fn after_deleting_the_next_in_sidebar_order_shows_else_the_one_before_else_none() {
+        let named = |name: &str| Instance::new(name, "26.3", Loader::Vanilla);
+        let (a, b, c) = (named("alpha"), named("Beta"), named("gamma"));
+        let all = vec![c.clone(), a.clone(), b.clone()];
+        assert_eq!(after(&all, &a.id), Some(b.id.clone()));
+        assert_eq!(after(&all, &b.id), Some(c.id.clone()));
+        assert_eq!(after(&all, &c.id), Some(b.id.clone()));
+        assert_eq!(after(&[a.clone()], &a.id), None);
+        assert_eq!(after(&all, "missing"), None);
     }
 }

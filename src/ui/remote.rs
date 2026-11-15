@@ -701,9 +701,38 @@ pub fn clone_instance(id: &str) -> Result<setup::Instance> {
     })
 }
 
-/// Deletes the saved instance `id` with its games; refused while a batch plays it or a game runs.
+/// Moves the saved instance `id` with its games to the trash; refused while a batch plays it or a game runs.
 pub fn delete_instance(id: &str) -> Result<()> {
     saved(|| fleet::remove_instance(&find_instance(id)?))
+}
+
+/// Brings the deleted instance `id` back from the trash and returns it; a name taken since gets a number.
+pub fn restore_instance(id: &str) -> Result<setup::Instance> {
+    let _saving = saving();
+    let mut made = fleet::restore_instance(id)?;
+    let taken: Vec<String> = setup::load_all()?.into_iter().filter(|i| i.id != made.id).map(|i| i.name).collect();
+    let name = setup::free_name(&made.name, &taken);
+    if name != made.name {
+        made.name = name;
+        if let Err(e) = setup::save(&made) {
+            eprintln!("restored instance keeps its old name: {e:#}");
+        }
+    }
+    Ok(made)
+}
+
+/// Deletes the instance `id` from the trash for good.
+pub fn purge_instance(id: &str) -> Result<()> {
+    setup::purge(id)
+}
+
+/// Deletes the saved instance `id` for good, without a trash to bring it back from; refused like [`delete_instance`].
+pub fn discard_instance(id: &str) -> Result<()> {
+    saved(|| {
+        let made = find_instance(id)?;
+        fleet::remove_instance(&made)?;
+        setup::purge(&made.id)
+    })
 }
 
 /// Remembers `account` as the one that last played instance `id` alone.
