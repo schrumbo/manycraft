@@ -49,9 +49,14 @@ impl Phase {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
     }
 
-    /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash or a start once the connection is back is due.
+    /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash is due.
     pub fn is_active(&self) -> bool {
-        self.is_running() || matches!(self, Phase::Restarting { .. } | Phase::NoNetwork)
+        self.is_running() || matches!(self, Phase::Restarting { .. })
+    }
+
+    /// Whether Stop has something to end: an active instance, or a start that waits for the connection.
+    pub fn stoppable(&self) -> bool {
+        self.is_active() || matches!(self, Phase::NoNetwork)
     }
 
     /// The server the instance is on or was last on, when it is known.

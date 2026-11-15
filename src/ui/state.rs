@@ -2742,7 +2742,7 @@ mod tests {
     fn a_waiting_game_can_be_played_and_a_waiting_start_can_be_stopped() {
         assert!(playable(&Phase::NetworkLost { server: "s".into() }));
         assert_eq!(server_of(&Phase::NetworkLost { server: "s".into() }).as_deref(), Some("s"));
-        assert!(Phase::NoNetwork.is_active() && !Phase::NoNetwork.is_running());
+        assert!(Phase::NoNetwork.stoppable() && !Phase::NoNetwork.is_active());
     }
 
     #[test]

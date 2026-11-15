@@ -858,7 +858,7 @@ fn able(keys: &[String], m: &Model) -> [usize; 5] {
     for i in keys.iter().filter_map(|k| m.games.get(k)) {
         let running = i.phase.is_running();
         n[0] += usize::from(!running && !i.stopping && i.phase != Phase::LoginNeeded);
-        n[1] += usize::from(i.phase.is_active() && !i.stopping);
+        n[1] += usize::from(i.phase.stoppable() && !i.stopping);
         n[2] += usize::from(!i.stopping && i.phase != Phase::LoginNeeded);
         n[3] += usize::from(running && !i.stopping && !matches!(i.phase, Phase::Starting { .. }));
         n[4] += usize::from(i.phase.on_server());

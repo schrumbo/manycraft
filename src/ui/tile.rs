@@ -394,7 +394,7 @@ fn picture(d: &TileData, g: &Geometry, t: &Theme) -> Option<AnyElement> {
 }
 
 fn actions(d: &TileData, g: &Geometry, t: &Theme) -> Option<Div> {
-    let active = d.phase.is_active() && !d.stopping;
+    let active = d.phase.stoppable() && !d.stopping;
     let main = primary(&d.phase, d.stopping);
     let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
     if main.is_none() && stop.is_none() {
