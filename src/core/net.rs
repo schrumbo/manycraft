@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -6,17 +6,22 @@ use anyhow::{Context, Result, bail};
 use sha1::{Digest, Sha1};
 
 const ATTEMPTS: u32 = 3;
+const CONNECT: Duration = Duration::from_secs(10);
+const PER_READ: Duration = Duration::from_secs(30);
+const TOTAL: Duration = Duration::from_secs(15 * 60);
 const MAX_JSON: u64 = 64 << 20;
 const MAX_FILE: u64 = 1 << 30;
 const RENAME_ATTEMPTS: u32 = 12;
 
 /// HTTP agent, routed through `proxy` when given (`socks5://user:pass@host:port`, `http://host:port`),
-/// otherwise through the proxy from the environment, if any.
+/// otherwise through the proxy from the environment, if any. Connecting gives up after 10 s, a stalled read after 30 s,
+/// and a whole request after 15 minutes.
 pub fn agent(proxy: Option<&str>) -> Result<ureq::Agent> {
     let proxy = proxy.map(ureq::Proxy::new).transpose().context("invalid proxy address")?.or_else(ureq::Proxy::try_from_env);
     Ok(ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(30)))
-        .timeout_per_read(Some(Duration::from_secs(30)))
+        .timeout_connect(Some(CONNECT))
+        .timeout_per_read(Some(PER_READ))
+        .timeout_global(Some(TOTAL))
         .user_agent(concat!("Manycraft/", env!("CARGO_PKG_VERSION")))
         .proxy(proxy)
         .build()
@@ -26,6 +31,7 @@ pub fn agent(proxy: Option<&str>) -> Result<ureq::Agent> {
 /// HTTP agent for short calls: the whole request, connect to last byte, ends within `timeout`. Uses the proxy from the environment, if any.
 pub fn agent_within(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .timeout_connect(Some(timeout.min(CONNECT)))
         .timeout_global(Some(timeout))
         .user_agent(concat!("Manycraft/", env!("CARGO_PKG_VERSION")))
         .proxy(ureq::Proxy::try_from_env())
@@ -33,19 +39,71 @@ pub fn agent_within(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
+/// Whether `e` means no connection could be made or kept: no network, unknown host, refused, reset or timed out.
+pub fn no_connection(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some_and(unreachable) || c.downcast_ref::<std::io::Error>().is_some_and(lost))
+}
+
+fn unreachable(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Timeout(_) => true,
+        ureq::Error::Io(io) => lost(io),
+        _ => false,
+    }
+}
+
+fn refused(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Timeout(ureq::Timeout::Resolve | ureq::Timeout::Connect) => true,
+        ureq::Error::Io(io) => matches!(io.kind(), ErrorKind::ConnectionRefused | ErrorKind::PermissionDenied | ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable | ErrorKind::NetworkDown | ErrorKind::AddrNotAvailable),
+        _ => false,
+    }
+}
+
+fn lost(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::PermissionDenied
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::AddrNotAvailable
+    )
+}
+
+/// Tells [`super::online`] how a request ended: an answer proves the connection, a failure to connect asks it to check.
+pub fn note(outcome: &Result<impl Sized, ureq::Error>) {
+    match outcome {
+        Ok(_) | Err(ureq::Error::StatusCode(_)) => super::online::reached(),
+        Err(e) if unreachable(e) => super::online::suspect(),
+        Err(_) => {}
+    }
+}
+
 /// Fetches `url` and parses the body as JSON, retrying transient failures.
 pub fn get_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str) -> Result<T> {
     let bytes = retrying(url, || {
-        let mut res = agent.get(url).call().map_err(Failure::from)?;
+        let mut res = called(agent.get(url).call())?;
         res.body_mut().with_config().limit(MAX_JSON).read_to_vec().map_err(Failure::from)
     })?;
     serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))
 }
 
+fn called<T>(outcome: Result<T, ureq::Error>) -> Result<T, Failure> {
+    note(&outcome);
+    outcome.map_err(Failure::from)
+}
+
 /// Posts `body` as JSON to `url` and parses the response as JSON, retrying transient failures.
 pub fn post_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str, body: &serde_json::Value) -> Result<T> {
     let bytes = retrying(url, || {
-        let mut res = agent.post(url).send_json(body).map_err(Failure::from)?;
+        let mut res = called(agent.post(url).send_json(body))?;
         res.body_mut().with_config().limit(MAX_JSON).read_to_vec().map_err(Failure::from)
     })?;
     serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))
@@ -64,7 +122,7 @@ pub fn fetch_verified(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<
     let dir = path.parent().context("path has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let tmp = retrying(url, || {
-        let mut res = agent.get(url).call().map_err(Failure::from)?;
+        let mut res = called(agent.get(url).call())?;
         let mut reader = res.body_mut().with_config().limit(MAX_FILE).reader();
         let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| Failure::Fatal(e.into()))?;
         let mut hasher = Sha1::new();
@@ -136,6 +194,7 @@ enum Failure {
 impl From<ureq::Error> for Failure {
     fn from(e: ureq::Error) -> Self {
         match e {
+            _ if refused(&e) => Failure::Fatal(e.into()),
             ureq::Error::StatusCode(429) => Failure::RateLimited(e.into()),
             ureq::Error::StatusCode(code) if code >= 500 => Failure::Retry(e.into()),
             ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => Failure::Retry(e.into()),
@@ -152,20 +211,126 @@ fn retrying<T>(url: &str, mut attempt: impl FnMut() -> Result<T, Failure>) -> Re
             Err(Failure::Fatal(e)) => return Err(e.context(format!("download failed: {url}"))),
             Err(Failure::Retry(e)) => {
                 last = Some(e);
-                std::thread::sleep(Duration::from_millis(500 << n));
+                if n + 1 < ATTEMPTS {
+                    std::thread::sleep(Duration::from_millis(500 << n));
+                }
             }
             Err(Failure::RateLimited(e)) => {
                 last = Some(e);
-                std::thread::sleep(Duration::from_secs(5 << n));
+                if n + 1 < ATTEMPTS {
+                    std::thread::sleep(Duration::from_secs(5 << n));
+                }
             }
         }
     }
     Err(last.map_or_else(|| anyhow::anyhow!("download failed"), |e| e.context(format!("download failed: {url}"))))
 }
 
+/// Agents whose name lookups are counted and answered by the test, for exercising requests without a network.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
+    use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
+
+    /// Where every host name leads: nowhere (no network) or one local address.
+    #[derive(Debug)]
+    pub struct Lookups {
+        to: Option<SocketAddr>,
+        count: AtomicUsize,
+    }
+
+    impl Lookups {
+        /// How many requests tried to reach a host.
+        pub fn count(&self) -> usize {
+            self.count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Debug)]
+    struct Shared(Arc<Lookups>);
+
+    impl Resolver for Shared {
+        fn resolve(&self, _uri: &ureq::http::Uri, _config: &ureq::config::Config, _timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
+            self.0.count.fetch_add(1, Ordering::SeqCst);
+            let to = self.0.to.ok_or(ureq::Error::HostNotFound)?;
+            let mut found = self.empty();
+            found.push(to);
+            Ok(found)
+        }
+    }
+
+    /// An agent like [`super::agent`] whose requests go to `to`, or find no host when `None`, with `total` as the whole-request limit.
+    pub fn agent(to: Option<SocketAddr>, total: std::time::Duration) -> (ureq::Agent, Arc<Lookups>) {
+        let lookups = Arc::new(Lookups { to, count: AtomicUsize::new(0) });
+        let config = ureq::Agent::config_builder().timeout_connect(Some(total)).timeout_global(Some(total)).build();
+        (ureq::Agent::with_parts(config, DefaultConnector::new(), Shared(Arc::clone(&lookups))), lookups)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    #[test]
+    fn no_network_fails_at_once_without_retries() {
+        let (agent, lookups) = fake::agent(None, Duration::from_secs(5));
+        let started = Instant::now();
+        let e = get_json::<serde_json::Value>(&agent, "https://example.invalid/x.json").unwrap_err();
+        assert!(no_connection(&e), "{e:#}");
+        assert_eq!(lookups.count(), 1);
+        assert!(started.elapsed() < Duration::from_millis(400), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_silent_server_ends_within_the_total_timeout() {
+        let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (agent, _) = fake::agent(Some(silent.local_addr().unwrap()), Duration::from_millis(300));
+        let started = Instant::now();
+        let e = get_json::<serde_json::Value>(&agent, "http://example.invalid/x.json").unwrap_err();
+        assert!(no_connection(&e), "{e:#}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_refused_connection_is_no_connection_and_not_retried() {
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let (agent, lookups) = fake::agent(Some(closed), Duration::from_secs(5));
+        let e = get_json::<serde_json::Value>(&agent, "http://example.invalid/x.json").unwrap_err();
+        assert!(no_connection(&e), "{e:#}");
+        assert_eq!(lookups.count(), 1);
+    }
+
+    #[test]
+    fn a_download_cut_short_leaves_no_file() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in server.incoming().take(ATTEMPTS as usize) {
+                let mut stream = stream.unwrap();
+                let mut buf = [0; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nonly a part");
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.jar");
+        let (agent, _) = fake::agent(Some(addr), Duration::from_secs(5));
+        assert!(fetch_verified(&agent, "http://example.invalid/lib.jar", &path, None).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn errors_without_a_connection_problem_are_not_no_connection() {
+        assert!(!no_connection(&anyhow::anyhow!("unexpected response")));
+        assert!(!no_connection(&anyhow::Error::from(ureq::Error::StatusCode(404))));
+        assert!(no_connection(&anyhow::Error::from(ureq::Error::HostNotFound).context("cannot download")));
+    }
 
     #[test]
     fn sha1_matches_known_value() {

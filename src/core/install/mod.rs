@@ -10,17 +10,19 @@ mod natives;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use self::download::{Downloader, Job, join_safe, read_json};
 use self::meta::{Env, VersionJson};
-use super::{net, paths};
+use super::{net, online, paths};
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const FALLBACK_JAVA_COMPONENT: &str = "jre-legacy";
 const LOADER_PREFIX: &str = "fabric-loader-";
+const QUICK_METADATA: Duration = Duration::from_secs(5);
 
 /// What the installer is working on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,17 +120,24 @@ pub fn latest_loader(game_version: &str) -> Result<String> {
 }
 
 /// Installs `game_version` with Fabric (`loader_version`, or the newest stable loader) into the shared folders.
-/// Files that are already there are not downloaded again. Without a connection, a version that was installed
-/// before is used as it is.
+/// Files that are already there are not downloaded again. A version that was installed before starts without asking
+/// the network while the connection is known to be gone, and asks it only briefly otherwise.
 pub fn install(game_version: &str, loader_version: Option<&str>, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
     let _in_use = clean::in_use()?;
-    let root = paths::data_dir();
+    let dl = Downloader::new(net::agent(None)?)?;
+    install_in(&paths::data_dir(), &dl, &net::agent_within(QUICK_METADATA), online::offline(), game_version, loader_version, progress)
+}
+
+fn install_in(root: &Path, dl: &Downloader, quick: &ureq::Agent, offline: bool, game_version: &str, loader_version: Option<&str>, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
     let (versions, libraries, assets_dir, runtimes) = (root.join("versions"), root.join("libraries"), root.join("assets"), root.join("runtimes"));
-    let dl = Downloader::new()?;
     progress(Progress { stage: Stage::Metadata, done: 0, total: 1 });
-    let plan = match online_plan(&dl, &versions, game_version, loader_version) {
-        Ok(plan) => plan,
-        Err(online) => local_plan(&versions, game_version, loader_version).map_err(|_| online)?,
+    let local = local_plan(&versions, game_version, loader_version).filter(|plan| java::local(&runtimes, component(&plan.profile)).is_some());
+    let plan = match local {
+        Some(plan) if offline => plan,
+        local => match online_plan(dl, if local.is_some() { quick } else { dl.agent() }, &versions, game_version, loader_version) {
+            Ok(plan) => plan,
+            Err(online) => local.ok_or(online)?,
+        },
     };
     progress(Progress { stage: Stage::Metadata, done: 1, total: 1 });
     let Plan { profile, loader, runtime } = plan;
@@ -173,9 +182,9 @@ pub fn install(game_version: &str, loader_version: Option<&str>, progress: &(dyn
     };
     dl.all(Stage::Assets, &asset_jobs, progress)?;
 
-    let component = profile.java_version.as_ref().map_or(FALLBACK_JAVA_COMPONENT, |j| j.component.as_str());
+    let component = component(&profile);
     let java = match &runtime {
-        Some(runtime) => java::ensure(&dl, &runtimes, runtime, progress)?,
+        Some(runtime) => java::ensure(dl, &runtimes, runtime, progress)?,
         None => java::local(&runtimes, component).with_context(|| format!("Java runtime {component} is not installed and there is no connection"))?,
     };
 
@@ -199,29 +208,32 @@ pub fn install(game_version: &str, loader_version: Option<&str>, progress: &(dyn
     })
 }
 
-fn online_plan(dl: &Downloader, versions: &Path, game_version: &str, loader_version: Option<&str>) -> Result<Plan> {
-    let manifest: Manifest = net::get_json(dl.agent(), MANIFEST_URL)?;
+fn component(profile: &VersionJson) -> &str {
+    profile.java_version.as_ref().map_or(FALLBACK_JAVA_COMPONENT, |j| j.component.as_str())
+}
+
+fn online_plan(dl: &Downloader, meta: &ureq::Agent, versions: &Path, game_version: &str, loader_version: Option<&str>) -> Result<Plan> {
+    let manifest: Manifest = net::get_json(meta, MANIFEST_URL)?;
     let entry = manifest.versions.iter().find(|v| v.id == game_version).with_context(|| format!("unknown Minecraft version {game_version}"))?;
     let vanilla_path = join_safe(versions, game_version)?.join(format!("{game_version}.json"));
     dl.one(&Job::new(entry.url.clone(), vanilla_path.clone(), Some(entry.sha1.clone()), None))?;
     let vanilla: VersionJson = read_json(&vanilla_path)?;
     let loader = match loader_version {
         Some(v) => v.to_owned(),
-        None => fabric::latest_loader(dl.agent(), game_version)?,
+        None => fabric::latest_loader(meta, game_version)?,
     };
-    let profile = meta::merge(vanilla, fabric::profile(dl.agent(), game_version, &loader)?);
-    let component = profile.java_version.as_ref().map_or(FALLBACK_JAVA_COMPONENT, |j| j.component.as_str());
-    let runtime = java::lookup(dl, component)?;
+    let profile = meta::merge(vanilla, fabric::profile(meta, game_version, &loader)?);
+    let runtime = java::lookup(meta, component(&profile))?;
     let path = join_safe(versions, &profile.id)?.join(format!("{}.json", profile.id));
     net::write_atomic(&path, &serde_json::to_vec(&profile)?)?;
     Ok(Plan { profile, loader, runtime: Some(runtime) })
 }
 
-fn local_plan(versions: &Path, game_version: &str, loader_version: Option<&str>) -> Result<Plan> {
+fn local_plan(versions: &Path, game_version: &str, loader_version: Option<&str>) -> Option<Plan> {
     let suffix = format!("-{game_version}");
     let wanted = loader_version.map(|l| format!("{LOADER_PREFIX}{l}{suffix}"));
     let found = std::fs::read_dir(versions)
-        .with_context(|| format!("cannot read {}", versions.display()))?
+        .ok()?
         .filter_map(Result::ok)
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -234,9 +246,9 @@ fn local_plan(versions: &Path, game_version: &str, loader_version: Option<&str>)
             matches.then_some((modified, name, json))
         })
         .max_by_key(|(modified, _, _)| *modified);
-    let (_, name, json) = found.with_context(|| format!("Minecraft {game_version} with Fabric is not installed"))?;
+    let (_, name, json) = found?;
     let loader = name.strip_prefix(LOADER_PREFIX).and_then(|n| n.strip_suffix(&suffix)).unwrap_or_default().to_owned();
-    Ok(Plan { profile: read_json(&json)?, loader, runtime: None })
+    Some(Plan { profile: read_json(&json).ok()?, loader, runtime: None })
 }
 
 fn lock(dir: &Path) -> Result<File> {
@@ -259,6 +271,75 @@ mod tests {
         File::options().write(true).open(&json).unwrap().set_modified(time).unwrap();
     }
 
+    fn cached_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let jar = root.join("versions/26.3/26.3.jar");
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, b"jar").unwrap();
+        let index = root.join("assets/indexes/t.json");
+        std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+        std::fs::write(&index, br#"{"objects":{}}"#).unwrap();
+        let (jar_sha, index_sha) = (net::file_sha1(&jar).unwrap(), net::file_sha1(&index).unwrap());
+        let id = "fabric-loader-0.20.1-26.3";
+        let profile = root.join("versions").join(id).join(format!("{id}.json"));
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        std::fs::write(&profile, format!(
+            r#"{{"id":"{id}","downloads":{{"client":{{"url":"https://example.invalid/c.jar","sha1":"{jar_sha}","size":3}}}},"assetIndex":{{"id":"t","url":"https://example.invalid/t.json","sha1":"{index_sha}","size":14}},"javaVersion":{{"component":"comp"}}}}"#
+        )).unwrap();
+        let runtime = root.join("runtimes/comp/abc");
+        let java = runtime.join(java::executable(meta::Os::current()));
+        std::fs::create_dir_all(java.parent().unwrap()).unwrap();
+        std::fs::write(&java, b"").unwrap();
+        std::fs::write(runtime.join(".complete"), b"").unwrap();
+        dir
+    }
+
+    fn offline_install(root: &Path, offline: bool, loader: Option<&str>) -> (Result<Installed>, usize, usize) {
+        let (agent, downloads) = net::fake::agent(None, Duration::from_secs(5));
+        let (quick, metadata) = net::fake::agent(None, Duration::from_secs(5));
+        let dl = Downloader::new(agent).unwrap();
+        let result = install_in(root, &dl, &quick, offline, "26.3", loader, &|_| {});
+        (result, downloads.count(), metadata.count())
+    }
+
+    #[test]
+    fn a_cached_version_starts_offline_without_a_single_request() {
+        let root = cached_root();
+        for loader in [Some("0.20.1"), None] {
+            let (installed, downloads, metadata) = offline_install(root.path(), true, loader);
+            let installed = installed.unwrap();
+            assert_eq!((downloads, metadata), (0, 0));
+            assert_eq!((installed.loader_version.as_str(), installed.downloaded), ("0.20.1", 0));
+            assert!(installed.java.ends_with(java::executable(meta::Os::current())));
+        }
+    }
+
+    #[test]
+    fn a_cached_version_falls_back_after_one_quick_failed_request() {
+        let root = cached_root();
+        let (installed, downloads, metadata) = offline_install(root.path(), false, Some("0.20.1"));
+        assert_eq!(installed.unwrap().loader_version, "0.20.1");
+        assert_eq!((downloads, metadata), (0, 1));
+    }
+
+    #[test]
+    fn a_missing_version_without_network_is_a_connection_error() {
+        let root = tempfile::tempdir().unwrap();
+        let (installed, _, _) = offline_install(root.path(), true, Some("0.20.1"));
+        let e = installed.unwrap_err();
+        assert!(net::no_connection(&e), "{e:#}");
+    }
+
+    #[test]
+    fn a_cached_version_with_a_missing_runtime_asks_the_network() {
+        let root = cached_root();
+        std::fs::remove_file(root.path().join("runtimes/comp/abc/.complete")).unwrap();
+        let (installed, downloads, metadata) = offline_install(root.path(), true, Some("0.20.1"));
+        assert!(net::no_connection(&installed.unwrap_err()));
+        assert_eq!((downloads, metadata), (1, 0));
+    }
+
     #[test]
     fn local_plan_picks_the_newest_loader_for_the_game() {
         let dir = tempfile::tempdir().unwrap();
@@ -277,15 +358,15 @@ mod tests {
         write_version(dir.path(), "fabric-loader-0.19.0-26.3", 100);
         write_version(dir.path(), "fabric-loader-0.20.1-26.3", 10);
         assert_eq!(local_plan(dir.path(), "26.3", Some("0.19.0")).unwrap().loader, "0.19.0");
-        assert!(local_plan(dir.path(), "26.3", Some("9.9.9")).is_err());
+        assert!(local_plan(dir.path(), "26.3", Some("9.9.9")).is_none());
     }
 
     #[test]
     fn local_plan_fails_when_nothing_is_installed() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(local_plan(dir.path(), "26.3", None).is_err());
+        assert!(local_plan(dir.path(), "26.3", None).is_none());
         write_version(dir.path(), "fabric-loader-0.20.1-26.3", 1);
-        assert!(local_plan(dir.path(), "26.4", None).is_err());
+        assert!(local_plan(dir.path(), "26.4", None).is_none());
     }
 
     #[test]
