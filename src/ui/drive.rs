@@ -495,8 +495,9 @@ fn native(window: &Window) -> Value {
     }
 }
 
+/// Moves a driven window outside every screen before anyone sees it.
 #[cfg(target_os = "windows")]
-fn send_away(window: &Window) {
+pub fn send_away(window: &Window) {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_APPWINDOW,
@@ -517,8 +518,9 @@ fn send_away(window: &Window) {
     }
 }
 
+/// Moves a driven window outside every screen before anyone sees it.
 #[cfg(not(target_os = "windows"))]
-fn send_away(_: &Window) {}
+pub fn send_away(_: &Window) {}
 
 #[cfg(target_os = "macos")]
 fn native(window: &Window) -> Value {

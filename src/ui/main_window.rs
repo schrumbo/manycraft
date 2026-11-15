@@ -685,7 +685,7 @@ pub fn open(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(window_bounds),
         display_id,
-        show: !(maximized && !driven),
+        show: !(maximized && !driven) && !crate::core::drive::away(),
         window_min_size: Some(size(px(640.), px(420.))),
         app_id: Some("io.github.schrumbo.manycraft".into()),
         ..Default::default()
@@ -693,6 +693,9 @@ pub fn open(cx: &mut App) {
     let options = super::chrome::window_options(options, "Manycraft");
     if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::refresh(window, cx);
+        if crate::core::drive::away() {
+            super::drive::send_away(window);
+        }
         if maximized && !driven {
             window.activate_window();
         }

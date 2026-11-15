@@ -6,9 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class ConfigTest {
 	private static Config read(Map<String, String> props, Map<String, String> env) {
@@ -60,6 +62,20 @@ class ConfigTest {
 		assertEquals(new ProxySpec(ProxySpec.Kind.SOCKS5, "env", 2, "u", "p"), read(props, Map.of(Config.ENV_PROXY, "socks5://u:p@env:2")).proxy());
 		assertEquals(new ProxySpec(ProxySpec.Kind.SOCKS5, "prop", 1, null, null), read(props, Map.of(Config.ENV_PROXY, " ")).proxy());
 		assertTrue(read(Map.of("manycraft.ipc", "127.0.0.1:4000"), Map.of(Config.ENV_PROXY, "ftp://x:1")).proxyRequested());
+	}
+
+	@Test
+	void theManagerIsFoundWhereItLastWroteItsAddress(@TempDir Path dir) throws Exception {
+		Path file = dir.resolve("manager.address");
+		Config c = read(Map.of("manycraft.ipc", "127.0.0.1:4000", "manycraft.ipcfile", file.toString()), Map.of());
+		assertEquals(file, c.ipcFile());
+		assertEquals(4000, c.manager().getPort());
+		Files.writeString(file, "127.0.0.1:5123\n");
+		assertEquals(5123, c.manager().getPort());
+		assertEquals("127.0.0.1", c.manager().getHostString());
+		Files.writeString(file, "garbage");
+		assertEquals(4000, c.manager().getPort());
+		assertNull(read(Map.of("manycraft.ipc", "127.0.0.1:4000"), Map.of()).ipcFile());
 	}
 
 	@Test

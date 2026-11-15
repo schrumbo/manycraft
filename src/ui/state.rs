@@ -28,7 +28,7 @@ use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
 use crate::core::store::{self, Recovery};
-use crate::core::{companion, drive, install, ipc};
+use crate::core::{adopt, companion, drive, install, ipc};
 
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -79,6 +79,12 @@ pub trait Backend: Send + Sync {
     fn refresh(&self, _accounts: Vec<Account>) {}
     /// Checks the proxy `url` of instance `key` and reports the result.
     fn check_proxy(&self, _key: String, _url: String) {}
+    /// The games an earlier manager launched that still run; only the first call returns them.
+    fn adopted(&self) -> Vec<fleet::Adoption> {
+        Vec::new()
+    }
+    /// Lets the adopted games that got a tile talk to the manager again and stops tracking the rest, which keep running.
+    fn settle(&self, _placed: &[String], _dropped: &[String]) {}
 }
 
 struct Real {
@@ -91,12 +97,18 @@ struct Real {
     previews: mpsc::Sender<(String, PathBuf)>,
     refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
     checking: Arc<Mutex<HashSet<String>>>,
+    adopted: Mutex<Vec<fleet::Adoption>>,
 }
 
 impl Real {
     fn new(out: async_channel::Sender<Update>) -> anyhow::Result<Self> {
         crate::core::fleet::scrub_crash_files();
-        let (fleet, events) = Fleet::new()?;
+        let (fleet, events, adopted) = if adopt::is_manager() {
+            Fleet::manager()?
+        } else {
+            let (fleet, events) = Fleet::new()?;
+            (fleet, events, Vec::new())
+        };
         let fleet = Arc::new(fleet);
         let forward = out.clone();
         std::thread::Builder::new().name("fleet-events".into()).spawn(move || {
@@ -106,7 +118,7 @@ impl Real {
                 }
             }
         })?;
-        let watch: Arc<Mutex<HashSet<String>>> = Arc::default();
+        let watch: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(adopted.iter().map(|a| a.key.clone()).collect()));
         let (watching, exits, exiting) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet));
         std::thread::Builder::new().name("fleet-exits".into()).spawn(move || {
             loop {
@@ -148,7 +160,7 @@ impl Real {
                 }
             }
         })?;
-        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default() })
+        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted) })
     }
 }
 
@@ -271,6 +283,18 @@ impl Backend for Real {
         });
     }
 
+    fn adopted(&self) -> Vec<fleet::Adoption> {
+        let (live, ended): (Vec<_>, Vec<_>) = std::mem::take(&mut *lock(&self.adopted)).into_iter().partition(|a| self.fleet.is_running(&a.key));
+        self.settle(&[], &ended.into_iter().map(|a| a.key).collect::<Vec<_>>());
+        live
+    }
+
+    fn settle(&self, placed: &[String], dropped: &[String]) {
+        self.fleet.admit(placed);
+        self.fleet.release(dropped);
+        lock(&self.watch).retain(|k| !dropped.contains(k));
+    }
+
     fn check_proxy(&self, key: String, url: String) {
         if !lock(&self.checking).insert(key.clone()) {
             return;
@@ -370,6 +394,10 @@ struct Runtime {
     phone: phone::Coalescer,
     outbox: Option<phone::Outbox>,
     phone_at: Option<Instant>,
+    /// Games an earlier manager launched whose mod has not reported its state since.
+    adopted: HashSet<String>,
+    /// Games an earlier manager launched; where the OS does not tell their exit code, an exit counts as clean.
+    foreign: HashSet<String>,
 }
 
 
@@ -385,7 +413,7 @@ pub fn init(cx: &mut App) {
     let (out, updates) = async_channel::unbounded::<Update>();
     super::stills::init(out.clone(), cx);
     let shared_visible: Arc<Mutex<HashSet<String>>> = Arc::default();
-    let backend: Arc<dyn Backend> = if drive::on() {
+    let backend: Arc<dyn Backend> = if drive::on() && !drive::real() {
         Arc::new(super::fake::Fake::new(out, Arc::clone(&shared_visible)))
     } else {
         match Real::new(out) {
@@ -430,6 +458,8 @@ pub fn init(cx: &mut App) {
         phone: phone::Coalescer::default(),
         outbox: None,
         phone_at: None,
+        adopted: HashSet::new(),
+        foreign: HashSet::new(),
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
@@ -599,6 +629,14 @@ fn reload_with(cx: &mut App, keep: bool) {
             });
             for image in retired {
                 cx.drop_image(image, None);
+            }
+            if model.read(cx).loaded
+                && let Some(rt) = cx.try_global::<Runtime>()
+            {
+                let adopted = rt.backend.adopted();
+                if !adopted.is_empty() {
+                    update_model(cx, |m, rt, _| adopt_games(m, rt, adopted));
+                }
             }
             let present: HashSet<String> = model.read(cx).games.keys().cloned().collect();
             super::tile::forget_except(&|k| present.contains(k), cx);
@@ -1186,7 +1224,7 @@ fn playable(phase: &Phase) -> bool {
 /// Puts the game window of `key` in the manager's place and hides the manager.
 pub fn play(key: &str, cx: &mut App) {
     let model = model::get(cx);
-    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) {
+    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) || model::hint(key).link_lost {
         return;
     }
     let shown = model.read(cx).playing.is_some();
@@ -1418,6 +1456,7 @@ struct Effects {
     placed: Vec<String>,
     game_focused: bool,
     revealed: Option<Reveal>,
+    reopen: bool,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -1432,9 +1471,11 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
                 Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } => None,
                 Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
+                Update::Ipc(Event::Reopen) => None,
             };
             let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
-            let seeded = matches!(update, Update::Seed { .. });
+            let first_state = matches!(&update, Update::Ipc(Event::Message { message: FromMod::State { .. }, .. })) && key.as_ref().is_some_and(|k| rt.adopted.contains(k));
+            let seeded = matches!(update, Update::Seed { .. }) || first_state;
             apply(m, rt, update, &mut fx);
             let Some(key) = key else { continue };
             let Some(i) = m.games.get(&key) else { continue };
@@ -1492,7 +1533,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
         let place = follow_shown(cx);
         super::main_window::hide(place, cx);
     }
-    if fx.exited_playing {
+    if fx.exited_playing || fx.reopen {
         show_grid(cx);
     }
     for action in fx.hotkeys {
@@ -1634,12 +1675,16 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 rt.backend.send(&instance, message);
             }
             tint(m, &instance, pid);
+            if rt.adopted.contains(&instance) && m.playing.as_deref() != Some(instance.as_str()) {
+                rt.backend.send(&instance, ToMod::Hide);
+            }
             if let Some(i) = m.games.get_mut(&instance)
                 && matches!(i.phase, Phase::Starting { .. })
             {
                 i.phase = Phase::Menu;
             }
         }
+        Update::Ipc(Event::Reopen) => fx.reopen = true,
         Update::Ipc(Event::Disconnected { instance }) => {
             let alive = rt.pids.contains_key(&instance) && m.games.get(&instance).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
             if alive {
@@ -1659,6 +1704,8 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     rt.unplaced.remove(&key);
     rt.insets.remove(&key);
     rt.joined.remove(&key);
+    rt.adopted.remove(&key);
+    let unknown = rt.foreign.remove(&key) && code.is_none();
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
     let Some(i) = m.games.get_mut(&key) else {
         let keys = drop_restart(rt, &key);
@@ -1668,7 +1715,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
         return;
     };
     *rt.joins.entry(key.clone()).or_default() += 1;
-    let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
+    let crashed = !(i.stopping || code == Some(0) || unknown || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
     let restart = if i.stopping { rt.restarts.remove(&key) } else { None };
     i.stopping = false;
@@ -1727,6 +1774,9 @@ fn join_lines_of(m: &Model, key: &str) -> Option<(Vec<String>, Duration)> {
 }
 
 fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind: StateKind, server: Option<String>, reason: Option<String>, cause: Option<DisconnectCause>) {
+    if rt.adopted.remove(&key) {
+        return seed_state(m, rt, &key, kind, server, reason, cause);
+    }
     if kind != StateKind::Playing {
         *rt.joins.entry(key.clone()).or_default() += 1;
     }
@@ -1823,6 +1873,69 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
     if let Some((kind, server, reason)) = event {
         note(m, fx, &key, kind, server, &reason);
     }
+}
+
+fn seed_state(m: &mut Model, rt: &mut Runtime, key: &str, kind: StateKind, server: Option<String>, reason: Option<String>, cause: Option<DisconnectCause>) {
+    let Some(i) = m.games.get_mut(key) else { return };
+    if i.stopping || !i.phase.is_running() {
+        return;
+    }
+    if matches!(kind, StateKind::Menu | StateKind::Disconnected) {
+        rt.joined.remove(key);
+    }
+    let (server_text, reason) = (server.clone().unwrap_or_default(), reason.unwrap_or_default());
+    i.phase = match kind {
+        StateKind::Menu => Phase::Menu,
+        StateKind::Connecting => Phase::Connecting { server: server_text },
+        StateKind::Queue => Phase::Queue { server: server_text },
+        StateKind::Playing => Phase::Playing { server: server_text, since: Instant::now() },
+        StateKind::Dead => Phase::Dead { server, reason },
+        StateKind::Disconnected if cause == Some(DisconnectCause::Banned) => Phase::Banned { server, reason },
+        StateKind::Disconnected => Phase::Disconnected { server, reason },
+    };
+}
+
+fn adopt_games(m: &mut Model, rt: &mut Runtime, adopted: Vec<fleet::Adoption>) {
+    let (mut placed, mut dropped) = (Vec::new(), Vec::new());
+    for a in adopted {
+        if a.batch.is_none() && !m.games.contains_key(&a.key) {
+            let Some(name) = m.account(a.account).map(|account| account.name.clone()) else {
+                dropped.push(a.key);
+                continue;
+            };
+            m.games.insert(a.key.clone(), Game {
+                key: a.key.clone(),
+                batch_id: fleet::solo_owner(&a.instance),
+                instance_id: a.instance.clone(),
+                account_id: a.account,
+                name,
+                phase: Phase::Stopped,
+                reconnect_attempts: 0,
+                unread_whispers: 0,
+                preview: None,
+                preview_seq: 0,
+                live: false,
+                stopping: false,
+            });
+        }
+        let Some(i) = m.games.get_mut(&a.key) else {
+            dropped.push(a.key);
+            continue;
+        };
+        i.phase = Phase::Menu;
+        rt.pids.insert(a.key.clone(), a.pid);
+        rt.joined.insert(a.key.clone());
+        rt.started.insert(a.key.clone(), Instant::now());
+        rt.adopted.insert(a.key.clone());
+        rt.foreign.insert(a.key.clone());
+        if cfg!(target_os = "windows") && !drive::on() {
+            rt.unplaced.insert(a.key.clone());
+        }
+        model::set_hint(&a.key, |h| h.link_lost = true);
+        placed.push(a.key);
+    }
+    rt.backend.settle(&placed, &dropped);
+    m.order_seq += 1;
 }
 
 fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx: &mut Effects) {
@@ -2309,7 +2422,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, apply, fleet, needs_sign_in, redraw, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, adopt_games, apply, fleet, needs_sign_in, redraw, render_image, status};
 
     fn instance(phase: Phase) -> Game {
         Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -2451,6 +2564,8 @@ mod tests {
             phone: super::phone::Coalescer::default(),
             outbox: None,
             phone_at: None,
+            adopted: HashSet::new(),
+            foreign: HashSet::new(),
         }
     }
 
@@ -2656,6 +2771,108 @@ mod tests {
         assert!(fx.later.is_empty());
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
         assert_ne!(rt.joins[&key], generation);
+    }
+
+    fn adopted(phase: Phase) -> (Model, Runtime, String) {
+        let (mut m, mut rt, key) = setup(phase, AccountKind::Offline, &["/login pw"]);
+        let (account, batch) = (m.games[&key].account_id, m.games[&key].batch_id.clone());
+        let instance = m.games[&key].instance_id.clone();
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41 }]);
+        (m, rt, key)
+    }
+
+    #[test]
+    fn an_adopted_game_runs_without_contact_until_its_mod_reports() {
+        let (m, rt, key) = adopted(Phase::Stopped);
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+        assert!(m.games[&key].phase.is_running());
+        assert_eq!(rt.pids[&key], 41);
+        assert!(model::hint(&key).link_lost);
+        let (mut m, mut rt, solo) = adopted(Phase::Stopped);
+        let account = m.games[&solo].account_id;
+        let made = m.instances[0].clone();
+        let key = fleet::solo_key(&made, account);
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42 }]);
+        assert_eq!(m.games[&key].batch_id, fleet::solo_owner(&made.id));
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+    }
+
+    #[test]
+    fn an_adopted_game_that_plays_on_sends_no_join_commands_and_no_news() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 41, mod_version: String::new() }), &mut fx);
+        assert!(!model::hint(&key).link_lost);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(matches!(m.games[&key].phase, Phase::Playing { .. }));
+        assert!(fx.later.is_empty() && fx.phone.is_empty());
+        assert!(m.history.get(&key).is_none_or(|h| h.is_empty()));
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(fx.later.is_empty());
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(matches!(fx.later.pop(), Some(Deferred::Join { .. })), "a real rejoin later sends them again");
+    }
+
+    #[test]
+    fn an_adopted_game_on_a_disconnect_screen_is_not_reconnected_by_the_restart() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }));
+        assert!(fx.later.is_empty() && fx.phone.is_empty());
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
+        assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
+        assert!(fx.later.is_empty());
+    }
+
+    #[test]
+    fn an_adopted_game_that_quits_without_an_exit_code_is_not_a_crash() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: None }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(fx.later.is_empty());
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: None }, &mut fx);
+        assert!(matches!(m.games[&key].phase, Phase::Crashed { .. } | Phase::Restarting { .. }), "a launched game still crashes");
+    }
+
+    #[test]
+    fn adopted_games_without_a_tile_are_let_go_and_the_rest_may_talk() {
+        struct Settled(std::sync::Mutex<(Vec<String>, Vec<String>)>);
+        impl Backend for Settled {
+            fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>) {}
+            fn stop(&self, _: Vec<String>) {}
+            fn send(&self, _: &str, _: ToMod) {}
+            fn read_preview(&self, _: String, _: PathBuf) {}
+            fn quit(&self) {}
+            fn settle(&self, placed: &[String], dropped: &[String]) {
+                *self.0.lock().unwrap() = (placed.to_vec(), dropped.to_vec());
+            }
+        }
+        let (mut m, mut rt, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let settled = Arc::new(Settled(std::sync::Mutex::default()));
+        rt.backend = settled.clone();
+        let game = &m.games[&key];
+        let (batch, instance, account) = (game.batch_id.clone(), game.instance_id.clone(), game.account_id);
+        let gone = fleet::Adoption { key: "removed-member".into(), batch: Some(batch.clone()), instance: instance.clone(), account, pid: 2 };
+        let stranger = fleet::Adoption { key: "solo-of-deleted-account".into(), batch: None, instance: instance.clone(), account: uuid::Uuid::from_u128(99), pid: 3 };
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 1 }, gone, stranger]);
+        let (placed, dropped) = settled.0.lock().unwrap().clone();
+        assert_eq!(placed, [key.clone()]);
+        assert_eq!(dropped, ["removed-member", "solo-of-deleted-account"]);
+        assert!(!m.games.contains_key("removed-member") && !rt.pids.contains_key("removed-member"));
+    }
+
+    #[test]
+    fn a_second_start_brings_the_manager_back() {
+        let (mut m, mut rt, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Reopen), &mut fx);
+        assert!(fx.reopen);
     }
 
     #[test]
