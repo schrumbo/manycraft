@@ -763,7 +763,7 @@ fn clone_instance(id: &str, cx: &mut App) {
                         m.instances.push(made);
                         cx.notify();
                     });
-                    super::main_window::show_instance(&id, cx);
+                    super::instance_page::rename(&id, cx);
                 }
                 Err(e) => tell(super::forms::explain_as(tr("Nicht kopiert."), &e).text, cx),
             }

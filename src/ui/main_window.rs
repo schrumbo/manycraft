@@ -160,7 +160,7 @@ impl MainWindow {
         }
         if matches!(self.page, Page::Grid(_)) && !self.onboarding_shown(cx) {
             window.focus(&self.grid.focus, cx);
-        } else {
+        } else if !matches!(self.page, Page::Instance(_)) || !super::instance_page::focus(window, cx) {
             window.focus(&self.focus, cx);
         }
     }

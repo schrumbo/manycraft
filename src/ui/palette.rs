@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::actions::{
     AddAccount, AddMicrosoft, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
-    CloneInstance, DeleteInstance, EditMods, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, ShowInstance,
+    CloneInstance, DeleteInstance, EditMods, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -373,6 +373,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         if matches!(made.loader, Loader::Fabric(_)) {
             out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
         }
+        out.push(entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
         if matches!(made.loader, Loader::Fabric(_)) {

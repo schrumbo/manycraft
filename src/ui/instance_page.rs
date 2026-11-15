@@ -8,12 +8,13 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+use gpui_kit::base::input::Escape;
 use gpui_kit::component::{FocusableExt, IndexPath, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, CloneInstance, DeleteInstance, EditMods, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, ShowAll, ShowBatch, StartBatch};
+use super::actions::{AddAccount, CloneInstance, DeleteInstance, EditMods, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ShowAll, ShowBatch, StartBatch};
 use super::batch_sheet::Load;
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -23,7 +24,7 @@ use super::remote::{self, InstanceEdit};
 use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::toolbar;
-use super::widgets::{KeyNav, icon, segment, segmented, tip};
+use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented, tip};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, LOADERS, Loader};
@@ -31,14 +32,41 @@ use crate::core::instance::{Instance, LOADERS, Loader};
 const PAGE_MAX: f32 = 760.;
 const VERSION_WIDTH: f32 = 168.;
 const ICON_TILE: f32 = control::L + space::XS;
+const RENAME_GLYPH: f32 = 0.6;
 
-/// Registers the instance page's delete confirmation.
+/// Registers the instance page's delete confirmation and the rename that starts from outside the page.
 pub fn init(cx: &mut App) {
     cx.on_action(|a: &DeleteInstance, cx| {
         let id = a.0.clone();
         sheet::in_window(cx, move |window, cx| ask_delete(&id, window, cx));
     });
+    cx.on_action(|a: &RenameInstance, cx| {
+        let id = a.0.clone();
+        cx.defer(move |cx| rename(&id, cx));
+    });
+    cx.bind_keys([KeyBinding::new("f2", RenameCurrent, Some(PAGE_CONTEXT))]);
 }
+
+/// Shows the page of instance `id` and starts renaming it there.
+pub fn rename(id: &str, cx: &mut App) {
+    cx.set_global(WantsRename(id.to_owned()));
+    super::main_window::show_instance(id, cx);
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// Moves the keyboard to the instance page, where F2 renames.
+pub fn focus(window: &mut Window, cx: &mut App) -> bool {
+    let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) else { return false };
+    let root = page.read(cx).root.clone();
+    window.focus(&root, cx);
+    true
+}
+
+struct WantsRename(String);
+
+impl Global for WantsRename {}
 
 fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
     if sheet::busy(window, cx) {
@@ -68,6 +96,8 @@ fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
     });
 }
 
+const PAGE_CONTEXT: &str = "InstancePage";
+
 struct Page(Entity<InstancePage>);
 
 impl Global for Page {}
@@ -79,6 +109,10 @@ pub fn page(id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
         None => {
             let view = cx.new(|cx| InstancePage::new(id, window, cx));
             cx.set_global(Page(view.clone()));
+            if !window.has_active_dialog(cx) {
+                let root = view.read(cx).root.clone();
+                window.focus(&root, cx);
+            }
             view
         }
     };
@@ -89,23 +123,15 @@ pub fn page(id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Mods,
-    Packs,
-    Worlds,
-    Screenshots,
-    Logs,
     Settings,
 }
 
-const TABS: [Tab; 6] = [Tab::Mods, Tab::Packs, Tab::Worlds, Tab::Screenshots, Tab::Logs, Tab::Settings];
+const TABS: [Tab; 2] = [Tab::Mods, Tab::Settings];
 
 impl Tab {
     fn label(self) -> String {
         match self {
             Self::Mods => tr("Mods"),
-            Self::Packs => tr("Packs"),
-            Self::Worlds => tr("Welten"),
-            Self::Screenshots => tr("Screenshots"),
-            Self::Logs => tr("Logs"),
             Self::Settings => tr("Einstellungen"),
         }
     }
@@ -113,6 +139,7 @@ impl Tab {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Change {
+    Name(String),
     Memory(u32),
     JvmArgs(Vec<String>),
     LoaderVersion(Option<String>),
@@ -122,6 +149,7 @@ enum Change {
 impl Change {
     fn apply(&self, edit: &mut InstanceEdit) {
         match self {
+            Self::Name(name) => edit.name.clone_from(name),
             Self::Memory(mb) => edit.memory_mb = *mb,
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
@@ -181,12 +209,17 @@ struct InstancePage {
     select_applied: Option<(String, u64)>,
     jvm: Entity<InputState>,
     loader_version: Entity<InputState>,
+    name: Entity<InputState>,
+    renaming: bool,
+    rename_saving: bool,
+    focus_name: bool,
     synced: Option<(String, String, String)>,
     queue: VecDeque<(String, Job)>,
     in_flight: Option<(String, Job)>,
     switching: Option<Busy>,
     notes: Vec<String>,
     error: Option<Problem>,
+    rename_error: Option<Problem>,
     details: HashSet<&'static str>,
     memory_max: u32,
     scroll: ScrollHandle,
@@ -199,6 +232,7 @@ impl InstancePage {
         let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
         let jvm = cx.new(|cx| InputState::new(window, cx));
         let loader_version = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Neueste")));
+        let name = cx.new(|cx| InputState::new(window, cx));
         let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
             if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 s.commit_inputs(cx);
@@ -208,6 +242,15 @@ impl InstancePage {
             cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
             cx.subscribe(&jvm, committed),
             cx.subscribe(&loader_version, committed),
+            cx.subscribe_in(&name, window, |s: &mut Self, _, e: &InputEvent, window, cx| match e {
+                InputEvent::PressEnter { .. } => {
+                    s.commit_rename(cx);
+                    let root = s.root.clone();
+                    window.on_next_frame(move |window, cx| window.focus(&root, cx));
+                }
+                InputEvent::Blur => s.commit_rename(cx),
+                _ => {}
+            }),
             cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<String>>, window, cx| {
                 let SelectEvent::Confirm(Some(v)) = e else { return };
                 s.pick_version(v.clone(), window, cx);
@@ -225,12 +268,17 @@ impl InstancePage {
             select_applied: None,
             jvm,
             loader_version,
+            name,
+            renaming: false,
+            rename_saving: false,
+            focus_name: false,
             synced: None,
             queue: VecDeque::new(),
             in_flight: None,
             switching: None,
             notes: Vec::new(),
             error: None,
+            rename_error: None,
             details: HashSet::new(),
             memory_max: forms::memory_max(forms::total_ram_mb()),
             scroll: ScrollHandle::new(),
@@ -246,6 +294,9 @@ impl InstancePage {
             return;
         }
         self.id = id.to_owned();
+        self.renaming = false;
+        self.rename_saving = false;
+        self.rename_error = None;
         self.advanced = false;
         self.select_target = None;
         self.select_applied = None;
@@ -254,6 +305,47 @@ impl InstancePage {
         self.details.clear();
         self.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
+    }
+
+    fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(made) = self.instance(cx) else { return };
+        self.rename_error = None;
+        self.renaming = true;
+        self.rename_saving = false;
+        self.name.update(cx, |s, cx| s.set_value(made.name, window, cx));
+        self.focus_name = true;
+        cx.notify();
+    }
+
+    fn end_rename(&mut self, cx: &mut Context<Self>) {
+        self.renaming = false;
+        self.rename_saving = false;
+        self.rename_error = None;
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.renaming {
+            cx.propagate();
+            return;
+        }
+        self.end_rename(cx);
+        window.focus(&self.root, cx);
+    }
+
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        if !self.renaming || self.rename_saving {
+            return;
+        }
+        let Some(made) = self.instance(cx) else { return };
+        let typed = self.name.read(cx).value().trim().to_owned();
+        if typed.is_empty() || typed == made.name {
+            self.end_rename(cx);
+            return;
+        }
+        self.rename_saving = true;
+        self.rename_error = None;
+        self.enqueue(Job::Save(Change::Name(typed)), cx);
     }
 
     fn toggle(&mut self, key: &'static str, cx: &mut Context<Self>) {
@@ -414,7 +506,7 @@ impl InstancePage {
     }
 
     fn finished(&mut self, id: &str, switched: bool, result: anyhow::Result<(Instance, Vec<String>)>, cx: &mut Context<Self>) {
-        self.in_flight = None;
+        let renamed = matches!(self.in_flight.take(), Some((_, Job::Save(Change::Name(_)))));
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
         }
@@ -429,12 +521,25 @@ impl InstancePage {
                 if switched && id == self.id {
                     self.notes = notes;
                 }
+                if renamed && self.rename_saving {
+                    self.end_rename(cx);
+                }
                 cx.dispatch_action(&Reload);
             }
             Err(e) => {
+                let problem = forms::explain_as(tr("Nicht gespeichert."), &e);
+                let rename_failed = renamed && self.rename_saving;
+                if rename_failed {
+                    self.rename_saving = false;
+                    self.focus_name = true;
+                }
                 self.queue.retain(|(queued, _)| queued != id);
                 if id == self.id {
-                    self.error = Some(forms::explain_as(tr("Nicht gespeichert."), &e));
+                    if rename_failed {
+                        self.rename_error = Some(problem);
+                    } else {
+                        self.error = Some(problem);
+                    }
                 }
                 self.synced = None;
             }
@@ -494,7 +599,7 @@ impl InstancePage {
             Switch::Loader(l) => trf("Auf %@ umstellen?", &[&l.name()]),
         };
         let page = cx.entity().downgrade();
-        sheet::ask(window, cx, title, tr("Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben."), tr("Umstellen"), move |_, cx| {
+        sheet::confirm(window, cx, title, tr("Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben."), tr("Umstellen"), move |_, cx| {
             let switch = switch.clone();
             let _ = page.update(cx, |s, cx| {
                 if !s.blocked(cx) {
@@ -508,13 +613,57 @@ impl InstancePage {
     fn header(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Div {
         let made = &f.made;
         let icon_tile = div().size(px(ICON_TILE)).flex_none().rounded(px(radius::CONTROL)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::L, t.tertiary));
+        let name = if self.renaming {
+            let typed = self.name.read(cx).value().chars().count() as f32;
+            let width = (typed * font::TITLE3 * RENAME_GLYPH + space::XL).clamp(control::RENAME_MIN, control::RENAME_MAX);
+            div()
+                .id("instance-title-edit")
+                .mark("textbox", tr("Name"))
+                .self_start()
+                .w(px(width))
+                .max_w_full()
+                .h(px(font::TITLE3 * font::LINE))
+                .ml(px(-space::XS))
+                .px(px(space::XS))
+                .rounded(px(radius::SMALL))
+                .bg(t.window)
+                .shadow(vec![BoxShadow { color: super::theme::ring::color(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::HAIRLINE), inset: false }])
+                .text_size(px(font::TITLE3))
+                .font_weight(FontWeight::SEMIBOLD)
+                .on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx)))
+                .child(Styled::h(Input::new(&self.name).appearance(false).bordered(false).focus_bordered(false).p_0().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD), px(font::TITLE3 * font::LINE)))
+                .into_any_element()
+        } else {
+            div()
+                .id("instance-title")
+                .mark("heading", made.name.clone())
+                .self_start()
+                .max_w_full()
+                .ml(px(-space::XS))
+                .px(px(space::XS))
+                .truncate()
+                .text_size(px(font::TITLE3))
+                .font_weight(FontWeight::SEMIBOLD)
+                .tooltip(tip(tr("Doppelklicken zum Umbenennen")))
+                .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
+                .on_click(cx.listener(|s, e: &ClickEvent, window, cx| {
+                    if e.click_count() == 2 {
+                        s.begin_rename(window, cx);
+                    }
+                }))
+                .child(made.name.clone())
+                .into_any_element()
+        };
         let title = div()
             .flex_1()
             .min_w_0()
             .flex()
             .flex_col()
-            .child(div().id("instance-title").mark("heading", made.name.clone()).truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).child(made.name.clone()))
-            .child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.version_line()));
+            .child(name)
+            .child(match self.rename_error.as_ref().filter(|_| self.renaming) {
+                Some(e) => div().id("instance-rename-error").mark("notice", e.text.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(e.text.clone())).child(e.text.clone()),
+                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.version_line()),
+            });
         div()
             .h(px(shell::TOOLBAR))
             .flex_none()
@@ -740,12 +889,6 @@ impl InstancePage {
         col.child(div().flex().child(add))
     }
 
-    fn render_later(&self, f: &Facts, t: &Theme) -> Div {
-        let id = f.made.id.clone();
-        let open = sheet::button("folder-open", tr("Ordner öffnen"), None, Look::Secondary, false, false, t).on_click(move |_, window, cx| window.dispatch_action(Box::new(OpenInstanceFolder(id.clone())), cx));
-        div().flex().flex_col().items_start().gap(px(space::M)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Kommt mit einem der nächsten Updates."))).child(open)
-    }
-
     fn render_settings(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Div {
         let made = &f.made;
         let busy = self.switching_now();
@@ -778,10 +921,8 @@ impl InstancePage {
             .gap(px(space::L))
             .child(field("instance-version-field", tr("Minecraft-Version"), version_control.into_any_element(), Some(VERSION_WIDTH)))
             .child(field("instance-loader-field", tr("Loader"), loader_control.into_any_element(), None));
-        let mut col = div().flex().flex_col().gap(px(space::L)).child(controls);
-        if let Some(b) = self.switching.as_ref().filter(|b| b.id == self.id) {
-            col = col.child(sheet::waiting(b.text.clone(), t));
-        }
+        let busy_line = div().min_h(px(font::CALLOUT * font::LINE)).flex().items_center().children(self.switching.as_ref().filter(|b| b.id == self.id).map(|b| sheet::waiting(b.text.clone(), t)));
+        let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).child(busy_line));
         if let Load::Failed(why) = &self.versions {
             let retry = sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)));
             col = col.child(div().flex().items_start().gap(px(space::S)).child(div().flex_1().min_w_0().child(sheet::problem("versions-error", "circle-alert", t.danger_text, why, self.details.contains("versions-error"), cx.listener(|s, _, _, cx| s.toggle("versions-error", cx)), t))).child(retry));
@@ -914,15 +1055,28 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
 impl Render for InstancePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let root = div().id("instance-page").size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
+        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
         self.sync(&f.made, window, cx);
+        if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {
+            cx.remove_global::<WantsRename>();
+            self.begin_rename(window, cx);
+        }
+        if std::mem::take(&mut self.focus_name) && self.renaming {
+            let input = self.name.clone();
+            window.on_next_frame(move |window, cx| {
+                input.update(cx, |s, cx| {
+                    let end = s.value().len();
+                    s.take_focus(window, cx);
+                    s.set_selected_range(0..end, cx);
+                })
+            });
+        }
         let header = self.header(&f, cx, &t);
         let hint = (!f.made.loader.has_companion()).then(|| sheet::status("info", t.secondary, trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&f.made.loader.name()])));
         let content = match self.tab {
             Tab::Mods => self.render_mods(&f, cx, &t),
             Tab::Settings => self.render_settings(&f, cx, &t),
-            Tab::Packs | Tab::Worlds | Tab::Screenshots | Tab::Logs => self.render_later(&f, &t),
         };
         let error = self.error.clone().filter(|_| self.tab != Tab::Settings).map(|e| sheet::problem("instance-error", "circle-alert", t.danger_text, &e, self.details.contains("instance-error"), cx.listener(|s, _, _, cx| s.toggle("instance-error", cx)), &t));
         let body = div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).py(px(space::L)).flex().flex_col().gap(px(space::M)).children(self.batch_links(&f, &t)).children(hint).child(self.tabs(cx, &t)).children(error).child(content);
@@ -953,6 +1107,13 @@ mod tests {
         assert_eq!(e.mods, vec![mod_ref("b")]);
         Change::RemoveMod("gone".into()).apply(&mut e);
         assert_eq!(e.mods.len(), 1);
+    }
+
+    #[test]
+    fn renaming_changes_only_the_name() {
+        let mut e = edit();
+        Change::Name("Technik".into()).apply(&mut e);
+        assert_eq!((e.name.as_str(), e.mods.len(), e.game_version.as_str(), e.memory_mb), ("Technik", 2, "26.2", edit().memory_mb));
     }
 
     #[test]

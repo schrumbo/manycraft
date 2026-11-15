@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelImport, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, ImportBatch, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{CancelImport, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, ImportBatch, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -332,6 +332,7 @@ fn new_row(id: &'static str, label: String, action: Box<dyn Action>, t: &Theme) 
 /// The menu of an instance, in the sidebar and over the tiles it plays alone.
 pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool) -> PopupMenu {
     menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
+        .menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenInstanceFolder(id.to_owned())))
         .menu(tr("Als .mrpack exportieren…"), Box::new(ExportInstance(id.to_owned())))

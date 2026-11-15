@@ -67,16 +67,27 @@ pub fn typing(window: &Window) -> bool {
 
 /// Asks before a change that cannot be taken back. Focus starts on Abbrechen, so Enter alone never runs `ok`.
 pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, true, ok);
+}
+
+/// Asks before a change that can be taken back or redone. Focus starts on the confirm button, so Enter confirms and Esc cancels.
+pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, false, ok);
+}
+
+fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, irreversible: bool, ok: impl Fn(&mut Window, &mut App) + 'static) {
     let ok = std::rc::Rc::new(ok);
     let cancel = cx.focus_handle();
-    let first = cancel.clone();
+    let accept = cx.focus_handle();
+    let first = if irreversible { cancel.clone() } else { accept.clone() };
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let ok = ok.clone();
         let rings = super::theme::rings(cx);
-        let confirm = Button::new("alert-ok").label(ok_text.clone()).danger().focus_ring(rings).on_click(move |_, window, cx| {
+        let confirm = Button::new("alert-ok").label(ok_text.clone()).focus_ring(rings).track_focus(&accept).on_click(move |_, window, cx| {
             window.close_dialog(cx);
             ok(window, cx);
         });
+        let confirm = if irreversible { confirm.danger() } else { confirm.primary() };
         alert.title(title.clone()).description(message.clone()).on_ok(pass_enter).footer(
             DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).focus_ring(rings).track_focus(&cancel).on_click(|_, window, cx| window.close_dialog(cx))).child(confirm),
         )
