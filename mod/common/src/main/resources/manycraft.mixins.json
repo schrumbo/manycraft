@@ -4,6 +4,7 @@
 	"package": "io.github.schrumbo.manycraft.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
+		"ClientLevelMixin",
 		"ConnectScreenMixin",
 		"ConnectionInitializerMixin",
 		"DeathScreenAccessor",

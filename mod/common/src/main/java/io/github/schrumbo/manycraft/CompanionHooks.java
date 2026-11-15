@@ -43,6 +43,11 @@ public final class CompanionHooks {
 		return c != null && c.hidden() ? c.hiddenFramerate() : 0;
 	}
 
+	public static boolean skipsAmbience() {
+		Companion c = Companion.get();
+		return c != null && c.skipsAmbience();
+	}
+
 	public static String title() {
 		Companion c = Companion.get();
 		return c == null ? null : c.title();

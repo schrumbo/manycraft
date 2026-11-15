@@ -15,24 +15,28 @@ class BackgroundLevelTest {
 	void savingCutsEverything() {
 		assertEquals(new BackgroundController.Values(2, 5, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, 120), SAVED.reduced(BackgroundLevel.SAVING, 2, 5, 10));
 		assertTrue(BackgroundLevel.SAVING.skipsRender());
+		assertTrue(BackgroundLevel.SAVING.skipsAmbience());
 	}
 
 	@Test
 	void balancedKeepsSightAndCutsParticles() {
 		assertEquals(new BackgroundController.Values(12, 10, ParticleStatus.MINIMAL, CloudStatus.FANCY, 0.0, 120), SAVED.reduced(BackgroundLevel.BALANCED, 2, 5, 10));
 		assertFalse(BackgroundLevel.BALANCED.skipsRender());
+		assertTrue(BackgroundLevel.BALANCED.skipsAmbience());
 	}
 
 	@Test
 	void fullOnlyMutes() {
 		assertEquals(new BackgroundController.Values(12, 10, ParticleStatus.ALL, CloudStatus.FANCY, 0.0, 120), SAVED.reduced(BackgroundLevel.FULL, 2, 5, 10));
 		assertFalse(BackgroundLevel.FULL.skipsRender());
+		assertFalse(BackgroundLevel.FULL.skipsAmbience());
 	}
 
 	@Test
 	void customSetsSightAndFrameLimitAndCutsTheRest() {
 		assertEquals(new BackgroundController.Values(6, 5, ParticleStatus.MINIMAL, CloudStatus.OFF, 0.0, 10), SAVED.reduced(BackgroundLevel.CUSTOM, 6, 5, 10));
 		assertFalse(BackgroundLevel.CUSTOM.skipsRender());
+		assertTrue(BackgroundLevel.CUSTOM.skipsAmbience());
 	}
 
 	@Test

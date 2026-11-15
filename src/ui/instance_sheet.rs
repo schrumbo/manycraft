@@ -30,7 +30,7 @@ use crate::core::modrinth::Update;
 use crate::core::prism::Instance;
 use crate::core::versions::{GameVersion, Kind};
 
-const DEFAULT_TITLES: [(&str, &str); 5] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton")];
+const DEFAULT_TITLES: [(&str, &str); 6] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton"), ("sodium", "Sodium")];
 const VERSION_WIDTH: f32 = 232.;
 const RESULTS_MAX: f32 = 340.;
 const PRISM_FILTER_FROM: usize = 6;

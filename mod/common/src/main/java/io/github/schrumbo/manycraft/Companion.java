@@ -93,6 +93,11 @@ final class Companion {
 		return background.hiddenFramerate();
 	}
 
+	boolean skipsAmbience() {
+		BackgroundController bg = background;
+		return bg != null && bg.skipsAmbience();
+	}
+
 	void saveOptions(Options gameOptions, Runnable save) {
 		if (guard.blocksSave()) {
 			save.run();

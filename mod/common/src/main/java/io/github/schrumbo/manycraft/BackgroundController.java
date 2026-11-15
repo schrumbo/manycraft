@@ -120,6 +120,10 @@ final class BackgroundController {
 		return !visible && level.skipsRender();
 	}
 
+	boolean skipsAmbience() {
+		return !visible && level.skipsAmbience();
+	}
+
 	int hiddenFramerate() {
 		return switch (level) {
 			case SAVING -> profile.fps();

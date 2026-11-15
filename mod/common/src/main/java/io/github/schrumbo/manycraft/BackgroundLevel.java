@@ -29,6 +29,10 @@ enum BackgroundLevel {
 		return this == SAVING;
 	}
 
+	boolean skipsAmbience() {
+		return this != FULL;
+	}
+
 	static int optionFramerate(int fps) {
 		int stepped = (fps + OPTION_FPS_STEP - 1) / OPTION_FPS_STEP * OPTION_FPS_STEP;
 		return Math.clamp(stepped, OPTION_FPS_STEP, OPTION_FPS_MAX);
