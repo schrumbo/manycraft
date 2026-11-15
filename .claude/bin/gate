@@ -386,7 +386,7 @@ def cli(args):
 def yield_to_owner():
     if os.name == "nt":
         import ctypes
-        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x40)
+        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
     else:
         with contextlib.suppress(OSError):
             os.nice(19)
