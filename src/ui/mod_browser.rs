@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -20,7 +20,7 @@ use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::modicons;
 use crate::core::modrinth::{Hit, Page, Sort, Support};
 
@@ -821,7 +821,7 @@ impl InstanceSheet {
                     s.browser.query.update(cx, |q, cx| q.take_focus(window, cx));
                 }))),
             None => match self.browser.page().and_then(|p| p.saved) {
-                Some(at) => line.child(sheet::status("wifi-off", t.secondary, saved_text(at.elapsed().unwrap_or_default()))).child(sheet::button("search-saved-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| {
+                Some(at) => line.child(sheet::status("wifi-off", t.secondary, saved_text(at))).child(sheet::button("search-saved-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| {
                     s.browser.forget_saved();
                     s.browse_refresh(false, cx);
                 }))),
@@ -831,16 +831,16 @@ impl InstanceSheet {
     }
 }
 
-fn saved_text(age: Duration) -> String {
-    let minutes = (age.as_secs() / 60).max(1);
-    let hours = minutes / 60;
-    if minutes < 60 {
-        trf("Keine Verbindung · Ergebnisse von vor %lld Min.", &[&minutes])
-    } else if hours < 48 {
-        trf("Keine Verbindung · Ergebnisse von vor %lld Std.", &[&hours])
+fn saved_text(at: SystemTime) -> String {
+    let at = chrono::DateTime::<chrono::Local>::from(at);
+    let when = if at.date_naive() == chrono::Local::now().date_naive() {
+        at.format("%H:%M").to_string()
+    } else if lang() == Lang::En {
+        at.format("%b %-d").to_string()
     } else {
-        trf("Keine Verbindung · Ergebnisse von vor %lld Tagen", &[&(hours / 24)])
-    }
+        at.format("%-d.%-m.").to_string()
+    };
+    trf("Keine Verbindung · Ergebnisse von %@", &[&when])
 }
 
 fn placeholder(t: &Theme) -> Div {

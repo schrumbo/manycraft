@@ -339,6 +339,8 @@ pub fn found(i: &Game, m: &Model, words: &[String]) -> bool {
     }
     let state = if i.phase.needs_attention() {
         "braucht dich"
+    } else if matches!(i.phase, Phase::NetworkLost { .. } | Phase::NoNetwork) {
+        "Keine Verbindung"
     } else if i.phase.is_active() {
         "läuft"
     } else {

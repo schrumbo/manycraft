@@ -72,6 +72,7 @@ fn watch(probe: &dyn Fn() -> bool, wait: &dyn Fn(u32), set: &dyn Fn(u8)) {
 }
 
 fn set(state: u8) {
+    let listeners = LISTENERS.lock().unwrap_or_else(PoisonError::into_inner);
     let before = STATE.swap(state, Ordering::SeqCst);
     let changed = match (before, state) {
         (OFFLINE, ONLINE) => Some(true),
@@ -79,7 +80,7 @@ fn set(state: u8) {
         _ => None,
     };
     if let Some(up) = changed {
-        for listener in LISTENERS.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+        for listener in listeners.iter() {
             listener(up);
         }
     }

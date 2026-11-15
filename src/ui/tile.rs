@@ -214,7 +214,7 @@ impl Geometry {
 
 /// Whether the game of an instance in `phase` has a window to show.
 pub fn playable(phase: &Phase) -> bool {
-    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -561,7 +561,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
                 window.dispatch_action(Box::new(Play(key.clone())), cx);
             }
         });
-    let (account, login) = (d.account_id, d.phase == Phase::LoginNeeded);
+    let (account, login, waits) = (d.account_id, d.phase == Phase::LoginNeeded, d.phase == Phase::NoNetwork);
     tile.context_menu(move |menu, window, cx| {
         let chosen = menu_view.upgrade().map(|v| v.read(cx).grid.chosen()).unwrap_or_default();
         let several = chosen.len() > 1 && chosen.contains(&menu_key);
@@ -586,7 +586,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         let menu = if can_play { menu.menu(tr("Spielen"), Box::new(Play(menu_key.clone()))) } else { menu };
         let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
         let menu = menu.menu_with_disabled(tr("Neu verbinden"), Box::new(Reconnect(menu_key.clone())), !reconnectable);
-        let menu = if running || stopping {
+        let menu = if running || stopping || waits {
             menu.menu_with_disabled(tr("Stoppen"), Box::new(Stop(menu_key.clone())), stopping)
         } else if login {
             menu.menu(tr("Anmelden"), Box::new(SignInAgain(account.to_string())))

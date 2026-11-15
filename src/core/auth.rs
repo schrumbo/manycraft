@@ -568,7 +568,6 @@ fn get_bearer(agent: &ureq::Agent, url: &str, token: &str) -> Result<Reply> {
 }
 
 fn reply(url: &str, res: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Reply> {
-    net::note(&res);
     let mut res = res.with_context(|| format!("cannot reach {}", host(url)))?;
     let status = res.status().as_u16();
     let body = res.body_mut().with_config().limit(MAX_BODY).read_to_vec().with_context(|| format!("cannot read the answer from {}", host(url)))?;

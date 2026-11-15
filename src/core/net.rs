@@ -41,7 +41,15 @@ pub fn agent_within(timeout: Duration) -> ureq::Agent {
 
 /// Whether `e` means no connection could be made or kept: no network, unknown host, refused, reset or timed out.
 pub fn no_connection(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some_and(unreachable) || c.downcast_ref::<std::io::Error>().is_some_and(lost))
+    e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some_and(unreachable) || c.downcast_ref::<std::io::Error>().is_some_and(cut))
+}
+
+fn cut(e: &std::io::Error) -> bool {
+    e.get_ref().and_then(|inner| inner.downcast_ref::<ureq::Error>()).is_some_and(unreachable)
+        || matches!(
+            e.kind(),
+            ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::NotConnected | ErrorKind::TimedOut | ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable | ErrorKind::NetworkDown
+        )
 }
 
 fn unreachable(e: &ureq::Error) -> bool {
@@ -327,6 +335,15 @@ mod tests {
         let (agent, _) = fake::agent(Some(addr), Duration::from_secs(5));
         assert!(fetch_verified(&agent, "http://example.invalid/lib.jar", &path, None).is_err());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn local_file_errors_are_not_no_connection() {
+        let denied = anyhow::Error::from(std::io::Error::from(ErrorKind::PermissionDenied)).context("cannot replace a file");
+        assert!(!no_connection(&denied));
+        assert!(!no_connection(&anyhow::Error::from(std::io::Error::from(ErrorKind::UnexpectedEof))));
+        assert!(no_connection(&anyhow::Error::from(std::io::Error::from(ErrorKind::ConnectionReset))));
+        assert!(no_connection(&anyhow::Error::from(std::io::Error::other(ureq::Error::HostNotFound))));
     }
 
     #[test]

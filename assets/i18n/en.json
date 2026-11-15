@@ -816,7 +816,5 @@
   "Keine Verbindung": "No connection",
   "Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist": "No connection · reconnects as soon as the internet is back",
   "Keine Verbindung · startet, sobald das Internet zurück ist": "No connection · starts as soon as the internet is back",
-  "Keine Verbindung · Ergebnisse von vor %lld Min.": {"one": "No connection · results from %lld minute ago", "other": "No connection · results from %lld minutes ago"},
-  "Keine Verbindung · Ergebnisse von vor %lld Std.": {"one": "No connection · results from %lld hour ago", "other": "No connection · results from %lld hours ago"},
-  "Keine Verbindung · Ergebnisse von vor %lld Tagen": "No connection · results from %lld days ago"
+  "Keine Verbindung · Ergebnisse von %@": "No connection · results from %@"
 }
