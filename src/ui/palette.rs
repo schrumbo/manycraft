@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, CancelStart, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartAnyway, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
     AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
 };
@@ -27,6 +27,7 @@ use crate::core::instance::Loader;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Group {
     Selection,
+    Recent,
     Commands,
     Pages,
     Batches,
@@ -38,6 +39,7 @@ impl Group {
     fn label(self) -> String {
         match self {
             Self::Selection => tr("Auswahl"),
+            Self::Recent => tr("Zuletzt verwendet"),
             Self::Commands => tr("Befehle"),
             Self::Pages => tr("Seiten"),
             Self::Batches => tr("Batches"),
@@ -57,6 +59,8 @@ pub struct Entry {
     pub action: Box<dyn Action>,
     /// Whether the command can run now; a disabled one shows why in its detail and does nothing.
     pub enabled: bool,
+    /// Whether it starts, stops or deletes many games or a whole instance at once, so the cursor never starts on it.
+    pub mass: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -79,14 +83,20 @@ pub struct Palette {
 impl Palette {
     fn filter(&mut self, query: &str) {
         self.rows = Rc::new(rows(&self.entries, query));
-        self.cursor = self.rows.iter().position(|r| matches!(r, Row::Entry(_))).unwrap_or(0);
+        self.cursor = first_pick(&self.entries, &self.rows).unwrap_or(self.rows.len());
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     fn step(&mut self, by: isize) {
         let entries: Vec<usize> = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Entry(_))).map(|(ix, _)| ix).collect();
-        let Some(at) = entries.iter().position(|ix| *ix == self.cursor) else { return };
-        let to = (at as isize + by).clamp(0, entries.len() as isize - 1) as usize;
+        if entries.is_empty() {
+            return;
+        }
+        let to = match entries.iter().position(|ix| *ix == self.cursor) {
+            Some(at) => (at as isize + by).clamp(0, entries.len() as isize - 1) as usize,
+            None if by > 0 => 0,
+            None => entries.len() - 1,
+        };
         self.cursor = entries[to];
         let shown = if to == 0 { 0 } else { self.cursor };
         self.scroll.scroll_to_item(shown, ScrollStrategy::Nearest);
@@ -100,7 +110,11 @@ impl Palette {
     }
 
     fn blocked(&self) -> bool {
-        matches!(self.rows.get(self.cursor), Some(Row::Entry(ix)) if self.entries.get(*ix).is_some_and(|e| !e.enabled))
+        match self.rows.get(self.cursor) {
+            Some(Row::Entry(ix)) => self.entries.get(*ix).is_some_and(|e| !e.enabled),
+            Some(Row::Heading(_)) => false,
+            None => !self.rows.is_empty(),
+        }
     }
 }
 
@@ -149,7 +163,7 @@ fn open(this: &mut MainWindow, entries: Vec<Entry>, placeholder: String, nested:
         }
     });
     let rows = Rc::new(rows(&entries, ""));
-    let cursor = rows.iter().position(|r| matches!(r, Row::Entry(ix) if entries[*ix].enabled)).or_else(|| rows.iter().position(|r| matches!(r, Row::Entry(_)))).unwrap_or(0);
+    let cursor = first_pick(&entries, &rows).unwrap_or(rows.len());
     input.update(cx, |s, cx| s.take_focus(window, cx));
     this.palette = Some(Palette { input, entries, rows, cursor, scroll: UniformListScrollHandle::new(), nested, _typed: typed });
     cx.notify();
@@ -174,12 +188,13 @@ fn pick_shortcut_instance(this: &mut MainWindow, window: &mut Window, cx: &mut C
             keys: None,
             action: Box::new(CreateShortcut { instance: made.id.clone(), account: made.last_account.map(|a| a.to_string()) }),
             enabled: true,
+            mass: false,
         })
         .collect();
     let Some(p) = this.palette.as_mut() else { return };
     p.rows = Rc::new(rows(&entries, ""));
     p.entries = Rc::new(entries);
-    p.cursor = p.rows.iter().position(|r| matches!(r, Row::Entry(_))).unwrap_or(0);
+    p.cursor = first_pick(&p.entries, &p.rows).unwrap_or(p.rows.len());
     p.scroll.scroll_to_item(0, ScrollStrategy::Top);
     p.input.update(cx, |s, cx| s.set_value("", window, cx));
     cx.notify();
@@ -190,6 +205,9 @@ fn run(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
         return;
     }
     let action = this.palette.as_ref().and_then(Palette::chosen);
+    if let Some(action) = action.as_ref().filter(|_| this.palette.as_ref().is_some_and(|p| !p.nested)) {
+        remember(action.as_ref(), cx);
+    }
     if action.as_ref().is_some_and(|a| a.as_any().is::<PickShortcutInstance>()) {
         pick_shortcut_instance(this, window, cx);
         return;
@@ -198,6 +216,35 @@ fn run(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
     if let Some(action) = action {
         window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
     }
+}
+
+/// How many commands the palette keeps as recently used.
+const RECENT_MAX: usize = 5;
+
+struct Recent(Vec<Box<dyn Action>>);
+
+impl Global for Recent {}
+
+fn remember(action: &dyn Action, cx: &mut App) {
+    if !cx.has_global::<Recent>() {
+        cx.set_global(Recent(Vec::new()));
+    }
+    let recent = &mut cx.global_mut::<Recent>().0;
+    recent.retain(|a| !a.partial_eq(action));
+    recent.insert(0, action.boxed_clone());
+    recent.truncate(RECENT_MAX);
+}
+
+/// Whether `action` starts, stops or deletes many games or a whole instance; selection commands count when `several` are chosen.
+fn mass(action: &dyn Action, several: bool) -> bool {
+    let a = action.as_any();
+    a.is::<StartAll>() || a.is::<StopAll>() || a.is::<CancelStart>() || a.is::<StartBatch>() || a.is::<StopBatch>() || a.is::<StartAnyway>() || a.is::<DeleteInstance>() || a.is::<ResetInstance>()
+        || (several && (a.is::<StartSelected>() || a.is::<StopSelected>() || a.is::<RestartSelected>()))
+}
+
+/// The row the cursor starts on: the first entry that can run and is no mass action; none when every hit is one.
+fn first_pick(entries: &[Entry], rows: &[Row]) -> Option<usize> {
+    rows.iter().position(|r| matches!(r, Row::Entry(ix) if entries[*ix].enabled && !entries[*ix].mass))
 }
 
 /// The rows for `query`: every entry under its group heading when it is empty, otherwise the hits, best first.
@@ -212,7 +259,7 @@ fn rows(entries: &[Entry], query: &str) -> Vec<Row> {
         }
         return rows;
     }
-    let mut hits: Vec<(i32, usize)> = entries.iter().enumerate().filter_map(|(ix, e)| score(query, &e.label, e.detail.as_deref().unwrap_or("")).map(|s| (s, ix))).collect();
+    let mut hits: Vec<(i32, usize)> = entries.iter().enumerate().filter(|(_, e)| e.group != Group::Recent).filter_map(|(ix, e)| score(query, &e.label, e.detail.as_deref().unwrap_or("")).map(|s| (s, ix))).collect();
     hits.sort_by_key(|(s, ix)| (-s, *ix));
     hits.into_iter().map(|(_, ix)| Row::Entry(ix)).collect()
 }
@@ -332,7 +379,7 @@ pub fn menu_row(text: String, keys: Option<String>, disabled: bool) -> impl Fn(&
 
 fn entry(group: Group, icon: &'static str, label: String, detail: Option<String>, action: Box<dyn Action>, cx: &App) -> Entry {
     let keys = shortcut(action.as_ref(), cx);
-    Entry { group, icon, label, detail, keys, action, enabled: true }
+    Entry { group, icon, label, detail, keys, action, enabled: true, mass: false }
 }
 
 fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
@@ -374,9 +421,12 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     let playable = m.games.values().any(|i| super::tile::playable(&i.phase));
     let attention = m.attention_count(None) > 0;
     let ready = matches!(m.updates.status, model::UpdateStatus::Ready { .. }) && super::updates::counts(cx).0 == 0;
+    let run = m.run(None);
     for (icon, label, action, able) in [
         ("play", tr("Alle starten"), Box::new(StartAll) as Box<dyn Action>, stopped),
         ("square", tr("Alle stoppen"), Box::new(StopAll), active),
+        ("x", tr("Start abbrechen"), Box::new(CancelStart(None)), run.is_some()),
+        ("play", tr("Trotzdem alle starten"), Box::new(StartAnyway(None)), run.is_some_and(|r| r.memory > 0)),
         ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount), true),
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
@@ -436,7 +486,10 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     for (icon, label, action) in [("layout-grid", tr("Alle"), Box::new(ShowAll) as Box<dyn Action>), ("users", tr("Accounts"), Box::new(ShowAccounts)), ("messages-square", tr("Chat"), Box::new(OpenChat))] {
         out.push(entry(Group::Pages, icon, label, None, action, cx));
     }
-    for b in &m.batches {
+    let shown = if let Page::Grid(Some(b)) = &this.page { Some(b.as_str()) } else { None };
+    let mut batches: Vec<_> = m.batches.iter().collect();
+    batches.sort_by_key(|b| Some(b.id.as_str()) != shown);
+    for b in batches {
         let server = b.server.clone().filter(|s| !s.is_empty());
         out.push(entry(Group::Batches, "boxes", b.name.clone(), server.clone(), Box::new(ShowBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "play", trf("%@ starten", &[&b.name]), server.clone(), Box::new(StartBatch(b.id.clone())), cx));
@@ -518,8 +571,23 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         } else {
             ("play", tr("Starten"), Box::new(Start(i.key.clone())))
         };
-        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action, enabled: true });
+        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action, enabled: true, mass: false });
     }
+    let several = chosen.len() > 1;
+    for e in &mut out {
+        e.mass = mass(e.action.as_ref(), several);
+    }
+    let recent: Vec<Entry> = cx
+        .try_global::<Recent>()
+        .map(|r| {
+            r.0.iter()
+                .filter_map(|a| out.iter().find(|e| e.enabled && e.action.partial_eq(a.as_ref())))
+                .map(|e| Entry { group: Group::Recent, icon: e.icon, label: e.label.clone(), detail: e.detail.clone(), keys: e.keys.clone(), action: e.action.boxed_clone(), enabled: true, mass: e.mass })
+                .collect()
+        })
+        .unwrap_or_default();
+    let at = out.iter().take_while(|e| e.group == Group::Selection).count();
+    out.splice(at..at, recent);
     out
 }
 
@@ -656,7 +724,28 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
 
 #[cfg(test)]
 mod tests {
-    use super::{label, score};
+    use super::{Entry, Group, Row, first_pick, label, mass, rows, score};
+    use crate::ui::actions::{CancelStart, NewBatch, StartAll, StartBatch, StartSelected, StopAll, StopBatch};
+    use gpui_kit::Action;
+
+    #[test]
+    fn the_cursor_never_starts_on_a_mass_action() {
+        let entry = |label: &str, action: Box<dyn Action>| {
+            let mass = mass(action.as_ref(), false);
+            Entry { group: Group::Commands, icon: "play", label: label.into(), detail: None, keys: None, action, enabled: true, mass }
+        };
+        let entries = vec![entry("Alle starten", Box::new(StartAll)), entry("Alle stoppen", Box::new(StopAll)), entry("Test starten", Box::new(StartBatch("b".into()))), entry("Neuer Batch", Box::new(NewBatch))];
+        for query in ["", "a", "alle", "start", "st", "neu", "batch"] {
+            let rows = rows(&entries, query);
+            if let Some(Row::Entry(ix)) = first_pick(&entries, &rows).map(|at| rows[at]) {
+                assert!(!entries[ix].mass, "{query:?} starts on {}", entries[ix].label);
+            }
+        }
+        assert_eq!(first_pick(&entries, &rows(&entries, "alle st")), None, "only mass hits: Enter does nothing until an arrow picks one");
+        assert!(mass(&StopBatch("b".into()), false) && mass(&StartSelected, true));
+        assert!(!mass(&StartSelected, false), "one chosen game is no mass action");
+        assert!(mass(&CancelStart(None), false), "cancelling stops every game still in line");
+    }
     use gpui_kit::Keystroke;
 
     #[test]

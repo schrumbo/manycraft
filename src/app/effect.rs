@@ -43,6 +43,10 @@ pub enum Effect {
     /// Checks whether `count` games of `memory_mb` fit into the free memory, and says so when they do not.
     CheckFit { count: u32, memory_mb: u32 },
     Stop(Vec<String>),
+    /// The user stopped these games together: offer to start them again.
+    Stopped(Vec<String>),
+    /// Reads the memory of the machine and answers with [`Event::Memory`].
+    ReadMemory,
     ReadPreview { key: String, path: PathBuf },
     /// The game ended: its preview file is closed so the instance folder can be moved or deleted.
     ReleasePreview(String),

@@ -9,9 +9,9 @@ use uuid::Uuid;
 
 use crate::app;
 use crate::core::fit::Fit;
-use crate::core::i18n::trf;
+use crate::core::i18n::{tr, trf};
 
-pub use crate::app::model::{ChatLine, Game, Import, Phase, UpdateStatus, Updates, banned_status, link_status, proxy_status, rank, restart_status};
+pub use crate::app::model::{ChatLine, Game, Import, Phase, Run, UpdateStatus, Updates, banned_status, link_status, proxy_status, rank, restart_status};
 
 use super::forms;
 
@@ -54,6 +54,16 @@ impl Model {
     pub fn live(&self, key: &str) -> bool {
         self.app.frames.get(key).is_some_and(|f| f.live)
     }
+}
+
+/// What a bulk start under way says: how far it is and how many wait for free memory.
+pub fn run_line(run: &Run) -> String {
+    let line = trf("Startet %lld/%lld", &[&run.launched, &run.total]);
+    if run.memory == 0 {
+        return line;
+    }
+    let waiting = if run.memory == 1 { tr("1 wartet auf Arbeitsspeicher") } else { trf("%lld warten auf Arbeitsspeicher", &[&run.memory]) };
+    format!("{line} · {waiting}")
 }
 
 /// What `count` instances of `each_mb` need against the memory that is free, as one German line.

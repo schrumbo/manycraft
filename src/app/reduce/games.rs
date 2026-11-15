@@ -630,7 +630,7 @@ pub(super) fn restart_due(m: &mut Model, key: &str, generation: u64, out: &mut V
     }
     let batch = m.games.get(key).filter(|i| matches!(i.phase, Phase::Restarting { .. }) && !i.stopping).map(|i| i.batch_id.clone());
     if let Some(batch) = batch {
-        fleet::launch(m, &batch, Some(&[key.to_owned()]), true, out);
+        fleet::launch(m, &batch, Some(&[key.to_owned()]), fleet::Kick::Crash, out);
     }
 }
 

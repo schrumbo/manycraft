@@ -51,7 +51,13 @@ impl<'a> Env<'a> {
 pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
     let mut out = Vec::new();
     match event {
-        Event::Reports(reports) => games::reports(model, env, reports, &mut out),
+        Event::Reports(reports) => {
+            let freed = reports.iter().any(|r| matches!(r, Report::Exited { .. } | Report::Connected { .. }));
+            games::reports(model, env, reports, &mut out);
+            if freed && fleet::memory_waiting(model) {
+                fleet::ask_memory(model, &mut out);
+            }
+        }
         Event::ReconnectDue { key, generation } => games::reconnect_due(model, &key, generation, &mut out),
         Event::RestartDue { key, generation } => games::restart_due(model, &key, generation, &mut out),
         Event::JoinDue { key, generation, lines, delay } => games::join_due(model, key, generation, lines, delay, &mut out),
@@ -97,17 +103,37 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             let keys = fleet::signed_in(model, &keys);
             fleet::start_keys(model, &keys, &mut out);
         }
-        Event::StartBatch(batch) => fleet::launch(model, &batch, None, false, &mut out),
+        Event::StartBatch(batch) => fleet::launch(model, &batch, None, fleet::Kick::Plain, &mut out),
         Event::StartAll => {
             for id in batch_ids(model) {
-                fleet::launch(model, &id, None, false, &mut out);
+                fleet::launch(model, &id, None, fleet::Kick::Bulk, &mut out);
             }
         }
         Event::Stop(keys) => fleet::stop_keys(model, keys, &mut out),
-        Event::StopBatch(batch) => fleet::stop_batch(model, &batch, &mut out),
+        Event::StopBatch(batch) => {
+            let stopped = fleet::stoppable(model, Some(&batch));
+            fleet::stop_batch(model, &batch, &mut out);
+            if !stopped.is_empty() {
+                out.push(Effect::Stopped(stopped));
+            }
+        }
         Event::StopAll => {
+            let stopped = fleet::stoppable(model, None);
             for id in batch_ids(model) {
                 fleet::stop_batch(model, &id, &mut out);
+            }
+            if !stopped.is_empty() {
+                out.push(Effect::Stopped(stopped));
+            }
+        }
+        Event::StartAgain(keys) => fleet::start_again(model, &keys, &mut out),
+        Event::StartAnyway(batch) => fleet::start_anyway(model, batch.as_deref(), &mut out),
+        Event::CancelStart(batch) => fleet::cancel_start(model, batch.as_deref(), &mut out),
+        Event::Memory(memory) => fleet::memory(model, memory, &mut out),
+        Event::MemoryDue => {
+            model.session.memory_timer = false;
+            if fleet::memory_waiting(model) {
+                fleet::ask_memory(model, &mut out);
             }
         }
         Event::Restart(keys) => {
@@ -161,6 +187,10 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::Visible(keys) => games::visible(model, env, keys, &mut out),
         Event::TellGames => games::tell_games(model, env, &mut out),
+    }
+    if !model.session.runs.is_empty() {
+        let games = &model.games;
+        model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));
     }
     out
 }

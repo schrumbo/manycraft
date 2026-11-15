@@ -4,12 +4,13 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, StartBatch, StopBatch};
+use super::actions::{CancelStart, StartAnyway, EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
 use super::motion::Soft;
-use super::theme::{Theme, font, iconsize, radius, shell, space, tint};
+use super::theme::{Theme, control, font, iconsize, radius, shell, space, tint};
+use super::toolbar::tabular;
 use super::widgets::{KeyNav, icon, menu_of, menu_open, tip};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
@@ -25,6 +26,8 @@ struct Row {
     unread: u32,
     hint: Option<String>,
     running: bool,
+    /// The batch whose bulk start the row can cancel.
+    cancel: Option<String>,
 }
 
 fn row(this: &MainWindow, mut r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
@@ -88,7 +91,30 @@ fn row_body(r: Row, selected: bool, t: &Theme) -> Stateful<Div> {
                     .child(r.unread.to_string()),
             )
         })
-        .when_some(r.trailing, |d, text| d.child(div().flex_none().text_size(px(font::CAPTION)).text_color(if selected { t.accent_text } else { t.tertiary }).child(text)))
+        .when_some(r.trailing, |d, text| d.child(div().flex_none().text_size(px(font::CAPTION)).font_features(tabular()).text_color(if selected { t.accent_text } else { t.tertiary }).child(text)))
+        .when_some(r.cancel, |d, batch| {
+            let label = tr("Start abbrechen");
+            d.child(
+                div()
+                    .id(SharedString::from(format!("nav-cancel-{batch}")))
+                    .mark("button", label.clone())
+                    .size(px(control::S))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::FULL))
+                    .cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::FULL)
+                    .child(icon("x", iconsize::S, if selected { t.accent_text } else { t.secondary }))
+                    .tooltip(tip(label))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        window.dispatch_action(Box::new(CancelStart(Some(batch.clone()))), cx);
+                    }),
+            )
+        })
         .when_some(r.hint, |d, hint| d.tooltip(tip(hint)))
 }
 
@@ -276,7 +302,14 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
 }
 
 /// The menu of a batch, in the sidebar and over its tiles.
-pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, exporting: bool) -> PopupMenu {
+pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, exporting: bool, run: Option<model::Run>) -> PopupMenu {
+    let menu = match run {
+        Some(run) => menu
+            .when(run.memory > 0, |menu| menu.menu(tr("Trotzdem alle starten"), Box::new(StartAnyway(Some(id.to_owned())))))
+            .menu(tr("Start abbrechen"), Box::new(CancelStart(Some(id.to_owned()))))
+            .separator(),
+        None => menu,
+    };
     menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(id.to_owned())), stopped == 0)
         .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), stoppable == 0)
         .separator()
@@ -407,16 +440,19 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         unread: 0,
         hint: None,
         running: false,
+        cancel: None,
     };
-    let batches: Vec<(Row, String, usize, usize, bool)> = m
+    let batches: Vec<(Row, String, usize, usize, bool, Option<model::Run>)> = m
         .batches
         .iter()
         .map(|b| {
             let total = m.games.values().filter(|i| i.batch_id == b.id).count();
             let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.is_active()).count();
             let attention = m.attention_count(Some(&b.id));
-            let fine = m.games.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.needs_attention()).count();
+            let fine = m.games.values().filter(|i| i.batch_id == b.id && i.phase.is_active() && !i.phase.waiting() && !i.phase.needs_attention()).count();
+            let run = m.run(Some(&b.id));
             let hint = match (total, running) {
+                _ if run.is_some() => run.as_ref().map(model::run_line).unwrap_or_default(),
                 (0, _) => tr("Noch keiner da."),
                 (1, 0) if attention == 0 => tr("Schläft noch."),
                 (_, 0) if attention == 0 => trf("Alle %lld schlummern.", &[&total]),
@@ -425,8 +461,13 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
             let stopped = total - running;
             let stoppable = m.games.values().filter(|i| i.batch_id == b.id && i.phase.stoppable()).count();
             let exporting = m.exporting.contains(&b.instance_id);
-            let trailing = if exporting { tr("Wird exportiert …") } else { format!("{fine}/{total}") };
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false }, b.id.clone(), stoppable, stopped, exporting)
+            let trailing = match &run {
+                _ if exporting => tr("Wird exportiert …"),
+                Some(run) => format!("{}/{}", run.launched, run.total),
+                None => format!("{fine}/{total}"),
+            };
+            let cancel = run.is_some().then(|| b.id.clone());
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false, cancel }, b.id.clone(), stoppable, stopped, exporting, run)
         })
         .collect();
     let mut instances: Vec<&Instance> = m.instances.iter().collect();
@@ -445,13 +486,14 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 unread: 0,
                 hint: running.then(|| tr("Läuft gerade")),
                 running,
+                cancel: None,
             };
             (r, made.id.clone())
         })
         .collect();
-    let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None, running: false };
+    let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None, running: false, cancel: None };
     let updates = m.updates.clone();
-    let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None, running: false };
+    let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None, running: false, cancel: None };
     let waiting = m.imports.len().saturating_sub(IMPORT_ROWS_MAX);
     let mut imports: Vec<AnyElement> = m.imports.iter().take(IMPORT_ROWS_MAX).map(|import| {
         let id = import.id;
@@ -459,9 +501,9 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         import_row(import, &t).context_menu(move |menu, _, _| menu.menu_with_disabled(tr("Import abbrechen"), Box::new(CancelImport(id)), stopping)).into_any_element()
     }).collect();
     let mut batch_rows = Vec::new();
-    for (r, id, stoppable, stopped, exporting) in batches {
+    for (r, id, stoppable, stopped, exporting, run) in batches {
         let key = r.id.clone();
-        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, stoppable, stopped, exporting), window, cx));
+        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, stoppable, stopped, exporting, run), window, cx));
         batch_rows.push(element.into_any_element());
     }
     if waiting > 0 {

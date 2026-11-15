@@ -1276,5 +1276,17 @@
   "Vollbild": "Full screen",
   "Vollbild beenden": "Exit full screen",
   "Darstellung": "View",
-  "und %lld weitere": "and %lld more"
+  "und %lld weitere": "and %lld more",
+  "Wartet auf Arbeitsspeicher": "Waiting for memory",
+  "Startet %lld/%lld": "Starting %lld/%lld",
+  "%lld warten auf Arbeitsspeicher": "%lld waiting for memory",
+  "Trotzdem alle starten": "Start all anyway",
+  "Start abbrechen": "Cancel start",
+  "„%@“ gestoppt.": "“%@” stopped.",
+  "„%@“ wurde nicht neu gestartet.": "“%@” was not restarted.",
+  "%lld Spiele": "%lld games",
+  "%lld Spiele gestoppt.": "%lld games stopped.",
+  "%@ wurden nicht neu gestartet.": "%@ were not restarted.",
+  "1 wartet auf Arbeitsspeicher": "1 waiting for memory",
+  "Startet auch die Spiele, für die der Arbeitsspeicher gerade nicht reicht.": "Also starts the games there is not enough free memory for right now."
 }

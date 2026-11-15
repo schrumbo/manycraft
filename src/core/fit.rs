@@ -36,6 +36,11 @@ pub fn fit_in(count: u32, memory_mb: u32, memory: Memory) -> Fit {
     Fit { needed_mb, free_mb: memory.free_mb, suggested_count }
 }
 
+/// The memory kept free for the system and the user's other apps on a machine with `total_mb`: an eighth, at least 1 GB and at most 4 GB.
+pub fn reserve_mb(total_mb: u64) -> u64 {
+    (total_mb / 8).clamp(1024, 4096)
+}
+
 /// Total and available RAM of this machine.
 pub fn system_memory() -> Option<Memory> {
     platform::read()
@@ -134,6 +139,13 @@ mod tests {
         assert_eq!(fit_in(5, 0, MEM).suggested_count, 5);
         assert_eq!(fit_in(0, 2048, MEM), Fit { needed_mb: 0, free_mb: 32000, suggested_count: 0 });
         assert_eq!(fit_in(u32::MAX, u32::MAX, MEM).needed_mb, u64::from(u32::MAX) * u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn the_reserve_is_an_eighth_within_one_and_four_gigabytes() {
+        assert_eq!(reserve_mb(16384), 2048);
+        assert_eq!(reserve_mb(4096), 1024);
+        assert_eq!(reserve_mb(131_072), 4096);
     }
 
     #[test]
