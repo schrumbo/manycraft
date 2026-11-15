@@ -93,7 +93,8 @@ def heavy():
 
 
 def clippy(scope):
-    args = ["cargo", "clippy", "--all-targets", "--message-format=json", "--"]
+    features = ["--features", "freya-proto"] if "freya-proto =" in Path("Cargo.toml").read_text(encoding="utf-8") else []
+    args = ["cargo", "clippy", "--all-targets", *features, "--message-format=json", "--"]
     for lint in LINTS:
         args += ["-W", f"clippy::{lint}"]
     run = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
