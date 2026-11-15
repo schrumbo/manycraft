@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMods, CloneInstance, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
+use super::actions::{AddAccount, AddMods, CloneInstance, CreateShortcut, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
 use super::batch_sheet::Load;
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -1339,13 +1339,17 @@ impl InstancePage {
             let id = id.clone();
             move |_, window, cx| window.dispatch_action(Box::new(CloneInstance(id.clone())), cx)
         });
+        let shortcut = sheet::button("instance-shortcut", tr("Verknüpfung erstellen"), None, Look::Secondary, false, false, t).on_click({
+            let (id, account) = (id.clone(), f.solo.map(|a| a.to_string()));
+            move |_, window, cx| window.dispatch_action(Box::new(CreateShortcut { instance: id.clone(), account: account.clone() }), cx)
+        });
         let reset = sheet::button_unless("instance-reset", tr("Zurücksetzen…"), None, Look::Secondary, f.running.then(|| tr("Stoppe zuerst die laufenden Spiele.").into()), false, t);
         let reset = if f.running { reset } else { reset.on_click({ let id = id.clone(); move |_, window, cx| window.dispatch_action(Box::new(ResetInstance(id.clone())), cx) }) };
         let used = !f.batches.is_empty();
         let names: Vec<String> = f.batches.iter().map(|(_, name)| name.clone()).collect();
         let delete = sheet::button_unless("instance-delete", tr("Löschen…"), None, Look::Danger, used.then(|| crate::core::fleet::used_by(&names).into()), false, t);
         let delete = if used { delete } else { delete.on_click(move |_, window, cx| window.dispatch_action(Box::new(DeleteInstance(id.clone())), cx)) };
-        div().flex().flex_wrap().items_center().gap(px(space::S)).child(open).child(clone).child(reset).child(delete)
+        div().flex().flex_wrap().items_center().gap(px(space::S)).child(open).child(clone).child(shortcut).child(reset).child(delete)
     }
 
     fn render_gone(&self, root: Stateful<Div>, t: &Theme) -> Stateful<Div> {

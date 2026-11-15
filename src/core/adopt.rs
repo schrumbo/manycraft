@@ -173,6 +173,15 @@ pub fn is_manager() -> bool {
 
 /// Asks the running manager to come to the front. False when it does not answer.
 pub fn reopen_first() -> bool {
+    send_first(&serde_json::json!({ "t": "reopen" }))
+}
+
+/// Asks the running manager to play an instance. False when it does not answer.
+pub fn play_first(play: &super::shortcut::Play) -> bool {
+    send_first(&serde_json::json!({ "t": "play", "instance": play.instance, "account": play.account }))
+}
+
+fn send_first(message: &serde_json::Value) -> bool {
     let Some(addr) = std::fs::read_to_string(address_file()).ok().and_then(|a| a.trim().parse::<SocketAddr>().ok()) else { return false };
     #[cfg(windows)]
     unsafe {
@@ -181,7 +190,7 @@ pub fn reopen_first() -> bool {
     }
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, REOPEN_TIMEOUT) else { return false };
     let _ = stream.set_write_timeout(Some(REOPEN_TIMEOUT));
-    stream.write_all(b"{\"t\":\"reopen\"}\n").and_then(|()| stream.flush()).is_ok()
+    stream.write_all(format!("{message}\n").as_bytes()).and_then(|()| stream.flush()).is_ok()
 }
 
 /// Who a process is: when it started and which program it runs.

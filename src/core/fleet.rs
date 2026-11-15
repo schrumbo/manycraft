@@ -1679,7 +1679,7 @@ fn print_event(names: &HashMap<String, String>, event: &ipc::Event) {
         ipc::Event::Connected { instance, pid, mod_version } => println!("{} connected (pid {pid}, mod {mod_version})", name(instance)),
         ipc::Event::Message { instance, message } => println!("{}: {message:?}", name(instance)),
         ipc::Event::Disconnected { instance } => println!("{} disconnected", name(instance)),
-        ipc::Event::Reopen => {}
+        ipc::Event::Reopen | ipc::Event::Play { .. } => {}
     }
 }
 

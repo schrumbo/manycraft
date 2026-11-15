@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::actions::{
     AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
-    AddMods, CloneInstance, DeleteInstance, EditMods, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance,
+    AddMods, CloneInstance, DeleteInstance, EditMods, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -401,6 +401,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Instances, "package", trf("Instanz %@ öffnen", &[name]), detail.clone(), Box::new(ShowInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
         out.push(entry(Group::Instances, "boxes", trf("Neuer Batch mit %@…", &[name]), detail.clone(), Box::new(NewBatchFor(id.clone())), cx));
+        out.push(entry(Group::Instances, "link", trf("Verknüpfung für %@ erstellen", &[name]), detail.clone(), Box::new(CreateShortcut { instance: id.clone(), account: made.last_account.map(|a| a.to_string()) }), cx));
         if made.loader.takes_mods() {
             out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(AddMods(id.clone())), cx));
             out.push(entry(Group::Instances, "package", trf("Mods von %@ verwalten…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));

@@ -49,6 +49,7 @@ pub mod skins;
 pub mod stagger;
 #[allow(dead_code)]
 pub mod settings;
+pub mod shortcut;
 pub mod shots;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod signin_window;

@@ -18,7 +18,8 @@ use crate::core::javas::Java;
 use crate::core::options::LaunchOptions;
 use crate::core::versions::{GameVersion, Kind};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
-use crate::core::{mrpack, origin};
+use crate::core::{mrpack, origin, shortcut};
+use crate::core::i18n::tr;
 use crate::core::launchers::{self, Found, Launcher, Library, Take, Unsupported};
 use crate::core::prism::{self, AccountImport, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
@@ -971,6 +972,17 @@ pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(
 /// Deletes an instance an import made after it was cancelled too late to stop.
 pub fn drop_import(made: &setup::Instance) -> Result<()> {
     setup::delete(made)
+}
+
+/// Writes a desktop shortcut named `name` that plays `play`; a driven instance only records it, or writes to the folder `MANYCRAFT_DESKTOP` names.
+pub fn create_shortcut(play: &shortcut::Play, name: &str) -> Result<Option<PathBuf>> {
+    let dir = match std::env::var_os("MANYCRAFT_DESKTOP").filter(|_| drive::on()).map(PathBuf::from) {
+        Some(dir) => dir,
+        None if drive::fenced("shortcut", name) => return Ok(None),
+        None => shortcut::desktop_dir().context(tr("Der Desktop-Ordner wurde nicht gefunden."))?,
+    };
+    let exe = std::env::current_exe().context(tr("Das Programm lässt sich nicht finden."))?;
+    shortcut::create(play, name, &exe, &dir).map(Some)
 }
 
 /// Writes `made` as a `.mrpack` to `out`; a driven instance only records it.

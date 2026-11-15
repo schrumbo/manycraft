@@ -1042,5 +1042,10 @@
   "Prism, Modrinth, CurseForge und mehr": "Prism, Modrinth, CurseForge and more",
   "Oder aus anderem Launcher übernehmen": "Or import from another launcher",
   "„%@“ lässt sich nicht übernehmen.": "“%@” cannot be imported.",
-  "%lld Mods": "%lld mods"
+  "%lld Mods": "%lld mods",
+  "Der Desktop-Ordner wurde nicht gefunden.": "The desktop folder was not found.",
+  "Das Programm lässt sich nicht finden.": "The program cannot be found.",
+  "Verknüpfung für „%@“ nicht erstellt.": "Shortcut for “%@” not created.",
+  "Verknüpfung erstellen": "Create shortcut",
+  "Verknüpfung für %@ erstellen": "Create shortcut for %@"
 }

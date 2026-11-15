@@ -200,6 +200,14 @@ pub struct OpenInstanceFolder(pub String);
 #[action(namespace = manycraft)]
 pub struct ExportInstance(pub String);
 
+/// Puts a desktop shortcut on the desktop that plays an instance, with an account (id) when one is named.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct CreateShortcut {
+    pub instance: String,
+    pub account: Option<String>,
+}
+
 /// Opens the mod browser of an instance (id) with the search focused.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -367,6 +367,7 @@ pub fn instance_menu(menu: PopupMenu, id: &str, cx: &App) -> PopupMenu {
         .menu(tr("Klonen"), Box::new(CloneInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenInstanceFolder(id.to_owned())))
+        .menu(tr("Verknüpfung erstellen"), Box::new(CreateShortcut { instance: id.to_owned(), account: made.and_then(|made| made.last_account).map(|a| a.to_string()) }))
         .menu(tr("Als .mrpack exportieren…"), Box::new(ExportInstance(id.to_owned())))
         .separator();
     let menu = if running {

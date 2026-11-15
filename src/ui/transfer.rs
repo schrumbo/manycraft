@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use gpui_kit::*;
 
-use super::actions::{CancelImport, ExportBatch, ExportInstance, ImportBatch, OpenBatchFolder, OpenGameFolder, OpenInstanceFolder};
+use super::actions::{CancelImport, CreateShortcut, ExportBatch, ExportInstance, ImportBatch, OpenBatchFolder, OpenGameFolder, OpenInstanceFolder};
 use super::{forms, model, remote};
 use crate::core::instance::Instance;
 use crate::core::drive;
@@ -27,6 +27,7 @@ pub fn init(cx: &mut App) {
         }
     });
     cx.on_action(|a: &ExportInstance, cx| export(&a.0, cx));
+    cx.on_action(|a: &CreateShortcut, cx| shortcut(a, cx));
     cx.on_action(|a: &CancelImport, cx| cancel(a.0, cx));
     cx.on_action(|a: &OpenBatchFolder, cx| {
         let dir = model::get(cx).read(cx).instance_of(&a.0).map(Instance::dir);
@@ -257,6 +258,33 @@ fn file_name(name: &str) -> String {
 
 fn with_extension(path: PathBuf) -> PathBuf {
     if path.extension().is_some() { path } else { path.with_extension(mrpack::EXTENSION) }
+}
+
+fn shortcut(a: &CreateShortcut, cx: &mut App) {
+    let m = model::get(cx).read(cx);
+    let Some(made) = m.instance(&a.instance) else { return };
+    let account = a.account.as_deref().and_then(|id| id.parse().ok()).and_then(|id| m.account(id));
+    let name = match account.filter(|_| m.accounts.len() > 1) {
+        Some(account) => format!("{} ({})", made.name, account.name),
+        None => made.name.clone(),
+    };
+    let play = crate::core::shortcut::Play { instance: made.id.clone(), account: account.map(|a| a.id.to_string()) };
+    let job = cx.background_spawn({
+        let name = name.clone();
+        async move { remote::create_shortcut(&play, &name) }
+    });
+    cx.spawn(async move |cx| {
+        let result = job.await;
+        let _ = cx.update(|cx| match result {
+            Ok(Some(path)) => cx.reveal_path(&path),
+            Ok(None) => {}
+            Err(e) => model::get(cx).update(cx, |m, cx| {
+                m.error = Some(forms::explain_as(trf("Verknüpfung für „%@“ nicht erstellt.", &[&name]), &e).text);
+                cx.notify();
+            }),
+        });
+    })
+    .detach();
 }
 
 fn export(id: &str, cx: &mut App) {

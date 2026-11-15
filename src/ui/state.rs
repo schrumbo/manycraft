@@ -43,6 +43,9 @@ const BACK_STAGGER: Duration = Duration::from_secs(1);
 const BACK_WAIT_SECS: u64 = 2;
 const WAITING_RETRY_SECS: u64 = 60;
 const TRASH_KEPT: Duration = Duration::from_secs(600);
+const SHOW_READY_FOR: Duration = Duration::from_secs(600);
+
+static WAITING_PLAYS: Mutex<Vec<(String, Option<String>)>> = Mutex::new(Vec::new());
 
 /// What the fleet reports back to the UI thread.
 pub enum Update {
@@ -404,6 +407,7 @@ struct Runtime {
     joined: HashSet<String>,
     history: Option<history::Writer>,
     refreshed: bool,
+    show_when_ready: Option<(String, Instant)>,
     alerts: HashMap<String, Vec<(String, Alert)>>,
     pids: HashMap<String, u32>,
     restarts: HashMap<String, u64>,
@@ -468,6 +472,7 @@ pub fn init(cx: &mut App) {
         joined: HashSet::new(),
         history: history::Writer::start().ok(),
         refreshed: false,
+        show_when_ready: None,
         alerts: HashMap::new(),
         pids: HashMap::new(),
         restarts: HashMap::new(),
@@ -539,7 +544,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|a: &PlayInstance, cx| {
         let instance = a.instance.clone();
         let account = a.account.as_deref().and_then(|id| id.parse().ok());
-        cx.defer(move |cx| play_instance(&instance, account, cx));
+        cx.defer(move |cx| {
+            play_instance(&instance, account, cx);
+        });
     });
     cx.on_action(|a: &CloneInstance, cx| clone_instance(&a.0, cx));
     cx.on_action(|_: &ShowGrid, cx| cx.defer(show_grid));
@@ -700,6 +707,9 @@ fn reload_with(cx: &mut App, keep: bool) {
                 cx.global_mut::<Runtime>().refreshed = true;
             }
             tell_games(cx);
+            if model.read(cx).loaded {
+                run_waiting_plays(cx);
+            }
         });
     })
     .detach();
@@ -815,7 +825,47 @@ pub fn solo_account(m: &Model, made: &Instance) -> Option<uuid::Uuid> {
     })
 }
 
-fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
+/// Plays `instance` as another start of Manycraft or a shortcut asked: with `account`, else the one that played it last. Waits for the first load when the data is not there yet, and shows the game as soon as it can be shown.
+pub fn request_play(instance: String, account: Option<String>, cx: &mut App) {
+    if !model::get(cx).read(cx).loaded {
+        WAITING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()).push((instance, account));
+        return;
+    }
+    let account = account.as_deref().and_then(|id| id.parse().ok());
+    match play_instance(&instance, account, cx) {
+        Some(key) => {
+            if cx.has_global::<Runtime>() {
+                cx.global_mut::<Runtime>().show_when_ready = Some((key, Instant::now()));
+            }
+        }
+        None => show_grid(cx),
+    }
+}
+
+fn run_waiting_plays(cx: &mut App) {
+    let waiting = std::mem::take(&mut *WAITING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()));
+    for (instance, account) in waiting {
+        request_play(instance, account, cx);
+    }
+}
+
+fn show_ready(cx: &mut App) {
+    let Some((key, since)) = cx.try_global::<Runtime>().and_then(|rt| rt.show_when_ready.clone()) else { return };
+    let model = model::get(cx);
+    let (shown, ready) = {
+        let m = model.read(cx);
+        (m.playing.as_deref() == Some(key.as_str()), m.games.get(&key).is_some_and(|g| playable(&g.phase)) && !model::hint(&key).link_lost)
+    };
+    if !shown && !ready && since.elapsed() < SHOW_READY_FOR {
+        return;
+    }
+    cx.global_mut::<Runtime>().show_when_ready = None;
+    if ready && !shown {
+        play(&key, cx);
+    }
+}
+
+fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) -> Option<String> {
     let model = model::get(cx);
     let picked = {
         let m = model.read(cx);
@@ -835,11 +885,11 @@ fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
                 super::main_window::show_instance(&id, cx);
             });
         }
-        return;
+        return None;
     };
     if shown {
         play(&key, cx);
-        return;
+        return Some(key);
     }
     let owner = fleet::solo_owner(id);
     update_model(cx, |m, _, _| {
@@ -871,6 +921,7 @@ fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
         }
     })
     .detach();
+    Some(key)
 }
 
 /// Shows `text` as the notice after the next reload.
@@ -1496,6 +1547,7 @@ struct Effects {
     later: Vec<Deferred>,
     hotkeys: Vec<HotkeyAction>,
     exited_playing: bool,
+    plays: Vec<(String, Option<String>)>,
     retired: Vec<Arc<RenderImage>>,
     changed_history: Vec<String>,
     stop: Vec<String>,
@@ -1523,7 +1575,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
                 Update::Preparing { .. } | Update::Prepared { .. } | Update::SignIn { .. } | Update::Face { .. } | Update::Reach { .. } => None,
                 Update::Launched { key, .. } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
-                Update::Ipc(Event::Reopen) => None,
+                Update::Ipc(Event::Reopen | Event::Play { .. }) => None,
             };
             let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
             let first_state = matches!(&update, Update::Ipc(Event::Message { message: FromMod::State { .. }, .. })) && key.as_ref().is_some_and(|k| rt.adopted.contains(k));
@@ -1595,6 +1647,10 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     if fx.exited_playing || fx.reopen {
         show_grid(cx);
     }
+    for (instance, account) in fx.plays {
+        request_play(instance, account, cx);
+    }
+    show_ready(cx);
     for action in fx.hotkeys {
         step(action, cx);
     }
@@ -1748,6 +1804,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
         }
         Update::Ipc(Event::Reopen) => fx.reopen = true,
+        Update::Ipc(Event::Play { instance, account }) => fx.plays.push((instance, account)),
         Update::Ipc(Event::Disconnected { instance }) => {
             let alive = rt.pids.contains_key(&instance) && m.games.get(&instance).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
             if alive {
@@ -2688,6 +2745,7 @@ mod tests {
             joined: HashSet::new(),
             history: None,
             refreshed: false,
+            show_when_ready: None,
             alerts: HashMap::new(),
             pids: HashMap::new(),
             restarts: HashMap::new(),
@@ -3103,6 +3161,16 @@ mod tests {
         assert_eq!(placed, [key.clone()]);
         assert_eq!(dropped, ["removed-member", "solo-of-deleted-account"]);
         assert!(!m.games.contains_key("removed-member") && !rt.pids.contains_key("removed-member"));
+    }
+
+    #[test]
+    fn a_play_request_from_another_start_is_kept_for_the_manager() {
+        let (mut m, mut rt, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        let event = Event::Play { instance: "abc".into(), account: Some("acc".into()) };
+        apply(&mut m, &mut rt, Update::Ipc(event), &mut fx);
+        assert_eq!(fx.plays, vec![("abc".to_owned(), Some("acc".to_owned()))]);
+        assert!(!fx.reopen);
     }
 
     #[test]
