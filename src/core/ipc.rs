@@ -378,13 +378,14 @@ fn read_frame(file: &mut std::fs::File) -> Frame {
     if u32::from_le_bytes(again) == seq { Frame::Ready(Preview { seq, width, height, rgba }) } else { Frame::Torn }
 }
 
-/// Keeps one handle per instance on the preview file the mod writes and reads only the frame from it. Reopening a file under constant write costs milliseconds on Windows, so a handle is dropped only when the path now holds a different file, the read fails, or [`release`](Self::release) is called.
+/// Keeps one handle per instance on the preview file the mod writes and reads only the frame from it. Reopening a file under constant write costs milliseconds on Windows, so a handle is dropped only when the read fails, the path changed, a read that brought no new frame finds the path holding a different file, or [`release`](Self::release) is called.
 #[derive(Default)]
 pub struct PreviewReader(HashMap<String, Open>);
 
 struct Open {
     file: std::fs::File,
     path: PathBuf,
+    seq: u32,
 }
 
 impl Open {
@@ -411,15 +412,26 @@ fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
 impl PreviewReader {
     /// Reads the latest frame of `key`'s preview file. Returns `None` while the file is missing, incomplete or being rewritten.
     pub fn read(&mut self, key: &str, path: &Path) -> Option<Preview> {
-        if self.0.get(key).is_some_and(|open| open.path != path || open.stale()) {
+        if self.0.get(key).is_some_and(|open| open.path != path) {
             self.0.remove(key);
         }
         if !self.0.contains_key(key) {
             let file = std::fs::File::open(path).ok()?;
-            self.0.insert(key.to_owned(), Open { file, path: path.to_owned() });
+            self.0.insert(key.to_owned(), Open { file, path: path.to_owned(), seq: 0 });
         }
-        match read_frame(&mut self.0.get_mut(key)?.file) {
-            Frame::Ready(preview) => Some(preview),
+        let open = self.0.get_mut(key)?;
+        match read_frame(&mut open.file) {
+            Frame::Ready(preview) if preview.seq != open.seq => {
+                open.seq = preview.seq;
+                Some(preview)
+            }
+            Frame::Ready(preview) => {
+                if open.stale() {
+                    self.0.remove(key);
+                    return None;
+                }
+                Some(preview)
+            }
             Frame::Torn => None,
             Frame::Invalid => {
                 self.0.remove(key);

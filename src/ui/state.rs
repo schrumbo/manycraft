@@ -78,6 +78,8 @@ pub trait Backend: Send + Sync {
     fn send(&self, key: &str, message: ToMod);
     /// Reads the newest preview frame from `path` and reports it.
     fn read_preview(&self, key: String, path: PathBuf);
+    /// Closes the kept preview file of `key` after its game ended.
+    fn release_preview(&self, key: String);
     /// Stops every instance and waits for them, at quit.
     fn quit(&self);
     /// Learns the instances the model holds, by key and account name.
@@ -164,7 +166,7 @@ impl Real {
             }
         })?;
         let watch: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(adopted.iter().map(|a| a.key.clone()).collect()));
-        let (watching, exits, exiting, releasing) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet), previews.clone());
+        let (watching, exits, exiting) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet));
         std::thread::Builder::new().name("fleet-exits".into()).spawn(move || {
             loop {
                 std::thread::sleep(EXIT_POLL);
@@ -172,7 +174,6 @@ impl Real {
                 for key in keys {
                     if let Some(code) = exiting.exit_code(&key) {
                         lock(&watching).remove(&key);
-                        let _ = releasing.send(PreviewJob::Release(key.clone()));
                         if exits.send_blocking(Update::Exited { key, code }).is_err() {
                             return;
                         }
@@ -295,6 +296,10 @@ impl Backend for Real {
 
     fn read_preview(&self, key: String, path: PathBuf) {
         let _ = self.previews.send(PreviewJob::Read(key, path));
+    }
+
+    fn release_preview(&self, key: String) {
+        let _ = self.previews.send(PreviewJob::Release(key));
     }
 
     fn refresh(&self, accounts: Vec<Account>) {
@@ -600,6 +605,11 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
         Effect::ReadPreview { key, path } => {
             if let Some(backend) = backend {
                 backend.read_preview(key, path);
+            }
+        }
+        Effect::ReleasePreview(key) => {
+            if let Some(backend) = backend {
+                backend.release_preview(key);
             }
         }
         Effect::CheckProxy { key, url } => {
