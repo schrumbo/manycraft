@@ -135,4 +135,14 @@ pub enum Event {
     Visible(HashSet<String>),
     /// Batches, accounts or settings changed; every connected game hears its identity again.
     TellGames,
+    /// The user closed the manager window, where closing it can put it in the notification area.
+    CloseWindow,
+    /// The one-time hint about the notification area was seen.
+    TrayExplained,
+    /// The user asked to quit Manycraft.
+    Quit,
+    /// The answer to the quit question: whether the running games keep running.
+    QuitChosen { keep: bool },
+    /// The user asked to restart for the downloaded update.
+    RestartForUpdate,
 }

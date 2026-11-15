@@ -84,6 +84,14 @@ pub enum Effect {
     Known(Vec<(String, String)>),
     /// Checks whether the saved sign-ins of these accounts still work.
     Refresh(Vec<Account>),
+    /// Puts the manager window away in the notification area; `explain` shows the one-time hint first.
+    ToTray { explain: bool },
+    /// Remembers that the hint about the notification area was seen.
+    RememberTrayExplained,
+    /// Asks whether the `running` games keep running when Manycraft quits.
+    AskQuit { running: usize },
+    /// Quits Manycraft; the games keep running when `keep`, for the next start to find again.
+    Quit { keep: bool },
     /// A line for the test drive log.
     Trace(String),
     /// A line for the error log.

@@ -41,6 +41,7 @@ pub mod stills;
 pub mod tile;
 pub mod toolbar;
 pub mod transfer;
+pub mod tray;
 pub mod undo;
 pub mod updates;
 pub mod versions;

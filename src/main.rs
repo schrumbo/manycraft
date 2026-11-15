@@ -79,6 +79,7 @@ fn main() {
         ui::main_window::open(cx);
         ui::drive::init(cx);
         ui::updates::init(cx);
+        ui::tray::init(cx);
         if let Some(play) = play {
             ui::state::request_play(play.instance, play.account, cx);
         }
