@@ -304,7 +304,7 @@ fn restart(window: &mut Window, cx: &mut App) {
         quit(Quit::Install, cx);
         return;
     }
-    sheet::confirm(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
+    sheet::ask_blocked(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
 }
 
 fn go_back(window: &mut Window, cx: &mut App) {
@@ -317,7 +317,7 @@ fn go_back(window: &mut Window, cx: &mut App) {
     if running > 0 {
         message = format!("{message} {}", stops(running));
     }
-    sheet::confirm(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), blocked, |_, cx| quit_unless_launching(Quit::Back, cx));
+    sheet::ask_blocked(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), blocked, |_, cx| quit_unless_launching(Quit::Back, cx));
 }
 
 fn blocked(cx: &App) -> Option<String> {

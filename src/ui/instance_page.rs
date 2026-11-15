@@ -721,7 +721,7 @@ impl InstancePage {
             Switch::Loader(l) => trf("Auf %@ umstellen?", &[&l.name()]),
         };
         let page = cx.entity().downgrade();
-        sheet::confirm(window, cx, title, tr("Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben."), tr("Umstellen"), |_| None, move |_, cx| {
+        sheet::ask_blocked(window, cx, title, tr("Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben."), tr("Umstellen"), |_| None, move |_, cx| {
             let switch = switch.clone();
             let _ = page.update(cx, |s, cx| {
                 if !s.blocked(cx) {

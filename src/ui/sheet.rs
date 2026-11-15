@@ -70,6 +70,11 @@ pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok
     alert(window, cx, title, message, ok_text, true, false, |_| None, ok);
 }
 
+/// Like [`ask`] for an accent action that stops something, with `blocked` as in [`confirm`].
+pub fn ask_blocked(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, false, false, blocked, ok);
+}
+
 /// Asks before a change that is easy to redo or undo. Focus starts on the confirm button, so Enter confirms and Esc
 /// cancels. While `blocked` names a reason the button is off and the reason shows in the alert, redrawn as that changes.
 pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
