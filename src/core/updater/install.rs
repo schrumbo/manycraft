@@ -628,6 +628,16 @@ fn alone(dir: &Path) -> bool {
     }
 }
 
+/// Tells whether no other Manycraft runs, trying the exclusive lock without waiting and giving it up again at once.
+pub fn running_alone() -> bool {
+    let mut held = HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.take();
+    let path = super::dir().join(RUNNING);
+    let alone = matches!(crate::core::lock::try_exclusive(&path), Ok(Some(_)));
+    *held = crate::core::lock::try_shared(&path).ok().flatten();
+    alone
+}
+
 /// Records that the running `current` works.
 pub fn mark_proven(current: &str) {
     let dir = super::dir();

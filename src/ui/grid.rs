@@ -11,14 +11,15 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
+use super::actions::{ClearSelection, EditBatch, MessageSelected, NewInstance, Play, ShowInstance, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
-use super::model::{self, Instance, Model, Phase};
+use super::model::{self, Game, Model, Phase};
 use super::motion::{SLOW, Soft};
 use super::theme::{Theme, control, font, iconsize, radius, selection, shell, space, tile, tint, with_alpha};
 use super::tile::{Geometry, TileData};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button, tip};
+use crate::core::fleet;
 use crate::core::i18n::{tr, trf};
 
 /// One line of the grid: a batch heading, or a row of the shown tiles `from..to`.
@@ -101,12 +102,12 @@ impl Order {
     /// at the end. True when the order changed.
     fn update(&mut self, m: &Model, hovered: bool) -> bool {
         if self.seq == Some(m.order_seq) || hovered {
-            if self.keys.len() != m.instances.len() || self.keys.iter().any(|k| !m.instances.contains_key(k)) {
+            if self.keys.len() != m.games.len() || self.keys.iter().any(|k| !m.games.contains_key(k)) {
                 let known: HashSet<&str> = self.keys.iter().map(String::as_str).collect();
-                let mut fresh: Vec<&Instance> = m.instances.values().filter(|i| !known.contains(i.key.as_str())).collect();
+                let mut fresh: Vec<&Game> = m.games.values().filter(|i| !known.contains(i.key.as_str())).collect();
                 fresh.sort_by_cached_key(|i| i.name.to_lowercase());
                 let fresh: Vec<String> = fresh.into_iter().map(|i| i.key.clone()).collect();
-                self.keys.retain(|k| m.instances.contains_key(k));
+                self.keys.retain(|k| m.games.contains_key(k));
                 self.keys.extend(fresh);
             }
             return false;
@@ -309,7 +310,7 @@ impl Grid {
 }
 
 /// Whether `i` belongs to `batch`, any when `None`, and shows under `filter`.
-pub fn matches(i: &Instance, batch: Option<&str>, filter: Filter) -> bool {
+pub fn matches(i: &Game, batch: Option<&str>, filter: Filter) -> bool {
     batch.is_none_or(|b| i.batch_id == b)
         && match filter {
             Filter::All => true,
@@ -325,7 +326,7 @@ pub fn words(query: &str) -> Vec<String> {
 }
 
 /// Whether each of the search `words` occurs in the account name, batch, server or status of `i`.
-pub fn found(i: &Instance, m: &Model, words: &[String]) -> bool {
+pub fn found(i: &Game, m: &Model, words: &[String]) -> bool {
     if words.is_empty() {
         return true;
     }
@@ -386,7 +387,7 @@ pub fn layout(sections: &[usize], width: f32, height: f32, headed: bool) -> Layo
 }
 
 /// The status of `i` in a word for its tile; the full line is in its tooltip.
-fn word(i: &Instance, preparing: Option<u8>, banned: bool) -> String {
+fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
     if i.stopping {
         return tr("Stoppt…");
     }
@@ -419,7 +420,7 @@ fn word(i: &Instance, preparing: Option<u8>, banned: bool) -> String {
     }
 }
 
-fn data(i: &Instance, m: &Model, selected: &Option<String>, picked: &HashSet<String>) -> TileData {
+fn data(i: &Game, m: &Model, selected: &Option<String>, picked: &HashSet<String>) -> TileData {
     let preparing = m.preparing.get(&i.batch_id).copied();
     let ban = super::state::stopped_ban(i, m);
     TileData {
@@ -505,16 +506,22 @@ fn empty(id: &'static str, symbol: &str, title: String, text: String, button: Op
 
 /// The heading over a batch's tiles in the grid of all batches: name, server, how many run, and what needs attention.
 fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
-    let name = m.batch(batch).map(|b| b.name.clone()).unwrap_or_default();
+    let alone = m.batch(batch).is_none().then(|| m.games.values().find(|i| i.batch_id == batch).and_then(|g| m.instance(&g.instance_id))).flatten();
+    let name = match (m.batch(batch), alone) {
+        (Some(b), _) => b.name.clone(),
+        (None, Some(made)) => trf("%@ · allein", &[&made.name]),
+        (None, None) => String::new(),
+    };
+    let solo = alone.map(|made| (made.id.clone(), made.loader.launchable()));
     let server = m.batch(batch).and_then(|b| b.server.clone()).filter(|s| !s.is_empty());
-    let mine = || m.instances.values().filter(|i| i.batch_id == batch);
+    let mine = || m.games.values().filter(|i| i.batch_id == batch);
     let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
     let attention = m.attention_count(Some(batch));
     let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
     let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
     let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let id = batch.to_owned();
-    let exporting = m.exporting.contains(batch);
+    let exporting = m.batch(batch).is_some_and(|b| m.exporting.contains(&b.instance_id));
     let stopped = total - running;
     div()
         .id(SharedString::from(format!("heading-{batch}")))
@@ -544,7 +551,11 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                     .child(attention.to_string()),
             )
         })
-        .context_menu(move |menu, _, _| super::sidebar::batch_menu(menu, &id, running, stopped, exporting))
+        .when_some(solo.as_ref().map(|(instance, _)| instance.clone()), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
+        .context_menu(move |menu, _, cx| match &solo {
+            Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable, cx),
+            None => super::sidebar::batch_menu(menu, &id, running, stopped, exporting),
+        })
         .into_any_element()
 }
 
@@ -563,13 +574,19 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let held: HashSet<&str> = if this.grid.hovered && same_scope { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
     let words = words(&this.query);
     let mut keys: Vec<String> = this.grid.order.keys.iter().filter(
-|k| held.contains(k.as_str()) || m.instances.get(*k).is_some_and(|i| matches(i, batch, this.filter) && found(i, m, &words))).cloned().collect();
+|k| held.contains(k.as_str()) || m.games.get(*k).is_some_and(|i| matches(i, batch, this.filter) && found(i, m, &words))).cloned().collect();
     drop(held);
-    let batch_of = |k: &String| m.instances.get(k).map(|i| i.batch_id.clone()).unwrap_or_default();
-    let headed = batch.is_none() && keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1;
+    let batch_of = |k: &String| m.games.get(k).map(|i| i.batch_id.clone()).unwrap_or_default();
+    let alone = |k: &String| m.games.get(k).is_some_and(|i| i.batch_id == fleet::solo_owner(&i.instance_id));
+    let headed = batch.is_none() && (keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1 || keys.iter().any(alone));
     if headed {
         let rank: HashMap<&str, usize> = m.batches.iter().enumerate().map(|(n, b)| (b.id.as_str(), n)).collect();
-        keys.sort_by_key(|k| m.instances.get(k).and_then(|i| rank.get(i.batch_id.as_str()).copied()).unwrap_or(usize::MAX));
+        keys.sort_by_cached_key(|k| {
+            let game = m.games.get(k);
+            let owner = game.map(|i| i.batch_id.clone()).unwrap_or_default();
+            let name = game.and_then(|i| m.instance(&i.instance_id)).map(|i| i.name.to_lowercase()).unwrap_or_default();
+            (rank.get(owner.as_str()).copied().unwrap_or(usize::MAX), name, owner)
+        });
     }
     if resorted && same_scope && let Some(playing) = m.playing.as_deref() {
         let group = |k: &str| headed.then(|| batch_of(&k.to_owned()));
@@ -587,9 +604,14 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         let resting = m.attention_count(batch) == 0;
         this.grid.shown.clear();
         this.grid.rows.clear();
-        let in_scope = m.instances.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
+        let in_scope = m.games.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
+        let unstarted = !in_scope && batch.is_none() && m.batches.is_empty() && !m.accounts.is_empty();
         super::tile::unhover_except(None, cx);
         super::state::set_visible(HashSet::new(), cx);
+        if unstarted {
+            let new = action("new-instance", tr("Neue Instanz"), "plus", Box::new(NewInstance), &t);
+            return empty("nothing-started", "layout-grid", tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."), Some(new), &this.grid.focus, &t);
+        }
         if !in_scope {
             let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
             return empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &this.grid.focus, &t);
@@ -714,7 +736,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         section.filter(|_| !at_heading && (top.item_ix > 0 || top.offset_in_item > px(0.)))
     });
     let pinned = pinned.flatten().map(|n| div().absolute().top_0().left_0().right_0().px(px(tile::INSET)).bg(t.window).border_b_1().border_color(t.separator).child(heading(&section_batches[n], true, m, &t)));
-    let can_play: HashMap<String, bool> = shown.iter().filter_map(|k| m.instances.get(k)).map(|i| (i.key.clone(), super::tile::playable(&i.phase))).collect();
+    let can_play: HashMap<String, bool> = shown.iter().filter_map(|k| m.games.get(k)).map(|i| (i.key.clone(), super::tile::playable(&i.phase))).collect();
     if super::tile::hovered(cx).is_some_and(|k| !visible.contains(&k)) {
         super::tile::unhover_except(None, cx);
     }
@@ -732,7 +754,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 let geometry = Geometry::new(tile_width(to - from, width), tile_h);
                 let cells: Vec<TileData> = {
                     let m = model.read(cx);
-                    list_shown[from..to].iter().filter_map(|k| m.instances.get(k).map(|i| data(i, m, &selected, &picked))).collect()
+                    list_shown[from..to].iter().filter_map(|k| m.games.get(k).map(|i| data(i, m, &selected, &picked))).collect()
                 };
                 let cells: Vec<AnyElement> = cells
                     .into_iter()
@@ -830,7 +852,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
 /// How many of `keys` each selection action would act on: start, stop, restart, reconnect, message.
 fn able(keys: &[String], m: &Model) -> [usize; 5] {
     let mut n = [0; 5];
-    for i in keys.iter().filter_map(|k| m.instances.get(k)) {
+    for i in keys.iter().filter_map(|k| m.games.get(k)) {
         let running = i.phase.is_running();
         n[0] += usize::from(!running && !i.stopping && i.phase != Phase::LoginNeeded);
         n[1] += usize::from(i.phase.is_active() && !i.stopping);
@@ -881,7 +903,7 @@ pub fn open_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context
 
 fn on_server(this: &MainWindow, cx: &App) -> Vec<String> {
     let m = model::get(cx).read(cx);
-    this.grid.chosen().into_iter().filter(|k| m.instances.get(k).is_some_and(|i| i.phase.on_server())).collect()
+    this.grid.chosen().into_iter().filter(|k| m.games.get(k).is_some_and(|i| i.phase.on_server())).collect()
 }
 
 /// Sends what the user typed in the message field to the selected accounts that are on a server, and keeps the field open for the next one.
@@ -1035,7 +1057,7 @@ pub fn selection_bar(this: &mut MainWindow, window: &Window, cx: &mut Context<Ma
 
 #[cfg(test)]
 mod tests {
-    use super::{Filter, Instance, Model, Order, Phase, Picks, arrange, chosen, column_at, found, layout, matches, tile, tile_width, word, words};
+    use super::{Filter, Game, Model, Order, Phase, Picks, arrange, chosen, column_at, found, layout, matches, tile, tile_width, word, words};
 
     fn rows(sections: &[usize], columns: &[usize]) -> usize {
         sections.iter().zip(columns).map(|(n, c)| n.div_ceil(*c)).sum()
@@ -1097,14 +1119,14 @@ mod tests {
         assert!(small.scrolls && small.height < 120., "small sections scroll at the smallest tile height, not as huge tiles: {small:?}");
     }
 
-    fn mk(phase: Phase) -> Instance {
-        Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
+    fn mk(phase: Phase) -> Game {
+        Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     fn fleet(list: &[(&str, Phase)]) -> Model {
         let mut m = Model::default();
         for (name, phase) in list {
-            m.instances.insert((*name).to_owned(), Instance { key: (*name).into(), name: (*name).into(), ..mk(phase.clone()) });
+            m.games.insert((*name).to_owned(), Game { key: (*name).into(), name: (*name).into(), ..mk(phase.clone()) });
         }
         m
     }
@@ -1123,12 +1145,12 @@ mod tests {
         let mut order = Order::default();
         assert!(order.update(&m, false));
         assert_eq!(order.keys, ["c", "b", "d", "a"]);
-        m.instances.get_mut("d").unwrap().phase = Phase::Crashed { code: Some(1) };
+        m.games.get_mut("d").unwrap().phase = Phase::Crashed { code: Some(1) };
         assert!(!order.update(&m, false), "no state change counted yet");
         m.order_seq += 1;
         assert!(!order.update(&m, true), "never under the pointer");
         assert_eq!(order.keys, ["c", "b", "d", "a"]);
-        m.instances.insert("e".into(), Instance { key: "e".into(), name: "e".into(), ..mk(lost()) });
+        m.games.insert("e".into(), Game { key: "e".into(), name: "e".into(), ..mk(lost()) });
         assert!(!order.update(&m, true));
         assert_eq!(order.keys, ["c", "b", "d", "a", "e"], "a new one waits at the end");
         assert!(order.update(&m, false));

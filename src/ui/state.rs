@@ -8,16 +8,17 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
-use super::model::{self, ChatLine, Instance, Model, Phase, rank};
+use super::actions::{Broadcast, CloneInstance, NextAttention, NextInstance, OpenChat, Play, PlayInstance, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::model::{self, ChatLine, Game, Model, Phase, rank};
 use super::native;
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError};
 use crate::core::awake;
 use crate::core::batch::{self, Batch};
 use crate::core::fit;
-use crate::core::fleet::{self, Fleet};
+use crate::core::fleet::{self, Fleet, Target};
 use crate::core::history::{self, Kind};
+use crate::core::instance::{self, Instance};
 use crate::core::i18n::{tr, trf};
 use crate::core::game_window;
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, HotkeyAction, StateKind, ToMod};
@@ -37,6 +38,7 @@ const STAGGER_STEP: Duration = Duration::from_millis(100);
 const KEPT_CHAT: usize = 5000;
 const ALERT_NAMES: usize = 4;
 const QUIT_WAIT: Duration = Duration::from_secs(5);
+const TRASH_KEPT: Duration = Duration::from_secs(600);
 
 /// What the fleet reports back to the UI thread.
 pub enum Update {
@@ -60,8 +62,8 @@ pub enum Update {
 
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
 pub trait Backend: Send + Sync {
-    /// Starts `accounts` of `batch` one after another until `cancel` is set.
-    fn start(&self, batch: Batch, accounts: Vec<Account>, cancel: Arc<AtomicBool>);
+    /// Starts `accounts` of `target` one after another until `cancel` is set.
+    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>);
     /// Asks the instances to quit and ends them after a grace period.
     fn stop(&self, keys: Vec<String>);
     /// Sends a message to an instance's companion mod.
@@ -150,20 +152,21 @@ impl Real {
 }
 
 impl Backend for Real {
-    fn start(&self, batch: Batch, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
+    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
         let (fleet, out, watch, owners) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.owners));
+        let owner = target.owner();
         let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut owners = lock(&owners);
             for account in &accounts {
-                owners.insert(fleet::instance_key(&batch, account.id), run);
+                owners.insert(target.key(account.id), run);
             }
         }
         let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
             let mine = |key: &str| lock(&owners).get(key) == Some(&run);
             let fail_all = |reason: String| {
                 for account in &accounts {
-                    let key = fleet::instance_key(&batch, account.id);
+                    let key = target.key(account.id);
                     if mine(&key) {
                         let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false });
                     }
@@ -179,15 +182,15 @@ impl Backend for Real {
                 let mut last = lock(&last);
                 if *last != percent {
                     *last = percent;
-                    let _ = out.send_blocking(Update::Preparing { batch: batch.id.clone(), percent });
+                    let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), percent });
                 }
             };
-            let prepared = match fleet.prepare_launch(&batch, &accounts, Some(&jar), &progress) {
+            let prepared = match fleet.prepare_launch(&target, &accounts, Some(&jar), &progress) {
                 Ok(prepared) => prepared,
                 Err(e) => return fail_all(format!("{e:#}")),
             };
             let total = accounts.len();
-            let _ = out.send_blocking(Update::Progress { batch: batch.id.clone(), done: 0, total });
+            let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: 0, total });
             for (i, account) in accounts.iter().enumerate() {
                 if i > 0 {
                     let until = Instant::now() + fleet.stagger;
@@ -198,9 +201,9 @@ impl Backend for Real {
                 if cancel.load(Ordering::SeqCst) {
                     return;
                 }
-                let key = fleet::instance_key(&batch, account.id);
+                let key = target.key(account.id);
                 if !mine(&key) {
-                    let _ = out.send_blocking(Update::Progress { batch: batch.id.clone(), done: i + 1, total });
+                    let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: i + 1, total });
                     continue;
                 }
                 let update = match fleet.start_one(&prepared, account) {
@@ -218,7 +221,7 @@ impl Backend for Real {
                 if let Some(update) = update {
                     let _ = out.send_blocking(update);
                 }
-                let _ = out.send_blocking(Update::Progress { batch: batch.id.clone(), done: i + 1, total });
+                let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: i + 1, total });
             }
         });
     }
@@ -438,6 +441,15 @@ pub fn init(cx: &mut App) {
             text
         });
     }
+    cx.background_spawn(async {
+        if !crate::core::updater::install::running_alone() {
+            return;
+        }
+        if let Err(e) = instance::purge_stale(TRASH_KEPT) {
+            eprintln!("trash: {e:#}");
+        }
+    })
+    .detach();
     reload(cx);
     cx.observe(&model::get(cx), |_, cx| keep_awake(cx)).detach();
     cx.spawn(async move |cx| {
@@ -471,6 +483,12 @@ pub fn init(cx: &mut App) {
         let key = a.0.clone();
         cx.defer(move |cx| play(&key, cx));
     });
+    cx.on_action(|a: &PlayInstance, cx| {
+        let instance = a.instance.clone();
+        let account = a.account.as_deref().and_then(|id| id.parse().ok());
+        cx.defer(move |cx| play_instance(&instance, account, cx));
+    });
+    cx.on_action(|a: &CloneInstance, cx| clone_instance(&a.0, cx));
     cx.on_action(|_: &ShowGrid, cx| cx.defer(show_grid));
     cx.on_action(|_: &NextInstance, cx| cx.defer(|cx| step(HotkeyAction::Next, cx)));
     cx.on_action(|_: &PreviousInstance, cx| cx.defer(|cx| step(HotkeyAction::Prev, cx)));
@@ -545,25 +563,32 @@ pub fn reload_keeping_error(cx: &mut App) {
 
 fn reload_with(cx: &mut App, keep: bool) {
     let task = cx.background_spawn(async {
-        let (accounts, batches) = (account::load(), batch::load_all());
-        let logs = batches.as_ref().map(|batches| saved_history(batches)).unwrap_or_default();
-        (accounts, batches, logs)
+        let moved = crate::core::migrate::run();
+        let (accounts, batches, instances) = (account::load(), batch::load_all(), instance::load_all());
+        let logs = match (&batches, &instances) {
+            (Ok(batches), Ok(instances)) => saved_history(batches, instances),
+            _ => Vec::new(),
+        };
+        let loaded = batches.and_then(|b| instances.map(|i| (b, i)));
+        (accounts, loaded, logs, moved.problems)
     });
     cx.spawn(async move |cx| {
-        let (accounts, batches, logs) = task.await;
+        let (accounts, batches, logs, problems) = task.await;
         cx.update(|cx| {
             let model = model::get(cx);
             let loaded = accounts.is_ok() && batches.is_ok();
             let notice = if loaded && cx.has_global::<Runtime>() { cx.global_mut::<Runtime>().notice.take() } else { None };
+            let notice = if problems.is_empty() { notice } else { Some(problems.join("\n")) };
             let mut retired = Vec::new();
             model.update(cx, |m, cx| {
                 for (key, log) in logs {
                     m.history.entry(key).or_insert(log);
                 }
                 match (accounts, batches) {
-                    (Ok(accounts), Ok(batches)) => {
+                    (Ok(accounts), Ok((batches, instances))) => {
                         m.accounts = accounts;
                         m.batches = batches;
+                        m.instances = instances;
                         m.error = if keep { notice.or(m.error.take()) } else { notice };
                     }
                     (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),
@@ -574,18 +599,18 @@ fn reload_with(cx: &mut App, keep: bool) {
             for image in retired {
                 cx.drop_image(image, None);
             }
-            let present: HashSet<String> = model.read(cx).instances.keys().cloned().collect();
+            let present: HashSet<String> = model.read(cx).games.keys().cloned().collect();
             super::tile::forget_except(&|k| present.contains(k), cx);
             super::stills::forget_except(&|k| present.contains(k), cx);
-            let known: Vec<(String, String)> = model.read(cx).instances.values().map(|i| (i.key.clone(), i.name.clone())).collect();
+            let known: Vec<(String, String)> = model.read(cx).games.values().map(|i| (i.key.clone(), i.name.clone())).collect();
             let first = cx.try_global::<Runtime>().is_some_and(|rt| !rt.refreshed);
             let to_check: Vec<Account> = {
                 let m = model.read(cx);
-                m.accounts.iter().filter(|a| first || m.instances.values().any(|i| i.account_id == a.id && i.phase == Phase::LoginNeeded)).cloned().collect()
+                m.accounts.iter().filter(|a| first || m.games.values().any(|i| i.account_id == a.id && i.phase == Phase::LoginNeeded)).cloned().collect()
             };
             let (bare, faceless): (Vec<String>, Vec<Account>) = {
                 let m = model.read(cx);
-                (m.instances.values().filter(|i| i.preview.is_none()).map(|i| i.key.clone()).collect(), m.accounts.iter().filter(|a| !m.faces.contains_key(&a.id)).cloned().collect())
+                (m.games.values().filter(|i| i.preview.is_none()).map(|i| i.key.clone()).collect(), m.accounts.iter().filter(|a| !m.faces.contains_key(&a.id)).cloned().collect())
             };
             super::stills::load(bare, faceless, cx);
             if let Some(rt) = cx.try_global::<Runtime>() {
@@ -601,11 +626,12 @@ fn reload_with(cx: &mut App, keep: bool) {
     .detach();
 }
 
-fn saved_history(batches: &[Batch]) -> Vec<(String, history::Log)> {
+fn saved_history(batches: &[Batch], instances: &[Instance]) -> Vec<(String, history::Log)> {
     let mut logs = Vec::new();
     for batch in batches {
+        let Some(instance) = instances.iter().find(|i| i.id == batch.instance_id) else { continue };
         for id in &batch.accounts {
-            let log = history::load(&history::path(batch, *id));
+            let log = history::load(&history::path(instance, *id));
             if !log.is_empty() {
                 logs.push((fleet::instance_key(batch, *id), log));
             }
@@ -621,9 +647,10 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
             let Some(account) = m.accounts.iter().find(|a| a.id == *id) else { continue };
             let key = fleet::instance_key(batch, *id);
             keep.insert(key.clone());
-            let instance = m.instances.entry(key.clone()).or_insert_with(|| Instance {
+            let instance = m.games.entry(key.clone()).or_insert_with(|| Game {
                 key,
                 batch_id: batch.id.clone(),
+                instance_id: batch.instance_id.clone(),
                 account_id: *id,
                 name: account.name.clone(),
                 phase: Phase::Stopped,
@@ -635,17 +662,23 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
                 stopping: false,
             });
             instance.name = account.name.clone();
+            if !instance.phase.is_running() {
+                instance.instance_id.clone_from(&batch.instance_id);
+            }
         }
     }
     let mut retired = Vec::new();
-    m.instances.retain(|k, i| {
-        let stays = keep.contains(k) || i.phase.is_running();
+    let instances = &m.instances;
+    let accounts = &m.accounts;
+    m.games.retain(|k, i| {
+        let solo = i.batch_id == fleet::solo_owner(&i.instance_id) && instances.iter().any(|made| made.id == i.instance_id) && accounts.iter().any(|a| a.id == i.account_id);
+        let stays = keep.contains(k) || i.phase.is_running() || (solo && !matches!(i.phase, Phase::Stopped));
         if !stays && let Some(image) = i.preview.take() {
             retired.push(image);
         }
         stays
     });
-    let instances = &m.instances;
+    let instances = &m.games;
     m.history.retain(|k, _| instances.contains_key(k));
     let accounts = &m.accounts;
     m.faces.retain(|id, image| {
@@ -657,6 +690,136 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
     });
     m.order_seq += 1;
     retired
+}
+
+/// The account `made` is played with alone when none is named: the one that played it last, else the only one.
+pub fn solo_account(m: &Model, made: &Instance) -> Option<uuid::Uuid> {
+    made.last_account.filter(|id| m.account(*id).is_some()).or_else(|| match m.accounts.as_slice() {
+        [only] => Some(only.id),
+        _ => None,
+    })
+}
+
+fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
+    let model = model::get(cx);
+    let picked = {
+        let m = model.read(cx);
+        m.instance(id).and_then(|made| {
+            let account = account.or_else(|| solo_account(m, made)).filter(|a| m.account(*a).is_some())?;
+            let key = fleet::solo_key(made, account);
+            let shown = m.games.get(&key).is_some_and(|g| g.phase.is_active());
+            Some((key, account, shown))
+        })
+    };
+    let Some((key, account, shown)) = picked else {
+        if model.read(cx).accounts.is_empty() {
+            cx.dispatch_action(&super::actions::AddAccount);
+        } else {
+            let id = id.to_owned();
+            cx.defer(move |cx| {
+                super::main_window::show_instance(&id, cx);
+            });
+        }
+        return;
+    };
+    if shown {
+        play(&key, cx);
+        return;
+    }
+    let owner = fleet::solo_owner(id);
+    update_model(cx, |m, _, _| {
+        let name = m.account(account).map(|a| a.name.clone()).unwrap_or_default();
+        m.games.entry(key.clone()).or_insert_with(|| Game {
+            key: key.clone(),
+            batch_id: owner.clone(),
+            instance_id: id.to_owned(),
+            account_id: account,
+            name,
+            phase: Phase::Stopped,
+            reconnect_attempts: 0,
+            unread_whispers: 0,
+            preview: None,
+            preview_seq: 0,
+            live: false,
+            stopping: false,
+        });
+        if let Some(made) = m.instances.iter_mut().find(|made| made.id == id) {
+            made.last_account = Some(account);
+        }
+        m.order_seq += 1;
+    });
+    launch(&owner, Some(std::slice::from_ref(&key)), false, cx);
+    let id = id.to_owned();
+    cx.background_spawn(async move {
+        if let Err(e) = super::remote::remember_account(&id, account) {
+            eprintln!("last account: {e:#}");
+        }
+    })
+    .detach();
+}
+
+/// Shows `text` as the notice after the next reload.
+pub fn tell(text: String, cx: &mut App) {
+    if cx.has_global::<Runtime>() {
+        cx.global_mut::<Runtime>().notice = Some(text);
+    } else {
+        model::get(cx).update(cx, |m, cx| {
+            m.error = Some(text);
+            cx.notify();
+        });
+    }
+}
+
+fn clone_instance(id: &str, cx: &mut App) {
+    let source = id.to_owned();
+    let task = cx.background_spawn({
+        let id = source.clone();
+        async move { super::remote::clone_instance(&id) }
+    });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(made) => {
+                    let (id, name) = (made.id.clone(), made.name.clone());
+                    model::get(cx).update(cx, |m, cx| {
+                        m.instances.push(made);
+                        cx.notify();
+                    });
+                    super::instance_page::rename(&id, cx);
+                    super::undo::offer(super::undo::Kind::Cloned { id, name, source }, cx);
+                }
+                Err(e) => tell(super::forms::explain_as(tr("Nicht geklont."), &e).text, cx),
+            }
+            reload(cx);
+        });
+    })
+    .detach();
+}
+
+/// Deletes instance `id` with its games and offers to bring it back; says why when it was refused.
+pub fn delete_instance(id: &str, cx: &mut App) {
+    let id = id.to_owned();
+    let gone = id.clone();
+    let name = model::get(cx).read(cx).instance(&id).map(|made| made.name.clone()).unwrap_or_default();
+    let task = cx.background_spawn(async move { super::remote::delete_instance(&id) });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(entry) => {
+                    model::get(cx).update(cx, |m, cx| {
+                        m.instances.retain(|made| made.id != gone);
+                        cx.notify();
+                    });
+                    super::undo::offer(super::undo::Kind::Deleted { id: gone, name, entry }, cx);
+                }
+                Err(e) => tell(super::forms::explain_as(tr("Nicht gelöscht."), &e).text, cx),
+            }
+            reload(cx);
+        });
+    })
+    .detach();
 }
 
 fn update_model(cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)) {
@@ -704,7 +867,7 @@ fn start_keys(keys: &[String], cx: &mut App) {
     let model = model::get(cx);
     let mut by_batch: HashMap<String, Vec<String>> = HashMap::new();
     for key in keys {
-        if let Some(i) = model.read(cx).instances.get(key) {
+        if let Some(i) = model.read(cx).games.get(key) {
             by_batch.entry(i.batch_id.clone()).or_default().push(key.clone());
         }
     }
@@ -717,39 +880,54 @@ fn start_batch(batch: &str, cx: &mut App) {
     launch(batch, None, false, cx);
 }
 
-fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) {
+fn launch(owner: &str, only: Option<&[String]>, restart: bool, cx: &mut App) {
     let alive: HashSet<String> = cx.try_global::<Runtime>().map(|rt| rt.pids.keys().cloned().collect()).unwrap_or_default();
     let model = model::get(cx);
-    let (batch, accounts) = {
+    let (target, accounts, busy) = {
         let m = model.read(cx);
-        let Some(batch) = m.batch(batch_id).cloned() else { return };
-        let accounts: Vec<Account> = batch
-            .accounts
+        let Some(target) = m.target(owner) else { return };
+        let ids: Vec<uuid::Uuid> = match &target.batch {
+            Some(batch) => batch.accounts.clone(),
+            None => m.games.values().filter(|g| g.batch_id == owner).map(|g| g.account_id).collect(),
+        };
+        let wanted: Vec<Account> = ids
             .iter()
             .filter_map(|id| m.account(*id).cloned())
             .filter(|a| {
-                let key = fleet::instance_key(&batch, a.id);
-                only.is_none_or(|o| o.contains(&key)) && !alive.contains(&key) && m.instances.get(&key).is_some_and(|i| if only.is_some() { !i.phase.is_running() } else { !i.phase.is_active() })
+                let key = target.key(a.id);
+                only.is_none_or(|o| o.contains(&key)) && !alive.contains(&key) && m.games.get(&key).is_some_and(|i| if only.is_some() { !i.phase.is_running() } else { !i.phase.is_active() })
             })
             .collect();
-        (batch, accounts)
+        let (busy, accounts): (Vec<Account>, Vec<Account>) = wanted.into_iter().partition(|a| m.playing_elsewhere(&target.instance.id, a.id, &target.key(a.id)).is_some());
+        let busy: Vec<(String, String)> = busy.iter().filter_map(|a| m.playing_elsewhere(&target.instance.id, a.id, &target.key(a.id)).map(|place| (target.key(a.id), trf("Spielt schon in %@", &[&place])))).collect();
+        (target, accounts, busy)
     };
+    if !busy.is_empty() {
+        update_model(cx, |m, _, _| {
+            for (key, reason) in busy {
+                if let Some(i) = m.games.get_mut(&key) {
+                    i.phase = Phase::Failed { reason };
+                }
+            }
+            m.order_seq += 1;
+        });
+    }
     if accounts.is_empty() {
         return;
     }
     let cancel = Arc::new(AtomicBool::new(false));
     update_model(cx, |m, rt, _| {
-        let runs = rt.cancel.entry(batch.id.clone()).or_default();
+        let runs = rt.cancel.entry(owner.to_owned()).or_default();
         runs.retain(|c| Arc::strong_count(c) > 1);
         runs.push(Arc::clone(&cancel));
         let total = accounts.len();
         for account in &accounts {
-            let key = fleet::instance_key(&batch, account.id);
+            let key = target.key(account.id);
             if !restart {
                 rt.crash_restarts.remove(&key);
                 *rt.reconnects.entry(key.clone()).or_default() += 1;
             }
-            if let Some(i) = m.instances.get_mut(&key) {
+            if let Some(i) = m.games.get_mut(&key) {
                 i.phase = Phase::Starting { done: 0, total };
                 i.reconnect_attempts = 0;
                 i.stopping = false;
@@ -758,10 +936,10 @@ fn launch(batch_id: &str, only: Option<&[String]>, restart: bool, cx: &mut App) 
         m.order_seq += 1;
     });
     if !restart {
-        warn_if_too_big(u32::try_from(accounts.len()).unwrap_or(u32::MAX), batch.memory_mb, cx);
+        warn_if_too_big(u32::try_from(accounts.len()).unwrap_or(u32::MAX), target.memory_mb(), cx);
     }
     if let Some(backend) = backend(cx) {
-        backend.start(batch, accounts, cancel);
+        backend.start(target, accounts, cancel);
     }
 }
 
@@ -781,7 +959,7 @@ fn warn_if_too_big(count: u32, memory_mb: u32, cx: &mut App) {
 /// `keys` without the accounts that need to sign in again, which a bulk start would only fail.
 fn signed_in(keys: &[String], cx: &App) -> Vec<String> {
     let m = model::get(cx).read(cx);
-    keys.iter().filter(|k| m.instances.get(*k).is_some_and(|i| i.phase != Phase::LoginNeeded)).cloned().collect()
+    keys.iter().filter(|k| m.games.get(*k).is_some_and(|i| i.phase != Phase::LoginNeeded)).cloned().collect()
 }
 
 /// The keys of restart `group` once none of them is still on its way down, so they start again together.
@@ -808,7 +986,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
             rt.crash_restarts.remove(key);
             rt.joined.remove(key);
             rt.phone.forget(key);
-            let Some(i) = m.instances.get_mut(key) else { continue };
+            let Some(i) = m.games.get_mut(key) else { continue };
             match i.phase {
                 Phase::Starting { .. } if !rt.pids.contains_key(key) => {
                     i.phase = Phase::Stopped;
@@ -839,7 +1017,7 @@ fn restart_keys(keys: &[String], cx: &mut App) {
     let running: Vec<String> = {
         let pids: HashSet<&String> = cx.try_global::<Runtime>().map(|rt| rt.pids.keys().collect()).unwrap_or_default();
         let m = model::get(cx).read(cx);
-        keys.iter().filter(|k| pids.contains(k) || m.instances.get(*k).is_some_and(|i| i.phase.is_running())).cloned().collect()
+        keys.iter().filter(|k| pids.contains(k) || m.games.get(*k).is_some_and(|i| i.phase.is_running())).cloned().collect()
     };
     stop_keys(running.clone(), cx);
     let mut start: Vec<String> = keys.iter().filter(|k| !running.contains(k)).cloned().collect();
@@ -847,7 +1025,7 @@ fn restart_keys(keys: &[String], cx: &mut App) {
         rt.restart_groups += 1;
         let group = rt.restart_groups;
         for key in running {
-            if m.instances.get(&key).is_some_and(|i| i.stopping) {
+            if m.games.get(&key).is_some_and(|i| i.stopping) {
                 rt.restarts.insert(key, group);
             } else {
                 start.push(key);
@@ -865,7 +1043,7 @@ fn stop_batch(batch: &str, cx: &mut App) {
             cancel.store(true, Ordering::SeqCst);
         }
     }
-    let keys: Vec<String> = model::get(cx).read(cx).instances.values().filter(|i| i.batch_id == batch).map(|i| i.key.clone()).collect();
+    let keys: Vec<String> = model::get(cx).read(cx).games.values().filter(|i| i.batch_id == batch).map(|i| i.key.clone()).collect();
     stop_keys(keys, cx);
 }
 
@@ -904,7 +1082,7 @@ fn reconnect(key: &str, cx: &mut App) {
     let key = key.to_owned();
     let mut send = false;
     update_model(cx, |m, rt, _| {
-        let Some(i) = m.instances.get_mut(&key) else { return };
+        let Some(i) = m.games.get_mut(&key) else { return };
         if !i.phase.is_running() {
             return;
         }
@@ -921,7 +1099,7 @@ fn reconnect(key: &str, cx: &mut App) {
 }
 
 fn respawn(key: &str, cx: &mut App) {
-    let dead = model::get(cx).read(cx).instances.get(key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. }));
+    let dead = model::get(cx).read(cx).games.get(key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. }));
     if dead && let Some(backend) = backend(cx) {
         backend.send(key, ToMod::Respawn);
     }
@@ -938,7 +1116,7 @@ fn server_of(phase: &Phase) -> Option<String> {
 /// Sends a chat line or command to one running instance.
 fn send_chat(key: &str, text: &str, cx: &mut App) {
     let Some(backend) = backend(cx) else { return };
-    if model::get(cx).read(cx).instances.get(key).is_some_and(|i| i.phase.on_server()) {
+    if model::get(cx).read(cx).games.get(key).is_some_and(|i| i.phase.on_server()) {
         backend.send(key, ToMod::ChatSend { text: text.to_owned() });
     }
 }
@@ -946,11 +1124,11 @@ fn send_chat(key: &str, text: &str, cx: &mut App) {
 /// Marks the whispers of `batch` (all instances when `None`) as seen.
 pub fn clear_whispers(batch: Option<&str>, cx: &mut App) {
     let model = model::get(cx);
-    if !model.read(cx).instances.values().any(|i| i.unread_whispers > 0 && batch.is_none_or(|b| i.batch_id == b)) {
+    if !model.read(cx).games.values().any(|i| i.unread_whispers > 0 && batch.is_none_or(|b| i.batch_id == b)) {
         return;
     }
     update_model(cx, |m, _, _| {
-        for i in m.instances.values_mut().filter(|i| batch.is_none_or(|b| i.batch_id == b)) {
+        for i in m.games.values_mut().filter(|i| batch.is_none_or(|b| i.batch_id == b)) {
             i.unread_whispers = 0;
         }
     });
@@ -959,7 +1137,7 @@ pub fn clear_whispers(batch: Option<&str>, cx: &mut App) {
 fn broadcast(batch: &str, text: &str, cx: &mut App) {
     let Some(backend) = backend(cx) else { return };
     let model = model::get(cx);
-    for i in model.read(cx).instances.values().filter(|i| i.batch_id == batch && i.phase.on_server()) {
+    for i in model.read(cx).games.values().filter(|i| i.batch_id == batch && i.phase.on_server()) {
         backend.send(&i.key, ToMod::ChatSend { text: text.to_owned() });
     }
 }
@@ -971,7 +1149,7 @@ fn playable(phase: &Phase) -> bool {
 /// Puts the game window of `key` in the manager's place and hides the manager.
 pub fn play(key: &str, cx: &mut App) {
     let model = model::get(cx);
-    if !model.read(cx).instances.get(key).is_some_and(|i| playable(&i.phase)) {
+    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) {
         return;
     }
     let shown = model.read(cx).playing.is_some();
@@ -998,7 +1176,7 @@ fn swap_to(key: &str, place: Place, cx: &mut App) {
         };
         reveal.hide.retain(|k| *k != key);
         rt.reveal = Some(reveal);
-        if let Some(i) = m.instances.get_mut(&key) {
+        if let Some(i) = m.games.get_mut(&key) {
             i.unread_whispers = 0;
         }
         if let Some(pid) = rt.pids.get(&key) {
@@ -1136,10 +1314,10 @@ fn step(action: HotkeyAction, cx: &mut App) {
     let model = model::get(cx);
     let target = {
         let m = model.read(cx);
-        let order: Vec<&Instance> = m.sorted(None).into_iter().filter(|i| playable(&i.phase)).collect();
+        let order: Vec<&Game> = m.sorted(None).into_iter().filter(|i| playable(&i.phase)).collect();
         let at = m.playing.as_ref().and_then(|p| order.iter().position(|i| i.key == *p));
         let n = order.len();
-        let pick = |from: usize, forward: bool, want: &dyn Fn(&Instance) -> bool| -> Option<String> {
+        let pick = |from: usize, forward: bool, want: &dyn Fn(&Game) -> bool| -> Option<String> {
             (1..=n).map(|d| if forward { (from + d) % n } else { (from + n - d % n) % n }).map(|ix| order[ix]).find(|i| want(i)).map(|i| i.key.clone())
         };
         match (action, at) {
@@ -1177,8 +1355,8 @@ pub fn set_visible(keys: HashSet<String>, cx: &mut App) {
 }
 
 fn preview_path(m: &Model, key: &str) -> Option<PathBuf> {
-    let i = m.instances.get(key)?;
-    Some(fleet::preview_path(m.batch(&i.batch_id)?, i.account_id))
+    let i = m.games.get(key)?;
+    Some(fleet::preview_path(m.instance(&i.instance_id)?, i.account_id))
 }
 
 enum Deferred {
@@ -1218,11 +1396,11 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
                 Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
             };
-            let before = key.as_ref().and_then(|k| m.instances.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
+            let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
             let seeded = matches!(update, Update::Seed { .. });
             apply(m, rt, update, &mut fx);
             let Some(key) = key else { continue };
-            let Some(i) = m.instances.get(&key) else { continue };
+            let Some(i) = m.games.get(&key) else { continue };
             let after = (rank(&i.phase), i.phase.needs_attention());
             if before.is_some_and(|b| b.0 != after.0) {
                 m.order_seq += 1;
@@ -1294,9 +1472,9 @@ fn save_histories(keys: &[String], cx: &mut App) {
     let rt = cx.global::<Runtime>();
     let Some(writer) = &rt.history else { return };
     for key in keys {
-        let Some(i) = m.instances.get(key) else { continue };
-        let (Some(batch), Some(log)) = (m.batch(&i.batch_id), m.history.get(key)) else { continue };
-        writer.save(history::path(batch, i.account_id), log.clone());
+        let Some(i) = m.games.get(key) else { continue };
+        let (Some(instance), Some(log)) = (m.instance(&i.instance_id), m.history.get(key)) else { continue };
+        writer.save(history::path(instance, i.account_id), log.clone());
     }
 }
 
@@ -1307,7 +1485,7 @@ fn apply_previews(updates: Vec<Update>, cx: &mut App) {
     model.update(cx, |m, _| {
         for update in updates {
             let Update::Preview { key, seq, image } = update else { continue };
-            match m.instances.get_mut(&key) {
+            match m.games.get_mut(&key) {
                 Some(i) if i.phase.is_running() => {
                     if let Some(old) = i.preview.replace(Arc::clone(&image)) {
                         retired.push(old);
@@ -1343,7 +1521,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         }
         Update::Progress { batch, done, total } => {
             m.preparing.remove(&batch);
-            for i in m.instances.values_mut().filter(|i| i.batch_id == batch) {
+            for i in m.games.values_mut().filter(|i| i.batch_id == batch) {
                 if let Phase::Starting { total: queued, .. } = i.phase
                     && queued > 0
                 {
@@ -1352,7 +1530,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
         }
         Update::Launched { key } => {
-            if let Some(i) = m.instances.get_mut(&key)
+            if let Some(i) = m.games.get_mut(&key)
                 && matches!(i.phase, Phase::Starting { .. } | Phase::Failed { .. })
                 && !i.stopping
             {
@@ -1360,19 +1538,19 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
         }
         Update::Failed { key, reason, login } => {
-            if let Some(i) = m.instances.get_mut(&key) {
+            if let Some(i) = m.games.get_mut(&key) {
                 m.preparing.remove(&i.batch_id);
                 i.phase = if login { Phase::LoginNeeded } else { Phase::Failed { reason } };
             }
         }
         Update::Seed { key, phase, attempts } => {
-            if let Some(i) = m.instances.get_mut(&key) {
+            if let Some(i) = m.games.get_mut(&key) {
                 i.phase = phase;
                 i.reconnect_attempts = attempts;
             }
         }
         Update::SignIn { account, valid } => {
-            for i in m.instances.values_mut().filter(|i| i.account_id == account) {
+            for i in m.games.values_mut().filter(|i| i.account_id == account) {
                 if !valid && matches!(i.phase, Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. }) {
                     i.phase = Phase::LoginNeeded;
                 } else if valid && i.phase == Phase::LoginNeeded && !rt.pids.contains_key(&i.key) {
@@ -1382,7 +1560,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             m.order_seq += 1;
         }
         Update::Exited { key, code } => on_exit(m, rt, fx, key, code),
-        Update::Preview { key, seq, image } => match m.instances.get_mut(&key) {
+        Update::Preview { key, seq, image } => match m.games.get_mut(&key) {
             Some(i) if i.phase.is_running() => {
                 fx.stills.push((key, Arc::clone(&image), false));
                 if let Some(old) = i.preview.replace(image) {
@@ -1393,7 +1571,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
             _ => fx.retired.push(image),
         },
-        Update::Still { key, image } => match m.instances.get_mut(&key) {
+        Update::Still { key, image } => match m.games.get_mut(&key) {
             Some(i) if i.preview.is_none() && !i.live => i.preview = Some(image),
             _ => fx.retired.push(image),
         },
@@ -1405,7 +1583,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
         }
         Update::ProxyChecked { key, fault } => {
-            if m.instances.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })) {
+            if m.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })) {
                 model::set_hint(&key, |h| h.proxy = fault);
             }
         }
@@ -1419,14 +1597,14 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 rt.backend.send(&instance, message);
             }
             tint(m, &instance, pid);
-            if let Some(i) = m.instances.get_mut(&instance)
+            if let Some(i) = m.games.get_mut(&instance)
                 && matches!(i.phase, Phase::Starting { .. })
             {
                 i.phase = Phase::Menu;
             }
         }
         Update::Ipc(Event::Disconnected { instance }) => {
-            let alive = rt.pids.contains_key(&instance) && m.instances.get(&instance).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
+            let alive = rt.pids.contains_key(&instance) && m.games.get(&instance).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
             if alive {
                 model::set_hint(&instance, |h| h.link_lost = true);
             }
@@ -1445,7 +1623,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     rt.insets.remove(&key);
     rt.joined.remove(&key);
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
-    let Some(i) = m.instances.get_mut(&key) else {
+    let Some(i) = m.games.get_mut(&key) else {
         let keys = drop_restart(rt, &key);
         if !keys.is_empty() {
             fx.later.push(Deferred::Start { keys });
@@ -1506,7 +1684,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
 }
 
 fn join_lines_of(m: &Model, key: &str) -> Option<(Vec<String>, Duration)> {
-    let batch = m.batch(&m.instances.get(key)?.batch_id)?;
+    let batch = m.batch(&m.games.get(key)?.batch_id)?;
     let lines = batch.join_lines();
     (!lines.is_empty()).then(|| (lines, Duration::from_millis(u64::from(batch.join_delay_ms))))
 }
@@ -1515,18 +1693,18 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
     if kind != StateKind::Playing {
         *rt.joins.entry(key.clone()).or_default() += 1;
     }
-    let offline = m.instances.get(&key).and_then(|i| m.account(i.account_id)).is_some_and(|a| a.kind == AccountKind::Offline);
+    let offline = m.games.get(&key).and_then(|i| m.account(i.account_id)).is_some_and(|a| a.kind == AccountKind::Offline);
     if matches!(kind, StateKind::Menu | StateKind::Playing) {
         model::set_hint(&key, |h| h.proxy = None);
     }
     if kind == StateKind::Disconnected
         && matches!(cause, None | Some(DisconnectCause::ServerDown | DisconnectCause::Auth | DisconnectCause::Unknown))
-        && let Some(url) = m.instances.get(&key).and_then(|i| m.account(i.account_id)).and_then(|a| a.proxy.clone())
+        && let Some(url) = m.games.get(&key).and_then(|i| m.account(i.account_id)).and_then(|a| a.proxy.clone())
     {
         fx.check_proxy.push((key.clone(), url));
     }
     let join = if kind == StateKind::Playing { join_lines_of(m, &key) } else { None };
-    let Some(i) = m.instances.get_mut(&key) else { return };
+    let Some(i) = m.games.get_mut(&key) else { return };
     if i.stopping || i.phase == Phase::Stopped {
         return;
     }
@@ -1622,17 +1800,17 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
             if whisper
                 && !playing
                 && settings::active().merged_chat
-                && let Some(i) = m.instances.get_mut(&key)
+                && let Some(i) = m.games.get_mut(&key)
             {
                 i.unread_whispers += 1;
             }
-            let (account, batch) = m.instances.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
+            let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
             if whisper && !playing {
                 fx.whispers.push(Whisper { account: account.clone(), from: from.clone(), text: text.clone() });
             }
             if settings::active().merged_chat {
                 let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-                let server = m.instances.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
+                let server = m.games.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
                 let shared = !whisper && !(from.is_none() && text.contains(&account));
                 m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at, whisper, from, text }, server.as_deref(), shared, Instant::now(), KEPT_CHAT);
             }
@@ -1671,20 +1849,20 @@ fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx
 }
 
 fn game_identity(m: &Model, key: &str) -> Vec<ToMod> {
-    let Some(i) = m.instances.get(key) else { return Vec::new() };
-    let (Some(account), Some(batch)) = (m.accounts.iter().find(|a| a.id == i.account_id), m.batches.iter().find(|b| b.id == i.batch_id)) else { return Vec::new() };
-    fleet::identity_messages(batch, account, settings::active().game_badge)
+    let Some(i) = m.games.get(key) else { return Vec::new() };
+    let (Some(account), Some(target)) = (m.accounts.iter().find(|a| a.id == i.account_id), m.target(&i.batch_id)) else { return Vec::new() };
+    fleet::identity_messages(&target, account, settings::active().game_badge)
 }
 
 fn tint(m: &Model, key: &str, pid: u32) {
-    if let Some(account) = m.instances.get(key).and_then(|i| m.accounts.iter().find(|a| a.id == i.account_id)) {
+    if let Some(account) = m.games.get(key).and_then(|i| m.accounts.iter().find(|a| a.id == i.account_id)) {
         crate::core::game_window::tint(pid, account);
     }
 }
 
 /// Keeps the computer awake while a game runs or waits to start again, as far as the settings allow.
 pub fn keep_awake(cx: &App) {
-    let busy = model::get(cx).read(cx).instances.values().any(|i| i.phase.is_active());
+    let busy = model::get(cx).read(cx).games.values().any(|i| i.phase.is_active());
     awake::set(awake::wanted(settings::active().prevent_sleep, busy));
 }
 
@@ -1708,7 +1886,7 @@ fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut Ap
                 return;
             }
             let model = model::get(cx);
-            if model.read(cx).instances.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. }) && !i.stopping) {
+            if model.read(cx).games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. }) && !i.stopping) {
                 rt.backend.send(&key, ToMod::Reconnect);
             }
         });
@@ -1727,7 +1905,7 @@ fn schedule_restart(key: String, delay: Duration, generation: u64, cx: &mut App)
             let model = model::get(cx);
             let batch = {
                 let m = model.read(cx);
-                m.instances.get(&key).filter(|i| matches!(i.phase, Phase::Restarting { .. }) && !i.stopping).map(|i| i.batch_id.clone())
+                m.games.get(&key).filter(|i| matches!(i.phase, Phase::Restarting { .. }) && !i.stopping).map(|i| i.batch_id.clone())
             };
             if let Some(batch) = batch {
                 launch(&batch, Some(std::slice::from_ref(&key)), true, cx);
@@ -1747,7 +1925,7 @@ fn schedule_join(key: String, generation: u64, lines: Vec<String>, delay: Durati
                     return false;
                 }
                 let model = model::get(cx);
-                if !model.read(cx).instances.get(&key).is_some_and(|i| matches!(i.phase, Phase::Playing { .. }) && !i.stopping) {
+                if !model.read(cx).games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Playing { .. }) && !i.stopping) {
                     return false;
                 }
                 rt.backend.send(&key, ToMod::ChatSend { text: line });
@@ -1791,7 +1969,7 @@ fn flush_alert(batch_id: &str, cx: &mut App) {
     let model = model::get(cx);
     let (names, kinds, batch_name) = {
         let m = model.read(cx);
-        let open: Vec<&(String, Alert)> = list.iter().filter(|(name, _)| m.instances.values().any(|i| i.batch_id == batch_id && i.name == *name && i.phase.needs_attention())).collect();
+        let open: Vec<&(String, Alert)> = list.iter().filter(|(name, _)| m.games.values().any(|i| i.batch_id == batch_id && i.name == *name && i.phase.needs_attention())).collect();
         let mut seen = HashSet::new();
         let names: Vec<String> = open.iter().filter(|(n, _)| seen.insert(n.clone())).map(|(n, _)| n.clone()).collect();
         let kinds: HashSet<Alert> = open.iter().map(|(_, k)| *k).collect();
@@ -1957,7 +2135,7 @@ fn flush_phone(cx: &mut App) {
     let due: Vec<(String, Vec<Incident>)> = {
         let m = model.read(cx);
         let current = |e: &Incident| {
-            m.instances.get(&e.key).is_some_and(|i| {
+            m.games.get(&e.key).is_some_and(|i| {
                 !i.stopping
                     && match e.what {
                         _ if e.healed => i.phase.on_server(),
@@ -2041,7 +2219,7 @@ fn refresh_badge(cx: &mut App) {
 }
 
 /// The ban that is still the latest event of a stopped instance, as its status line, so a stop does not hide it.
-pub fn stopped_ban(i: &Instance, m: &Model) -> Option<String> {
+pub fn stopped_ban(i: &Game, m: &Model) -> Option<String> {
     if i.phase != Phase::Stopped || i.stopping {
         return None;
     }
@@ -2050,7 +2228,7 @@ pub fn stopped_ban(i: &Instance, m: &Model) -> Option<String> {
 }
 
 /// The phase of an instance as one line of German for its tile.
-pub fn status(i: &Instance, preparing: Option<u8>) -> String {
+pub fn status(i: &Game, preparing: Option<u8>) -> String {
     if i.stopping {
         return tr("Wird gestoppt…");
     }
@@ -2094,10 +2272,10 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Instance, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, apply, fleet, needs_sign_in, redraw, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, apply, fleet, needs_sign_in, redraw, render_image, status};
 
-    fn instance(phase: Phase) -> Instance {
-        Instance { key: "k".into(), batch_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
+    fn instance(phase: Phase) -> Game {
+        Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     #[test]
@@ -2135,7 +2313,7 @@ mod tests {
     struct Recorder(std::sync::Mutex<Vec<(String, ToMod)>>);
 
     impl Backend for Recorder {
-        fn start(&self, _: Batch, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>) {}
         fn stop(&self, _: Vec<String>) {}
         fn send(&self, key: &str, message: ToMod) {
             self.0.lock().unwrap().push((key.to_owned(), message));
@@ -2198,7 +2376,7 @@ mod tests {
     struct Quiet;
 
     impl Backend for Quiet {
-        fn start(&self, _: Batch, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>) {}
         fn stop(&self, _: Vec<String>) {}
         fn send(&self, _: &str, _: ToMod) {}
         fn read_preview(&self, _: String, _: PathBuf) {}
@@ -2241,14 +2419,16 @@ mod tests {
 
     fn setup(phase: Phase, kind: AccountKind, join: &[&str]) -> (Model, Runtime, String) {
         let id = uuid::Uuid::from_u128(7);
-        let mut batch = Batch::new("b", "26.3");
+        let made = crate::core::instance::Instance::new("b", "26.3", crate::core::instance::Loader::default());
+        let mut batch = Batch::new("b", &made.id);
         batch.accounts = vec![id];
         batch.join_commands = join.iter().map(|s| (*s).to_owned()).collect();
         let key = fleet::instance_key(&batch, id);
         let mut m = Model::default();
         m.accounts.push(Account { id, name: "AltOne".into(), kind, proxy: None, color: None });
-        m.instances.insert(key.clone(), Instance { key: key.clone(), batch_id: batch.id.clone(), account_id: id, name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false });
+        m.games.insert(key.clone(), Game { key: key.clone(), batch_id: batch.id.clone(), instance_id: made.id.clone(), account_id: id, name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false });
         m.batches.push(batch);
+        m.instances.push(made);
         (m, runtime(), key)
     }
 
@@ -2261,7 +2441,7 @@ mod tests {
         let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(cause));
-        (m.instances[&key].phase.clone(), fx, m)
+        (m.games[&key].phase.clone(), fx, m)
     }
 
     #[test]
@@ -2281,15 +2461,15 @@ mod tests {
         for attempt in 1..=5 {
             let mut fx = Effects::default();
             send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
-            assert!(matches!(m.instances[&key].phase, Phase::Connecting { .. }));
-            assert_eq!(m.instances[&key].reconnect_attempts, attempt);
+            assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }));
+            assert_eq!(m.games[&key].reconnect_attempts, attempt);
             let Some(Deferred::Reconnect { delay, .. }) = fx.later.pop() else { panic!("no reconnect scheduled") };
             let base = [10.0, 30.0, 90.0, 300.0, 300.0][attempt as usize - 1];
             assert!(delay.as_secs_f64() >= base * 0.75 - 0.01 && delay.as_secs_f64() <= base * 1.25 + 0.01, "{delay:?} for try {attempt}");
         }
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
-        assert!(matches!(m.instances[&key].phase, Phase::Disconnected { .. }) && fx.later.is_empty());
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && fx.later.is_empty());
         assert_eq!(m.history[&key].len(), 6);
     }
 
@@ -2326,23 +2506,23 @@ mod tests {
         for attempt in 1..=3 {
             let mut fx = Effects::default();
             send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
-            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert_eq!(m.games[&key].phase, Phase::Restarting { attempt, of: 3 });
             assert_eq!(fx.stop.len(), 1);
             assert!(fx.later.is_empty());
             let mut exit = Effects::default();
             apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut exit);
-            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert_eq!(m.games[&key].phase, Phase::Restarting { attempt, of: 3 });
             assert!(matches!(exit.later.pop(), Some(Deferred::Restart { .. })));
-            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+            m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         }
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
-        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
         assert!(fx.later.is_empty());
         let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
-        assert!(matches!(m.instances[&key].phase, Phase::Disconnected { .. }) && fx.stop.is_empty());
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && fx.stop.is_empty());
     }
 
     #[test]
@@ -2356,7 +2536,7 @@ mod tests {
         let (mut m, mut rt, key) = setup(Phase::Banned { server: None, reason: "x".into() }, AccountKind::Microsoft, &[]);
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
-        assert_eq!(m.instances[&key].phase, Phase::Crashed { code: Some(1) });
+        assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(1) });
         assert!(fx.later.is_empty());
     }
 
@@ -2393,14 +2573,14 @@ mod tests {
         apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut Effects::default());
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));
-        assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
         assert_eq!(fx.stop, [key.clone()]);
         assert!(fx.later.is_empty());
         assert!(rt.pids.contains_key(&key));
         let mut exit = Effects::default();
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut exit);
         assert!(!rt.pids.contains_key(&key));
-        assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
         let Some(Deferred::Restart { delay, generation, .. }) = exit.later.pop() else { panic!("no restart scheduled") };
         assert_eq!(delay, Duration::ZERO);
         assert_eq!(generation, rt.reconnects[&key]);
@@ -2420,7 +2600,7 @@ mod tests {
     fn a_manual_exit_after_a_rejected_sign_in_keeps_the_login_state() {
         let (mut m, mut rt, key) = setup(Phase::LoginNeeded, AccountKind::Microsoft, &[]);
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut Effects::default());
-        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
     }
 
     #[test]
@@ -2455,14 +2635,14 @@ mod tests {
         for attempt in 1..=3 {
             let mut fx = Effects::default();
             apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
-            assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt, of: 3 });
-            assert!(!m.instances[&key].phase.needs_attention());
+            assert_eq!(m.games[&key].phase, Phase::Restarting { attempt, of: 3 });
+            assert!(!m.games[&key].phase.needs_attention());
             assert!(matches!(fx.later.pop(), Some(Deferred::Restart { .. })));
-            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+            m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         }
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
-        assert_eq!(m.instances[&key].phase, Phase::Crashed { code: Some(1) });
+        assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(1) });
         assert!(fx.later.is_empty());
         assert_eq!(m.history[&key].iter().filter(|e| e.kind == Kind::Crashed).count(), 4);
     }
@@ -2473,7 +2653,7 @@ mod tests {
         rt.crash_restarts.insert(key.clone(), 3);
         rt.started.insert(key.clone(), Instant::now() - Duration::from_secs(120));
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut Effects::default());
-        assert_eq!(m.instances[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
     }
 
     #[test]
@@ -2481,11 +2661,11 @@ mod tests {
         let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
-        assert_eq!(m.instances[&key].phase, Phase::Stopped);
-        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
-        m.instances.get_mut(&key).unwrap().stopping = true;
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.games.get_mut(&key).unwrap().stopping = true;
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
-        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
         assert!(fx.later.is_empty() && m.history.is_empty());
     }
 
@@ -2497,10 +2677,10 @@ mod tests {
         rt.restarts.insert("other".into(), 1);
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
         assert!(fx.later.is_empty() && rt.restarts.contains_key(&key), "an exit the user did not ask for is no restart");
-        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
-        m.instances.get_mut(&key).unwrap().stopping = true;
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.games.get_mut(&key).unwrap().stopping = true;
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(1) }, &mut fx);
-        assert_eq!(m.instances[&key].phase, Phase::Stopped);
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
         assert!(fx.later.is_empty(), "the group waits for its other account");
         rt.restarts.remove("other");
         assert_eq!(super::restart_done(&mut rt, 1), Some(vec![key.clone()]), "the group starts together once the last one is down");
@@ -2519,7 +2699,7 @@ mod tests {
         assert_eq!(super::drop_restart(&mut rt, "b"), vec!["c".to_string()], "a user stop never starts a, and c goes on once b is down");
         rt.restarts.insert("gone".into(), 2);
         rt.restart_ready.insert(2, vec![key.clone()]);
-        m.instances.clear();
+        m.games.clear();
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Exited { key: "gone".into(), code: Some(0) }, &mut fx);
         assert!(matches!(fx.later.as_slice(), [Deferred::Start { keys }] if *keys == [key]), "a removed instance does not hold up its group");
@@ -2529,16 +2709,16 @@ mod tests {
     fn a_stopped_banned_account_keeps_its_ban_in_the_status() {
         crate::core::i18n::init("de");
         let (_, _, mut m) = dropped(DisconnectCause::Banned);
-        let key = m.instances.keys().next().unwrap().clone();
+        let key = m.games.keys().next().unwrap().clone();
         let mut rt = runtime();
         let mut fx = Effects::default();
-        m.instances.get_mut(&key).unwrap().stopping = true;
+        m.games.get_mut(&key).unwrap().stopping = true;
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
-        let i = &m.instances[&key];
+        let i = &m.games[&key];
         assert_eq!(i.phase, Phase::Stopped);
         assert_eq!(super::stopped_ban(i, &m).as_deref(), Some("Gestoppt · Gesperrt · why"));
         crate::core::history::push(m.history.get_mut(&key).unwrap(), crate::core::history::Entry::now(Kind::Connected, None, ""));
-        assert!(super::stopped_ban(&m.instances[&key], &m).is_none());
+        assert!(super::stopped_ban(&m.games[&key], &m).is_none());
     }
 
     #[test]
@@ -2546,12 +2726,12 @@ mod tests {
         let (mut m, mut rt, key) = setup(Phase::Stopped, AccountKind::Microsoft, &[]);
         let id = uuid::Uuid::from_u128(7);
         apply(&mut m, &mut rt, Update::SignIn { account: id, valid: false }, &mut Effects::default());
-        assert_eq!(m.instances[&key].phase, Phase::LoginNeeded);
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
         apply(&mut m, &mut rt, Update::SignIn { account: id, valid: true }, &mut Effects::default());
-        assert_eq!(m.instances[&key].phase, Phase::Stopped);
-        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         apply(&mut m, &mut rt, Update::SignIn { account: id, valid: false }, &mut Effects::default());
-        assert_eq!(m.instances[&key].phase, Phase::Menu);
+        assert_eq!(m.games[&key].phase, Phase::Menu);
     }
 
     #[test]
@@ -2565,9 +2745,9 @@ mod tests {
     }
 
     fn rekeyed(m: &mut Model, old: &str, new: &str) -> String {
-        let mut i = m.instances.remove(old).unwrap();
+        let mut i = m.games.remove(old).unwrap();
         i.key = new.to_owned();
-        m.instances.insert(new.to_owned(), i);
+        m.games.insert(new.to_owned(), i);
         new.to_owned()
     }
 
@@ -2582,13 +2762,13 @@ mod tests {
         apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut fx);
         apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
         assert!(model::hint(&key).link_lost);
-        assert_eq!(status(&m.instances[&key], None), "Keine Verbindung zum Spiel");
+        assert_eq!(status(&m.games[&key], None), "Keine Verbindung zum Spiel");
         apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut fx);
         assert!(!model::hint(&key).link_lost);
         apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
         assert!(!model::hint(&key).link_lost);
-        assert_eq!(status(&m.instances[&key], None), "Auf mc.example:25565");
+        assert_eq!(status(&m.games[&key], None), "Auf mc.example:25565");
     }
 
     #[test]
@@ -2597,10 +2777,10 @@ mod tests {
         let key = rekeyed(&mut m, &old, "link-closing");
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 9, mod_version: String::new() }), &mut fx);
-        m.instances.get_mut(&key).unwrap().stopping = true;
+        m.games.get_mut(&key).unwrap().stopping = true;
         apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
         assert!(!model::hint(&key).link_lost);
-        m.instances.get_mut(&key).unwrap().stopping = false;
+        m.games.get_mut(&key).unwrap().stopping = false;
         apply(&mut m, &mut rt, Update::Ipc(Event::Disconnected { instance: key.clone() }), &mut fx);
         assert!(model::hint(&key).link_lost);
         apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: Some(0) }, &mut fx);
@@ -2616,13 +2796,13 @@ mod tests {
         let mut fx = Effects::default();
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
         assert_eq!(fx.check_proxy, [(key.clone(), "socks5://u:p@10.0.0.1:1080".to_owned())]);
-        assert_eq!(status(&m.instances[&key], None), "Verbindet neu · Versuch 1 von 5");
+        assert_eq!(status(&m.games[&key], None), "Verbindet neu · Versuch 1 von 5");
         apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut fx);
-        assert_eq!(status(&m.instances[&key], None), "Proxy nicht erreichbar");
+        assert_eq!(status(&m.games[&key], None), "Proxy nicht erreichbar");
         apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Rejected) }, &mut fx);
-        assert_eq!(status(&m.instances[&key], None), "Proxy lehnt die Anmeldung ab");
+        assert_eq!(status(&m.games[&key], None), "Proxy lehnt die Anmeldung ab");
         apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: None }, &mut fx);
-        assert_eq!(status(&m.instances[&key], None), "Verbindet neu · Versuch 1 von 5");
+        assert_eq!(status(&m.games[&key], None), "Verbindet neu · Versuch 1 von 5");
         apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut fx);
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
         assert_eq!(model::hint(&key).proxy, None);
@@ -2636,10 +2816,10 @@ mod tests {
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
         assert!(fx.check_proxy.is_empty(), "no proxy, no check");
         m.accounts[0].proxy = Some("socks5://10.0.0.1".into());
-        m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+        m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         for cause in [DisconnectCause::Banned, DisconnectCause::Kicked, DisconnectCause::Whitelist, DisconnectCause::ServerFull, DisconnectCause::Duplicate] {
             send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(cause));
-            m.instances.get_mut(&key).unwrap().phase = Phase::Menu;
+            m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         }
         assert!(fx.check_proxy.is_empty(), "the server answered, the proxy works");
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Auth));

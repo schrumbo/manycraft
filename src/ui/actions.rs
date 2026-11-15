@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, NewBatchFromPrism, UndoRemoveAccount, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch]);
+actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, NewBatchFromPrism, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent]);
 
 /// Gives these accounts (ids) colour `color`, an index into `core::account::COLORS`.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -137,3 +137,56 @@ pub struct OpenGameFolder(pub String);
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
 pub struct CancelImport(pub u64);
+
+/// Opens the sheet that creates an instance.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct NewInstance;
+
+/// Shows the page of one instance (id).
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ShowInstance(pub String);
+
+/// Plays an instance alone with one account; without one, with the account that played it last.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct PlayInstance {
+    pub instance: String,
+    pub account: Option<String>,
+}
+
+/// Opens the batch sheet for a new batch on this instance (id).
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct NewBatchFor(pub String);
+
+/// Opens the sheet that adds and removes the mods of an instance (id).
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct EditMods(pub String);
+
+/// Copies an instance (id) with its mods, config and packs, but no worlds.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct CloneInstance(pub String);
+
+/// Shows the page of an instance (id) and starts renaming it there.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct RenameInstance(pub String);
+
+/// Asks, then deletes an instance (id) with its worlds.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct DeleteInstance(pub String);
+
+/// Opens an instance's folder (id) in the file manager.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct OpenInstanceFolder(pub String);
+
+/// Writes an instance (id) as a `.mrpack` file the person picks.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ExportInstance(pub String);

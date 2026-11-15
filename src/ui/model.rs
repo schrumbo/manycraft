@@ -11,7 +11,9 @@ use uuid::Uuid;
 use crate::core::account::Account;
 use crate::core::batch::Batch;
 use crate::core::fit::Fit;
+use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
+use crate::core::instance::Instance;
 use crate::core::i18n::{tr, trf};
 use crate::core::proxy::Fault;
 
@@ -68,11 +70,12 @@ impl Phase {
     }
 }
 
-/// Live status of one account in one batch.
+/// Live status of one account in one batch, or playing an instance alone when `batch_id` is empty.
 #[derive(Clone, Debug)]
-pub struct Instance {
+pub struct Game {
     pub key: String,
     pub batch_id: String,
+    pub instance_id: String,
     pub account_id: Uuid,
     pub name: String,
     pub phase: Phase,
@@ -115,7 +118,8 @@ impl EventEmitter<ChatArrived> for Model {}
 pub struct Model {
     pub accounts: Vec<Account>,
     pub batches: Vec<Batch>,
-    pub instances: HashMap<String, Instance>,
+    pub instances: Vec<Instance>,
+    pub games: HashMap<String, Game>,
     pub chat: Vec<ChatLine>,
     /// How many lines were ever added to `chat`, so a view can tell new lines from dropped old ones.
     pub chat_seq: u64,
@@ -184,15 +188,15 @@ pub struct Updates {
 
 impl Model {
     /// Instances of `batch_id` (all batches when `None`), attention first, then running, then stopped, each by name.
-    pub fn sorted(&self, batch_id: Option<&str>) -> Vec<&Instance> {
-        let mut list: Vec<&Instance> = self.instances.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b)).collect();
+    pub fn sorted(&self, batch_id: Option<&str>) -> Vec<&Game> {
+        let mut list: Vec<&Game> = self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b)).collect();
         list.sort_by_key(|i| (rank(&i.phase), i.name.to_lowercase(), i.key.clone()));
         list
     }
 
     /// How many instances of `batch_id` (all when `None`) need attention.
     pub fn attention_count(&self, batch_id: Option<&str>) -> usize {
-        self.instances.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && i.phase.needs_attention()).count()
+        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && i.phase.needs_attention()).count()
     }
 
     /// The saved account with this id.
@@ -203,6 +207,40 @@ impl Model {
     /// The batch with this id.
     pub fn batch(&self, id: &str) -> Option<&Batch> {
         self.batches.iter().find(|b| b.id == id)
+    }
+
+    /// The instance with this id.
+    pub fn instance(&self, id: &str) -> Option<&Instance> {
+        self.instances.iter().find(|i| i.id == id)
+    }
+
+    /// The instance batch `id` plays.
+    pub fn instance_of(&self, batch_id: &str) -> Option<&Instance> {
+        self.batch(batch_id).and_then(|b| self.instance(&b.instance_id))
+    }
+
+    /// What `owner` plays: a batch with its instance, or an instance played alone by the games it owns.
+    pub fn target(&self, owner: &str) -> Option<Target> {
+        if let Some(batch) = self.batch(owner) {
+            return Some(Target::of_batch(batch, self.instance(&batch.instance_id)?));
+        }
+        let game = self.games.values().find(|g| g.batch_id == owner)?;
+        Some(Target::solo(self.instance(&game.instance_id)?))
+    }
+
+    /// Where `account` already plays `instance` other than in game `key`: the batch name, or the instance's when alone.
+    pub fn playing_elsewhere(&self, instance: &str, account: Uuid, key: &str) -> Option<String> {
+        let other = self.games.values().find(|g| g.key != key && g.account_id == account && g.instance_id == instance && g.phase.is_active())?;
+        match self.batch(&other.batch_id) {
+            Some(batch) => Some(batch.name.clone()),
+            None => self.instance(instance).map(|i| trf("%@ · allein", &[&i.name])),
+        }
+    }
+
+    /// Games of `instance` played alone.
+    pub fn solo_games(&self, instance: &str) -> impl Iterator<Item = &Game> {
+        let owner = fleet::solo_owner(instance);
+        self.games.values().filter(move |g| g.batch_id == owner)
     }
 
     /// Adds a chat line. A `shared` line, one the whole server sees, that another instance on `server` received within `CHAT_MERGE` joins that line instead of repeating it.
@@ -247,7 +285,7 @@ impl Model {
 
     /// Whispers not yet seen, over all instances.
     pub fn unread_whispers_total(&self) -> u32 {
-        self.instances.values().map(|i| i.unread_whispers).sum()
+        self.games.values().map(|i| i.unread_whispers).sum()
     }
 
     /// The recorded events of instance `key`, newest first.
@@ -358,8 +396,8 @@ mod tests {
         assert_eq!(fit_line(1, 8192, &fit(8192, 4096)), "Ein Account braucht 8 GB, dein PC hat 4 GB frei");
     }
 
-    fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Instance {
-        Instance { key: key.into(), batch_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
+    fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Game {
+        Game { key: key.into(), batch_id: batch.into(), instance_id: batch.into(), account_id: Uuid::nil(), name: name.into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
     }
 
     #[test]
@@ -372,7 +410,7 @@ mod tests {
             instance("4", "amy", "b", Phase::Stopped),
             instance("5", "Abe", "a", Phase::LoginNeeded),
         ] {
-            m.instances.insert(i.key.clone(), i);
+            m.games.insert(i.key.clone(), i);
         }
         let names: Vec<&str> = m.sorted(None).iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["Abe", "zed", "Alex", "amy", "bob"]);
@@ -390,7 +428,7 @@ mod tests {
             instance("2", "zed", "a", Phase::Restarting { attempt: 1, of: 3 }),
             instance("3", "bob", "a", Phase::Playing { server: "s".into(), since: Instant::now() }),
         ] {
-            m.instances.insert(i.key.clone(), i);
+            m.games.insert(i.key.clone(), i);
         }
         let names: Vec<&str> = m.sorted(None).iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["bob", "zed", "amy"]);
@@ -401,7 +439,7 @@ mod tests {
         let banned = Phase::Banned { server: None, reason: "x".into() };
         assert!(banned.needs_attention() && banned.is_running());
         let mut m = Model::default();
-        m.instances.insert("1".into(), instance("1", "a", "a", banned));
+        m.games.insert("1".into(), instance("1", "a", "a", banned));
         assert_eq!(m.attention_count(None), 1);
     }
 
@@ -436,7 +474,7 @@ mod tests {
         for (key, n) in [("1", 2), ("2", 0), ("3", 5)] {
             let mut i = instance(key, key, "a", Phase::Stopped);
             i.unread_whispers = n;
-            m.instances.insert(key.into(), i);
+            m.games.insert(key.into(), i);
         }
         assert_eq!(m.unread_whispers_total(), 7);
     }

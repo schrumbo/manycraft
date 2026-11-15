@@ -94,12 +94,12 @@ pub fn scrub_logs(logs: &Path) -> usize {
     entries.filter_map(Result::ok).filter(|e| is_crash_file(&e.file_name().to_string_lossy())).filter(|e| scrub_file(&e.path())).count()
 }
 
-/// Redacts the crash files of every instance folder under `instances` (`<batch>/<account>/logs`).
+/// Redacts the crash files of every game folder under `instances` (`<instance>/games/<account>/logs`).
 pub fn scrub_instances(instances: &Path) -> usize {
-    let Ok(batches) = std::fs::read_dir(instances) else { return 0 };
-    batches
+    let Ok(found) = std::fs::read_dir(instances) else { return 0 };
+    found
         .filter_map(Result::ok)
-        .filter_map(|batch| std::fs::read_dir(batch.path()).ok())
+        .filter_map(|instance| std::fs::read_dir(super::instance::games_dir(&instance.path())).ok())
         .flat_map(|accounts| accounts.filter_map(Result::ok))
         .map(|account| scrub_logs(&account.path().join("logs")))
         .sum()
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn crash_files_are_found_and_rewritten_in_place() {
         let dir = tempfile::tempdir().unwrap();
-        let logs = dir.path().join("b").join("a").join("logs");
+        let logs = dir.path().join("b").join("games").join("a").join("logs");
         std::fs::create_dir_all(&logs).unwrap();
         std::fs::write(logs.join("hs_err_pid42.log"), format!("java_command: X --accessToken {JWT}\n")).unwrap();
         std::fs::write(logs.join("latest.log"), format!("--accessToken {JWT}\n")).unwrap();

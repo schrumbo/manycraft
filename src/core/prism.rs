@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::account::{self, Account, AccountKind};
-use super::batch::{self, Batch, ModRef};
+use super::batch::ModRef;
+use super::instance::{self as made, Loader};
 use super::{fleet, modrinth, mrpack, net};
 
 const CONFIG_FILE: &str = "prismlauncher.cfg";
@@ -118,12 +119,12 @@ pub fn accounts() -> Result<Vec<PrismAccount>> {
 /// Copies `instance` into a new batch called `name`: same game and loader version, its mods, config and
 /// `options.txt`. Mods found on Modrinth by SHA-1 become pinned `ModRef`s; the others stay local jars,
 /// listed in `Batch::local_mods`. Saved before it returns; Prism's files are untouched.
-pub fn import_instance(instance: &Instance, name: &str) -> Result<Batch> {
+pub fn import_instance(instance: &Instance, name: &str) -> Result<made::Instance> {
     let name = name.trim();
-    if batch::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
-        bail!("a batch named {name} exists already");
+    if made::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
+        bail!("an instance named {name} exists already");
     }
-    import_to(instance, name, &batch::batches_dir(), &modrinth::match_hashes)
+    import_to(instance, name, &made::instances_dir(), &modrinth::match_hashes)
 }
 
 /// Adds Prism's offline accounts to the saved accounts. Microsoft accounts are not saved, they need a sign-in.
@@ -174,7 +175,7 @@ pub fn instance_at(dir: &Path) -> Result<Instance> {
 }
 
 /// Copies `instance` into a new batch `name` under `root`; see `import_instance`. Does not check that the name is free.
-pub(super) fn import_into(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Result<Batch> {
+pub(super) fn import_into(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Result<made::Instance> {
     import_to(instance, name, root, lookup)
 }
 
@@ -229,7 +230,7 @@ struct Jar {
     sha1: String,
 }
 
-fn import_to(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Result<Batch> {
+fn import_to(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Result<made::Instance> {
     if name.is_empty() {
         bail!("a batch needs a name");
     }
@@ -241,8 +242,7 @@ fn import_to(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Re
     let hashes: Vec<String> = jars.iter().map(|j| j.sha1.clone()).collect();
     let matched = lookup(&hashes).context("cannot look the mods up on Modrinth")?;
 
-    let mut batch = Batch::new(name, game);
-    batch.loader_version.clone_from(&instance.loader_version);
+    let mut batch = made::Instance::new(name, game, Loader::Fabric(instance.loader_version.clone()));
     let mut copies: Vec<(&Jar, String)> = Vec::new();
     let mut taken = HashSet::new();
     let mut seen = HashSet::new();
@@ -268,7 +268,7 @@ fn import_to(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Re
     }
 
     let dest = root.join(&batch.id);
-    let copied = copy_into(instance, &dest, &copies).and_then(|()| batch::save_in(root, &batch));
+    let copied = copy_into(instance, &dest, &copies).and_then(|()| made::save_in(root, &batch));
     if let Err(e) = copied {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
@@ -582,7 +582,7 @@ fn import(who: &str, args: &[&str]) -> Result<i32> {
     };
     let instance = find_instance(instances()?, who)?;
     let batch = import_instance(&instance, name.unwrap_or(&instance.name))?;
-    println!("Batch {} ({}) for Minecraft {}", batch.name, batch.id, batch.game_version);
+    println!("Instance {} ({}): {}", batch.name, batch.id, batch.version_line());
     println!("{} mods from Modrinth, {} local", batch.mods.len(), batch.local_mods.len());
     for local in &batch.local_mods {
         println!("  local: {local}");
@@ -830,7 +830,7 @@ mod tests {
         let batch = import_to(&inst, "Imported", out.path(), &lookup_of(known.clone())).unwrap();
 
         assert_eq!(snapshot(prism.path()), before);
-        assert_eq!((batch.name.as_str(), batch.game_version.as_str(), batch.loader_version.as_deref()), ("Imported", "1.21.1", Some("0.16.5")));
+        assert_eq!((batch.name.as_str(), batch.game_version.as_str(), batch.loader.version()), ("Imported", "1.21.1", Some("0.16.5")));
         assert_eq!(batch.mods, known);
         assert_eq!(batch.local_mods, ["mine.jar"]);
         let dest = out.path().join(&batch.id);
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(fs::read(dest.join("config").join("deep").join("er").join("x.toml")).unwrap(), b"x=1");
         assert_eq!(fs::read_to_string(dest.join(OPTIONS_FILE)).unwrap(), "fov:1.0\nsoundCategory_master:0.7\n");
         assert!(!dest.join("servers.dat").exists());
-        let saved: Batch = serde_json::from_slice(&fs::read(dest.join("batch.json")).unwrap()).unwrap();
+        let saved: made::Instance = serde_json::from_slice(&fs::read(dest.join("instance.json")).unwrap()).unwrap();
         assert_eq!(saved, batch);
     }
 

@@ -45,6 +45,9 @@ pub fn explain(e: &anyhow::Error) -> Problem {
     if let Some(Plain(text)) = e.chain().find_map(|c| c.downcast_ref::<Plain>()) {
         return Problem::plain(text.clone());
     }
+    if let Some(crate::core::instance::Final(text)) = e.chain().find_map(|c| c.downcast_ref::<crate::core::instance::Final>()) {
+        return Problem::plain(text.clone());
+    }
     let raw = format!("{e:#}");
     let io = e.chain().find_map(|c| c.downcast_ref::<std::io::Error>());
     let text = if io.is_some_and(|i| i.kind() == ErrorKind::PermissionDenied) {
