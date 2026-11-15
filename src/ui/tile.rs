@@ -159,7 +159,7 @@ pub fn view(data: TileData, geometry: Geometry, offset: (f32, f32), main: WeakEn
             entity
         }
     };
-    entity.cached(style).into_any_element()
+    entity.cached(style).movable().into_any_element()
 }
 
 /// Shows new previews in the tiles that are drawn, without redrawing anything else.

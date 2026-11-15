@@ -88,4 +88,5 @@ objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 
 [patch.crates-io]
+gpui-pre = { path = "patches/gpui-pre" }
 gpui-pre-windows = { path = "patches/gpui-pre-windows" }
