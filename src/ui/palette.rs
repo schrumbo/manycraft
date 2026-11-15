@@ -353,6 +353,13 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     if let Some(newest) = super::undo::newest(cx) {
         out.push(entry(Group::Commands, "undo-2", tr("Rückgängig"), Some(newest), Box::new(Undo), cx));
     }
+    if matches!(this.page, Page::Instance(_)) {
+        for c in super::mod_list::commands(cx) {
+            let mut e = entry(Group::Commands, c.icon, c.label, c.blocked.clone(), c.action, cx);
+            e.enabled = c.blocked.is_none();
+            out.push(e);
+        }
+    }
     out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
         out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));

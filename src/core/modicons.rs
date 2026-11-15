@@ -98,7 +98,7 @@ fn load(dir: &Path, id: &str, url: &str, fetch: Fetch) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn shrink(bytes: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn shrink(bytes: &[u8]) -> Result<Vec<u8>> {
     extension(bytes).context("not a supported image")?;
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_SIDE);

@@ -28,7 +28,7 @@ use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
 use crate::core::store::{self, Recovery};
-use crate::core::{adopt, drive, install, ipc, net, online};
+use crate::core::{adopt, content, drive, install, ipc, net, online};
 
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -497,6 +497,9 @@ pub fn init(cx: &mut App) {
         }
         if let Err(e) = instance::purge_stale(TRASH_KEPT) {
             eprintln!("trash: {e:#}");
+        }
+        if let Err(e) = content::purge_stale(TRASH_KEPT) {
+            eprintln!("mod trash: {e:#}");
         }
         if let Err(e) = crate::core::trash::purge_stale(&instance::instances_dir(), TRASH_KEPT) {
             eprintln!("trash: {e:#}");

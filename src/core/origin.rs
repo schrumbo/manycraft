@@ -169,7 +169,7 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
         return Err(e);
     }
     let _ = std::fs::remove_dir(&staging);
-    let next = Instance { mods, local_mods: local, ..made.clone() };
+    let next = Instance { mods, local_mods: local, disabled: Vec::new(), ..made.clone() };
     if let Err(e) = instance::save_in(root, &next) {
         let back = instance::trash_dir(root).join(format!("{}-{}{SUFFIX}", made.id, millis + 1));
         return Err(match exchange(&dir, &trash, &back) {
@@ -177,6 +177,7 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
             Err(rollback) => rollback.context(format!("{e:#}")),
         });
     }
+    let _ = super::content::drop_state(&dir);
     Ok((next, entry))
 }
 
@@ -200,7 +201,7 @@ pub(super) fn unreset_in(root: &Path, now: &Instance, before: &Instance, entry: 
     let _held = lock::exclusive(&dir.join(MODS_LOCK))?;
     let kept = instance::trash_dir(root).join(format!("{}-{millis}{SUFFIX}", now.id));
     exchange(&dir, &from, &kept)?;
-    let next = Instance { mods: before.mods.clone(), local_mods: before.local_mods.clone(), ..now.clone() };
+    let next = Instance { mods: before.mods.clone(), local_mods: before.local_mods.clone(), disabled: before.disabled.clone(), ..now.clone() };
     if let Err(e) = instance::save_in(root, &next) {
         return Err(match exchange(&dir, &kept, &from) {
             Ok(()) => e,
@@ -359,6 +360,24 @@ mod tests {
         assert_eq!((read(&folder.join("shaderpacks/bsl.zip")), read(&folder.join("mods/mine.jar"))), ("<missing>".to_owned(), "<missing>".to_owned()));
         let again = unreset_in(root, &back, &now, &entry, 3000).unwrap_err();
         assert!(again.chain().any(|c| c.is::<Final>()));
+    }
+
+    #[test]
+    fn a_reset_switches_every_mod_on_ends_the_troubleshooter_and_an_undo_brings_the_switches_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let made = pack_instance(root);
+        let folder = root.join(&made.id);
+        let mut now = mess_up(root, &made);
+        now.disabled = vec!["a.jar".into(), "b.jar".into()];
+        save_in(root, &now).unwrap();
+        write(&folder.join("bisect.json"), "{}");
+        let (after, entry) = reset_in(root, &now, vec![mod_ref("a")], 1000).unwrap();
+        assert!(after.disabled.is_empty());
+        assert!(!folder.join("bisect.json").exists());
+        assert!(store::load::<Instance>(&folder.join(instance::FILE)).unwrap().unwrap().disabled.is_empty());
+        let back = unreset_in(root, &after, &now, &entry, 2000).unwrap();
+        assert_eq!(back.disabled, now.disabled);
     }
 
     #[test]
