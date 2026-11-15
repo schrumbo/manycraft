@@ -10,7 +10,8 @@ use uuid::Uuid;
 use super::{paths, store};
 
 const FILE: &str = "accounts.json";
-const KEYCHAIN_SERVICE: &str = "Manycraft";
+/// The keychain service every secret of Manycraft is stored under.
+pub const KEYCHAIN_SERVICE: &str = "Manycraft";
 
 /// How an account signs in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -137,6 +137,8 @@ pub struct Model {
     pub imports: Vec<Import>,
     /// Batches being written as a `.mrpack`, by id.
     pub exporting: HashSet<String>,
+    /// Why the last message to the phone did not arrive, until one does.
+    pub phone_trouble: Option<String>,
 }
 
 /// An import as the sidebar shows it.
