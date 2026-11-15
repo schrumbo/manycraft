@@ -26,6 +26,8 @@ final class GameWindow {
 	private static boolean drawn;
 	private static int waited;
 	private static Boolean chosen;
+	private static int hiddenWidth;
+	private static int hiddenHeight;
 
 	private GameWindow() {}
 
@@ -86,6 +88,9 @@ final class GameWindow {
 			}
 			int width = window.getWidth();
 			int height = window.getHeight();
+			if (hiddenWidth == 0 && !shown(mc)) {
+				remember(handle);
+			}
 			SDLVideo.SDL_SetWindowSize(handle, Math.max(w, 320), Math.max(h, 240));
 			SDLVideo.SDL_SetWindowPosition(handle, x, y);
 			if (!shown(mc) && (width != window.getWidth() || height != window.getHeight() || resizes(handle, width, height))) {
@@ -98,6 +103,26 @@ final class GameWindow {
 			}
 		}
 		reveal.run();
+	}
+
+	static void shrink(Minecraft mc) {
+		long handle = mc.getWindow().handle();
+		long flags = SDLVideo.SDL_GetWindowFlags(handle);
+		if (hiddenWidth == 0 || (flags & (SDLVideo.SDL_WINDOW_FULLSCREEN | SDLVideo.SDL_WINDOW_MAXIMIZED)) != 0) {
+			return;
+		}
+		SDLVideo.SDL_SetWindowSize(handle, hiddenWidth, hiddenHeight);
+	}
+
+	private static void remember(long handle) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			IntBuffer w = stack.mallocInt(1);
+			IntBuffer h = stack.mallocInt(1);
+			if (SDLVideo.SDL_GetWindowSize(handle, w, h)) {
+				hiddenWidth = w.get(0);
+				hiddenHeight = h.get(0);
+			}
+		}
 	}
 
 	static void saving(Options options, Runnable save) {

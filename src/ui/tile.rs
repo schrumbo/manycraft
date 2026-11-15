@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, Respawn, RestartMany, ShowInstance, SignInAgain, Start, StartMany, Stop, StopMany};
+use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, ReconnectSelected, Respawn, RestartMany, RestartSelected, ShowInstance, SignInAgain, Start, StartMany, StartSelected, Stop, StopMany, StopSelected};
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
@@ -238,8 +238,7 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         Phase::LoginNeeded => Some(Primary::SignIn),
         Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
         Phase::NoNetwork => Some(Primary::Retry),
-        Phase::Starting { .. } | Phase::Plain => None,
-        Phase::Banned { .. } => Some(Primary::Reconnect),
+        Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
         Phase::Restarting { .. } => Some(Primary::Start),
     }
 }
@@ -519,6 +518,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
+    let banned = matches!(d.phase, Phase::Banned { .. });
     let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
         .relative()
@@ -584,17 +584,24 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
             }
             return menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current));
         }
-        let menu = if can_play { menu.menu(tr("Spielen"), Box::new(Play(menu_key.clone()))) } else { menu };
+        let row = |text: String, shown: &dyn Action, disabled: bool| super::palette::menu_row(text, super::palette::shortcut(shown, cx), disabled);
+        let menu = if can_play {
+            let enter = Keystroke::parse("enter").ok().map(|k| super::palette::label(&k));
+            menu.menu_element_with_disabled(Box::new(Play(menu_key.clone())), false, super::palette::menu_row(tr("Spielen"), enter, false))
+        } else {
+            menu
+        };
         let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
-        let menu = menu.menu_with_disabled(tr("Neu verbinden"), Box::new(Reconnect(menu_key.clone())), !reconnectable);
         let menu = if running || stopping || waits {
-            menu.menu_with_disabled(tr("Stoppen"), Box::new(Stop(menu_key.clone())), stopping)
+            menu.menu_element_with_disabled(Box::new(Stop(menu_key.clone())), stopping, row(tr("Stoppen"), &StopSelected, stopping))
         } else if login {
             menu.menu(tr("Anmelden"), Box::new(SignInAgain(account.to_string())))
         } else {
-            menu.menu(tr("Starten"), Box::new(Start(menu_key.clone())))
+            menu.menu_element_with_disabled(Box::new(Start(menu_key.clone())), false, row(tr("Starten"), &StartSelected, false))
         };
-        let menu = menu.menu_with_disabled(tr("Neu starten"), Box::new(RestartMany(vec![menu_key.clone()])), stopping || login);
+        let restart = stopping || login;
+        let menu = menu.menu_element_with_disabled(Box::new(RestartMany(vec![menu_key.clone()])), restart, row(tr("Neu starten"), &RestartSelected, restart));
+        let menu = if banned { menu } else { menu.menu_element_with_disabled(Box::new(Reconnect(menu_key.clone())), !reconnectable, row(tr("Neu verbinden"), &ReconnectSelected, !reconnectable)) };
         menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).map(|menu| match crate::core::fleet::solo_instance(&menu_batch) {
             Some(instance) => menu.menu(tr("Instanz öffnen"), Box::new(ShowInstance(instance.to_owned()))),
             None => menu.menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone()))),
@@ -633,6 +640,7 @@ mod tests {
         assert!(primary(&Phase::LoginNeeded, false) == Some(Primary::SignIn));
         assert!(primary(&Phase::Starting { place: 1, total: 2 }, false).is_none());
         assert!(primary(&Phase::Menu, true).is_none());
+        assert!(primary(&Phase::Banned { server: None, reason: String::new() }, false).is_none());
     }
 
     #[test]

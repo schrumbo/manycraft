@@ -7,7 +7,7 @@ use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{StartAll, StartBatch, StopAll, StopBatch, ToggleSidebar};
+use super::actions::{StartAll, StartBatch, StopAll, StopBatch, ToggleFullscreen, ToggleSidebar};
 use super::drive::Mark;
 use super::main_window::{Filter, FilterAll, FilterAttention, FilterRunning, FilterStopped, MainWindow};
 use super::palette::hint;
@@ -195,7 +195,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let menu = space::S * 2. + text_w(&picked_label, font::CALLOUT) + space::XS + text_w(&picked_count.to_string(), font::CAPTION) + suffix + space::XS + iconsize::XS;
     let labelled = |label: &str| space::M * 2. + iconsize::S + space::XS + text_w(label, font::BODY);
     let widths = Widths {
-        fixed: lead() + tile::INSET + control::M + shell::TITLE.min(title_w) + space::S + space::XS + space::S * 8.,
+        fixed: lead() + tile::INSET + control::M + shell::TITLE.min(title_w) + space::S + space::XS + space::S * 8. + if cfg!(target_os = "macos") { 0. } else { control::M + space::S },
         segments,
         menu,
         labelled: labelled(&start_label) + labelled(&stop_label) + space::S,
@@ -297,6 +297,11 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         .child(div().w(px(space::XS)).flex_none())
         .child(action_button("stop-scope", stop_label.clone(), "square", false, running == 0, compact, stop, &t).tooltip(tip(format!("{stop_label} · {}", if running == 0 { tr("Nichts läuft") } else { trf("%lld laufende stoppen", &[&running]) }))))
         .child(action_button("start-scope", start_label.clone(), "play", true, startable == 0, compact, start, &t).tooltip(tip(format!("{start_label} · {}", if startable == 0 { tr("Alle sind schon wach") } else { trf("%lld gestoppte starten", &[&startable]) }))))
+        .when(!cfg!(target_os = "macos"), |d| {
+            let full = window.is_fullscreen();
+            let hint = hint(if full { tr("Vollbild beenden") } else { tr("Vollbild") }, &ToggleFullscreen, cx);
+            d.child(icon_button("toggle-fullscreen", if full { "minimize" } else { "maximize" }, hint, &t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleFullscreen), cx)))
+        })
         .into_any_element()
 }
 

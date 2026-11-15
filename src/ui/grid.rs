@@ -2,6 +2,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -155,22 +156,37 @@ pub struct Grid {
     hovered: bool,
     goal: Option<f32>,
     list: ListState,
-    items: Vec<Item>,
+    items: Rc<Vec<Item>>,
     heights: (f32, f32),
     to_top: bool,
     reveal: bool,
     selected_in_view: bool,
     area: Rc<Cell<Size<Pixels>>>,
-    shown: Vec<String>,
+    drawn_picks: Rc<HashSet<String>>,
+    shown: Rc<Vec<String>>,
     rows: Vec<(usize, usize, usize)>,
-    tops: Vec<f32>,
+    tops: Rc<Vec<f32>>,
     row_h: f32,
     padding: f32,
     headed: bool,
-    places: HashMap<String, (f32, f32)>,
-    moves: HashMap<String, (f32, f32)>,
+    places: Rc<HashMap<String, (f32, f32)>>,
+    moves: Rc<HashMap<String, (f32, f32)>>,
     moved_at: Option<Instant>,
     scope: Option<(Option<String>, Filter, String)>,
+    rev: u64,
+    built: Option<Built>,
+    seen: Option<Range<usize>>,
+    visible: HashSet<String>,
+}
+
+/// What a frame of the grid was laid out from, so a frame that only scrolls or redraws a tile reuses the layout.
+struct Built {
+    rev: u64,
+    scope: (Option<String>, Filter, String),
+    size: (f32, f32),
+    hovered: bool,
+    batches: Rc<Vec<String>>,
+    tile_h: f32,
 }
 
 impl Grid {
@@ -185,22 +201,37 @@ impl Grid {
             hovered: false,
             goal: None,
             list: ListState::new(0, ListAlignment::Top, px(tile::OVERDRAW)),
-            items: Vec::new(),
+            items: Rc::default(),
             heights: (0., 0.),
             to_top: false,
             reveal: false,
             selected_in_view: false,
             area: Rc::default(),
-            shown: Vec::new(),
+            drawn_picks: Rc::default(),
+            shown: Rc::default(),
             rows: Vec::new(),
-            tops: Vec::new(),
+            tops: Rc::default(),
             row_h: 1.,
             padding: 0.,
             headed: false,
-            places: HashMap::new(),
-            moves: HashMap::new(),
+            places: Rc::default(),
+            moves: Rc::default(),
             moved_at: None,
+            rev: 0,
+            built: None,
+            seen: None,
+            visible: HashSet::new(),
         }
+    }
+
+    /// Notes that the model changed, so the next frame lays the grid out again.
+    pub fn touch(&mut self) {
+        self.rev += 1;
+    }
+
+    /// Notes that the grid left the screen, so the next frame it draws tells the runtime again which tiles show.
+    pub fn hide(&mut self) {
+        self.seen = None;
     }
 
     /// Scrolls back to the first row, for a new filter, search or page.
@@ -284,7 +315,7 @@ impl Grid {
     }
 
     /// Hands the list its new lines, keeping the first tile on screen where it was.
-    fn sync(&mut self, items: Vec<Item>, heights: (f32, f32), keys: &[String]) {
+    fn sync(&mut self, items: Rc<Vec<Item>>, heights: (f32, f32), keys: &[String]) {
         if self.items == items && self.heights == heights {
             return;
         }
@@ -568,19 +599,21 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// Draws the grid of `batch` (all batches when `None`) with the window's filter, size and search.
-pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+/// Lays the grid out for `scope` in an area of `width` × `height`: which tiles show in which order, its rows and where each
+/// tile sits. Returns the empty state instead when no tile shows.
+fn build(this: &mut MainWindow, batch: Option<&str>, scope: (Option<String>, Filter, String), (width, height): (f32, f32), window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let t = Theme::get(cx);
     let model = model::get(cx);
     let m = model.read(cx);
-    let resorted = this.grid.order.update(m, this.grid.hovered);
+    let hovered = this.grid.hovered;
+    let resorted = this.grid.order.update(m, hovered);
     if resorted && this.grid.selected_in_view && this.grid.focus.is_focused(window) && window.last_input_was_keyboard() {
         this.grid.reveal = true;
     }
-    let scope = (batch.map(str::to_owned), this.filter, this.query.clone());
     let same_scope = this.grid.scope.as_ref() == Some(&scope);
-    this.grid.scope = Some(scope);
-    let held: HashSet<&str> = if this.grid.hovered && same_scope { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
+    this.grid.scope = Some(scope.clone());
+    this.grid.seen = None;
+    let held: HashSet<&str> = if hovered && same_scope { this.grid.shown.iter().map(String::as_str).collect() } else { HashSet::new() };
     let words = words(&this.query);
     let mut keys: Vec<String> = this.grid.order.keys.iter().filter(
 |k| held.contains(k.as_str()) || m.games.get(*k).is_some_and(|i| matches(i, batch, this.filter) && found(i, m, &words))).cloned().collect();
@@ -611,19 +644,21 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     }
     if keys.is_empty() {
         let resting = m.attention_count(batch) == 0;
-        this.grid.shown.clear();
+        this.grid.shown = Rc::default();
         this.grid.rows.clear();
+        this.grid.built = None;
+        this.grid.visible.clear();
         let in_scope = m.games.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
         let unstarted = !in_scope && batch.is_none() && m.batches.is_empty() && !m.accounts.is_empty();
         super::tile::unhover_except(None, cx);
         super::state::set_visible(HashSet::new(), cx);
         if unstarted {
             let new = action("new-instance", tr("Neue Instanz"), "plus", Box::new(NewInstance), &t);
-            return empty("nothing-started", "layout-grid", tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."), Some(new), &this.grid.focus, &t);
+            return Some(empty("nothing-started", "layout-grid", tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."), Some(new), &this.grid.focus, &t));
         }
         if !in_scope {
             let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
-            return empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &this.grid.focus, &t);
+            return Some(empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &this.grid.focus, &t));
         }
         if !this.query.is_empty() {
             let clear = primary_button("clear-search", tr("Suche löschen"), "x", false, &t)
@@ -634,9 +669,9 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                     cx.notify();
                 }))
                 .into_any_element();
-            return empty("no-match", "search", tr("Nichts gefunden."), trf("Zu „%@“ passt keiner.", &[&this.query]), Some(clear), &this.grid.focus, &t);
+            return Some(empty("no-match", "search", tr("Nichts gefunden."), trf("Zu „%@“ passt keiner.", &[&this.query]), Some(clear), &this.grid.focus, &t));
         }
-        return match this.filter {
+        return Some(match this.filter {
             Filter::Attention => empty("all-good", "circle-check", tr("Alles ruhig."), tr("Gerade braucht dich keiner."), None, &this.grid.focus, &t),
             Filter::Stopped => empty("none-stopped", "circle-check", tr("Nichts gestoppt."), tr("Alle laufen oder brauchen dich."), None, &this.grid.focus, &t),
             Filter::Running | Filter::All => {
@@ -648,7 +683,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 let title = if resting { tr("Alle schlummern.") } else { tr("Gerade läuft keiner.") };
                 empty("none-running", "play", title, tr("Starte sie, dann siehst du sie hier."), Some(action("start-empty", label, "play", start, &t)), &this.grid.focus, &t)
             }
-        };
+        });
     }
     let mut sections: Vec<(String, usize, usize)> = Vec::new();
     for (n, k) in keys.iter().enumerate() {
@@ -658,11 +693,8 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             _ => sections.push((b, n, n + 1)),
         }
     }
-    let area = this.grid.area.get();
-    let (width, height) = if area.width > px(0.) { (f32::from(area.width), f32::from(area.height)) } else { (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height) - shell::TOOLBAR) };
-    let width = width.max(1.);
     let counts: Vec<usize> = sections.iter().map(|(_, from, to)| to - from).collect();
-    let Layout { columns, height: tile_h, .. } = layout(&counts, width, height.max(1.), headed);
+    let Layout { columns, height: tile_h, .. } = layout(&counts, width, height, headed);
     let row_h = tile_h + tile::HAIRLINE;
     let mut items = Vec::new();
     for (n, (_, from, to)) in sections.iter().enumerate() {
@@ -693,63 +725,85 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         }
     }
     if resorted && !cx.reduce_motion() {
-        this.grid.moves = places.iter().filter_map(|(k, new)| this.grid.places.get(k).filter(|old| *old != new).map(|old| (k.clone(), *old))).collect();
+        this.grid.moves = Rc::new(places.iter().filter_map(|(k, new)| this.grid.places.get(k).filter(|old| *old != new).map(|old| (k.clone(), *old))).collect());
         this.grid.moved_at = (!this.grid.moves.is_empty()).then(Instant::now);
     }
-    this.grid.sync(items.clone(), (row_h, width), &keys);
-    this.grid.to_top = false;
-    this.grid.places = places.clone();
-    this.grid.shown = keys.clone();
+    this.grid.sync(Rc::new(items), (row_h, width), &keys);
+    this.grid.places = Rc::new(places);
+    this.grid.shown = Rc::new(keys);
     this.grid.rows = rows;
     this.grid.row_h = row_h;
-    this.grid.tops = tops.clone();
+    this.grid.tops = Rc::new(tops);
     this.grid.headed = headed;
+    let batches = Rc::new(sections.into_iter().map(|(b, _, _)| b).collect());
+    this.grid.built = Some(Built { rev: this.grid.rev, scope, size: (width, height), hovered, batches, tile_h });
+    None
+}
+
+/// Draws the grid of `batch` (all batches when `None`) with the window's filter, size and search.
+pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = Theme::get(cx);
+    let scope = (batch.map(str::to_owned), this.filter, this.query.clone());
+    let area = this.grid.area.get();
+    let (width, height) = if area.width > px(0.) { (f32::from(area.width), f32::from(area.height)) } else { (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height) - shell::TOOLBAR) };
+    let size = (width.max(1.), height.max(1.));
+    let fresh = this.grid.built.as_ref().is_some_and(|b| b.rev == this.grid.rev && b.scope == scope && b.size == size && b.hovered == this.grid.hovered);
+    if !fresh && let Some(empty) = build(this, batch, scope, size, window, cx) {
+        return empty;
+    }
+    this.grid.to_top = false;
+    let Some((section_batches, tile_h, width)) = this.grid.built.as_ref().map(|b| (Rc::clone(&b.batches), b.tile_h, b.size.0)) else { return div().into_any_element() };
+    let row_h = this.grid.row_h;
     let bar = if this.grid.picks.set.len() >= 2 { selection::BAR + selection::BOTTOM } else { 0. };
     this.grid.padding = bar;
     if std::mem::take(&mut this.grid.reveal)
-        && let Some(row) = this.grid.selected.as_ref().and_then(|s| keys.iter().position(|k| k == s)).and_then(|at| this.grid.row_at(at))
+        && let Some(row) = this.grid.selected.as_ref().and_then(|s| this.grid.shown.iter().position(|k| k == s)).and_then(|at| this.grid.row_at(at))
     {
         this.grid.reveal_row(row);
     }
     let selected = if this.grid.focus.is_focused(window) { this.grid.selected.clone() } else { None };
-    let picked = Rc::new(this.grid.picks.set.clone());
+    if *this.grid.drawn_picks != this.grid.picks.set {
+        this.grid.drawn_picks = Rc::new(this.grid.picks.set.clone());
+    }
+    let picked = Rc::clone(&this.grid.drawn_picks);
     let progress = this.grid.moved_at.map(|at| (at.elapsed().as_secs_f32() / SLOW.as_secs_f32()).min(1.));
     if progress.is_some_and(|p| p >= 1.) {
         this.grid.moved_at = None;
-        this.grid.moves.clear();
+        this.grid.moves = Rc::default();
     } else if progress.is_some() {
         window.request_animation_frame();
     }
     let ease = progress.filter(|p| *p < 1.).map(|p| 1. - (1. - p).powi(3));
-    let moves = Rc::new(this.grid.moves.clone());
+    let moves = Rc::clone(&this.grid.moves);
     let view = cx.entity().downgrade();
-    let (shown, items, tops, places) = (Rc::new(keys), Rc::new(items), Rc::new(tops), Rc::new(places));
-    let section_batches: Rc<Vec<String>> = Rc::new(sections.iter().map(|(b, _, _)| b.clone()).collect());
+    let (shown, items, tops, places) = (Rc::clone(&this.grid.shown), Rc::clone(&this.grid.items), Rc::clone(&this.grid.tops), Rc::clone(&this.grid.places));
     let scrolled = this.grid.list.logical_scroll_top();
     let from = tops.get(scrolled.item_ix).copied().unwrap_or(0.) + f32::from(scrolled.offset_in_item);
     let to = from + f32::from(this.grid.area.get().height).max(row_h);
-    let visible: HashSet<String> = items
-        .iter()
-        .zip(tops.iter())
-        .filter(|(_, y)| **y < to && **y + row_h > from)
-        .flat_map(|(i, _)| match *i {
-            Item::Row { from, to } => shown[from..to].to_vec(),
-            Item::Heading(_) => Vec::new(),
-        })
-        .collect();
-    this.grid.selected_in_view = this.grid.selected.as_ref().is_some_and(|s| visible.contains(s));
-    let pinned = headed.then(|| {
+    let seen = tops.partition_point(|y| *y + row_h <= from)..tops.partition_point(|y| *y < to);
+    if this.grid.seen.as_ref() != Some(&seen) {
+        let visible: HashSet<String> = items[seen.clone()]
+            .iter()
+            .flat_map(|i| match *i {
+                Item::Row { from, to } => shown[from..to].to_vec(),
+                Item::Heading(_) => Vec::new(),
+            })
+            .collect();
+        this.grid.visible = visible.clone();
+        this.grid.seen = Some(seen);
+        super::state::set_visible(visible, cx);
+    }
+    this.grid.selected_in_view = this.grid.selected.as_ref().is_some_and(|s| this.grid.visible.contains(s));
+    let pinned = this.grid.headed.then(|| {
         let top = scrolled;
         let at_heading = matches!(items.get(top.item_ix), Some(Item::Heading(_))) && top.offset_in_item <= px(0.);
         let section = items.iter().take(top.item_ix + 1).filter_map(|i| if let Item::Heading(n) = i { Some(*n) } else { None }).last();
         section.filter(|_| !at_heading && (top.item_ix > 0 || top.offset_in_item > px(0.)))
     });
-    let pinned = pinned.flatten().map(|n| div().absolute().top_0().left_0().right_0().px(px(tile::INSET)).bg(t.window).border_b_1().border_color(t.separator).child(heading(&section_batches[n], true, m, &t)));
-    let can_play: HashMap<String, bool> = shown.iter().filter_map(|k| m.games.get(k)).map(|i| (i.key.clone(), super::tile::playable(&i.phase))).collect();
-    if super::tile::hovered(cx).is_some_and(|k| !visible.contains(&k)) {
+    let pinned = pinned.flatten().map(|n| div().absolute().top_0().left_0().right_0().px(px(tile::INSET)).bg(t.window).border_b_1().border_color(t.separator).child(heading(&section_batches[n], true, model::get(cx).read(cx), &t)));
+    if super::tile::hovered(cx).is_some_and(|k| !this.grid.visible.contains(&k)) {
         super::tile::unhover_except(None, cx);
     }
-    super::state::set_visible(visible, cx);
     let (list_items, list_shown, list_batches) = (Rc::clone(&items), Rc::clone(&shown), Rc::clone(&section_batches));
     let list = list(this.grid.list.clone(), move |ix, _, cx| {
         let t = Theme::get(cx);
@@ -829,7 +883,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 "end" => Move::Last,
                 "enter" => {
                     if let Some(key) = this.grid.selected.clone().filter(|k| this.grid.shown.contains(k)) {
-                        if can_play.get(&key).copied().unwrap_or(false) {
+                        if model::get(cx).read(cx).games.get(&key).is_some_and(|i| super::tile::playable(&i.phase)) {
                             window.dispatch_action(Box::new(Play(key)), cx);
                         } else {
                             super::tile::primary_action(&key, window, cx);
@@ -866,7 +920,7 @@ fn able(keys: &[String], m: &Model) -> [usize; 5] {
         n[0] += usize::from(!running && !i.stopping && i.phase != Phase::LoginNeeded);
         n[1] += usize::from(i.phase.stoppable() && !i.stopping);
         n[2] += usize::from(!i.stopping && i.phase != Phase::LoginNeeded);
-        n[3] += usize::from(running && !i.stopping && !matches!(i.phase, Phase::Starting { .. }));
+        n[3] += usize::from(running && !i.stopping && !matches!(i.phase, Phase::Starting { .. } | Phase::Banned { .. }));
         n[4] += usize::from(i.phase.on_server());
     }
     n
