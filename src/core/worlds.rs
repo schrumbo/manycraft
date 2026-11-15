@@ -308,11 +308,9 @@ pub fn is_open(dir: &Path) -> bool {
 #[cfg(unix)]
 fn locked(file: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
-    // SAFETY: a zeroed flock is a valid argument; F_GETLK only writes into it.
     let mut lock: libc::flock = unsafe { std::mem::zeroed() };
     lock.l_type = libc::F_WRLCK as _;
     lock.l_whence = libc::SEEK_SET as _;
-    // SAFETY: the descriptor is open for the call and `lock` lives across it.
     let ok = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) } == 0;
     (ok && lock.l_type != libc::F_UNLCK as _) || file.try_lock().is_err()
 }
