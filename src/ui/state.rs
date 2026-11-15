@@ -40,6 +40,11 @@ const STAGGER_STEP: Duration = Duration::from_millis(100);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
 const TRASH_KEPT: Duration = Duration::from_secs(600);
 
+enum PreviewJob {
+    Read(String, PathBuf),
+    Release(String),
+}
+
 /// What the fleet reports back to the UI thread.
 pub enum Update {
     Preparing { batch: String, percent: u8 },
@@ -96,7 +101,7 @@ struct Real {
     owners: Arc<Mutex<HashMap<String, u64>>>,
     runs: AtomicU64,
     sends: mpsc::Sender<(String, ToMod)>,
-    previews: mpsc::Sender<(String, PathBuf)>,
+    previews: mpsc::Sender<PreviewJob>,
     refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
     checking: Arc<Mutex<HashSet<String>>>,
     adopted: Mutex<Vec<fleet::Adoption>>,
@@ -128,8 +133,38 @@ impl Real {
                 }
             }
         })?;
+        let (previews, wanted) = mpsc::channel::<PreviewJob>();
+        let frames = out.clone();
+        std::thread::Builder::new().name("previews".into()).spawn(move || {
+            let mut reader = ipc::PreviewReader::default();
+            let mut changes = ipc::PreviewChanges::default();
+            while let Ok(first) = wanted.recv() {
+                let mut batch: HashMap<String, PathBuf> = HashMap::new();
+                for job in std::iter::once(first).chain(wanted.try_iter()) {
+                    match job {
+                        PreviewJob::Read(key, path) => {
+                            batch.insert(key, path);
+                        }
+                        PreviewJob::Release(key) => {
+                            batch.remove(&key);
+                            reader.release(&key);
+                        }
+                    }
+                }
+                for (key, path) in batch {
+                    let Some(preview) = reader.read(&key, &path) else { continue };
+                    if !changes.changed(&key, &preview) {
+                        continue;
+                    }
+                    let Some(image) = render_image(preview.width, preview.height, preview.rgba) else { continue };
+                    if frames.send_blocking(Update::Preview { key, seq: preview.seq, image }).is_err() {
+                        return;
+                    }
+                }
+            }
+        })?;
         let watch: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(adopted.iter().map(|a| a.key.clone()).collect()));
-        let (watching, exits, exiting) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet));
+        let (watching, exits, exiting, releasing) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet), previews.clone());
         std::thread::Builder::new().name("fleet-exits".into()).spawn(move || {
             loop {
                 std::thread::sleep(EXIT_POLL);
@@ -137,6 +172,7 @@ impl Real {
                 for key in keys {
                     if let Some(code) = exiting.exit_code(&key) {
                         lock(&watching).remove(&key);
+                        let _ = releasing.send(PreviewJob::Release(key.clone()));
                         if exits.send_blocking(Update::Exited { key, code }).is_err() {
                             return;
                         }
@@ -149,25 +185,6 @@ impl Real {
         std::thread::Builder::new().name("fleet-send".into()).spawn(move || {
             while let Ok((key, message)) = outgoing.recv() {
                 let _ = sender.send(&key, &message);
-            }
-        })?;
-        let (previews, wanted) = mpsc::channel::<(String, PathBuf)>();
-        let frames = out.clone();
-        std::thread::Builder::new().name("previews".into()).spawn(move || {
-            let mut changes = ipc::PreviewChanges::default();
-            while let Ok(first) = wanted.recv() {
-                let mut batch: HashMap<String, PathBuf> = HashMap::from([first]);
-                batch.extend(wanted.try_iter());
-                for (key, path) in batch {
-                    let Some(preview) = ipc::read_preview(&path) else { continue };
-                    if !changes.changed(&key, &preview) {
-                        continue;
-                    }
-                    let Some(image) = render_image(preview.width, preview.height, preview.rgba) else { continue };
-                    if frames.send_blocking(Update::Preview { key, seq: preview.seq, image }).is_err() {
-                        return;
-                    }
-                }
             }
         })?;
         Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted) })
@@ -277,7 +294,7 @@ impl Backend for Real {
     }
 
     fn read_preview(&self, key: String, path: PathBuf) {
-        let _ = self.previews.send((key, path));
+        let _ = self.previews.send(PreviewJob::Read(key, path));
     }
 
     fn refresh(&self, accounts: Vec<Account>) {
