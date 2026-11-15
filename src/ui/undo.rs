@@ -1,4 +1,5 @@
-//! Undo notices over the main window: one per account removal, deleted or cloned instance and removed mod, each with its own timer.
+//! Undo history and its notices: one offer per account removal, deleted or cloned instance and removed mod. A notice
+//! hides after a while; its offer stays reachable with Ctrl+Z and the palette until Manycraft quits.
 
 use std::time::Instant;
 
@@ -8,6 +9,7 @@ use gpui_kit::*;
 use super::accounts::{self, Pending};
 use super::actions::Undo;
 use super::drive::Mark;
+use super::remote::InstanceEdit;
 use super::sheet::{self, Look};
 use super::theme::{Theme, font, radius, shell, space, tint, with_alpha};
 use super::{forms, main_window, model, remote, state};
@@ -15,18 +17,22 @@ use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 
 const MAX_TOASTS: usize = 3;
+const MAX_OFFERS: usize = 50;
 
 /// What an undo notice brings back.
 pub enum Kind {
-    Deleted { id: String, name: String },
+    Deleted { id: String, name: String, entry: String },
     Cloned { id: String, name: String, source: String },
-    ModRemoved { instance_id: String, mod_ref: ModRef, index: usize },
+    ModRemoved { instance_id: String, mod_ref: ModRef, index: usize, base: InstanceEdit },
 }
 
 struct Offer {
     kind: Kind,
     failed: bool,
     at: Instant,
+    shown: bool,
+    hovered: bool,
+    round: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -42,13 +48,14 @@ struct Line {
     name: String,
     text: String,
     failed: bool,
+    shown: bool,
 }
 
 struct Toasts(Entity<UndoToasts>);
 
 impl Global for Toasts {}
 
-/// Registers Ctrl+Z, which undoes the newest notice of any kind.
+/// Registers Ctrl+Z, which undoes the newest offer of any kind.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &Undo, cx| undo_newest(cx));
 }
@@ -75,58 +82,100 @@ pub fn changed(cx: &mut App) {
     }
 }
 
-/// Offers to undo `kind` for a while.
+/// Offers to undo `kind` until Manycraft quits; its notice hides after a while.
 pub fn offer(kind: Kind, cx: &mut App) {
     push(kind, false, cx);
 }
 
+/// Offers `kind` again after an undo failed, with a retry in its notice.
+pub fn retry(kind: Kind, cx: &mut App) {
+    push(kind, true, cx);
+}
+
 fn push(kind: Kind, failed: bool, cx: &mut App) {
     let id = toasts(cx).update(cx, |t, cx| {
-        let id = t.items.push(Offer { kind, failed, at: Instant::now() });
+        let id = t.items.push(Offer { kind, failed, at: Instant::now(), shown: true, hovered: false, round: 0 });
+        if t.items.items.len() > MAX_OFFERS {
+            t.items.items.remove(0);
+        }
         cx.notify();
         id
     });
+    arm(id, cx);
+}
+
+fn arm(id: u64, cx: &mut App) {
+    let round = toasts(cx).update(cx, |t, _| {
+        t.items.items.iter_mut().find(|(i, _)| *i == id).map(|(_, o)| {
+            o.round += 1;
+            o.round
+        })
+    });
+    let Some(round) = round else { return };
     cx.spawn(async move |cx| {
         cx.background_executor().timer(accounts::UNDO_FOR).await;
-        cx.update(|cx| expire(id, cx));
+        cx.update(|cx| hide_later(id, round, cx));
     })
     .detach();
 }
 
-fn expire(id: u64, cx: &mut App) {
-    let gone = toasts(cx).update(cx, |t, cx| {
-        let gone = t.items.take(id);
-        if gone.is_some() {
+fn hide_later(id: u64, round: u64, cx: &mut App) {
+    toasts(cx).update(cx, |t, cx| {
+        if let Some((_, o)) = t.items.items.iter_mut().find(|(i, o)| *i == id && o.round == round && !o.hovered) {
+            o.shown = false;
             cx.notify();
         }
-        gone
     });
-    if let Some(Offer { kind: Kind::Deleted { id, .. }, .. }) = gone {
-        cx.background_spawn(async move {
-            if let Err(e) = remote::purge_instance(&id) {
-                eprintln!("trash: {e:#}");
+}
+
+fn hover(target: Target, on: bool, cx: &mut App) {
+    match target {
+        Target::Account(id) => accounts::hover_removal(id, on, cx),
+        Target::Instance(id) => {
+            let changed = toasts(cx).update(cx, |t, _| match t.items.items.iter_mut().find(|(i, _)| *i == id) {
+                Some((_, o)) if o.hovered != on => {
+                    o.hovered = on;
+                    o.round += 1;
+                    true
+                }
+                _ => false,
+            });
+            if changed && !on {
+                arm(id, cx);
             }
-        })
-        .detach();
+        }
     }
 }
 
-fn text(name: &str, failed: bool, done: String) -> String {
-    if failed { trf("„%@“ wurde nicht zurückgeholt.", &[&name]) } else { done }
+fn close(target: Target, cx: &mut App) {
+    match target {
+        Target::Account(id) => accounts::hide_removal(id, cx),
+        Target::Instance(id) => toasts(cx).update(cx, |t, cx| {
+            if let Some((_, o)) = t.items.items.iter_mut().find(|(i, _)| *i == id) {
+                o.shown = false;
+                o.hovered = false;
+                cx.notify();
+            }
+        }),
+    }
 }
 
 fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
     let mut lines: Vec<Line> = accounts::removals(cx)
         .into_iter()
-        .map(|r| Line { at: r.at, target: Target::Account(r.id), key: format!("remove-{}", r.id), text: text(&r.name, r.failed, trf("„%@“ entfernt.", &[&r.name])), name: r.name, failed: r.failed })
+        .map(|r| {
+            let text = if r.failed { trf("„%@“ wurde nicht zurückgeholt.", &[&r.name]) } else { trf("„%@“ entfernt.", &[&r.name]) };
+            Line { at: r.at, target: Target::Account(r.id), key: format!("remove-{}", r.id), text, name: r.name, failed: r.failed, shown: r.shown }
+        })
         .collect();
     for (id, offer) in &items.items {
-        let (name, done) = match &offer.kind {
-            Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name])),
-            Kind::Cloned { name, .. } => (name.clone(), trf("„%@“ angelegt.", &[name])),
-            Kind::ModRemoved { mod_ref, .. } => (mod_ref.title.clone(), trf("„%@“ entfernt.", &[&mod_ref.title])),
+        let (name, done, undone) = match &offer.kind {
+            Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Cloned { name, .. } => (name.clone(), trf("„%@“ geklont.", &[name]), trf("„%@“ wurde nicht gelöscht.", &[name])),
+            Kind::ModRemoved { mod_ref, .. } => (mod_ref.title.clone(), trf("„%@“ entfernt.", &[&mod_ref.title]), trf("„%@“ wurde nicht zurückgeholt.", &[&mod_ref.title])),
         };
-        lines.push(Line { at: offer.at, target: Target::Instance(*id), key: format!("offer-{id}"), text: text(&name, offer.failed, done), name, failed: offer.failed });
+        let text = if offer.failed { undone } else { done };
+        lines.push(Line { at: offer.at, target: Target::Instance(*id), key: format!("offer-{id}"), text, name, failed: offer.failed, shown: offer.shown });
     }
     lines.sort_by_key(|l| l.at);
     lines
@@ -139,7 +188,7 @@ fn current(cx: &App) -> Vec<Line> {
     }
 }
 
-/// The text of the notice Ctrl+Z would undo now.
+/// The text of the offer Ctrl+Z would undo now.
 pub fn newest(cx: &App) -> Option<String> {
     current(cx).pop().map(|l| l.text)
 }
@@ -164,16 +213,16 @@ fn undo_offer(id: u64, cx: &mut App) {
     });
     let Some(offer) = taken else { return };
     match offer.kind {
-        Kind::Deleted { id, name } => restore(id, name, cx),
-        Kind::Cloned { id, source, .. } => discard(id, source, cx),
-        Kind::ModRemoved { instance_id, mod_ref, index } => super::instance_page::restore_mod(&instance_id, mod_ref, index, cx),
+        Kind::Deleted { id, name, entry } => restore(id, name, entry, cx),
+        Kind::Cloned { id, name, source } => discard(id, name, source, cx),
+        Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, cx),
     }
 }
 
-fn restore(id: String, name: String, cx: &mut App) {
+fn restore(id: String, name: String, entry: String, cx: &mut App) {
     let task = cx.background_spawn({
-        let id = id.clone();
-        async move { remote::restore_instance(&id) }
+        let entry = entry.clone();
+        async move { remote::restore_instance(&entry) }
     });
     cx.spawn(async move |cx| {
         let result = task.await;
@@ -192,7 +241,7 @@ fn restore(id: String, name: String, cx: &mut App) {
                 }
                 Err(e) => {
                     state::tell(forms::explain_as(tr("Nicht zurückgeholt."), &e).text, cx);
-                    push(Kind::Deleted { id, name }, true, cx);
+                    retry(Kind::Deleted { id, name, entry }, cx);
                 }
             }
             state::reload(cx);
@@ -201,7 +250,22 @@ fn restore(id: String, name: String, cx: &mut App) {
     .detach();
 }
 
-fn discard(id: String, source: String, cx: &mut App) {
+fn discard(id: String, name: String, source: String, cx: &mut App) {
+    let (exists, running) = {
+        let m = model::get(cx).read(cx);
+        (m.instance(&id).is_some(), m.games.values().any(|g| g.instance_id == id && g.phase.is_active()))
+    };
+    if !exists {
+        state::tell(tr("Diese Instanz gibt es nicht mehr."), cx);
+        state::reload(cx);
+        return;
+    }
+    if running {
+        state::tell(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+        retry(Kind::Cloned { id, name, source }, cx);
+        state::reload(cx);
+        return;
+    }
     let task = cx.background_spawn({
         let id = id.clone();
         async move { remote::discard_instance(&id) }
@@ -210,14 +274,17 @@ fn discard(id: String, source: String, cx: &mut App) {
         let result = task.await;
         cx.update(|cx| {
             match result {
-                Ok(()) => {
+                Ok(_) => {
                     model::get(cx).update(cx, |m, cx| {
                         m.instances.retain(|made| made.id != id);
                         cx.notify();
                     });
                     main_window::leave_instance(&id, &source, cx);
                 }
-                Err(e) => state::tell(forms::explain_as(tr("Nicht gelöscht."), &e).text, cx),
+                Err(e) => {
+                    state::tell(forms::explain_as(tr("Nicht gelöscht."), &e).text, cx);
+                    retry(Kind::Cloned { id, name, source }, cx);
+                }
             }
             state::reload(cx);
         });
@@ -225,10 +292,11 @@ fn discard(id: String, source: String, cx: &mut App) {
     .detach();
 }
 
-/// One notice: its text and the button that undoes it, or retries after a failed undo.
-pub(super) fn toast(key: &str, name: String, text: String, failed: bool, on_undo: impl Fn(&mut App) + 'static, t: &Theme) -> Stateful<Div> {
+/// One notice: its text, the button that undoes it or retries after a failed undo, and a close button.
+pub(super) fn toast(key: &str, name: String, text: String, failed: bool, on_undo: impl Fn(&mut App) + 'static, on_close: impl Fn(&mut App) + 'static, on_hover: impl Fn(bool, &mut App) + 'static, t: &Theme) -> Stateful<Div> {
     let label = if failed { tr("Erneut versuchen") } else { tr("Rückgängig") };
     let undo = sheet::button(SharedString::from(format!("undo-{key}")), label, Some("undo-2"), Look::Plain, false, false, t).on_click(move |_, _, cx| on_undo(cx));
+    let close = sheet::icon_button(SharedString::from(format!("undo-close-{key}")), "x", tr("Schließen"), t.tertiary, t).on_click(move |_, _, cx| on_close(cx));
     div()
         .id(SharedString::from(format!("undo-note-{key}")))
         .mark("status", name)
@@ -245,33 +313,25 @@ pub(super) fn toast(key: &str, name: String, text: String, failed: bool, on_undo
         .border_1()
         .border_color(if failed { with_alpha(t.danger, tint::ATTENTION) } else { t.separator })
         .shadow_md()
+        .on_hover(move |on, _, cx| on_hover(*on, cx))
         .child(div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if failed { t.danger_text } else { t.primary }).child(text))
         .child(undo)
+        .child(close)
 }
 
 impl Render for UndoToasts {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let all = lines(&self.items, cx);
-        let hidden = all.len().saturating_sub(MAX_TOASTS);
-        let toasts: Vec<Stateful<Div>> = all
+        let shown: Vec<Line> = lines(&self.items, cx).into_iter().filter(|l| l.shown).collect();
+        let skip = shown.len().saturating_sub(MAX_TOASTS);
+        let toasts: Vec<Stateful<Div>> = shown
             .into_iter()
-            .rev()
-            .take(MAX_TOASTS)
-            .rev()
+            .skip(skip)
             .map(|l| {
                 let target = l.target;
-                toast(&l.key, l.name, l.text, l.failed, move |cx| undo(target, cx), &t)
+                toast(&l.key, l.name, l.text, l.failed, move |cx| undo(target, cx), move |cx| close(target, cx), move |on, cx| hover(target, on, cx), &t)
             })
             .collect();
-        div()
-            .w_full()
-            .px(px(space::XL))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(space::S))
-            .when(hidden > 0, |d| d.child(div().text_size(px(font::CAPTION)).text_color(t.secondary).child(trf("+%lld weitere", &[&hidden]))))
-            .children(toasts)
+        div().w_full().px(px(space::XL)).flex().flex_col().items_center().gap(px(space::S)).children(toasts)
     }
 }

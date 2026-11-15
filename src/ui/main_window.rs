@@ -644,9 +644,11 @@ pub fn select_batch(batch: &str, cx: &mut App) {
 }
 
 /// Shows the page of instance `id`, as after creating or importing it; stays put while the palette or a sheet is open.
-pub fn show_instance(id: &str, cx: &mut App) {
-    let Some(h) = handle(cx) else { return };
+/// Returns whether the page is shown now.
+pub fn show_instance(id: &str, cx: &mut App) -> bool {
+    let Some(h) = handle(cx) else { return false };
     let id = id.to_owned();
+    let mut shown = false;
     let _ = h.update(cx, |view, window, cx| {
         let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
         let content = root.read(cx).view().clone();
@@ -656,9 +658,11 @@ pub fn show_instance(id: &str, cx: &mut App) {
                     return;
                 }
                 this.go(Page::Instance(id), window, cx);
+                shown = true;
             });
         }
     });
+    shown
 }
 
 /// Moves from the page of instance `gone` to the page of `to`, or to all games when `to` is gone too; any other page stays.

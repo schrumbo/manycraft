@@ -70,7 +70,7 @@ pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok
     alert(window, cx, title, message, ok_text, true, false, ok);
 }
 
-/// Asks before a change that can be taken back or redone. Focus starts on the confirm button, so Enter confirms and Esc cancels.
+/// Asks before a change that is easy to redo or undo. Focus starts on the confirm button, so Enter confirms and Esc cancels.
 pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
     alert(window, cx, title, message, ok_text, false, true, ok);
 }
@@ -113,14 +113,14 @@ pub enum Look {
     Plain,
 }
 
-/// Dims `element` and says why it does nothing: not-allowed cursor, a Tab stop with the focus ring, `reason` as tooltip and as the label of its automation mark. Leave `element` unmarked.
-pub fn unavailable(element: Stateful<Div>, reason: impl Into<SharedString>) -> Stateful<Div> {
+/// Says why `element` does nothing: not-allowed cursor, a Tab stop with the focus ring, `reason` as tooltip and as the label of its automation mark, and `content` dimmed inside it. Leave `element` unmarked and give it no content of its own; it is never dimmed itself, so its ring keeps full contrast.
+pub fn unavailable(element: Stateful<Div>, content: impl IntoElement, reason: impl Into<SharedString>) -> Stateful<Div> {
     let reason: SharedString = reason.into();
-    dim(element, "disabled", reason.clone(), reason)
+    dim(element, "disabled", reason.clone(), reason).child(div().opacity(tint::DISABLED).child(content))
 }
 
 fn dim(element: Stateful<Div>, role: &'static str, reason: SharedString, label: SharedString) -> Stateful<Div> {
-    element.opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(tip(reason)).mark(role, label)
+    element.cursor_not_allowed().key_nav().tooltip(tip(reason)).mark(role, label)
 }
 
 /// Covers a disabled `control` that takes hover itself, such as a select or a segmented control, so the cover carries the reason as tooltip, the Tab stop and the ring.
@@ -148,6 +148,8 @@ fn button_for(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_
         Look::Danger => (None, t.danger_text, with_alpha(t.danger, tint::HOVER)),
         Look::Plain => (None, t.accent_text, t.ink.opacity(tint::HOVER)),
     };
+    let faded = disabled && !busy && reason.is_some();
+    let bg = bg.map(|c| if faded { c.opacity(tint::DISABLED) } else { c });
     let base = div()
         .id(id)
         .when(!(disabled && !busy && reason.is_some()), |d| d.mark("button", label.clone()))
@@ -169,10 +171,18 @@ fn button_for(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_
             .child(label.clone())
     };
     if disabled && !busy {
-        return inner(match reason {
-            Some(reason) => dim(base, "button", reason.clone(), format!("{label}: {reason}").into()),
-            None => base.opacity(tint::DISABLED),
-        });
+        return match reason {
+            Some(reason) => dim(base, "button", reason.clone(), format!("{label}: {reason}").into()).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::XS))
+                    .opacity(tint::DISABLED)
+                    .when_some(icon_name, |d, name| d.child(icon(name, iconsize::S, fg)))
+                    .child(label.clone()),
+            ),
+            None => inner(base.opacity(tint::DISABLED)),
+        };
     }
     if busy {
         return inner(base);

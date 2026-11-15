@@ -55,6 +55,8 @@ pub struct Entry {
     pub detail: Option<String>,
     pub keys: Option<String>,
     pub action: Box<dyn Action>,
+    /// Whether the command can run now; a disabled one shows why in its detail and does nothing.
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -91,9 +93,13 @@ impl Palette {
 
     fn chosen(&self) -> Option<Box<dyn Action>> {
         match self.rows.get(self.cursor)? {
-            Row::Entry(ix) => self.entries.get(*ix).map(|e| e.action.boxed_clone()),
+            Row::Entry(ix) => self.entries.get(*ix).filter(|e| e.enabled).map(|e| e.action.boxed_clone()),
             Row::Heading(_) => None,
         }
+    }
+
+    fn blocked(&self) -> bool {
+        matches!(self.rows.get(self.cursor), Some(Row::Entry(ix)) if self.entries.get(*ix).is_some_and(|e| !e.enabled))
     }
 }
 
@@ -133,6 +139,9 @@ fn close(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
 }
 
 fn run(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if this.palette.as_ref().is_some_and(Palette::blocked) {
+        return;
+    }
     let action = this.palette.as_ref().and_then(Palette::chosen);
     close(this, window, cx);
     if let Some(action) = action {
@@ -272,7 +281,7 @@ pub fn menu_row(text: String, keys: Option<String>, disabled: bool) -> impl Fn(&
 
 fn entry(group: Group, icon: &'static str, label: String, detail: Option<String>, action: Box<dyn Action>, cx: &App) -> Entry {
     let keys = shortcut(action.as_ref(), cx);
-    Entry { group, icon, label, detail, keys, action }
+    Entry { group, icon, label, detail, keys, action, enabled: true }
 }
 
 fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
@@ -381,7 +390,13 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         if matches!(made.loader, Loader::Fabric(_)) {
             out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
         }
-        out.push(entry(Group::Instances, "trash", trf("%@ löschen…", &[name]), detail, Box::new(DeleteInstance(id)), cx));
+        let mut delete = entry(Group::Instances, "trash", trf("%@ löschen…", &[name]), detail, Box::new(DeleteInstance(id)), cx);
+        let users: Vec<String> = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| b.name.clone()).collect();
+        if !users.is_empty() {
+            delete.detail = Some(crate::core::fleet::used_by(&users));
+            delete.enabled = false;
+        }
+        out.push(delete);
     }
     for a in m.accounts.iter().filter(|a| a.kind == crate::core::account::AccountKind::Microsoft) {
         out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));
@@ -398,7 +413,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         } else {
             ("play", tr("Starten"), Box::new(Start(i.key.clone())))
         };
-        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action });
+        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action, enabled: true });
     }
     out
 }
@@ -436,12 +451,13 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                                 .flex()
                                 .items_center()
                                 .gap(px(space::S))
-                                .cursor_pointer()
+                                .when(e.enabled, |d| d.cursor_pointer())
+                                .when(!e.enabled, |d| d.cursor_not_allowed())
                                 .when(on, |d| d.bg(t.highlight.opacity(tint::SELECTED)))
                                 .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-                                .child(icon(e.icon, iconsize::M, if on { t.accent_text } else { t.secondary }))
-                                .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if on { t.accent_text } else { t.primary }).child(e.label.clone()))
-                                .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if on { t.accent_text } else { t.secondary }).children(e.detail.clone()))
+                                .child(icon(e.icon, iconsize::M, if !e.enabled { t.tertiary } else if on { t.accent_text } else { t.secondary }))
+                                .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if !e.enabled { t.tertiary } else if on { t.accent_text } else { t.primary }).child(e.label.clone()))
+                                .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if !e.enabled { t.tertiary } else if on { t.accent_text } else { t.secondary }).children(e.detail.clone()))
                                 .children(e.keys.clone().map(|k| div().flex_none().min_w(px(palette::KEYS)).text_right().text_size(px(font::CALLOUT)).text_color(if on { t.accent_text } else { t.tertiary }).child(k)))
                                 .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
                                     if let Some(p) = this.palette.as_mut()

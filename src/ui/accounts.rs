@@ -99,18 +99,40 @@ pub struct Removal {
     pub at: Instant,
     pub name: String,
     pub failed: bool,
+    pub shown: bool,
 }
 
 /// The removals that can still be undone, oldest first.
 pub fn removals(cx: &App) -> Vec<Removal> {
     let Some(page) = cx.try_global::<Page>() else { return Vec::new() };
-    page.0.read(cx).removed.items.iter().map(|(id, o)| Removal { id: *id, at: o.at, name: o.removed.account.name.clone(), failed: o.failed }).collect()
+    page.0.read(cx).removed.items.iter().map(|(id, o)| Removal { id: *id, at: o.at, name: o.removed.account.name.clone(), failed: o.failed, shown: !o.hidden }).collect()
 }
 
 /// Brings the removed account `id` back.
 pub fn undo_removal(id: u64, cx: &mut App) {
     if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
         page.update(cx, |s, cx| s.undo_remove(id, cx));
+    }
+}
+
+/// Keeps the notice of removal `id` and its undo while the pointer is over it, and gives it a fresh time on leaving.
+pub fn hover_removal(id: u64, on: bool, cx: &mut App) {
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |s, cx| s.hover_removal(id, on, cx));
+    }
+}
+
+/// Hides the notice of removal `id`; it can still be undone until its time is up.
+pub fn hide_removal(id: u64, cx: &mut App) {
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |s, cx| {
+            if let Some((_, o)) = s.removed.items.iter_mut().find(|(i, _)| *i == id) {
+                o.hidden = true;
+                o.hovered = false;
+                cx.notify();
+            }
+        });
+        super::undo::changed(cx);
     }
 }
 
@@ -148,6 +170,9 @@ struct Offer {
     removed: remote::Removed,
     failed: bool,
     at: Instant,
+    hidden: bool,
+    hovered: bool,
+    round: u64,
 }
 
 pub(super) struct Pending<T> {
@@ -1226,19 +1251,39 @@ impl AccountsPage {
     }
 
     fn offer_undo(&mut self, removed: remote::Removed, failed: bool, cx: &mut Context<Self>) {
-        let id = self.removed.push(Offer { removed, failed, at: Instant::now() });
+        let id = self.removed.push(Offer { removed, failed, at: Instant::now(), hidden: false, hovered: false, round: 0 });
+        self.arm_removal(id, cx);
+        cx.notify();
+        super::undo::changed(cx);
+    }
+
+    fn arm_removal(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some((_, offer)) = self.removed.items.iter_mut().find(|(i, _)| *i == id) else { return };
+        offer.round += 1;
+        let round = offer.round;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNDO_FOR).await;
             let _ = this.update(cx, |s, cx| {
-                if s.removed.take(id).is_some() {
+                if s.removed.items.iter().any(|(i, o)| *i == id && o.round == round && !o.hovered) {
+                    s.removed.take(id);
                     cx.notify();
                     super::undo::changed(cx);
                 }
             });
         })
         .detach();
-        cx.notify();
-        super::undo::changed(cx);
+    }
+
+    fn hover_removal(&mut self, id: u64, on: bool, cx: &mut Context<Self>) {
+        let Some((_, offer)) = self.removed.items.iter_mut().find(|(i, _)| *i == id) else { return };
+        if offer.hovered == on {
+            return;
+        }
+        offer.hovered = on;
+        offer.round += 1;
+        if !on {
+            self.arm_removal(id, cx);
+        }
     }
 
     fn undo_newest(&mut self, cx: &mut Context<Self>) {

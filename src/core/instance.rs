@@ -1,6 +1,7 @@
 //! Instances: one game version, one loader, one mod list and one config, played alone or by any number of batches.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ pub const FILE: &str = "instance.json";
 /// Memory a new instance gets.
 pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
+const TRASH: &str = ".trash";
 const COPIED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
 
 /// The mod loader of an instance, with its pinned version; `None` follows the newest one.
@@ -281,47 +283,44 @@ pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
     Ok(())
 }
 
-/// Folder holding deleted instances until they are purged; beside `instances/`, so moving in and out is a rename.
-pub fn trash_dir() -> PathBuf {
-    paths::data_dir().join("trash").join("instances")
+/// Moves the instance folder out of `instances/` into its own entry `.trash/<id>-<unix_millis>` on the same volume, and
+/// returns the entry name [`untrash`] and [`purge`] take. Callers check first that no batch uses it and no game of it runs.
+pub fn trash(instance: &Instance) -> Result<String> {
+    trash_in(&instances_dir(), instance, now_millis())
 }
 
-/// Moves the instance folder out of `instances/` into the trash, where [`untrash`] finds it until [`purge`] runs.
-/// Callers check first that no batch uses it and no game of it runs.
-pub fn trash(instance: &Instance) -> Result<()> {
-    trash_in(&instances_dir(), &trash_dir(), instance)
-}
-
-pub(super) fn trash_in(root: &Path, trash: &Path, instance: &Instance) -> Result<()> {
+pub(super) fn trash_in(root: &Path, instance: &Instance, millis: u64) -> Result<String> {
     if !valid_id(&instance.id) {
         bail!("invalid instance id {:?}", instance.id);
     }
-    let (from, to) = (root.join(&instance.id), trash.join(&instance.id));
+    let entry = format!("{}-{millis}", instance.id);
+    let trash = root.join(TRASH);
+    let (from, to) = (root.join(&instance.id), trash.join(&entry));
     if std::fs::symlink_metadata(&from).is_err() {
-        return Ok(());
+        bail!(super::i18n::tr("Diese Instanz gibt es nicht mehr."));
     }
-    std::fs::create_dir_all(trash).with_context(|| format!("cannot create {}", trash.display()))?;
-    remove_dir(&to)?;
-    std::fs::rename(&from, &to).with_context(|| format!("cannot move {} to the trash", from.display()))
+    if std::fs::symlink_metadata(&to).is_ok() {
+        bail!("trash entry {entry} exists already");
+    }
+    std::fs::create_dir_all(&trash).with_context(|| format!("cannot create {}", trash.display()))?;
+    std::fs::rename(&from, &to).with_context(|| format!("cannot move {} to the trash", from.display()))?;
+    Ok(entry)
 }
 
-/// Moves instance `id` back out of the trash and returns it. Refused when an instance with that id exists again.
-pub fn untrash(id: &str) -> Result<Instance> {
-    untrash_in(&instances_dir(), &trash_dir(), id)
+/// Moves the trash entry `entry` back to `instances/` and returns the instance. Refused when an instance with that id exists again.
+pub fn untrash(entry: &str) -> Result<Instance> {
+    untrash_in(&instances_dir(), entry)
 }
 
-pub(super) fn untrash_in(root: &Path, trash: &Path, id: &str) -> Result<Instance> {
-    if !valid_id(id) {
-        bail!("invalid instance id {id:?}");
-    }
-    let (from, to) = (trash.join(id), root.join(id));
+pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Instance> {
+    let (id, _) = parse_entry(entry).with_context(|| format!("invalid trash entry {entry:?}"))?;
+    let (from, to) = (root.join(TRASH).join(entry), root.join(id));
     if std::fs::symlink_metadata(&to).is_ok() {
         bail!(super::i18n::tr("Es gibt schon eine Instanz mit dieser Kennung."));
     }
     if std::fs::symlink_metadata(&from).is_err() {
         bail!(super::i18n::tr("Die Instanz liegt nicht mehr im Papierkorb."));
     }
-    std::fs::create_dir_all(root).with_context(|| format!("cannot create {}", root.display()))?;
     std::fs::rename(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
     let file = to.join(FILE);
     let loaded = store::read(&file).and_then(|bytes| {
@@ -337,21 +336,53 @@ pub(super) fn untrash_in(root: &Path, trash: &Path, id: &str) -> Result<Instance
     }
 }
 
-/// Deletes instance `id` from the trash for good; not being there is fine.
-pub fn purge(id: &str) -> Result<()> {
-    purge_in(&trash_dir(), id)
+/// Deletes the trash entry `entry` for good; not being there is fine.
+pub fn purge(entry: &str) -> Result<()> {
+    purge_in(&instances_dir(), entry)
 }
 
-pub(super) fn purge_in(trash: &Path, id: &str) -> Result<()> {
-    if !valid_id(id) {
-        bail!("invalid instance id {id:?}");
+pub(super) fn purge_in(root: &Path, entry: &str) -> Result<()> {
+    parse_entry(entry).with_context(|| format!("invalid trash entry {entry:?}"))?;
+    remove_dir(&root.join(TRASH).join(entry))
+}
+
+/// Deletes the trash entries older than `older_than`, one entry at a time; names that are not entries stay.
+pub fn purge_stale(older_than: Duration) -> Result<()> {
+    purge_stale_in(&instances_dir(), now_millis(), older_than)
+}
+
+pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Result<()> {
+    let trash = root.join(TRASH);
+    let entries = match std::fs::read_dir(&trash) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", trash.display())),
+    };
+    let cutoff = now.saturating_sub(u64::try_from(older_than.as_millis()).unwrap_or(u64::MAX));
+    let mut first = Ok(());
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some((_, millis)) = name.to_str().and_then(parse_entry) else { continue };
+        if millis < cutoff
+            && let Err(e) = remove_dir(&entry.path())
+            && first.is_ok()
+        {
+            first = Err(e);
+        }
     }
-    remove_dir(&trash.join(id))
+    first
 }
 
-/// Deletes everything in the trash for good.
-pub fn purge_all() -> Result<()> {
-    remove_dir(&trash_dir())
+fn parse_entry(entry: &str) -> Option<(&str, u64)> {
+    let (id, millis) = entry.split_once('-')?;
+    if !valid_id(id) || millis.is_empty() || !millis.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((id, millis.parse().ok()?))
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn remove_dir(dir: &Path) -> Result<()> {
@@ -533,8 +564,8 @@ mod tests {
         assert_eq!(load_all_in(dir.path()).unwrap().len(), 2);
     }
 
-    fn trashed_setup(dir: &Path) -> (Instance, PathBuf, PathBuf) {
-        let (root, trash) = (dir.join("instances"), dir.join("trash").join("instances"));
+    fn trashed_setup(dir: &Path) -> (Instance, PathBuf) {
+        let root = dir.join("instances");
         let made = Instance::new("Farm", "26.3", Loader::Fabric(None));
         save_in(&root, &made).unwrap();
         let home = root.join(&made.id);
@@ -544,20 +575,21 @@ mod tests {
         std::fs::write(home.join("games").join("x").join("options.txt"), b"fov:1").unwrap();
         std::fs::create_dir_all(home.join("mods")).unwrap();
         std::fs::write(home.join("mods").join("a.jar"), b"jar").unwrap();
-        (made, root, trash)
+        (made, root)
     }
 
     #[test]
     fn trash_and_untrash_round_trip_keeps_every_file() {
         let dir = tempfile::tempdir().unwrap();
-        let (made, root, trash) = trashed_setup(dir.path());
-        trash_in(&root, &trash, &made).unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        let entry = trash_in(&root, &made, 1234).unwrap();
+        assert_eq!(entry, format!("{}-1234", made.id));
         assert!(!root.join(&made.id).exists());
         assert!(load_all_in(&root).unwrap().is_empty());
-        assert!(trash.join(&made.id).join(FILE).is_file());
-        let back = untrash_in(&root, &trash, &made.id).unwrap();
+        assert!(root.join(TRASH).join(&entry).join(FILE).is_file());
+        let back = untrash_in(&root, &entry).unwrap();
         assert_eq!(back, made);
-        assert!(!trash.join(&made.id).exists());
+        assert!(!root.join(TRASH).join(&entry).exists());
         let home = root.join(&made.id);
         assert_eq!(std::fs::read(home.join("games").join("x").join("saves").join("W").join("region").join("r.0.0.mca")).unwrap(), [0u8, 159, 146, 150, 255]);
         assert_eq!(std::fs::read(home.join("games").join("x").join("options.txt")).unwrap(), b"fov:1");
@@ -566,77 +598,113 @@ mod tests {
     }
 
     #[test]
-    fn trashing_replaces_a_stale_entry_and_a_missing_folder_is_fine() {
+    fn two_deletes_of_one_id_are_two_entries_and_untrash_takes_the_given_one() {
         let dir = tempfile::tempdir().unwrap();
-        let (made, root, trash) = trashed_setup(dir.path());
-        std::fs::create_dir_all(trash.join(&made.id)).unwrap();
-        std::fs::write(trash.join(&made.id).join("stale.txt"), "old").unwrap();
-        trash_in(&root, &trash, &made).unwrap();
-        assert!(!trash.join(&made.id).join("stale.txt").exists());
-        assert!(trash.join(&made.id).join(FILE).is_file());
+        let (made, root) = trashed_setup(dir.path());
+        std::fs::write(root.join(&made.id).join("marker.txt"), "first").unwrap();
+        let first = trash_in(&root, &made, 100).unwrap();
+        std::fs::create_dir_all(root.join(&made.id)).unwrap();
+        std::fs::write(root.join(&made.id).join(FILE), serde_json::to_vec(&made).unwrap()).unwrap();
+        std::fs::write(root.join(&made.id).join("marker.txt"), "second").unwrap();
+        let second = trash_in(&root, &made, 200).unwrap();
+        assert_ne!(first, second);
+        untrash_in(&root, &second).unwrap();
+        assert_eq!(std::fs::read(root.join(&made.id).join("marker.txt")).unwrap(), b"second");
+        assert_eq!(std::fs::read(root.join(TRASH).join(&first).join("marker.txt")).unwrap(), b"first");
+    }
+
+    #[test]
+    fn a_missing_folder_cannot_be_trashed_and_an_entry_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        std::fs::create_dir_all(root.join(TRASH).join(format!("{}-5", made.id))).unwrap();
+        assert!(trash_in(&root, &made, 5).is_err());
+        assert!(root.join(&made.id).join(FILE).is_file());
         let ghost = Instance::new("Ghost", "26.3", Loader::Vanilla);
-        trash_in(&root, &trash, &ghost).unwrap();
-        assert!(!trash.join(&ghost.id).exists());
+        assert!(trash_in(&root, &ghost, 5).is_err());
     }
 
     #[test]
     fn untrash_is_refused_when_the_id_exists_again_or_the_entry_is_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let (made, root, trash) = trashed_setup(dir.path());
-        trash_in(&root, &trash, &made).unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        let entry = trash_in(&root, &made, 7).unwrap();
         std::fs::create_dir_all(root.join(&made.id)).unwrap();
-        assert!(untrash_in(&root, &trash, &made.id).is_err());
-        assert!(trash.join(&made.id).join(FILE).is_file());
+        assert!(untrash_in(&root, &entry).is_err());
+        assert!(root.join(TRASH).join(&entry).join(FILE).is_file());
         assert!(!root.join(&made.id).join(FILE).exists());
-        assert!(untrash_in(&root, &trash, "nothere").is_err());
+        assert!(untrash_in(&root, "nothere-1").is_err());
     }
 
     #[test]
     fn a_damaged_trash_entry_goes_back_where_it_was() {
         let dir = tempfile::tempdir().unwrap();
-        let (made, root, trash) = trashed_setup(dir.path());
-        trash_in(&root, &trash, &made).unwrap();
-        std::fs::write(trash.join(&made.id).join(FILE), "{").unwrap();
-        assert!(untrash_in(&root, &trash, &made.id).is_err());
+        let (made, root) = trashed_setup(dir.path());
+        let entry = trash_in(&root, &made, 9).unwrap();
+        std::fs::write(root.join(TRASH).join(&entry).join(FILE), "{").unwrap();
+        assert!(untrash_in(&root, &entry).is_err());
         assert!(!root.join(&made.id).exists());
-        assert!(trash.join(&made.id).join("mods").join("a.jar").is_file());
+        assert!(root.join(TRASH).join(&entry).join("mods").join("a.jar").is_file());
     }
 
     #[test]
-    fn purge_removes_one_entry_and_purge_all_the_rest() {
+    fn purge_removes_one_entry_only() {
         let dir = tempfile::tempdir().unwrap();
-        let (a, root, trash) = trashed_setup(dir.path());
+        let (a, root) = trashed_setup(dir.path());
         let b = Instance::new("B", "26.3", Loader::Vanilla);
         save_in(&root, &b).unwrap();
-        trash_in(&root, &trash, &a).unwrap();
-        trash_in(&root, &trash, &b).unwrap();
-        purge_in(&trash, &a.id).unwrap();
-        assert!(!trash.join(&a.id).exists() && trash.join(&b.id).exists());
-        purge_in(&trash, &a.id).unwrap();
-        assert!(purge_in(&trash, "../b").is_err());
-        assert!(trash.join(&b.id).exists());
-        remove_dir(&trash).unwrap();
-        assert!(!trash.exists());
-        remove_dir(&trash).unwrap();
+        let (ea, eb) = (trash_in(&root, &a, 1).unwrap(), trash_in(&root, &b, 1).unwrap());
+        purge_in(&root, &ea).unwrap();
+        assert!(!root.join(TRASH).join(&ea).exists() && root.join(TRASH).join(&eb).exists());
+        purge_in(&root, &ea).unwrap();
     }
 
     #[test]
-    fn trash_ids_that_could_escape_the_folder_are_refused() {
+    fn purge_stale_keeps_fresh_entries_and_leaves_other_names_alone() {
         let dir = tempfile::tempdir().unwrap();
-        let (root, trash) = (dir.path().join("instances"), dir.path().join("trash"));
+        let (a, root) = trashed_setup(dir.path());
+        let b = Instance::new("B", "26.3", Loader::Vanilla);
+        save_in(&root, &b).unwrap();
+        let (old, fresh) = (trash_in(&root, &a, 1_000).unwrap(), trash_in(&root, &b, 700_000).unwrap());
+        let others = ["notes", "x-", "-5", "a b-5", "abc-1x", "abc-1-2", "loose.txt"];
+        for name in others {
+            std::fs::create_dir_all(root.join(TRASH).join(name)).unwrap();
+        }
+        purge_stale_in(&root, 800_000, Duration::from_secs(600)).unwrap();
+        assert!(!root.join(TRASH).join(&old).exists());
+        assert!(root.join(TRASH).join(&fresh).join(FILE).is_file());
+        for name in others {
+            assert!(root.join(TRASH).join(name).exists(), "{name}");
+        }
+        purge_stale_in(&root, 800_000, Duration::from_secs(60)).unwrap();
+        assert!(!root.join(TRASH).join(&fresh).exists());
+        assert!(root.join(TRASH).is_dir());
+        purge_stale_in(&dir.path().join("none"), 1, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn invalid_entry_names_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("instances");
+        std::fs::create_dir_all(root.join(TRASH).join("keep-1")).unwrap();
+        for bad in ["", "..", "../evil-1", "a-1/../..", "a-1\\b", "a", "a-", "-1", "a-b", "a/b-1", "a-1 "] {
+            assert!(untrash_in(&root, bad).is_err(), "{bad}");
+            assert!(purge_in(&root, bad).is_err(), "{bad}");
+        }
+        assert!(root.join(TRASH).join("keep-1").is_dir());
         let mut i = Instance::new("x", "26.3", Loader::Vanilla);
         i.id = "../evil".into();
-        assert!(trash_in(&root, &trash, &i).is_err());
-        assert!(untrash_in(&root, &trash, "../evil").is_err());
-        assert!(untrash_in(&root, &trash, "").is_err());
-        assert!(purge_in(&trash, "..").is_err());
-        assert!(purge_in(&trash, "").is_err());
+        assert!(trash_in(&root, &i, 1).is_err());
     }
 
     #[test]
-    fn the_trash_lies_beside_the_instances_on_the_same_volume() {
-        let (trash, instances) = (trash_dir(), instances_dir());
-        assert_eq!(trash.parent().and_then(Path::parent), instances.parent());
-        assert!(trash.ends_with(Path::new("trash").join("instances")));
+    fn the_trash_is_never_loaded_as_an_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        let other = Instance::new("Other", "26.3", Loader::Vanilla);
+        save_in(&root, &other).unwrap();
+        trash_in(&root, &made, 3).unwrap();
+        assert!(root.join(TRASH).is_dir());
+        assert_eq!(load_all_in(&root).unwrap(), vec![other]);
     }
 }

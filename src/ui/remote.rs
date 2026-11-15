@@ -701,15 +701,15 @@ pub fn clone_instance(id: &str) -> Result<setup::Instance> {
     })
 }
 
-/// Moves the saved instance `id` with its games to the trash; refused while a batch plays it or a game runs.
-pub fn delete_instance(id: &str) -> Result<()> {
+/// Moves the saved instance `id` with its games to the trash and returns its trash entry; refused while a batch plays it or a game runs.
+pub fn delete_instance(id: &str) -> Result<String> {
     saved(|| fleet::remove_instance(&find_instance(id)?))
 }
 
-/// Brings the deleted instance `id` back from the trash and returns it; a name taken since gets a number.
-pub fn restore_instance(id: &str) -> Result<setup::Instance> {
+/// Brings the deleted instance in trash entry `entry` back and returns it; a name taken since gets a number.
+pub fn restore_instance(entry: &str) -> Result<setup::Instance> {
     let _saving = saving();
-    let mut made = fleet::restore_instance(id)?;
+    let mut made = fleet::restore_instance(entry)?;
     let taken: Vec<String> = setup::load_all()?.into_iter().filter(|i| i.id != made.id).map(|i| i.name).collect();
     let name = setup::free_name(&made.name, &taken);
     if name != made.name {
@@ -721,18 +721,10 @@ pub fn restore_instance(id: &str) -> Result<setup::Instance> {
     Ok(made)
 }
 
-/// Deletes the instance `id` from the trash for good.
-pub fn purge_instance(id: &str) -> Result<()> {
-    setup::purge(id)
-}
-
-/// Deletes the saved instance `id` for good, without a trash to bring it back from; refused like [`delete_instance`].
-pub fn discard_instance(id: &str) -> Result<()> {
-    saved(|| {
-        let made = find_instance(id)?;
-        fleet::remove_instance(&made)?;
-        setup::purge(&made.id)
-    })
+/// Moves the saved instance `id` to the trash and returns its trash entry, without waiting for every game to stop;
+/// refused while a batch plays it. Callers check first that no game of it runs.
+pub fn discard_instance(id: &str) -> Result<String> {
+    saved(|| fleet::discard_instance(&find_instance(id)?))
 }
 
 /// Remembers `account` as the one that last played instance `id` alone.
@@ -1009,6 +1001,29 @@ mod tests {
         stale_mods.mods = vec![ModRef { project_id: "p".into(), version_id: "v".into(), title: "P".into(), file_name: "p.jar".into(), url: String::new(), sha1: String::new() }];
         assert!(merge(&base, &moved, &stale_mods).is_none());
         assert!(merge(&base, &stale_mods, &moved).is_none());
+    }
+
+    #[test]
+    fn restoring_a_removed_mod_is_refused_after_the_version_or_the_mods_moved() {
+        let mod_ref = |id: &str| ModRef { project_id: id.into(), version_id: "v".into(), title: id.into(), file_name: format!("{id}.jar"), url: String::new(), sha1: String::new() };
+        let mut made = setup::Instance::new("Farm", "26.2", Loader::Fabric(None));
+        made.mods = vec![mod_ref("b")];
+        let base = InstanceEdit::of(&made);
+        let mut back = base.clone();
+        back.mods.insert(0, mod_ref("a"));
+        assert_eq!(merge(&base, &base, &back).unwrap().mods, vec![mod_ref("a"), mod_ref("b")]);
+        let mut renamed = base.clone();
+        renamed.name = "Technik".into();
+        assert_eq!(merge(&base, &renamed, &back).unwrap().mods.len(), 2);
+        let mut moved = base.clone();
+        moved.game_version = "26.3".into();
+        assert!(merge(&base, &moved, &back).is_none());
+        let mut other_loader = base.clone();
+        other_loader.loader = Loader::Quilt(None);
+        assert!(merge(&base, &other_loader, &back).is_none());
+        let mut added = base.clone();
+        added.mods.push(mod_ref("c"));
+        assert!(merge(&base, &added, &back).is_none());
     }
 
     #[test]

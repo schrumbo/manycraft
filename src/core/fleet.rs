@@ -1192,25 +1192,44 @@ fn list_instances() -> Result<i32> {
 fn delete_instance(who: &str) -> Result<i32> {
     let instances = instance::load_all()?;
     let doomed = find_instance(&instances, who)?;
-    remove_instance(doomed)?;
+    let entry = remove_instance(doomed)?;
+    instance::purge(&entry)?;
     println!("Deleted instance {} with its mods, configs and worlds", doomed.name);
     Ok(0)
 }
 
-/// Moves `doomed` with its mods, configs and worlds to the trash; refused while a batch plays it or any game runs.
-/// [`restore_instance`] brings it back until it is purged.
-pub fn remove_instance(doomed: &Instance) -> Result<()> {
-    let users: Vec<String> = batch::load_all()?.into_iter().filter(|b| b.instance_id == doomed.id).map(|b| b.name).collect();
-    if !users.is_empty() {
-        bail!(super::i18n::trf("„%@“ wird noch von %@ gespielt. Gib ihnen zuerst eine andere Instanz.", &[&doomed.name, &users.join(", ")]));
+/// Why batches keep an instance from going: "Wird vom Batch „A“ benutzt" or "Wird von den Batches „A“, „B“ benutzt".
+pub fn used_by(batches: &[String]) -> String {
+    let quoted: Vec<String> = batches.iter().map(|n| super::i18n::trf("„%@“", &[n])).collect();
+    match batches {
+        [one] => super::i18n::trf("Wird vom Batch „%@“ benutzt", &[one]),
+        _ => super::i18n::trf("Wird von den Batches %@ benutzt", &[&quoted.join(", ")]),
     }
+}
+
+fn check_unused(doomed: &Instance) -> Result<()> {
+    let users: Vec<String> = batch::load_all()?.into_iter().filter(|b| b.instance_id == doomed.id).map(|b| b.name).collect();
+    if users.is_empty() { Ok(()) } else { bail!(used_by(&users)) }
+}
+
+/// Moves `doomed` with its mods, configs and worlds to the trash and returns its trash entry; refused while a batch
+/// plays it or any game runs. [`restore_instance`] brings it back until it is purged.
+pub fn remove_instance(doomed: &Instance) -> Result<String> {
+    check_unused(doomed)?;
     let _quiet = lock::try_exclusive(&paths::data_dir().join(install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))?;
     instance::trash(doomed)
 }
 
-/// Brings instance `id` back out of the trash.
-pub fn restore_instance(id: &str) -> Result<Instance> {
-    instance::untrash(id)
+/// Moves `doomed` to the trash and returns its trash entry like [`remove_instance`], but without waiting for every game
+/// to stop; refused only while a batch plays it. Callers check first that no game of it runs.
+pub fn discard_instance(doomed: &Instance) -> Result<String> {
+    check_unused(doomed)?;
+    instance::trash(doomed)
+}
+
+/// Brings the trash entry `entry` back out of the trash.
+pub fn restore_instance(entry: &str) -> Result<Instance> {
+    instance::untrash(entry)
 }
 
 fn start(who: &str, args: &[&str]) -> Result<i32> {
@@ -1332,6 +1351,13 @@ fn print_event(names: &HashMap<String, String>, event: &ipc::Event) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_reason_names_one_batch_or_all_of_them() {
+        crate::core::i18n::init("de");
+        assert_eq!(super::used_by(&["Farm".to_owned()]), "Wird vom Batch „Farm“ benutzt");
+        assert_eq!(super::used_by(&["Farm".to_owned(), "Lobby".to_owned()]), "Wird von den Batches „Farm“, „Lobby“ benutzt");
+    }
+
     use std::cell::{Cell, RefCell};
     use std::process::{Command, Stdio};
 

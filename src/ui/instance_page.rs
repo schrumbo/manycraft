@@ -5,7 +5,7 @@ use std::collections::{HashSet, VecDeque};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenu};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::base::input::Escape;
@@ -32,7 +32,6 @@ use crate::core::instance::{Instance, LOADERS, Loader};
 const PAGE_MAX: f32 = 760.;
 const VERSION_WIDTH: f32 = 168.;
 const ICON_TILE: f32 = control::L + space::XS;
-const RENAME_GLYPH: f32 = 0.6;
 
 /// Registers the instance page's delete confirmation and the rename that starts from outside the page.
 pub fn init(cx: &mut App) {
@@ -50,7 +49,10 @@ pub fn init(cx: &mut App) {
 /// Shows the page of instance `id` and starts renaming it there.
 pub fn rename(id: &str, cx: &mut App) {
     cx.set_global(WantsRename(id.to_owned()));
-    super::main_window::show_instance(id, cx);
+    if !super::main_window::show_instance(id, cx) {
+        cx.remove_global::<WantsRename>();
+        return;
+    }
     if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
         page.update(cx, |_, cx| cx.notify());
     }
@@ -79,7 +81,7 @@ fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
         (made.name.clone(), users)
     };
     if !users.is_empty() {
-        let (title, why) = (trf("„%@“ lässt sich nicht löschen.", &[&name]), trf("Wird von %@ benutzt", &[&users.join(", ")]));
+        let (title, why) = (trf("„%@“ lässt sich nicht löschen.", &[&name]), crate::core::fleet::used_by(&users));
         let done = cx.focus_handle();
         let first = done.clone();
         window.open_alert_dialog(cx, move |alert, _, cx| {
@@ -90,7 +92,7 @@ fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let id = id.to_owned();
-    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht. Du kannst das gleich danach rückgängig machen."), tr("Löschen"), move |window, cx| {
+    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht. Solange Manycraft offen ist, kannst du das rückgängig machen."), tr("Löschen"), move |window, cx| {
         let next = after(&model::get(cx).read(cx).instances, &id);
         match next {
             Some(next) => window.dispatch_action(Box::new(ShowInstance(next)), cx),
@@ -107,26 +109,42 @@ fn after(instances: &[Instance], id: &str) -> Option<String> {
     order.get(at + 1).or_else(|| at.checked_sub(1).and_then(|before| order.get(before))).map(|made| made.id.clone())
 }
 
-/// Puts removed mod `mod_ref` back into instance `id` at `index`, unless a mod of that project is there again.
-pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, cx: &mut App) {
+/// Puts removed mod `mod_ref` back into instance `id` at `index`. `base` is the instance as it was right after the
+/// removal, so a change since then is refused instead of merged. Says why when it cannot, and offers a retry when that may help.
+pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, base: InstanceEdit, cx: &mut App) {
+    let again = |mod_ref: ModRef, base: InstanceEdit| super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index, base };
     let (made, running) = {
         let m = model::get(cx).read(cx);
         (m.instance(id).cloned(), m.games.values().any(|g| g.instance_id == id && g.phase.is_active()))
     };
-    let Some(made) = made else { return };
-    if running {
-        super::state::tell(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+    let Some(made) = made else {
+        super::state::tell(tr("Diese Instanz gibt es nicht mehr."), cx);
+        super::state::reload(cx);
+        return;
+    };
+    if made.mods.iter().any(|m| m.project_id == mod_ref.project_id) {
+        super::state::tell(trf("„%@“ ist schon wieder da.", &[&mod_ref.title]), cx);
         super::state::reload(cx);
         return;
     }
-    let base = InstanceEdit::of(&made);
-    if base.mods.iter().any(|m| m.project_id == mod_ref.project_id) {
+    if made.game_version != base.game_version || !made.loader.same_kind(&base.loader) {
+        super::state::tell(trf("„%@“ passt nicht mehr zu dieser Version.", &[&mod_ref.title]), cx);
+        super::state::reload(cx);
+        return;
+    }
+    if running {
+        super::state::tell(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+        super::undo::retry(again(mod_ref, base), cx);
+        super::state::reload(cx);
         return;
     }
     let mut edit = base.clone();
-    edit.mods.insert(index.min(edit.mods.len()), mod_ref);
-    let id = id.to_owned();
-    let task = cx.background_spawn(async move { remote::save_instance(&id, &base, edit) });
+    edit.mods.insert(index.min(edit.mods.len()), mod_ref.clone());
+    let instance = id.to_owned();
+    let task = cx.background_spawn({
+        let (base, instance) = (base.clone(), instance.clone());
+        async move { remote::save_instance(&instance, &base, edit) }
+    });
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| {
@@ -137,7 +155,10 @@ pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, cx: &mut App) {
                     }
                     cx.notify();
                 }),
-                Err(e) => super::state::tell(forms::explain_as(tr("Nicht gespeichert."), &e).text, cx),
+                Err(e) => {
+                    super::state::tell(forms::explain_as(tr("Nicht gespeichert."), &e).text, cx);
+                    super::undo::retry(super::undo::Kind::ModRemoved { instance_id: instance, mod_ref, index, base }, cx);
+                }
             }
             super::state::reload(cx);
         });
@@ -261,6 +282,7 @@ struct InstancePage {
     name: Entity<InputState>,
     renaming: bool,
     rename_saving: bool,
+    loader_focus: FocusHandle,
     focus_name: bool,
     removing: Option<(ModRef, usize)>,
     synced: Option<(String, String, String)>,
@@ -299,6 +321,10 @@ impl InstancePage {
                     window.on_next_frame(move |window, cx| window.focus(&root, cx));
                 }
                 InputEvent::Blur => s.commit_rename(cx),
+                InputEvent::Change if s.rename_error.is_some() => {
+                    s.rename_error = None;
+                    cx.notify();
+                }
                 _ => {}
             }),
             cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<String>>, window, cx| {
@@ -321,6 +347,7 @@ impl InstancePage {
             name,
             renaming: false,
             rename_saving: false,
+            loader_focus: cx.focus_handle().tab_stop(true),
             focus_name: false,
             removing: None,
             synced: None,
@@ -360,6 +387,11 @@ impl InstancePage {
 
     fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(made) = self.instance(cx) else { return };
+        if self.renaming {
+            self.focus_name = true;
+            cx.notify();
+            return;
+        }
         self.rename_error = None;
         self.renaming = true;
         self.rename_saving = false;
@@ -390,7 +422,12 @@ impl InstancePage {
         }
         let Some(made) = self.instance(cx) else { return };
         let typed = self.name.read(cx).value().trim().to_owned();
-        if typed.is_empty() || typed == made.name {
+        if typed.is_empty() {
+            self.rename_error = Some(Problem::plain(tr("Der Name darf nicht leer sein.")));
+            cx.notify();
+            return;
+        }
+        if typed == made.name {
             self.end_rename(cx);
             return;
         }
@@ -569,6 +606,7 @@ impl InstancePage {
         }
         match result {
             Ok((saved, notes)) => {
+                let kept = removed.is_some().then(|| InstanceEdit::of(&saved));
                 model::get(cx).update(cx, |m, cx| {
                     if let Some(slot) = m.instances.iter_mut().find(|made| made.id == saved.id) {
                         *slot = saved;
@@ -581,8 +619,8 @@ impl InstancePage {
                 if renamed && self.rename_saving {
                     self.end_rename(cx);
                 }
-                if let Some((mod_ref, index)) = removed {
-                    super::undo::offer(super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index }, cx);
+                if let (Some((mod_ref, index)), Some(base)) = (removed, kept) {
+                    super::undo::offer(super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index, base }, cx);
                 }
                 cx.dispatch_action(&Reload);
             }
@@ -650,10 +688,16 @@ impl InstancePage {
         if made.loader.same_kind(loader) || self.blocked(cx) {
             return;
         }
+        window.focus(&self.loader_focus, cx);
         self.ask_switch(Switch::Loader(loader.clone()), window, cx);
     }
 
     fn ask_switch(&mut self, switch: Switch, window: &mut Window, cx: &mut Context<Self>) {
+        if self.instance(cx).is_some_and(|made| made.mods.is_empty()) {
+            self.notes.clear();
+            self.enqueue(Job::Switch(switch), cx);
+            return;
+        }
         let title = match &switch {
             Switch::Version(v) => trf("Auf Minecraft %@ umstellen?", &[v]),
             Switch::Loader(l) => trf("Auf %@ umstellen?", &[&l.name()]),
@@ -675,7 +719,7 @@ impl InstancePage {
         let icon_tile = div().size(px(ICON_TILE)).flex_none().rounded(px(radius::CONTROL)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::L, t.tertiary));
         let name = if self.renaming {
             let typed = self.name.read(cx).value().chars().count() as f32;
-            let width = (typed * font::TITLE3 * RENAME_GLYPH + space::XL).clamp(control::RENAME_MIN, control::RENAME_MAX);
+            let width = (typed * font::TITLE3 * control::RENAME_GLYPH + space::XL).clamp(control::RENAME_MIN, control::RENAME_MAX);
             div()
                 .id("instance-title-edit")
                 .mark("textbox", tr("Name"))
@@ -687,7 +731,7 @@ impl InstancePage {
                 .px(px(space::XS))
                 .rounded(px(radius::SMALL))
                 .bg(t.window)
-                .shadow(vec![BoxShadow { color: super::theme::ring::color(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(tile::HAIRLINE), inset: false }])
+                .shadow(vec![BoxShadow { color: super::theme::ring::color(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(super::theme::ring::INSET), inset: true }])
                 .text_size(px(font::TITLE3))
                 .font_weight(FontWeight::SEMIBOLD)
                 .on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx)))
@@ -704,6 +748,7 @@ impl InstancePage {
                 .truncate()
                 .text_size(px(font::TITLE3))
                 .font_weight(FontWeight::SEMIBOLD)
+                .cursor_pointer()
                 .tooltip(tip(tr("Doppelklicken zum Umbenennen")))
                 .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
                 .on_click(cx.listener(|s, e: &ClickEvent, window, cx| {
@@ -712,6 +757,10 @@ impl InstancePage {
                     }
                 }))
                 .child(made.name.clone())
+                .context_menu({
+                    let (id, launchable) = (made.id.clone(), made.loader.launchable());
+                    move |menu, _, _| super::sidebar::instance_menu(menu, &id, launchable)
+                })
                 .into_any_element()
         };
         let title = div()
@@ -721,7 +770,13 @@ impl InstancePage {
             .flex_col()
             .child(name)
             .child(match self.rename_error.as_ref().filter(|_| self.renaming) {
-                Some(e) => div().id("instance-rename-error").mark("notice", e.text.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(e.text.clone())).child(e.text.clone()),
+                Some(e) => {
+                    let said = match &e.detail {
+                        Some(detail) => format!("{}\n{detail}", e.text),
+                        None => e.text.clone(),
+                    };
+                    div().id("instance-rename-error").mark("notice", e.text.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(said)).child(e.text.clone())
+                }
                 None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.version_line()),
             });
         div()
@@ -895,9 +950,9 @@ impl InstancePage {
                             .items_center()
                             .justify_center()
                             .rounded(px(radius::INNER)),
+                        icon("x", iconsize::M, t.tertiary),
                         if self.switching_now() { tr("Warte, bis die Umstellung fertig ist.") } else { tr("Stoppe zuerst die laufenden Spiele.") },
                     )
-                    .child(icon("x", iconsize::M, t.tertiary))
                 } else {
                     sheet::icon_button(SharedString::from(format!("mod-remove-{project}")), "x", tr("Entfernen"), t.tertiary, t).on_click(cx.listener(move |s, _, _, cx| s.remove_mod(&project, cx)))
                 };
@@ -960,7 +1015,11 @@ impl InstancePage {
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)).into_any_element(),
             _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
         };
-        let segments = LOADERS.iter().enumerate().map(|(n, l)| segment(("instance-loader", n), l.name().to_owned(), made.loader.same_kind(l), !blocked, t));
+        let loader_focus = self.loader_focus.clone();
+        let segments = LOADERS.iter().enumerate().map(|(n, l)| {
+            let selected = made.loader.same_kind(l);
+            segment(("instance-loader", n), l.name().to_owned(), selected, !blocked, t).when(selected && !blocked, |d| d.track_focus(&loader_focus))
+        });
         let pick = cx.listener(|s, n: &usize, window, cx| s.pick_loader(*n, window, cx));
         let loader_control = locked("instance-loaders-locked", segmented("instance-loaders", segments, move |n, window, cx| pick(&n, window, cx), t).when(blocked, |d| d.opacity(tint::DISABLED)).into_any_element());
         let field = |id: &'static str, label: String, control: AnyElement, width: Option<f32>| {
@@ -992,7 +1051,7 @@ impl InstancePage {
         let shown = self.pending_memory().unwrap_or(made.memory_mb);
         let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
             if let Some(reason) = reason {
-                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), reason).child(icon(icon_name, iconsize::M, t.tertiary));
+                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| s.step_memory(delta, cx)))
         };
@@ -1061,8 +1120,8 @@ impl InstancePage {
             move |_, window, cx| window.dispatch_action(Box::new(CloneInstance(id.clone())), cx)
         });
         let used = !f.batches.is_empty();
-        let names: Vec<&str> = f.batches.iter().map(|(_, name)| name.as_str()).collect();
-        let delete = sheet::button_unless("instance-delete", tr("Löschen…"), None, Look::Danger, used.then(|| trf("Wird von %@ benutzt", &[&names.join(", ")]).into()), false, t);
+        let names: Vec<String> = f.batches.iter().map(|(_, name)| name.clone()).collect();
+        let delete = sheet::button_unless("instance-delete", tr("Löschen…"), None, Look::Danger, used.then(|| crate::core::fleet::used_by(&names).into()), false, t);
         let delete = if used { delete } else { delete.on_click(move |_, window, cx| window.dispatch_action(Box::new(DeleteInstance(id.clone())), cx)) };
         div().flex().items_center().gap(px(space::S)).child(open).child(clone).child(delete)
     }

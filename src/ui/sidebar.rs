@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelImport, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, ImportBatch, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{CancelImport, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -259,8 +259,6 @@ pub fn batch_menu(menu: PopupMenu, id: &str, running: usize, stopped: usize, exp
         .menu(tr("Batch bearbeiten"), Box::new(EditBatch(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenBatchFolder(id.to_owned())))
         .when(!exporting, |menu| menu.menu(tr("Als .mrpack exportieren…"), Box::new(ExportBatch(id.to_owned()))))
-        .separator()
-        .menu(tr("Instanz importieren…"), Box::new(ImportBatch))
 }
 
 fn import_row(import: &model::Import, t: &Theme) -> Stateful<Div> {
@@ -333,6 +331,7 @@ fn new_row(id: &'static str, label: String, action: Box<dyn Action>, t: &Theme) 
 pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool) -> PopupMenu {
     menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
         .menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
+        .menu(tr("Klonen"), Box::new(CloneInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenInstanceFolder(id.to_owned())))
         .menu(tr("Als .mrpack exportieren…"), Box::new(ExportInstance(id.to_owned())))

@@ -32,6 +32,7 @@ const RESULTS_MAX: f32 = 340.;
 const PRISM_FILTER_FROM: usize = 6;
 const SNUG_PERCENT: u64 = 80;
 const SAVE_ERROR_MAX: f32 = 220.;
+const DEFAULT_ROWS: f32 = 4.;
 
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
@@ -703,7 +704,9 @@ impl InstanceSheet {
 
     fn finish(&mut self, id: String, cx: &mut Context<Self>) {
         cx.emit(Dismissed);
-        cx.defer(move |cx| super::main_window::show_instance(&id, cx));
+        cx.defer(move |cx| {
+            super::main_window::show_instance(&id, cx);
+        });
     }
 
     fn done(&mut self, cx: &mut Context<Self>) {
@@ -767,7 +770,7 @@ impl InstanceSheet {
                 div()
                     .flex()
                     .gap(px(space::M))
-                    .child(div().flex_1().min_w_0().child(sheet::field(tr("Name"), Input::new(&self.name), None, name_problem, t)))
+                    .child(div().flex_1().min_w_0().child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Name"), t)).child(Input::new(&self.name)).child(sheet::note(None, name_problem, t).min_h(px(font::CAPTION * font::LINE * 2.)))))
                     .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, version_hint, version_problem, t))),
             )
             .child(self.render_loader(cx, t));
@@ -854,7 +857,7 @@ impl InstanceSheet {
         let at_max = self.memory >= self.memory_max;
         let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
             if let Some(reason) = reason {
-                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), reason).child(icon(icon_name, iconsize::M, t.tertiary));
+                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
@@ -891,7 +894,9 @@ impl InstanceSheet {
             .child(sheet::button_unless("mods-add", tr("Mod hinzufügen"), Some("plus"), Look::Plain, add_reason.clone().map(Into::into), false, t).when(add_reason.is_none(), |b| b.on_click(cx.listener(|s, _, window, cx| s.open_search(true, window, cx)))));
         let mut col = div().flex().flex_col().gap(px(space::XS)).child(header);
         if let Some(text) = busy {
-            return col.child(div().h(px(control::L)).flex().items_center().child(sheet::waiting(text, t)));
+            let rows = if self.mods.is_empty() { DEFAULT_ROWS } else { self.mods.len() as f32 };
+            let height = (rows * control::M + space::XXS * 2. + 2.).min(self.list_max);
+            return col.child(div().h(px(height)).flex().items_center().child(sheet::waiting(text, t)));
         }
         if let Some(e) = &self.mods_error {
             col = col.child(self.problem("mods-error", "circle-alert", t.danger_text, e, cx, t));
@@ -952,21 +957,23 @@ impl InstanceSheet {
         let entry = match self.prism_choice.clone() {
             None if self.prism_list.is_empty() => None,
             None => {
-                let row = card("prism-pick", "download", tr("Aus Prism importieren"), tr("Version, Mods und Einstellungen aus Prism Launcher"));
-                let row = if let Some(why) = blocked.clone() { sheet::unavailable(row, why) } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))) };
-                Some(row.child(icon("chevron-right", iconsize::M, t.tertiary)))
+                let row = card("prism-pick", "download", tr("Aus Prism importieren"), tr("Version, Mods und Einstellungen aus Prism Launcher")).child(icon("chevron-right", iconsize::M, t.tertiary));
+                Some(if let Some(why) = blocked.clone() { sheet::unavailable_over("prism-pick-locked", row.opacity(tint::DISABLED), why).into_any_element() } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))).into_any_element() })
             }
             Some(instance) => {
                 let subtitle = trf("Aus Prism · Minecraft %@ · %lld Mods", &[&instance.game_version.clone().unwrap_or_default(), &instance.mods]);
-                Some(card("prism-chosen", "download", instance.name.clone(), subtitle)
-                    .child(sheet::icon_button("prism-change", "list", tr("Andere Instanz wählen"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))))
-                    .child(sheet::icon_button("prism-drop", "x", tr("Nicht aus Prism übernehmen"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.drop_prism(cx)))))
+                Some(
+                    card("prism-chosen", "download", instance.name.clone(), subtitle)
+                        .child(sheet::icon_button("prism-change", "list", tr("Andere Instanz wählen"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))))
+                        .child(sheet::icon_button("prism-drop", "x", tr("Nicht aus Prism übernehmen"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.drop_prism(cx))))
+                        .into_any_element(),
+                )
             }
         };
         let file = self.prism_choice.is_none().then(|| {
-            let row = card("file-pick", "file-down", tr("Datei importieren…"), tr("Modpack (.mrpack) oder Prism-Export"));
-            let row = if let Some(why) = blocked.clone() {
-                sheet::unavailable(row, why)
+            let row = card("file-pick", "file-down", tr("Datei importieren…"), tr("Modpack (.mrpack) oder Prism-Export")).child(icon("chevron-right", iconsize::M, t.tertiary));
+            if let Some(why) = blocked.clone() {
+                sheet::unavailable_over("file-pick-locked", row.opacity(tint::DISABLED), why).into_any_element()
             } else {
                 row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|_, _, _, cx| {
                     let sheet = cx.weak_entity();
@@ -976,8 +983,8 @@ impl InstanceSheet {
                         })
                     });
                 }))
-            };
-            row.child(icon("chevron-right", iconsize::M, t.tertiary))
+                .into_any_element()
+            }
         });
         Some(div().flex().flex_col().gap(px(space::S)).children(entry).children(file))
     }
@@ -1101,27 +1108,26 @@ impl InstanceSheet {
                 .when(at == selected, |d| d.bg(t.ink.opacity(tint::HOVER)));
             let chosen = self.prism_choice.as_ref().is_some_and(|c| c.id == instance.id);
             let busy = self.mods_busy.clone().or_else(|| self.saving.then(|| tr("Wird gerade gesichert …")));
-            let row = match reason.clone().or(busy) {
+            let row = row
+                .child(icon(if ok { "package" } else { "circle-alert" }, iconsize::M, t.tertiary))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::XXS))
+                        .child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).child(instance.name.clone()))
+                        .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)),
+                )
+                .when(chosen, |d| d.child(icon("check", iconsize::S, t.success_text)));
+            list = list.child(match reason.clone().or(busy) {
                 None => {
                     let picked = instance.clone();
-                    row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx)))
+                    row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx))).into_any_element()
                 }
-                Some(why) => sheet::unavailable(row, why),
-            };
-            list = list.child(
-                row.child(icon(if ok { "package" } else { "circle-alert" }, iconsize::M, t.tertiary))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(space::XXS))
-                            .child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).child(instance.name.clone()))
-                            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)),
-                    )
-                    .when(chosen, |d| d.child(icon("check", iconsize::S, t.success_text))),
-            );
+                Some(why) => sheet::unavailable_over(SharedString::from(format!("prism-row-locked-{}", instance.id)), row.opacity(tint::DISABLED), why).into_any_element(),
+            });
         }
         let mut col = div().flex().flex_col().gap(px(space::S));
         if self.prism_list.len() > PRISM_FILTER_FROM {
@@ -1254,7 +1260,7 @@ fn default_note(note: &str, version: &str) -> String {
     let Some(rest) = note.strip_prefix("skipped ") else { return note.to_owned() };
     let slug = rest.split(':').next().unwrap_or(rest);
     let title = DEFAULT_TITLES.iter().find(|(s, _)| *s == slug).map_or(slug, |(_, t)| t);
-    trf("%@ fehlt, weil es keine Version für %@ gibt.", &[&title, &version])
+    trf("Den Mod „%@“ gibt es nicht für %@.", &[&title, &version])
 }
 
 impl Render for InstanceSheet {

@@ -37,6 +37,7 @@ const STAGGER_STEP: Duration = Duration::from_millis(100);
 const KEPT_CHAT: usize = 5000;
 const ALERT_NAMES: usize = 4;
 const QUIT_WAIT: Duration = Duration::from_secs(5);
+const TRASH_KEPT: Duration = Duration::from_secs(600);
 
 /// What the fleet reports back to the UI thread.
 pub enum Update {
@@ -434,7 +435,7 @@ pub fn init(cx: &mut App) {
         });
     }
     cx.background_spawn(async {
-        if let Err(e) = instance::purge_all() {
+        if let Err(e) = instance::purge_stale(TRASH_KEPT) {
             eprintln!("trash: {e:#}");
         }
     })
@@ -705,7 +706,9 @@ fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
             cx.dispatch_action(&super::actions::AddAccount);
         } else {
             let id = id.to_owned();
-            cx.defer(move |cx| super::main_window::show_instance(&id, cx));
+            cx.defer(move |cx| {
+                super::main_window::show_instance(&id, cx);
+            });
         }
         return;
     };
@@ -776,7 +779,7 @@ fn clone_instance(id: &str, cx: &mut App) {
                     super::instance_page::rename(&id, cx);
                     super::undo::offer(super::undo::Kind::Cloned { id, name, source }, cx);
                 }
-                Err(e) => tell(super::forms::explain_as(tr("Nicht kopiert."), &e).text, cx),
+                Err(e) => tell(super::forms::explain_as(tr("Nicht geklont."), &e).text, cx),
             }
             reload(cx);
         });
@@ -794,12 +797,12 @@ pub fn delete_instance(id: &str, cx: &mut App) {
         let result = task.await;
         cx.update(|cx| {
             match result {
-                Ok(()) => {
+                Ok(entry) => {
                     model::get(cx).update(cx, |m, cx| {
                         m.instances.retain(|made| made.id != gone);
                         cx.notify();
                     });
-                    super::undo::offer(super::undo::Kind::Deleted { id: gone, name }, cx);
+                    super::undo::offer(super::undo::Kind::Deleted { id: gone, name, entry }, cx);
                 }
                 Err(e) => tell(super::forms::explain_as(tr("Nicht gelöscht."), &e).text, cx),
             }
