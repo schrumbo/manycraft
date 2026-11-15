@@ -22,7 +22,8 @@ pub fn lead() -> f32 {
     tile::INSET - (control::M - iconsize::M) / 2.
 }
 
-fn tabular() -> FontFeatures {
+/// Font features for figures of equal width, so changing numbers do not shift their neighbours.
+pub fn tabular() -> FontFeatures {
     FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 

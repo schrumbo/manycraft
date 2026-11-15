@@ -315,6 +315,9 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Selection, "palette", label, detail.clone(), Box::new(SetColor { accounts: accounts.clone(), color }), cx));
         }
     }
+    if let Page::Instance(id) = &this.page {
+        out.extend(super::instance_files::palette(id, cx));
+    }
     let stopped = m.games.values().any(|i| !i.phase.is_active());
     let active = m.games.values().any(|i| i.phase.is_active() && !i.stopping);
     let playable = m.games.values().any(|i| super::tile::playable(&i.phase));
@@ -388,6 +391,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
+        out.extend(super::instance_files::tab_entries(made, cx));
         if matches!(made.loader, Loader::Fabric(_)) {
             out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
         }

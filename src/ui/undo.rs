@@ -24,6 +24,7 @@ pub enum Kind {
     Deleted { id: String, name: String, entry: String },
     Cloned { id: String, name: String, source: String },
     ModRemoved { instance_id: String, mod_ref: ModRef, index: usize, base: InstanceEdit },
+    Files { name: String, undo: super::instance_files::FileUndo },
 }
 
 struct Offer {
@@ -255,6 +256,9 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Cloned { name, .. } => (name.clone(), trf("„%@“ geklont.", &[name]), trf("„%@“ wurde nicht gelöscht.", &[name])),
             Kind::ModRemoved { mod_ref, .. } => (mod_ref.title.clone(), trf("„%@“ entfernt.", &[&mod_ref.title]), trf("„%@“ wurde nicht zurückgeholt.", &[&mod_ref.title])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Deleted { .. } } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Restored { .. } } => (name.clone(), trf("„%@“ wiederhergestellt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Copied { .. } } => (name.clone(), trf("„%@“ kopiert.", &[name]), trf("Die Kopie von „%@“ wurde nicht entfernt.", &[name])),
         };
         let text = if offer.failed { undone } else { done };
         lines.push(Line { at: offer.at, target: Target::Instance(*id), key: format!("offer-{id}"), text, name, failed: offer.failed, shown: offer.shown, hovered: offer.hovered });
@@ -300,6 +304,7 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
         Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, at, cx),
+        Kind::Files { name, undo } => super::instance_files::undo(name, undo, at, cx),
     }
 }
 

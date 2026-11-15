@@ -472,6 +472,9 @@ pub fn init(cx: &mut App) {
         if let Err(e) = instance::purge_stale(TRASH_KEPT) {
             eprintln!("trash: {e:#}");
         }
+        if let Err(e) = crate::core::trash::purge_stale(&instance::instances_dir(), TRASH_KEPT) {
+            eprintln!("trash: {e:#}");
+        }
     })
     .detach();
     reload(cx);
