@@ -365,7 +365,7 @@ pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Instance> {
     };
     let parse = |path: &Path| -> Result<Instance, (bool, anyhow::Error)> {
         let bytes = std::fs::read(path).map_err(|e| (e.kind() == std::io::ErrorKind::NotFound, e.into()))?;
-        serde_json::from_slice(&bytes).map_err(|e| (bytes.is_empty() || e.is_syntax() || e.is_eof(), e.into()))
+        serde_json::from_slice(&bytes).map_err(|e| (store::damage(&bytes, &e), e.into()))
     };
     let loaded = match parse(&file) {
         Ok(instance) => Ok(instance),

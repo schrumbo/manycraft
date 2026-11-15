@@ -548,7 +548,7 @@ pub fn init(cx: &mut App) {
         let instance = a.instance.clone();
         let account = a.account.as_deref().and_then(|id| id.parse().ok());
         cx.defer(move |cx| {
-            play_instance(&instance, account, cx);
+            play_and_show(&instance, account, cx);
         });
     });
     cx.on_action(|a: &CloneInstance, cx| clone_instance(&a.0, cx));
@@ -837,14 +837,17 @@ pub fn request_play(instance: String, account: Option<String>, cx: &mut App) {
         return;
     }
     let account = account.as_deref().and_then(|id| id.parse().ok());
-    match play_instance(&instance, account, cx) {
-        Some(key) => {
-            if cx.has_global::<Runtime>() {
-                cx.global_mut::<Runtime>().show_when_ready = Some((key, Instant::now()));
-            }
-        }
-        None => show_grid(cx),
+    if play_and_show(&instance, account, cx).is_none() {
+        show_grid(cx);
     }
+}
+
+fn play_and_show(instance: &str, account: Option<uuid::Uuid>, cx: &mut App) -> Option<String> {
+    let key = play_instance(instance, account, cx)?;
+    if cx.has_global::<Runtime>() {
+        cx.global_mut::<Runtime>().show_when_ready = Some((key.clone(), Instant::now()));
+    }
+    Some(key)
 }
 
 fn run_waiting_plays(cx: &mut App) {
@@ -863,11 +866,12 @@ fn forget_show_when_ready(rt: &mut Runtime, key: &str) {
 fn show_ready(cx: &mut App) {
     let Some((key, since)) = cx.try_global::<Runtime>().and_then(|rt| rt.show_when_ready.clone()) else { return };
     let model = model::get(cx);
-    let (shown, ready) = {
+    let (shown, ready, waiting) = {
         let m = model.read(cx);
-        (m.playing.as_deref() == Some(key.as_str()), m.games.get(&key).is_some_and(|g| playable(&g.phase)) && !model::hint(&key).link_lost)
+        let phase = m.games.get(&key).map(|g| &g.phase);
+        (m.playing.as_deref() == Some(key.as_str()), phase.is_some_and(playable) && !model::hint(&key).link_lost, phase.is_some_and(on_the_way))
     };
-    if !shown && !ready && since.elapsed() < SHOW_READY_FOR {
+    if !shown && !ready && waiting && since.elapsed() < SHOW_READY_FOR {
         return;
     }
     cx.global_mut::<Runtime>().show_when_ready = None;
@@ -1338,6 +1342,10 @@ fn broadcast(batch: &str, text: &str, cx: &mut App) {
 
 fn playable(phase: &Phase) -> bool {
     matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+}
+
+fn on_the_way(phase: &Phase) -> bool {
+    (phase.is_active() && !matches!(phase, Phase::Banned { .. })) || matches!(phase, Phase::NoNetwork)
 }
 
 /// Puts the game window of `key` in the manager's place and hides the manager.
@@ -2652,7 +2660,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, adopt_games, apply, fleet, local_server, needs_sign_in, playable, server_of, redraw, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, adopt_games, apply, fleet, local_server, needs_sign_in, on_the_way, playable, server_of, redraw, render_image, status};
 
     fn instance(phase: Phase) -> Game {
         Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -2918,6 +2926,16 @@ mod tests {
         assert!(playable(&Phase::NetworkLost { server: "s".into() }));
         assert_eq!(server_of(&Phase::NetworkLost { server: "s".into() }).as_deref(), Some("s"));
         assert!(Phase::NoNetwork.stoppable() && !Phase::NoNetwork.is_active());
+    }
+
+    #[test]
+    fn a_pending_show_waits_only_while_the_game_is_on_its_way() {
+        for phase in [Phase::Starting { place: 0, total: 0 }, Phase::Restarting { attempt: 1, of: 3 }, Phase::NoNetwork, Phase::Menu] {
+            assert!(on_the_way(&phase), "{phase:?}");
+        }
+        for phase in [Phase::Stopped, Phase::Failed { reason: "x".into() }, Phase::Crashed { code: None }, Phase::LoginNeeded, Phase::Banned { server: None, reason: "x".into() }] {
+            assert!(!on_the_way(&phase), "{phase:?}");
+        }
     }
 
     #[test]
