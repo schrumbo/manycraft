@@ -1,0 +1,40 @@
+{
+  "name": "Creeper",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "identity": [
+    "#4CC74A",
+    "#8FD86B",
+    "#2E7D32",
+    "#C5E1A5",
+    "#5D4037",
+    "#9E9E9E",
+    "#FFEB3B",
+    "#212121"
+  ],
+  "dark": {
+    "surface": "#0F1A10",
+    "sidebar": "#0B140C",
+    "raised": "#16251A",
+    "sunken": "#0A120B",
+    "control": "#1F3323",
+    "separator": "#274030",
+    "text-1": "#E4F5E1",
+    "text-2": "#B3D1AE",
+    "text-3": "#8FB089",
+    "accent": "#4CC74A",
+    "accent-text": "#4CC74A",
+    "on-accent": "#0B140C",
+    "attention": "#F5D547",
+    "attention-text": "#F5D547",
+    "on-attention": "#000000",
+    "danger": "#FF5E57",
+    "danger-text": "#FF5E57",
+    "on-danger": "#000000",
+    "success": "#B5E36B",
+    "success-text": "#B5E36B",
+    "focus-ring": "#7EE07B",
+    "tile-ring": "#7EE07B",
+    "scrim": "#03080399"
+  }
+}

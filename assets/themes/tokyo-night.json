@@ -1,0 +1,31 @@
+{
+  "name": "Tokyo Night",
+  "author": "enkia",
+  "license": "MIT",
+  "source": "https://github.com/enkia/tokyo-night-vscode-theme",
+  "dark": {
+    "surface": "#1A1B26",
+    "sidebar": "#16161E",
+    "raised": "#1F2335",
+    "sunken": "#13131A",
+    "control": "#292E42",
+    "separator": "#292E42",
+    "text-1": "#C0CAF5",
+    "text-2": "#A9B1D6",
+    "text-3": "#848BAE",
+    "accent": "#7AA2F7",
+    "accent-text": "#7AA2F7",
+    "on-accent": "#1A1B26",
+    "attention": "#E0AF68",
+    "attention-text": "#E0AF68",
+    "on-attention": "#000000",
+    "danger": "#F7768E",
+    "danger-text": "#F7768E",
+    "on-danger": "#000000",
+    "success": "#9ECE6A",
+    "success-text": "#9ECE6A",
+    "focus-ring": "#7DCFFF",
+    "tile-ring": "#7DCFFF",
+    "scrim": "#0E0E1499"
+  }
+}

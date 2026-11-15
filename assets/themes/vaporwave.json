@@ -1,0 +1,41 @@
+{
+  "name": "Vaporwave",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "radius": 1.2,
+  "identity": [
+    "#FF71CE",
+    "#01CDFE",
+    "#05FFA1",
+    "#B967FF",
+    "#FFFB96",
+    "#FF9A8B",
+    "#7B5CFF",
+    "#FFC1F3"
+  ],
+  "dark": {
+    "surface": "#1A1033",
+    "sidebar": "#140C29",
+    "raised": "#221543",
+    "sunken": "#100A22",
+    "control": "#2E1D57",
+    "separator": "#3A2668",
+    "text-1": "#F6E9FF",
+    "text-2": "#D3B8F0",
+    "text-3": "#A98ED1",
+    "accent": "#FF71CE",
+    "accent-text": "#FF71CE",
+    "on-accent": "#1A1033",
+    "attention": "#FFFB96",
+    "attention-text": "#FFFB96",
+    "on-attention": "#000000",
+    "danger": "#FF4F4F",
+    "danger-text": "#FF4F4F",
+    "on-danger": "#000000",
+    "success": "#05FFA1",
+    "success-text": "#05FFA1",
+    "focus-ring": "#01CDFE",
+    "tile-ring": "#01CDFE",
+    "scrim": "#08041499"
+  }
+}

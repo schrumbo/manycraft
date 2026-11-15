@@ -11,7 +11,7 @@ publish = false
 ignored = ["md-5"]
 
 [features]
-freya-proto = ["dep:freya", "dep:freya-winit"]
+freya-proto = ["dep:freya", "dep:freya-winit", "dep:notify"]
 
 [[bin]]
 name = "manycraft"
@@ -30,6 +30,7 @@ base64 = "0.22"
 dirs = "6"
 freya = { version = "0.5.2", optional = true, features = ["engine"] }
 freya-winit = { version = "0.5.2", optional = true }
+notify = { version = "8.2", optional = true }
 flate2 = "1"
 gpui-kit = "0.8.1"
 hickory-resolver = "0.26"

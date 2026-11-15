@@ -1,0 +1,41 @@
+{
+  "name": "Enderman",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "signature": "glow",
+  "identity": [
+    "#CC66FF",
+    "#2EB8A5",
+    "#E0D7F0",
+    "#6A4C93",
+    "#1B1B1B",
+    "#F1E05A",
+    "#9B59B6",
+    "#58D68D"
+  ],
+  "dark": {
+    "surface": "#120E17",
+    "sidebar": "#0E0B12",
+    "raised": "#1A1522",
+    "sunken": "#0B0810",
+    "control": "#2A2135",
+    "separator": "#332842",
+    "text-1": "#EDE6F5",
+    "text-2": "#C3B4D6",
+    "text-3": "#9F8FB3",
+    "accent": "#D47CFF",
+    "accent-text": "#D47CFF",
+    "on-accent": "#120E17",
+    "attention": "#F2C14E",
+    "attention-text": "#F2C14E",
+    "on-attention": "#000000",
+    "danger": "#FF6B8B",
+    "danger-text": "#FF6B8B",
+    "on-danger": "#000000",
+    "success": "#2EB8A5",
+    "success-text": "#2EB8A5",
+    "focus-ring": "#E0A3FF",
+    "tile-ring": "#E0A3FF",
+    "scrim": "#06040899"
+  }
+}

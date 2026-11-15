@@ -1,0 +1,41 @@
+{
+  "name": "Redstone",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "signature": "glow",
+  "identity": [
+    "#E5322D",
+    "#9E9E9E",
+    "#F5C542",
+    "#6D4C41",
+    "#BDBDBD",
+    "#FF8A65",
+    "#455A64",
+    "#C62828"
+  ],
+  "dark": {
+    "surface": "#161212",
+    "sidebar": "#110D0D",
+    "raised": "#1F1919",
+    "sunken": "#0D0A0A",
+    "control": "#2E2424",
+    "separator": "#3A2E2E",
+    "text-1": "#F2E8E6",
+    "text-2": "#CFBDBA",
+    "text-3": "#A89590",
+    "accent": "#FF3B30",
+    "accent-text": "#FF3B30",
+    "on-accent": "#160808",
+    "attention": "#F5C542",
+    "attention-text": "#F5C542",
+    "on-attention": "#000000",
+    "danger": "#FF7AB6",
+    "danger-text": "#FF7AB6",
+    "on-danger": "#000000",
+    "success": "#7BD88F",
+    "success-text": "#7BD88F",
+    "focus-ring": "#FF6B61",
+    "tile-ring": "#FF6B61",
+    "scrim": "#08050599"
+  }
+}

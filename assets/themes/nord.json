@@ -1,0 +1,31 @@
+{
+  "name": "Nord",
+  "author": "Arctic Ice Studio",
+  "license": "MIT",
+  "source": "https://www.nordtheme.com",
+  "dark": {
+    "surface": "#2E3440",
+    "sidebar": "#292E39",
+    "raised": "#3B4252",
+    "sunken": "#242933",
+    "control": "#434C5E",
+    "separator": "#434C5E",
+    "text-1": "#ECEFF4",
+    "text-2": "#D8DEE9",
+    "text-3": "#AAAFB8",
+    "accent": "#88C0D0",
+    "accent-text": "#88C0D0",
+    "on-accent": "#2E3440",
+    "attention": "#EBCB8B",
+    "attention-text": "#EBCB8B",
+    "on-attention": "#000000",
+    "danger": "#C97980",
+    "danger-text": "#D9A0A6",
+    "on-danger": "#000000",
+    "success": "#A3BE8C",
+    "success-text": "#A3BE8C",
+    "focus-ring": "#88C0D0",
+    "tile-ring": "#88C0D0",
+    "scrim": "#1D212899"
+  }
+}
