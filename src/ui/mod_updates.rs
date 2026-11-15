@@ -394,7 +394,7 @@ fn spans(text: &str) -> Vec<Span> {
         }
         let c = rest.chars().next().unwrap_or_default();
         let opens = (c == '*' || c == '_') && !plain.chars().last().is_some_and(char::is_alphanumeric) && rest[1..].chars().next().is_some_and(|n| !n.is_whitespace());
-        let close = opens.then(|| rest[1..].match_indices(c).map(|(at, _)| at + 1).find(|&at| !rest[..at].chars().next_back().is_some_and(char::is_whitespace) && !rest[at + 1..].chars().next().is_some_and(char::is_alphanumeric))).flatten();
+        let close = opens.then(|| rest[1..].match_indices(c).map(|(at, _)| at + 1).find(|&at| at > 1 && !rest[..at].chars().next_back().is_some_and(char::is_whitespace) && !rest[at + 1..].chars().next().is_some_and(char::is_alphanumeric))).flatten();
         if let Some(close) = close {
             plain.push_str(&rest[1..close]);
             rest = &rest[close + 1..];
@@ -452,6 +452,9 @@ mod tests {
         assert_eq!(spans("**Fix** `foo()` in [Sodium](https://x.y/z) now"), vec![Span::Bold("Fix".into()), Span::Plain(" ".into()), Span::Code("foo()".into()), Span::Plain(" in Sodium now".into())]);
         assert_eq!(links("![img](a.png) and [x]"), "img and [x]");
         assert_eq!(spans("a * b and unclosed **bold"), vec![Span::Plain("a * b and unclosed **bold".into())]);
+        for odd in ["2 ** 3", "note **", "__ init"] {
+            assert_eq!(spans(odd), vec![Span::Plain(odd.into())]);
+        }
         assert_eq!(spans("fixed mod_menu and snake_case_name, 2*3, *new* and _über_ ü*"), vec![Span::Plain("fixed mod_menu and snake_case_name, 2*3, new and über ü*".into())]);
     }
 

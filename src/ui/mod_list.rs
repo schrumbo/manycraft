@@ -342,6 +342,9 @@ impl ModList {
         if let Some(why) = &self.hold {
             return Some(why.clone());
         }
+        if !self.scanned && self.error.is_some() && !self.failed {
+            return Some(tr("Die Mods ließen sich nicht lesen."));
+        }
         if self.bisecting || self.bisect.as_ref().is_some_and(|b| b.outcome.is_none()) {
             return Some(tr("Beende zuerst die Fehlersuche."));
         }
@@ -619,11 +622,14 @@ impl ModList {
 
     fn switch(&mut self, files: Vec<String>, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let files: Vec<String> = files.into_iter().filter(|f| self.entry(f).is_some_and(|e| e.enabled != on)).collect();
-        if files.is_empty() || self.busy || !self.scanned {
+        if files.is_empty() || self.busy {
             return;
         }
         if let Some(why) = self.locked(cx) {
             super::undo::note(why, cx);
+            return;
+        }
+        if !self.scanned {
             return;
         }
         if !self.scanned {
@@ -740,11 +746,14 @@ impl ModList {
     }
 
     fn trash(&mut self, files: Vec<String>, label: Option<String>, cx: &mut Context<Self>) {
-        if files.is_empty() || self.busy || !self.scanned {
+        if files.is_empty() || self.busy {
             return;
         }
         if let Some(why) = self.locked(cx) {
             super::undo::note(why, cx);
+            return;
+        }
+        if !self.scanned {
             return;
         }
         let label = label.unwrap_or_else(|| self.label_of(&files));
@@ -1328,7 +1337,7 @@ impl Render for ModList {
         let problems = error.map(|e| div().flex().items_start().gap(px(space::S)).child(div().flex_1().min_w_0().child(e)).children(retry));
         let bisect = self.bisect.clone().map(|b| self.render_bisect(&b, cx, &t));
         if self.scan.entries.is_empty() && self.bisect.is_none() {
-            let body = if self.error.is_some() { div().into_any_element() } else if self.scanned { self.render_empty(&made, &t).into_any_element() } else { div().size_full().flex().items_center().justify_center().child(sheet::waiting(tr("Mods werden gelesen …"), &t)).into_any_element() };
+            let body = if self.error.is_some() && !self.failed { div().into_any_element() } else if self.scanned { self.render_empty(&made, &t).into_any_element() } else { div().size_full().flex().items_center().justify_center().child(sheet::waiting(tr("Mods werden gelesen …"), &t)).into_any_element() };
             return root.children(problems).child(div().flex_1().min_h_0().child(body));
         }
         let list = div()
