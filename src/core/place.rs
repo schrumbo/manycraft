@@ -98,6 +98,22 @@ fn home(frame: Rect, works: &[Rect]) -> Option<Rect> {
     works.iter().copied().max_by_key(|w| (frame.overlap(*w), -frame.center_distance(*w)))
 }
 
+/// A window of `size` in the middle of `home`, kept on the work area `home` is on.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn centered(home: Rect, size: Rect, works: &[Rect]) -> Rect {
+    let at = Rect { x: home.x + (i64::from(home.w) - i64::from(size.w)) as i32 / 2, y: home.y + (i64::from(home.h) - i64::from(size.h)) as i32 / 2, w: size.w, h: size.h };
+    match self::home(home, works) {
+        Some(work) => at.fit(work),
+        None => at,
+    }
+}
+
+/// Whether `a` and `b` are mostly on the same work area.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn same_work_area(a: Rect, b: Rect, works: &[Rect]) -> bool {
+    home(a, works) == home(b, works)
+}
+
 /// `frame` as it is when its title bar can be grabbed on some work area, else moved and shrunk onto the work area it is closest to.
 pub fn clamp(frame: Rect, works: &[Rect]) -> Rect {
     let bar = Rect { h: frame.h.min(40), ..frame };
@@ -151,6 +167,16 @@ mod tests {
 
     const fn r(x: i32, y: i32, w: u32, h: u32) -> Rect {
         Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn a_plain_game_moves_into_the_middle_of_the_manager_on_its_monitor() {
+        let works = [r(0, 0, 2560, 1400), r(-1920, 139, 1920, 1040)];
+        let home = r(-1800, 200, 1600, 900);
+        assert_eq!(centered(home, r(1000, 400, 854, 480), &works), r(-1800 + 373, 200 + 210, 854, 480));
+        assert_eq!(centered(r(-1900, 150, 400, 300), r(0, 0, 854, 480), &works), r(-1920, 139, 854, 480));
+        assert!(same_work_area(r(-1500, 300, 854, 480), home, &works));
+        assert!(!same_work_area(r(853, 460, 854, 480), home, &works));
     }
 
     const LAPTOP: Rect = r(0, 0, 2560, 1552);

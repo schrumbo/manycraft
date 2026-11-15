@@ -236,7 +236,7 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
         Phase::LoginNeeded => Some(Primary::SignIn),
         Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } => Some(Primary::Play),
-        Phase::Starting { .. } => None,
+        Phase::Starting { .. } | Phase::Plain => None,
         Phase::Banned { .. } => Some(Primary::Reconnect),
         Phase::Restarting { .. } => Some(Primary::Start),
     }
@@ -350,6 +350,7 @@ fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
     match d.phase {
         Phase::Stopped if !d.stopping => None,
         Phase::Starting { .. } if !d.stopping => Some(("hourglass", t.tertiary)),
+        Phase::Plain if !d.stopping => Some(("app-window", t.tertiary)),
         _ => Some(("loader-circle", t.tertiary)),
     }
 }
@@ -362,7 +363,7 @@ fn glyph(d: &TileData, neutral: Hsla, t: &Theme) -> AnyElement {
     let dot = match d.phase {
         _ if d.stopping => dot.border_1().border_color(neutral),
         Phase::Playing { .. } => dot.bg(t.success),
-        Phase::Menu | Phase::Queue { .. } => dot.bg(neutral),
+        Phase::Menu | Phase::Queue { .. } | Phase::Plain => dot.bg(neutral),
         _ => dot.border_1().border_color(neutral),
     };
     dot.into_any_element()

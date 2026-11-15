@@ -406,6 +406,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Starting { done, total } if *total > 1 => trf("Wartet %lld/%lld", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Restarting { .. } => tr("Startet neu…"),
+        Phase::Plain => tr("Läuft"),
         Phase::Menu => tr("Hauptmenü"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Versuch %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } => tr("Verbindet…"),
@@ -512,7 +513,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         (None, Some(made)) => trf("%@ · allein", &[&made.name]),
         (None, None) => String::new(),
     };
-    let solo = alone.map(|made| (made.id.clone(), made.loader.launchable()));
+    let solo = alone.map(|made| made.id.clone());
     let server = m.batch(batch).and_then(|b| b.server.clone()).filter(|s| !s.is_empty());
     let mine = || m.games.values().filter(|i| i.batch_id == batch);
     let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
@@ -551,9 +552,9 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                     .child(attention.to_string()),
             )
         })
-        .when_some(solo.as_ref().map(|(instance, _)| instance.clone()), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
+        .when_some(solo.clone(), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
         .context_menu(move |menu, _, cx| match &solo {
-            Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable, cx),
+            Some(instance) => super::sidebar::instance_menu(menu, instance, cx),
             None => super::sidebar::batch_menu(menu, &id, running, stopped, exporting),
         })
         .into_any_element()

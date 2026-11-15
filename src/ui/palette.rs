@@ -18,7 +18,6 @@ use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
 use super::widgets::{TakeFocus, icon};
-use crate::core::instance::Loader;
 
 actions!(palette, [PaletteNext, PalettePrevious]);
 use crate::core::i18n::{tr, trf};
@@ -378,19 +377,15 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         let detail = Some(made.version_line());
         let name = &made.name;
         out.push(entry(Group::Instances, "package", trf("Instanz %@ öffnen", &[name]), detail.clone(), Box::new(ShowInstance(id.clone())), cx));
-        if made.loader.launchable() {
-            out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
-        }
+        out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
         out.push(entry(Group::Instances, "boxes", trf("Neuer Batch mit %@…", &[name]), detail.clone(), Box::new(NewBatchFor(id.clone())), cx));
-        if matches!(made.loader, Loader::Fabric(_)) {
+        if made.loader.takes_mods() {
             out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
         }
         out.push(entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
-        if matches!(made.loader, Loader::Fabric(_)) {
-            out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
-        }
+        out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
         let mut delete = entry(Group::Instances, "trash", trf("%@ löschen…", &[name]), detail, Box::new(DeleteInstance(id)), cx);
         let users: Vec<String> = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| b.name.clone()).collect();
         if !users.is_empty() {

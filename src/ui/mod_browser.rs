@@ -21,6 +21,7 @@ use super::theme::{Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
+use crate::core::instance::Loader;
 use crate::core::modicons;
 use crate::core::modrinth::{Hit, Page, Sort, Support};
 
@@ -42,6 +43,7 @@ const BAR_HEIGHT: f32 = 10.;
 struct Key {
     query: String,
     version: String,
+    loader: Loader,
     sort: Sort,
     all: bool,
 }
@@ -167,10 +169,10 @@ impl Browser {
         (browser, sub)
     }
 
-    fn key(&self, version: &str, cx: &App) -> Key {
+    fn key(&self, version: &str, loader: &Loader, cx: &App) -> Key {
         let query = self.query.read(cx).value().trim().to_lowercase();
         let sort = if query.is_empty() { Sort::Downloads } else { self.sort };
-        Key { query, version: version.to_owned(), sort, all: self.all }
+        Key { query, version: version.to_owned(), loader: loader.with_version(None), sort, all: self.all }
     }
 
     fn fresh(&self) -> bool {
@@ -187,8 +189,8 @@ impl Browser {
     }
 
     fn reindex(&mut self) {
-        let (version, all) = self.shown.as_ref().map_or(("", true), |k| (k.version.as_str(), k.all));
-        let visible = self.page().map_or_else(Vec::new, |p| p.hits.iter().enumerate().filter(|(_, h)| all || h.support(version) == Support::Fits).map(|(i, _)| i).collect());
+        let (version, loader, all) = self.shown.as_ref().map_or(("", &Loader::Vanilla, true), |k| (k.version.as_str(), &k.loader, k.all));
+        let visible = self.page().map_or_else(Vec::new, |p| p.hits.iter().enumerate().filter(|(_, h)| all || h.support(version, loader) == Support::Fits).map(|(i, _)| i).collect());
         self.visible = visible;
     }
 
@@ -347,11 +349,11 @@ impl InstanceSheet {
         if self.mods.iter().any(|m| m.project_id == hit.project_id) {
             return if self.browse_update_for(&hit.project_id) && self.updating.is_empty() && !self.saving { Act::Update } else { Act::Nothing };
         }
-        if hit.support(&self.version) == Support::Fits { Act::Install } else { Act::Nothing }
+        if hit.support(&self.version, &self.loader) == Support::Fits { Act::Install } else { Act::Nothing }
     }
 
     pub(super) fn browse_refresh(&mut self, debounce: bool, cx: &mut Context<Self>) {
-        let key = self.browser.key(&self.version, cx);
+        let key = self.browser.key(&self.version, &self.loader, cx);
         if debounce && self.browser.wanted.as_ref() == Some(&key) {
             return;
         }
@@ -386,7 +388,7 @@ impl InstanceSheet {
                 }
             }
             let asked = key.clone();
-            let result = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, asked.sort, asked.all, 0) }).await;
+            let result = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, &asked.loader, asked.sort, asked.all, 0) }).await;
             let _ = this.update(cx, |s, cx| {
                 let current = s.browser.generation == generation;
                 match result {
@@ -419,7 +421,7 @@ impl InstanceSheet {
         let generation = self.browser.generation;
         cx.notify();
         let asked = key.clone();
-        let task = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, asked.sort, asked.all, offset) });
+        let task = cx.background_executor().spawn(async move { remote::search_page(&asked.query, &asked.version, &asked.loader, asked.sort, asked.all, offset) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
@@ -472,12 +474,14 @@ impl InstanceSheet {
         let version = self.version.clone();
         let ids = vec![id.clone()];
         let asked = version.clone();
-        let task = cx.background_executor().spawn(async move { remote::resolve(&ids, &asked) });
+        let loader = self.loader.clone();
+        let asked_loader = loader.clone();
+        let task = cx.background_executor().spawn(async move { remote::resolve(&ids, &asked, &asked_loader) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.browser.adding.remove(&id);
-                if s.version != version {
+                if s.version != version || !s.loader.same_kind(&loader) {
                     return;
                 }
                 match result {
@@ -533,7 +537,7 @@ impl InstanceSheet {
     fn browse_row(&mut self, ix: usize, hit: Hit, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let pid = hit.project_id.clone();
         let installed = self.mods.iter().any(|m| m.project_id == pid);
-        let support = hit.support(&self.version);
+        let support = hit.support(&self.version, &self.loader);
         let dim = !installed && support != Support::Fits;
         let selected = ix == self.browser.sel && self.browser.fresh();
         let face = match modicons::icon(&pid) {

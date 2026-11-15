@@ -193,8 +193,6 @@ fn explain(label: &str, e: &anyhow::Error) -> String {
     };
     match refused {
         Refused::NotAPack => trf("„%@“ ist kein Modpack von Modrinth. Wähle eine .mrpack-Datei.", &[&label]),
-        Refused::Loader(loader) => trf("„%@“ ist für %@ gebaut. Manycraft kann nur Fabric-Modpacks importieren. Such nach der Fabric-Version.", &[&label, loader]),
-        Refused::NoLoader => trf("„%@“ nennt keinen Mod-Loader. Manycraft kann nur Fabric-Modpacks importieren.", &[&label]),
         Refused::NoGame => trf("„%@“ nennt keine Minecraft-Version.", &[&label]),
         Refused::Host(_) => trf("„%@“ lädt Dateien von einer Seite, die Manycraft nicht kennt. Nichts wurde importiert.", &[&label]),
         Refused::Hash(_) => trf("Eine Datei aus „%@“ kam verändert an. Nichts wurde importiert. Versuche es noch einmal.", &[&label]),

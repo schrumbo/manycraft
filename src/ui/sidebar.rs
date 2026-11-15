@@ -93,7 +93,7 @@ fn row_body(r: Row, selected: bool, t: &Theme) -> Stateful<Div> {
 }
 
 struct InstanceRows {
-    rows: Vec<(Row, String, bool)>,
+    rows: Vec<(Row, String)>,
     selected: Page,
     main: WeakEntity<MainWindow>,
 }
@@ -106,7 +106,7 @@ impl Global for InstanceRowsView {}
 impl Render for InstanceRows {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let rows = self.rows.iter().cloned().map(|(mut r, id, launchable)| {
+        let rows = self.rows.iter().cloned().map(|(mut r, id)| {
             if menu_open(&r.id, cx) {
                 r.hint = None;
             }
@@ -115,13 +115,13 @@ impl Render for InstanceRows {
             let key = r.id.clone();
             row_body(r, self.selected == page, &t)
                 .on_click(move |_, window, cx| drop(main.update(cx, |this, cx| this.go(page.clone(), window, cx))))
-                .context_menu(move |menu, window, cx| menu_of(&key, instance_menu(menu, &id, launchable, cx), window, cx))
+                .context_menu(move |menu, window, cx| menu_of(&key, instance_menu(menu, &id, cx), window, cx))
         });
         div().size_full().flex().flex_col().gap(px(space::XXS)).children(rows)
     }
 }
 
-fn instance_list(rows: Vec<(Row, String, bool)>, selected: Page, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+fn instance_list(rows: Vec<(Row, String)>, selected: Page, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let count = rows.len() as f32;
     if rows.is_empty() {
         return None;
@@ -349,9 +349,9 @@ fn new_row(id: &'static str, label: String, action: Box<dyn Action>, t: &Theme) 
 }
 
 /// The menu of an instance, in the sidebar and over the tiles it plays alone.
-pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool, cx: &App) -> PopupMenu {
+pub fn instance_menu(menu: PopupMenu, id: &str, cx: &App) -> PopupMenu {
     let users: Vec<String> = model::get(cx).read(cx).batches.iter().filter(|b| b.instance_id == id).map(|b| b.name.clone()).collect();
-    let menu = menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
+    let menu = menu.menu(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }))
         .menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
         .menu(tr("Klonen"), Box::new(CloneInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
@@ -407,7 +407,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         .collect();
     let mut instances: Vec<&Instance> = m.instances.iter().collect();
     instances.sort_by_cached_key(|i| i.name.to_lowercase());
-    let instances: Vec<(Row, String, bool)> = instances
+    let instances: Vec<(Row, String)> = instances
         .into_iter()
         .map(|made| {
             let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
@@ -422,7 +422,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 hint: running.then(|| tr("Läuft gerade")),
                 running,
             };
-            (r, made.id.clone(), made.loader.launchable())
+            (r, made.id.clone())
         })
         .collect();
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None, running: false };

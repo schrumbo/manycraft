@@ -27,7 +27,7 @@ use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
-use crate::core::{companion, drive, install, ipc};
+use crate::core::{drive, install, ipc};
 
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -44,7 +44,7 @@ const TRASH_KEPT: Duration = Duration::from_secs(600);
 pub enum Update {
     Preparing { batch: String, percent: u8 },
     Progress { batch: String, done: usize, total: usize },
-    Launched { key: String },
+    Launched { key: String, plain: bool },
     Failed { key: String, reason: String, login: bool },
     Ipc(Event),
     Exited { key: String, code: Option<i32> },
@@ -63,7 +63,7 @@ pub enum Update {
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
 pub trait Backend: Send + Sync {
     /// Starts `accounts` of `target` one after another until `cancel` is set.
-    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>);
+    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>);
     /// Asks the instances to quit and ends them after a grace period.
     fn stop(&self, keys: Vec<String>);
     /// Sends a message to an instance's companion mod.
@@ -152,7 +152,7 @@ impl Real {
 }
 
 impl Backend for Real {
-    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
+    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>) {
         let (fleet, out, watch, owners) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.owners));
         let owner = target.owner();
         let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
@@ -172,10 +172,6 @@ impl Backend for Real {
                     }
                 }
             };
-            let jar = match companion::jar() {
-                Ok(jar) => jar,
-                Err(e) => return fail_all(format!("{e:#}")),
-            };
             let last = Mutex::new(u8::MAX);
             let progress = |p: install::Progress| {
                 let percent = (p.done * 100).checked_div(p.total).unwrap_or(0).min(100) as u8;
@@ -185,7 +181,7 @@ impl Backend for Real {
                     let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), percent });
                 }
             };
-            let prepared = match fleet.prepare_launch(&target, &accounts, Some(&jar), &progress) {
+            let prepared = match fleet.prepare_launch(&target, &accounts, None, &progress) {
                 Ok(prepared) => prepared,
                 Err(e) => return fail_all(format!("{e:#}")),
             };
@@ -211,10 +207,12 @@ impl Backend for Real {
                         lock(&watch).insert(key.clone());
                         if !lock(&owners).contains_key(&key) {
                             fleet.stop_all(std::slice::from_ref(&key));
+                        } else if let Some(home) = home.filter(|_| prepared.plain()) {
+                            fleet.bring_home(&key, home);
                         }
-                        Some(Update::Launched { key })
+                        Some(Update::Launched { key, plain: prepared.plain() })
                     }
-                    Err(_) if fleet.is_running(&key) => Some(Update::Launched { key }),
+                    Err(_) if fleet.is_running(&key) => Some(Update::Launched { key, plain: prepared.plain() }),
                     Err(_) if !mine(&key) => None,
                     Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), reason: format!("{e:#}") }),
                 };
@@ -938,8 +936,9 @@ fn launch(owner: &str, only: Option<&[String]>, restart: bool, cx: &mut App) {
     if !restart {
         warn_if_too_big(u32::try_from(accounts.len()).unwrap_or(u32::MAX), target.memory_mb(), cx);
     }
+    let home = manager_place(cx).map(|p| p.frame);
     if let Some(backend) = backend(cx) {
-        backend.start(target, accounts, cancel);
+        backend.start(target, accounts, cancel, home);
     }
 }
 
@@ -1393,7 +1392,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
         for update in updates {
             let key = match &update {
                 Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } => None,
-                Update::Launched { key } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
+                Update::Launched { key, .. } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
             };
             let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
@@ -1529,12 +1528,12 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 }
             }
         }
-        Update::Launched { key } => {
+        Update::Launched { key, plain } => {
             if let Some(i) = m.games.get_mut(&key)
                 && matches!(i.phase, Phase::Starting { .. } | Phase::Failed { .. })
                 && !i.stopping
             {
-                i.phase = Phase::Starting { done: 0, total: 0 };
+                i.phase = if plain { Phase::Plain } else { Phase::Starting { done: 0, total: 0 } };
             }
         }
         Update::Failed { key, reason, login } => {
@@ -2247,6 +2246,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Restarting { attempt, of } => model::restart_status(*attempt, *of),
         Phase::Starting { done, total } if *total > 1 => trf("Wartet · %lld/%lld gestartet", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
+        Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Im Hauptmenü"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &settings::active().reconnect.max_attempts]),
         Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
@@ -2313,7 +2313,7 @@ mod tests {
     struct Recorder(std::sync::Mutex<Vec<(String, ToMod)>>);
 
     impl Backend for Recorder {
-        fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>, _: Option<crate::core::place::Rect>) {}
         fn stop(&self, _: Vec<String>) {}
         fn send(&self, key: &str, message: ToMod) {
             self.0.lock().unwrap().push((key.to_owned(), message));
@@ -2376,7 +2376,7 @@ mod tests {
     struct Quiet;
 
     impl Backend for Quiet {
-        fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>) {}
+        fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>, _: Option<crate::core::place::Rect>) {}
         fn stop(&self, _: Vec<String>) {}
         fn send(&self, _: &str, _: ToMod) {}
         fn read_preview(&self, _: String, _: PathBuf) {}

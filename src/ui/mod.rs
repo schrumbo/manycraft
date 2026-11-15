@@ -11,6 +11,7 @@ pub mod grid;
 pub mod identity;
 pub mod instance_page;
 pub mod instance_sheet;
+pub mod loader_version;
 pub mod main_window;
 pub mod mod_browser;
 #[allow(dead_code)]

@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 
 use super::meta::{self, Env, VersionJson};
-use super::{FALLBACK_JAVA_COMPONENT, LOADER_PREFIX};
-use crate::core::instance::{self, Instance, Loader};
+use super::FALLBACK_JAVA_COMPONENT;
+use crate::core::instance::{self, Instance};
 use crate::core::{lock, paths};
 
 /// How long unused files must have sat untouched before cleaning may remove them.
@@ -57,6 +57,9 @@ pub fn plan(root: &Path, instances: &[Instance], margin: Duration, now: SystemTi
         let resolved = meta::resolve(&profile.libraries, &Env::current(Vec::new()));
         for dep in resolved.classpath.iter().chain(resolved.natives.iter().map(|n| &n.dep)) {
             keep_libraries.insert(libraries.join(&dep.path));
+        }
+        for rel in super::extra_files(&versions.join(id)) {
+            keep_libraries.insert(libraries.join(rel));
         }
     }
     let mut plan = Plan::default();
@@ -111,21 +114,12 @@ fn split_versions(versions: &Path, instances: &[Instance], margin: Duration, now
         if installed.iter().any(|n| n == game) {
             kept.insert((*game).to_owned());
         }
-        let suffix = format!("-{game}");
-        let loaders: Vec<&String> = installed.iter().filter(|n| n.starts_with(LOADER_PREFIX) && n.ends_with(&suffix)).collect();
-        let here: Vec<&Instance> = instances.iter().filter(|b| b.game_version == *game).collect();
-        for made in &here {
-            if let Some(loader) = made.loader.version() {
-                let wanted = format!("{LOADER_PREFIX}{loader}{suffix}");
-                if loaders.iter().any(|n| **n == wanted) {
-                    kept.insert(wanted);
-                }
+        for made in instances.iter().filter(|b| b.game_version == *game) {
+            let found = super::candidates(&installed, &made.loader, game);
+            let pick = if made.loader.version().is_some() { found.first().copied() } else { found.into_iter().max_by_key(|n| modified(&versions.join(n.as_str()).join(format!("{n}.json")))) };
+            if let Some(name) = pick {
+                kept.insert(name.clone());
             }
-        }
-        if here.iter().any(|b| matches!(b.loader, Loader::Fabric(None)))
-            && let Some(newest) = loaders.iter().max_by_key(|n| modified(&versions.join(n.as_str()).join(format!("{n}.json"))))
-        {
-            kept.insert((*newest).clone());
         }
     }
     let doomed = installed.iter().filter(|n| !kept.contains(*n)).map(|n| versions.join(n)).filter(|p| older(p, margin, now)).collect();
@@ -252,6 +246,7 @@ mod tests {
     use std::fs::File;
 
     use super::*;
+    use crate::core::instance::Loader;
 
     const NOW_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 
@@ -293,6 +288,21 @@ mod tests {
         let mut out: Vec<String> = plan.remove.iter().map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/")).collect();
         out.sort();
         out
+    }
+
+    #[test]
+    fn processor_outputs_of_a_kept_forge_version_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        version(root, "1.20.1", "gamma", &[], NOW_AGE);
+        version(root, "forge-47.4.28-1.20.1", "gamma", &["x/fml.jar"], NOW_AGE);
+        std::fs::write(root.join("versions/forge-47.4.28-1.20.1/.processed"), br#"{"installer":"s","files":["x/client-patched.jar"]}"#).unwrap();
+        for lib in ["x/fml.jar", "x/client-patched.jar", "x/orphan.jar"] {
+            library(root, lib, NOW_AGE);
+        }
+        let forge = Instance::new("f", "1.20.1", Loader::Forge(None));
+        let plan = plan(root, &[forge], MARGIN, SystemTime::now()).unwrap();
+        assert_eq!(names(root, &plan), ["libraries/x/orphan.jar"]);
     }
 
     #[test]
