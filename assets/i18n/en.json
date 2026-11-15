@@ -534,9 +534,8 @@
   "Vorherige Version": "Previous version",
   "Manycraft %@": "Manycraft %@",
   "Version %@ ist noch da, falls die neue Probleme macht.": "Version %@ is still here in case the new one causes trouble.",
-  "Geht, sobald keine Instanz mehr startet.": "Available once no instance is starting.",
   "Update bereit": "Update ready",
-  "Update wird geladen": "Downloading update",
+  "Update lädt": "Downloading",
   "Neu in %@": "New in %@",
   "Neu in %@: %@": "New in %@: %@",
   "Version %@ ist geladen und wird beim Beenden installiert.": "Version %@ is downloaded and installs when you quit.",
@@ -639,5 +638,10 @@
   "„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.": "“%@” was cancelled but could not be removed completely.",
   "Die Datei ist beschädigt oder lässt sich nicht lesen.": "The file is damaged or can’t be read.",
   "Die Datei lässt sich nicht schreiben. Ist sie in einem anderen Programm offen?": "The file can’t be written. Is it open in another program?",
-  "Modpack (.mrpack) oder Prism-Export": "Modpack (.mrpack) or Prism export"
+  "Modpack (.mrpack) oder Prism-Export": "Modpack (.mrpack) or Prism export",
+  "Das geht, sobald keine Instanz mehr startet.": "Available once no instance is starting.",
+  "Wartet": "Waiting",
+  "Laden abbrechen": "Cancel download",
+  "Laden von Version %@ wird abgebrochen …": "Cancelling the download of version %@…",
+  "Laden des Updates abbrechen": "Cancel update download"
 }

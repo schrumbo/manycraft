@@ -176,6 +176,8 @@ pub struct Updates {
     pub offline: bool,
     /// The user asked for the running check or download, so its progress shows in the sidebar too.
     pub asked: bool,
+    /// The running download was stopped and is winding down.
+    pub cancelling: bool,
 }
 
 impl Model {
