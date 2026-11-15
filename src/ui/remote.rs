@@ -948,7 +948,12 @@ fn canned_import(instance: &Instance, name: &str) -> Result<setup::Instance> {
 
 fn canned_update(m: &ModRef) -> Update {
     let latest = ModRef { version_id: format!("{}-new", m.version_id), file_name: m.file_name.replace(".jar", "-b.jar"), sha1: "1".repeat(40), ..m.clone() };
-    Update { current: m.clone(), latest, changelog: Vec::new() }
+    let notes = "## Fixes
+- **Crash** when joining a server
+- `render()` is faster
+  - fewer allocations
+See [the issue](https://example.invalid/1).";
+    Update { current: m.clone(), latest, changelog: vec![("1.1.0".into(), notes.into()), ("1.0.1".into(), String::new())] }
 }
 
 fn canned_hits(game_version: &str) -> Vec<Hit> {

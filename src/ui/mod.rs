@@ -14,6 +14,8 @@ pub mod instance_sheet;
 pub mod main_window;
 pub mod maintenance;
 pub mod mod_browser;
+pub mod mod_list;
+pub mod mod_updates;
 #[allow(dead_code)]
 pub mod model;
 #[allow(dead_code)]

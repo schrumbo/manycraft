@@ -97,7 +97,7 @@ pub(super) struct IconCache {
 }
 
 impl IconCache {
-    fn new(cx: &mut App) -> Entity<Self> {
+    pub(super) fn new(cx: &mut App) -> Entity<Self> {
         let cache = cx.new(|_| Self { items: HashMap::new(), tick: 0 });
         cx.observe_release(&cache, |cache, cx| {
             for (_, (item, _)) in cache.items.drain() {

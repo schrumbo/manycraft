@@ -14,7 +14,8 @@ use crate::core::instance::Instance;
 use super::sheet::{self, Look};
 use super::theme::{Theme, font, radius, shell, space, tint, with_alpha};
 use super::{forms, main_window, model, remote, state};
-use crate::core::batch::ModRef;
+use crate::core::content::Trashed;
+use crate::core::modrinth::Update;
 use crate::core::i18n::{tr, trf};
 
 const MAX_TOASTS: usize = 3;
@@ -34,7 +35,9 @@ pub enum Edit {
 pub enum Kind {
     Deleted { id: String, name: String, entry: String },
     Cloned { id: String, name: String, source: String },
-    ModRemoved { instance_id: String, mod_ref: ModRef, index: usize, base: InstanceEdit },
+    ModsSwitched { instance_id: String, files: Vec<String>, on: bool, label: String },
+    ModsTrashed { instance_id: String, trashed: Trashed, label: String },
+    ModsUpdated { instance_id: String, updates: Vec<Update>, label: String },
     Edited { instance_id: String, name: String, what: Edit, before: InstanceEdit, after: InstanceEdit },
     Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
 }
@@ -267,7 +270,10 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
         let (name, done, undone) = match &offer.kind {
             Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Cloned { name, .. } => (name.clone(), trf("„%@“ geklont.", &[name]), trf("„%@“ wurde nicht gelöscht.", &[name])),
-            Kind::ModRemoved { mod_ref, .. } => (mod_ref.title.clone(), trf("„%@“ entfernt.", &[&mod_ref.title]), trf("„%@“ wurde nicht zurückgeholt.", &[&mod_ref.title])),
+            Kind::ModsSwitched { label, on: true, .. } => (label.clone(), trf("%@ eingeschaltet.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
+            Kind::ModsSwitched { label, on: false, .. } => (label.clone(), trf("%@ ausgeschaltet.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
+            Kind::ModsTrashed { label, .. } => (label.clone(), trf("%@ gelöscht.", &[label]), trf("%@ wurde nicht zurückgeholt.", &[label])),
+            Kind::ModsUpdated { label, .. } => (label.clone(), trf("%@ aktualisiert.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
             Kind::Reset { name, .. } => (name.clone(), trf("„%@“ zurückgesetzt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Edited { name, what, .. } => {
                 let done = match what {
@@ -322,7 +328,9 @@ fn undo_offer(id: u64, cx: &mut App) {
     match offer.kind {
         Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
-        Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, at, cx),
+        Kind::ModsSwitched { instance_id, files, on, label } => super::mod_list::undo_switch(instance_id, files, on, label, at, cx),
+        Kind::ModsTrashed { instance_id, trashed, label } => super::mod_list::undo_trash(instance_id, trashed, label, at, cx),
+        Kind::ModsUpdated { instance_id, updates, label } => super::mod_updates::undo_updates(instance_id, updates, label, at, cx),
         Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
         Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
     }
