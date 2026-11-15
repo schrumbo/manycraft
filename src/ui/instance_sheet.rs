@@ -344,6 +344,20 @@ impl InstanceSheet {
         !self.saving && self.updating.is_empty()
     }
 
+    fn wait_reason(&self) -> Option<String> {
+        if let Some(text) = &self.mods_busy {
+            return Some(text.clone());
+        }
+        if !self.updating.is_empty() {
+            return Some(tr("Warte, bis die Updates fertig sind."));
+        }
+        (!self.browser.adding.is_empty()).then(|| tr("Warte, bis die Mods hinzugefügt sind."))
+    }
+
+    fn lock_reason(&self) -> Option<String> {
+        self.wait_reason().or_else(|| self.prism_choice.is_some().then(|| tr("Kommt aus Prism.")))
+    }
+
     fn taken_names(&self, cx: &App) -> Vec<String> {
         super::model::get(cx).read(cx).instances.iter().map(|i| i.name.clone()).collect()
     }
@@ -735,7 +749,14 @@ impl InstanceSheet {
                 .child(div().flex_1().min_w_0().child(self.problem("versions-error", "circle-alert", t.danger_text, why, cx, t)))
                 .child(sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)))),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
-            _ => div().child(Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(self.mods_busy.is_some() || self.prism_choice.is_some() || !self.browser.adding.is_empty())),
+            _ => {
+                let lock = self.lock_reason();
+                let select = Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(lock.is_some());
+                match lock {
+                    Some(why) => sheet::unavailable_over("instance-version-locked", select, why),
+                    None => div().child(select),
+                }
+            }
         };
         if let Some(entry) = self.render_prism_entry(cx, t) {
             body = body.child(entry);
@@ -762,10 +783,15 @@ impl InstanceSheet {
     }
 
     fn render_loader(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let blocked = self.saving || self.mods_busy.is_some() || self.prism_choice.is_some();
+        let lock = self.saving.then(|| tr("Wird gerade gesichert …")).or_else(|| self.lock_reason());
+        let blocked = lock.is_some();
         let segments = LOADERS.iter().enumerate().map(|(n, l)| segment(("instance-loader", n), l.name().to_owned(), self.loader.same_kind(l), !blocked, t));
         let pick = cx.listener(|s, n: &usize, _, cx| s.pick_loader(*n, cx));
         let control = segmented("instance-loaders", segments, move |n, window, cx| pick(&n, window, cx), t).when(blocked, |d| d.opacity(tint::DISABLED));
+        let control = match lock {
+            Some(why) => sheet::unavailable_over("instance-loaders-locked", control, why).into_any_element(),
+            None => control.into_any_element(),
+        };
         let mut col = div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Loader"), t)).child(div().flex().child(control));
         if !self.loader.has_companion() {
             col = col.child(sheet::status("info", t.secondary, trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&self.loader.name()])));
@@ -826,9 +852,9 @@ impl InstanceSheet {
     fn render_memory(&mut self, over: bool, tight: Option<crate::core::fit::Fit>, snug: Option<crate::core::fit::Fit>, cx: &mut Context<Self>, t: &Theme) -> Div {
         let at_min = self.memory <= forms::MEMORY_MIN;
         let at_max = self.memory >= self.memory_max;
-        let step = |id: &'static str, icon_name: &'static str, label: String, limit: bool, delta: i32, cx: &mut Context<Self>| {
-            if limit {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)).opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+        let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
+            if let Some(reason) = reason {
+                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), reason).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
@@ -839,9 +865,9 @@ impl InstanceSheet {
             .flex()
             .items_center()
             .gap(px(space::XS))
-            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), at_min, -1, cx))
+            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), at_min.then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])), -1, cx))
             .child(div().id("memory-value").mark("value", forms::memory_label(self.memory)).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(forms::memory_label(self.memory)))
-            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max, 1, cx));
+            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max.then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])), 1, cx));
         let line = if over {
             sheet::note(None, Some(trf("Das ist mehr, als dieser Rechner hat (%@).", &[&forms::memory_label(u32::try_from(self.total_ram).unwrap_or(u32::MAX))])), t)
         } else if let Some(fit) = tight {
@@ -856,12 +882,13 @@ impl InstanceSheet {
 
     fn render_mods(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
         let busy = self.mods_busy.clone();
+        let add_reason = busy.clone().or_else(|| self.version.is_empty().then(|| tr("Wähle zuerst eine Version.")));
         let header = div()
             .flex()
             .items_center()
             .gap(px(space::S))
             .child(div().flex_1().child(sheet::label(trf("Mods (%lld)", &[&self.mods.len()]), t)))
-            .child(sheet::button("mods-add", tr("Mod hinzufügen"), Some("plus"), Look::Plain, self.version.is_empty() || busy.is_some(), false, t).on_click(cx.listener(|s, _, window, cx| s.open_search(true, window, cx))));
+            .child(sheet::button_unless("mods-add", tr("Mod hinzufügen"), Some("plus"), Look::Plain, add_reason.clone().map(Into::into), false, t).when(add_reason.is_none(), |b| b.on_click(cx.listener(|s, _, window, cx| s.open_search(true, window, cx)))));
         let mut col = div().flex().flex_col().gap(px(space::XS)).child(header);
         if let Some(text) = busy {
             return col.child(div().h(px(control::L)).flex().items_center().child(sheet::waiting(text, t)));
@@ -905,7 +932,7 @@ impl InstanceSheet {
     }
 
     fn render_prism_entry(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
-        let blocked = self.mods_busy.is_some() || self.saving;
+        let blocked = self.mods_busy.clone().or_else(|| self.saving.then(|| tr("Wird gerade gesichert …")));
         let card = |id: &'static str, glyph: &'static str, title: String, subtitle: String| {
             div()
                 .id(id)
@@ -926,7 +953,7 @@ impl InstanceSheet {
             None if self.prism_list.is_empty() => None,
             None => {
                 let row = card("prism-pick", "download", tr("Aus Prism importieren"), tr("Version, Mods und Einstellungen aus Prism Launcher"));
-                let row = if blocked { row.opacity(tint::DISABLED) } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))) };
+                let row = if let Some(why) = blocked.clone() { sheet::unavailable(row, why) } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))) };
                 Some(row.child(icon("chevron-right", iconsize::M, t.tertiary)))
             }
             Some(instance) => {
@@ -938,8 +965,8 @@ impl InstanceSheet {
         };
         let file = self.prism_choice.is_none().then(|| {
             let row = card("file-pick", "file-down", tr("Datei importieren…"), tr("Modpack (.mrpack) oder Prism-Export"));
-            let row = if blocked {
-                row.opacity(tint::DISABLED)
+            let row = if let Some(why) = blocked.clone() {
+                sheet::unavailable(row, why)
             } else {
                 row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|_, _, _, cx| {
                     let sheet = cx.weak_entity();
@@ -981,7 +1008,7 @@ impl InstanceSheet {
         };
         let mut header = div().flex().items_center().gap(px(space::S)).min_h(px(control::M)).child(div().flex_1().child(sheet::label(if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") }, t)));
         if count > 1 {
-            header = header.child(sheet::button("updates-all", tr("Alle aktualisieren"), Some("refresh-cw"), Look::Secondary, self.saving, busy, t).on_click(cx.listener(|s, _, _, cx| s.apply_updates(None, cx))));
+            header = header.child(sheet::button_unless("updates-all", tr("Alle aktualisieren"), Some("refresh-cw"), Look::Secondary, self.saving.then(|| tr("Wird gerade gesichert …").into()), busy, t).on_click(cx.listener(|s, _, _, cx| s.apply_updates(None, cx))));
         }
         col = col.child(header);
         if let Some(e) = &self.update_error {
@@ -1013,7 +1040,7 @@ impl InstanceSheet {
                     let action = if done {
                         sheet::status("check", t.success_text, tr("Aktualisiert")).into_any_element()
                     } else {
-                        sheet::button(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, busy || self.saving, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx))).into_any_element()
+                        sheet::button_unless(SharedString::from(format!("update-{pid}")), tr("Aktualisieren"), None, Look::Plain, if self.saving { Some(tr("Wird gerade gesichert …").into()) } else if busy { Some(tr("Warte, bis die Updates fertig sind.").into()) } else { None }, working, t).on_click(cx.listener(move |s, _, _, cx| s.apply_updates(Some(pid.clone()), cx))).into_any_element()
                     };
                     let versions = if done { u.latest.file_name.clone() } else { format!("{} → {}", u.current.file_name, u.latest.file_name) };
                     rows = rows.child(
@@ -1073,11 +1100,13 @@ impl InstanceSheet {
                 .rounded(px(radius::CONTROL))
                 .when(at == selected, |d| d.bg(t.ink.opacity(tint::HOVER)));
             let chosen = self.prism_choice.as_ref().is_some_and(|c| c.id == instance.id);
-            let row = if ok && self.mods_busy.is_none() && !self.saving {
-                let picked = instance.clone();
-                row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx)))
-            } else {
-                row.opacity(tint::DISABLED)
+            let busy = self.mods_busy.clone().or_else(|| self.saving.then(|| tr("Wird gerade gesichert …")));
+            let row = match reason.clone().or(busy) {
+                None => {
+                    let picked = instance.clone();
+                    row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx)))
+                }
+                Some(why) => sheet::unavailable(row, why),
             };
             list = list.child(
                 row.child(icon(if ok { "package" } else { "circle-alert" }, iconsize::M, t.tertiary))
@@ -1265,14 +1294,14 @@ impl Render for InstanceSheet {
                 vec![sheet::button("search-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_search(false, window, cx))).into_any_element()],
             )
         } else {
-            let blocked = self.mods_busy.is_some() || !self.updating.is_empty() || !self.browser.adding.is_empty();
-            let invalid = creating && (self.name_problem(cx).is_some() || self.version.is_empty());
+            let invalid = if creating { self.name_problem(cx).or_else(|| self.version.is_empty().then(|| tr("Wähle eine Version."))) } else { None };
+            let wait = invalid.or_else(|| self.wait_reason());
             let mut trailing = Vec::new();
             if let Some(e) = &self.save_error {
                 trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(self.problem("save-error", "circle-alert", t.danger_text, e, cx, &t)).into_any_element());
             }
-            trailing.push(sheet::button("instance-cancel", tr("Abbrechen"), None, Look::Secondary, !self.closable(), false, &t).on_click(cx.listener(|s, _, _, cx| if s.closable() { cx.emit(Dismissed) })).into_any_element());
-            trailing.push(sheet::button("instance-save", if creating { tr("Erstellen") } else { tr("Sichern") }, None, Look::Primary, invalid || blocked, self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
+            trailing.push(sheet::button_unless("instance-cancel", tr("Abbrechen"), None, Look::Secondary, (!self.closable()).then(|| if self.saving { tr("Wird gerade gesichert …") } else { tr("Warte, bis die Updates fertig sind.") }.into()), false, &t).on_click(cx.listener(|s, _, _, cx| if s.closable() { cx.emit(Dismissed) })).into_any_element());
+            trailing.push(sheet::button_unless("instance-save", if creating { tr("Erstellen") } else { tr("Sichern") }, None, Look::Primary, wait.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
             (Vec::new(), trailing)
         };
         let me = cx.entity().downgrade();

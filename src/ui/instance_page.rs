@@ -752,8 +752,7 @@ impl InstancePage {
             (None, None) => (tr("Spielen"), None),
         };
         if !made.loader.launchable() {
-            let blocked = sheet::button("play", label, None, Look::Primary, true, false, t);
-            return div().id("play-blocked").tooltip(tip(trf("Manycraft kann %@ noch nicht starten.", &[&made.loader.name()]))).child(blocked).into_any_element();
+            return sheet::button_unless("play", label, None, Look::Primary, Some(trf("Manycraft kann %@ noch nicht starten.", &[&made.loader.name()]).into()), false, t).into_any_element();
         }
         let rings = super::theme::rings(cx);
         let (instance, accounts, current) = (made.id.clone(), f.accounts.clone(), f.solo);
@@ -872,8 +871,7 @@ impl InstancePage {
         }
         let locked = self.blocked(cx);
         let switching = self.switching_now();
-        let add = sheet::button("mods-add", tr("Mods hinzufügen…"), Some("plus"), Look::Secondary, switching, false, t)
-            .when(switching, |b| b.tooltip(super::widgets::tip(tr("Warte, bis die Umstellung fertig ist."))))
+        let add = sheet::button_unless("mods-add", tr("Mods hinzufügen…"), Some("plus"), Look::Secondary, switching.then(|| tr("Warte, bis die Umstellung fertig ist.").into()), false, t)
             .when(!switching, |b| {
                 b.on_click({
                     let id = made.id.clone();
@@ -888,19 +886,18 @@ impl InstancePage {
             for (at, m) in made.mods.iter().enumerate() {
                 let project = m.project_id.clone();
                 let remove = if locked {
-                    div()
-                        .id(SharedString::from(format!("mod-remove-{project}")))
-                        .mark("button", tr("Entfernen"))
-                        .size(px(control::M))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(radius::INNER))
-                        .opacity(tint::DISABLED)
-                        .cursor_not_allowed()
-                        .tooltip(tip(if self.switching_now() { tr("Warte, bis die Umstellung fertig ist.") } else { tr("Stoppe zuerst die laufenden Spiele.") }))
-                        .child(icon("x", iconsize::M, t.tertiary))
+                    sheet::unavailable(
+                        div()
+                            .id(SharedString::from(format!("mod-remove-{project}")))
+                            .size(px(control::M))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(radius::INNER)),
+                        if self.switching_now() { tr("Warte, bis die Umstellung fertig ist.") } else { tr("Stoppe zuerst die laufenden Spiele.") },
+                    )
+                    .child(icon("x", iconsize::M, t.tertiary))
                 } else {
                     sheet::icon_button(SharedString::from(format!("mod-remove-{project}")), "x", tr("Entfernen"), t.tertiary, t).on_click(cx.listener(move |s, _, _, cx| s.remove_mod(&project, cx)))
                 };
@@ -953,34 +950,29 @@ impl InstancePage {
         let made = &f.made;
         let busy = self.switching_now();
         let blocked = busy || f.running;
-        let why = f.running.then(|| tr("Stoppe zuerst die laufenden Spiele."));
+        let why = if busy { Some(tr("Warte, bis die Umstellung fertig ist.")) } else { f.running.then(|| tr("Stoppe zuerst die laufenden Spiele.")) };
+        let locked = |id: &'static str, control: AnyElement| match &why {
+            Some(why) => sheet::unavailable_over(id, control, why.clone()).into_any_element(),
+            None => control,
+        };
         let version_control = match &self.versions {
-            Load::Failed(_) if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.game_version.clone())),
-            Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
-            _ => div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)),
+            Load::Failed(_) if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.game_version.clone())).into_any_element(),
+            Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)).into_any_element(),
+            _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
         };
         let segments = LOADERS.iter().enumerate().map(|(n, l)| segment(("instance-loader", n), l.name().to_owned(), made.loader.same_kind(l), !blocked, t));
         let pick = cx.listener(|s, n: &usize, window, cx| s.pick_loader(*n, window, cx));
-        let loader_control = segmented("instance-loaders", segments, move |n, window, cx| pick(&n, window, cx), t).when(blocked, |d| d.opacity(tint::DISABLED));
+        let loader_control = locked("instance-loaders-locked", segmented("instance-loaders", segments, move |n, window, cx| pick(&n, window, cx), t).when(blocked, |d| d.opacity(tint::DISABLED)).into_any_element());
         let field = |id: &'static str, label: String, control: AnyElement, width: Option<f32>| {
-            div()
-                .id(id)
-                .flex()
-                .flex_col()
-                .flex_none()
-                .gap(px(space::XS))
-                .when_some(width, |d, w| d.w(px(w)))
-                .when_some(why.clone(), |d, why| d.tooltip(tip(why)))
-                .child(sheet::label(label, t))
-                .child(control)
+            div().id(id).flex().flex_col().flex_none().gap(px(space::XS)).when_some(width, |d, w| d.w(px(w))).child(sheet::label(label, t)).child(control)
         };
         let controls = div()
             .flex()
             .flex_wrap()
             .items_start()
             .gap(px(space::L))
-            .child(field("instance-version-field", tr("Minecraft-Version"), version_control.into_any_element(), Some(VERSION_WIDTH)))
-            .child(field("instance-loader-field", tr("Loader"), loader_control.into_any_element(), None));
+            .child(field("instance-version-field", tr("Minecraft-Version"), version_control, Some(VERSION_WIDTH)))
+            .child(field("instance-loader-field", tr("Loader"), loader_control, None));
         let busy_line = div().min_h(px(font::CALLOUT * font::LINE)).flex().items_center().children(self.switching.as_ref().filter(|b| b.id == self.id).map(|b| sheet::waiting(b.text.clone(), t)));
         let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).child(busy_line));
         if let Load::Failed(why) = &self.versions {
@@ -998,20 +990,23 @@ impl InstancePage {
 
     fn render_memory(&self, made: &Instance, busy: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
         let shown = self.pending_memory().unwrap_or(made.memory_mb);
-        let step = |id: &'static str, icon_name: &'static str, label: String, limit: bool, delta: i32, cx: &mut Context<Self>| {
-            if limit || busy {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)).opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+        let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
+            if let Some(reason) = reason {
+                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), reason).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| s.step_memory(delta, cx)))
         };
         let value = forms::memory_label(shown);
+        let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
+        let less = wait().or_else(|| (shown <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
+        let more = wait().or_else(|| (shown >= self.memory_max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])));
         let stepper = div()
             .flex()
             .items_center()
             .gap(px(space::XS))
-            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), shown <= forms::MEMORY_MIN, -1, cx))
+            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx))
             .child(div().id("memory-value").mark("value", value.clone()).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(value))
-            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), shown >= self.memory_max, 1, cx));
+            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx));
         div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(sheet::note(Some(tr("Pro Account.")), None, t))
     }
 
@@ -1066,13 +1061,9 @@ impl InstancePage {
             move |_, window, cx| window.dispatch_action(Box::new(CloneInstance(id.clone())), cx)
         });
         let used = !f.batches.is_empty();
-        let delete = sheet::button("instance-delete", tr("Löschen…"), None, Look::Danger, used, false, t);
-        let delete = if used {
-            let names: Vec<&str> = f.batches.iter().map(|(_, name)| name.as_str()).collect();
-            delete.tooltip(tip(trf("Wird von %@ benutzt", &[&names.join(", ")])))
-        } else {
-            delete.on_click(move |_, window, cx| window.dispatch_action(Box::new(DeleteInstance(id.clone())), cx))
-        };
+        let names: Vec<&str> = f.batches.iter().map(|(_, name)| name.as_str()).collect();
+        let delete = sheet::button_unless("instance-delete", tr("Löschen…"), None, Look::Danger, used.then(|| trf("Wird von %@ benutzt", &[&names.join(", ")]).into()), false, t);
+        let delete = if used { delete } else { delete.on_click(move |_, window, cx| window.dispatch_action(Box::new(DeleteInstance(id.clone())), cx)) };
         div().flex().items_center().gap(px(space::S)).child(open).child(clone).child(delete)
     }
 

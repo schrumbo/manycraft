@@ -113,8 +113,34 @@ pub enum Look {
     Plain,
 }
 
-/// A labelled button. A disabled one keeps its place and says why in `reason`; a busy one keeps its label beside a spinner.
+/// Dims `element` and says why it does nothing: not-allowed cursor, a Tab stop with the focus ring, `reason` as tooltip and as the label of its automation mark. Leave `element` unmarked.
+pub fn unavailable(element: Stateful<Div>, reason: impl Into<SharedString>) -> Stateful<Div> {
+    let reason: SharedString = reason.into();
+    dim(element, "disabled", reason.clone(), reason)
+}
+
+fn dim(element: Stateful<Div>, role: &'static str, reason: SharedString, label: SharedString) -> Stateful<Div> {
+    element.opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(tip(reason)).mark(role, label)
+}
+
+/// Covers a disabled `control` that takes hover itself, such as a select or a segmented control, so the cover carries the reason as tooltip, the Tab stop and the ring.
+pub fn unavailable_over(id: impl Into<SharedString>, control: impl IntoElement, reason: impl Into<SharedString>) -> Div {
+    let reason: SharedString = reason.into();
+    let cover = div().id(id.into()).absolute().inset_0().occlude().cursor_not_allowed().key_nav_inside().tooltip(tip(reason.clone())).mark("disabled", reason);
+    div().relative().child(control).child(cover)
+}
+
+/// A labelled button. A disabled one keeps its place and takes no input; a busy one keeps its label beside a spinner.
 pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_name: Option<&str>, look: Look, disabled: bool, busy: bool, t: &Theme) -> Stateful<Div> {
+    button_for(id, label, icon_name, look, disabled, None, busy, t)
+}
+
+/// Like [`button`], disabled while `reason` is set; it keeps its place, shows the reason on hover and stays reachable with Tab.
+pub fn button_unless(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_name: Option<&str>, look: Look, reason: Option<SharedString>, busy: bool, t: &Theme) -> Stateful<Div> {
+    button_for(id, label, icon_name, look, reason.is_some(), reason, busy, t)
+}
+
+fn button_for(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_name: Option<&str>, look: Look, disabled: bool, reason: Option<SharedString>, busy: bool, t: &Theme) -> Stateful<Div> {
     let (id, label) = (id.into(), label.into());
     let (bg, fg, shade) = match look {
         Look::Primary => (Some(t.accent), t.on_accent, t.shade),
@@ -124,7 +150,7 @@ pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_
     };
     let base = div()
         .id(id)
-        .mark("button", label.clone())
+        .when(!(disabled && !busy && reason.is_some()), |d| d.mark("button", label.clone()))
         .h(px(control::M))
         .px(px(if matches!(look, Look::Plain) { space::S } else { space::M }))
         .rounded(px(radius::INNER))
@@ -142,8 +168,14 @@ pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_
             .when_some(icon_name.filter(|_| !busy), |d, name| d.child(icon(name, iconsize::S, fg)))
             .child(label.clone())
     };
-    if disabled || busy {
-        return inner(base.when(disabled && !busy, |d| d.opacity(tint::DISABLED)));
+    if disabled && !busy {
+        return inner(match reason {
+            Some(reason) => dim(base, "button", reason.clone(), format!("{label}: {reason}").into()),
+            None => base.opacity(tint::DISABLED),
+        });
+    }
+    if busy {
+        return inner(base);
     }
     inner(base.cursor_pointer().key_nav().soft(shade, radius::INNER))
 }

@@ -728,5 +728,11 @@
   "Nicht zurückgeholt.": "Not restored.",
   "Mods, Welten und Screenshots dieser Instanz werden gelöscht. Du kannst das gleich danach rückgängig machen.": "This instance's mods, worlds and screenshots will be deleted. You can undo this right after.",
   "Es gibt schon eine Instanz mit dieser Kennung.": "An instance with this ID already exists.",
-  "Die Instanz liegt nicht mehr im Papierkorb.": "The instance is no longer in the trash."
+  "Die Instanz liegt nicht mehr im Papierkorb.": "The instance is no longer in the trash.",
+  "Mehr geht nicht: höchstens %@.": "No more: at most %@.",
+  "Weniger geht nicht: mindestens %@.": "No less: at least %@.",
+  "Wird gerade gesichert …": "Saving right now …",
+  "Wähle zuerst eine Version.": "Choose a version first.",
+  "Warte, bis die Updates fertig sind.": "Wait until the updates are done.",
+  "Warte, bis die Mods hinzugefügt sind.": "Wait until the mods are added."
 }

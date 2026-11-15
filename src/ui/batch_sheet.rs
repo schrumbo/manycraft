@@ -411,7 +411,12 @@ impl BatchSheet {
     fn render_instance(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
         let active = self.active(cx);
         let caption = self.original.as_ref().filter(|b| self.instance.as_ref() != Some(&b.instance_id)).and_then(|b| super::model::get(cx).read(cx).instance(&b.instance_id).map(|i| trf("Welten und Screenshots bleiben bei %@.", &[&i.name])));
-        let picker = div().id("batch-instance").when(active, |d| d.tooltip(super::widgets::tip(tr("Stoppe zuerst die laufenden Spiele.")))).child(Select::new(&self.instance_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Instanz suchen")).disabled(active || self.saving));
+        let select = Select::new(&self.instance_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Instanz suchen")).disabled(active || self.saving);
+        let picker = match (active, self.saving) {
+            (true, _) => sheet::unavailable_over("batch-instance-locked", select, tr("Stoppe zuerst die laufenden Spiele.")),
+            (false, true) => sheet::unavailable_over("batch-instance-locked", select, tr("Wird gerade gesichert …")),
+            (false, false) => div().child(select),
+        };
         let mut col = div().flex().flex_col().gap(px(space::M)).child(sheet::field(tr("Instanz"), picker, caption, None, t));
         if self.instance.is_none() {
             let (_, _, version_problem) = self.problems(cx);
@@ -423,7 +428,10 @@ impl BatchSheet {
                     .child(div().flex_1().min_w_0().child(self.problem("versions-error", "circle-alert", t.danger_text, why, cx, t)))
                     .child(sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)))),
                 Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
-                _ => div().child(Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(self.saving)),
+                _ => {
+                    let select = Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(self.saving);
+                    if self.saving { sheet::unavailable_over("batch-version-locked", select, tr("Wird gerade gesichert …")) } else { div().child(select) }
+                }
             };
             col = col.child(sheet::field(tr("Minecraft-Version"), control, None, version_problem.filter(|_| self.tried), t));
         }
@@ -516,9 +524,9 @@ impl BatchSheet {
                 cx.stop_propagation();
             })))
             .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(like));
-        let step = |id: &'static str, icon_name: &'static str, label: String, limit: bool, delta: i32, cx: &mut Context<Self>| {
-            if limit {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)).opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+        let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
+            if let Some(reason) = reason {
+                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), reason).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
@@ -529,9 +537,9 @@ impl BatchSheet {
             .flex()
             .items_center()
             .gap(px(space::XS))
-            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), at_min, -1, cx))
+            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), at_min.then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])), -1, cx))
             .child(div().id("memory-value").mark("value", forms::memory_label(self.memory)).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(forms::memory_label(self.memory)))
-            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max, 1, cx));
+            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max.then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])), 1, cx));
         let line = if over {
             sheet::note(None, Some(trf("%lld Accounts brauchen zusammen bis zu %@, mehr als dieser Rechner hat (%@).", &[&count, &total_label, &forms::memory_label(u32::try_from(self.total_ram).unwrap_or(u32::MAX))])), t)
         } else if let Some(fit) = tight {
@@ -573,6 +581,7 @@ impl BatchSheet {
             cx.notify();
         });
         let control = segmented("batch-background", segments, move |n, window, cx| pick(&n, window, cx), t).when(busy, |d| d.opacity(tint::DISABLED));
+        let control = if busy { sheet::unavailable_over("batch-background-locked", control, tr("Wird gerade gesichert …")).into_any_element() } else { control.into_any_element() };
         let hint = if running { format!("{cost} {}", tr("Gilt sofort, auch für die laufenden Spiele.")) } else { cost };
         let mut col = div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Im Hintergrund"), t)).child(div().flex().child(control));
         if let Background::Custom { fps, sight } = self.background {
@@ -586,10 +595,22 @@ impl BatchSheet {
             Dial::Fps => ("fps", tr("Bilder pro Sekunde"), value.to_string(), tr("Weniger Bilder pro Sekunde"), tr("Mehr Bilder pro Sekunde"), &forms::FPS_STEPS),
             Dial::Sight => ("sight", tr("Sichtweite"), trf("%lld Chunks", &[&value]), tr("Weniger Sichtweite"), tr("Mehr Sichtweite"), &forms::SIGHT_STEPS),
         };
+        let shown = |v: u8| match dial {
+            Dial::Fps => v.to_string(),
+            Dial::Sight => trf("%lld Chunks", &[&v]),
+        };
         let step = |icon_name: &'static str, label: String, up: bool, cx: &mut Context<Self>| {
             let id = SharedString::from(format!("background-{id}-{}", if up { "more" } else { "less" }));
-            if busy || forms::ladder_step(value, up, steps) == value {
-                return div().id(id).mark("button", label.clone()).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)).opacity(tint::DISABLED).cursor_not_allowed().key_nav().tooltip(super::widgets::tip(label)).child(icon(icon_name, iconsize::M, t.tertiary));
+            let reason = if busy {
+                Some(tr("Wird gerade gesichert …"))
+            } else if forms::ladder_step(value, up, steps) == value {
+                let end = shown((if up { steps.last() } else { steps.first() }).copied().unwrap_or(value));
+                Some(if up { trf("Mehr geht nicht: höchstens %@.", &[&end]) } else { trf("Weniger geht nicht: mindestens %@.", &[&end]) })
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), reason).child(icon(icon_name, iconsize::M, t.tertiary));
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 if s.saving {
@@ -649,7 +670,7 @@ impl BatchSheet {
         let all = !ids.is_empty() && ids.iter().all(|id| self.accounts.contains(id));
         let (pick, unpick) = if filtered { (tr("Alle gefilterten auswählen"), tr("Gefilterte abwählen")) } else { (tr("Alle auswählen"), tr("Keine auswählen")) };
         let toggled = ids.clone();
-        let header = header.child(sheet::button("accounts-all", if all { unpick } else { pick }, None, Look::Plain, ids.is_empty(), false, t).on_click(cx.listener(move |s, _, _, cx| {
+        let header = header.child(sheet::button_unless("accounts-all", if all { unpick } else { pick }, None, Look::Plain, ids.is_empty().then(|| trf("Kein Account passt zu „%@“.", &[&raw_filter]).into()), false, t).on_click(cx.listener(move |s, _, _, cx| {
             if all {
                 s.accounts.retain(|id| !toggled.contains(id));
             } else {
@@ -757,20 +778,21 @@ impl Render for BatchSheet {
         let max_body = body_max(window.viewport_size().height.as_f32());
         let running = self.active(cx);
         let leading = if editing {
-            let delete = sheet::button("batch-delete", tr("Batch löschen"), None, Look::Danger, running || self.saving, false, &t);
-            let delete = if running { delete.tooltip(super::widgets::tip(tr("Stoppe den Batch, bevor du ihn löschst."))) } else { delete.on_click(cx.listener(|s, _, window, cx| s.ask_delete(window, cx))) };
+            let why = if running { Some(tr("Stoppe den Batch, bevor du ihn löschst.")) } else { self.saving.then(|| tr("Wird gerade gesichert …")) };
+            let delete = sheet::button_unless("batch-delete", tr("Batch löschen"), None, Look::Danger, why.clone().map(Into::into), false, &t);
+            let delete = if why.is_some() { delete } else { delete.on_click(cx.listener(|s, _, window, cx| s.ask_delete(window, cx))) };
             vec![delete.into_any_element()]
         } else {
             Vec::new()
         };
         let (name_problem, server_problem, version_problem) = self.problems(cx);
-        let invalid = name_problem.is_some() || server_problem.is_some() || version_problem.is_some();
+        let invalid = name_problem.or(server_problem).or(version_problem);
         let mut trailing = Vec::new();
         if let Some(e) = &self.save_error {
             trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(self.problem("save-error", "circle-alert", t.danger_text, e, cx, &t)).into_any_element());
         }
-        trailing.push(sheet::button("batch-cancel", tr("Abbrechen"), None, Look::Secondary, self.saving, false, &t).on_click(cx.listener(|s, _, _, cx| if !s.saving { cx.emit(Dismissed) })).into_any_element());
-        trailing.push(sheet::button("batch-save", if editing { tr("Sichern") } else { tr("Erstellen") }, None, Look::Primary, invalid, self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
+        trailing.push(sheet::button_unless("batch-cancel", tr("Abbrechen"), None, Look::Secondary, self.saving.then(|| tr("Wird gerade gesichert …").into()), false, &t).on_click(cx.listener(|s, _, _, cx| if !s.saving { cx.emit(Dismissed) })).into_any_element());
+        trailing.push(sheet::button_unless("batch-save", if editing { tr("Sichern") } else { tr("Erstellen") }, None, Look::Primary, invalid.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
         div()
             .id("batch-sheet")
             .track_focus(&self.root)
