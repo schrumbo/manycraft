@@ -24,6 +24,10 @@ final class BackgroundMode<V> {
 		return saved != null;
 	}
 
+	V saved() {
+		return saved;
+	}
+
 	void enter() {
 		if (saved == null) {
 			guard.enable();
