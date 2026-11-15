@@ -77,7 +77,7 @@ pub fn validate_offline_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Loads all saved accounts; an absent file is an empty list, an unreadable one an error.
+/// Loads all saved accounts; an absent file is an empty list, a damaged one its backup or, without a good backup, an empty list.
 pub fn load() -> Result<Vec<Account>> {
     load_from(&paths::data_dir())
 }
@@ -151,11 +151,7 @@ fn parse(bytes: &[u8], path: &Path) -> Result<Vec<Account>> {
 }
 
 fn load_from(dir: &Path) -> Result<Vec<Account>> {
-    let path = dir.join(FILE);
-    match store::read(&path)? {
-        Some(bytes) => parse(&bytes, &path),
-        None => Ok(Vec::new()),
-    }
+    Ok(store::load(&dir.join(FILE))?.unwrap_or_default())
 }
 
 fn save_to(dir: &Path, accounts: &[Account]) -> Result<()> {
@@ -165,7 +161,7 @@ fn save_to(dir: &Path, accounts: &[Account]) -> Result<()> {
     }
     let bytes = serde_json::to_vec_pretty(accounts).context("cannot encode accounts")?;
     let path = dir.join(FILE);
-    store::write(&path, &bytes, |current| current.map_or(Ok(()), |c| parse(c, &path).map(drop)))
+    store::write::<Vec<Account>>(&path, &bytes, |current| current.map_or(Ok(()), |c| parse(c, &path).map(drop)))
 }
 
 #[cfg(test)]
@@ -211,15 +207,41 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_is_an_error_and_stays_byte_for_byte() {
+    fn corrupt_file_restores_the_previous_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        let accounts = vec![account(1, "Alpha", None), account(2, "Beta", None)];
+        save_to(dir.path(), &accounts[..1]).unwrap();
+        save_to(dir.path(), &accounts).unwrap();
+        std::fs::write(&path, b"[{\"id\": broken").unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), &accounts[..1]);
+        assert_eq!(std::fs::read(store::damaged_path(&path)).unwrap(), b"[{\"id\": broken");
+        save_to(dir.path(), &accounts).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), accounts);
+    }
+
+    #[test]
+    fn corrupt_file_and_backup_give_an_empty_list_and_keep_both() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FILE);
         std::fs::write(&path, b"[{\"id\": broken").unwrap();
-        assert!(load_from(dir.path()).is_err());
-        assert!(save_to(dir.path(), &[account(1, "Alpha", None)]).is_err());
+        std::fs::write(store::backup_path(&path), b"").unwrap();
+        assert!(load_from(dir.path()).unwrap().is_empty());
+        assert_eq!(std::fs::read(store::damaged_path(&path)).unwrap(), b"[{\"id\": broken");
+        assert!(store::damaged_path(&store::backup_path(&path)).exists());
+    }
+
+    #[test]
+    fn a_file_damaged_after_loading_is_never_overwritten_and_never_becomes_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        save_to(dir.path(), &[account(1, "Alpha", None)]).unwrap();
+        save_to(dir.path(), &[account(2, "Beta", None)]).unwrap();
+        let backup = std::fs::read(store::backup_path(&path)).unwrap();
+        std::fs::write(&path, b"[{\"id\": broken").unwrap();
+        assert!(save_to(dir.path(), &[account(3, "Gamma", None)]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"[{\"id\": broken");
-        let others = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok).filter(|e| e.file_name() != "accounts.json.lock").count();
-        assert_eq!(others, 1);
+        assert_eq!(std::fs::read(store::backup_path(&path)).unwrap(), backup);
     }
 
     #[test]
@@ -235,7 +257,8 @@ mod tests {
     fn wrong_shape_counts_as_corrupt() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), br#"{"accounts":[]}"#).unwrap();
-        assert!(load_from(dir.path()).is_err());
+        assert!(load_from(dir.path()).unwrap().is_empty());
+        assert!(store::damaged_path(&dir.path().join(FILE)).exists());
     }
 
     #[test]

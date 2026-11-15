@@ -339,7 +339,10 @@ impl Render for MainWindow {
             Page::Accounts => super::accounts::page(window, cx).into_any_element(),
             Page::Chat => super::chat::page(window, cx).into_any_element(),
             Page::Grid(batch) => match self.onboarding(cx) {
-                Some(empty) => empty,
+                Some(empty) => match model::get(cx).read(cx).error.clone() {
+                    Some(error) => div().size_full().flex().flex_col().child(notice(error, &t, cx)).child(div().flex_1().min_h_0().child(empty)).into_any_element(),
+                    None => empty,
+                },
                 None => {
                     let error = model::get(cx).read(cx).error.clone();
                     let fit = self.fit_line(batch.as_deref(), cx).filter(|_| error.is_none());
