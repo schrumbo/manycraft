@@ -1,7 +1,9 @@
 //! The sheet that imports instances of other launchers: the launchers found with their instances, a choice among them and what to take along.
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::component::checkbox::Checkbox;
@@ -15,7 +17,7 @@ use super::drive::Mark;
 use super::motion::Soft;
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint};
-use super::widgets::{ContainScroll, KeyNav, icon};
+use super::widgets::{KeyNav, icon};
 use super::{remote, transfer};
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
@@ -25,6 +27,12 @@ const FILTER_FROM: usize = 8;
 const LIST_MIN: f32 = 160.;
 const LIST_MAX: f32 = 340.;
 const OPTIONS_HEIGHT: f32 = 120.;
+const ROW_HEIGHT: f32 = 56.;
+
+enum Line {
+    Head { at: usize, all: bool, any: bool },
+    Item(Found),
+}
 
 /// Registers the action that opens the import sheet.
 pub fn init(cx: &mut App) {
@@ -58,7 +66,7 @@ struct ImportSheet {
     settings: bool,
     worlds: bool,
     note: Option<String>,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
     root: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -89,7 +97,7 @@ impl ImportSheet {
             });
         })
         .detach();
-        Self { libs: Vec::new(), loading: true, scanning: false, chosen: HashSet::new(), cursor: None, filter, settings: true, worlds: false, note: None, scroll: ScrollHandle::new(), root: cx.focus_handle(), _subs: subs }
+        Self { libs: Vec::new(), loading: true, scanning: false, chosen: HashSet::new(), cursor: None, filter, settings: true, worlds: false, note: None, scroll: UniformListScrollHandle::new(), root: cx.focus_handle(), _subs: subs }
     }
 
     fn total(&self) -> usize {
@@ -162,7 +170,7 @@ impl ImportSheet {
         };
         self.cursor = Some(keys[next].clone());
         let flat = self.row_index(&keys[next], cx);
-        self.scroll.scroll_to_item(flat);
+        self.scroll.scroll_to_item(flat, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -272,9 +280,8 @@ impl ImportSheet {
         let row = div()
             .id(SharedString::from(format!("launcher-row-{key}")))
             .mark("row", found.name.clone())
-            .w_full()
+            .size_full()
             .px(px(space::M))
-            .py(px(space::S))
             .flex()
             .items_center()
             .gap(px(space::M))
@@ -315,30 +322,52 @@ impl ImportSheet {
             };
             return div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(line);
         }
-        let mut list = div().id("launcher-list").flex().flex_col().gap(px(space::XXS)).max_h(px(max)).overflow_y_scroll().track_scroll(&self.scroll).contain_scroll(&self.scroll);
+        let mut lines = Vec::new();
         for (at, items) in shown {
             let all = items.iter().filter(|i| i.importable()).all(|i| self.chosen.contains(&i.key()));
             let any = items.iter().any(Found::importable);
-            let name = self.libs[at].launcher.name();
-            let head = div()
-                .px(px(space::M))
-                .pt(px(space::S))
-                .flex()
-                .items_center()
-                .gap(px(space::S))
-                .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).text_color(t.secondary).child(name))
-                .when(any, |d| {
-                    d.child(
-                        sheet::button(SharedString::from(format!("launcher-all-{at}")), if all { tr("Keine abwählen") } else { tr("Alle wählen") }, None, Look::Plain, false, false, t)
-                            .h(px(control::S))
-                            .on_click(cx.listener(move |s, _, _, cx| s.toggle_library(at, cx))),
-                    )
-                });
-            list = list.child(head);
-            for item in &items {
-                list = list.child(self.render_row(item, cx, t));
-            }
+            lines.push(Line::Head { at, all, any });
+            lines.extend(items.into_iter().map(Line::Item));
         }
+        let height = (lines.len() as f32 * ROW_HEIGHT).min(max);
+        let lines = Rc::new(lines);
+        let list = uniform_list(
+            "launcher-list",
+            lines.len(),
+            cx.processor(move |this: &mut Self, range: Range<usize>, _, cx| {
+                let t = Theme::get(cx);
+                range
+                    .filter_map(|ix| {
+                        Some(match lines.get(ix)? {
+                            Line::Head { at, all, any } => {
+                                let at = *at;
+                                let name = this.libs[at].launcher.name();
+                                div()
+                                    .id(("launcher-head", ix))
+                                    .h(px(ROW_HEIGHT))
+                                    .px(px(space::M))
+                                    .pb(px(space::XS))
+                                    .flex()
+                                    .items_end()
+                                    .gap(px(space::S))
+                                    .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).text_color(t.secondary).child(name))
+                                    .when(*any, |d| {
+                                        d.child(
+                                            sheet::button(SharedString::from(format!("launcher-all-{at}")), if *all { tr("Keine abwählen") } else { tr("Alle wählen") }, None, Look::Plain, false, false, &t)
+                                                .h(px(control::S))
+                                                .on_click(cx.listener(move |s, _, _, cx| s.toggle_library(at, cx))),
+                                        )
+                                    })
+                                    .into_any_element()
+                            }
+                            Line::Item(item) => div().id(("launcher-line", ix)).h(px(ROW_HEIGHT)).w_full().py(px(space::XXS / 2.)).child(this.render_row(item, cx, &t)).into_any_element(),
+                        })
+                    })
+                    .collect()
+            }),
+        )
+        .track_scroll(&self.scroll)
+        .h(px(height));
         div().child(list)
     }
 
