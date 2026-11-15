@@ -1232,5 +1232,13 @@
   "%@ gelöscht.": "%@ deleted.",
   "%@ wurde nicht zurückgeholt.": "%@ was not brought back.",
   "%@ aktualisiert.": "%@ updated.",
-  "Neue Instanz aus Modpack": "New instance from modpack"
+  "Neue Instanz aus Modpack": "New instance from modpack",
+  "Farbe von „%@“ auf %@ gesetzt.": "Set the color of “%@” to %@.",
+  "Farbe von %lld Accounts auf %@ gesetzt.": "Set the color of %lld accounts to %@.",
+  "%@ — Farbe ändern…": "%@ — Change color…",
+  "Aktuelle Farbe": "Current color",
+  "Farbe für %@ suchen": "Search a color for %@",
+  "Vollbild": "Full screen",
+  "Vollbild beenden": "Exit full screen",
+  "Darstellung": "View"
 }

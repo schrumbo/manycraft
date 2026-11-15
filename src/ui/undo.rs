@@ -1,4 +1,4 @@
-//! Undo history and its notices: one offer per account removal, deleted, cloned, reset or changed instance and removed mod. A notice
+//! Undo history and its notices: one offer per account removal, deleted, cloned, reset or changed instance, removed mod and colour change. A notice
 //! hides after a while; its offer stays reachable with Ctrl+Z and the palette until Manycraft quits.
 
 use std::time::Instant;
@@ -42,6 +42,8 @@ pub enum Kind {
     Files { name: String, undo: super::instance_files::FileUndo },
     Edited { instance_id: String, name: String, what: Edit, before: InstanceEdit, after: InstanceEdit },
     Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
+    /// Accounts by id with the colour they had before they all got `color`; `name` is the account's when it was one.
+    Colored { before: Vec<(String, u8)>, color: u8, name: Option<String> },
 }
 
 struct Offer {
@@ -281,6 +283,11 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::Files { name, undo: super::instance_files::FileUndo::Restored { .. } } => (name.clone(), trf("„%@“ wiederhergestellt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Files { name, undo: super::instance_files::FileUndo::Copied { .. } } => (name.clone(), trf("„%@“ kopiert.", &[name]), trf("Die Kopie von „%@“ wurde nicht entfernt.", &[name])),
             Kind::Reset { name, .. } => (name.clone(), trf("„%@“ zurückgesetzt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Colored { color, name: Some(name), .. } => (name.clone(), trf("Farbe von „%@“ auf %@ gesetzt.", &[name, &super::identity::name(*color)]), trf("„%@“ wurde nicht zurückgestellt.", &[name])),
+            Kind::Colored { before, color, name: None } => {
+                let many = trf("%lld Accounts", &[&before.len()]);
+                (many.clone(), trf("Farbe von %lld Accounts auf %@ gesetzt.", &[&before.len(), &super::identity::name(*color)]), trf("%@ wurde nicht zurückgestellt.", &[&many]))
+            }
             Kind::Edited { name, what, .. } => {
                 let done = match what {
                     Edit::Renamed => trf("Umbenannt in „%@“.", &[name]),
@@ -341,6 +348,15 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::Files { name, undo } => super::instance_files::undo(name, undo, at, cx),
         Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
         Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
+        Kind::Colored { before, .. } => {
+            let mut colors: Vec<u8> = before.iter().map(|(_, c)| *c).collect();
+            colors.sort_unstable();
+            colors.dedup();
+            for color in colors {
+                let ids = before.iter().filter(|(_, c)| *c == color).filter_map(|(id, _)| id.parse().ok()).collect();
+                state::recolor(ids, color, cx);
+            }
+        }
     }
 }
 
