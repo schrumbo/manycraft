@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu};
-use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::base::input::Escape;
 use gpui_kit::component::{FocusableExt, IndexPath, Sizable, WindowExt};
@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMods, CloneInstance, DeleteInstance, NewBatchFor, OpenInstanceFolder, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
+use super::actions::{AddAccount, AddMods, CloneInstance, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
 use super::batch_sheet::Load;
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -24,12 +24,20 @@ use super::motion::Soft;
 use super::remote::{self, InstanceEdit};
 use super::sheet::{self, Look};
 use super::undo::Edit;
+use super::versions::{self as picker, VersionItem};
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::toolbar;
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented, tip};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, LOADERS, Loader};
+use crate::core::options::check_jvm_args;
+use crate::core::versions::GameVersion;
+
+#[path = "instance_options.rs"]
+mod options;
+
+use options::{OptionChange, Options};
 
 const PAGE_MAX: f32 = 760.;
 const VERSION_WIDTH: f32 = 168.;
@@ -45,6 +53,10 @@ pub fn init(cx: &mut App) {
         let id = a.0.clone();
         cx.defer(move |cx| rename(&id, cx));
     });
+    cx.on_action(|a: &OpenInstanceSetting, cx| {
+        let (id, setting) = (a.instance.clone(), a.setting.clone());
+        cx.defer(move |cx| open_setting(&id, &setting, cx));
+    });
     cx.bind_keys([KeyBinding::new("f2", RenameCurrent, Some(PAGE_CONTEXT))]);
 }
 
@@ -59,6 +71,22 @@ pub fn rename(id: &str, cx: &mut App) {
         page.update(cx, |_, cx| cx.notify());
     }
 }
+
+/// Shows the settings of instance `id` with "Erweitert" open and `setting` focused.
+pub fn open_setting(id: &str, setting: &str, cx: &mut App) {
+    cx.set_global(WantsSetting(id.to_owned(), setting.to_owned()));
+    if !super::main_window::show_instance(id, cx) {
+        cx.remove_global::<WantsSetting>();
+        return;
+    }
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
+}
+
+struct WantsSetting(String, String);
+
+impl Global for WantsSetting {}
 
 /// Moves the keyboard to the instance page, where F2 renames.
 pub fn focus(window: &mut Window, cx: &mut App) -> bool {
@@ -224,6 +252,7 @@ enum Change {
     JvmArgs(Vec<String>),
     LoaderVersion(Option<String>),
     RemoveMod(String),
+    Option(OptionChange),
 }
 
 impl Change {
@@ -234,6 +263,7 @@ impl Change {
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
             Self::RemoveMod(project) => edit.mods.retain(|m| m.project_id != *project),
+            Self::Option(change) => change.apply(&mut edit.options),
         }
     }
 }
@@ -288,11 +318,15 @@ struct InstancePage {
     tab: Tab,
     advanced: bool,
     versions: Load<()>,
-    version_list: Vec<String>,
+    version_list: Vec<GameVersion>,
     list_gen: u64,
-    version_select: Entity<SelectState<SearchableVec<String>>>,
+    everything: bool,
+    supported: Option<(String, Option<HashSet<String>>)>,
+    supported_asked: Option<String>,
+    version_select: Entity<SelectState<SearchableVec<VersionItem>>>,
     select_target: Option<String>,
-    select_applied: Option<(String, u64)>,
+    select_applied: Option<(String, u64, bool, bool)>,
+    opts: Options,
     jvm: Entity<InputState>,
     loader_version: Entity<InputState>,
     name: Entity<InputState>,
@@ -321,7 +355,8 @@ struct InstancePage {
 
 impl InstancePage {
     fn new(id: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
+        let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<VersionItem>::new()), None, window, cx).searchable(true));
+        let (opts, opts_subs) = Options::new(window, cx);
         let jvm = cx.new(|cx| InputState::new(window, cx));
         let loader_version = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Neueste")));
         let name = cx.new(|cx| InputState::new(window, cx));
@@ -357,11 +392,14 @@ impl InstancePage {
                 }
                 _ => {}
             }),
-            cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<String>>, window, cx| {
+            cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<VersionItem>>, window, cx| {
                 let SelectEvent::Confirm(Some(v)) = e else { return };
                 s.pick_version(v.clone(), window, cx);
             }),
-        ];
+        ]
+        .into_iter()
+        .chain(opts_subs)
+        .collect();
         let mut page = Self {
             id: id.to_owned(),
             tab: Tab::Mods,
@@ -369,9 +407,13 @@ impl InstancePage {
             versions: Load::Loading,
             version_list: Vec::new(),
             list_gen: 0,
+            everything: false,
+            supported: None,
+            supported_asked: None,
             version_select,
             select_target: None,
             select_applied: None,
+            opts,
             jvm,
             loader_version,
             name,
@@ -410,6 +452,7 @@ impl InstancePage {
         self.rename_saving = false;
         self.rename_error = None;
         self.advanced = false;
+        self.opts.rebind();
         self.select_target = None;
         self.select_applied = None;
         self.loader_asked = None;
@@ -511,7 +554,7 @@ impl InstancePage {
     fn load_versions(&mut self, cx: &mut Context<Self>) {
         self.versions = Load::Loading;
         cx.notify();
-        let task = cx.background_executor().spawn(async { remote::versions() });
+        let task = cx.background_executor().spawn(async { remote::catalog() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
@@ -530,16 +573,35 @@ impl InstancePage {
         .detach();
     }
 
+    fn check_supported(&mut self, made: &Instance, cx: &mut Context<Self>) {
+        let kind = made.loader.name().to_owned();
+        if self.supported_asked.as_ref() == Some(&kind) {
+            return;
+        }
+        self.supported_asked = Some(kind.clone());
+        let loader = made.loader.clone();
+        let task = cx.background_executor().spawn(async move { remote::supported_versions(&loader) });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.supported_asked.as_ref() == Some(&kind) {
+                    s.supported = Some((kind, found));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn sync(&mut self, made: &Instance, window: &mut Window, cx: &mut Context<Self>) {
+        self.check_supported(made, cx);
         let want = self.select_target.clone().unwrap_or_else(|| made.game_version.clone());
-        let key = (want.clone(), self.list_gen);
+        let supported = self.supported.as_ref().filter(|(kind, _)| kind == made.loader.name()).and_then(|(_, s)| s.as_ref());
+        let key = (want.clone(), self.list_gen, self.everything, supported.is_some());
         if self.select_applied.as_ref() != Some(&key) {
             self.select_applied = Some(key);
-            let mut list = self.version_list.clone();
-            if !list.contains(&want) {
-                list.insert(0, want.clone());
-            }
-            let at = list.iter().position(|v| *v == want);
+            let list = picker::items(&self.version_list, self.everything, supported, &want);
+            let at = list.iter().position(|v| v.value() == &want);
             self.version_select.update(cx, |s, cx| {
                 s.set_items(SearchableVec::new(list), window, cx);
                 if let Some(at) = at {
@@ -554,6 +616,7 @@ impl InstancePage {
             self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
             self.loader_version.update(cx, |s, cx| s.set_value(version, window, cx));
         }
+        self.sync_options(made, window, cx);
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {
@@ -562,9 +625,11 @@ impl InstancePage {
             return;
         }
         let args = split_args(&self.jvm.read(cx).value());
-        if args != split_args(&jvm) {
+        self.opts.jvm_problem = check_jvm_args(&args).err();
+        if self.opts.jvm_problem.is_none() && args != split_args(&jvm) {
             self.enqueue(Job::Save(Change::JvmArgs(args)), cx);
         }
+        cx.notify();
         let Some(made) = self.instance(cx).filter(|made| !matches!(made.loader, Loader::Vanilla)) else { return };
         let pinned = loader_version_of(&self.loader_version.read(cx).value());
         if pinned != loader_version_of(&version) && made.loader.version() == loader_version_of(&version).as_deref() {
@@ -1065,8 +1130,16 @@ impl InstancePage {
         let version_control = match &self.versions {
             Load::Failed(_) if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.game_version.clone())).into_any_element(),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)).into_any_element(),
-            _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
+            _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_width(px(control::VERSION_MENU)).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
         };
+        let page = cx.entity().downgrade();
+        let everything = picker::everything_toggle("instance-versions-all", self.everything, move |_, cx| {
+            let _ = page.update(cx, |s, cx| {
+                s.everything = !s.everything;
+                cx.notify();
+            });
+        }, t);
+        let version_control = div().flex().flex_col().gap(px(space::XS)).child(version_control).child(everything).into_any_element();
         let loader_focus = self.loader_focus.clone();
         let segments = LOADERS.iter().enumerate().map(|(n, l)| {
             let selected = made.loader.same_kind(l);
@@ -1100,7 +1173,7 @@ impl InstancePage {
         for note in &self.notes {
             col = col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(note.clone()));
         }
-        col.child(self.render_memory(made, busy, cx, t)).child(self.render_advanced(made, cx, t)).child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."))).child(self.render_actions(f, t))
+        col.child(self.render_advanced(made, busy, cx, t)).child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."))).child(self.render_actions(f, t))
     }
 
     fn loader_update(&self, made: &Instance) -> Option<String> {
@@ -1170,10 +1243,10 @@ impl InstancePage {
             .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx))
             .child(div().id("memory-value").mark("value", value.clone()).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(value))
             .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx));
-        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper).child(sheet::note(Some(tr("Pro Account.")), None, t))
+        div().flex().child(stepper)
     }
 
-    fn render_advanced(&self, made: &Instance, cx: &mut Context<Self>, t: &Theme) -> Div {
+    fn render_advanced(&mut self, made: &Instance, busy: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
         let open = self.advanced;
         let disclosure = div()
             .id("instance-advanced")
@@ -1201,16 +1274,8 @@ impl InstancePage {
         if !open {
             return col;
         }
-        let labelled = |label: String, input: &Entity<InputState>| div().flex().flex_col().gap(px(space::XS)).child(sheet::label(label, t)).child(Input::new(input));
-        col.child(
-            div()
-                .pl(px(space::L))
-                .flex()
-                .flex_col()
-                .gap(px(space::M))
-                .child(labelled(tr("Java-Argumente"), &self.jvm))
-                .when(!matches!(made.loader, Loader::Vanilla), |d| d.child(labelled(tr("Loader-Version"), &self.loader_version))),
-        )
+        let memory = self.render_memory(made, busy, cx, t);
+        col.child(div().pl(px(space::L)).child(self.render_options(made, memory, cx, t)))
     }
 
     fn render_actions(&self, f: &Facts, t: &Theme) -> Div {
@@ -1275,6 +1340,12 @@ impl Render for InstancePage {
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
         self.sync(&f.made, window, cx);
         self.check_loader(&f.made, cx);
+        if let Some(setting) = cx.try_global::<WantsSetting>().filter(|w| w.0 == self.id).map(|w| w.1.clone()) {
+            cx.remove_global::<WantsSetting>();
+            self.tab = Tab::Settings;
+            self.advanced = true;
+            self.opts.reveal(&setting);
+        }
         if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {
             cx.remove_global::<WantsRename>();
             self.begin_rename(window, cx);
@@ -1287,6 +1358,12 @@ impl Render for InstancePage {
                     s.take_focus(window, cx);
                     s.set_selected_range(0..end, cx);
                 })
+            });
+        }
+        if self.opts.revealing() {
+            let page = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                let _ = page.update(cx, |s, cx| s.finish_reveal(window, cx));
             });
         }
         let header = self.header(&f, cx, &t);

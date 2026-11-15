@@ -59,6 +59,32 @@ pub fn required_major(major_version: Option<u32>, component: Option<&str>) -> u3
     })
 }
 
+/// The Java `game_version` needs: what its downloaded metadata says, else what Mojang ships for that release line, else
+/// `None` for a version not known yet.
+pub fn expected_major(game_version: &str) -> Option<u32> {
+    let saved = super::paths::data_dir().join("versions").join(game_version).join(format!("{game_version}.json"));
+    let declared = std::fs::read(saved).ok().and_then(|bytes| serde_json::from_slice::<super::install::meta::VersionJson>(&bytes).ok()).and_then(|v| v.java_version);
+    match declared {
+        Some(java) => Some(required_major(java.major_version, Some(&java.component))),
+        None => release_major(game_version),
+    }
+}
+
+fn release_major(game_version: &str) -> Option<u32> {
+    if game_version.starts_with(['a', 'b', 'c', 'r', 'i']) {
+        return Some(8);
+    }
+    let parts: Vec<u32> = game_version.split('.').map(str::parse).collect::<Result<_, _>>().ok()?;
+    Some(match parts.as_slice() {
+        [1, minor, ..] if *minor <= 16 => 8,
+        [1, 17, ..] => 16,
+        [1, 18 | 19, ..] | [1, 20] | [1, 20, 0..=4] => 17,
+        [1, 20, _] | [1, 21, ..] => 21,
+        [year, ..] if *year >= 26 => 25,
+        _ => return None,
+    })
+}
+
 fn launcher_name() -> &'static str {
     if cfg!(windows) { "javaw.exe" } else { "java" }
 }

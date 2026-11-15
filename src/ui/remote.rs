@@ -513,6 +513,11 @@ pub fn supported_versions(loader: &Loader) -> Option<HashSet<String>> {
     crate::core::versions::supported(loader).ok().flatten()
 }
 
+/// The Java `game_version` needs, when known before it is installed.
+pub fn expected_java(game_version: &str) -> Option<u32> {
+    crate::core::javas::expected_major(game_version)
+}
+
 /// Java installations on this computer, newest first.
 pub fn detect_javas() -> Vec<Java> {
     if drive::fenced("java detection", "canned") {
@@ -525,6 +530,11 @@ pub fn detect_javas() -> Vec<Java> {
 
 /// The Java at a file or folder the user picked.
 pub fn probe_java(picked: &Path) -> Result<Java> {
+    if drive::fenced("java probe", picked.display()) {
+        let major = picked.to_string_lossy().split("jdk-").nth(1).and_then(|rest| rest.split(['/', '\\']).next()).and_then(|n| n.parse::<u32>().ok());
+        let Some(major) = major else { bail!(crate::core::i18n::tr("Dort ist kein Java. Wähle die Datei „java“ im Ordner „bin“ eines Java.")) };
+        return Ok(Java { path: picked.to_path_buf(), version: major.to_string(), major, vendor: None });
+    }
     let home = crate::core::javas::home_of(picked).ok_or_else(|| gone(crate::core::i18n::tr("Dort ist kein Java. Wähle die Datei „java“ im Ordner „bin“ eines Java.")))?;
     crate::core::javas::probe(&home)
 }
