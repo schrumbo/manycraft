@@ -21,7 +21,7 @@ use super::mod_browser::IconCache;
 use super::model;
 use super::motion::Soft;
 use super::sheet::{self, Look};
-use super::theme::{Theme, control, font, iconsize, radius, space, tint};
+use super::theme::{Theme, control, font, iconsize, radius, shell, space, tint};
 use super::widgets::{TakeFocus, icon, tip};
 use crate::core::content::{self, Answer, Bisect, Entry, Outcome, Scan, Source, Trashed};
 use crate::core::i18n::{tr, trf};
@@ -63,6 +63,7 @@ pub fn init(cx: &mut App) {
 fn on<A: Action>(cx: &mut App, f: impl Fn(&mut ModList, &A, &mut Window, &mut Context<ModList>) + Clone + 'static) {
     cx.on_action(move |a: &A, cx| {
         let Some(list) = current(cx) else { return };
+        super::instance_page::show_mods(cx);
         let (f, a) = (f.clone(), a.boxed_clone());
         sheet::in_window(cx, move |window, cx| {
             let Some(a) = a.as_any().downcast_ref::<A>() else { return };
@@ -134,6 +135,8 @@ pub struct ModList {
     ticket: u64,
     error: Option<Problem>,
     error_open: bool,
+    failed: bool,
+    reveal: Option<String>,
     busy: bool,
     filter: Entity<InputState>,
     query: String,
@@ -197,7 +200,9 @@ pub fn new(id: &str, window: &mut Window, cx: &mut App) -> Entity<ModList> {
             cursor: None,
             bisect: None,
             bisecting: false,
-            focus: cx.focus_handle(),
+            failed: false,
+            reveal: None,
+            focus: cx.focus_handle().tab_stop(true),
             scroll: UniformListScrollHandle::new(),
             icons: IconCache::new(cx),
             _subs: subs,
@@ -234,7 +239,7 @@ pub fn commands(cx: &App) -> Vec<Command> {
     if s.facts.dups > 0 {
         out.push(Command { icon: "copy-x", label: tr("Doppelte Mods bereinigen"), action: Box::new(FixDuplicates), blocked: locked });
     }
-    for (sort, label, action) in [(Sort::Name, tr("Mods nach Name sortieren"), Box::new(SortModsByName) as Box<dyn Action>), (Sort::Added, tr("Mods nach Hinzugefügt sortieren"), Box::new(SortModsByAdded)), (Sort::Updated, tr("Mods nach Aktualisiert sortieren"), Box::new(SortModsByUpdated))] {
+    for (sort, label, action) in [(Sort::Name, tr("Mods nach Name sortieren"), Box::new(SortModsByName) as Box<dyn Action>), (Sort::Added, tr("Mods nach Hinzufügedatum sortieren"), Box::new(SortModsByAdded)), (Sort::Updated, tr("Mods nach Aktualisierungsdatum sortieren"), Box::new(SortModsByUpdated))] {
         if sort != sorting(cx) {
             out.push(Command { icon: "arrow-up-down", label, action, blocked: None });
         }
@@ -306,6 +311,8 @@ impl ModList {
         self.anchor = None;
         self.cursor = None;
         self.error = None;
+        self.failed = false;
+        self.reveal = None;
         self.scanned = false;
         self.bisect = None;
         self.scan = Scan { entries: self.instance(cx).map(|made| fallback(&made)).unwrap_or_default(), ..Scan::default() };
@@ -324,15 +331,18 @@ impl ModList {
     }
 
     /// Locks every change of the list for `reason`, e.g. while the page moves the instance to another version.
-    pub fn hold(&mut self, reason: Option<String>) {
-        self.hold = reason;
+    pub fn hold(&mut self, reason: Option<String>, cx: &mut Context<Self>) {
+        if self.hold != reason {
+            self.hold = reason;
+            cx.notify();
+        }
     }
 
     fn locked(&self, cx: &App) -> Option<String> {
         if let Some(why) = &self.hold {
             return Some(why.clone());
         }
-        if self.bisect.as_ref().is_some_and(|b| b.outcome.is_none()) {
+        if self.bisecting || self.bisect.as_ref().is_some_and(|b| b.outcome.is_none()) {
             return Some(tr("Beende zuerst die Fehlersuche."));
         }
         self.running(cx).then(|| tr("Stoppe zuerst die laufenden Spiele."))
@@ -374,19 +384,41 @@ impl ModList {
                 self.analyze();
                 self.bisect = bisect;
                 self.scanned = true;
-                self.error = None;
+                if !self.failed {
+                    self.error = None;
+                }
                 let known: HashSet<&str> = self.scan.entries.iter().map(|e| e.file.as_str()).collect();
                 self.selected.retain(|f| known.contains(f.as_str()));
                 self.rebuild();
+                if let Some(file) = self.reveal.take().and_then(|name| self.scan.entries.iter().find(|e| e.file.eq_ignore_ascii_case(&name)).map(|e| e.file.clone())) {
+                    self.go_to(&file, false, cx);
+                }
             }
-            Err(e) => self.error = Some(forms::explain_as(tr("Die Mods ließen sich nicht lesen."), &e)),
+            Err(e) => {
+                self.error = Some(forms::explain_as(tr("Die Mods ließen sich nicht lesen."), &e));
+                self.failed = false;
+                self.scanned = false;
+            }
         }
         cx.notify();
     }
 
+    fn fail(&mut self, problem: Problem) {
+        self.error = Some(problem);
+        self.failed = true;
+    }
+
+    fn settle(&mut self) {
+        if self.failed {
+            self.error = None;
+            self.failed = false;
+        }
+    }
+
     fn analyze(&mut self) {
         let mut facts = Facts::default();
-        for dup in content::duplicates(&self.scan.entries) {
+        let on: Vec<Entry> = self.scan.entries.iter().filter(|e| e.enabled).cloned().collect();
+        for dup in content::duplicates(&on) {
             facts.dups += 1;
             let older = dup.files[1..].to_vec();
             for file in &dup.files {
@@ -587,7 +619,7 @@ impl ModList {
 
     fn switch(&mut self, files: Vec<String>, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let files: Vec<String> = files.into_iter().filter(|f| self.entry(f).is_some_and(|e| e.enabled != on)).collect();
-        if files.is_empty() || self.busy {
+        if files.is_empty() || self.busy || !self.scanned {
             return;
         }
         if let Some(why) = self.locked(cx) {
@@ -674,6 +706,8 @@ impl ModList {
         let label = self.label_of(&files);
         let id = self.id.clone();
         self.busy = true;
+        self.ticket += 1;
+        self.settle();
         for e in self.scan.entries.iter_mut().filter(|e| files.contains(&e.file)) {
             e.enabled = on;
         }
@@ -688,10 +722,15 @@ impl ModList {
                 s.busy = false;
                 match result {
                     Ok(made) => {
+                        let culprit = !on && s.id == id && s.bisect.as_ref().is_some_and(|b| matches!(&b.outcome, Some(Outcome::Found(f)) if files.contains(f)));
                         put(made, cx);
                         super::undo::offer(super::undo::Kind::ModsSwitched { instance_id: id, files, on, label }, cx);
+                        if culprit {
+                            s.bisect_step(Step::Dismiss, cx);
+                        }
                     }
-                    Err(e) => s.error = Some(forms::explain_as(tr("Nicht gespeichert."), &e)),
+                    Err(e) if s.id == id => s.fail(forms::explain_as(tr("Nicht gespeichert."), &e)),
+                    Err(_) => {}
                 }
                 s.rescan(cx);
                 cx.notify();
@@ -701,7 +740,7 @@ impl ModList {
     }
 
     fn trash(&mut self, files: Vec<String>, label: Option<String>, cx: &mut Context<Self>) {
-        if files.is_empty() || self.busy {
+        if files.is_empty() || self.busy || !self.scanned {
             return;
         }
         if let Some(why) = self.locked(cx) {
@@ -712,6 +751,8 @@ impl ModList {
         let id = self.id.clone();
         let next = self.after(&files);
         self.busy = true;
+        self.ticket += 1;
+        self.settle();
         cx.notify();
         let task = cx.background_spawn({
             let (id, files) = (id.clone(), files.clone());
@@ -723,17 +764,20 @@ impl ModList {
                 s.busy = false;
                 match result {
                     Ok((made, trashed)) => {
-                        s.scan.entries.retain(|e| !files.contains(&e.file));
-                        s.selected.clear();
-                        s.cursor = None;
-                        s.rebuild();
-                        if let Some(next) = next {
-                            s.go_to(&next, false, cx);
+                        if s.id == id {
+                            s.scan.entries.retain(|e| !files.contains(&e.file));
+                            s.selected.clear();
+                            s.cursor = None;
+                            s.rebuild();
+                            if let Some(next) = next {
+                                s.go_to(&next, false, cx);
+                            }
                         }
                         put(made, cx);
                         super::undo::offer(super::undo::Kind::ModsTrashed { instance_id: id, trashed, label }, cx);
                     }
-                    Err(e) => s.error = Some(forms::explain_as(tr("Nicht gelöscht."), &e)),
+                    Err(e) if s.id == id => s.fail(forms::explain_as(tr("Nicht gelöscht."), &e)),
+                    Err(_) => {}
                 }
                 s.rescan(cx);
                 cx.notify();
@@ -805,19 +849,28 @@ impl ModList {
         if jars.is_empty() {
             return;
         }
+        self.settle();
+        let added: Vec<String> = jars.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
         let id = self.id.clone();
-        let task = cx.background_spawn(async move { content::add_files(&id, &jars) });
+        let task = cx.background_spawn({
+            let id = id.clone();
+            async move { content::add_files(&id, &jars) }
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 match result {
                     Ok((made, taken)) => {
+                        if s.id == id {
+                            s.reveal = added.into_iter().find(|name| !taken.contains(name));
+                        }
                         put(made, cx);
                         if !taken.is_empty() {
                             super::undo::note(trf("Schon da: %@.", &[&listing(&taken)]), cx);
                         }
                     }
-                    Err(e) => s.error = Some(forms::explain_as(tr("Nicht hinzugefügt."), &e)),
+                    Err(e) if s.id == id => s.fail(forms::explain_as(tr("Nicht hinzugefügt."), &e)),
+                    Err(_) => {}
                 }
                 s.rescan(cx);
             });
@@ -855,28 +908,34 @@ impl ModList {
             return;
         }
         self.bisecting = true;
+        self.settle();
         cx.notify();
         let id = self.id.clone();
-        let task = cx.background_spawn(async move {
+        let task = cx.background_spawn({
+            let id = id.clone();
+            async move {
             match step {
                 Step::Start => content::start(&id).map(|(made, b)| (Some(made), Some(b))),
                 Step::Answer(answer) => content::answer(&id, answer).map(|(made, b)| (Some(made), Some(b))),
                 Step::Stop => content::stop(&id).map(|made| (Some(made), None)),
                 Step::Dismiss => content::dismiss(&id).map(|_| (None, None)),
             }
-        });
+        }});
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.bisecting = false;
                 match result {
                     Ok((made, bisect)) => {
-                        s.bisect = bisect;
+                        if s.id == id {
+                            s.bisect = bisect;
+                        }
                         if let Some(made) = made {
                             put(made, cx);
                         }
                     }
-                    Err(e) => s.error = Some(forms::explain_as(tr("Die Fehlersuche hat nicht geklappt."), &e)),
+                    Err(e) if s.id == id => s.fail(forms::explain_as(tr("Die Fehlersuche hat nicht geklappt."), &e)),
+                    Err(_) => {}
                 }
                 s.rescan(cx);
                 cx.notify();
@@ -908,15 +967,14 @@ impl ModList {
                 let done = sheet::button("bisect-done", tr("Fertig"), None, Look::Secondary, false, self.bisecting, t).on_click(cx.listener(|s, _, _, cx| s.bisect_step(Step::Dismiss, cx)));
                 let (heading, glyph, color) = match outcome {
                     Outcome::Found(file) => (trf("%@ verursacht den Fehler.", &[&self.label_of(std::slice::from_ref(file))]), "circle-check", t.success_text),
-                    Outcome::Several(files) => (trf("Einer dieser Mods verursacht den Fehler: %@.", &[&listing(&self.names(files))]), "circle-help", t.attention_text),
-                    Outcome::Nothing => (tr("Kein Mod verursacht den Fehler."), "circle-help", t.secondary),
+                    Outcome::Several(files) => (trf("Einer dieser Mods verursacht den Fehler: %@.", &[&listing(&self.names(files))]), "circle-question-mark", t.attention_text),
+                    Outcome::Nothing => (tr("Kein Mod verursacht den Fehler."), "circle-question-mark", t.secondary),
                 };
                 let culprit = match outcome {
                     Outcome::Found(file) if self.entry(file).is_some_and(|e| e.enabled) => {
                         let file = file.clone();
                         Some(sheet::button("bisect-off", trf("%@ ausschalten", &[&self.label_of(std::slice::from_ref(&file))]), None, Look::Primary, false, false, t).on_click(cx.listener(move |s, _, window, cx| {
                             s.switch(vec![file.clone()], false, window, cx);
-                            s.bisect_step(Step::Dismiss, cx);
                         })))
                     }
                     _ => None,
@@ -962,7 +1020,7 @@ impl ModList {
         let updates = sheet::button_unless("mods-updates", tr("Updates prüfen…"), None, Look::Secondary, made.mods.is_empty().then(|| SharedString::from(tr("Keine Mods von Modrinth."))), false, t).when(!made.mods.is_empty(), |b| b.on_click(cx.listener(|s, _, window, cx| s.check_updates(window, cx))));
         let id = made.id.clone();
         let add = sheet::button("mods-add", tr("Mods hinzufügen…"), Some("plus"), Look::Secondary, false, false, t).on_click(move |_, window, cx| window.dispatch_action(Box::new(AddMods(id.clone())), cx));
-        let field = div().id("mods-filter").mark("textbox", tr("Mods filtern")).flex_1().min_w(px(control::RENAME_MIN)).on_action(cx.listener(|s, _: &gpui_kit::base::input::Escape, window, cx| {
+        let field = div().id("mods-filter").mark("textbox", tr("Mods filtern")).flex_1().min_w(px(shell::SEARCH_MIN)).on_action(cx.listener(|s, _: &gpui_kit::base::input::Escape, window, cx| {
             if s.query.is_empty() {
                 window.focus(&s.focus, cx);
             } else {
@@ -1062,9 +1120,19 @@ impl ModList {
             .flex_col()
             .child(div().flex().items_baseline().gap(px(space::S)).when(dim, |d| d.opacity(tint::DISABLED)).child(div().min_w_0().truncate().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(name.clone())).children(version))
             .child(div().truncate().text_size(px(font::CAPTION)).text_color(if warn { t.attention_text } else { t.tertiary }).child(caption));
-        let trailing = if self.facts.older.contains_key(&file) {
+        let trailing = if let Some(older) = self.facts.older.get(&file) {
             let target = file.clone();
-            Some(sheet::button_unless(SharedString::from(format!("mod-fix-{ix}")), tr("Ältere löschen"), None, Look::Plain, locked.clone().map(SharedString::from), false, t).when(locked.is_none(), |b| b.on_click(cx.listener(move |s, _, _, cx| s.fix(&target, cx)))))
+            let newest = !older.contains(&file);
+            let label = if newest { tr("Ältere Version löschen") } else { tr("Löschen") };
+            Some(sheet::button_unless(SharedString::from(format!("mod-fix-{ix}")), label, None, Look::Plain, locked.clone().map(SharedString::from), false, t).when(locked.is_none(), |b| {
+                b.on_click(cx.listener(move |s, _, _, cx| {
+                    if newest {
+                        s.fix(&target, cx);
+                    } else {
+                        s.trash(vec![target.clone()], None, cx);
+                    }
+                }))
+            }))
         } else if let Some(missing) = self.facts.needs.get(&file) {
             let missing = missing.clone();
             Some(sheet::button_unless(SharedString::from(format!("mod-needs-{ix}")), tr("Einschalten"), None, Look::Plain, locked.clone().map(SharedString::from), false, t).when(locked.is_none(), |b| b.on_click(cx.listener(move |s, _, window, cx| s.switch(missing.clone(), true, window, cx)))))
@@ -1094,6 +1162,7 @@ impl ModList {
             .rounded(px(radius::INNER))
             .when(selected, |d| d.bg(t.highlight.opacity(tint::SELECTED)))
             .when(focused && !selected, |d| d.border_1().border_color(t.highlight))
+            .cursor_pointer()
             .soft(t.ink.opacity(tint::HOVER), radius::INNER)
             .on_click(cx.listener(move |s, e: &ClickEvent, window, cx| s.click(&click_file, e, window, cx)))
             .on_mouse_down(MouseButton::Right, cx.listener(move |s, _, window, cx| {
@@ -1149,7 +1218,7 @@ impl ModList {
             .text_center()
             .child(icon("package", iconsize::HERO, t.tertiary))
             .child(div().id("mods-empty").mark("heading", tr("Noch keine Mods")).text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).child(tr("Noch keine Mods")))
-            .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge Mods von Modrinth hinzu oder zieh .jar-Dateien hierher.")))
+            .child(div().max_w(px(control::READING)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge Mods von Modrinth hinzu oder zieh Mod-Dateien hierher.")))
             .child(add)
     }
 }
@@ -1255,11 +1324,11 @@ impl Render for ModList {
             s.error_open = !s.error_open;
             cx.notify();
         }), &t));
-        let retry = self.error.as_ref().filter(|_| !self.scanned).map(|_| sheet::button("mods-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.rescan(cx))));
+        let retry = self.error.as_ref().filter(|_| !self.failed).map(|_| sheet::button("mods-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.rescan(cx))));
         let problems = error.map(|e| div().flex().items_start().gap(px(space::S)).child(div().flex_1().min_w_0().child(e)).children(retry));
         let bisect = self.bisect.clone().map(|b| self.render_bisect(&b, cx, &t));
         if self.scan.entries.is_empty() && self.bisect.is_none() {
-            let body = if self.scanned || self.error.is_some() { self.render_empty(&made, &t).into_any_element() } else { div().size_full().flex().items_center().justify_center().child(sheet::waiting(tr("Mods werden gelesen …"), &t)).into_any_element() };
+            let body = if self.error.is_some() { div().into_any_element() } else if self.scanned { self.render_empty(&made, &t).into_any_element() } else { div().size_full().flex().items_center().justify_center().child(sheet::waiting(tr("Mods werden gelesen …"), &t)).into_any_element() };
             return root.children(problems).child(div().flex_1().min_h_0().child(body));
         }
         let list = div()

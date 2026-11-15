@@ -347,6 +347,7 @@ impl InstancePage {
         }
         self.id = id.to_owned();
         self.mods.update(cx, |m, cx| m.bind(id, window, cx));
+        self.hold_mods(cx);
         self.renaming = false;
         self.rename_saving = false;
         self.rename_error = None;
@@ -443,6 +444,11 @@ impl InstancePage {
 
     fn switching_now(&self) -> bool {
         self.switching.as_ref().is_some_and(|b| b.id == self.id)
+    }
+
+    fn hold_mods(&mut self, cx: &mut Context<Self>) {
+        let hold = self.switching_now().then(|| tr("Warte, bis die Umstellung fertig ist."));
+        self.mods.update(cx, |m, cx| m.hold(hold, cx));
     }
 
     fn blocked(&self, cx: &App) -> bool {
@@ -553,6 +559,7 @@ impl InstancePage {
                         Switch::Loader(l) => trf("Auf %@ wird umgestellt …", &[&l.name()]),
                     };
                     self.switching = Some(Busy { id: id.clone(), text });
+                    self.hold_mods(cx);
                     let target = match &switch {
                         Switch::Version(v) => Some(v.clone()),
                         Switch::Loader(_) => None,
@@ -583,6 +590,7 @@ impl InstancePage {
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
         }
+        self.hold_mods(cx);
         match result {
             Ok((saved, notes)) => {
                 let edited = changed.and_then(|(before, what)| {
@@ -898,8 +906,6 @@ impl InstancePage {
         if !f.made.loader.takes_mods() {
             return div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Vanilla lädt keine Mods.")).into_any_element();
         }
-        let hold = self.switching_now().then(|| tr("Warte, bis die Umstellung fertig ist."));
-        self.mods.update(cx, |m, _| m.hold(hold));
         div().flex_1().min_h_0().child(self.mods.clone()).into_any_element()
     }
 

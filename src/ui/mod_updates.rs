@@ -14,8 +14,8 @@ use super::model;
 use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
-use super::theme::{Theme, control, font, iconsize, radius, space, tint};
-use super::widgets::icon;
+use super::theme::{Theme, control, edge, font, iconsize, radius, space, tint};
+use super::widgets::{KeyNav, icon};
 use crate::core::i18n::{tr, trf};
 use crate::core::modrinth::Update;
 
@@ -156,6 +156,7 @@ impl ModUpdates {
                 .gap(px(space::XXS))
                 .rounded(px(radius::SMALL))
                 .cursor_pointer()
+                .key_nav()
                 .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
                 .text_size(px(font::CALLOUT))
                 .text_color(t.secondary)
@@ -168,12 +169,21 @@ impl ModUpdates {
                     cx.notify();
                 }))
         });
+        let flip = pid.clone();
         let head = div()
             .flex()
             .items_center()
             .gap(px(space::M))
             .child(div().id(SharedString::from(format!("update-check-{at}"))).mark("checkbox", u.current.title.clone()).flex_none().child(check))
-            .child(div().flex_1().min_w_0().flex().flex_col().child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(u.current.title.clone())).child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(versions)))
+            .child(div().id(SharedString::from(format!("update-head-{at}"))).flex_1().min_w_0().px(px(space::XS)).cursor_pointer().soft(t.ink.opacity(tint::HOVER), radius::SMALL).on_click(cx.listener(move |s, _, _, cx| {
+                if s.applying {
+                    return;
+                }
+                if !s.chosen.remove(&flip) {
+                    s.chosen.insert(flip.clone());
+                }
+                cx.notify();
+            })).flex().flex_col().child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(u.current.title.clone())).child(div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(versions)))
             .children(disclosure);
         let notes = (open && has_notes).then(|| {
             let mut col = div().ml(px(control::S + space::M)).mt(px(space::XS)).p(px(space::M)).rounded(px(radius::INNER)).bg(t.raised).flex().flex_col().gap(px(space::XS));
@@ -210,7 +220,7 @@ fn render_block(block: Block, t: &Theme) -> Div {
             text = text.child(match span {
                 Span::Plain(s) => div().child(s),
                 Span::Bold(s) => div().font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(s),
-                Span::Code(s) => div().px(px(space::XXS)).rounded(px(radius::SMALL)).bg(t.separator).font_family("monospace").child(s),
+                Span::Code(s) => div().px(px(space::XXS)).rounded(px(radius::SMALL)).bg(t.separator).font_family(Theme::mono_family()).child(s),
             });
         }
         text
@@ -248,7 +258,7 @@ impl Render for ModUpdates {
                 let mut rows = div().id("updates-list").flex().flex_col().max_h(px(LIST_MAX)).overflow_y_scroll().rounded(px(radius::CONTROL)).border_1().border_color(t.separator);
                 for (at, u) in list.iter().enumerate() {
                     if at > 0 {
-                        rows = rows.child(div().h(px(1.)).mx(px(space::M)).bg(t.separator));
+                        rows = rows.child(div().h(px(edge::RING)).mx(px(space::M)).bg(t.separator));
                     }
                     rows = rows.child(self.render_row(at, u, cx, &t));
                 }
@@ -276,7 +286,7 @@ impl Render for ModUpdates {
         let main = match &self.load {
             Load::Failed(_) => sheet::button("updates-retry", tr("Erneut versuchen"), None, Look::Primary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.reload(cx))),
             Load::Ready(list) if list.is_empty() => sheet::button("updates-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))),
-            _ => sheet::button("updates-apply", if n == 1 { tr("1 Mod aktualisieren") } else { trf("%lld Mods aktualisieren", &[&n]) }, None, Look::Primary, n == 0, self.applying, &t).on_click(cx.listener(|s, _, _, cx| s.apply(cx))),
+            _ => sheet::button("updates-apply", if n == 0 { tr("Aktualisieren") } else if n == 1 { tr("1 Mod aktualisieren") } else { trf("%lld Mods aktualisieren", &[&n]) }, None, Look::Primary, n == 0, self.applying, &t).on_click(cx.listener(|s, _, _, cx| s.apply(cx))),
         };
         div()
             .id("updates-sheet")
@@ -383,9 +393,14 @@ fn spans(text: &str) -> Vec<Span> {
             continue;
         }
         let c = rest.chars().next().unwrap_or_default();
-        if !(c == '*' || c == '_') || rest.chars().nth(1).is_some_and(char::is_whitespace) {
-            plain.push(c);
+        let opens = (c == '*' || c == '_') && !plain.chars().last().is_some_and(char::is_alphanumeric) && rest[1..].chars().next().is_some_and(|n| !n.is_whitespace());
+        let close = opens.then(|| rest[1..].match_indices(c).map(|(at, _)| at + 1).find(|&at| !rest[..at].chars().next_back().is_some_and(char::is_whitespace) && !rest[at + 1..].chars().next().is_some_and(char::is_alphanumeric))).flatten();
+        if let Some(close) = close {
+            plain.push_str(&rest[1..close]);
+            rest = &rest[close + 1..];
+            continue;
         }
+        plain.push(c);
         rest = &rest[c.len_utf8()..];
     }
     if !plain.is_empty() {
@@ -436,7 +451,8 @@ mod tests {
     fn bold_code_and_links_render_as_spans() {
         assert_eq!(spans("**Fix** `foo()` in [Sodium](https://x.y/z) now"), vec![Span::Bold("Fix".into()), Span::Plain(" ".into()), Span::Code("foo()".into()), Span::Plain(" in Sodium now".into())]);
         assert_eq!(links("![img](a.png) and [x]"), "img and [x]");
-        assert_eq!(spans("a * b and unclosed **bold"), vec![Span::Plain("a * b and unclosed bold".into())]);
+        assert_eq!(spans("a * b and unclosed **bold"), vec![Span::Plain("a * b and unclosed **bold".into())]);
+        assert_eq!(spans("fixed mod_menu and snake_case_name, 2*3, *new* and _über_ ü*"), vec![Span::Plain("fixed mod_menu and snake_case_name, 2*3, new and über ü*".into())]);
     }
 
     #[test]

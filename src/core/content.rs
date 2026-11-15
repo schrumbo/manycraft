@@ -550,6 +550,9 @@ pub fn set_enabled(id: &str, files: &[String], on: bool) -> Result<Instance> {
 
 fn set_enabled_in(root: &Path, id: &str, files: &[String], on: bool) -> Result<Instance> {
     exclusive(root, id, |dir, made| {
+        if searching(dir) {
+            bail!(tr("Beende zuerst die Fehlersuche."));
+        }
         let (made, _) = scan_locked(root, dir, made, None)?;
         let listed = resolve(&made, files)?;
         let touched: HashSet<String> = listed.iter().map(|n| key(n)).collect();
@@ -654,6 +657,9 @@ pub fn trash(id: &str, files: &[String]) -> Result<(Instance, Trashed)> {
 
 fn trash_in(root: &Path, id: &str, files: &[String], millis: u64) -> Result<(Instance, Trashed)> {
     exclusive(root, id, |dir, made| {
+        if searching(dir) {
+            bail!(tr("Beende zuerst die Fehlersuche."));
+        }
         let (made, _) = scan_locked(root, dir, made, None)?;
         let listed = resolve(&made, files)?;
         let wanted: HashSet<String> = listed.iter().map(|n| key(n)).collect();
@@ -711,6 +717,9 @@ pub fn untrash(id: &str, trashed: &Trashed) -> Result<Instance> {
 
 fn untrash_in(root: &Path, id: &str, trashed: &Trashed) -> Result<Instance> {
     exclusive(root, id, |dir, made| {
+        if searching(dir) {
+            bail!(tr("Beende zuerst die Fehlersuche."));
+        }
         let gone = || Final(tr("Diese Mods liegen nicht mehr im Papierkorb."));
         let valid = !trashed.entry.is_empty() && trashed.entry.bytes().all(|b| b.is_ascii_digit());
         let entry = dir.join(TRASH).join(&trashed.entry);
@@ -1633,6 +1642,19 @@ mod tests {
             put(root, made, &format!("m{i}.jar"), b"x");
         }
         shared(root, &made.id, |dir, saved| scan_locked(root, dir, saved, None)).unwrap();
+    }
+
+    #[test]
+    fn nothing_switches_trashes_or_comes_back_from_the_trash_while_a_search_runs() {
+        let (_dir, root, mut made) = setup();
+        four(&root, &mut made);
+        let (_, trashed) = trash_in(&root, &made.id, &names(&["m3.jar"]), 7).unwrap();
+        start_in(&root, &made.id).unwrap();
+        let before = mods_of(&root, &made);
+        assert!(set_enabled_in(&root, &made.id, &names(&["m0.jar"]), true).is_err());
+        assert!(trash_in(&root, &made.id, &names(&["m2.jar"]), 8).is_err());
+        assert!(untrash_in(&root, &made.id, &trashed).is_err());
+        assert_eq!(mods_of(&root, &made), before);
     }
 
     #[test]
