@@ -4,6 +4,7 @@ use std::fmt;
 use std::io::ErrorKind;
 
 use crate::core::account::Account;
+use crate::core::batch::Background;
 use crate::core::i18n::{tr, trf};
 
 /// Smallest memory a batch can get, in MB.
@@ -240,6 +241,39 @@ pub const FPS_STEPS: [u8; 10] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
 /// Sight in chunks a custom background level steps through.
 pub const SIGHT_STEPS: [u8; 10] = [2, 3, 4, 6, 8, 10, 12, 16, 24, 32];
 
+/// What a custom background level costs, by how often the hidden game draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cost {
+    /// The game draws only for previews.
+    Little,
+    Noticeable,
+    Much,
+}
+
+/// The cost of a hidden game at `fps` frames per second; up to `SKIP_DRAW_MAX_FPS` it does not draw at all.
+pub fn custom_cost(fps: u8) -> Cost {
+    match fps {
+        0..=SKIP_DRAW_MAX_FPS => Cost::Little,
+        ..=30 => Cost::Noticeable,
+        _ => Cost::Much,
+    }
+}
+
+/// From this sight on the loaded chunks cost on their own, whatever the frame rate.
+pub const FAR_SIGHT: u8 = 16;
+/// Up to this many frames per second a hidden custom game skips drawing, like the Sparsam level.
+pub const SKIP_DRAW_MAX_FPS: u8 = 10;
+
+/// The level and the kept custom pair after picking segment `n` (the presets, then custom). Leaving custom keeps its pair, so a misclick on a preset can be undone with the custom segment.
+pub fn pick_background(current: Background, kept: Option<Background>, n: usize) -> (Background, Option<Background>) {
+    let custom = matches!(current, Background::Custom { .. });
+    match Background::PRESETS.get(n) {
+        Some(preset) => (*preset, if custom { Some(current) } else { kept }),
+        None if custom => (current, kept),
+        None => (kept.unwrap_or_else(|| current.to_custom()), None),
+    }
+}
+
 /// The next value of `steps` above `value` (`up`) or below it, or `value` when there is none.
 pub fn ladder_step(value: u8, up: bool, steps: &[u8]) -> u8 {
     let next = if up { steps.iter().find(|&&s| s > value) } else { steps.iter().rev().find(|&&s| s < value) };
@@ -410,6 +444,28 @@ mod tests {
         assert_eq!(ladder_step(1, false, &FPS_STEPS), 1);
         assert_eq!(ladder_step(32, true, &SIGHT_STEPS), 32);
         assert_eq!(ladder_step(2, false, &SIGHT_STEPS), 2);
+    }
+
+    #[test]
+    fn custom_cost_follows_the_drawing() {
+        assert_eq!(custom_cost(1), Cost::Little);
+        assert_eq!(custom_cost(SKIP_DRAW_MAX_FPS), Cost::Little);
+        assert_eq!(custom_cost(15), Cost::Noticeable);
+        assert_eq!(custom_cost(30), Cost::Noticeable);
+        assert_eq!(custom_cost(45), Cost::Much);
+    }
+
+    #[test]
+    fn a_misclick_on_a_preset_keeps_the_tuned_pair() {
+        let tuned = Background::Custom { fps: 7, sight: 9 };
+        let (level, kept) = pick_background(tuned, None, 0);
+        assert_eq!(level, Background::Saving);
+        assert_eq!(kept, Some(tuned));
+        let (level, kept) = pick_background(level, kept, 1);
+        assert_eq!((level, kept), (Background::Balanced, Some(tuned)));
+        assert_eq!(pick_background(level, kept, 3), (tuned, None));
+        assert_eq!(pick_background(tuned, None, 3), (tuned, None));
+        assert_eq!(pick_background(Background::Balanced, None, 3), (Background::Balanced.to_custom(), None));
     }
 
     #[test]

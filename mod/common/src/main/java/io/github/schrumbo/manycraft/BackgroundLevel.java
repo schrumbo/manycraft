@@ -9,6 +9,7 @@ enum BackgroundLevel {
 	CUSTOM;
 
 	static final int BALANCED_FPS = 30;
+	static final int SKIP_DRAW_MAX_FPS = 10;
 	static final int OPTION_FPS_STEP = 10;
 	static final int OPTION_FPS_MAX = 260;
 
@@ -25,8 +26,8 @@ enum BackgroundLevel {
 		};
 	}
 
-	boolean skipsRender() {
-		return this == SAVING;
+	boolean skipsRender(Custom custom) {
+		return this == SAVING || this == CUSTOM && custom.fps() <= SKIP_DRAW_MAX_FPS;
 	}
 
 	static int optionFramerate(int fps) {

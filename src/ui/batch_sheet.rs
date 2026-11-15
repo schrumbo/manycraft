@@ -120,6 +120,7 @@ struct BatchSheet {
     inherit: bool,
     memory: u32,
     background: Background,
+    kept_custom: Option<Background>,
     launch_parallel: u32,
     advanced: bool,
     memory_max: u32,
@@ -232,6 +233,7 @@ impl BatchSheet {
             inherit,
             memory,
             background: original_background,
+            kept_custom: None,
             launch_parallel,
             advanced: false,
             memory_max,
@@ -536,7 +538,7 @@ impl BatchSheet {
             .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(like));
         let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
             if let Some(reason) = reason {
-                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
+                return sheet::stepper_end(div().id(SharedString::from(format!("{id}-end"))).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
@@ -610,8 +612,14 @@ impl BatchSheet {
             Background::Saving => tr("Kostet kaum etwas: Das Spiel zeigt nur wenige Bilder und sieht nicht weit."),
             Background::Balanced => tr("Kostet spürbar mehr: Das Spiel läuft flüssig weiter und sieht so weit wie sonst."),
             Background::Full => tr("Kostet so viel wie ein offenes Spiel."),
-            Background::Custom { fps: 1, sight } => trf("Eigene Werte: 1 Bild pro Sekunde, %lld Chunks Sichtweite.", &[&sight]),
-            Background::Custom { fps, sight } => trf("Eigene Werte: %lld Bilder pro Sekunde, %lld Chunks Sichtweite.", &[&fps, &sight]),
+            Background::Custom { fps, sight } => {
+                let line = match forms::custom_cost(fps) {
+                    forms::Cost::Little => tr("Kostet wenig: Das Spiel zeichnet im Hintergrund nur für die Vorschau."),
+                    forms::Cost::Noticeable => tr("Kostet spürbar: Das Spiel zeichnet im Hintergrund weiter."),
+                    forms::Cost::Much => tr("Kostet viel, fast so viel wie ein offenes Spiel."),
+                };
+                if sight >= forms::FAR_SIGHT { format!("{line} {}", tr("Die große Sichtweite kostet zusätzlich.")) } else { line }
+            }
         };
         let busy = self.saving;
         let levels = Background::PRESETS.into_iter().chain([self.background.to_custom()]);
@@ -620,7 +628,7 @@ impl BatchSheet {
             if s.saving {
                 return;
             }
-            s.background = Background::PRESETS.get(*n).copied().unwrap_or_else(|| s.background.to_custom());
+            (s.background, s.kept_custom) = forms::pick_background(s.background, s.kept_custom, *n);
             s.save_error = None;
             cx.notify();
         });
@@ -654,7 +662,7 @@ impl BatchSheet {
                 None
             };
             if let Some(reason) = reason {
-                return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
+                return sheet::stepper_end(div().id(SharedString::from(format!("{id}-end"))).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 if s.saving {

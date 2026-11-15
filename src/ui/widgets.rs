@@ -1,4 +1,5 @@
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -115,6 +116,26 @@ pub fn segment(id: impl Into<ElementId>, label: String, selected: bool, enabled:
         )
 }
 
+/// Arrow keys move the focus along a grid of `count` choices, `n` being this one, and stop at its ends.
+pub fn arrows(element: Stateful<Div>, n: usize, count: usize) -> Stateful<Div> {
+    element.on_key_down(move |e: &KeyDownEvent, window, cx| {
+        if e.keystroke.modifiers.modified() {
+            return;
+        }
+        let back = matches!(e.keystroke.key.as_str(), "left" | "up");
+        let forward = matches!(e.keystroke.key.as_str(), "right" | "down");
+        if !back && !forward {
+            return;
+        }
+        cx.stop_propagation();
+        if back && n > 0 {
+            window.focus_prev(cx);
+        } else if forward && n + 1 < count {
+            window.focus_next(cx);
+        }
+    })
+}
+
 /// A segmented control: a click on a segment or Left and Right on a focused one picks it, `on_pick` gets its index.
 pub fn segmented(id: impl Into<ElementId>, segments: impl IntoIterator<Item = Stateful<Div>>, on_pick: impl Fn(usize, &mut Window, &mut App) + 'static, t: &Theme) -> Stateful<Div> {
     let on_pick = std::rc::Rc::new(on_pick);
@@ -168,10 +189,31 @@ pub fn menu_of(key: &str, menu: PopupMenu, window: &mut Window, cx: &mut Context
     menu
 }
 
-/// Tooltip builder for `.tooltip(...)`.
+struct Hint {
+    inner: AnyView,
+    under_dialog: bool,
+    under_menu: bool,
+}
+
+fn any_menu_open(cx: &App) -> bool {
+    cx.try_global::<MenuOpen>().is_some_and(|open| open.0.is_some())
+}
+
+impl Render for Hint {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let covered = (!self.under_dialog && window.has_active_dialog(cx)) || (!self.under_menu && any_menu_open(cx));
+        if covered { div().into_any_element() } else { self.inner.clone().into_any_element() }
+    }
+}
+
+/// Tooltip builder for `.tooltip(...)`. A tooltip already showing disappears when a sheet or a context menu opens over it; one built inside a sheet or menu stays.
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text: SharedString = text.into();
-    move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+    move |window, cx| {
+        let inner = gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx);
+        let (under_dialog, under_menu) = (window.has_active_dialog(cx), any_menu_open(cx));
+        cx.new(|_| Hint { inner, under_dialog, under_menu }).into()
+    }
 }
 
 /// The main button of a screen: accent fill, one per view. A disabled one keeps its place but takes no input.
