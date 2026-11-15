@@ -278,6 +278,7 @@ struct Facts {
     solo: Option<Uuid>,
     shown: Option<String>,
     running: bool,
+    plain: Vec<Uuid>,
 }
 
 struct InstancePage {
@@ -488,11 +489,12 @@ impl InstancePage {
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
-        let solo = super::state::solo_account(m, &made).filter(|a| !live.iter().any(|g| g.account_id == *a && matches!(g.phase, Phase::Plain)));
+        let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
+        let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
         let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
         let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-        Some(Facts { made, batches, accounts, solo, shown, running })
+        Some(Facts { made, batches, accounts, solo, shown, running, plain })
     }
 
     fn instance(&self, cx: &App) -> Option<Instance> {
@@ -857,11 +859,16 @@ impl InstancePage {
             (None, None) => (tr("Spielen"), None),
         };
         let rings = super::theme::rings(cx);
-        let (instance, accounts, current) = (made.id.clone(), f.accounts.clone(), f.solo);
+        let (instance, accounts, current, plain) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone());
         let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
             for (account, name) in &accounts {
-                menu = menu.menu_with_check(name.clone(), current == Some(*account), Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) }));
+                let action = Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) });
+                menu = if plain.contains(account) {
+                    menu.menu_element_with_disabled(action, true, super::palette::menu_row(name.clone(), Some(tr("Läuft · ohne Vorschau")), true))
+                } else {
+                    menu.menu_with_check(name.clone(), current == Some(*account), action)
+                };
             }
             menu
         };
