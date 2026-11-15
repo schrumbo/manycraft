@@ -39,6 +39,10 @@ pub enum Phase {
     Banned { server: Option<String>, reason: String },
     LoginNeeded,
     Failed { reason: String },
+    /// In the game, but the network is gone; reconnects to `server` by itself when it is back.
+    NetworkLost { server: String },
+    /// Not started because there was no connection; starts by itself when it is back.
+    NoNetwork,
 }
 
 impl Phase {
@@ -52,10 +56,15 @@ impl Phase {
         self.is_running() || matches!(self, Phase::Restarting { .. })
     }
 
+    /// Whether Stop has something to end: an active instance, or a start that waits for the connection.
+    pub fn stoppable(&self) -> bool {
+        self.is_active() || matches!(self, Phase::NoNetwork)
+    }
+
     /// The server the instance is on or was last on, when it is known.
     pub fn server(&self) -> Option<&str> {
         match self {
-            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } => Some(server),
+            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } => Some(server),
             Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.as_deref(),
             _ => None,
         }
@@ -68,7 +77,7 @@ impl Phase {
 
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
-        !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. })
+        !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::NoNetwork)
     }
 }
 
@@ -120,6 +129,8 @@ impl EventEmitter<ChatArrived> for Model {}
 pub struct Model {
     pub accounts: Vec<Account>,
     pub batches: Vec<Batch>,
+    /// Whether accounts and batches were read from disk at least once.
+    pub loaded: bool,
     pub instances: Vec<Instance>,
     pub games: HashMap<String, Game>,
     pub chat: Vec<ChatLine>,
@@ -145,6 +156,8 @@ pub struct Model {
     pub exporting: HashSet<String>,
     /// Why the last message to the phone did not arrive, until one does.
     pub phone_trouble: Option<String>,
+    /// Whether the connection is known to be gone.
+    pub offline: bool,
 }
 
 /// An import as the sidebar shows it.

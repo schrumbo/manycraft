@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
@@ -9,7 +10,7 @@ use serde::Deserialize;
 
 use super::batch::ModRef;
 use super::instance::{Instance, Loader};
-use super::{install, net};
+use super::{install, net, online, paths};
 
 const API: &str = "https://api.modrinth.com/v2";
 const FABRIC_DEFAULTS: [&str; 5] = ["fabric-api", "lithium", "ferrite-core", "modernfix", "krypton"];
@@ -19,6 +20,7 @@ pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
 const HASH_CHUNK: usize = 200;
 const PROJECT_CHUNK: usize = 100;
+const KEPT_PAGES: usize = 300;
 /// How many results one search page holds.
 pub const PAGE: usize = 20;
 const USAGE: &str = "usage: manycraft mods search <query> [--version <version>]\n       manycraft mods resolve <slug>... [--version <version>]";
@@ -103,6 +105,8 @@ impl Sort {
 pub struct Page {
     pub hits: Vec<Hit>,
     pub total: usize,
+    /// When the results were fetched, for a page kept from an earlier search because there was no connection.
+    pub saved: Option<SystemTime>,
 }
 
 /// The default mods for a game version, and why any of them is missing.
@@ -526,9 +530,48 @@ pub fn search(query: &str, game_version: &str, loader: &Loader) -> Result<Vec<Hi
 
 /// One page of mods matching `query`, starting at result `offset`. With `all` false only mods for `loader` with a
 /// version for `game_version` come back; with `all` true the others do too, and [`Hit::support`] tells them apart.
+/// Every page that arrives is kept on disk; without a connection the kept page comes back with [`Page::saved`].
 pub fn search_page(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> Result<Page> {
-    let response: SearchResponse = net::get_json(&Api::new()?.agent, &search_url(query, game_version, loader, sort, all, offset))?;
-    Ok(Page { hits: response.hits, total: response.total_hits })
+    search_page_in(&paths::data_dir().join("cache").join("modrinth"), &Api::new()?.agent, online::offline(), &search_url(query, game_version, loader, sort, all, offset))
+}
+
+fn search_page_in(cache: &Path, agent: &ureq::Agent, offline: bool, url: &str) -> Result<Page> {
+    let path = cache.join(format!("{}.json", sha1_hex(url.as_bytes())));
+    let saved = || -> Option<Page> {
+        let at = path.metadata().and_then(|m| m.modified()).ok()?;
+        let response: SearchResponse = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        Some(Page { hits: response.hits, total: response.total_hits, saved: Some(at) })
+    };
+    if offline && let Some(page) = saved() {
+        return Ok(page);
+    }
+    let bytes = match net::get_bytes(agent, url) {
+        Ok(bytes) => bytes,
+        Err(e) if net::no_connection(&e) => return saved().ok_or(e),
+        Err(e) => return Err(e),
+    };
+    let response: SearchResponse = serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))?;
+    if net::write_atomic(&path, &bytes).is_ok() {
+        prune(cache, KEPT_PAGES);
+    }
+    Ok(Page { hits: response.hits, total: response.total_hits, saved: None })
+}
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn prune(dir: &Path, kept: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(SystemTime, std::path::PathBuf)> = entries.filter_map(Result::ok).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
+    if files.len() <= kept {
+        return;
+    }
+    files.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    for (_, path) in files.into_iter().skip(kept) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// The newest version of a mod (slug or project id) for `game_version` and `loader`, releases before betas before alphas.
@@ -583,10 +626,26 @@ fn saved_in(dir: &Path, instance: &Instance) -> Instance {
 
 fn sync_locked(instance: &Instance) -> Result<usize> {
     let mut mods = instance.mods.clone();
+    let mut local = instance.local_mods.clone();
     if needs_fabric_api(instance) {
-        mods.push(resolve(FABRIC_API, &instance.game_version, &instance.loader).context("the companion mod needs Fabric API, which could not be found")?);
+        let present = fabric_api_on_disk(&instance.mods_dir());
+        match present {
+            Some(name) if super::online::offline() => local.push(name),
+            _ => match resolve(FABRIC_API, &instance.game_version, &instance.loader) {
+                Ok(found) => mods.push(found),
+                Err(e) if net::no_connection(&e) && present.is_some() => local.extend(present),
+                Err(e) => return Err(e.context("the companion mod needs Fabric API, which could not be found")),
+            },
+        }
     }
-    sync_into(&net::agent(None)?, &mods, &instance.local_mods, &instance.mods_dir())
+    sync_into(&net::agent(None)?, &mods, &local, &instance.mods_dir())
+}
+
+fn fabric_api_on_disk(dir: &Path) -> Option<String> {
+    std::fs::read_dir(dir).ok()?.filter_map(Result::ok).filter_map(|e| e.file_name().to_str().map(str::to_owned)).find(|name| {
+        let lower = name.to_lowercase();
+        lower.starts_with("fabric-api") && lower.ends_with(".jar")
+    })
 }
 
 /// Mods of the instance that have a newer file for its game version.
@@ -686,6 +745,53 @@ fn run(args: &[String]) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_search_page_is_kept_and_comes_back_with_its_age_without_a_connection() {
+        use std::io::{Read, Write};
+        use std::time::Duration;
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let body = r#"{"hits":[{"project_id":"AANobbMI","slug":"sodium","title":"Sodium","description":"fast","downloads":5,"versions":["26.3"],"categories":["fabric"]}],"total_hits":1}"#;
+            let mut stream = server.incoming().next().unwrap().unwrap();
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(format!("HTTP/1.1 200 OK
+Content-Length: {}
+Connection: close
+
+{body}", body.len()).as_bytes());
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let url = "http://modrinth.test/v2/search?query=sodium";
+        let (none, lookups) = super::net::fake::agent(None, Duration::from_secs(5));
+        assert!(super::net::no_connection(&super::search_page_in(cache.path(), &none, false, url).err().unwrap()));
+        let (up, _) = super::net::fake::agent(Some(addr), Duration::from_secs(5));
+        let fresh = super::search_page_in(cache.path(), &up, false, url).unwrap();
+        assert_eq!((fresh.hits.len(), fresh.total, fresh.saved), (1, 1, None));
+        let kept = super::search_page_in(cache.path(), &none, false, url).unwrap();
+        assert_eq!((kept.hits, kept.total), (fresh.hits.clone(), 1));
+        assert!(kept.saved.is_some_and(|at| at.elapsed().unwrap_or_default() < Duration::from_secs(60)));
+        assert_eq!(lookups.count(), 2);
+        assert!(super::search_page_in(cache.path(), &none, true, url).unwrap().saved.is_some());
+        assert_eq!(lookups.count(), 2);
+        assert!(super::search_page_in(cache.path(), &none, true, "http://modrinth.test/v2/search?query=other").is_err());
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            let path = dir.path().join(format!("{i}.json"));
+            std::fs::write(&path, "{}").unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000 + i)).unwrap();
+        }
+        super::prune(dir.path(), 2);
+        let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["3.json", "4.json"]);
+    }
+
     #[test]
     fn mod_folder_syncs_of_one_instance_run_one_after_another() {
         use std::sync::atomic::{AtomicUsize, Ordering};

@@ -38,6 +38,16 @@ fn main() {
     if core::updater::install::boot(env!("CARGO_PKG_VERSION")) {
         return;
     }
+    match core::adopt::claim() {
+        Ok(core::adopt::Claim::Manager) => {}
+        Ok(core::adopt::Claim::Taken) => {
+            if !core::adopt::reopen_first() {
+                eprintln!("another Manycraft runs on this data folder and does not answer");
+            }
+            return;
+        }
+        Err(e) => eprintln!("manager lock: {e:#}"),
+    }
     core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
     ui::theme::start_with(ui::theme::Choice::parse(&std::env::var("MANYCRAFT_THEME").unwrap_or_default()));
     let app = gpui_kit::application().with_assets(Assets);
@@ -54,6 +64,7 @@ fn main() {
         ui::batch_sheet::init(cx);
         ui::instance_sheet::init(cx);
         ui::instance_page::init(cx);
+        ui::maintenance::init(cx);
         ui::transfer::init(cx);
         ui::settings_window::init(cx);
         ui::main_window::open(cx);

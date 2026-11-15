@@ -1,7 +1,7 @@
 //! Running games: preparing game folders from an instance, starting them staggered, tracking their processes.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -26,7 +26,7 @@ use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::proxy::{self, Kind};
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
-use super::{auth, ipc, lock, net, paths, scrub};
+use super::{adopt, auth, ipc, lock, net, paths, scrub};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
@@ -562,11 +562,12 @@ impl Process for Child {
 struct Held {
     child: Child,
     in_use: Option<lock::Guard>,
+    instance_in_use: Option<lock::Guard>,
 }
 
 impl Held {
-    fn new(child: Child) -> Self {
-        Self { child, in_use: install::clean::in_use().ok() }
+    fn new(child: Child, instance: &str) -> Self {
+        Self { child, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(instance) }
     }
 }
 
@@ -579,6 +580,7 @@ impl Process for Held {
         let exit = Process::try_wait(&mut self.child)?;
         if exit.is_some() {
             self.in_use = None;
+            self.instance_in_use = None;
         }
         Ok(exit)
     }
@@ -590,6 +592,39 @@ impl Process for Held {
     fn wait(&mut self) -> io::Result<Option<i32>> {
         let code = Process::wait(&mut self.child);
         self.in_use = None;
+        self.instance_in_use = None;
+        code
+    }
+}
+
+struct Adopted {
+    process: adopt::Process,
+    in_use: Option<lock::Guard>,
+    instance_in_use: Option<lock::Guard>,
+}
+
+impl Process for Adopted {
+    fn id(&self) -> u32 {
+        self.process.id()
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<Option<i32>>> {
+        let exit = self.process.try_wait()?;
+        if exit.is_some() {
+            self.in_use = None;
+            self.instance_in_use = None;
+        }
+        Ok(exit)
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        self.process.kill()
+    }
+
+    fn wait(&mut self) -> io::Result<Option<i32>> {
+        let code = self.process.wait();
+        self.in_use = None;
+        self.instance_in_use = None;
         code
     }
 }
@@ -659,6 +694,17 @@ impl Prepared {
     }
 }
 
+/// A game an earlier manager launched that still runs and is tracked again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Adoption {
+    pub key: String,
+    /// The batch the game runs in; `None` when played alone.
+    pub batch: Option<String>,
+    pub instance: String,
+    pub account: Uuid,
+    pub pid: u32,
+}
+
 /// Outcome of starting one account: its instance key, or why it did not start.
 pub type Started = (Uuid, Result<String>);
 
@@ -670,6 +716,8 @@ pub struct Fleet {
     games: sync::Games,
     reaping: Arc<AtomicBool>,
     closing: AtomicBool,
+    ledger: Option<adopt::Ledger>,
+    adopted: Mutex<HashMap<String, String>>,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -689,9 +737,83 @@ impl Fleet {
     /// A fleet with its IPC server listening; IPC events arrive on the returned receiver.
     pub fn new() -> Result<(Fleet, Receiver<ipc::Event>)> {
         let (ipc, raw) = ipc::Server::start()?;
+        Self::with(ipc, raw, None)
+    }
+
+    /// The fleet of the manager: it listens where the last manager did, records every launch, and tracks again the
+    /// games the last manager launched that still run.
+    pub fn manager() -> Result<(Fleet, Receiver<ipc::Event>, Vec<Adoption>)> {
+        let ledger = adopt::Ledger::open();
+        let (ipc, raw) = ipc::Server::start_on(ledger.port())?;
+        ledger.set_port(ipc.port());
+        let (fleet, events) = Self::with(ipc, raw, Some(ledger.clone()))?;
+        let adopted = fleet.adopt(&ledger.games());
+        ledger.keep_only(&adopted.iter().map(|a| a.key.clone()).collect::<Vec<_>>());
+        Ok((fleet, events, adopted))
+    }
+
+    fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
         let events = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), stagger: DEFAULT_STAGGER }, events))
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), stagger: DEFAULT_STAGGER }, events))
+    }
+
+    fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
+        let mut adopted = Vec::new();
+        for (key, run) in runs {
+            let Some(process) = adopt::Process::adopt(run) else { continue };
+            let pid = process.id();
+            sync::register(&self.games, key, &run.instance, run.account);
+            lock(&self.adopted).insert(key.clone(), run.token.clone());
+            let instance = RunningInstance {
+                batch: run.batch.clone(),
+                instance: run.instance.clone(),
+                account: run.account,
+                child: Box::new(Adopted { process, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(&run.instance) }),
+                pid,
+                server_addr: run.server_addrs.first().copied(),
+                server_addrs: run.server_addrs.clone(),
+                started: Instant::now(),
+                exit: None,
+                logs: run.game_dir.join("logs"),
+            };
+            self.insert(key.clone(), instance);
+            adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid });
+        }
+        adopted
+    }
+
+    /// Lets the companion mods of adopted games connect again, once their tiles exist.
+    pub fn admit(&self, keys: &[String]) {
+        let mut adopted = lock(&self.adopted);
+        for key in keys {
+            if let Some(token) = adopted.remove(key) {
+                self.ipc.register_with(key, &token);
+            }
+        }
+    }
+
+    /// Stops tracking adopted games that have no place any more; they keep running untouched.
+    pub fn release(&self, keys: &[String]) {
+        let mut gone = Vec::new();
+        {
+            let mut running = lock(&self.running);
+            let mut adopted = lock(&self.adopted);
+            for key in keys {
+                if adopted.remove(key).is_some()
+                    && let Some(instance) = running.remove(key)
+                {
+                    gone.push((key.clone(), instance.pid));
+                }
+            }
+        }
+        if let Some(ledger) = &self.ledger {
+            ledger.remove(&gone);
+        }
+    }
+
+    fn ipc_file(&self) -> Option<PathBuf> {
+        self.ledger.is_some().then(adopt::address_file)
     }
 
     /// Installs the target's game, then prepares and starts every account `stagger` apart. `companion_jar` replaces the
@@ -700,8 +822,9 @@ impl Fleet {
     pub fn start_batch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
         let prepared = self.prepare_launch(target, accounts, companion_jar, progress)?;
         let ipc_address = self.ipc.address();
+        let ipc_file = self.ipc_file();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
         };
         Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
@@ -714,7 +837,7 @@ impl Fleet {
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
         }
-        let server_addrs = server_addresses(target.server(), accounts, resolve_all)?;
+        let server_addrs = server_addresses(target.server(), accounts, resolve_all, || !super::online::reachable())?;
         let installed = install::install(&instance.game_version, &instance.loader, progress)?;
         let companion_jar = match companion_jar {
             Some(jar) => Some(jar.to_path_buf()),
@@ -728,8 +851,9 @@ impl Fleet {
     /// already on the same server in another batch.
     pub fn start_one(&self, prepared: &Prepared, account: &Account) -> Result<String> {
         let ipc_address = self.ipc.address();
+        let ipc_file = self.ipc_file();
         self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
         })
     }
 
@@ -786,7 +910,24 @@ impl Fleet {
             bail!("Manycraft is quitting");
         }
         let pid = child.id();
-        let logs = target.instance.game_dir(account.id).join("logs");
+        let game_dir = target.instance.game_dir(account.id);
+        if let Some(ledger) = &self.ledger
+            && let Some(seen) = adopt::identify(pid)
+        {
+            let run = adopt::Run {
+                batch: target.batch.as_ref().map(|b| b.id.clone()),
+                instance: target.instance.id.clone(),
+                account: account.id,
+                pid,
+                started: seen.started,
+                exe: seen.exe,
+                game_dir: game_dir.clone(),
+                token,
+                server_addrs: server_addrs.to_vec(),
+            };
+            ledger.add(&key, run);
+        }
+        let logs = game_dir.join("logs");
         let instance = RunningInstance {
             batch: target.batch.as_ref().map(|b| b.id.clone()),
             instance: target.instance.id.clone(),
@@ -833,18 +974,25 @@ impl Fleet {
         let running = Arc::downgrade(&self.running);
         let reaping = Arc::clone(&self.reaping);
         let ipc = self.ipc.clone();
+        let ledger = self.ledger.clone();
         std::thread::Builder::new().name("fleet-reaper".into()).spawn(move || {
             loop {
                 std::thread::sleep(REAP_INTERVAL);
                 let Some(running) = running.upgrade() else { return };
-                let mut running = lock(&running);
                 let mut alive = false;
-                for (key, instance) in running.iter_mut() {
+                let mut ended = Vec::new();
+                for (key, instance) in lock(&running).iter_mut() {
                     if instance.poll() {
                         alive = true;
                     } else {
                         ipc.unregister(key);
+                        ended.push((key.clone(), instance.pid));
                     }
+                }
+                if let Some(ledger) = &ledger
+                    && !ended.is_empty()
+                {
+                    ledger.remove(&ended);
                 }
                 if !alive {
                     reaping.store(false, Ordering::SeqCst);
@@ -954,7 +1102,8 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
     Ok(())
 }
 
-fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, key: &str, token: &str) -> Result<Child> {
+#[allow(clippy::too_many_arguments)]
+fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, ipc_file: Option<&Path>, key: &str, token: &str) -> Result<Child> {
     let instance = &target.instance;
     let game_dir = prepare(instance, account, companion_jar)?;
     require_companion_for_proxy(account, &instance.mods_dir())?;
@@ -962,7 +1111,10 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         quiet_early_window(&instance.config_dir())?;
     }
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
-    let extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    let mut extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    if let Some(file) = ipc_file {
+        extra.jvm.push(format!("-Dmanycraft.ipcfile={}", file.display()));
+    }
     let session = match account.kind {
         AccountKind::Offline => {
             account::validate_offline_name(&account.name)?;
@@ -987,7 +1139,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
 /// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
 /// resolve the name through it, still clash across batches. The lookup is skipped when all accounts have a proxy and
 /// may fail when some do.
-fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>) -> Result<Vec<SocketAddr>> {
+fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>, offline: impl Fn() -> bool) -> Result<Vec<SocketAddr>> {
     let Some(server) = server else { return Ok(Vec::new()) };
     let name = name_stand_in(server)?;
     let proxied = accounts.iter().filter(|a| a.proxy.is_some()).count();
@@ -995,7 +1147,7 @@ fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(
         return Ok(vec![name]);
     }
     let mut found = match lookup(server) {
-        Err(_) if proxied > 0 => Vec::new(),
+        Err(_) if proxied > 0 || offline() => Vec::new(),
         found => found.with_context(|| format!("cannot find the server {server}"))?,
     };
     found.push(name);
@@ -1422,6 +1574,7 @@ fn print_event(names: &HashMap<String, String>, event: &ipc::Event) {
         ipc::Event::Connected { instance, pid, mod_version } => println!("{} connected (pid {pid}, mod {mod_version})", name(instance)),
         ipc::Event::Message { instance, message } => println!("{}: {message:?}", name(instance)),
         ipc::Event::Disconnected { instance } => println!("{} disconnected", name(instance)),
+        ipc::Event::Reopen => {}
     }
 }
 
@@ -1874,6 +2027,36 @@ mod tests {
     }
 
     #[test]
+    fn adopted_games_wait_for_their_tile_and_released_ones_keep_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = adopt::Ledger::at(dir.path().join("launched.json"));
+        let (ipc, raw) = ipc::Server::start_on(None).unwrap();
+        let (fleet, _events) = Fleet::with(ipc, raw, Some(ledger.clone())).unwrap();
+        let mut kept = adopt::tests::sleeper();
+        let mut freed = adopt::tests::sleeper();
+        let mut runs = BTreeMap::new();
+        for (key, child) in [("kept", &kept), ("freed", &freed)] {
+            let run = adopt::tests::run(dir.path(), child.id(), &adopt::identify(child.id()).unwrap());
+            ledger.add(key, run.clone());
+            runs.insert(key.to_owned(), run);
+        }
+        let adopted = fleet.adopt(&runs);
+        assert_eq!(adopted.len(), 2);
+        assert_eq!(lock(&fleet.adopted).len(), 2, "no mod may connect before its tile exists");
+        fleet.admit(&["kept".to_owned()]);
+        fleet.release(&["freed".to_owned()]);
+        assert!(lock(&fleet.adopted).is_empty());
+        assert!(lock(&fleet.running).contains_key("kept"));
+        assert!(!lock(&fleet.running).contains_key("freed"));
+        assert_eq!(ledger.games().keys().collect::<Vec<_>>(), ["kept"]);
+        assert!(freed.try_wait().unwrap().is_none(), "a released game is left running");
+        let _ = freed.kill();
+        let _ = kept.kill();
+        let _ = freed.wait();
+        let _ = kept.wait();
+    }
+
+    #[test]
     fn a_failed_launch_is_reported_and_unregistered() {
         let (fleet, _events) = Fleet::new().unwrap();
         let batch = target("A");
@@ -2173,18 +2356,20 @@ mod tests {
         let mut proxied = Account::offline("AltTwo").unwrap();
         proxied.proxy = Some("socks5://10.1.1.1:1080".into());
         let name = name_stand_in("s").unwrap();
-        assert_eq!(server_addresses(None, &[direct.clone()], found).unwrap(), []);
-        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr, name]);
-        assert!(server_addresses(Some("s"), &[direct.clone()], missing).is_err());
-        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr, name]);
-        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), [name]);
+        let online = || false;
+        assert_eq!(server_addresses(None, &[direct.clone()], found, online).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found, online).unwrap(), [addr, name]);
+        assert!(server_addresses(Some("s"), &[direct.clone()], missing, online).is_err());
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], missing, || true).unwrap(), [name]);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found, online).unwrap(), [addr, name]);
+        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing, online).unwrap(), [name]);
         let never = |_: &str| -> Result<Vec<SocketAddr>> { panic!("looked up on this machine") };
-        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never).unwrap(), [name]);
+        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never, online).unwrap(), [name]);
         assert_eq!(name_stand_in("S").unwrap(), name);
         assert_eq!(name_stand_in("s:25565").unwrap(), name);
         assert_ne!(name_stand_in("s:25566").unwrap(), name);
         assert_ne!(name_stand_in("t").unwrap(), name);
-        let other = server_addresses(Some("S"), &[proxied], never).unwrap();
+        let other = server_addresses(Some("S"), &[proxied], never, online).unwrap();
         let reserved = HashMap::from([("k".to_owned(), Reservation { account: Uuid::nil(), instance: "i".into(), server_addrs: vec![name] })]);
         let mut account = Account::offline("AltThree").unwrap();
         account.id = Uuid::nil();

@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
-use super::{net, webauth};
+use super::{net, online, webauth};
 
 const CLIENT_ID_VAR: &str = "MANYCRAFT_MSA_CLIENT_ID";
 pub(super) const LIVE_CLIENT_ID: &str = "00000000402b5328";
@@ -33,6 +33,7 @@ const SLOW_DOWN_STEP: u64 = 5;
 const TRANSPORT_FAILURES: u32 = 3;
 const CANCEL_SLICE: Duration = Duration::from_millis(100);
 const OFFLINE_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
+const SESSION_MARGIN: Duration = Duration::from_secs(10 * 60);
 const USAGE: &str = "usage: manycraft login [--proxy URL]\n       manycraft login --offline <name>\n       manycraft login --check <name or id>";
 
 /// Why a sign-in failed, for the cases a person can act on. Found with `downcast_ref` on the returned error.
@@ -300,11 +301,29 @@ pub fn client_id() -> String {
     pick_client_id(std::env::var(CLIENT_ID_VAR).ok().as_deref(), option_env!("MANYCRAFT_MSA_CLIENT_ID"))
 }
 
-/// Gets a fresh session for a saved account from the refresh token in the keychain, and keeps the rotated token.
+/// Gets a fresh session for a saved account from the refresh token in the keychain, and keeps the rotated token
+/// and the session. Without a connection, the last session is used while it stays valid for a while.
 pub fn session_for(account: &Account) -> Result<Session> {
     if account.kind == AccountKind::Offline {
         return Ok(offline_session(account, SystemTime::now()));
     }
+    let saved = || account::read_session(account.id).ok().flatten().and_then(|text| restore_session(account, &text, SystemTime::now()));
+    if online::offline()
+        && let Some(session) = saved()
+    {
+        return Ok(session);
+    }
+    match fresh_session(account) {
+        Ok(session) => {
+            let _ = account::store_session(account.id, &save_session(&session));
+            Ok(session)
+        }
+        Err(e) if net::no_connection(&e) => saved().ok_or(e),
+        Err(e) => Err(e),
+    }
+}
+
+fn fresh_session(account: &Account) -> Result<Session> {
     let flow = Flow::new(account.proxy.as_deref())?;
     let tokens = refresh_saved(&flow, account)?;
     let session = flow.session(&tokens)?;
@@ -312,6 +331,26 @@ pub fn session_for(account: &Account) -> Result<Session> {
         bail!("the saved sign-in belongs to {}, not to {}", session.name, account.name);
     }
     Ok(session)
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedSession {
+    name: String,
+    uuid: Uuid,
+    access_token: String,
+    xuid: String,
+    expires_at: u64,
+}
+
+fn save_session(session: &Session) -> String {
+    let expires_at = session.expires_at.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    serde_json::json!(SavedSession { name: session.name.clone(), uuid: session.uuid, access_token: session.access_token.clone(), xuid: session.xuid.clone(), expires_at }).to_string()
+}
+
+fn restore_session(account: &Account, text: &str, now: SystemTime) -> Option<Session> {
+    let saved: SavedSession = serde_json::from_str(text).ok()?;
+    let session = Session { name: saved.name, uuid: saved.uuid, access_token: saved.access_token, xuid: saved.xuid, expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(saved.expires_at) };
+    (session.uuid == account.id && session.is_usable(now + SESSION_MARGIN)).then_some(session)
 }
 
 fn refresh_lock(id: Uuid) -> Arc<Mutex<()>> {
@@ -939,6 +978,22 @@ mod tests {
         assert_eq!(session.uuid.to_string(), "b50ad385-829d-3141-a216-7e7d7539ba7f");
         assert!(session.is_usable(now + Duration::from_secs(5 * 365 * 24 * 3600)));
         assert_eq!(offline_session(&account, now).expires_at, now + OFFLINE_LIFETIME);
+    }
+
+    #[test]
+    fn a_saved_session_comes_back_only_for_its_account_while_it_stays_valid() {
+        let account = Account { kind: AccountKind::Microsoft, ..Account::offline("Alt").unwrap() };
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let session = Session { name: "Alt".into(), uuid: account.id, access_token: "SECRET-MC".into(), xuid: "42".into(), expires_at: now + Duration::from_secs(3600) };
+        let text = save_session(&session);
+        let back = restore_session(&account, &text, now).unwrap();
+        assert_eq!((back.name.as_str(), back.uuid, back.access_token.as_str(), back.xuid.as_str(), back.expires_at), ("Alt", account.id, "SECRET-MC", "42", session.expires_at));
+        assert!(restore_session(&account, &text, now + Duration::from_secs(3600) - SESSION_MARGIN).is_none());
+        assert!(restore_session(&account, &text, now + Duration::from_secs(3599) - SESSION_MARGIN).is_some());
+        let other = Account { id: Uuid::nil(), ..account.clone() };
+        assert!(restore_session(&other, &text, now).is_none());
+        assert!(restore_session(&account, "not json", now).is_none());
+        assert!(!format!("{back:?}").contains("SECRET-MC"));
     }
 
     #[test]

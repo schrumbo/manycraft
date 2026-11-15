@@ -39,9 +39,9 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new() -> Result<Self> {
+    pub fn new(agent: ureq::Agent) -> Result<Self> {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(WORKERS).build().context("cannot start download workers")?;
-        Ok(Downloader { agent: net::agent(None)?, pool, fetched: AtomicUsize::new(0) })
+        Ok(Downloader { agent, pool, fetched: AtomicUsize::new(0) })
     }
 
     pub fn agent(&self) -> &ureq::Agent {
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn existing_files_are_not_fetched() {
         let (_dir, path) = file(b"abc");
-        let dl = Downloader::new().unwrap();
+        let dl = Downloader::new(net::agent(None).unwrap()).unwrap();
         assert!(!dl.one(&job(&path, None, Some(3))).unwrap());
         assert!(!dl.one(&job(&path, Some(ABC_SHA1), None)).unwrap());
         assert!(!dl.one(&job(&path, None, None)).unwrap());

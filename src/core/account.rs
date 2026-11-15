@@ -77,7 +77,7 @@ pub fn validate_offline_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Loads all saved accounts; an absent file is an empty list, an unreadable one an error.
+/// Loads all saved accounts; an absent file is an empty list, a damaged one its backup or, without a good backup, an empty list.
 pub fn load() -> Result<Vec<Account>> {
     load_from(&paths::data_dir())
 }
@@ -134,11 +134,28 @@ pub fn read_token(id: Uuid) -> Result<Option<String>> {
     }
 }
 
-/// Removes the refresh token for account `id`; a missing token is not an error.
+/// Removes the refresh token and the saved game session for account `id`; missing ones are not an error.
 pub fn delete_token(id: Uuid) -> Result<()> {
-    match entry(id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e).context("cannot remove the sign-in from the system keychain"),
+    for entry in [entry(id)?, session_entry(id)?] {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e).context("cannot remove the sign-in from the system keychain"),
+        }
+    }
+    Ok(())
+}
+
+/// Stores the game session of account `id` in the OS keychain, for starting while the sign-in cannot be refreshed.
+pub fn store_session(id: Uuid, session: &str) -> Result<()> {
+    session_entry(id)?.set_secret(session.as_bytes()).context("cannot save the game session in the system keychain")
+}
+
+/// Reads the game session of account `id`; `None` when the keychain has none.
+pub fn read_session(id: Uuid) -> Result<Option<String>> {
+    match session_entry(id)?.get_secret() {
+        Ok(bytes) => Ok(Some(String::from_utf8(bytes).context("the stored game session is unreadable")?)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e).context("cannot read the game session from the system keychain"),
     }
 }
 
@@ -146,16 +163,16 @@ fn entry(id: Uuid) -> Result<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &id.to_string()).context("system keychain is not available")
 }
 
+fn session_entry(id: Uuid) -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("{id}.session")).context("system keychain is not available")
+}
+
 fn parse(bytes: &[u8], path: &Path) -> Result<Vec<Account>> {
     serde_json::from_slice(bytes).with_context(|| format!("{} is damaged; it was left untouched, fix or move it", path.display()))
 }
 
 fn load_from(dir: &Path) -> Result<Vec<Account>> {
-    let path = dir.join(FILE);
-    match store::read(&path)? {
-        Some(bytes) => parse(&bytes, &path),
-        None => Ok(Vec::new()),
-    }
+    Ok(store::load(&dir.join(FILE))?.unwrap_or_default())
 }
 
 fn save_to(dir: &Path, accounts: &[Account]) -> Result<()> {
@@ -165,7 +182,7 @@ fn save_to(dir: &Path, accounts: &[Account]) -> Result<()> {
     }
     let bytes = serde_json::to_vec_pretty(accounts).context("cannot encode accounts")?;
     let path = dir.join(FILE);
-    store::write(&path, &bytes, |current| current.map_or(Ok(()), |c| parse(c, &path).map(drop)))
+    store::write::<Vec<Account>>(&path, &bytes, |current| current.map_or(Ok(()), |c| parse(c, &path).map(drop)))
 }
 
 #[cfg(test)]
@@ -211,15 +228,41 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_is_an_error_and_stays_byte_for_byte() {
+    fn corrupt_file_restores_the_previous_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        let accounts = vec![account(1, "Alpha", None), account(2, "Beta", None)];
+        save_to(dir.path(), &accounts[..1]).unwrap();
+        save_to(dir.path(), &accounts).unwrap();
+        std::fs::write(&path, b"[{\"id\": broken").unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), &accounts[..1]);
+        assert_eq!(std::fs::read(store::damaged_path(&path)).unwrap(), b"[{\"id\": broken");
+        save_to(dir.path(), &accounts).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), accounts);
+    }
+
+    #[test]
+    fn corrupt_file_and_backup_give_an_empty_list_and_keep_both() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FILE);
         std::fs::write(&path, b"[{\"id\": broken").unwrap();
-        assert!(load_from(dir.path()).is_err());
-        assert!(save_to(dir.path(), &[account(1, "Alpha", None)]).is_err());
+        std::fs::write(store::backup_path(&path), b"").unwrap();
+        assert!(load_from(dir.path()).unwrap().is_empty());
+        assert_eq!(std::fs::read(store::damaged_path(&path)).unwrap(), b"[{\"id\": broken");
+        assert!(store::damaged_path(&store::backup_path(&path)).exists());
+    }
+
+    #[test]
+    fn a_file_damaged_after_loading_is_never_overwritten_and_never_becomes_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        save_to(dir.path(), &[account(1, "Alpha", None)]).unwrap();
+        save_to(dir.path(), &[account(2, "Beta", None)]).unwrap();
+        let backup = std::fs::read(store::backup_path(&path)).unwrap();
+        std::fs::write(&path, b"[{\"id\": broken").unwrap();
+        assert!(save_to(dir.path(), &[account(3, "Gamma", None)]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"[{\"id\": broken");
-        let others = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok).filter(|e| e.file_name() != "accounts.json.lock").count();
-        assert_eq!(others, 1);
+        assert_eq!(std::fs::read(store::backup_path(&path)).unwrap(), backup);
     }
 
     #[test]
@@ -236,6 +279,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), br#"{"accounts":[]}"#).unwrap();
         assert!(load_from(dir.path()).is_err());
+        assert!(save_to(dir.path(), &[account(1, "Alpha", None)]).is_err());
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"accounts":[]}"#);
     }
 
     #[test]

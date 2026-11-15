@@ -27,7 +27,8 @@ use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
-use crate::core::{drive, install, ipc};
+use crate::core::store::{self, Recovery};
+use crate::core::{adopt, drive, install, ipc, net, online};
 
 const STABLE: Duration = Duration::from_secs(60);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -38,6 +39,9 @@ const STAGGER_STEP: Duration = Duration::from_millis(100);
 const KEPT_CHAT: usize = 5000;
 const ALERT_NAMES: usize = 4;
 const QUIT_WAIT: Duration = Duration::from_secs(5);
+const BACK_STAGGER: Duration = Duration::from_secs(1);
+const BACK_WAIT_SECS: u64 = 2;
+const WAITING_RETRY_SECS: u64 = 60;
 const TRASH_KEPT: Duration = Duration::from_secs(600);
 
 /// What the fleet reports back to the UI thread.
@@ -45,7 +49,9 @@ pub enum Update {
     Preparing { batch: String, percent: u8 },
     Progress { batch: String, done: usize, total: usize },
     Launched { key: String, plain: bool },
-    Failed { key: String, reason: String, login: bool },
+    Failed { key: String, reason: String, login: bool, offline: bool },
+    /// Whether the connection came back (`true`) or is gone.
+    Reach { online: bool },
     Ipc(Event),
     Exited { key: String, code: Option<i32> },
     Preview { key: String, seq: u32, image: Arc<RenderImage> },
@@ -78,6 +84,12 @@ pub trait Backend: Send + Sync {
     fn refresh(&self, _accounts: Vec<Account>) {}
     /// Checks the proxy `url` of instance `key` and reports the result.
     fn check_proxy(&self, _key: String, _url: String) {}
+    /// The games an earlier manager launched that still run; only the first call returns them.
+    fn adopted(&self) -> Vec<fleet::Adoption> {
+        Vec::new()
+    }
+    /// Lets the adopted games that got a tile talk to the manager again and stops tracking the rest, which keep running.
+    fn settle(&self, _placed: &[String], _dropped: &[String]) {}
 }
 
 struct Real {
@@ -90,13 +102,23 @@ struct Real {
     previews: mpsc::Sender<(String, PathBuf)>,
     refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
     checking: Arc<Mutex<HashSet<String>>>,
+    adopted: Mutex<Vec<fleet::Adoption>>,
 }
 
 impl Real {
     fn new(out: async_channel::Sender<Update>) -> anyhow::Result<Self> {
         crate::core::fleet::scrub_crash_files();
-        let (fleet, events) = Fleet::new()?;
+        let (fleet, events, adopted) = if adopt::is_manager() {
+            Fleet::manager()?
+        } else {
+            let (fleet, events) = Fleet::new()?;
+            (fleet, events, Vec::new())
+        };
         let fleet = Arc::new(fleet);
+        let reach = out.clone();
+        online::subscribe(move |up| {
+            let _ = reach.send_blocking(Update::Reach { online: up });
+        });
         let forward = out.clone();
         std::thread::Builder::new().name("fleet-events".into()).spawn(move || {
             while let Ok(event) = events.recv() {
@@ -105,7 +127,7 @@ impl Real {
                 }
             }
         })?;
-        let watch: Arc<Mutex<HashSet<String>>> = Arc::default();
+        let watch: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(adopted.iter().map(|a| a.key.clone()).collect()));
         let (watching, exits, exiting) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet));
         std::thread::Builder::new().name("fleet-exits".into()).spawn(move || {
             loop {
@@ -147,7 +169,7 @@ impl Real {
                 }
             }
         })?;
-        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default() })
+        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted) })
     }
 }
 
@@ -164,11 +186,14 @@ impl Backend for Real {
         }
         let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
             let mine = |key: &str| lock(&owners).get(key) == Some(&run);
-            let fail_all = |reason: String| {
+            let gone = std::cell::OnceCell::new();
+            let cut_off = |e: &anyhow::Error, account: &Account| account.proxy.is_none() && net::no_connection(e) && *gone.get_or_init(|| !online::reachable());
+            let fail_all = |e: anyhow::Error| {
+                let reason = format!("{e:#}");
                 for account in &accounts {
                     let key = target.key(account.id);
                     if mine(&key) {
-                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false });
+                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false, offline: cut_off(&e, account) });
                     }
                 }
             };
@@ -183,7 +208,7 @@ impl Backend for Real {
             };
             let prepared = match fleet.prepare_launch(&target, &accounts, None, &progress) {
                 Ok(prepared) => prepared,
-                Err(e) => return fail_all(format!("{e:#}")),
+                Err(e) => return fail_all(e),
             };
             let total = accounts.len();
             let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: 0, total });
@@ -214,7 +239,7 @@ impl Backend for Real {
                     }
                     Err(_) if fleet.is_running(&key) => Some(Update::Launched { key, plain: prepared.plain() }),
                     Err(_) if !mine(&key) => None,
-                    Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), reason: format!("{e:#}") }),
+                    Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), offline: cut_off(&e, account), reason: format!("{e:#}") }),
                 };
                 if let Some(update) = update {
                     let _ = out.send_blocking(update);
@@ -266,6 +291,18 @@ impl Backend for Real {
                 }
             }
         });
+    }
+
+    fn adopted(&self) -> Vec<fleet::Adoption> {
+        let (live, ended): (Vec<_>, Vec<_>) = std::mem::take(&mut *lock(&self.adopted)).into_iter().partition(|a| self.fleet.is_running(&a.key));
+        self.settle(&[], &ended.into_iter().map(|a| a.key).collect::<Vec<_>>());
+        live
+    }
+
+    fn settle(&self, placed: &[String], dropped: &[String]) {
+        self.fleet.admit(placed);
+        self.fleet.release(dropped);
+        lock(&self.watch).retain(|k| !dropped.contains(k));
     }
 
     fn check_proxy(&self, key: String, url: String) {
@@ -367,6 +404,10 @@ struct Runtime {
     phone: phone::Coalescer,
     outbox: Option<phone::Outbox>,
     phone_at: Option<Instant>,
+    /// Games an earlier manager launched whose mod has not reported its state since.
+    adopted: HashSet<String>,
+    /// Games an earlier manager launched; where the OS does not tell their exit code, an exit counts as clean.
+    foreign: HashSet<String>,
 }
 
 
@@ -382,7 +423,7 @@ pub fn init(cx: &mut App) {
     let (out, updates) = async_channel::unbounded::<Update>();
     super::stills::init(out.clone(), cx);
     let shared_visible: Arc<Mutex<HashSet<String>>> = Arc::default();
-    let backend: Arc<dyn Backend> = if drive::on() {
+    let backend: Arc<dyn Backend> = if drive::on() && !drive::real() {
         Arc::new(super::fake::Fake::new(out, Arc::clone(&shared_visible)))
     } else {
         match Real::new(out) {
@@ -427,17 +468,12 @@ pub fn init(cx: &mut App) {
         phone: phone::Coalescer::default(),
         outbox: None,
         phone_at: None,
+        adopted: HashSet::new(),
+        foreign: HashSet::new(),
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
-        let text = format!("{e:#}");
-        cx.global_mut::<Runtime>().notice = Some(if text.contains("a copy is in") {
-            tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.bak).")
-        } else if text.contains("it was left untouched") {
-            tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; die Datei bleibt unverändert, bis du etwas änderst.")
-        } else {
-            text
-        });
+        cx.global_mut::<Runtime>().notice = Some(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}")));
     }
     cx.background_spawn(async {
         if !crate::core::updater::install::running_alone() {
@@ -568,15 +604,21 @@ fn reload_with(cx: &mut App, keep: bool) {
             _ => Vec::new(),
         };
         let loaded = batches.and_then(|b| instances.map(|i| (b, i)));
-        (accounts, loaded, logs, moved.problems)
+        (accounts, loaded, logs, moved.problems, store::take_recovered())
     });
     cx.spawn(async move |cx| {
-        let (accounts, batches, logs, problems) = task.await;
+        let (accounts, batches, logs, problems, recovered) = task.await;
         cx.update(|cx| {
+            if let Some(text) = recovered_notice(&recovered)
+                && cx.has_global::<Runtime>()
+            {
+                let rt = cx.global_mut::<Runtime>();
+                rt.notice = Some(rt.notice.take().map_or(text.clone(), |before| format!("{before} {text}")));
+            }
             let model = model::get(cx);
             let loaded = accounts.is_ok() && batches.is_ok();
             let notice = if loaded && cx.has_global::<Runtime>() { cx.global_mut::<Runtime>().notice.take() } else { None };
-            let notice = if problems.is_empty() { notice } else { Some(problems.join("\n")) };
+            let notice = if problems.is_empty() { notice } else { Some(notice.into_iter().fold(problems.join("\n"), |p, n| format!("{p}\n{n}"))) };
             let mut retired = Vec::new();
             model.update(cx, |m, cx| {
                 for (key, log) in logs {
@@ -587,15 +629,24 @@ fn reload_with(cx: &mut App, keep: bool) {
                         m.accounts = accounts;
                         m.batches = batches;
                         m.instances = instances;
+                        m.loaded = true;
                         m.error = if keep { notice.or(m.error.take()) } else { notice };
                     }
-                    (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),
+                    (Err(e), _) | (_, Err(e)) => m.error = Some(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))),
                 }
                 retired = rebuild(m);
                 cx.notify();
             });
             for image in retired {
                 cx.drop_image(image, None);
+            }
+            if model.read(cx).loaded
+                && let Some(rt) = cx.try_global::<Runtime>()
+            {
+                let adopted = rt.backend.adopted();
+                if !adopted.is_empty() {
+                    update_model(cx, |m, rt, _| adopt_games(m, rt, adopted));
+                }
             }
             let present: HashSet<String> = model.read(cx).games.keys().cloned().collect();
             super::tile::forget_except(&|k| present.contains(k), cx);
@@ -622,6 +673,42 @@ fn reload_with(cx: &mut App, keep: bool) {
         });
     })
     .detach();
+}
+
+fn recovered_notice(found: &[(PathBuf, Recovery)]) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for (path, recovery) in found {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let count = found.iter().filter(|(p, r)| r == recovery && p.file_name() == path.file_name()).count();
+        let line = match (name.as_str(), recovery, count) {
+            ("accounts.json", Recovery::Restored, _) => tr("Die Accounts waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("accounts.json", Recovery::Lost, _) => tr("Die Accounts waren beschädigt und ließen sich nicht wiederherstellen. Füg sie neu hinzu; eine Kopie liegt neben der Datei (accounts.json.damaged)."),
+            ("settings.json", Recovery::Restored, _) => tr("Die Einstellungen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("settings.json", Recovery::Lost, _) => tr("Die Einstellungen waren beschädigt und ließen sich nicht wiederherstellen. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.damaged)."),
+            ("batch.json", Recovery::Restored, 1) => tr("Ein Batch war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("batch.json", Recovery::Restored, n) => trf("%lld Batches waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
+            ("batch.json", Recovery::Lost, 1) => tr("Ein Batch war beschädigt und ließ sich nicht wiederherstellen. Leg ihn neu an; eine Kopie liegt in seinem Ordner (batch.json.damaged)."),
+            ("batch.json", Recovery::Lost, n) => trf("%lld Batches waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (batch.json.damaged).", &[&n]),
+            ("instance.json", Recovery::Restored, 1) => tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("instance.json", Recovery::Restored, n) => trf("%lld Instanzen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
+            ("instance.json", Recovery::Lost, 1) => tr("Eine Instanz war beschädigt und ließ sich nicht wiederherstellen. Ihre Mods und Welten bleiben in ihrem Ordner, dazu eine Kopie (instance.json.damaged)."),
+            ("instance.json", Recovery::Lost, n) => trf("%lld Instanzen waren beschädigt und ließen sich nicht wiederherstellen. Ihre Mods und Welten bleiben in ihren Ordnern, dazu je eine Kopie (instance.json.damaged).", &[&n]),
+            (_, Recovery::Restored, _) => trf("%@ war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&name]),
+            (_, Recovery::Lost, _) => trf("%@ war beschädigt und ließ sich nicht wiederherstellen. Eine Kopie liegt daneben (%@.damaged).", &[&name, &name]),
+        };
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    if lines.len() < 2 {
+        return lines.pop();
+    }
+    let restored = found.iter().filter(|(_, r)| *r == Recovery::Restored).count();
+    Some(match (restored, found.len()) {
+        (r, all) if r == all => trf("%lld Dateien waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&all]),
+        (0, all) => trf("%lld Dateien waren beschädigt und ließen sich nicht wiederherstellen. Kopien liegen jeweils daneben (Endung .damaged).", &[&all]),
+        (r, all) => trf("%lld Dateien waren beschädigt: %lld aus der Sicherung wiederhergestellt, die übrigen nicht. Kopien liegen jeweils daneben (Endung .damaged).", &[&all, &r]),
+    })
 }
 
 fn saved_history(batches: &[Batch], instances: &[Instance]) -> Vec<(String, history::Log)> {
@@ -995,7 +1082,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
                     i.stopping = true;
                     running.push(key.clone());
                 }
-                Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } => i.phase = Phase::Stopped,
+                Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } | Phase::NoNetwork => i.phase = Phase::Stopped,
                 _ => {}
             }
         }
@@ -1106,7 +1193,7 @@ fn respawn(key: &str, cx: &mut App) {
 
 fn server_of(phase: &Phase) -> Option<String> {
     match phase {
-        Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } => Some(server.clone()),
+        Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } => Some(server.clone()),
         Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.clone(),
         _ => None,
     }
@@ -1142,7 +1229,7 @@ fn broadcast(batch: &str, text: &str, cx: &mut App) {
 }
 
 fn playable(phase: &Phase) -> bool {
-    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
 /// Puts the game window of `key` in the manager's place and hides the manager.
@@ -1156,7 +1243,7 @@ pub fn play(key: &str, cx: &mut App) {
         });
         return;
     }
-    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) {
+    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) || model::hint(key).link_lost {
         return;
     }
     let shown = model.read(cx).playing.is_some();
@@ -1371,6 +1458,7 @@ enum Deferred {
     Restart { key: String, delay: Duration, generation: u64 },
     Join { key: String, generation: u64, lines: Vec<String>, delay: Duration },
     Start { keys: Vec<String> },
+    StartWaiting { key: String, delay: Duration },
 }
 
 #[derive(Default)]
@@ -1388,6 +1476,9 @@ struct Effects {
     placed: Vec<String>,
     game_focused: bool,
     revealed: Option<Reveal>,
+    reopen: bool,
+    suspect_offline: bool,
+    network_back: bool,
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
@@ -1399,12 +1490,14 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     change_model(redraw(&updates), cx, |m, rt, _| {
         for update in updates {
             let key = match &update {
-                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } => None,
+                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } | Update::Reach { .. } => None,
                 Update::Launched { key, .. } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
+                Update::Ipc(Event::Reopen) => None,
             };
             let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
-            let seeded = matches!(update, Update::Seed { .. });
+            let first_state = matches!(&update, Update::Ipc(Event::Message { message: FromMod::State { .. }, .. })) && key.as_ref().is_some_and(|k| rt.adopted.contains(k));
+            let seeded = matches!(update, Update::Seed { .. }) || first_state;
             apply(m, rt, update, &mut fx);
             let Some(key) = key else { continue };
             let Some(i) = m.games.get(&key) else { continue };
@@ -1437,12 +1530,19 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             backend.check_proxy(key, url);
         }
     }
+    if fx.suspect_offline {
+        online::suspect();
+    }
+    if fx.network_back {
+        network_back(cx);
+    }
     for deferred in fx.later {
         match deferred {
             Deferred::Reconnect { key, delay, generation } => schedule_reconnect(key, delay, generation, cx),
             Deferred::Restart { key, delay, generation } => schedule_restart(key, delay, generation, cx),
             Deferred::Join { key, generation, lines, delay } => schedule_join(key, generation, lines, delay, cx),
             Deferred::Start { keys } => start_keys(&keys, cx),
+            Deferred::StartWaiting { key, delay } => start_waiting(key, delay, cx),
         }
     }
     for (batch, name, kind) in fresh {
@@ -1462,7 +1562,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
         let place = follow_shown(cx);
         super::main_window::hide(place, cx);
     }
-    if fx.exited_playing {
+    if fx.exited_playing || fx.reopen {
         show_grid(cx);
     }
     for action in fx.hotkeys {
@@ -1544,12 +1644,23 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 i.phase = if plain { Phase::Plain } else { Phase::Starting { done: 0, total: 0 } };
             }
         }
-        Update::Failed { key, reason, login } => {
+        Update::Failed { key, reason, login, offline } => {
             if let Some(i) = m.games.get_mut(&key) {
                 m.preparing.remove(&i.batch_id);
-                i.phase = if login { Phase::LoginNeeded } else { Phase::Failed { reason } };
+                i.phase = if login {
+                    Phase::LoginNeeded
+                } else if offline {
+                    Phase::NoNetwork
+                } else {
+                    Phase::Failed { reason }
+                };
             }
+            if offline && !login {
+                fx.later.push(Deferred::StartWaiting { key, delay: waiting_retry() });
+            }
+            fx.suspect_offline |= offline;
         }
+        Update::Reach { online } => on_reach(m, rt, fx, online),
         Update::Seed { key, phase, attempts } => {
             if let Some(i) = m.games.get_mut(&key) {
                 i.phase = phase;
@@ -1604,12 +1715,16 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
                 rt.backend.send(&instance, message);
             }
             tint(m, &instance, pid);
+            if rt.adopted.contains(&instance) && m.playing.as_deref() != Some(instance.as_str()) {
+                rt.backend.send(&instance, ToMod::Hide);
+            }
             if let Some(i) = m.games.get_mut(&instance)
                 && matches!(i.phase, Phase::Starting { .. })
             {
                 i.phase = Phase::Menu;
             }
         }
+        Update::Ipc(Event::Reopen) => fx.reopen = true,
         Update::Ipc(Event::Disconnected { instance }) => {
             let alive = rt.pids.contains_key(&instance) && m.games.get(&instance).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
             if alive {
@@ -1629,6 +1744,8 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     rt.unplaced.remove(&key);
     rt.insets.remove(&key);
     rt.joined.remove(&key);
+    rt.adopted.remove(&key);
+    let unknown = rt.foreign.remove(&key) && code.is_none();
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
     let Some(i) = m.games.get_mut(&key) else {
         let keys = drop_restart(rt, &key);
@@ -1638,7 +1755,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
         return;
     };
     *rt.joins.entry(key.clone()).or_default() += 1;
-    let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
+    let crashed = !(i.stopping || code == Some(0) || unknown || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
     let restart = if i.stopping { rt.restarts.remove(&key) } else { None };
     i.stopping = false;
@@ -1697,10 +1814,17 @@ fn join_lines_of(m: &Model, key: &str) -> Option<(Vec<String>, Duration)> {
 }
 
 fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind: StateKind, server: Option<String>, reason: Option<String>, cause: Option<DisconnectCause>) {
+    if rt.adopted.remove(&key) {
+        return seed_state(m, rt, &key, kind, server, reason, cause);
+    }
     if kind != StateKind::Playing {
         *rt.joins.entry(key.clone()).or_default() += 1;
     }
-    let offline = m.games.get(&key).and_then(|i| m.account(i.account_id)).is_some_and(|a| a.kind == AccountKind::Offline);
+    let account = m.games.get(&key).and_then(|i| m.account(i.account_id));
+    let offline = account.is_some_and(|a| a.kind == AccountKind::Offline);
+    let direct = account.is_none_or(|a| a.proxy.is_none());
+    let nearby = server.as_deref().is_some_and(local_server);
+    let cut_off = m.offline && direct && !nearby;
     if matches!(kind, StateKind::Menu | StateKind::Playing) {
         model::set_hint(&key, |h| h.proxy = None);
     }
@@ -1753,8 +1877,9 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
             let cause = cause.unwrap_or(DisconnectCause::Unknown);
             let generation = rt.reconnects.entry(key.clone()).or_default();
             *generation += 1;
-            let reaction = match reconnect::react(cause, i.reconnect_attempts, policy, reconnect::unit()) {
-                Reaction::Retry(_) if server.is_none() => Reaction::GiveUp,
+            fx.suspect_offline |= direct && !nearby && matches!(cause, DisconnectCause::ServerDown | DisconnectCause::Unknown);
+            let reaction = match reconnect::react(cause, i.reconnect_attempts, policy, reconnect::unit(), cut_off) {
+                Reaction::Retry(_) | Reaction::WaitForNetwork if server.is_none() => Reaction::GiveUp,
                 Reaction::SignInAgain if offline => Reaction::NotAllowed,
                 other => other,
             };
@@ -1772,6 +1897,10 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
                     i.reconnect_attempts += 1;
                     fx.later.push(Deferred::Reconnect { key: key.clone(), delay, generation: *generation });
                     Phase::Connecting { server: server_text }
+                }
+                Reaction::WaitForNetwork => {
+                    fx.later.push(Deferred::Reconnect { key: key.clone(), delay: waiting_retry(), generation: *generation });
+                    Phase::NetworkLost { server: server_text }
                 }
                 Reaction::GiveUp | Reaction::NotAllowed => Phase::Disconnected { server, reason: reason_text },
                 Reaction::Banned => Phase::Banned { server, reason: reason_text },
@@ -1793,6 +1922,122 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
     if let Some((kind, server, reason)) = event {
         note(m, fx, &key, kind, server, &reason);
     }
+}
+
+fn on_reach(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, online: bool) {
+    m.offline = !online;
+    let (accounts, mut nth, mut start) = (&m.accounts, 0, Vec::new());
+    for i in m.games.values_mut().filter(|i| !i.stopping) {
+        let direct = accounts.iter().find(|a| a.id == i.account_id).is_none_or(|a| a.proxy.is_none());
+        match &i.phase {
+            Phase::Connecting { server } if !online && direct && i.reconnect_attempts > 0 && !local_server(server) => {
+                let generation = rt.reconnects.entry(i.key.clone()).or_default();
+                *generation += 1;
+                fx.later.push(Deferred::Reconnect { key: i.key.clone(), delay: waiting_retry(), generation: *generation });
+                i.reconnect_attempts -= 1;
+                i.phase = Phase::NetworkLost { server: server.clone() };
+            }
+            Phase::NetworkLost { server } if online => {
+                let generation = rt.reconnects.entry(i.key.clone()).or_default();
+                *generation += 1;
+                let delay = BACK_STAGGER * nth + reconnect::wait(&[BACK_WAIT_SECS], 0, 50, reconnect::unit());
+                nth += 1;
+                fx.later.push(Deferred::Reconnect { key: i.key.clone(), delay, generation: *generation });
+                i.phase = Phase::Connecting { server: server.clone() };
+            }
+            Phase::NoNetwork if online => start.push(i.key.clone()),
+            _ => {}
+        }
+    }
+    if !start.is_empty() {
+        fx.later.push(Deferred::Start { keys: start });
+    }
+    fx.network_back |= online;
+    m.order_seq += 1;
+}
+
+fn waiting_retry() -> Duration {
+    reconnect::wait(&[WAITING_RETRY_SECS], 0, 20, reconnect::unit())
+}
+
+fn local_server(server: &str) -> bool {
+    let host = match server.rsplit_once(':') {
+        Some((host, port)) if port.parse::<u16>().is_ok() && (!host.contains(':') || host.ends_with(']')) => host,
+        _ => server,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || ip.segments()[0] & 0xfe00 == 0xfc00 || ip.segments()[0] & 0xffc0 == 0xfe80,
+        Err(_) => host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local"),
+    }
+}
+
+fn network_back(cx: &mut App) {
+    super::remote::network_back(cx);
+}
+
+fn seed_state(m: &mut Model, rt: &mut Runtime, key: &str, kind: StateKind, server: Option<String>, reason: Option<String>, cause: Option<DisconnectCause>) {
+    let Some(i) = m.games.get_mut(key) else { return };
+    if i.stopping || !i.phase.is_running() {
+        return;
+    }
+    if matches!(kind, StateKind::Menu | StateKind::Disconnected) {
+        rt.joined.remove(key);
+    }
+    let (server_text, reason) = (server.clone().unwrap_or_default(), reason.unwrap_or_default());
+    i.phase = match kind {
+        StateKind::Menu => Phase::Menu,
+        StateKind::Connecting => Phase::Connecting { server: server_text },
+        StateKind::Queue => Phase::Queue { server: server_text },
+        StateKind::Playing => Phase::Playing { server: server_text, since: Instant::now() },
+        StateKind::Dead => Phase::Dead { server, reason },
+        StateKind::Disconnected if cause == Some(DisconnectCause::Banned) => Phase::Banned { server, reason },
+        StateKind::Disconnected => Phase::Disconnected { server, reason },
+    };
+}
+
+fn adopt_games(m: &mut Model, rt: &mut Runtime, adopted: Vec<fleet::Adoption>) {
+    let (mut placed, mut dropped) = (Vec::new(), Vec::new());
+    for a in adopted {
+        if a.batch.is_none() && !m.games.contains_key(&a.key) {
+            let Some(name) = m.account(a.account).map(|account| account.name.clone()) else {
+                dropped.push(a.key);
+                continue;
+            };
+            m.games.insert(a.key.clone(), Game {
+                key: a.key.clone(),
+                batch_id: fleet::solo_owner(&a.instance),
+                instance_id: a.instance.clone(),
+                account_id: a.account,
+                name,
+                phase: Phase::Stopped,
+                reconnect_attempts: 0,
+                unread_whispers: 0,
+                preview: None,
+                preview_seq: 0,
+                live: false,
+                stopping: false,
+            });
+        }
+        let Some(i) = m.games.get_mut(&a.key) else {
+            dropped.push(a.key);
+            continue;
+        };
+        i.phase = Phase::Menu;
+        rt.pids.insert(a.key.clone(), a.pid);
+        rt.joined.insert(a.key.clone());
+        rt.started.insert(a.key.clone(), Instant::now());
+        rt.adopted.insert(a.key.clone());
+        rt.foreign.insert(a.key.clone());
+        if cfg!(target_os = "windows") && !drive::on() {
+            rt.unplaced.insert(a.key.clone());
+        }
+        model::set_hint(&a.key, |h| h.link_lost = true);
+        placed.push(a.key);
+    }
+    rt.backend.settle(&placed, &dropped);
+    m.order_seq += 1;
 }
 
 fn on_message(m: &mut Model, rt: &mut Runtime, key: String, message: FromMod, fx: &mut Effects) {
@@ -1884,6 +2129,18 @@ pub fn tell_games(cx: &mut App) {
     }
 }
 
+fn start_waiting(key: String, delay: Duration, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(|cx| {
+            if model::get(cx).read(cx).games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
+                start_keys(std::slice::from_ref(&key), cx);
+            }
+        });
+    })
+    .detach();
+}
+
 fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(delay).await;
@@ -1893,7 +2150,7 @@ fn schedule_reconnect(key: String, delay: Duration, generation: u64, cx: &mut Ap
                 return;
             }
             let model = model::get(cx);
-            if model.read(cx).games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. }) && !i.stopping) {
+            if model.read(cx).games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. } | Phase::NetworkLost { .. }) && !i.stopping) {
                 rt.backend.send(&key, ToMod::Reconnect);
             }
         });
@@ -2269,6 +2526,8 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Banned { reason, .. } => model::banned_status(reason),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
+        Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
+        Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
     }
 }
 
@@ -2280,7 +2539,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, apply, fleet, needs_sign_in, redraw, render_image, status};
+    use super::{model, ChatKind, Fault, AccountKind, Account, AuthError, Backend, Batch, Deferred, DisconnectCause, Effects, Event, FromMod, HotkeyAction, Game, Instant, Kind, Model, Phase, Redraw, Reveal, Runtime, StateKind, ToMod, Update, What, adopt_games, apply, fleet, local_server, needs_sign_in, playable, server_of, redraw, render_image, status};
 
     fn instance(phase: Phase) -> Game {
         Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "Alex".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
@@ -2422,6 +2681,8 @@ mod tests {
             phone: super::phone::Coalescer::default(),
             outbox: None,
             phone_at: None,
+            adopted: HashSet::new(),
+            foreign: HashSet::new(),
         }
     }
 
@@ -2479,6 +2740,104 @@ mod tests {
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
         assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && fx.later.is_empty());
         assert_eq!(m.history[&key].len(), 6);
+    }
+
+    #[test]
+    fn without_network_a_drop_waits_and_resumes_by_itself_when_it_is_back() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        for _ in 0..8 {
+            let mut fx = Effects::default();
+            send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+            assert_eq!(m.games[&key].phase, Phase::NetworkLost { server: "mc.example:25565".into() });
+            assert!(fx.suspect_offline);
+            let [Deferred::Reconnect { delay, .. }] = fx.later.as_slice() else { panic!("no slow retry while waiting") };
+            assert!(delay.as_secs() >= 48, "{delay:?}");
+        }
+        assert_eq!(m.games[&key].reconnect_attempts, 0);
+        assert!(m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Reach { online: true }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::Connecting { server: "mc.example:25565".into() });
+        assert!(fx.network_back);
+        let Some(Deferred::Reconnect { generation, .. }) = fx.later.pop() else { panic!("no reconnect scheduled") };
+        assert_eq!(rt.reconnects.get(&key), Some(&generation));
+    }
+
+    #[test]
+    fn losing_the_network_gives_back_the_try_a_pending_reconnect_spent() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        send_state(&mut m, &mut rt, &mut Effects::default(), &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(m.games[&key].reconnect_attempts, 1);
+        let before = rt.reconnects.get(&key).copied();
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        assert_eq!(m.games[&key].phase, Phase::NetworkLost { server: "mc.example:25565".into() });
+        assert_eq!(m.games[&key].reconnect_attempts, 0);
+        assert_ne!(rt.reconnects.get(&key).copied(), before);
+    }
+
+    #[test]
+    fn a_server_on_this_computer_or_in_the_home_network_does_not_wait_for_the_internet() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        let mut fx = Effects::default();
+        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("192.168.1.20:25565".into()), reason: None, cause: Some(DisconnectCause::ServerDown) };
+        apply(&mut m, &mut rt, Update::Ipc(Event::Message { instance: key.clone(), message }), &mut fx);
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !fx.suspect_offline);
+        assert_eq!(m.games[&key].reconnect_attempts, 1);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }));
+    }
+
+    #[test]
+    fn local_servers_are_told_apart_from_the_internet() {
+        for near in ["localhost", "localhost:25565", "127.0.0.1:25565", "10.0.0.5", "192.168.1.20:25565", "172.16.3.4:1", "[::1]:25565", "fd00::1", "minecraft.local"] {
+            assert!(local_server(near), "{near}");
+        }
+        for far in ["mc.example:25565", "8.8.8.8:25565", "[2001:db8::1]:25565", "localhost.example.com", ""] {
+            assert!(!local_server(far), "{far}");
+        }
+    }
+
+    #[test]
+    fn a_waiting_game_can_be_played_and_a_waiting_start_can_be_stopped() {
+        assert!(playable(&Phase::NetworkLost { server: "s".into() }));
+        assert_eq!(server_of(&Phase::NetworkLost { server: "s".into() }).as_deref(), Some("s"));
+        assert!(Phase::NoNetwork.stoppable() && !Phase::NoNetwork.is_active());
+    }
+
+    #[test]
+    fn a_ban_is_a_ban_even_without_network() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        send_state(&mut m, &mut rt, &mut Effects::default(), &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
+        assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
+    }
+
+    #[test]
+    fn a_proxied_account_does_not_wait_for_the_network() {
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        m.accounts[0].proxy = Some("socks5://127.0.0.1:1080".into());
+        apply(&mut m, &mut rt, Update::Reach { online: false }, &mut Effects::default());
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !fx.suspect_offline);
+    }
+
+    #[test]
+    fn a_start_without_connection_waits_and_starts_when_it_is_back_unless_stopped() {
+        let (mut m, mut rt, key) = setup(Phase::Starting { done: 0, total: 1 }, AccountKind::Microsoft, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::NoNetwork);
+        assert!(fx.suspect_offline && !m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
+        let [Deferred::StartWaiting { key: waiting, delay }] = fx.later.as_slice() else { panic!("no slow retry for a waiting start") };
+        assert!(waiting == &key && delay.as_secs() >= 48);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Reach { online: true }, &mut fx);
+        assert!(matches!(fx.later.as_slice(), [Deferred::Start { keys }] if keys == &[key.clone()]));
+        apply(&mut m, &mut rt, Update::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false }, &mut Effects::default());
+        assert!(matches!(m.games[&key].phase, Phase::Failed { .. }));
     }
 
     #[test]
@@ -2627,6 +2986,108 @@ mod tests {
         assert!(fx.later.is_empty());
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
         assert_ne!(rt.joins[&key], generation);
+    }
+
+    fn adopted(phase: Phase) -> (Model, Runtime, String) {
+        let (mut m, mut rt, key) = setup(phase, AccountKind::Offline, &["/login pw"]);
+        let (account, batch) = (m.games[&key].account_id, m.games[&key].batch_id.clone());
+        let instance = m.games[&key].instance_id.clone();
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41 }]);
+        (m, rt, key)
+    }
+
+    #[test]
+    fn an_adopted_game_runs_without_contact_until_its_mod_reports() {
+        let (m, rt, key) = adopted(Phase::Stopped);
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+        assert!(m.games[&key].phase.is_running());
+        assert_eq!(rt.pids[&key], 41);
+        assert!(model::hint(&key).link_lost);
+        let (mut m, mut rt, solo) = adopted(Phase::Stopped);
+        let account = m.games[&solo].account_id;
+        let made = m.instances[0].clone();
+        let key = fleet::solo_key(&made, account);
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42 }]);
+        assert_eq!(m.games[&key].batch_id, fleet::solo_owner(&made.id));
+        assert_eq!(m.games[&key].phase, Phase::Menu);
+    }
+
+    #[test]
+    fn an_adopted_game_that_plays_on_sends_no_join_commands_and_no_news() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Connected { instance: key.clone(), pid: 41, mod_version: String::new() }), &mut fx);
+        assert!(!model::hint(&key).link_lost);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(matches!(m.games[&key].phase, Phase::Playing { .. }));
+        assert!(fx.later.is_empty() && fx.phone.is_empty());
+        assert!(m.history.get(&key).is_none_or(|h| h.is_empty()));
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(fx.later.is_empty());
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Menu, None);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        assert!(matches!(fx.later.pop(), Some(Deferred::Join { .. })), "a real rejoin later sends them again");
+    }
+
+    #[test]
+    fn an_adopted_game_on_a_disconnect_screen_is_not_reconnected_by_the_restart() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }));
+        assert!(fx.later.is_empty() && fx.phone.is_empty());
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
+        assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
+        assert!(fx.later.is_empty());
+    }
+
+    #[test]
+    fn an_adopted_game_that_quits_without_an_exit_code_is_not_a_crash() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: None }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(fx.later.is_empty());
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: None }, &mut fx);
+        assert!(matches!(m.games[&key].phase, Phase::Crashed { .. } | Phase::Restarting { .. }), "a launched game still crashes");
+    }
+
+    #[test]
+    fn adopted_games_without_a_tile_are_let_go_and_the_rest_may_talk() {
+        struct Settled(std::sync::Mutex<(Vec<String>, Vec<String>)>);
+        impl Backend for Settled {
+            fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>, _: Option<crate::core::place::Rect>) {}
+            fn stop(&self, _: Vec<String>) {}
+            fn send(&self, _: &str, _: ToMod) {}
+            fn read_preview(&self, _: String, _: PathBuf) {}
+            fn quit(&self) {}
+            fn settle(&self, placed: &[String], dropped: &[String]) {
+                *self.0.lock().unwrap() = (placed.to_vec(), dropped.to_vec());
+            }
+        }
+        let (mut m, mut rt, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let settled = Arc::new(Settled(std::sync::Mutex::default()));
+        rt.backend = settled.clone();
+        let game = &m.games[&key];
+        let (batch, instance, account) = (game.batch_id.clone(), game.instance_id.clone(), game.account_id);
+        let gone = fleet::Adoption { key: "removed-member".into(), batch: Some(batch.clone()), instance: instance.clone(), account, pid: 2 };
+        let stranger = fleet::Adoption { key: "solo-of-deleted-account".into(), batch: None, instance: instance.clone(), account: uuid::Uuid::from_u128(99), pid: 3 };
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 1 }, gone, stranger]);
+        let (placed, dropped) = settled.0.lock().unwrap().clone();
+        assert_eq!(placed, [key.clone()]);
+        assert_eq!(dropped, ["removed-member", "solo-of-deleted-account"]);
+        assert!(!m.games.contains_key("removed-member") && !rt.pids.contains_key("removed-member"));
+    }
+
+    #[test]
+    fn a_second_start_brings_the_manager_back() {
+        let (mut m, mut rt, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let mut fx = Effects::default();
+        apply(&mut m, &mut rt, Update::Ipc(Event::Reopen), &mut fx);
+        assert!(fx.reopen);
     }
 
     #[test]
@@ -2840,5 +3301,18 @@ mod tests {
         let key = rekeyed(&mut m, &old, "proxy-late");
         apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut Effects::default());
         assert_eq!(model::hint(&key).proxy, None);
+    }
+
+    #[test]
+    fn recovery_notices_name_one_file_and_summarise_several() {
+        use super::{Recovery, recovered_notice};
+        let at = |file: &str, r: Recovery| (PathBuf::from("data").join(file), r);
+        assert_eq!(recovered_notice(&[]), None);
+        assert_eq!(recovered_notice(&[at("accounts.json", Recovery::Restored)]), Some(crate::core::i18n::tr("Die Accounts waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.")));
+        let two_batches = [at("b1/batch.json", Recovery::Lost), at("b2/batch.json", Recovery::Lost)];
+        assert_eq!(recovered_notice(&two_batches), Some(crate::core::i18n::trf("%lld Batches waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (batch.json.damaged).", &[&2])));
+        assert_eq!(recovered_notice(&[at("i1/instance.json", Recovery::Restored)]), Some(crate::core::i18n::tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.")));
+        let mixed = [at("accounts.json", Recovery::Restored), at("settings.json", Recovery::Lost), at("b1/batch.json", Recovery::Restored)];
+        assert_eq!(recovered_notice(&mixed), Some(crate::core::i18n::trf("%lld Dateien waren beschädigt: %lld aus der Sicherung wiederhergestellt, die übrigen nicht. Kopien liegen jeweils daneben (Endung .damaged).", &[&3, &2])));
     }
 }

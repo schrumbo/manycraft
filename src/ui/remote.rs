@@ -14,7 +14,7 @@ use crate::core::auth::{self, AuthError, WrongAccount};
 use crate::core::batch::{self, Background, Batch, ModRef};
 use crate::core::instance::{self as setup, Loader};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
-use crate::core::mrpack;
+use crate::core::{mrpack, origin};
 use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
 
@@ -31,6 +31,18 @@ static SAVING: Mutex<()> = Mutex::new(());
 
 fn saving() -> MutexGuard<'static, ()> {
     SAVING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Counts how often the connection came back; views observe it to retry what failed without one.
+#[derive(Default)]
+pub struct Back(pub u64);
+
+impl gpui_kit::Global for Back {}
+
+/// Tells every observing view that the connection is back.
+pub fn network_back(cx: &mut gpui_kit::App) {
+    let next = cx.try_global::<Back>().map_or(0, |b| b.0) + 1;
+    cx.set_global(Back(next));
 }
 
 fn is_stale(e: &anyhow::Error) -> bool {
@@ -160,7 +172,7 @@ pub fn sign_in(proxy: Option<String>, expected: Option<Uuid>, via: Via, cancel: 
 
 fn window_request() -> webauth::Request {
     use crate::core::i18n::tr;
-    webauth::Request { url: webauth::authorize_url(), title: tr("Mit Microsoft anmelden"), browser_label: tr("Im Browser öffnen"), quiet: drive::dir().is_some() }
+    webauth::Request { url: webauth::authorize_url(), title: tr("Mit Microsoft anmelden"), browser_label: tr("Im Browser öffnen"), quiet: drive::dir().is_some(), near: super::native::center() }
 }
 
 fn in_window(flow: &auth::Flow, cancel: &AtomicBool, send: &impl Fn(SignIn)) -> Result<Next> {
@@ -495,7 +507,7 @@ pub fn search_page(query: &str, game_version: &str, loader: &Loader, sort: Sort,
             hits.sort_by_key(|h| !h.title.to_lowercase().starts_with(&q));
         }
         let total = hits.len();
-        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total });
+        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total, saved: None });
     }
     modrinth::search_page(query, game_version, loader, sort, all, offset)
 }
@@ -576,7 +588,8 @@ pub struct BatchEdit {
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`, and returns it.
-/// A picked new instance is created first; accounts that no longer exist are left out.
+/// A picked new instance is created first; picked accounts that no longer exist are left out; members the sheet could not show,
+/// because the account list did not load, stay.
 pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<Batch> {
     let made = match &edit.instance {
         InstancePick::New { game_version, mods } => Some(saved(|| {
@@ -616,7 +629,8 @@ fn apply(b: &mut Batch, instance_id: String, edit: BatchEdit, known: &HashSet<Uu
     b.instance_id = instance_id;
     b.server = edit.server;
     b.memory_override = edit.memory_override;
-    b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).collect();
+    let unseen: Vec<Uuid> = b.accounts.iter().copied().filter(|id| !known.contains(id)).collect();
+    b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).chain(unseen).collect();
     b.background = edit.background;
 }
 
@@ -719,6 +733,59 @@ pub fn clone_instance(id: &str) -> Result<setup::Instance> {
         let taken: Vec<String> = setup::load_all()?.into_iter().map(|i| i.name).collect();
         setup::clone(&source, &setup::free_name(&crate::core::i18n::trf("%@ Kopie", &[&source.name]), &taken))
     })
+}
+
+/// What `reset_instance` changed: the instance before and after, the trash entry that holds what was taken away, and
+/// the titles of the mods that do not exist for the instance's version and were left out.
+pub struct Reverted {
+    pub before: setup::Instance,
+    pub after: setup::Instance,
+    pub entry: String,
+    pub missing: Vec<String>,
+}
+
+/// Sets the saved instance `id` back to the mods, config and packs it was created with; worlds, screenshots, servers and options stay.
+/// The mods it was created with are looked up again when the instance moved to another version since.
+pub fn reset_instance(id: &str) -> Result<Reverted> {
+    let seen = find_instance(id)?;
+    let origin = origin::load(&seen)?;
+    let (mods, missing) = match origin.plan(&seen.game_version, &seen.loader) {
+        origin::Plan::Ready(mods) => (mods, Vec::new()),
+        origin::Plan::Move(mods) => move_mods(&mods, &seen.game_version, &seen.loader)?,
+    };
+    saved(|| {
+        let made = find_instance(id)?;
+        if made.game_version != seen.game_version || !made.loader.same_kind(&seen.loader) {
+            return Err(gone(crate::core::i18n::tr("Die Instanz wurde inzwischen anders geändert. Sieh nach und versuch es noch einmal.")));
+        }
+        let (after, entry) = origin::reset(&made, mods.clone())?;
+        Ok(Reverted { before: made, after, entry, missing: missing.clone() })
+    })
+}
+
+/// Puts back what `reset_instance` took away into trash entry `entry`, when the instance still is `after` as far as its mods, version and loader go.
+pub fn restore_reset(id: &str, before: &setup::Instance, after: &setup::Instance, entry: &str) -> Result<setup::Instance> {
+    saved(|| {
+        let now = find_instance(id)?;
+        if !same_files(&now, after) {
+            return Err(gone(crate::core::i18n::tr("Die Instanz wurde inzwischen anders geändert. Sieh nach und versuch es noch einmal.")));
+        }
+        origin::unreset(&now, before, entry)
+    })
+}
+
+/// Whether `a` and `b` have the same version, loader, mods and own files.
+pub fn same_files(a: &setup::Instance, b: &setup::Instance) -> bool {
+    a.game_version == b.game_version && a.loader == b.loader && a.mods == b.mods && a.local_mods == b.local_mods
+}
+
+/// The newest stable loader of the kind `loader` is, for `game_version`; `None` when there is none.
+pub fn newest_loader(loader: &Loader, game_version: &str) -> Result<Option<String>> {
+    if drive::fenced("loader newest", game_version) {
+        std::thread::sleep(CANNED_DELAY);
+        return Ok(loader.takes_mods().then(|| "0.99.0".to_owned()));
+    }
+    install::newest_loader(loader, game_version)
 }
 
 /// Moves the saved instance `id` with its games to the trash and returns its trash entry; refused while a batch plays it or a game runs.
@@ -1044,6 +1111,40 @@ mod tests {
         let mut added = base.clone();
         added.mods.push(mod_ref("c"));
         assert!(merge(&base, &added, &back).is_none());
+    }
+
+    #[test]
+    fn undoing_a_rename_or_a_switch_writes_the_old_fields_back_unless_they_moved_since() {
+        let made = setup::Instance::new("Farm", "26.2", Loader::Fabric(Some("0.17.2".into())));
+        let before = InstanceEdit::of(&made);
+        let mut renamed = before.clone();
+        renamed.name = "Technik".into();
+        assert_eq!(merge(&renamed, &renamed, &before).unwrap().name, "Farm");
+        let mut other_name = renamed.clone();
+        other_name.name = "Anders".into();
+        assert!(merge(&renamed, &other_name, &before).is_none());
+        let mut switched = before.clone();
+        switched.game_version = "26.3".into();
+        switched.loader = Loader::Quilt(Some("0.30.0".into()));
+        let back = merge(&switched, &switched, &before).unwrap();
+        assert_eq!((back.game_version.as_str(), back.loader.clone()), ("26.2", Loader::Fabric(Some("0.17.2".into()))));
+        let mut renamed_since = switched.clone();
+        renamed_since.name = "Technik".into();
+        let kept = merge(&switched, &renamed_since, &before).unwrap();
+        assert_eq!((kept.name.as_str(), kept.game_version.as_str()), ("Technik", "26.2"));
+        let mut switched_again = switched.clone();
+        switched_again.game_version = "26.4".into();
+        assert!(merge(&switched, &switched_again, &before).is_none());
+    }
+
+    #[test]
+    fn members_the_sheet_could_not_show_stay_in_the_batch() {
+        let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut b = Batch::new("Farm", "i1");
+        b.accounts = vec![shown, unseen];
+        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving };
+        apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
+        assert_eq!(b.accounts, [unseen]);
     }
 
     #[test]

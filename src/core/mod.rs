@@ -1,4 +1,5 @@
 pub mod account;
+pub mod adopt;
 pub mod auth;
 pub mod awake;
 #[allow(dead_code)]
@@ -29,6 +30,8 @@ pub mod modicons;
 pub mod modrinth;
 pub mod mrpack;
 pub mod net;
+pub mod online;
+pub mod origin;
 pub mod paths;
 pub mod phone;
 pub mod place;
@@ -48,3 +51,4 @@ pub mod store;
 pub mod sync;
 pub mod updater;
 pub mod webauth;
+pub mod winstate;

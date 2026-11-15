@@ -928,7 +928,7 @@ mod tests {
         assert_eq!(fs::read(dest.join("shaderpacks").join("s.zip")).unwrap(), b"shader");
         let top: Vec<String> = names(&dest).into_iter().filter(|n| !n.ends_with(".lock")).collect();
         assert_eq!(fs::read(dest.join("servers.dat")).unwrap(), b"servers");
-        assert_eq!(top, ["config", "instance.json", "mods", "options.txt", "resourcepacks", "servers.dat", "shaderpacks"]);
+        assert_eq!(top, ["config", "instance.json", "mods", "options.txt", "origin", "resourcepacks", "servers.dat", "shaderpacks"]);
         let saved: Instance = serde_json::from_slice(&fs::read(dest.join("instance.json")).unwrap()).unwrap();
         assert_eq!(saved, made);
         let steps = steps.into_inner().unwrap();
