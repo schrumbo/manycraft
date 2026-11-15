@@ -14,7 +14,7 @@ use gpui_kit::*;
 use super::{Change, InstancePage, Job};
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
-use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, Loader};
+use crate::core::instance::{DEFAULT_MEMORY_MB, Instance};
 use crate::core::javas::{Java, mismatch};
 use crate::core::options::{self, Gpu, LaunchOptions, Renderer, WindowSize};
 use crate::ui::drive::Mark;
@@ -442,9 +442,9 @@ impl InstancePage {
             let row = self.choice_row("instance-renderer", &self.opts.renderer_focus.clone(), now.renderer, &choices, cx, OptionChange::Renderer, t);
             col = col.child(self.setting("renderer", tr("Grafikschnittstelle"), None, row, Some(tr("Automatisch nimmt, was im Spiel eingestellt ist.")), None, t));
         }
-        if !matches!(made.loader, Loader::Vanilla) {
-            let loader_reset = made.loader.version().is_some().then(|| self.reset_button("loader-version-reset", tr("Loader-Version"), cx, |s, cx| s.enqueue(Job::Save(Change::LoaderVersion(None)), cx), t));
-            col = col.child(self.setting("loader_version", tr("Loader-Version"), loader_reset, Input::new(&self.loader_version), Some(tr("Leer lassen für die neueste.")), None, t));
+        if made.loader.takes_mods() {
+            let label = crate::ui::loader_version::label(&made.loader);
+            col = col.child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(label, t)).child(self.loader_version.clone()));
         }
         col
     }

@@ -238,7 +238,7 @@ fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
         Phase::LoginNeeded => Some(Primary::SignIn),
         Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
         Phase::NoNetwork => Some(Primary::Retry),
-        Phase::Starting { .. } => None,
+        Phase::Starting { .. } | Phase::Plain => None,
         Phase::Banned { .. } => Some(Primary::Reconnect),
         Phase::Restarting { .. } => Some(Primary::Start),
     }
@@ -355,6 +355,7 @@ fn placeholder(d: &TileData, t: &Theme) -> Option<(&'static str, Hsla)> {
         Phase::Stopped if !d.stopping => None,
         _ if cut_off(d) => Some(("wifi-off", t.tertiary)),
         Phase::Starting { .. } if !d.stopping => Some(("hourglass", t.tertiary)),
+        Phase::Plain if !d.stopping => Some(("app-window", t.tertiary)),
         _ => Some(("loader-circle", t.tertiary)),
     }
 }
@@ -370,7 +371,7 @@ fn glyph(d: &TileData, neutral: Hsla, t: &Theme) -> AnyElement {
     let dot = match d.phase {
         _ if d.stopping => dot.border_1().border_color(neutral),
         Phase::Playing { .. } => dot.bg(t.success),
-        Phase::Menu | Phase::Queue { .. } => dot.bg(neutral),
+        Phase::Menu | Phase::Queue { .. } | Phase::Plain => dot.bg(neutral),
         _ => dot.border_1().border_color(neutral),
     };
     dot.into_any_element()
@@ -517,7 +518,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let menu_batch = d.batch_id.clone();
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
-    let reconnectable = running && !matches!(d.phase, Phase::Starting { .. }) && !stopping;
+    let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
     let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
         .relative()

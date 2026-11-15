@@ -32,9 +32,15 @@ jobs:
         with:
           name: companion
           path: ${{ runner.temp }}/companion
-      - name: Use the prebuilt companion mod
+      - name: Use the prebuilt companion mods
         shell: bash
-        run: echo "MANYCRAFT_COMPANION_JAR=$(ls "$RUNNER_TEMP"/companion/*.jar | head -1)" >> "$GITHUB_ENV"
+        run: |
+          d="$RUNNER_TEMP/companion"
+          : > "$d/none.jar"
+          pick() { f=$(find "$d" -name "$1" ! -name '*-slim.jar' | head -1); echo "${f:-$d/none.jar}"; }
+          echo "MANYCRAFT_COMPANION_JAR=$(find "$d" -name 'manycraft-companion-[0-9]*.jar' | head -1)" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_NEOFORGE_JAR=$(pick 'manycraft-companion-neoforge-*.jar')" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_FORGE_JAR=$(pick 'manycraft-companion-forge-*.jar')" >> "$GITHUB_ENV"
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libdbus-1-dev libasound2-dev pkg-config
@@ -78,13 +84,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: companion
-          path: mod/fabric/build/libs/manycraft-companion-*.jar
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        if: steps.changes.outputs.loaders == 'true'
-        with:
-          name: companion-loaders
           path: |
+            mod/fabric/build/libs/manycraft-companion-*.jar
             mod/neoforge/build/libs/manycraft-companion-neoforge-*.jar
             mod/forge/build/libs/manycraft-companion-forge-*.jar
             !mod/forge/build/libs/*-slim.jar

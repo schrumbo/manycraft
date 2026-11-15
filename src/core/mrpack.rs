@@ -1,4 +1,4 @@
-//! Modrinth modpacks (`.mrpack`): a Fabric pack becomes an instance and an instance becomes a pack.
+//! Modrinth modpacks (`.mrpack`): a pack becomes an instance and an instance becomes a pack.
 //! Files come only from the hosts the format allows and must match their SHA-1 and SHA-512.
 //! Also the entry point for importing a Prism instance export (`.zip`) or a Prism instance folder.
 
@@ -26,8 +26,7 @@ pub const EXTENSION: &str = "mrpack";
 const INDEX: &str = "modrinth.index.json";
 const OVERRIDES: [&str; 2] = ["overrides/", "client-overrides/"];
 const HOSTS: [&str; 4] = ["cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com"];
-const OTHER_LOADERS: [(&str, &str); 3] = [("forge", "Forge"), ("neoforge", "NeoForge"), ("quilt-loader", "Quilt")];
-const FABRIC: &str = "fabric-loader";
+const LOADER_KEYS: [&str; 4] = ["fabric-loader", "quilt-loader", "forge", "neoforge"];
 const MINECRAFT: &str = "minecraft";
 const OPTIONS_FILE: &str = "options.txt";
 const SERVERS_FILE: &str = "servers.dat";
@@ -50,9 +49,7 @@ const USAGE: &str = "usage: manycraft mrpack import <file.mrpack|prism.zip|prism
 pub enum Refused {
     /// No readable `modrinth.index.json`, or one of another game or format.
     NotAPack,
-    /// The pack is built for this loader instead of Fabric.
-    Loader(String),
-    /// The pack names no mod loader.
+    /// The pack brings mods but names no mod loader to run them.
     NoLoader,
     /// The pack names no Minecraft version.
     NoGame,
@@ -73,8 +70,7 @@ impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAPack => write!(f, "not a Modrinth modpack"),
-            Self::Loader(loader) => write!(f, "the pack uses {loader}, only Fabric is supported"),
-            Self::NoLoader => write!(f, "the pack has no mod loader, only Fabric packs can be imported"),
+            Self::NoLoader => write!(f, "the pack brings mods but names no mod loader"),
             Self::NoGame => write!(f, "the pack names no Minecraft version"),
             Self::Host(url) => write!(f, "{url} is not an allowed download host"),
             Self::Hash(path) => write!(f, "{path} does not match its hash"),
@@ -131,7 +127,7 @@ struct Wanted {
 struct Pack {
     name: String,
     game: String,
-    loader: String,
+    loader: Loader,
     files: Vec<Wanted>,
 }
 
@@ -179,7 +175,7 @@ pub fn peek(path: &Path) -> Result<String> {
     let Ok(mut zip) = ZipArchive::new(file) else { bail!(Refused::Unknown) };
     if zip.index_for_name(INDEX).is_some() {
         let pack = read_index(&mut zip)?;
-        overrides(&mut zip)?;
+        pack_overrides(&mut zip, &pack)?;
         return Ok(pack.name);
     }
     let Some(prefix) = prism::export_prefix(&zip) else { bail!(Refused::Unknown) };
@@ -246,10 +242,13 @@ fn claim_name(root: &Path, mut made: Instance) -> Instance {
 /// config, resource and shader packs and `options.txt` as overrides. Nothing else of the instance folder is read,
 /// so accounts, servers, game folders, logs and saves never end up in the pack. Replaces `out` atomically.
 pub fn export(made: &Instance, out: &Path) -> Result<()> {
-    let loader = match &made.loader {
-        Loader::Fabric(Some(loader)) => loader.clone(),
-        Loader::Fabric(None) => install::latest_loader(&made.game_version).context("cannot find the Fabric loader version")?,
-        other => bail!(Refused::Loader(other.name().to_owned())),
+    let loader = match (&made.loader, made.loader.version()) {
+        (Loader::Vanilla, _) => Loader::Vanilla,
+        (pinned, Some(_)) => pinned.clone(),
+        (unpinned, None) => {
+            let version = install::latest_loader(unpinned, &made.game_version).with_context(|| format!("cannot find the {} loader version", unpinned.name()))?;
+            unpinned.with_version(Some(version))
+        }
     };
     export_with(made, &made.dir(), &loader, out, &download)
 }
@@ -335,10 +334,18 @@ fn parse_index(bytes: &[u8]) -> Result<Pack> {
     if index.format_version != 1 || index.game != MINECRAFT {
         bail!(Refused::NotAPack);
     }
-    if let Some((_, loader)) = OTHER_LOADERS.iter().find(|(key, _)| index.dependencies.contains_key(*key)) {
-        bail!(Refused::Loader((*loader).to_owned()));
-    }
-    let loader = index.dependencies.get(FABRIC).filter(|v| !v.trim().is_empty()).ok_or(Refused::NoLoader)?.trim().to_owned();
+    let loader = LOADER_KEYS
+        .iter()
+        .find_map(|key| {
+            let version = Some(index.dependencies.get(*key)?.trim()).filter(|v| !v.is_empty())?.to_owned();
+            Some(match *key {
+                "fabric-loader" => Loader::Fabric(Some(version)),
+                "quilt-loader" => Loader::Quilt(Some(version)),
+                "forge" => Loader::Forge(Some(version)),
+                _ => Loader::NeoForge(Some(version)),
+            })
+        })
+        .unwrap_or(Loader::Vanilla);
     let game = index.dependencies.get(MINECRAFT).filter(|v| !v.trim().is_empty()).ok_or(Refused::NoGame)?.trim().to_owned();
     let mut files = Vec::new();
     for file in index.files {
@@ -350,6 +357,9 @@ fn parse_index(bytes: &[u8]) -> Result<Pack> {
         let (Some(sha1), Some(sha512)) = (hash("sha1", 40), hash("sha512", 128)) else { bail!(Refused::Hash(file.path)) };
         let url = file.downloads.iter().find(|u| allowed(u)).cloned().ok_or_else(|| Refused::Host(file.downloads.first().cloned().unwrap_or_else(|| file.path.clone())))?;
         files.push(Wanted { rel, sha1, sha512, url });
+    }
+    if loader == Loader::Vanilla && files.iter().any(|f| mod_name(&f.rel).is_some()) {
+        bail!(Refused::NoLoader);
     }
     Ok(Pack { name: index.name, game, loader, files })
 }
@@ -367,6 +377,14 @@ fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Pack> {
 struct Override {
     index: usize,
     rel: PathBuf,
+}
+
+fn pack_overrides<R: Read + Seek>(zip: &mut ZipArchive<R>, pack: &Pack) -> Result<Vec<Override>> {
+    let found = overrides(zip)?;
+    if pack.loader == Loader::Vanilla && found.iter().any(|o| mod_name(&o.rel).is_some()) {
+        bail!(Refused::NoLoader);
+    }
+    Ok(found)
 }
 
 fn overrides<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Vec<Override>> {
@@ -426,7 +444,7 @@ fn place_mod(slots: &mut Vec<Slot>, mut slot: Slot) -> Result<()> {
 
 fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[String], lookup: Lookup, fetch: Fetch, cancel: &AtomicBool, progress: Progress) -> Result<Instance> {
     let pack = read_index(zip)?;
-    let extra = overrides(zip)?;
+    let extra = pack_overrides(zip, &pack)?;
     let mut total = 0;
     let mut jars: Vec<(usize, String, String)> = Vec::new();
     for o in &extra {
@@ -460,7 +478,7 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
         }
     }
 
-    let mut made = Instance::new(&free_name(&pack.name, taken), &pack.game, Loader::Fabric(Some(pack.loader.clone())));
+    let mut made = Instance::new(&free_name(&pack.name, taken), &pack.game, pack.loader.clone());
     for slot in &slots {
         match &slot.found {
             Some(found) => made.mods.push(found.clone()),
@@ -556,7 +574,17 @@ fn shared_files(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<(String, P
     Ok(())
 }
 
-fn export_with(batch: &Instance, dir: &Path, loader: &str, out: &Path, fetch: Fetch) -> Result<()> {
+fn loader_key(loader: &Loader) -> Option<&'static str> {
+    match loader {
+        Loader::Vanilla => None,
+        Loader::Fabric(_) => Some("fabric-loader"),
+        Loader::Quilt(_) => Some("quilt-loader"),
+        Loader::Forge(_) => Some("forge"),
+        Loader::NeoForge(_) => Some("neoforge"),
+    }
+}
+
+fn export_with(batch: &Instance, dir: &Path, loader: &Loader, out: &Path, fetch: Fetch) -> Result<()> {
     let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
     let mut files = Vec::new();
     let mut extra: Vec<(String, PathBuf)> = Vec::new();
@@ -596,7 +624,10 @@ fn export_with(batch: &Instance, dir: &Path, loader: &str, out: &Path, fetch: Fe
             shared_files(&path, &format!("overrides/{folder}"), 0, &mut extra)?;
         }
     }
-    let dependencies = BTreeMap::from([(MINECRAFT.to_owned(), batch.game_version.clone()), (FABRIC.to_owned(), loader.to_owned())]);
+    let mut dependencies = BTreeMap::from([(MINECRAFT.to_owned(), batch.game_version.clone())]);
+    if let (Some(key), Some(version)) = (loader_key(loader), loader.version()) {
+        dependencies.insert(key.to_owned(), version.to_owned());
+    }
     let index = Index { format_version: 1, game: MINECRAFT.to_owned(), version_id: "1".to_owned(), name: batch.name.clone(), summary: None, files, dependencies };
 
     let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -743,8 +774,65 @@ mod tests {
         idx["files"][1]["env"] = serde_json::json!({ "client": "unsupported", "server": "required" });
         idx["files"][0]["downloads"] = serde_json::json!(["https://evil.com/a.jar", "https://cdn.modrinth.com/a.jar"]);
         let pack = parse_index(&serde_json::to_vec(&idx).unwrap()).unwrap();
-        assert_eq!((pack.name.as_str(), pack.game.as_str(), pack.loader.as_str()), ("Farm Pack", "1.21.1", "0.16.5"));
+        assert_eq!((pack.name.as_str(), pack.game.as_str(), pack.loader.clone()), ("Farm Pack", "1.21.1", Loader::Fabric(Some("0.16.5".into()))));
         assert_eq!(pack.files, [Wanted { rel: PathBuf::from("mods").join("a.jar"), sha1: sha1_of(b"a"), sha512: sha512_of(b"a"), url: "https://cdn.modrinth.com/a.jar".into() }]);
+    }
+
+    #[test]
+    fn each_loader_key_maps_to_its_loader_and_no_key_means_vanilla() {
+        let parse = |idx: &serde_json::Value| parse_index(&serde_json::to_vec(idx).unwrap()).unwrap().loader;
+        for (key, expected) in [
+            ("fabric-loader", Loader::Fabric(Some("1.2".into()))),
+            ("quilt-loader", Loader::Quilt(Some("1.2".into()))),
+            ("forge", Loader::Forge(Some("1.2".into()))),
+            ("neoforge", Loader::NeoForge(Some("1.2".into()))),
+        ] {
+            let mut idx = index(Vec::new());
+            idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+            idx["dependencies"][key] = " 1.2 ".into();
+            assert_eq!(parse(&idx), expected, "{key}");
+            assert_eq!(loader_key(&expected), Some(key));
+        }
+        let mut idx = index(Vec::new());
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        assert_eq!(parse(&idx), Loader::Vanilla);
+        idx["dependencies"]["forge"] = " ".into();
+        assert_eq!(parse(&idx), Loader::Vanilla);
+        assert_eq!(loader_key(&Loader::Vanilla), None);
+    }
+
+    #[test]
+    fn mods_without_a_loader_are_refused() {
+        let mut idx = index(vec![file_entry("mods/a.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        let err = parse_index(&serde_json::to_vec(&idx).unwrap()).unwrap_err();
+        assert_eq!(err.downcast_ref::<Refused>(), Some(&Refused::NoLoader));
+        let mut idx = index(vec![file_entry("resourcepacks/r.zip", b"r", "https://cdn.modrinth.com/r.zip")]);
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        assert_eq!(parse_index(&serde_json::to_vec(&idx).unwrap()).unwrap().loader, Loader::Vanilla);
+        let mut idx = index(vec![file_entry("Mods/a.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        assert!(parse_index(&serde_json::to_vec(&idx).unwrap()).is_err());
+        let mut idx = index(Vec::new());
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        let out = tempfile::tempdir().unwrap();
+        let err = import_pack(&mut pack_of(&idx, &[("overrides/mods/b.jar", b"b")]), out.path(), &[], &lookup_of(Vec::new()), &served(Vec::new()), &AtomicBool::new(false), &quiet()).unwrap_err();
+        assert_eq!(err.downcast_ref::<Refused>(), Some(&Refused::NoLoader));
+    }
+
+    #[test]
+    fn export_writes_the_loader_key_and_import_reads_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        for loader in [Loader::Vanilla, Loader::Fabric(Some("0.16.5".into())), Loader::Quilt(Some("0.30.2".into())), Loader::Forge(Some("47.4.28".into())), Loader::NeoForge(Some("21.1.77".into()))] {
+            let b = Instance::new("Loaders", "1.21.1", loader.clone());
+            let src = dir.path().join("src");
+            fs::create_dir_all(&src).unwrap();
+            let file = dir.path().join(format!("{}.mrpack", loader.name()));
+            export_with(&b, &src, &loader, &file, &served(Vec::new())).unwrap();
+            let pack = read_index(&mut ZipArchive::new(File::open(&file).unwrap()).unwrap()).unwrap();
+            assert_eq!(pack.loader, loader);
+            assert_eq!(pack.game, "1.21.1");
+        }
     }
 
     #[test]
@@ -757,14 +845,6 @@ mod tests {
         let mut idx = index(Vec::new());
         idx["game"] = "minetest".into();
         assert_eq!(parse(&idx), Some(Refused::NotAPack));
-        for (key, name) in OTHER_LOADERS {
-            let mut idx = index(Vec::new());
-            idx["dependencies"][key] = "1".into();
-            assert_eq!(parse(&idx), Some(Refused::Loader(name.into())));
-        }
-        let mut idx = index(Vec::new());
-        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
-        assert_eq!(parse(&idx), Some(Refused::NoLoader));
         let mut idx = index(Vec::new());
         idx["dependencies"].as_object_mut().unwrap().remove("minecraft");
         assert_eq!(parse(&idx), Some(Refused::NoGame));
@@ -912,7 +992,7 @@ mod tests {
         assert_eq!(peek(&write("ok.mrpack", &index(Vec::new()), &[])).unwrap(), "Farm Pack");
         let mut forge = index(Vec::new());
         forge["dependencies"]["forge"] = "47".into();
-        assert_eq!(refused(&peek(&write("forge.mrpack", &forge, &[])).unwrap_err()), Some(Refused::Loader("Forge".into())));
+        assert_eq!(peek(&write("forge.mrpack", &forge, &[])).unwrap(), "Farm Pack");
         let slip = write("slip.mrpack", &index(Vec::new()), &[("overrides/../evil.txt", b"x")]);
         assert!(matches!(refused(&peek(&slip).unwrap_err()), Some(Refused::Path(_))));
         let text = dir.path().join("note.txt");
@@ -1009,7 +1089,7 @@ mod tests {
         let cdn = served(vec![("https://cdn.modrinth.com/data/Sodium/sodium-fabric.jar", b"sodium".to_vec()), ("https://cdn.modrinth.com/data/Lithium/lithium.jar", b"lithium".to_vec())]);
         let file = home.path().join("out.mrpack");
 
-        export_with(&b, &src, "0.16.5", &file, &cdn).unwrap();
+        export_with(&b, &src, &Loader::Fabric(Some("0.16.5".into())), &file, &cdn).unwrap();
 
         let mut zip = ZipArchive::new(File::open(&file).unwrap()).unwrap();
         let mut inside: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
@@ -1049,7 +1129,7 @@ mod tests {
         let linked = junction::create(&outside, src.join("config").join("link")).is_ok();
         let b = Instance::new("Links", "1.21.1", Loader::default());
         let file = home.path().join("out.mrpack");
-        export_with(&b, &src, "0.16.5", &file, &served(Vec::new())).unwrap();
+        export_with(&b, &src, &Loader::Fabric(Some("0.16.5".into())), &file, &served(Vec::new())).unwrap();
         let zip = ZipArchive::new(File::open(&file).unwrap()).unwrap();
         let inside: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
         assert!(linked);
