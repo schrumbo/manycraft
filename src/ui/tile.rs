@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, Respawn, RestartMany, SignInAgain, Start, StartMany, Stop, StopMany};
+use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, Respawn, RestartMany, ShowInstance, SignInAgain, Start, StartMany, Stop, StopMany};
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
@@ -582,7 +582,10 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
             menu.menu(tr("Starten"), Box::new(Start(menu_key.clone())))
         };
         let menu = menu.menu_with_disabled(tr("Neu starten"), Box::new(RestartMany(vec![menu_key.clone()])), stopping || login);
-        menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone()))).menu(tr("Spielordner öffnen"), Box::new(OpenGameFolder(menu_key.clone())))
+        menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).map(|menu| match crate::core::fleet::solo_instance(&menu_batch) {
+            Some(instance) => menu.menu(tr("Instanz öffnen"), Box::new(ShowInstance(instance.to_owned()))),
+            None => menu.menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone()))),
+        }).menu(tr("Spielordner öffnen"), Box::new(OpenGameFolder(menu_key.clone())))
     })
     .into_any_element()
 }

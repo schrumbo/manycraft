@@ -11,7 +11,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{ClearSelection, EditBatch, MessageSelected, Play, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
+use super::actions::{ClearSelection, EditBatch, MessageSelected, NewInstance, Play, ShowInstance, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
 use super::model::{self, Game, Model, Phase};
@@ -19,6 +19,7 @@ use super::motion::{SLOW, Soft};
 use super::theme::{Theme, control, font, iconsize, radius, selection, shell, space, tile, tint, with_alpha};
 use super::tile::{Geometry, TileData};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button, tip};
+use crate::core::fleet;
 use crate::core::i18n::{tr, trf};
 
 /// One line of the grid: a batch heading, or a row of the shown tiles `from..to`.
@@ -505,7 +506,13 @@ fn empty(id: &'static str, symbol: &str, title: String, text: String, button: Op
 
 /// The heading over a batch's tiles in the grid of all batches: name, server, how many run, and what needs attention.
 fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
-    let name = m.batch(batch).map(|b| b.name.clone()).unwrap_or_default();
+    let alone = m.batch(batch).is_none().then(|| m.games.values().find(|i| i.batch_id == batch).and_then(|g| m.instance(&g.instance_id))).flatten();
+    let name = match (m.batch(batch), alone) {
+        (Some(b), _) => b.name.clone(),
+        (None, Some(made)) => trf("%@ · allein", &[&made.name]),
+        (None, None) => String::new(),
+    };
+    let solo = alone.map(|made| (made.id.clone(), made.loader.launchable()));
     let server = m.batch(batch).and_then(|b| b.server.clone()).filter(|s| !s.is_empty());
     let mine = || m.games.values().filter(|i| i.batch_id == batch);
     let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
@@ -514,7 +521,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
     let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let id = batch.to_owned();
-    let exporting = m.exporting.contains(batch);
+    let exporting = m.batch(batch).is_some_and(|b| m.exporting.contains(&b.instance_id));
     let stopped = total - running;
     div()
         .id(SharedString::from(format!("heading-{batch}")))
@@ -544,7 +551,11 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                     .child(attention.to_string()),
             )
         })
-        .context_menu(move |menu, _, _| super::sidebar::batch_menu(menu, &id, running, stopped, exporting))
+        .when_some(solo.as_ref().map(|(instance, _)| instance.clone()), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
+        .context_menu(move |menu, _, _| match &solo {
+            Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable),
+            None => super::sidebar::batch_menu(menu, &id, running, stopped, exporting),
+        })
         .into_any_element()
 }
 
@@ -566,10 +577,16 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
 |k| held.contains(k.as_str()) || m.games.get(*k).is_some_and(|i| matches(i, batch, this.filter) && found(i, m, &words))).cloned().collect();
     drop(held);
     let batch_of = |k: &String| m.games.get(k).map(|i| i.batch_id.clone()).unwrap_or_default();
-    let headed = batch.is_none() && keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1;
+    let alone = |k: &String| m.games.get(k).is_some_and(|i| i.batch_id == fleet::solo_owner(&i.instance_id));
+    let headed = batch.is_none() && (keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1 || keys.iter().any(alone));
     if headed {
         let rank: HashMap<&str, usize> = m.batches.iter().enumerate().map(|(n, b)| (b.id.as_str(), n)).collect();
-        keys.sort_by_key(|k| m.games.get(k).and_then(|i| rank.get(i.batch_id.as_str()).copied()).unwrap_or(usize::MAX));
+        keys.sort_by_cached_key(|k| {
+            let game = m.games.get(k);
+            let owner = game.map(|i| i.batch_id.clone()).unwrap_or_default();
+            let name = game.and_then(|i| m.instance(&i.instance_id)).map(|i| i.name.to_lowercase()).unwrap_or_default();
+            (rank.get(owner.as_str()).copied().unwrap_or(usize::MAX), name, owner)
+        });
     }
     if resorted && same_scope && let Some(playing) = m.playing.as_deref() {
         let group = |k: &str| headed.then(|| batch_of(&k.to_owned()));
@@ -588,8 +605,13 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         this.grid.shown.clear();
         this.grid.rows.clear();
         let in_scope = m.games.values().any(|i| batch.is_none_or(|b| i.batch_id == b));
+        let unstarted = !in_scope && batch.is_none() && m.batches.is_empty() && !m.accounts.is_empty();
         super::tile::unhover_except(None, cx);
         super::state::set_visible(HashSet::new(), cx);
+        if unstarted {
+            let new = action("new-instance", tr("Neue Instanz"), "plus", Box::new(NewInstance), &t);
+            return empty("nothing-started", "layout-grid", tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."), Some(new), &this.grid.focus, &t);
+        }
         if !in_scope {
             let edit = batch.map(|b| action("edit-batch", tr("Batch bearbeiten"), "pencil", Box::new(EditBatch(b.to_owned())), &t));
             return empty("no-accounts", "users", tr("Noch keiner da."), tr("Füg einen Account hinzu und los."), edit, &this.grid.focus, &t);

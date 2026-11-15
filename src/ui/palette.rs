@@ -10,6 +10,7 @@ use gpui_kit::*;
 use super::actions::{
     AddAccount, AddMicrosoft, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
+    CloneInstance, DeleteInstance, EditMods, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, ShowInstance,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -17,6 +18,7 @@ use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
 use super::widgets::{TakeFocus, icon};
+use crate::core::instance::Loader;
 
 actions!(palette, [PaletteNext, PalettePrevious]);
 use crate::core::i18n::{tr, trf};
@@ -28,6 +30,7 @@ pub enum Group {
     Commands,
     Pages,
     Batches,
+    Instances,
     Accounts,
 }
 
@@ -38,6 +41,7 @@ impl Group {
             Self::Commands => tr("Befehle"),
             Self::Pages => tr("Seiten"),
             Self::Batches => tr("Batches"),
+            Self::Instances => tr("Instanzen"),
             Self::Accounts => tr("Accounts"),
         }
     }
@@ -313,6 +317,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount), true),
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
+        ("plus", tr("Neue Instanz"), Box::new(NewInstance), true),
         ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
         ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.games.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
@@ -326,14 +331,14 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
         ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
         ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),
-        ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
-        ("download", tr("Aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
+        ("download", tr("Instanz aus Prism übernehmen"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
+        ("download", tr("Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
     ] {
         if able {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
         }
     }
-    out.push(entry(Group::Commands, "download", tr("Batch importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
+    out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
         out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
     }
@@ -351,10 +356,29 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Batches, "play", trf("%@ starten", &[&b.name]), server.clone(), Box::new(StartBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "square", trf("%@ stoppen", &[&b.name]), server.clone(), Box::new(StopBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "pencil", trf("%@ bearbeiten", &[&b.name]), server.clone(), Box::new(EditBatch(b.id.clone())), cx));
-        out.push(entry(Group::Batches, "folder-open", trf("Batch-Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
-        if !m.exporting.contains(&b.id) {
+        out.push(entry(Group::Batches, "folder-open", trf("Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
+        if !m.exporting.contains(&b.instance_id) {
             out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server, Box::new(ExportBatch(b.id.clone())), cx));
         }
+    }
+    for made in &m.instances {
+        let id = made.id.clone();
+        let detail = Some(made.version_line());
+        let name = &made.name;
+        out.push(entry(Group::Instances, "package", trf("Instanz %@ öffnen", &[name]), detail.clone(), Box::new(ShowInstance(id.clone())), cx));
+        if made.loader.launchable() {
+            out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
+        }
+        out.push(entry(Group::Instances, "boxes", trf("Neuer Batch mit %@…", &[name]), detail.clone(), Box::new(NewBatchFor(id.clone())), cx));
+        if matches!(made.loader, Loader::Fabric(_)) {
+            out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
+        }
+        out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
+        out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
+        if matches!(made.loader, Loader::Fabric(_)) {
+            out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
+        }
+        out.push(entry(Group::Instances, "trash", trf("%@ löschen…", &[name]), detail, Box::new(DeleteInstance(id)), cx));
     }
     for a in m.accounts.iter().filter(|a| a.kind == crate::core::account::AccountKind::Microsoft) {
         out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));

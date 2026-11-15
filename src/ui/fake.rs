@@ -11,7 +11,6 @@ use super::model::Phase;
 use super::state::{Backend, Update, render_image};
 use crate::core::account::Account;
 use crate::core::fleet::Target;
-use crate::core::fleet;
 use crate::core::ipc::{ChatKind, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
 
 const PREVIEW_W: u32 = 192;

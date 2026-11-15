@@ -326,6 +326,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_missing_root_is_no_instances_and_a_broken_one_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_all_in(&dir.path().join("none")).unwrap().is_empty());
+        let file = dir.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(load_all_in(&file).is_err());
+    }
+
+    #[test]
+    fn deleting_twice_is_fine_and_a_blocked_delete_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = Instance::new("Gone", "26.3", Loader::Vanilla);
+        save_in(dir.path(), &made).unwrap();
+        let games = games_dir(&dir.path().join(&made.id));
+        std::fs::create_dir_all(games.join(Uuid::from_u128(1).simple().to_string())).unwrap();
+        std::fs::create_dir_all(games.join(Uuid::from_u128(2).simple().to_string())).unwrap();
+        std::fs::write(games.join("stray.txt"), "x").unwrap();
+        delete_in(dir.path(), &made).unwrap();
+        assert!(!dir.path().join(&made.id).exists());
+        delete_in(dir.path(), &made).unwrap();
+        let blocked = Instance::new("Blocked", "26.3", Loader::Vanilla);
+        std::fs::create_dir_all(dir.path().join(&blocked.id).join(FILE)).unwrap();
+        assert!(delete_in(dir.path(), &blocked).is_err());
+    }
+
+    #[test]
     fn round_trip_and_sorted_by_name() {
         let dir = tempfile::tempdir().unwrap();
         let mut b = Instance::new("zeta", "26.3", Loader::Fabric(Some("0.16.5".into())));

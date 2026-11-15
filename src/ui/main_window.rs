@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -29,6 +29,8 @@ type FitScope = (Option<String>, Vec<(u32, u32)>);
 pub enum Page {
     /// The instance grid of one batch, or of all when `None`.
     Grid(Option<String>),
+    /// The page of one instance.
+    Instance(String),
     Accounts,
     Chat,
 }
@@ -256,6 +258,7 @@ impl MainWindow {
             Page::Grid(_) => !self.onboarding_shown(cx),
             Page::Accounts => super::accounts::has_filter(cx),
             Page::Chat => super::chat::has_filter(cx),
+            Page::Instance(_) => false,
         }
     }
 
@@ -270,7 +273,7 @@ impl MainWindow {
 
     fn onboarding_shown(&self, cx: &App) -> bool {
         let m = model::get(cx).read(cx);
-        m.accounts.is_empty() || m.batches.is_empty()
+        m.accounts.is_empty() || (m.batches.is_empty() && m.instances.is_empty())
     }
 
     fn onboarding(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -286,14 +289,14 @@ impl MainWindow {
                 Box::new(AddAccount),
                 (self.prism.1 > 0).then(|| (tr("Oder Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts) as Box<dyn Action>)),
             )
-        } else if m.batches.is_empty() {
+        } else if m.batches.is_empty() && m.instances.is_empty() {
             (
-                tr("Fehlt noch: ein Batch"),
-                tr("Ein Batch legt Version, Server und Mods fest und schickt deine Accounts gemeinsam los."),
-                "new-batch",
-                tr("Batch erstellen"),
-                Box::new(NewBatch),
-                (self.prism.0 > 0).then(|| (tr("Oder aus einer Prism-Instanz übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
+                tr("Fehlt noch: eine Instanz"),
+                tr("Eine Instanz legt Version, Loader und Mods fest. Spiel sie allein oder schick mehrere Accounts als Batch los."),
+                "new-instance",
+                tr("Instanz erstellen"),
+                Box::new(NewInstance),
+                (self.prism.0 > 0).then(|| (tr("Oder aus Prism übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
             )
         } else {
             return None;
@@ -338,6 +341,7 @@ impl Render for MainWindow {
         let content = match self.page.clone() {
             Page::Accounts => super::accounts::page(window, cx).into_any_element(),
             Page::Chat => super::chat::page(window, cx).into_any_element(),
+            Page::Instance(id) => super::instance_page::page(&id, window, cx),
             Page::Grid(batch) => match self.onboarding(cx) {
                 Some(empty) => empty,
                 None => {
@@ -394,7 +398,7 @@ impl Render for MainWindow {
                     }
                     Page::Accounts => super::accounts::focus_filter(window, cx),
                     Page::Chat => super::chat::focus_filter(window, cx),
-                    Page::Grid(_) => {}
+                    Page::Grid(_) | Page::Instance(_) => {}
                 }
             }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
@@ -422,6 +426,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ShowAll, window, cx| this.go(Page::Grid(None), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.go(Page::Accounts, window, cx)))
             .on_action(cx.listener(|this, a: &ShowBatch, window, cx| this.go(Page::Grid(Some(a.0.clone())), window, cx)))
+            .on_action(cx.listener(|this, a: &ShowInstance, window, cx| this.go(Page::Instance(a.0.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &FilterAll, window, cx| this.set_filter(Filter::All, window, cx)))
             .on_action(cx.listener(|this, _: &FilterAttention, window, cx| this.set_filter(Filter::Attention, window, cx)))
             .on_action(cx.listener(|this, _: &FilterRunning, window, cx| this.set_filter(Filter::Running, window, cx)))
@@ -527,6 +532,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
         KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
+        KeyBinding::new(k("shift-n"), NewInstance, Some("MainWindow")),
         KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
@@ -637,10 +643,10 @@ pub fn select_batch(batch: &str, cx: &mut App) {
     });
 }
 
-/// Shows the grid of `batch` with the window's filter, as after importing it; stays put while the palette or a sheet is open.
-pub fn show_batch(batch: &str, cx: &mut App) {
+/// Shows the page of instance `id`, as after creating or importing it; stays put while the palette or a sheet is open.
+pub fn show_instance(id: &str, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
-    let batch = batch.to_owned();
+    let id = id.to_owned();
     let _ = h.update(cx, |view, window, cx| {
         let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
         let content = root.read(cx).view().clone();
@@ -649,8 +655,7 @@ pub fn show_batch(batch: &str, cx: &mut App) {
                 if this.palette.is_some() || window.has_active_dialog(cx) {
                     return;
                 }
-                this.grid.reset_scroll();
-                this.go(Page::Grid(Some(batch)), window, cx);
+                this.go(Page::Instance(id), window, cx);
             });
         }
     });

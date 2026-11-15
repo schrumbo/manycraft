@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, NextAttention, NextInstance, OpenChat, Play, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{Broadcast, CloneInstance, NextAttention, NextInstance, OpenChat, Play, PlayInstance, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, ChatLine, Game, Model, Phase, rank};
 use super::native;
 use crate::core::account::{self, Account, AccountKind};
@@ -466,6 +466,12 @@ pub fn init(cx: &mut App) {
         let key = a.0.clone();
         cx.defer(move |cx| play(&key, cx));
     });
+    cx.on_action(|a: &PlayInstance, cx| {
+        let instance = a.instance.clone();
+        let account = a.account.as_deref().and_then(|id| id.parse().ok());
+        cx.defer(move |cx| play_instance(&instance, account, cx));
+    });
+    cx.on_action(|a: &CloneInstance, cx| clone_instance(&a.0, cx));
     cx.on_action(|_: &ShowGrid, cx| cx.defer(show_grid));
     cx.on_action(|_: &NextInstance, cx| cx.defer(|cx| step(HotkeyAction::Next, cx)));
     cx.on_action(|_: &PreviousInstance, cx| cx.defer(|cx| step(HotkeyAction::Prev, cx)));
@@ -645,8 +651,11 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
         }
     }
     let mut retired = Vec::new();
+    let instances = &m.instances;
+    let accounts = &m.accounts;
     m.games.retain(|k, i| {
-        let stays = keep.contains(k) || i.phase.is_running();
+        let solo = i.batch_id == fleet::solo_owner(&i.instance_id) && instances.iter().any(|made| made.id == i.instance_id) && accounts.iter().any(|a| a.id == i.account_id);
+        let stays = keep.contains(k) || i.phase.is_running() || (solo && !matches!(i.phase, Phase::Stopped));
         if !stays && let Some(image) = i.preview.take() {
             retired.push(image);
         }
@@ -664,6 +673,127 @@ fn rebuild(m: &mut Model) -> Vec<Arc<RenderImage>> {
     });
     m.order_seq += 1;
     retired
+}
+
+/// The account `made` is played with alone when none is named: the one that played it last, else the only one.
+pub fn solo_account(m: &Model, made: &Instance) -> Option<uuid::Uuid> {
+    made.last_account.filter(|id| m.account(*id).is_some()).or_else(|| match m.accounts.as_slice() {
+        [only] => Some(only.id),
+        _ => None,
+    })
+}
+
+fn play_instance(id: &str, account: Option<uuid::Uuid>, cx: &mut App) {
+    let model = model::get(cx);
+    let picked = {
+        let m = model.read(cx);
+        m.instance(id).and_then(|made| {
+            let account = account.or_else(|| solo_account(m, made)).filter(|a| m.account(*a).is_some())?;
+            let key = fleet::solo_key(made, account);
+            let shown = m.games.get(&key).is_some_and(|g| g.phase.is_active());
+            Some((key, account, shown))
+        })
+    };
+    let Some((key, account, shown)) = picked else {
+        if model.read(cx).accounts.is_empty() {
+            cx.dispatch_action(&super::actions::AddAccount);
+        } else {
+            let id = id.to_owned();
+            cx.defer(move |cx| super::main_window::show_instance(&id, cx));
+        }
+        return;
+    };
+    if shown {
+        play(&key, cx);
+        return;
+    }
+    let owner = fleet::solo_owner(id);
+    update_model(cx, |m, _, _| {
+        let name = m.account(account).map(|a| a.name.clone()).unwrap_or_default();
+        m.games.entry(key.clone()).or_insert_with(|| Game {
+            key: key.clone(),
+            batch_id: owner.clone(),
+            instance_id: id.to_owned(),
+            account_id: account,
+            name,
+            phase: Phase::Stopped,
+            reconnect_attempts: 0,
+            unread_whispers: 0,
+            preview: None,
+            preview_seq: 0,
+            live: false,
+            stopping: false,
+        });
+        if let Some(made) = m.instances.iter_mut().find(|made| made.id == id) {
+            made.last_account = Some(account);
+        }
+        m.order_seq += 1;
+    });
+    launch(&owner, Some(std::slice::from_ref(&key)), false, cx);
+    let id = id.to_owned();
+    cx.background_spawn(async move {
+        if let Err(e) = super::remote::remember_account(&id, account) {
+            eprintln!("last account: {e:#}");
+        }
+    })
+    .detach();
+}
+
+fn tell(text: String, cx: &mut App) {
+    if cx.has_global::<Runtime>() {
+        cx.global_mut::<Runtime>().notice = Some(text);
+    } else {
+        model::get(cx).update(cx, |m, cx| {
+            m.error = Some(text);
+            cx.notify();
+        });
+    }
+}
+
+fn clone_instance(id: &str, cx: &mut App) {
+    let id = id.to_owned();
+    let task = cx.background_spawn(async move { super::remote::clone_instance(&id) });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(made) => {
+                    let id = made.id.clone();
+                    model::get(cx).update(cx, |m, cx| {
+                        m.instances.push(made);
+                        cx.notify();
+                    });
+                    super::main_window::show_instance(&id, cx);
+                }
+                Err(e) => tell(super::forms::explain_as(tr("Nicht kopiert."), &e).text, cx),
+            }
+            reload(cx);
+        });
+    })
+    .detach();
+}
+
+/// Deletes instance `id` with its games; says why when it was refused.
+pub fn delete_instance(id: &str, cx: &mut App) {
+    let id = id.to_owned();
+    let gone = id.clone();
+    let task = cx.background_spawn(async move { super::remote::delete_instance(&id) });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(()) => {
+                    model::get(cx).update(cx, |m, cx| {
+                        m.instances.retain(|made| made.id != gone);
+                        cx.notify();
+                    });
+                }
+                Err(e) => tell(super::forms::explain_as(tr("Nicht gelöscht."), &e).text, cx),
+            }
+            reload(cx);
+        });
+    })
+    .detach();
 }
 
 fn update_model(cx: &mut App, f: impl FnOnce(&mut Model, &mut Runtime, &mut App)) {

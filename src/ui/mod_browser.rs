@@ -1,4 +1,4 @@
-//! The mod browser of the batch sheet: popular mods first, search as you type, install, update and remove in place.
+//! The mod browser of the instance sheet: popular mods first, search as you type, install, update and remove in place.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -10,7 +10,8 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::batch_sheet::{BatchSheet, Load};
+use super::batch_sheet::Load;
+use super::instance_sheet::InstanceSheet;
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::motion::Soft;
@@ -138,9 +139,9 @@ impl ImageCache for IconCache {
 }
 
 impl Browser {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<BatchSheet>) -> (Self, Subscription) {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<InstanceSheet>) -> (Self, Subscription) {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Mods suchen, z. B. Sodium")));
-        let sub = cx.subscribe(&query, |s: &mut BatchSheet, _, e: &InputEvent, cx| {
+        let sub = cx.subscribe(&query, |s: &mut InstanceSheet, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 s.browse_refresh(true, cx);
             }
@@ -247,7 +248,7 @@ fn search_problem(e: &anyhow::Error) -> Problem {
     }
 }
 
-impl BatchSheet {
+impl InstanceSheet {
     pub(super) fn open_search(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if open && !self.searching {
             self.saved_scroll = Some(self.body_scroll.offset());
@@ -771,7 +772,7 @@ impl BatchSheet {
         uniform_list(
             "mod-results",
             items,
-            cx.processor(move |s: &mut BatchSheet, range: Range<usize>, _, cx| {
+            cx.processor(move |s: &mut InstanceSheet, range: Range<usize>, _, cx| {
                 let t = Theme::get(cx);
                 let count = s.browser.rows().count();
                 let hits: Vec<(usize, Hit)> = s.browser.rows().enumerate().skip(range.start).take(range.len()).map(|(ix, h)| (ix, h.clone())).collect();

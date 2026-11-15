@@ -56,10 +56,11 @@ pub(super) fn run_in(root: &Path) -> Report {
         Err(e) => return Report { moved: 0, problems: vec![format!("{e:#}")] },
     };
     let instances = root.join("instances");
+    let mut taken: Vec<String> = instance::load_all_in(&instances).map(|all| all.into_iter().map(|i| i.name).collect()).unwrap_or_default();
     let mut report = Report::default();
     for (id, value) in pending {
         let name = value.get("name").and_then(Value::as_str).unwrap_or(&id).to_owned();
-        match migrate_one(&batches.join(&id), &instances.join(&id), &id, value) {
+        match migrate_one(&batches.join(&id), &instances.join(&id), &id, value, &mut taken) {
             Ok(()) => report.moved += 1,
             Err(e) => report.problems.push(trf("Batch „%@“ konnte nicht in eine Instanz umziehen: %@", &[&name, &format!("{e:#}")])),
         }
@@ -93,13 +94,15 @@ fn pending(batches: &Path) -> Result<Vec<(String, Value)>> {
     Ok(found)
 }
 
-fn migrate_one(from: &Path, to: &Path, id: &str, mut value: Value) -> Result<()> {
+fn migrate_one(from: &Path, to: &Path, id: &str, mut value: Value, taken: &mut Vec<String>) -> Result<()> {
     if !to.join(instance::FILE).is_file() {
         move_games(to)?;
         for name in SHARED {
             rename_new(&from.join(name), &to.join(name))?;
         }
-        let made = instance_of(id, &value)?;
+        let mut made = instance_of(id, &value)?;
+        made.name = instance::free_name(&made.name, taken);
+        taken.push(made.name.clone());
         net::write_atomic(&to.join(instance::FILE), &serde_json::to_vec_pretty(&made)?)?;
     }
     let fields: &mut Map<String, Value> = value.as_object_mut().context("batch.json is not an object")?;
@@ -357,5 +360,65 @@ mod tests {
         let i = &instance::load_all_in(&root.join("instances")).unwrap()[0];
         assert_eq!((i.name.as_str(), &i.loader, i.memory_mb), ("Bare", &Loader::Fabric(None), instance::DEFAULT_MEMORY_MB));
         assert_eq!(batch::load_all_in(&root.join("batches")).unwrap()[0].instance_id, "b2");
+    }
+
+    #[test]
+    fn only_account_folders_move_into_games() {
+        let f = fixture();
+        let outside = f.root.join("elsewhere");
+        fs::create_dir_all(&outside).unwrap();
+        let linked = account(4);
+        link(&outside, &f.instance().join(&linked));
+        write(&f.instance().join(account(5)), "a file named like an account");
+        fs::create_dir_all(f.instance().join("notes")).unwrap();
+        fs::create_dir_all(f.instance().join("z".repeat(32))).unwrap();
+        assert_eq!(run_in(&f.root).moved, 1);
+        check_done(&f);
+        assert!(fs::symlink_metadata(f.instance().join(&linked)).is_ok());
+        assert!(!f.instance().join("games").join(&linked).exists());
+        assert_eq!(read(&f.instance().join(account(5))), "a file named like an account");
+        assert!(f.instance().join("notes").is_dir());
+        assert!(f.instance().join("z".repeat(32)).is_dir());
+        assert!(outside.is_dir());
+    }
+
+    #[test]
+    fn no_batches_folder_is_nothing_to_do_and_an_unreadable_one_is_a_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(run_in(dir.path()), Report::default());
+        write(&dir.path().join("batches"), "not a folder");
+        assert!(!run_in(dir.path()).problems.is_empty());
+    }
+
+    #[test]
+    fn folders_that_are_no_batch_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("batches").join("not an id").join(BATCH_FILE), r#"{"id":"not an id","name":"X","game_version":"26.3"}"#);
+        fs::create_dir_all(root.join("batches").join("empty1")).unwrap();
+        assert_eq!(run_in(root), Report::default());
+        assert!(!root.join("instances").exists());
+    }
+
+    #[test]
+    fn batches_of_one_name_become_instances_of_different_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for id in ["b4", "b5"] {
+            write(&root.join("batches").join(id).join(BATCH_FILE), &format!(r#"{{"id":"{id}","name":"Farm","game_version":"26.3"}}"#));
+        }
+        assert_eq!(run_in(root).moved, 2);
+        let mut names: Vec<String> = instance::load_all_in(&root.join("instances")).unwrap().into_iter().map(|i| i.name).collect();
+        names.sort();
+        assert_eq!(names, ["Farm", "Farm 2"]);
+    }
+
+    #[test]
+    fn a_null_mod_list_moves_as_no_mods() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("batches").join("b3").join(BATCH_FILE), r#"{"id":"b3","name":"Null","game_version":"26.3","mods":null}"#);
+        assert_eq!(run_in(root).moved, 1);
+        assert!(instance::load_all_in(&root.join("instances")).unwrap()[0].mods.is_empty());
     }
 }

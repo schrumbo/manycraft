@@ -477,15 +477,16 @@ pub fn solo_owner(instance: &str) -> String {
     format!("{instance}-{SOLO}")
 }
 
+/// The instance `owner` plays alone, when it stands for solo play.
+pub fn solo_instance(owner: &str) -> Option<&str> {
+    owner.strip_suffix(SOLO)?.strip_suffix('-')
+}
+
 /// Key of the game of `account` playing `instance` alone.
 pub fn solo_key(instance: &Instance, account: Uuid) -> String {
     format!("{}-{}-{SOLO}", instance.id, account.simple())
 }
 
-/// Whether `key` names a game played alone.
-pub fn is_solo(key: &str) -> bool {
-    key.ends_with(&format!("-{SOLO}"))
-}
 
 trait Process: Send {
     fn id(&self) -> u32;
@@ -1329,6 +1330,12 @@ mod tests {
     use std::process::{Command, Stdio};
 
     use super::*;
+
+    #[test]
+    fn a_solo_owner_names_its_instance_and_a_batch_id_names_none() {
+        assert_eq!(solo_instance(&solo_owner("abc")), Some("abc"));
+        assert_eq!(solo_instance("abc"), None);
+    }
 
     fn target(name: &str) -> Target {
         let instance = Instance::new(name, "26.3", Loader::default());
