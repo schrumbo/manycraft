@@ -397,6 +397,9 @@ pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Res
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
         let Some(millis) = name.to_str().and_then(|n| parse_entry(n).map(|(_, millis)| millis).or_else(|| super::origin::parse_reset(n))) else { continue };
+        if entry.path().join(super::origin::KEEP).exists() {
+            continue;
+        }
         if (millis < cutoff || millis > ahead)
             && let Err(e) = remove_dir(&entry.path())
             && first.is_ok()
@@ -714,6 +717,20 @@ mod tests {
         assert!(!root.join(TRASH).join(&fresh).exists());
         assert!(root.join(TRASH).is_dir());
         purge_stale_in(&dir.path().join("none"), 1, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn purge_stale_leaves_an_entry_marked_as_kept_and_a_reset_entry_goes_when_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("instances");
+        let (kept, old) = (root.join(TRASH).join("abc-1.reset"), root.join(TRASH).join("abc-2.reset"));
+        for entry in [&kept, &old] {
+            std::fs::create_dir_all(entry.join("mods")).unwrap();
+        }
+        std::fs::write(kept.join(super::super::origin::KEEP), b"").unwrap();
+        purge_stale_in(&root, 800_000, Duration::from_secs(600)).unwrap();
+        assert!(kept.join("mods").is_dir());
+        assert!(!old.exists());
     }
 
     #[test]

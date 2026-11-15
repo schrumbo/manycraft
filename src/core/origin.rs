@@ -15,6 +15,7 @@ const PACKS: [&str; 3] = ["config", "resourcepacks", "shaderpacks"];
 const SWAPPED: [&str; 4] = ["mods", "config", "resourcepacks", "shaderpacks"];
 const MODS_LOCK: &str = "mods.lock";
 const SUFFIX: &str = ".reset";
+pub(super) const KEEP: &str = ".keep";
 
 /// The mods, version and loader an instance was created with; its config and packs sit in the same folder.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,8 +164,10 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
     let next = Instance { mods, local_mods: local, ..made.clone() };
     if let Err(e) = instance::save_in(root, &next) {
         let back = instance::trash_dir(root).join(format!("{}-{}{SUFFIX}", made.id, millis + 1));
-        let _ = exchange(&dir, &trash, &back);
-        return Err(e);
+        return Err(match exchange(&dir, &trash, &back) {
+            Ok(()) => e,
+            Err(rollback) => rollback.context(format!("{e:#}")),
+        });
     }
     Ok((next, entry))
 }
@@ -191,8 +194,10 @@ pub(super) fn unreset_in(root: &Path, now: &Instance, before: &Instance, entry: 
     exchange(&dir, &from, &kept)?;
     let next = Instance { mods: before.mods.clone(), local_mods: before.local_mods.clone(), ..now.clone() };
     if let Err(e) = instance::save_in(root, &next) {
-        let _ = exchange(&dir, &kept, &from);
-        return Err(e);
+        return Err(match exchange(&dir, &kept, &from) {
+            Ok(()) => e,
+            Err(rollback) => rollback.context(format!("{e:#}")),
+        });
     }
     let _ = std::fs::remove_dir(&from);
     Ok(next)
@@ -224,20 +229,20 @@ fn exchange(dir: &Path, replacement: &Path, away: &Path) -> Result<()> {
         Ok(())
     })();
     let Err(error) = result else { return Ok(()) };
+    let mut stuck = false;
     for name in placed {
-        let _ = std::fs::rename(dir.join(name), replacement.join(name));
+        stuck |= std::fs::rename(dir.join(name), replacement.join(name)).is_err();
     }
     for name in moved_away {
-        let _ = std::fs::rename(away.join(name), dir.join(name));
+        stuck |= std::fs::rename(away.join(name), dir.join(name)).is_err();
     }
-    if std::fs::remove_dir(away).is_err() {
-        let kept = away.with_file_name(format!("kept-{}", away.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
-        if std::fs::rename(away, &kept).is_ok() {
-            return Err(error.context(format!("the folders that could not be moved back are in {}", kept.display())));
-        }
-        return Err(error.context(format!("the folders that could not be moved back are in {}", away.display())));
+    if !stuck && std::fs::remove_dir(away).is_ok() {
+        return Err(error);
     }
-    Err(error)
+    for left in [away, replacement] {
+        let _ = std::fs::write(left.join(KEEP), b"");
+    }
+    Err(error.context(format!("folders that could not be moved back are kept in {} and {}", away.display(), replacement.display())))
 }
 
 /// Whether trash entry name `entry` is one [`reset`] made, and when.
