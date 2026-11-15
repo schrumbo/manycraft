@@ -240,12 +240,12 @@ pub(super) fn load_all_in(root: &Path) -> Result<Vec<Instance>> {
     let mut instances = Vec::new();
     for entry in entries {
         let file = entry?.path().join(FILE);
-        if !file.is_file() {
+        if !store::exists(&file) {
             continue;
         }
-        let bytes = store::read(&file)?.with_context(|| format!("cannot read {}", file.display()))?;
-        let instance: Instance = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", file.display()))?;
-        instances.push(instance);
+        if let Some(instance) = store::load::<Instance>(&file)? {
+            instances.push(instance);
+        }
     }
     instances.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
     Ok(instances)
@@ -255,7 +255,7 @@ pub(super) fn save_in(root: &Path, instance: &Instance) -> Result<()> {
     if !valid_id(&instance.id) {
         bail!("invalid instance id {:?}", instance.id);
     }
-    store::write(&root.join(&instance.id).join(FILE), &serde_json::to_vec_pretty(instance)?, |_| Ok(()))
+    store::write::<Instance>(&root.join(&instance.id).join(FILE), &serde_json::to_vec_pretty(instance)?, |_| Ok(()))
 }
 
 /// Whether `id` can name a folder without escaping it.
@@ -274,9 +274,11 @@ pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
         bail!("invalid instance id {:?}", instance.id);
     }
     let dir = root.join(&instance.id);
-    match std::fs::remove_file(dir.join(FILE)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
-        _ => {}
+    for file in [store::backup_path(&dir.join(FILE)), dir.join(FILE)] {
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
+            _ => {}
+        }
     }
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("cannot delete {}", dir.display()))?;
@@ -338,18 +340,19 @@ pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Instance> {
     }
     std::fs::rename(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
     let file = to.join(FILE);
-    let damaged = |e: Option<serde_json::Error>| {
+    let damaged = |e: anyhow::Error| {
         let text = Final(super::i18n::tr("Die Instanz im Papierkorb ist beschädigt. Ihre Dateien bleiben dort unverändert."));
-        let raw = anyhow::Error::new(text);
-        match e {
-            Some(e) => raw.context(format!("{} is damaged: {e}", file.display())),
-            None => raw.context(format!("{} is missing", file.display())),
-        }
+        anyhow::Error::new(text).context(format!("{} is damaged: {e:#}", file.display()))
     };
-    let loaded = store::read(&file).and_then(|bytes| {
-        let bytes = bytes.ok_or_else(|| damaged(None))?;
-        serde_json::from_slice::<Instance>(&bytes).map_err(|e| damaged(Some(e)))
-    });
+    let parse = |path: &Path| -> Result<Instance, (bool, anyhow::Error)> {
+        let bytes = std::fs::read(path).map_err(|e| (e.kind() == std::io::ErrorKind::NotFound, e.into()))?;
+        serde_json::from_slice(&bytes).map_err(|e| (bytes.is_empty() || e.is_syntax() || e.is_eof(), e.into()))
+    };
+    let loaded = match parse(&file) {
+        Ok(instance) => Ok(instance),
+        Err((true, e)) => parse(&store::backup_path(&file)).map_err(|_| damaged(e)),
+        Err((false, e)) => Err(damaged(e)),
+    };
     match loaded {
         Ok(instance) => Ok(instance),
         Err(e) => {
@@ -669,6 +672,50 @@ mod tests {
         assert!(untrash_in(&root, &entry).is_err());
         assert!(!root.join(&made.id).exists());
         assert!(root.join(TRASH).join(&entry).join("mods").join("a.jar").is_file());
+    }
+
+    #[test]
+    fn a_damaged_trash_entry_with_a_good_backup_comes_back_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        save_in(&root, &Instance { name: "Renamed".into(), ..made.clone() }).unwrap();
+        let entry = trash_in(&root, &made, 9).unwrap();
+        std::fs::write(root.join(TRASH).join(&entry).join(FILE), "{").unwrap();
+        assert_eq!(untrash_in(&root, &entry).unwrap(), made);
+        assert_eq!(std::fs::read(root.join(&made.id).join(FILE)).unwrap(), b"{");
+        assert_eq!(load_all_in(&root).unwrap(), vec![made]);
+    }
+
+    #[test]
+    fn a_trash_entry_from_a_newer_version_stays_in_the_trash_despite_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        save_in(&root, &Instance { name: "Renamed".into(), ..made.clone() }).unwrap();
+        let entry = trash_in(&root, &made, 9).unwrap();
+        std::fs::write(root.join(TRASH).join(&entry).join(FILE), br#"{"id":5}"#).unwrap();
+        assert!(untrash_in(&root, &entry).unwrap_err().downcast_ref::<Final>().is_some());
+        assert!(!root.join(&made.id).exists());
+        assert_eq!(std::fs::read(root.join(TRASH).join(&entry).join(FILE)).unwrap(), br#"{"id":5}"#);
+    }
+
+    #[test]
+    fn a_damaged_instance_file_comes_back_from_the_previous_save_and_delete_takes_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = Instance::new("A", "26.3", Loader::Vanilla);
+        save_in(dir.path(), &made).unwrap();
+        save_in(dir.path(), &Instance { memory_mb: made.memory_mb + 512, ..made.clone() }).unwrap();
+        let file = dir.path().join(&made.id).join(FILE);
+        std::fs::write(&file, b"{\"id\":").unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![made.clone()]);
+        assert_eq!(std::fs::read(store::damaged_path(&file)).unwrap(), b"{\"id\":");
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![made.clone()]);
+        std::fs::write(&file, br#"{"id":5}"#).unwrap();
+        assert!(load_all_in(dir.path()).unwrap_err().downcast_ref::<store::Untouched>().is_some());
+        assert_eq!(std::fs::read(&file).unwrap(), br#"{"id":5}"#);
+        delete_in(dir.path(), &made).unwrap();
+        assert!(!dir.path().join(&made.id).exists());
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
     }
 
     #[test]

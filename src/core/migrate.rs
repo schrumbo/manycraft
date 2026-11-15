@@ -14,7 +14,7 @@ use super::batch::ModRef;
 use super::i18n::trf;
 use super::install::clean::LOCK_FILE;
 use super::instance::{self, Instance, Loader};
-use super::{lock, net, paths};
+use super::{lock, net, paths, store};
 
 const SHARED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
 const MOVED_FIELDS: [&str; 6] = ["game_version", "loader_version", "mods", "local_mods", "memory_mb", "jvm_args"];
@@ -84,7 +84,7 @@ fn pending(batches: &Path) -> Result<Vec<(String, Value)>> {
             continue;
         }
         let bytes = fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
-        let value: Value = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", file.display()))?;
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
         let migrated = value.get("instance_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
         if !migrated && value.get("id").and_then(Value::as_str) == Some(id.as_str()) {
             found.push((id, value));
@@ -95,7 +95,7 @@ fn pending(batches: &Path) -> Result<Vec<(String, Value)>> {
 }
 
 fn migrate_one(from: &Path, to: &Path, id: &str, mut value: Value, taken: &mut Vec<String>) -> Result<()> {
-    if !to.join(instance::FILE).is_file() {
+    if !store::exists(&to.join(instance::FILE)) {
         move_games(to)?;
         for name in SHARED {
             rename_new(&from.join(name), &to.join(name))?;

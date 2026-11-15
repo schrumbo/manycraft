@@ -27,6 +27,7 @@ use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
 use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
+use crate::core::store::{self, Recovery};
 use crate::core::{adopt, companion, drive, install, ipc};
 
 const STABLE: Duration = Duration::from_secs(60);
@@ -462,14 +463,7 @@ pub fn init(cx: &mut App) {
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
-        let text = format!("{e:#}");
-        cx.global_mut::<Runtime>().notice = Some(if text.contains("a copy is in") {
-            tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.bak).")
-        } else if text.contains("it was left untouched") {
-            tr("Die Einstellungen waren beschädigt. Es gelten die Standardwerte; die Datei bleibt unverändert, bis du etwas änderst.")
-        } else {
-            text
-        });
+        cx.global_mut::<Runtime>().notice = Some(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}")));
     }
     cx.background_spawn(async {
         if !crate::core::updater::install::running_alone() {
@@ -600,15 +594,21 @@ fn reload_with(cx: &mut App, keep: bool) {
             _ => Vec::new(),
         };
         let loaded = batches.and_then(|b| instances.map(|i| (b, i)));
-        (accounts, loaded, logs, moved.problems)
+        (accounts, loaded, logs, moved.problems, store::take_recovered())
     });
     cx.spawn(async move |cx| {
-        let (accounts, batches, logs, problems) = task.await;
+        let (accounts, batches, logs, problems, recovered) = task.await;
         cx.update(|cx| {
+            if let Some(text) = recovered_notice(&recovered)
+                && cx.has_global::<Runtime>()
+            {
+                let rt = cx.global_mut::<Runtime>();
+                rt.notice = Some(rt.notice.take().map_or(text.clone(), |before| format!("{before} {text}")));
+            }
             let model = model::get(cx);
             let loaded = accounts.is_ok() && batches.is_ok();
             let notice = if loaded && cx.has_global::<Runtime>() { cx.global_mut::<Runtime>().notice.take() } else { None };
-            let notice = if problems.is_empty() { notice } else { Some(problems.join("\n")) };
+            let notice = if problems.is_empty() { notice } else { Some(notice.into_iter().fold(problems.join("\n"), |p, n| format!("{p}\n{n}"))) };
             let mut retired = Vec::new();
             model.update(cx, |m, cx| {
                 for (key, log) in logs {
@@ -622,7 +622,7 @@ fn reload_with(cx: &mut App, keep: bool) {
                         m.loaded = true;
                         m.error = if keep { notice.or(m.error.take()) } else { notice };
                     }
-                    (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),
+                    (Err(e), _) | (_, Err(e)) => m.error = Some(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))),
                 }
                 retired = rebuild(m);
                 cx.notify();
@@ -663,6 +663,42 @@ fn reload_with(cx: &mut App, keep: bool) {
         });
     })
     .detach();
+}
+
+fn recovered_notice(found: &[(PathBuf, Recovery)]) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for (path, recovery) in found {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let count = found.iter().filter(|(p, r)| r == recovery && p.file_name() == path.file_name()).count();
+        let line = match (name.as_str(), recovery, count) {
+            ("accounts.json", Recovery::Restored, _) => tr("Die Accounts waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("accounts.json", Recovery::Lost, _) => tr("Die Accounts waren beschädigt und ließen sich nicht wiederherstellen. Füg sie neu hinzu; eine Kopie liegt neben der Datei (accounts.json.damaged)."),
+            ("settings.json", Recovery::Restored, _) => tr("Die Einstellungen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("settings.json", Recovery::Lost, _) => tr("Die Einstellungen waren beschädigt und ließen sich nicht wiederherstellen. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.damaged)."),
+            ("batch.json", Recovery::Restored, 1) => tr("Ein Batch war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("batch.json", Recovery::Restored, n) => trf("%lld Batches waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
+            ("batch.json", Recovery::Lost, 1) => tr("Ein Batch war beschädigt und ließ sich nicht wiederherstellen. Leg ihn neu an; eine Kopie liegt in seinem Ordner (batch.json.damaged)."),
+            ("batch.json", Recovery::Lost, n) => trf("%lld Batches waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (batch.json.damaged).", &[&n]),
+            ("instance.json", Recovery::Restored, 1) => tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
+            ("instance.json", Recovery::Restored, n) => trf("%lld Instanzen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
+            ("instance.json", Recovery::Lost, 1) => tr("Eine Instanz war beschädigt und ließ sich nicht wiederherstellen. Ihre Mods und Welten bleiben in ihrem Ordner, dazu eine Kopie (instance.json.damaged)."),
+            ("instance.json", Recovery::Lost, n) => trf("%lld Instanzen waren beschädigt und ließen sich nicht wiederherstellen. Ihre Mods und Welten bleiben in ihren Ordnern, dazu je eine Kopie (instance.json.damaged).", &[&n]),
+            (_, Recovery::Restored, _) => trf("%@ war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&name]),
+            (_, Recovery::Lost, _) => trf("%@ war beschädigt und ließ sich nicht wiederherstellen. Eine Kopie liegt daneben (%@.damaged).", &[&name, &name]),
+        };
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    if lines.len() < 2 {
+        return lines.pop();
+    }
+    let restored = found.iter().filter(|(_, r)| *r == Recovery::Restored).count();
+    Some(match (restored, found.len()) {
+        (r, all) if r == all => trf("%lld Dateien waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&all]),
+        (0, all) => trf("%lld Dateien waren beschädigt und ließen sich nicht wiederherstellen. Kopien liegen jeweils daneben (Endung .damaged).", &[&all]),
+        (r, all) => trf("%lld Dateien waren beschädigt: %lld aus der Sicherung wiederhergestellt, die übrigen nicht. Kopien liegen jeweils daneben (Endung .damaged).", &[&all, &r]),
+    })
 }
 
 fn saved_history(batches: &[Batch], instances: &[Instance]) -> Vec<(String, history::Log)> {
@@ -3050,5 +3086,18 @@ mod tests {
         let key = rekeyed(&mut m, &old, "proxy-late");
         apply(&mut m, &mut rt, Update::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) }, &mut Effects::default());
         assert_eq!(model::hint(&key).proxy, None);
+    }
+
+    #[test]
+    fn recovery_notices_name_one_file_and_summarise_several() {
+        use super::{Recovery, recovered_notice};
+        let at = |file: &str, r: Recovery| (PathBuf::from("data").join(file), r);
+        assert_eq!(recovered_notice(&[]), None);
+        assert_eq!(recovered_notice(&[at("accounts.json", Recovery::Restored)]), Some(crate::core::i18n::tr("Die Accounts waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.")));
+        let two_batches = [at("b1/batch.json", Recovery::Lost), at("b2/batch.json", Recovery::Lost)];
+        assert_eq!(recovered_notice(&two_batches), Some(crate::core::i18n::trf("%lld Batches waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (batch.json.damaged).", &[&2])));
+        assert_eq!(recovered_notice(&[at("i1/instance.json", Recovery::Restored)]), Some(crate::core::i18n::tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.")));
+        let mixed = [at("accounts.json", Recovery::Restored), at("settings.json", Recovery::Lost), at("b1/batch.json", Recovery::Restored)];
+        assert_eq!(recovered_notice(&mixed), Some(crate::core::i18n::trf("%lld Dateien waren beschädigt: %lld aus der Sicherung wiederhergestellt, die übrigen nicht. Kopien liegen jeweils daneben (Endung .damaged).", &[&3, &2])));
     }
 }
