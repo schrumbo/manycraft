@@ -60,9 +60,17 @@ pub enum Support {
 impl Hit {
     /// Whether the mod has a file for `game_version` and `loader`, and if not, which of the two is missing.
     pub fn support(&self, game_version: &str, loader: &Loader) -> Support {
-        if !self.categories.iter().any(|c| keys(loader).contains(&c.as_str())) {
+        if keys(loader).is_empty() {
+            return Support::OtherLoader;
+        }
+        self.fits(&Filter::of(Kind::Mod, game_version, loader, None))
+    }
+
+    /// Whether the project has a file the filter asks for, and if not, which of loader and version is missing.
+    pub fn fits(&self, filter: &Filter) -> Support {
+        if !filter.loaders.is_empty() && !self.categories.iter().any(|c| filter.loaders.contains(c)) {
             Support::OtherLoader
-        } else if !self.versions.iter().any(|v| v == game_version) {
+        } else if filter.game_version.as_ref().is_some_and(|wanted| !self.versions.contains(wanted)) {
             Support::OtherVersion
         } else {
             Support::Fits
@@ -93,15 +101,97 @@ fn defaults_for(loader: &Loader) -> &'static [&'static str] {
 pub enum Sort {
     Relevance,
     Downloads,
+    Updated,
+    Newest,
 }
 
 impl Sort {
+    /// Every order, in the order the browser offers them.
+    pub const ALL: [Sort; 4] = [Sort::Relevance, Sort::Downloads, Sort::Updated, Sort::Newest];
+
     fn index(self) -> &'static str {
         match self {
             Sort::Relevance => "relevance",
             Sort::Downloads => "downloads",
+            Sort::Updated => "updated",
+            Sort::Newest => "newest",
         }
     }
+}
+
+/// The kinds of projects the browser finds on Modrinth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Mod,
+    ResourcePack,
+    Shader,
+    DataPack,
+    Modpack,
+}
+
+impl Kind {
+    /// Every kind, in the order of the browser's tabs.
+    pub const ALL: [Kind; 5] = [Kind::Mod, Kind::ResourcePack, Kind::Shader, Kind::DataPack, Kind::Modpack];
+
+    /// Modrinth's name for this kind of project.
+    pub fn project_type(self) -> &'static str {
+        match self {
+            Kind::Mod => "mod",
+            Kind::ResourcePack => "resourcepack",
+            Kind::Shader => "shader",
+            Kind::DataPack => "datapack",
+            Kind::Modpack => "modpack",
+        }
+    }
+
+    /// Modrinth's categories for the kind that the browser offers as a filter.
+    pub fn categories(self) -> &'static [&'static str] {
+        match self {
+            Kind::Mod | Kind::DataPack => &["adventure", "decoration", "economy", "equipment", "food", "game-mechanics", "library", "magic", "management", "minigame", "mobs", "optimization", "social", "storage", "technology", "transportation", "utility", "worldgen"],
+            Kind::ResourcePack => &["combat", "decoration", "modded", "realistic", "simplistic", "themed", "tweaks", "utility", "vanilla-like"],
+            Kind::Shader => &["cartoon", "fantasy", "realistic", "semi-realistic", "vanilla-like"],
+            Kind::Modpack => &["adventure", "challenging", "combat", "kitchen-sink", "lightweight", "magic", "multiplayer", "optimization", "quests", "technology"],
+        }
+    }
+}
+
+/// What a search looks for: a kind of project with a file for a game version and one of some loaders.
+/// No game version or no loaders means any.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Filter {
+    pub kind: Kind,
+    pub game_version: Option<String>,
+    pub loaders: Vec<String>,
+}
+
+impl Filter {
+    /// What fits an instance on `game_version` with `loader`: mods and modpacks for its loader, resource packs and data
+    /// packs as such, shader packs for `shader_loader` (Iris when it has none yet).
+    pub fn of(kind: Kind, game_version: &str, loader: &Loader, shader_loader: Option<&str>) -> Self {
+        let loaders: Vec<String> = match kind {
+            Kind::Mod | Kind::Modpack => keys(loader).iter().map(|k| (*k).to_owned()).collect(),
+            Kind::ResourcePack => vec!["minecraft".into()],
+            Kind::Shader => vec![shader_loader.unwrap_or("iris").to_owned()],
+            Kind::DataPack => vec!["datapack".into()],
+        };
+        Self { kind, game_version: (!game_version.is_empty()).then(|| game_version.to_owned()), loaders }
+    }
+
+    /// Every project of `kind`, for any version and loader.
+    pub fn any(kind: Kind) -> Self {
+        Self { kind, game_version: None, loaders: Vec::new() }
+    }
+}
+
+/// One search: what it filters for, the words, the order and an optional category.
+/// With `all` the version and loader filters are left out and [`Hit::fits`] tells the results apart.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Search {
+    pub filter: Filter,
+    pub query: String,
+    pub sort: Sort,
+    pub category: Option<String>,
+    pub all: bool,
 }
 
 /// One page of search results and how many results the whole search has.
@@ -157,44 +247,90 @@ struct Project {
     title: String,
 }
 
-#[derive(Clone, Deserialize)]
-struct Version {
-    id: String,
-    project_id: String,
+/// One version of a project: its files, what it runs on and what it needs.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Version {
+    pub id: String,
+    pub project_id: String,
     #[serde(default)]
-    version_number: String,
-    version_type: String,
-    date_published: String,
-    game_versions: Vec<String>,
-    loaders: Vec<String>,
-    files: Vec<File>,
+    pub name: String,
     #[serde(default)]
-    dependencies: Vec<Dependency>,
+    pub version_number: String,
+    pub version_type: String,
+    pub date_published: String,
+    pub game_versions: Vec<String>,
+    pub loaders: Vec<String>,
+    pub files: Vec<File>,
     #[serde(default)]
-    changelog: Option<String>,
+    pub dependencies: Vec<Dependency>,
+    #[serde(default)]
+    pub changelog: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
-struct File {
-    url: String,
-    filename: String,
+/// One file of a version.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct File {
+    pub url: String,
+    pub filename: String,
     #[serde(default)]
-    primary: bool,
-    hashes: Hashes,
+    pub primary: bool,
+    pub hashes: Hashes,
+    #[serde(default)]
+    pub size: u64,
 }
 
-#[derive(Clone, Deserialize)]
-struct Hashes {
-    sha1: String,
+/// The hashes Modrinth publishes for a file.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Hashes {
+    pub sha1: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct Dependency {
+/// Another project a version needs, may use, or cannot run with: `dependency_type` is `required`, `optional`,
+/// `incompatible` or `embedded`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Dependency {
     #[serde(default)]
-    project_id: Option<String>,
+    pub project_id: Option<String>,
     #[serde(default)]
-    version_id: Option<String>,
-    dependency_type: String,
+    pub version_id: Option<String>,
+    pub dependency_type: String,
+}
+
+/// What a project page shows: texts, numbers, dates and the gallery.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Details {
+    pub id: String,
+    #[serde(default)]
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// The long description, in Markdown with some HTML.
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub downloads: u64,
+    #[serde(default)]
+    pub followers: u64,
+    /// RFC 3339.
+    #[serde(default)]
+    pub updated: String,
+    #[serde(default)]
+    pub gallery: Vec<Shot>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+}
+
+/// One picture of a project's gallery.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Shot {
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub featured: bool,
+    #[serde(default)]
+    pub ordering: i64,
 }
 
 trait Source: Sync {
@@ -259,13 +395,27 @@ fn encode(s: &str) -> String {
 }
 
 fn search_url(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> String {
-    let mut facets = vec![vec!["project_type:mod".to_owned()]];
-    if !all {
-        facets.push(keys(loader).iter().map(|key| format!("categories:{key}")).collect());
-        facets.push(vec![format!("versions:{game_version}")]);
+    search_url_for(&Search { filter: Filter::of(Kind::Mod, game_version, loader, None), query: query.to_owned(), sort, category: None, all }, offset)
+}
+
+fn search_url_for(search: &Search, offset: usize) -> String {
+    let filter = &search.filter;
+    let mut facets = vec![vec![format!("project_type:{}", filter.kind.project_type())]];
+    if !search.all {
+        if !filter.loaders.is_empty() {
+            facets.push(filter.loaders.iter().map(|key| format!("categories:{key}")).collect());
+        }
+        if let Some(version) = &filter.game_version {
+            facets.push(vec![format!("versions:{version}")]);
+        }
     }
-    facets.push(vec!["client_side:required".to_owned(), "client_side:optional".to_owned()]);
-    format!("{API}/search?query={}&facets={}&index={}&offset={offset}&limit={PAGE}", encode(query), encode(&serde_json::json!(facets).to_string()), sort.index())
+    if let Some(category) = &search.category {
+        facets.push(vec![format!("categories:{category}")]);
+    }
+    if matches!(filter.kind, Kind::Mod | Kind::Modpack) {
+        facets.push(vec!["client_side:required".to_owned(), "client_side:optional".to_owned()]);
+    }
+    format!("{API}/search?query={}&facets={}&index={}&offset={offset}&limit={PAGE}", encode(search.query.trim()), encode(&serde_json::json!(facets).to_string()), search.sort.index())
 }
 
 fn versions_url(project_id: &str, game_version: &str, loader: &Loader) -> String {
@@ -275,6 +425,31 @@ fn versions_url(project_id: &str, game_version: &str, loader: &Loader) -> String
         encode(&serde_json::json!(keys(loader)).to_string()),
         encode(&serde_json::json!([game_version]).to_string()),
     )
+}
+
+fn versions_url_for(project_id: &str, filter: &Filter) -> String {
+    let mut url = format!("{API}/project/{}/version", encode(project_id));
+    let mut query = Vec::new();
+    if !filter.loaders.is_empty() {
+        query.push(format!("loaders={}", encode(&serde_json::json!(filter.loaders).to_string())));
+    }
+    if let Some(version) = &filter.game_version {
+        query.push(format!("game_versions={}", encode(&serde_json::json!([version]).to_string())));
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    url
+}
+
+/// The newest version of `versions` the filter takes, releases before betas before alphas.
+pub fn newest_for<'a>(versions: &'a [Version], filter: &Filter) -> Option<&'a Version> {
+    versions
+        .iter()
+        .filter(|v| filter.loaders.is_empty() || v.loaders.iter().any(|l| filter.loaders.contains(l)))
+        .filter(|v| filter.game_version.as_ref().is_none_or(|g| v.game_versions.contains(g)))
+        .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
 }
 
 fn rank(version_type: &str) -> u8 {
@@ -646,33 +821,102 @@ pub fn search(query: &str, game_version: &str, loader: &Loader) -> Result<Vec<Hi
     Api::new()?.search(query, game_version, loader)
 }
 
-/// One page of mods matching `query`, starting at result `offset`. With `all` false only mods for `loader` with a
-/// version for `game_version` come back; with `all` true the others do too, and [`Hit::support`] tells them apart.
+/// One page of projects for `search`, starting at result `offset`.
 /// Every page that arrives is kept on disk; without a connection the kept page comes back with [`Page::saved`].
-pub fn search_page(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> Result<Page> {
-    search_page_in(&paths::data_dir().join("cache").join("modrinth"), &Api::new()?.agent, online::offline(), &search_url(query, game_version, loader, sort, all, offset))
+pub fn search_for(search: &Search, offset: usize) -> Result<Page> {
+    search_page_in(&cache_dir(), &Api::new()?.agent, online::offline(), &search_url_for(search, offset))
+}
+
+/// A project's page, and when it was fetched if it comes from the disk because there is no connection.
+pub fn details(project_id: &str) -> Result<(Details, Option<SystemTime>)> {
+    cached_in(&cache_dir(), &Api::new()?.agent, online::offline(), &format!("{API}/project/{}", encode(project_id)))
+}
+
+/// Every version of a project, newest first, and when they were fetched if they come from the disk.
+pub fn versions(project_id: &str) -> Result<(Vec<Version>, Option<SystemTime>)> {
+    cached_in(&cache_dir(), &Api::new()?.agent, online::offline(), &format!("{API}/project/{}/version", encode(project_id)))
+}
+
+/// The titles of projects by id; ids Modrinth does not know are absent.
+pub fn titles(ids: &[String]) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let agent = Api::new()?.agent;
+    for chunk in ids.chunks(PROJECT_CHUNK) {
+        let url = format!("{API}/projects?ids={}", encode(&serde_json::json!(chunk).to_string()));
+        let (projects, _): (Vec<Project>, _) = cached_in(&cache_dir(), &agent, online::offline(), &url)?;
+        out.extend(projects.into_iter().map(|p| (p.id, p.title)));
+    }
+    Ok(out)
+}
+
+/// The newest file of a project that `filter` takes, as a reference with its hash.
+pub fn file_for(project_id: &str, title: &str, filter: &Filter) -> Result<ModRef> {
+    let api = Api::new()?;
+    let versions: Vec<Version> = net::get_json(&api.agent, &versions_url_for(project_id, filter))?;
+    let version = newest_for(&versions, filter).ok_or_else(|| {
+        Unavailable(match &filter.game_version {
+            Some(game) => format!("{title} has no version for {game}"),
+            None => format!("{title} has no version"),
+        })
+    })?;
+    mod_ref(title, version)
+}
+
+/// Newer files for `current`, files of projects `filter` describes; those without a newer one are left out.
+pub fn updates_for(filter: &Filter, current: &[ModRef]) -> Result<Vec<Update>> {
+    let api = Api::new()?;
+    let check = |m: &ModRef| -> Result<Option<Update>> {
+        let versions: Vec<Version> = net::get_json(&api.agent, &versions_url_for(&m.project_id, filter))?;
+        Ok(newer(&versions, filter, m)?.map(|latest| Update { current: m.clone(), latest, changelog: Vec::new() }))
+    };
+    let found = pool()?.install(|| current.par_iter().map(check).collect::<Result<Vec<_>>>())?;
+    Ok(found.into_iter().flatten().collect())
+}
+
+fn newer(versions: &[Version], filter: &Filter, current: &ModRef) -> Result<Option<ModRef>> {
+    let Some(latest) = newest_for(versions, filter) else { return Ok(None) };
+    if latest.id == current.version_id {
+        return Ok(None);
+    }
+    let published = versions.iter().find(|v| v.id == current.version_id).map(|v| v.date_published.as_str());
+    if published.is_some_and(|date| latest.date_published.as_str() <= date) {
+        return Ok(None);
+    }
+    mod_ref(&current.title, latest).map(Some)
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    paths::data_dir().join("cache").join("modrinth")
 }
 
 fn search_page_in(cache: &Path, agent: &ureq::Agent, offline: bool, url: &str) -> Result<Page> {
+    let (response, saved): (SearchResponse, _) = cached_in(cache, agent, offline, url)?;
+    Ok(Page { hits: response.hits, total: response.total_hits, saved })
+}
+
+fn cached_in<T: serde::de::DeserializeOwned>(cache: &Path, agent: &ureq::Agent, offline: bool, url: &str) -> Result<(T, Option<SystemTime>)> {
     let path = cache.join(format!("{}.json", sha1_hex(url.as_bytes())));
-    let saved = || -> Option<Page> {
+    let saved = || -> Option<(T, Option<SystemTime>)> {
         let at = path.metadata().and_then(|m| m.modified()).ok()?;
-        let response: SearchResponse = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-        Some(Page { hits: response.hits, total: response.total_hits, saved: Some(at) })
+        let value: T = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        Some((value, Some(at)))
     };
-    if offline && let Some(page) = saved() {
-        return Ok(page);
+    if offline && let Some(kept) = saved() {
+        return Ok(kept);
     }
     let bytes = match net::get_bytes(agent, url) {
         Ok(bytes) => bytes,
         Err(e) if net::no_connection(&e) => return saved().ok_or(e),
         Err(e) => return Err(e),
     };
-    let response: SearchResponse = serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))?;
+    let value: T = serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))?;
     if net::write_atomic(&path, &bytes).is_ok() {
         prune(cache, KEPT_PAGES);
     }
-    Ok(Page { hits: response.hits, total: response.total_hits, saved: None })
+    Ok((value, None))
 }
 
 fn sha1_hex(bytes: &[u8]) -> String {
@@ -1442,6 +1686,70 @@ Connection: close
         let url = search_url("x", "26.3", &Loader::NeoForge(None), Sort::Relevance, false, 0);
         assert!(url.contains("%5B%22categories%3Aneoforge%22%5D") && !url.contains("categories%3Afabric"), "{url}");
         assert!(versions_url("lithium", "26.3", &Loader::NeoForge(None)).contains("loaders=%5B%22neoforge%22%5D"));
+    }
+
+    fn facets_of(url: &str) -> Vec<Vec<String>> {
+        let raw = url.split("&facets=").nth(1).unwrap().split('&').next().unwrap();
+        let mut bytes = Vec::new();
+        let mut it = raw.bytes();
+        while let Some(b) = it.next() {
+            if b == b'%' {
+                let hex = [it.next().unwrap(), it.next().unwrap()];
+                bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).unwrap(), 16).unwrap());
+            } else {
+                bytes.push(b);
+            }
+        }
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn each_kind_searches_its_project_type_with_the_instance_filters() {
+        let search = |kind, shader: Option<&str>, loader: &Loader| Search { filter: Filter::of(kind, "26.3", loader, shader), query: " fresh ".into(), sort: Sort::Updated, category: None, all: false };
+        let facets = |s: &Search| facets_of(&search_url_for(s, 0));
+        let v = || vec!["versions:26.3".to_owned()];
+        assert_eq!(facets(&search(Kind::Mod, None, &fabric())), [vec!["project_type:mod".to_owned()], vec!["categories:fabric".into()], v(), vec!["client_side:required".into(), "client_side:optional".into()]]);
+        assert_eq!(facets(&search(Kind::ResourcePack, None, &fabric())), [vec!["project_type:resourcepack".to_owned()], vec!["categories:minecraft".into()], v()]);
+        assert_eq!(facets(&search(Kind::Shader, None, &Loader::Vanilla)), [vec!["project_type:shader".to_owned()], vec!["categories:iris".into()], v()]);
+        assert_eq!(facets(&search(Kind::Shader, Some("optifine"), &fabric())), [vec!["project_type:shader".to_owned()], vec!["categories:optifine".into()], v()]);
+        assert_eq!(facets(&search(Kind::DataPack, None, &fabric())), [vec!["project_type:datapack".to_owned()], vec!["categories:datapack".into()], v()]);
+        assert_eq!(facets(&search(Kind::Modpack, None, &Loader::Quilt(None)))[1], ["categories:quilt", "categories:fabric"]);
+        let url = search_url_for(&search(Kind::ResourcePack, None, &fabric()), 20);
+        assert!(url.contains("query=fresh&") && url.ends_with("&index=updated&offset=20&limit=20"), "{url}");
+        let newest = Search { sort: Sort::Newest, category: Some("vanilla-like".into()), ..search(Kind::Shader, None, &fabric()) };
+        assert!(search_url_for(&newest, 0).contains("&index=newest&"));
+        assert_eq!(facets_of(&search_url_for(&newest, 0)).last().unwrap(), &["categories:vanilla-like"]);
+        let anything = Search { filter: Filter::any(Kind::Modpack), query: String::new(), sort: Sort::Downloads, category: None, all: false };
+        assert_eq!(facets_of(&search_url_for(&anything, 0)), [vec!["project_type:modpack".to_owned()], vec!["client_side:required".into(), "client_side:optional".into()]]);
+        let all = Search { all: true, ..search(Kind::DataPack, None, &fabric()) };
+        assert_eq!(facets_of(&search_url_for(&all, 0)), [vec!["project_type:datapack".to_owned()]]);
+    }
+
+    #[test]
+    fn version_lookups_follow_the_filter() {
+        assert_eq!(versions_url_for("fresh", &Filter::of(Kind::ResourcePack, "26.3", &fabric(), None)), "https://api.modrinth.com/v2/project/fresh/version?loaders=%5B%22minecraft%22%5D&game_versions=%5B%2226.3%22%5D");
+        assert_eq!(versions_url_for("fo", &Filter::any(Kind::Modpack)), "https://api.modrinth.com/v2/project/fo/version");
+        let version = |id: &str, kind: &str, date: &str, loaders: &[&str], games: &[&str]| Version {
+            id: id.into(),
+            project_id: "p".into(),
+            name: String::new(),
+            version_number: id.into(),
+            version_type: kind.into(),
+            date_published: date.into(),
+            game_versions: games.iter().map(|s| (*s).to_owned()).collect(),
+            loaders: loaders.iter().map(|s| (*s).to_owned()).collect(),
+            files: Vec::new(),
+            dependencies: Vec::new(),
+            changelog: None,
+        };
+        let list = [version("a", "release", "2026-01", &["iris"], &["26.3"]), version("b", "beta", "2026-03", &["iris"], &["26.3"]), version("c", "release", "2026-05", &["optifine"], &["26.3"]), version("d", "release", "2026-06", &["iris"], &["26.2"])];
+        let shader = Filter::of(Kind::Shader, "26.3", &fabric(), None);
+        assert_eq!(newest_for(&list, &shader).map(|v| v.id.as_str()), Some("a"));
+        assert_eq!(newest_for(&list, &Filter::any(Kind::Shader)).map(|v| v.id.as_str()), Some("d"));
+        let hit = Hit { title: "t".into(), slug: "s".into(), project_id: "p".into(), description: String::new(), downloads: 0, icon_url: None, author: String::new(), versions: vec!["26.3".into()], categories: vec!["optifine".into()] };
+        assert_eq!(hit.fits(&shader), Support::OtherLoader);
+        assert_eq!(hit.fits(&Filter::of(Kind::ResourcePack, "26.2", &fabric(), None)), Support::OtherLoader);
+        assert_eq!(hit.fits(&Filter::any(Kind::Shader)), Support::Fits);
     }
 
     #[test]

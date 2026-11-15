@@ -40,6 +40,7 @@ pub mod net;
 pub mod online;
 pub mod options;
 pub mod origin;
+pub mod packs;
 pub mod paths;
 pub mod phone;
 pub mod place;

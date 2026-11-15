@@ -92,7 +92,8 @@ pub fn unexplained() -> String {
 /// Like [`explain`], with what was being attempted in front of the reason.
 pub fn explain_as(what: String, e: &anyhow::Error) -> Problem {
     let mut problem = explain(e);
-    problem.text = format!("{what} {}", problem.text);
+    let reason = if problem.text == unexplained() { tr("Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.") } else { problem.text };
+    problem.text = format!("{what} {reason}");
     problem
 }
 
@@ -339,6 +340,8 @@ mod tests {
         for p in [p, stale, keychain, denied, other] {
             assert!(p.text.contains("noch einmal"), "{p:?}");
         }
+        let search = explain_as("Die Suche hat nicht geklappt.".into(), &anyhow::anyhow!("something odd"));
+        assert_eq!(search.text.matches("nicht geklappt").count(), 1, "{search:?}");
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
 const TRASH: &str = ".trash";
 pub(super) const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
-const COPIED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
+const COPIED: [&str; 7] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks", "options.txt", "servers.dat"];
 
 /// The mod loader of an instance, with its pinned version; `None` follows the newest one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,7 +86,7 @@ impl Loader {
 }
 
 /// What a game is played with: version, loader, mods and memory. Its folder holds the shared `mods/`, `config/`,
-/// `resourcepacks/` and `shaderpacks/`, the `options.txt` and `servers.dat` templates, and one game folder per account.
+/// `resourcepacks/`, `shaderpacks/` and `datapacks/`, the `options.txt` and `servers.dat` templates, and one game folder per account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Instance {
     pub id: String,
@@ -161,6 +161,11 @@ impl Instance {
     /// Shared shader pack folder every game of the instance links to.
     pub fn shaderpacks_dir(&self) -> PathBuf {
         self.dir().join("shaderpacks")
+    }
+
+    /// Shared data pack folder every game of the instance links to, loaded into new worlds by a mod like Global Packs.
+    pub fn datapacks_dir(&self) -> PathBuf {
+        self.dir().join("datapacks")
     }
 
     /// Game options every game starts from; a game that saves its options updates the keys it changed.

@@ -10,7 +10,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{AddMods, EditMods, NewBatchFromPrism, NewInstance, Reload};
+use super::actions::{AddMods, EditMods, FindModpacks, FindResourcePacks, FindShaders, NewBatchFromPrism, NewInstance, Reload};
 use super::batch_sheet::{Load, body_max, list_max};
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -26,7 +26,7 @@ use crate::core::batch::ModRef;
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
-use crate::core::modrinth::Update;
+use crate::core::modrinth::{self, Update};
 use crate::core::prism::Instance;
 use crate::core::versions::{GameVersion, Kind};
 
@@ -41,7 +41,10 @@ const NOTE_LINE: &str = "\u{a0}";
 
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
-    cx.on_action(|_: &NewInstance, cx| open(Mode::Create, false, cx));
+    cx.on_action(|_: &NewInstance, cx| open(Mode::Create, None, cx));
+    cx.on_action(|_: &FindModpacks, cx| open(Mode::Create, Some(modrinth::Kind::Modpack), cx));
+    cx.on_action(|action: &FindResourcePacks, cx| find(&action.0, modrinth::Kind::ResourcePack, cx));
+    cx.on_action(|action: &FindShaders, cx| find(&action.0, modrinth::Kind::Shader, cx));
     cx.on_action(|_: &NewBatchFromPrism, cx| {
         let task = cx.background_executor().spawn(async { remote::prism_instances() });
         cx.spawn(async move |cx| {
@@ -66,30 +69,35 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|action: &EditMods, cx| {
         if super::model::get(cx).read(cx).instance(&action.0).is_some() {
-            open(Mode::Mods(action.0.clone()), false, cx);
+            open(Mode::Mods(action.0.clone()), None, cx);
         }
     });
     cx.on_action(|action: &AddMods, cx| {
         let Some(made) = super::model::get(cx).read(cx).instance(&action.0).cloned() else { return };
-        if !made.loader.takes_mods() {
-            super::undo::note(trf("%@ lädt keine Mods.", &[&made.loader.name()]), cx);
-            return;
-        }
-        open(Mode::Mods(action.0.clone()), true, cx);
+        let tab = if made.loader.takes_mods() { modrinth::Kind::Mod } else { modrinth::Kind::ResourcePack };
+        open(Mode::Mods(action.0.clone()), Some(tab), cx);
     });
 }
 
-fn open(mode: Mode, search: bool, cx: &mut App) {
+fn find(id: &str, tab: modrinth::Kind, cx: &mut App) {
+    if super::model::get(cx).read(cx).instance(id).is_some() {
+        open(Mode::Mods(id.to_owned()), Some(tab), cx);
+    }
+}
+
+fn open(mode: Mode, search: Option<modrinth::Kind>, cx: &mut App) {
     sheet::in_window(cx, move |window, cx| {
         if sheet::busy(window, cx) {
             return;
         }
         let view = cx.new(|cx| InstanceSheet::new(mode, window, cx));
         sheet::show(view.clone(), sheet::WIDE, window, cx);
-        if search {
+        if let Some(tab) = search {
             view.update(cx, |s, cx| {
                 s.direct = true;
+                s.browser.kind = tab;
                 s.open_search(true, window, cx);
+                s.browse_tab(tab, window, cx);
             });
             window.on_next_frame(move |window, cx| window.on_next_frame(move |window, cx| drop(view.update(cx, |s, cx| s.focus_search(window, cx)))));
         }
@@ -103,7 +111,7 @@ pub(super) enum Mode {
 }
 
 pub(super) struct InstanceSheet {
-    mode: Mode,
+    pub(super) mode: Mode,
     pub(super) setup: Option<setup::Instance>,
     name: Entity<InputState>,
     loader_version: Entity<LoaderVersion>,
@@ -208,7 +216,10 @@ impl InstanceSheet {
             }),
             cx.subscribe(&jvm_args, changed),
             browser_sub,
-            cx.observe(&super::model::get(cx), |_, _, cx| cx.notify()),
+            cx.observe(&super::model::get(cx), |s, model, cx| {
+                s.follow(&model, cx);
+                cx.notify();
+            }),
             cx.subscribe(&prism_filter, |s: &mut Self, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
                     s.prism_sel = s.first_supported(cx);
@@ -298,8 +309,31 @@ impl InstanceSheet {
         sheet
     }
 
-    fn creating(&self) -> bool {
+    pub(super) fn creating(&self) -> bool {
         self.mode == Mode::Create
+    }
+
+    /// Whether leaving now would drop something the user set: mods picked for a new instance, or changed mods.
+    fn follow(&mut self, model: &Entity<super::model::Model>, cx: &App) {
+        if self.creating() || self.pending_changes() || self.saving || !self.updating.is_empty() {
+            return;
+        }
+        let Some(made) = &self.setup else { return };
+        if let Some(now) = model.read(cx).instances.iter().find(|i| i.id == made.id)
+            && now.mods != made.mods
+        {
+            self.mods = now.mods.clone();
+            self.setup = Some(now.clone());
+            self.applied.clear();
+            self.updates_note = None;
+        }
+    }
+
+    pub(super) fn pending_changes(&self) -> bool {
+        match &self.setup {
+            Some(made) if !self.creating() => made.mods != self.mods,
+            _ => !self.mods.is_empty(),
+        }
     }
 
     pub(super) fn has_mods(&self) -> bool {
@@ -498,7 +532,8 @@ impl InstanceSheet {
                         s.applied.extend(selection.iter().map(|u| u.current.project_id.clone()));
                         s.refocus = true;
                         s.updates_note = Some(if running { trf("%lld Updates vorgemerkt. Sie gelten beim nächsten Start.", &[&selection.len()]) } else if selection.len() == 1 { tr("1 Mod aktualisiert.") } else { trf("%lld Mods aktualisiert.", &[&selection.len()]) });
-                        s.setup = Some(made);
+                        s.setup = Some(made.clone());
+                        super::mod_updates::applied(made, selection, cx);
                         cx.dispatch_action(&Reload);
                     }
                     Err(e) => {
@@ -780,7 +815,7 @@ impl InstanceSheet {
     }
 
     fn search_done(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.direct {
+        if !self.direct || self.creating() {
             self.open_search(false, window, cx);
         } else if self.wait_reason().is_some() {
             cx.notify();
@@ -1374,6 +1409,7 @@ impl Render for InstanceSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_focus(window, cx);
         self.list_max = list_max(window.viewport_size().height.as_f32());
+        self.browser.body = body_max(window.viewport_size().height.as_f32());
         let t = Theme::get(cx);
         let creating = self.creating();
         let (title, subtitle) = if self.imported.is_some() {
@@ -1381,7 +1417,12 @@ impl Render for InstanceSheet {
         } else if self.prism_picking {
             (tr("Aus Prism übernehmen"), Some(tr("Instanzen aus Prism Launcher. Nur Fabric-Instanzen lassen sich übernehmen.")))
         } else if self.searching {
-            (tr("Mod hinzufügen"), Some(trf("%@-Mods von Modrinth für Minecraft %@", &[&self.loader.name(), &self.version])))
+            let title = match self.setup.as_ref().filter(|_| !creating) {
+                _ if self.browser.kind == modrinth::Kind::Modpack => tr("Neue Instanz aus Modpack"),
+                Some(made) => trf("Zu %@ hinzufügen", &[&made.name]),
+                None => tr("Von Modrinth hinzufügen"),
+            };
+            (title, Some(trf("Von Modrinth für Minecraft %@ · %@", &[&self.version, &self.loader.name()])))
         } else if let Some(made) = self.setup.as_ref().filter(|_| !creating) {
             (trf("Mods von %@", &[&made.name]), None)
         } else {

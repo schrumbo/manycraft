@@ -83,7 +83,8 @@ pub fn pick(cx: &mut App, chosen: impl FnOnce(&mut App) + 'static) {
     .detach();
 }
 
-fn start(path: PathBuf, cx: &mut App) {
+/// Imports the pack at `path` as a new instance, with a row in the sidebar.
+pub(super) fn start(path: PathBuf, cx: &mut App) {
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
     let shown = path.file_stem().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| label.clone());
     let id = NEXT.fetch_add(1, Ordering::SeqCst);

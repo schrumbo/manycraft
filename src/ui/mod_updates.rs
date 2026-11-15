@@ -101,13 +101,7 @@ impl ModUpdates {
                 s.applying = false;
                 match result {
                     Ok(made) => {
-                        let label = match selection.as_slice() {
-                            [one] => trf("„%@“", &[&one.current.title]),
-                            many => trf("%lld Mods", &[&many.len()]),
-                        };
-                        let id = made.id.clone();
-                        super::mod_list::put(made, cx);
-                        super::undo::offer(super::undo::Kind::ModsUpdated { instance_id: id, updates: selection, label }, cx);
+                        applied(made, selection, cx);
                         cx.emit(Dismissed);
                     }
                     Err(e) => s.error = Some(forms::explain_as(tr("Nicht aktualisiert."), &e)),
@@ -315,6 +309,17 @@ impl Render for ModUpdates {
 }
 
 /// Puts the mods of instance `id` back on the files they had before `updates`; says why when it cannot.
+/// Shows the instance `made` after `selection` was applied to it everywhere and offers to undo the updates.
+pub fn applied(made: crate::core::instance::Instance, selection: Vec<Update>, cx: &mut App) {
+    let label = match selection.as_slice() {
+        [one] => trf("„%@“", &[&one.current.title]),
+        many => trf("%lld Mods", &[&many.len()]),
+    };
+    let id = made.id.clone();
+    super::mod_list::put(made, cx);
+    super::undo::offer(super::undo::Kind::ModsUpdated { instance_id: id, updates: selection, label }, cx);
+}
+
 pub fn undo_updates(id: String, updates: Vec<Update>, label: String, at: std::time::Instant, cx: &mut App) {
     let back: Vec<Update> = updates.iter().map(|u| Update { current: u.latest.clone(), latest: u.current.clone(), changelog: Vec::new() }).collect();
     let running = model::get(cx).read(cx).games.values().any(|g| g.instance_id == id && g.phase.is_active());
