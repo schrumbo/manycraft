@@ -8,7 +8,7 @@ pub mod verify;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -203,13 +203,16 @@ fn prepare_in(dir: &Path, release: &Release, kind: Kind, arch: &str, key: &str, 
         let sig = release::sidecar(&release.assets, &asset.name, "minisig").context("no signature")?;
         Ok((download::text(agent, &sha.url)?, download::text(agent, &sig.url)?))
     })();
-    let (sha, sig) = sidecars.map_err(|e| fail(Trouble::Download, e))?;
+    let (sha, sig) = sidecars.map_err(|e| if cancel.load(Ordering::SeqCst) { Skip::Cancelled.into() } else { fail(Trouble::Download, e) })?;
     let part = dir.join(format!("{}.part", asset.name));
     let max = if asset.size > 0 { asset.size.min(MAX_SIZE) } else { MAX_SIZE };
     download::resumable(agent, &asset.url, &part, max, cancel, progress).map_err(|e| if e.downcast_ref::<Skip>() == Some(&Skip::Cancelled) { e } else { fail(Trouble::Download, e) })?;
     if let Err(e) = verify::file(&part, &sha, &sig, key, &verify::comment(&release.version, &asset.name)) {
         let _ = std::fs::remove_file(&part);
         return Err(fail(Trouble::Damaged, e));
+    }
+    if cancel.load(Ordering::SeqCst) {
+        bail!(Skip::Cancelled);
     }
     let file = dir.join(&asset.name);
     std::fs::write(sidecar_path(&file, "sha256"), &sha)?;

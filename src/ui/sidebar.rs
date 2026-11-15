@@ -188,7 +188,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
             let cancel = tr("Laden abbrechen");
             let button = div().id("nav-update-cancel").mark("button", cancel.clone()).size(px(shell::PILL)).flex_none().rounded(px(radius::INNER)).flex().items_center().justify_center();
             let button = if stopping {
-                button.opacity(tint::DISABLED).child(icon("x", iconsize::S, t.tertiary))
+                button.opacity(tint::DISABLED).cursor_not_allowed().child(icon("x", iconsize::S, t.tertiary))
             } else {
                 button
                     .cursor_pointer()
@@ -198,7 +198,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                     .tooltip(tip(cancel))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(CancelUpdate), cx))
             };
-            Some(base(tr("Update lädt"), "download").child(trailing(done)).child(button).tooltip(tip(trf("Version %@ wird geladen.", &[&version]))))
+            Some(base(tr("Update lädt"), "download").child(trailing(done)).child(button).tooltip(tip(if stopping { trf("Laden von Version %@ wird abgebrochen …", &[&version]) } else { trf("Version %@ wird geladen.", &[&version]) })))
         }
         _ => None,
     }

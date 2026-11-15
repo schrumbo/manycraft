@@ -323,7 +323,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
-        ("x", tr("Laden des Updates abbrechen"), Box::new(CancelUpdate), super::updates::cancellable(&m.updates)),
+        ("x", tr("Laden abbrechen"), Box::new(CancelUpdate), super::updates::cancellable(&m.updates)),
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
         ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
         ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),

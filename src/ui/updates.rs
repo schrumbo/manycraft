@@ -248,7 +248,6 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
     .detach();
 }
 
-/// Stops the running download; what was loaded stays, and the background check does not start it again until the app is restarted.
 fn cancel(cx: &mut App) {
     let Some(stop) = cx.global::<Flight>().cancel.clone() else { return };
     stop.store(true, Ordering::SeqCst);

@@ -642,6 +642,5 @@
   "Das geht, sobald keine Instanz mehr startet.": "Available once no instance is starting.",
   "Wartet": "Waiting",
   "Laden abbrechen": "Cancel download",
-  "Laden von Version %@ wird abgebrochen …": "Cancelling the download of version %@…",
-  "Laden des Updates abbrechen": "Cancel update download"
+  "Laden von Version %@ wird abgebrochen …": "Cancelling the download of version %@…"
 }
