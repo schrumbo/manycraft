@@ -1,7 +1,7 @@
 //! Mods from Modrinth: search, version resolution with required dependencies, verified downloads into an instance.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
@@ -21,6 +21,9 @@ const HASH_CHUNK: usize = 200;
 const PROJECT_CHUNK: usize = 100;
 /// How many results one search page holds.
 pub const PAGE: usize = 20;
+const CHANGELOGS: usize = 5;
+pub(super) const DISABLED: &str = ".disabled";
+const LEDGER: &str = "mods.managed";
 const USAGE: &str = "usage: manycraft mods search <query> [--version <version>]\n       manycraft mods resolve <slug>... [--version <version>]";
 
 /// One search result.
@@ -99,6 +102,8 @@ pub struct Defaults {
 pub struct Update {
     pub current: ModRef,
     pub latest: ModRef,
+    /// Version number and changelog (Markdown) of every version after the current one up to the latest, newest first, at most 5.
+    pub changelog: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -142,6 +147,8 @@ struct Version {
     files: Vec<File>,
     #[serde(default)]
     dependencies: Vec<Dependency>,
+    #[serde(default)]
+    changelog: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -255,10 +262,14 @@ fn rank(version_type: &str) -> u8 {
     }
 }
 
+fn fits(version: &Version, game_version: &str) -> bool {
+    version.loaders.iter().any(|l| l == LOADER) && version.game_versions.iter().any(|g| g == game_version)
+}
+
 fn newest<'a>(versions: &'a [Version], game_version: &str) -> Option<&'a Version> {
     versions
         .iter()
-        .filter(|v| v.loaders.iter().any(|l| l == LOADER) && v.game_versions.iter().any(|g| g == game_version))
+        .filter(|v| fits(v, game_version))
         .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
 }
 
@@ -388,10 +399,20 @@ fn updates_from(src: &dyn Source, game_version: &str, mods: &[ModRef]) -> Result
         if published.is_some_and(|date| latest.date_published.as_str() <= date) {
             return Ok(None);
         }
-        Ok(Some(Update { current: current.clone(), latest: mod_ref(&current.title, latest)? }))
+        Ok(Some(Update { current: current.clone(), latest: mod_ref(&current.title, latest)?, changelog: changelog_since(&versions, latest, published, game_version) }))
     };
     let found = pool()?.install(|| mods.par_iter().map(check).collect::<Result<Vec<_>>>())?;
     Ok(found.into_iter().flatten().collect())
+}
+
+fn changelog_since(versions: &[Version], latest: &Version, published: Option<&str>, game_version: &str) -> Vec<(String, String)> {
+    let mut newer: Vec<&Version> = match published {
+        Some(date) => versions.iter().filter(|v| fits(v, game_version) && v.date_published.as_str() > date && v.date_published <= latest.date_published).collect(),
+        None => vec![latest],
+    };
+    newer.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+    newer.truncate(CHANGELOGS);
+    newer.into_iter().map(|v| (v.version_number.clone(), v.changelog.clone().unwrap_or_default())).collect()
 }
 
 fn matched_from(src: &dyn Source, hashes: &[String]) -> Result<HashMap<String, ModRef>> {
@@ -437,6 +458,9 @@ fn replaced(instance: &Instance, selection: &[Update]) -> Result<Instance> {
             .find(|m| m.project_id == current.project_id && m.version_id == current.version_id)
             .with_context(|| format!("{} is no longer in the instance at that version", current.title))?;
         *slot = update.latest.clone();
+        if let Some(kept) = next.disabled.iter_mut().find(|name| name.eq_ignore_ascii_case(&current.file_name)) {
+            kept.clone_from(&update.latest.file_name);
+        }
     }
     Ok(next)
 }
@@ -462,42 +486,120 @@ pub(super) fn safe_file_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], dir: &Path) -> Result<usize> {
-    let local: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
+pub(super) struct Found {
+    pub name: String,
+    pub on: Option<PathBuf>,
+    pub off: Option<PathBuf>,
+}
+
+pub(super) fn jar_name(name: &str) -> Option<(&str, bool)> {
+    let (base, off) = match name.len().checked_sub(DISABLED.len()).and_then(|at| Some((name.get(..at)?, name.get(at..)?))) {
+        Some((base, tail)) if tail.eq_ignore_ascii_case(DISABLED) => (base, true),
+        _ => (name, false),
+    };
+    let at = base.len().checked_sub(4)?;
+    base.get(at..)?.eq_ignore_ascii_case(".jar").then_some((base, off))
+}
+
+pub(super) fn list_jars(dir: &Path) -> Result<HashMap<String, Found>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
+    };
+    let mut found: HashMap<String, Found> = HashMap::new();
+    for entry in entries {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+        let Some((base, off)) = jar_name(&name) else { continue };
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let slot = found.entry(base.to_lowercase()).or_insert_with(|| Found { name: base.to_owned(), on: None, off: None });
+        if off {
+            slot.off = Some(entry.path());
+        } else {
+            slot.on = Some(entry.path());
+            base.clone_into(&mut slot.name);
+        }
+    }
+    Ok(found)
+}
+
+pub(super) fn rename(from: &Path, to: &Path) -> Result<()> {
+    std::fs::rename(from, to).with_context(|| format!("cannot rename {} to {}", from.display(), to.display()))
+}
+
+fn place_local(local: &[String], disabled: &HashSet<String>, dir: &Path) -> Result<()> {
+    let found = list_jars(dir)?;
+    for name in local {
+        if safe_file_name(name).is_err() {
+            continue;
+        }
+        let key = name.to_lowercase();
+        let Some(file) = found.get(&key) else { continue };
+        match (&file.on, &file.off, disabled.contains(&key)) {
+            (Some(on), None, true) => rename(on, &dir.join(format!("{}{DISABLED}", file.name)))?,
+            (None, Some(off), false) => rename(off, &dir.join(&file.name))?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn place(agent: &ureq::Agent, m: &ModRef, off: bool, dir: &Path) -> Result<bool> {
+    let (on_path, off_path) = (dir.join(&m.file_name), dir.join(format!("{}{DISABLED}", m.file_name)));
+    let (want, other) = if off { (off_path, on_path) } else { (on_path, off_path) };
+    let right = |path: &Path| -> Result<bool> { Ok(path.is_file() && net::file_sha1(path)?.eq_ignore_ascii_case(&m.sha1)) };
+    if right(&want)? {
+        return Ok(false);
+    }
+    if right(&other)? {
+        rename(&other, &want)?;
+        return Ok(false);
+    }
+    net::fetch_verified(agent, &m.url, &want, Some(&m.sha1)).with_context(|| format!("cannot download {}", m.title))?;
+    if other.is_file() {
+        std::fs::remove_file(&other).with_context(|| format!("cannot delete {}", other.display()))?;
+    }
+    Ok(true)
+}
+
+fn read_ledger(path: &Path) -> HashSet<String> {
+    std::fs::read_to_string(path).map(|text| text.lines().map(|line| line.trim().to_lowercase()).filter(|line| !line.is_empty()).collect()).unwrap_or_default()
+}
+
+fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
+    let local_keys: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
+    let off: HashSet<String> = disabled.iter().map(|name| name.to_lowercase()).collect();
     let mut keep = HashSet::new();
     let mut jobs = Vec::new();
     for m in mods {
         safe_file_name(&m.file_name)?;
-        if local.contains(&m.file_name.to_lowercase()) {
+        if local_keys.contains(&m.file_name.to_lowercase()) {
             bail!("{} is called {} like a local mod; rename or remove the local one", m.title, m.file_name);
         }
         if keep.insert(m.file_name.to_lowercase()) {
             jobs.push(m);
         }
     }
-    keep.extend(local);
+    let mut synced: Vec<String> = keep.iter().cloned().collect();
+    synced.sort_unstable();
+    keep.extend(local_keys);
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let fetched = pool()?.install(|| {
-        jobs.par_iter()
-            .map(|m| -> Result<bool> {
-                let path = dir.join(&m.file_name);
-                let current = path.is_file() && net::file_sha1(&path)?.eq_ignore_ascii_case(&m.sha1);
-                if !current {
-                    net::fetch_verified(agent, &m.url, &path, Some(&m.sha1)).with_context(|| format!("cannot download {}", m.title))?;
-                }
-                Ok(!current)
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
-    for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_lowercase) else {
+    place_local(local, &off, dir)?;
+    let fetched = pool()?.install(|| jobs.par_iter().map(|m| place(agent, m, off.contains(&m.file_name.to_lowercase()), dir)).collect::<Result<Vec<_>>>())?;
+    let managed = read_ledger(ledger);
+    for (name, file) in list_jars(dir)? {
+        if keep.contains(&name) || name == super::fleet::COMPANION_FILE || !managed.contains(&name) {
             continue;
-        };
-        if name.ends_with(".jar") && !keep.contains(&name) && name != super::fleet::COMPANION_FILE && entry.file_type()?.is_file() {
-            std::fs::remove_file(entry.path()).with_context(|| format!("cannot delete {}", entry.path().display()))?;
+        }
+        for path in file.on.iter().chain(&file.off) {
+            std::fs::remove_file(path).with_context(|| format!("cannot delete {}", path.display()))?;
         }
     }
+    let lines: String = synced.iter().map(|name| format!("{name}\n")).collect();
+    net::write_atomic(ledger, lines.as_bytes())?;
     Ok(fetched.into_iter().filter(|downloaded| *downloaded).count())
 }
 
@@ -543,7 +645,7 @@ pub fn sync_mods(instance: &Instance) -> Result<usize> {
     with_mods_lock(&instance.dir(), || sync_locked(&saved(instance)))
 }
 
-fn with_mods_lock<T>(instance_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+pub(super) fn with_mods_lock<T>(instance_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
     let _held = super::lock::exclusive(&instance_dir.join("mods.lock"))?;
     work()
 }
@@ -561,7 +663,7 @@ fn sync_locked(instance: &Instance) -> Result<usize> {
     if needs_fabric_api(instance) {
         mods.push(resolve(FABRIC_API, &instance.game_version).context("the companion mod needs Fabric API, which could not be found")?);
     }
-    sync_into(&net::agent(None)?, &mods, &instance.local_mods, &instance.mods_dir())
+    sync_into(&net::agent(None)?, &mods, &instance.local_mods, &instance.disabled, &instance.mods_dir(), &instance.dir().join(LEDGER))
 }
 
 /// Mods of the instance that have a newer file for its game version.
@@ -1017,7 +1119,7 @@ mod tests {
     }
 
     fn update_for(fx: &Fixtures, from: &str, to: &str) -> Update {
-        Update { current: pinned(fx, from), latest: pinned(fx, to) }
+        Update { current: pinned(fx, from), latest: pinned(fx, to), changelog: Vec::new() }
     }
 
     #[test]
@@ -1063,11 +1165,11 @@ mod tests {
         let b = ModRef { project_id: "p2".into(), version_id: "v2".into(), ..jar("b.jar", b"b") };
         batch.mods = vec![a.clone(), b.clone()];
         let latest = ModRef { version_id: "v9".into(), ..jar("a2.jar", b"a2") };
-        let same_project_other_version = Update { current: ModRef { version_id: "vX".into(), ..a.clone() }, latest: latest.clone() };
+        let same_project_other_version = Update { current: ModRef { version_id: "vX".into(), ..a.clone() }, latest: latest.clone(), changelog: Vec::new() };
         assert!(replaced(&batch, &[same_project_other_version]).is_err());
-        let same_version_other_project = Update { current: ModRef { project_id: "pX".into(), ..a.clone() }, latest: latest.clone() };
+        let same_version_other_project = Update { current: ModRef { project_id: "pX".into(), ..a.clone() }, latest: latest.clone(), changelog: Vec::new() };
         assert!(replaced(&batch, &[same_version_other_project]).is_err());
-        let next = replaced(&batch, &[Update { current: a, latest: latest.clone() }]).unwrap();
+        let next = replaced(&batch, &[Update { current: a, latest: latest.clone(), changelog: Vec::new() }]).unwrap();
         assert_eq!(next.mods, [latest, b]);
     }
 
@@ -1077,7 +1179,8 @@ mod tests {
         std::fs::write(dir.path().join("Foo.jar"), b"mine").unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"stray").unwrap();
         let agent = net::agent(None).unwrap();
-        let err = sync_into(&agent, &[jar("foo.jar", b"theirs")], &["FOO.jar".into()], dir.path()).unwrap_err().to_string();
+        let (_held, ledger) = ledger(&[]);
+        let err = sync_into(&agent, &[jar("foo.jar", b"theirs")], &["FOO.jar".into()], &[], dir.path(), &ledger).unwrap_err().to_string();
         assert!(err.contains("local mod"), "{err}");
         assert_eq!(std::fs::read(dir.path().join("Foo.jar")).unwrap(), b"mine");
         assert!(dir.path().join("stray.jar").is_file());
@@ -1106,9 +1209,10 @@ mod tests {
         let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         batch.mods = vec![jar("old.jar", b"old")];
         batch.local_mods = vec!["MINE.jar".into(), "other.jar".into()];
-        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") } };
+        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") }, changelog: Vec::new() };
         let agent = net::agent(None).unwrap();
-        let fetched = update_with(&mut batch, &[update], |next| sync_into(&agent, &next.mods, &next.local_mods, dir.path())).unwrap();
+        let (_held, ledger) = ledger(&["old.jar", "stray.jar"]);
+        let fetched = update_with(&mut batch, &[update], |next| sync_into(&agent, &next.mods, &next.local_mods, &next.disabled, dir.path(), &ledger)).unwrap();
         assert_eq!(fetched, 0);
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
@@ -1176,6 +1280,19 @@ mod tests {
         }
     }
 
+    fn ledger(names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mods.managed");
+        std::fs::write(&path, names.join("\n")).unwrap();
+        (dir, path)
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut left: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        left
+    }
+
     fn jar(name: &str, bytes: &[u8]) -> ModRef {
         use sha1::{Digest, Sha1};
         let sha1: String = Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
@@ -1203,12 +1320,13 @@ mod tests {
         std::fs::write(mods.join("manual").join("mine.jar"), b"keep").unwrap();
         let list = [jar("a.jar", b"aaa"), jar("b.jar", b"bbb"), jar("a.jar", b"aaa")];
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &list, &[], &mods).unwrap(), 0);
+        let (_held, ledger) = ledger(&["stray.jar", "stray2.jar"]);
+        assert_eq!(sync_into(&agent, &list, &[], &[], &mods, &ledger).unwrap(), 0);
         let mut left: Vec<String> = std::fs::read_dir(&mods).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
         assert_eq!(left, ["a.jar", "b.jar", "folder.jar", "manual", "notes.txt"]);
         assert!(mods.join("manual").join("mine.jar").is_file());
-        assert_eq!(sync_into(&agent, &[], &[], &mods).unwrap(), 0);
+        assert_eq!(sync_into(&agent, &[], &[], &[], &mods, &ledger).unwrap(), 0);
         assert!(!mods.join("a.jar").exists() && !mods.join("b.jar").exists());
         assert!(mods.join("folder.jar").is_dir() && mods.join("notes.txt").is_file());
     }
@@ -1218,11 +1336,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mods = dir.path().join("new").join("mods");
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &[], &[], &mods).unwrap(), 0);
+        let (_held, ledger) = ledger(&[]);
+        assert_eq!(sync_into(&agent, &[], &[], &[], &mods, &ledger).unwrap(), 0);
         assert!(mods.is_dir());
         let mut evil = jar("x.jar", b"x");
         evil.file_name = "../x.jar".into();
-        assert!(sync_into(&agent, &[evil], &[], &mods).is_err());
+        assert!(sync_into(&agent, &[evil], &[], &[], &mods, &ledger).is_err());
         assert!(!dir.path().join("new").join("x.jar").exists());
     }
 
@@ -1252,7 +1371,8 @@ mod tests {
             ModRef { url: url("changed.jar"), ..jar("changed.jar", b"updated") },
         ];
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &list, &[], dir.path()).unwrap(), 2);
+        let (_held, ledger) = ledger(&["stray.jar"]);
+        assert_eq!(sync_into(&agent, &list, &[], &[], dir.path(), &ledger).unwrap(), 2);
         server.join().unwrap();
         assert_eq!(std::fs::read(dir.path().join("new.jar")).unwrap(), b"fresh");
         assert_eq!(std::fs::read(dir.path().join("changed.jar")).unwrap(), b"updated");
@@ -1265,8 +1385,126 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"x").unwrap();
         let agent = net::agent(None).unwrap();
-        assert!(sync_into(&agent, &[jar("missing.jar", b"m")], &[], dir.path()).is_err());
+        let (_held, ledger) = ledger(&["stray.jar"]);
+        assert!(sync_into(&agent, &[jar("missing.jar", b"m")], &[], &[], dir.path(), &ledger).is_err());
         assert!(dir.path().join("stray.jar").is_file());
+    }
+
+    #[test]
+    fn a_disabled_modrinth_mod_is_downloaded_as_a_disabled_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 2048];
+            let _ = stream.read(&mut buf).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(b"fresh").unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let list = [ModRef { url: format!("http://127.0.0.1:{port}/new.jar"), ..jar("new.jar", b"fresh") }];
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[]);
+        assert_eq!(sync_into(&agent, &list, &[], &["NEW.jar".into()], dir.path(), &ledger).unwrap(), 1);
+        server.join().unwrap();
+        assert_eq!(names(dir.path()), ["new.jar.disabled"]);
+        assert_eq!(std::fs::read(dir.path().join("new.jar.disabled")).unwrap(), b"fresh");
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "new.jar\n");
+        assert_eq!(sync_into(&agent, &list, &[], &["new.jar".into()], dir.path(), &ledger).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_mod_switched_on_or_off_is_renamed_in_place_and_not_downloaded_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path();
+        for (name, body) in [("a.jar", "aaa"), ("b.jar.disabled", "bbb"), ("own.jar", "own"), ("back.JAR.disabled", "back"), ("both.jar", "x"), ("both.jar.disabled", "y")] {
+            std::fs::write(mods.join(name), body).unwrap();
+        }
+        let list = [jar("a.jar", b"aaa"), jar("b.jar", b"bbb")];
+        let local: Vec<String> = ["own.jar", "back.jar", "both.jar"].map(String::from).to_vec();
+        let off: Vec<String> = ["a.jar", "own.jar", "both.jar"].map(String::from).to_vec();
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[]);
+        assert_eq!(sync_into(&agent, &list, &local, &off, mods, &ledger).unwrap(), 0);
+        assert_eq!(names(mods), ["a.jar.disabled", "b.jar", "back.JAR", "both.jar", "both.jar.disabled", "own.jar.disabled"]);
+        assert_eq!(std::fs::read(mods.join("b.jar")).unwrap(), b"bbb");
+    }
+
+    #[test]
+    fn a_stray_jar_the_user_added_survives_a_sync_and_one_an_earlier_sync_placed_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path();
+        for name in ["a.jar", "user.jar", "User2.jar.disabled", "old.jar", "Old2.jar.disabled", crate::core::fleet::COMPANION_FILE] {
+            std::fs::write(mods.join(name), "x").unwrap();
+        }
+        std::fs::write(mods.join("a.jar"), b"aaa").unwrap();
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&["old.jar", "old2.jar", "OLD3.jar", crate::core::fleet::COMPANION_FILE]);
+        sync_into(&agent, &[jar("a.jar", b"aaa")], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["User2.jar.disabled", "a.jar", "manycraft-companion.jar", "user.jar"]);
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "a.jar\n");
+        sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["User2.jar.disabled", "manycraft-companion.jar", "user.jar"]);
+    }
+
+    #[test]
+    fn an_update_keeps_a_disabled_mod_disabled_under_its_new_file_name() {
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
+        batch.mods = vec![jar("old.jar", b"old"), jar("other.jar", b"other")];
+        batch.disabled = vec!["OLD.jar".into(), "gone.jar".into()];
+        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") }, changelog: Vec::new() };
+        let next = replaced(&batch, &[update]).unwrap();
+        assert_eq!(next.disabled, ["new.jar", "gone.jar"]);
+        let other = Update { current: batch.mods[1].clone(), latest: ModRef { version_id: "v2".into(), ..jar("other2.jar", b"o2") }, changelog: Vec::new() };
+        assert_eq!(replaced(&batch, &[other]).unwrap().disabled, batch.disabled);
+    }
+
+    fn versions_json(rows: &[(&str, &str, &str, Option<&str>)]) -> Vec<Version> {
+        let items: Vec<String> = rows
+            .iter()
+            .map(|(id, kind, date, log)| {
+                let log = log.map_or("null".to_owned(), |l| format!("{l:?}"));
+                format!(
+                    r#"{{"id":"{id}","project_id":"p","version_number":"n-{id}","version_type":"{kind}","date_published":"{date}","game_versions":["26.3"],"loaders":["fabric"],"files":[],"dependencies":[],"changelog":{log}}}"#
+                )
+            })
+            .collect();
+        serde_json::from_str(&format!("[{}]", items.join(","))).unwrap()
+    }
+
+    #[test]
+    fn the_changelog_is_every_version_after_the_current_one_up_to_the_latest_newest_first_and_capped() {
+        let versions = versions_json(&[
+            ("v1", "release", "2026-01-01T00:00:00Z", Some("one")),
+            ("v2", "release", "2026-01-02T00:00:00Z", None),
+            ("v3", "release", "2026-01-03T00:00:00Z", Some("three")),
+            ("v4", "release", "2026-01-04T00:00:00Z", Some("four")),
+            ("v5", "release", "2026-01-05T00:00:00Z", Some("five")),
+            ("v6", "release", "2026-01-06T00:00:00Z", Some("six")),
+            ("v7", "release", "2026-01-07T00:00:00Z", Some("seven")),
+            ("v8", "beta", "2026-01-08T00:00:00Z", Some("beta")),
+        ]);
+        let latest = newest(&versions, "26.3").unwrap();
+        assert_eq!(latest.id, "v7");
+        let from = |date: Option<&str>| changelog_since(&versions, latest, date, "26.3");
+        let all = from(Some("2026-01-01T00:00:00Z"));
+        assert_eq!(all.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["n-v7", "n-v6", "n-v5", "n-v4", "n-v3"]);
+        assert_eq!(all[0].1, "seven");
+        assert_eq!(from(Some("2026-01-05T00:00:00Z")), [("n-v7".to_owned(), "seven".to_owned()), ("n-v6".to_owned(), "six".to_owned())]);
+        assert_eq!(from(Some("2026-01-01T12:00:00Z")).last().unwrap(), &("n-v3".to_owned(), "three".to_owned()));
+        assert_eq!(from(None), [("n-v7".to_owned(), "seven".to_owned())]);
+        let single = versions_json(&[("a", "release", "2026-01-02T00:00:00Z", None)]);
+        assert_eq!(changelog_since(&single, &single[0], Some("2026-01-01T00:00:00Z"), "26.3"), [("n-a".to_owned(), String::new())]);
+    }
+
+    #[test]
+    fn jar_files_are_told_by_their_ending_in_any_case() {
+        assert_eq!(jar_name("a.jar"), Some(("a.jar", false)));
+        assert_eq!(jar_name("A.JAR.Disabled"), Some(("A.JAR", true)));
+        for other in ["a.txt", "a.jar.bak", ".disabled", "jar", "a.jar.disabled.disabled", "é.disabled", "日本.jar.disable"] {
+            assert_eq!(jar_name(other), None, "{other}");
+        }
+        assert_eq!(jar_name("日本.jar.disabled"), Some(("日本.jar", true)));
     }
 
     #[test]

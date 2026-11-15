@@ -863,5 +863,13 @@
   "%@ zurücksetzen…": "Reset %@…",
   "%@ lädt keine Mods.": "%@ does not load mods.",
   "Mods verwalten…": "Manage mods…",
-  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open."
+  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open.",
+  "Diese Mod gibt es nicht mehr.": "This mod no longer exists.",
+  "Die Datei %@ gibt es schon.": "The file %@ already exists.",
+  "Diese Mods liegen nicht mehr im Papierkorb.": "These mods are no longer in the trash.",
+  "Die Datei %@ gibt es wieder in der Instanz.": "The file %@ is in the instance again.",
+  "Die Fehlersuche läuft schon.": "The troubleshooter is already running.",
+  "Die Fehlersuche läuft nicht.": "The troubleshooter is not running.",
+  "Zum Eingrenzen müssen mindestens zwei Mods an sein.": "Narrowing it down needs at least two mods switched on.",
+  "Zum Eingrenzen sind mindestens zwei Mods nötig, die sich abschalten lassen.": "Narrowing it down needs at least two mods that can be switched off."
 }

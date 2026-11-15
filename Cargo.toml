@@ -31,6 +31,7 @@ sha1 = "0.10"
 sys-locale = "0.3.2"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "time"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 ureq = { version = "3", features = ["json", "socks-proxy"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
