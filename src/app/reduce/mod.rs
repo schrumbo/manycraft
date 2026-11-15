@@ -142,12 +142,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             fleet::restart_keys(model, &keys, &mut out);
         }
         Event::Reconnect(key) => fleet::reconnect(model, &key, &mut out),
-        Event::ReconnectMany(keys) => {
-            let keys: Vec<String> = keys.into_iter().filter(|k| !model.games.get(k).is_some_and(|i| matches!(i.phase, Phase::Banned { .. }))).collect();
-            for key in &keys {
-                fleet::reconnect(model, key, &mut out);
-            }
-        }
+        Event::ReconnectMany(keys) => fleet::reconnect_each(model, &keys, &mut out),
         Event::Respawn(key) => {
             if model.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. })) {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::Respawn });

@@ -28,6 +28,7 @@ pub mod model;
 #[allow(dead_code)]
 pub mod motion;
 pub mod native;
+pub mod needs;
 pub mod palette;
 pub mod perf;
 mod project_page;

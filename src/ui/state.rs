@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{Broadcast, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RespawnMany, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
@@ -484,6 +484,11 @@ pub fn init(cx: &mut App) {
     cx.on_action(|a: &StartAnyway, cx| dispatch(AppEvent::StartAnyway(a.0.clone()), cx));
     cx.on_action(|a: &Reconnect, cx| dispatch(AppEvent::Reconnect(a.0.clone()), cx));
     cx.on_action(|a: &Respawn, cx| dispatch(AppEvent::Respawn(a.0.clone()), cx));
+    cx.on_action(|a: &RespawnMany, cx| {
+        for key in &a.0 {
+            dispatch(AppEvent::Respawn(key.clone()), cx);
+        }
+    });
     cx.on_action(|a: &Play, cx| {
         let key = a.0.clone();
         cx.defer(move |cx| dispatch(AppEvent::Play(key), cx));
