@@ -88,12 +88,15 @@ impl Entry {
     }
 }
 
-/// The mods of an instance and what Manycraft's own mod needs.
+/// The mods of an instance, what Manycraft's own mod needs and the enabled jars the sync keeps in the folder that are not in the instance's lists.
 #[derive(Clone, Debug, Default)]
 pub struct Scan {
     pub entries: Vec<Entry>,
     pub companion: Option<Meta>,
+    pub managed: Vec<Meta>,
 }
+
+const FIXED: usize = usize::MAX;
 
 fn existing(root: &Path, id: &str) -> Result<PathBuf> {
     if !instance::valid_id(id) {
@@ -195,7 +198,16 @@ fn scan_locked(root: &Path, dir: &Path, made: Instance, icons: Option<&Path>) ->
             rows.push((name.clone(), Source::Own, k));
         }
     }
-    let mut adopted: Vec<(&String, &Found)> = folder.iter().filter(|(k, _)| !seen.contains(*k) && k.as_str() != COMPANION_FILE).collect();
+    let ledger = modrinth::managed_files(dir);
+    let mut adopted: Vec<(&String, &Found)> = Vec::new();
+    let mut kept_by_sync: Vec<&Found> = Vec::new();
+    for (k, found) in folder.iter().filter(|(k, _)| !seen.contains(*k) && k.as_str() != COMPANION_FILE) {
+        if ledger.contains_key(k) && found.on.iter().chain(&found.off).all(|path| modrinth::is_managed(&ledger, k, path)) {
+            kept_by_sync.push(found);
+        } else {
+            adopted.push((k, found));
+        }
+    }
     adopted.sort_by(|a, b| a.0.cmp(b.0));
     for (k, found) in adopted {
         local.push(found.name.clone());
@@ -204,11 +216,14 @@ fn scan_locked(root: &Path, dir: &Path, made: Instance, icons: Option<&Path>) ->
     let off: HashSet<String> = made.disabled.iter().map(|name| key(name)).collect();
     let disks: Vec<Option<Disk>> = rows.iter().map(|(_, _, k)| folder.get(k).and_then(|found| stat(found, &mods))).collect();
     let companion_disk = folder.get(COMPANION_FILE).and_then(|found| stat(found, &mods));
+    let managed_disks: Vec<Disk> = kept_by_sync.iter().filter(|found| found.on.is_some()).filter_map(|found| stat(found, &mods)).collect();
     let mut wanted: Vec<&Disk> = disks.iter().flatten().collect();
     wanted.extend(companion_disk.as_ref());
+    wanted.extend(&managed_disks);
     let mut metas = metas_of(&wanted).into_iter();
     let row_metas: Vec<Option<Meta>> = disks.iter().map(|disk| if disk.is_some() { metas.next().flatten() } else { None }).collect();
     let companion = companion_disk.as_ref().and_then(|_| metas.next().flatten());
+    let managed: Vec<Meta> = managed_disks.iter().filter_map(|_| metas.next().flatten()).collect();
     let pictures: Vec<Option<PathBuf>> = disks
         .par_iter()
         .zip(&row_metas)
@@ -252,16 +267,21 @@ fn scan_locked(root: &Path, dir: &Path, made: Instance, icons: Option<&Path>) ->
     if next != made {
         instance::save_in(root, &next)?;
     }
-    Ok((next, Scan { entries, companion }))
+    Ok((next, Scan { entries, companion, managed }))
 }
 
-fn providers(entries: &[Entry]) -> HashMap<&str, Vec<usize>> {
+fn providers(scan: &Scan) -> HashMap<&str, Vec<usize>> {
     let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (i, entry) in entries.iter().enumerate() {
+    for (i, entry) in scan.entries.iter().enumerate() {
         if let Some(meta) = &entry.meta {
             for id in std::iter::once(&meta.id).chain(&meta.provides) {
                 index.entry(id.as_str()).or_default().push(i);
             }
+        }
+    }
+    for meta in &scan.managed {
+        for id in std::iter::once(&meta.id).chain(&meta.provides) {
+            index.entry(id.as_str()).or_default().push(FIXED);
         }
     }
     index
@@ -302,8 +322,8 @@ fn sorted_names(mut names: Vec<String>) -> Vec<String> {
 /// Names of mods that stop working when `files` are switched off: enabled mods outside `files` with a required dependency that only mods in `files` satisfy, repeated until nothing more breaks; "Manycraft" when its own mod is among them. Sorted, deduplicated.
 pub fn needed_by(scan: &Scan, files: &[String]) -> Vec<String> {
     let entries = &scan.entries;
-    let index = providers(entries);
-    let on = |i: usize| entries[i].enabled;
+    let index = providers(scan);
+    let on = |i: usize| entries.get(i).is_none_or(|e| e.enabled);
     let mut off = indices(entries, files);
     let broken = spread(entries, &index, &on, &mut off);
     let mut names: Vec<String> = broken.into_iter().map(|i| entries[i].name()).collect();
@@ -316,8 +336,9 @@ pub fn needed_by(scan: &Scan, files: &[String]) -> Vec<String> {
 /// Files of switched-off mods that `files` need, directly or through each other, to work once switched on.
 pub fn missing_for(scan: &Scan, files: &[String]) -> Vec<String> {
     let entries = &scan.entries;
-    let index = providers(entries);
+    let index = providers(scan);
     let mut on: HashSet<usize> = (0..entries.len()).filter(|i| entries[*i].enabled).collect();
+    on.insert(FIXED);
     let wanted = indices(entries, files);
     on.extend(wanted.iter().copied());
     let mut queue: Vec<usize> = wanted.into_iter().collect();
@@ -467,7 +488,7 @@ fn resolve(made: &Instance, files: &[String]) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for file in files {
-        let name = known.get(&key(file)).ok_or_else(|| anyhow!(tr("Diese Mod gibt es nicht mehr.")))?;
+        let name = known.get(&key(file)).ok_or_else(|| anyhow!(tr("Diesen Mod gibt es nicht mehr.")))?;
         if seen.insert(key(name)) {
             out.push((*name).to_owned());
         }
@@ -529,6 +550,7 @@ pub fn set_enabled(id: &str, files: &[String], on: bool) -> Result<Instance> {
 
 fn set_enabled_in(root: &Path, id: &str, files: &[String], on: bool) -> Result<Instance> {
     exclusive(root, id, |dir, made| {
+        let (made, _) = scan_locked(root, dir, made, None)?;
         let listed = resolve(&made, files)?;
         let touched: HashSet<String> = listed.iter().map(|n| key(n)).collect();
         let mut target: Vec<String> = made.disabled.clone();
@@ -542,6 +564,76 @@ fn set_enabled_in(root: &Path, id: &str, files: &[String], on: bool) -> Result<I
             }
         }
         commit(root, dir, &made, &target)
+    })
+}
+
+/// Copies the `.jar` files `paths` into the shared mods folder of instance `id` and lists them in `local_mods`. A file whose name is already in the folder (on or off) or in the instance's lists is skipped and its name returned; other files are ignored. Refused while a game of the instance runs. Nothing stays copied when it fails.
+pub fn add_files(id: &str, paths: &[PathBuf]) -> Result<(Instance, Vec<String>)> {
+    add_files_in(&instance::instances_dir(), id, paths)
+}
+
+fn copy_into(from: &Path, mods: &Path, name: &str) -> Result<PathBuf> {
+    let tmp = mods.join(format!("{name}.manycraft-tmp"));
+    let target = mods.join(name);
+    let placed = (|| -> Result<()> {
+        std::fs::copy(from, &tmp).with_context(|| format!("cannot copy {}", from.display()))?;
+        if std::fs::symlink_metadata(&target).is_ok() {
+            bail!(trf("Die Datei %@ gibt es schon.", &[&name]));
+        }
+        modrinth::rename(&tmp, &target)
+    })();
+    if let Err(e) = placed {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(target)
+}
+
+fn add_files_in(root: &Path, id: &str, paths: &[PathBuf]) -> Result<(Instance, Vec<String>)> {
+    exclusive(root, id, |dir, made| {
+        let mods = dir.join("mods");
+        std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
+        let mut taken: HashSet<String> = list_jars(&mods)?.into_keys().collect();
+        taken.extend(made.mods.iter().map(|m| key(&m.file_name)));
+        taken.extend(made.local_mods.iter().map(|n| key(n)));
+        let mut skipped: Vec<String> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
+        let mut copied: Vec<PathBuf> = Vec::new();
+        let result = (|| -> Result<()> {
+            for path in paths {
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                if !matches!(jar_name(name), Some((_, false))) || safe_file_name(name).is_err() || !path.is_file() {
+                    continue;
+                }
+                let lower = key(name);
+                if taken.contains(&lower) {
+                    skipped.push(name.to_owned());
+                    continue;
+                }
+                copied.push(copy_into(path, &mods, name)?);
+                taken.insert(lower);
+                added.push(name.to_owned());
+            }
+            Ok(())
+        })();
+        let finished = result.and_then(|()| {
+            if added.is_empty() {
+                return Ok(made.clone());
+            }
+            let mut next = made.clone();
+            next.local_mods.extend(added.iter().cloned());
+            instance::save_in(root, &next)?;
+            Ok(next)
+        });
+        match finished {
+            Ok(next) => Ok((next, skipped)),
+            Err(e) => {
+                for path in &copied {
+                    let _ = std::fs::remove_file(path);
+                }
+                Err(e)
+            }
+        }
     })
 }
 
@@ -562,6 +654,7 @@ pub fn trash(id: &str, files: &[String]) -> Result<(Instance, Trashed)> {
 
 fn trash_in(root: &Path, id: &str, files: &[String], millis: u64) -> Result<(Instance, Trashed)> {
     exclusive(root, id, |dir, made| {
+        let (made, _) = scan_locked(root, dir, made, None)?;
         let listed = resolve(&made, files)?;
         let wanted: HashSet<String> = listed.iter().map(|n| key(n)).collect();
         let folder = list_jars(&dir.join("mods"))?;
@@ -583,7 +676,7 @@ fn trash_in(root: &Path, id: &str, files: &[String], millis: u64) -> Result<(Ins
         let moves = match apply(plan) {
             Ok(moves) => moves,
             Err(e) => {
-                let _ = instance::remove_dir(&entry);
+                let _ = std::fs::remove_dir(&entry);
                 return Err(e);
             }
         };
@@ -597,7 +690,7 @@ fn trash_in(root: &Path, id: &str, files: &[String], millis: u64) -> Result<(Ins
         };
         if let Err(e) = instance::save_in(root, &next) {
             moves.undo();
-            let _ = instance::remove_dir(&entry);
+            let _ = std::fs::remove_dir(&entry);
             return Err(e);
         }
         let trashed = Trashed {
@@ -747,11 +840,11 @@ impl<'a> Graph<'a> {
     fn new(scan: &'a Scan, before: &[String]) -> Self {
         let off: HashSet<String> = before.iter().map(|n| key(n)).collect();
         let active = (0..scan.entries.len()).filter(|i| scan.entries[*i].on_disk && !off.contains(&key(&scan.entries[*i].file))).collect();
-        Self { entries: &scan.entries, index: providers(&scan.entries), active }
+        Self { entries: &scan.entries, index: providers(scan), active }
     }
 
     fn on(&self) -> impl Fn(usize) -> bool + '_ {
-        |i| self.active.contains(&i)
+        |i| i == FIXED || self.active.contains(&i)
     }
 
     fn protected(&self, companion: Option<&Meta>) -> HashSet<usize> {
@@ -861,7 +954,7 @@ fn write_state(dir: &Path, state: &Bisect) -> Result<()> {
     net::write_atomic(&dir.join(STATE), &serde_json::to_vec_pretty(state)?)
 }
 
-fn drop_state(dir: &Path) -> Result<()> {
+pub(super) fn drop_state(dir: &Path) -> Result<()> {
     match std::fs::remove_file(dir.join(STATE)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("cannot delete {}", dir.join(STATE).display())),
         _ => Ok(()),
@@ -920,10 +1013,15 @@ pub fn stop(id: &str) -> Result<Instance> {
 }
 
 fn stop_in(root: &Path, id: &str) -> Result<Instance> {
-    let dir = existing(root, id)?;
-    if !read_state(&dir).is_some_and(|s| s.outcome.is_none()) {
-        drop_state(&dir)?;
-        return shared(root, id, |_, made| Ok(made));
+    let finished = shared(root, id, |dir, made| {
+        if read_state(dir).is_some_and(|s| s.outcome.is_none()) {
+            return Ok(None);
+        }
+        drop_state(dir)?;
+        Ok(Some(made))
+    })?;
+    if let Some(made) = finished {
+        return Ok(made);
     }
     exclusive(root, id, |dir, made| {
         let made = match read_state(dir) {
@@ -954,10 +1052,19 @@ fn dismiss_in(root: &Path, id: &str) -> Result<()> {
         bail!("invalid instance id {id:?}");
     }
     let dir = root.join(id);
-    if read_state(&dir).is_some_and(|s| s.outcome.is_some()) {
-        drop_state(&dir)?;
+    if !store::exists(&dir.join(instance::FILE)) {
+        return Ok(());
     }
-    Ok(())
+    with_mods_lock(&dir, || {
+        if read_state(&dir).is_some_and(|s| s.outcome.is_some()) {
+            drop_state(&dir)?;
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn searching(dir: &Path) -> bool {
+    read_state(dir).is_some_and(|s| s.outcome.is_none())
 }
 
 #[cfg(test)]
@@ -1246,7 +1353,7 @@ mod tests {
     }
 
     fn scan_of(entries: Vec<Entry>, companion: Option<&[&str]>) -> Scan {
-        Scan { entries, companion: companion.map(|d| Meta { id: "manycraft".into(), name: "Manycraft".into(), depends: names(d), ..Meta::default() }) }
+        Scan { entries, companion: companion.map(|d| Meta { id: "manycraft".into(), name: "Manycraft".into(), depends: names(d), ..Meta::default() }), managed: Vec::new() }
     }
 
     #[test]
@@ -1399,7 +1506,7 @@ mod tests {
 
     fn assert_closed(scan: &Scan, state: &Bisect) {
         let off: HashSet<String> = state.before.iter().chain(&state.off).map(|n| key(n)).collect();
-        let index = providers(&scan.entries);
+        let index = providers(scan);
         let on = |i: usize| !off.contains(&key(&scan.entries[i].file));
         for (i, e) in scan.entries.iter().enumerate().filter(|(i, _)| on(*i)) {
             for dep in &e.meta.as_ref().unwrap().depends {
@@ -1606,5 +1713,153 @@ mod tests {
         stop_in(&root, &made.id).unwrap();
         assert_eq!(load_in(&root, &made.id), None);
         drop(running);
+    }
+
+    fn sha_of(bytes: &[u8]) -> String {
+        Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn write_ledger(root: &Path, made: &Instance, lines: &[(&str, &[u8])]) {
+        let text: String = lines.iter().map(|(name, bytes)| format!("{} {}\n", name.to_lowercase(), sha_of(bytes))).collect();
+        std::fs::write(root.join(&made.id).join("mods.managed"), text).unwrap();
+    }
+
+    #[test]
+    fn a_jar_the_sync_placed_is_not_adopted_and_counts_as_an_always_on_provider() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &["x.jar"], &["alt.jar"], &[]);
+        let api = jar_bytes(&[("fabric.mod.json", br#"{"id":"fabric-api","version":"1"}"#)]);
+        let alt = jar_bytes(&[("fabric.mod.json", br#"{"id":"alt","provides":["fabric-api"]}"#)]);
+        put(&root, &made, "x.jar", &jar_bytes(&[("fabric.mod.json", br#"{"id":"x","name":"X","depends":{"fabric-api":"*"}}"#)]));
+        put(&root, &made, "alt.jar", &alt);
+        put(&root, &made, "Fabric-API-1.jar", &api);
+        write_ledger(&root, &made, &[("fabric-api-1.jar", &api[..])]);
+        let (now, scan) = scan_in(&root, &dir.path().join("icons"), &made.id).unwrap();
+        assert_eq!(scan.entries.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(), ["x.jar", "alt.jar"]);
+        assert_eq!(now.local_mods, ["alt.jar"]);
+        assert_eq!(scan.managed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["fabric-api"]);
+        assert!(needed_by(&scan, &names(&["alt.jar"])).is_empty());
+        let mut bare = scan.clone();
+        bare.managed.clear();
+        assert_eq!(needed_by(&bare, &names(&["alt.jar"])), ["X"]);
+        let unmanaged = scan_of(vec![entry("top.jar", "top", &["api"], &[], false), entry("impl.jar", "impl", &[], &["api"], false)], None);
+        let managed = Scan { managed: vec![Meta { id: "api".into(), ..Meta::default() }], ..unmanaged.clone() };
+        assert!(missing_for(&managed, &names(&["top.jar"])).is_empty());
+        assert_eq!(missing_for(&unmanaged, &names(&["top.jar"])), ["impl.jar"]);
+    }
+
+    #[test]
+    fn a_jar_with_a_ledger_name_but_another_hash_is_adopted_and_an_old_file_after_an_update_is_not() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &["new.jar"], &[], &[]);
+        put(&root, &made, "new.jar", b"new");
+        put(&root, &made, "mine.jar", b"mine");
+        put(&root, &made, "old.jar", b"old");
+        write_ledger(&root, &made, &[("mine.jar", &b"theirs"[..]), ("old.jar", &b"old"[..])]);
+        let (now, scan) = scan_in(&root, &dir.path().join("icons"), &made.id).unwrap();
+        assert_eq!(scan.entries.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(), ["new.jar", "mine.jar"]);
+        assert_eq!(now.local_mods, ["mine.jar"]);
+        assert!(scan.managed.is_empty());
+        assert_eq!(mods_of(&root, &made), ["mine.jar", "new.jar", "old.jar"]);
+    }
+
+    #[test]
+    fn a_hand_renamed_disabled_file_stays_off_when_other_mods_are_switched_or_trashed() {
+        let (_dir, root, mut made) = setup();
+        save_with(&root, &mut made, &[], &["a.jar", "b.jar", "c.jar"], &[]);
+        put(&root, &made, "a.jar.disabled", b"a");
+        put(&root, &made, "b.jar", b"b");
+        put(&root, &made, "c.jar", b"c");
+        let now = set_enabled_in(&root, &made.id, &names(&["b.jar"]), false).unwrap();
+        assert_eq!(now.disabled, ["a.jar", "b.jar"]);
+        assert_eq!(mods_of(&root, &made), ["a.jar.disabled", "b.jar.disabled", "c.jar"]);
+        let (after, _) = trash_in(&root, &made.id, &names(&["c.jar"]), 9).unwrap();
+        assert_eq!(after.disabled, ["a.jar", "b.jar"]);
+        assert_eq!(mods_of(&root, &made), ["a.jar.disabled", "b.jar.disabled"]);
+    }
+
+    #[test]
+    fn ending_or_dismissing_a_finished_search_waits_for_the_mods_lock() {
+        let (_dir, root, mut made) = setup();
+        four(&root, &mut made);
+        let state = Bisect { before: Vec::new(), suspects: Vec::new(), off: Vec::new(), round: 1, rounds: 1, outcome: Some(Outcome::Nothing) };
+        let dir = root.join(&made.id);
+        for stop in [true, false] {
+            write_state(&dir, &state).unwrap();
+            let held = crate::core::lock::exclusive(&dir.join("mods.lock")).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (root2, id) = (root.clone(), made.id.clone());
+            let worker = std::thread::spawn(move || {
+                let done = if stop { stop_in(&root2, &id).map(|_| ()) } else { dismiss_in(&root2, &id) };
+                let _ = tx.send(done.is_ok());
+            });
+            assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+            assert!(read_state(&dir).is_some());
+            drop(held);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok(true));
+            worker.join().unwrap();
+            assert!(read_state(&dir).is_none());
+        }
+    }
+
+    fn outside(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        std::fs::create_dir_all(dir.join("picked")).unwrap();
+        let path = dir.join("picked").join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn added_files_are_copied_whole_and_listed_as_own_mods() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &["listed.jar"], &[], &[]);
+        let one = outside(dir.path(), "One.JAR", b"one");
+        let two = outside(dir.path(), "two.jar", b"two");
+        let (now, skipped) = add_files_in(&root, &made.id, &[one, two]).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(now.local_mods, ["One.JAR", "two.jar"]);
+        assert_eq!(saved(&root, &made), now);
+        assert_eq!(mods_of(&root, &made), ["One.JAR", "two.jar"]);
+        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("two.jar")).unwrap(), b"two");
+        let (_, scan) = scan_in(&root, &dir.path().join("icons"), &made.id).unwrap();
+        assert!(scan.entries.iter().any(|e| e.file == "two.jar" && e.source == Source::Own));
+    }
+
+    #[test]
+    fn an_added_file_whose_name_is_taken_is_skipped_and_named_and_non_jars_are_ignored() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &["listed.jar"], &["own.jar"], &[]);
+        put(&root, &made, "a.jar", b"mine");
+        put(&root, &made, "b.jar.disabled", b"mine");
+        let picked: Vec<PathBuf> = [("A.jar", &b"x"[..]), ("b.JAR", b"x"), ("Listed.jar", b"x"), ("OWN.jar", b"x"), ("notes.txt", b"x"), ("c.jar.disabled", b"x"), ("fresh.jar", b"x"), ("fresh.jar", b"y")]
+            .iter()
+            .enumerate()
+            .map(|(i, (name, bytes))| outside(&dir.path().join(i.to_string()), name, bytes))
+            .chain([dir.path().join("missing.jar")])
+            .collect();
+        let (now, skipped) = add_files_in(&root, &made.id, &picked).unwrap();
+        assert_eq!(skipped, ["A.jar", "b.JAR", "Listed.jar", "OWN.jar", "fresh.jar"]);
+        assert_eq!(now.local_mods, ["own.jar", "fresh.jar"]);
+        assert_eq!(mods_of(&root, &made), ["a.jar", "b.jar.disabled", "fresh.jar"]);
+        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("a.jar")).unwrap(), b"mine");
+        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("fresh.jar")).unwrap(), b"x");
+        let (same, none) = add_files_in(&root, &made.id, &[]).unwrap();
+        assert!(none.is_empty() && same == now);
+    }
+
+    #[test]
+    fn adding_files_is_refused_while_a_game_runs_and_a_failure_leaves_no_copy_behind() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &[], &[], &[]);
+        let jar = outside(dir.path(), "a.jar", b"a");
+        let running = instance::hold_in(&root, &made.id).unwrap();
+        assert!(add_files_in(&root, &made.id, std::slice::from_ref(&jar)).is_err());
+        assert!(mods_of(&root, &made).is_empty());
+        drop(running);
+        std::fs::create_dir_all(root.join(&made.id).join("mods").join("blocked.jar")).unwrap();
+        let blocked = outside(dir.path(), "blocked.jar", b"b");
+        assert!(add_files_in(&root, &made.id, &[jar, blocked]).is_err());
+        assert_eq!(mods_of(&root, &made), ["blocked.jar"]);
+        assert_eq!(saved(&root, &made), made);
     }
 }

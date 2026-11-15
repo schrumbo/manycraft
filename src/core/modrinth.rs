@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use super::batch::ModRef;
+use super::i18n::tr;
 use super::instance::Instance;
 use super::{install, net};
 
@@ -565,8 +566,23 @@ fn place(agent: &ureq::Agent, m: &ModRef, off: bool, dir: &Path) -> Result<bool>
     Ok(true)
 }
 
-fn read_ledger(path: &Path) -> HashSet<String> {
-    std::fs::read_to_string(path).map(|text| text.lines().map(|line| line.trim().to_lowercase()).filter(|line| !line.is_empty()).collect()).unwrap_or_default()
+fn read_ledger(path: &Path) -> HashMap<String, String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let (name, hash) = line.trim().rsplit_once(char::is_whitespace)?;
+            let (name, hash) = (name.trim().to_lowercase(), hash.to_lowercase());
+            (!name.is_empty() && hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some((name, hash))
+        })
+        .collect()
+}
+
+pub(super) fn managed_files(instance_dir: &Path) -> HashMap<String, String> {
+    read_ledger(&instance_dir.join(LEDGER))
+}
+
+pub(super) fn is_managed(managed: &HashMap<String, String>, name: &str, path: &Path) -> bool {
+    managed.get(&name.to_lowercase()).is_some_and(|hash| net::file_sha1(path).is_ok_and(|actual| actual == *hash))
 }
 
 fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
@@ -583,7 +599,7 @@ fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &
             jobs.push(m);
         }
     }
-    let mut synced: Vec<String> = keep.iter().cloned().collect();
+    let mut synced: Vec<(String, String)> = jobs.iter().map(|m| (m.file_name.to_lowercase(), m.sha1.to_lowercase())).collect();
     synced.sort_unstable();
     keep.extend(local_keys);
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
@@ -591,14 +607,14 @@ fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &
     let fetched = pool()?.install(|| jobs.par_iter().map(|m| place(agent, m, off.contains(&m.file_name.to_lowercase()), dir)).collect::<Result<Vec<_>>>())?;
     let managed = read_ledger(ledger);
     for (name, file) in list_jars(dir)? {
-        if keep.contains(&name) || name == super::fleet::COMPANION_FILE || !managed.contains(&name) {
+        if keep.contains(&name) || name == super::fleet::COMPANION_FILE {
             continue;
         }
-        for path in file.on.iter().chain(&file.off) {
+        for path in file.on.iter().chain(&file.off).filter(|path| is_managed(&managed, &name, path)) {
             std::fs::remove_file(path).with_context(|| format!("cannot delete {}", path.display()))?;
         }
     }
-    let lines: String = synced.iter().map(|name| format!("{name}\n")).collect();
+    let lines: String = synced.iter().map(|(name, sha1)| format!("{name} {sha1}\n")).collect();
     net::write_atomic(ledger, lines.as_bytes())?;
     Ok(fetched.into_iter().filter(|downloaded| *downloaded).count())
 }
@@ -645,6 +661,13 @@ pub fn sync_mods(instance: &Instance) -> Result<usize> {
     with_mods_lock(&instance.dir(), || sync_locked(&saved(instance)))
 }
 
+fn not_searching(instance_dir: &Path) -> Result<()> {
+    if super::content::searching(instance_dir) {
+        bail!(tr("Beende zuerst die Fehlersuche."));
+    }
+    Ok(())
+}
+
 pub(super) fn with_mods_lock<T>(instance_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
     let _held = super::lock::exclusive(&instance_dir.join("mods.lock"))?;
     work()
@@ -687,6 +710,7 @@ pub fn match_hashes(hashes: &[String]) -> Result<HashMap<String, ModRef>> {
 pub fn update_mods(instance: &mut Instance, selection: &[Update]) -> Result<usize> {
     update_with(instance, selection, |next| {
         with_mods_lock(&next.dir(), || {
+            not_searching(&next.dir())?;
             let fetched = sync_locked(next)?;
             super::instance::save(next)?;
             Ok(fetched)
@@ -698,6 +722,7 @@ pub fn update_mods(instance: &mut Instance, selection: &[Update]) -> Result<usiz
 /// games run. The files change at the next start, when the mod folder is synced.
 pub fn update_mods_later(instance: &mut Instance, selection: &[Update]) -> Result<()> {
     update_with(instance, selection, |next| {
+        not_searching(&next.dir())?;
         super::instance::save(next)?;
         Ok(0)
     })
@@ -1211,7 +1236,7 @@ mod tests {
         batch.local_mods = vec!["MINE.jar".into(), "other.jar".into()];
         let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") }, changelog: Vec::new() };
         let agent = net::agent(None).unwrap();
-        let (_held, ledger) = ledger(&["old.jar", "stray.jar"]);
+        let (_held, ledger) = ledger(&[("old.jar", &b"old"[..]), ("stray.jar", &b"stray"[..])]);
         let fetched = update_with(&mut batch, &[update], |next| sync_into(&agent, &next.mods, &next.local_mods, &next.disabled, dir.path(), &ledger)).unwrap();
         assert_eq!(fetched, 0);
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
@@ -1280,10 +1305,11 @@ mod tests {
         }
     }
 
-    fn ledger(names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn ledger(entries: &[(&str, &[u8])]) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mods.managed");
-        std::fs::write(&path, names.join("\n")).unwrap();
+        let text: String = entries.iter().map(|(name, bytes)| format!("{name} {}\n", jar(name, bytes).sha1)).collect();
+        std::fs::write(&path, text).unwrap();
         (dir, path)
     }
 
@@ -1320,7 +1346,7 @@ mod tests {
         std::fs::write(mods.join("manual").join("mine.jar"), b"keep").unwrap();
         let list = [jar("a.jar", b"aaa"), jar("b.jar", b"bbb"), jar("a.jar", b"aaa")];
         let agent = net::agent(None).unwrap();
-        let (_held, ledger) = ledger(&["stray.jar", "stray2.jar"]);
+        let (_held, ledger) = ledger(&[("stray.jar", &b"old"[..]), ("stray2.jar", &b"old"[..])]);
         assert_eq!(sync_into(&agent, &list, &[], &[], &mods, &ledger).unwrap(), 0);
         let mut left: Vec<String> = std::fs::read_dir(&mods).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
@@ -1371,7 +1397,7 @@ mod tests {
             ModRef { url: url("changed.jar"), ..jar("changed.jar", b"updated") },
         ];
         let agent = net::agent(None).unwrap();
-        let (_held, ledger) = ledger(&["stray.jar"]);
+        let (_held, ledger) = ledger(&[("stray.jar", &b"x"[..])]);
         assert_eq!(sync_into(&agent, &list, &[], &[], dir.path(), &ledger).unwrap(), 2);
         server.join().unwrap();
         assert_eq!(std::fs::read(dir.path().join("new.jar")).unwrap(), b"fresh");
@@ -1385,7 +1411,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"x").unwrap();
         let agent = net::agent(None).unwrap();
-        let (_held, ledger) = ledger(&["stray.jar"]);
+        let (_held, ledger) = ledger(&[("stray.jar", &b"x"[..])]);
         assert!(sync_into(&agent, &[jar("missing.jar", b"m")], &[], &[], dir.path(), &ledger).is_err());
         assert!(dir.path().join("stray.jar").is_file());
     }
@@ -1409,7 +1435,7 @@ mod tests {
         server.join().unwrap();
         assert_eq!(names(dir.path()), ["new.jar.disabled"]);
         assert_eq!(std::fs::read(dir.path().join("new.jar.disabled")).unwrap(), b"fresh");
-        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "new.jar\n");
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), format!("new.jar {}\n", jar("new.jar", b"fresh").sha1));
         assert_eq!(sync_into(&agent, &list, &[], &["new.jar".into()], dir.path(), &ledger).unwrap(), 0);
     }
 
@@ -1439,12 +1465,69 @@ mod tests {
         }
         std::fs::write(mods.join("a.jar"), b"aaa").unwrap();
         let agent = net::agent(None).unwrap();
-        let (_held, ledger) = ledger(&["old.jar", "old2.jar", "OLD3.jar", crate::core::fleet::COMPANION_FILE]);
+        let (_held, ledger) = ledger(&[("old.jar", &b"x"[..]), ("old2.jar", &b"x"[..]), ("OLD3.jar", &b"x"[..]), (crate::core::fleet::COMPANION_FILE, &b"x"[..])]);
         sync_into(&agent, &[jar("a.jar", b"aaa")], &[], &[], mods, &ledger).unwrap();
         assert_eq!(names(mods), ["User2.jar.disabled", "a.jar", "manycraft-companion.jar", "user.jar"]);
-        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "a.jar\n");
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), format!("a.jar {}\n", jar("a.jar", b"aaa").sha1));
         sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
         assert_eq!(names(mods), ["User2.jar.disabled", "manycraft-companion.jar", "user.jar"]);
+    }
+
+    #[test]
+    fn a_jar_with_a_ledger_name_is_deleted_only_when_its_hash_is_the_recorded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path();
+        for (name, body) in [("x.jar", "synced"), ("x.jar.disabled", "mine"), ("y.jar", "mine"), ("z.jar.disabled", "synced"), ("z.jar", "mine")] {
+            std::fs::write(mods.join(name), body).unwrap();
+        }
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[("x.jar", &b"synced"[..]), ("y.jar", &b"synced"[..]), ("z.jar", &b"synced"[..])]);
+        sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["x.jar.disabled", "y.jar", "z.jar"]);
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "");
+        sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["x.jar.disabled", "y.jar", "z.jar"]);
+    }
+
+    #[test]
+    fn the_ledger_keeps_a_lowercase_hash_per_name_and_ignores_lines_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mods.managed");
+        let hash = "AB".repeat(20);
+        std::fs::write(&path, format!("old.jar\nbad name.jar zz\nOk Name.JAR {hash}\n\n{hash}\n")).unwrap();
+        let read = read_ledger(&path);
+        assert_eq!(read.len(), 1);
+        assert_eq!(read.get("ok name.jar"), Some(&hash.to_lowercase()));
+        assert!(read_ledger(&dir.path().join("none")).is_empty());
+        let (_held, written) = ledger(&[]);
+        let agent = net::agent(None).unwrap();
+        let mut api = jar("Fabric-API.jar", b"api");
+        api.sha1 = api.sha1.to_uppercase();
+        let mods = dir.path().join("mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::write(mods.join("Fabric-API.jar"), b"api").unwrap();
+        sync_into(&agent, &[api.clone()], &[], &[], &mods, &written).unwrap();
+        assert_eq!(read_ledger(&written).get("fabric-api.jar"), Some(&jar("Fabric-API.jar", b"api").sha1));
+    }
+
+    #[test]
+    fn updates_are_refused_while_the_troubleshooter_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(not_searching(dir.path()).is_ok());
+        let mut state = crate::core::content::Bisect { before: Vec::new(), suspects: Vec::new(), off: Vec::new(), round: 0, rounds: 1, outcome: None };
+        std::fs::write(dir.path().join("bisect.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        let err = not_searching(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("Fehlersuche") || err.contains("troubleshooter"), "{err}");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
+        let current = jar("a.jar", b"a");
+        batch.mods = vec![current.clone()];
+        let update = Update { current, latest: ModRef { version_id: "v2".into(), ..jar("a2.jar", b"a2") }, changelog: Vec::new() };
+        let before = batch.clone();
+        assert!(update_with(&mut batch, &[update], |_| not_searching(dir.path()).map(|()| 0)).is_err());
+        assert_eq!(batch, before);
+        state.outcome = Some(crate::core::content::Outcome::Nothing);
+        std::fs::write(dir.path().join("bisect.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        assert!(not_searching(dir.path()).is_ok());
     }
 
     #[test]
