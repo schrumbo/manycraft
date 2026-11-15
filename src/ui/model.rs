@@ -23,7 +23,8 @@ use super::forms;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
     Stopped,
-    Starting { done: usize, total: usize },
+    /// On its way: the `place`-th of `total` accounts of one start waits for its turn; `place` is 0 once its game launched.
+    Starting { place: usize, total: usize },
     /// Runs as a normal game window without Manycraft's mod: no preview, no background mode, no swap.
     Plain,
     Menu,

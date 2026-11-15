@@ -405,7 +405,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         _ if banned => tr("Gesperrt"),
         Phase::Stopped => tr("Gestoppt"),
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt %lld %%", &[&preparing.unwrap_or(0)]),
-        Phase::Starting { done, total } if *total > 1 => trf("Wartet %lld/%lld", &[done, total]),
+        Phase::Starting { place, total } if *total > 1 && *place > 0 => trf("Wartet %lld/%lld", &[place, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Restarting { .. } => tr("Startet neu…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),
@@ -1204,7 +1204,7 @@ mod tests {
         let mut again = mk(Phase::Connecting { server: "s".into() });
         again.reconnect_attempts = 2;
         assert_eq!(word(&again, None, false), "Versuch 2/5");
-        assert_eq!(word(&mk(Phase::Starting { done: 12, total: 50 }), None, false), "Wartet 12/50");
+        assert_eq!(word(&mk(Phase::Starting { place: 12, total: 50 }), None, false), "Wartet 12/50");
         assert_eq!(word(&mk(Phase::Stopped), None, true), "Gesperrt", "a stop after a ban says so");
         assert_eq!(word(&mk(Phase::LoginNeeded), None, false), "Anmeldung nötig");
     }

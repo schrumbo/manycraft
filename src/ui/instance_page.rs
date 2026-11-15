@@ -1131,11 +1131,12 @@ impl InstancePage {
             .child(field("instance-version-field", tr("Minecraft-Version"), version_control, Some(VERSION_WIDTH)))
             .child(field("instance-loader-field", tr("Loader"), loader_control, None));
         let news = self.loader_update(made);
-        let busy_line = div().min_h(px(control::M)).flex().items_center().children(match self.switching.as_ref().filter(|b| b.id == self.id) {
+        let busy_line = match self.switching.as_ref().filter(|b| b.id == self.id) {
             Some(b) => Some(sheet::waiting(b.text.clone(), t).into_any_element()),
             None => news.map(|newest| self.loader_news_line(made, &newest, t)),
-        });
-        let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).child(busy_line));
+        }
+        .map(|line| div().min_h(px(control::M)).flex().items_center().child(line));
+        let mut col = div().flex().flex_col().gap(px(space::L)).child(div().flex().flex_col().gap(px(space::XS)).child(controls).children(busy_line));
         if let Load::Failed(why) = &self.versions {
             let retry = sheet::button("versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.load_versions(cx)));
             col = col.child(div().flex().items_start().gap(px(space::S)).child(div().flex_1().min_w_0().child(sheet::problem("versions-error", "circle-alert", t.danger_text, why, self.details.contains("versions-error"), cx.listener(|s, _, _, cx| s.toggle("versions-error", cx)), t))).child(retry));

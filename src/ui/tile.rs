@@ -631,7 +631,7 @@ mod tests {
         assert!(primary(&Phase::Crashed { code: Some(1) }, false) == Some(Primary::Start));
         assert!(primary(&Phase::Menu, false) == Some(Primary::Play));
         assert!(primary(&Phase::LoginNeeded, false) == Some(Primary::SignIn));
-        assert!(primary(&Phase::Starting { done: 1, total: 2 }, false).is_none());
+        assert!(primary(&Phase::Starting { place: 1, total: 2 }, false).is_none());
         assert!(primary(&Phase::Menu, true).is_none());
     }
 

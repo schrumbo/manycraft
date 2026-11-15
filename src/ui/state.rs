@@ -47,7 +47,8 @@ const TRASH_KEPT: Duration = Duration::from_secs(600);
 /// What the fleet reports back to the UI thread.
 pub enum Update {
     Preparing { batch: String, percent: u8 },
-    Progress { batch: String, done: usize, total: usize },
+    /// The game is installed; the accounts of `batch` wait in line to start.
+    Prepared { batch: String },
     Launched { key: String, plain: bool },
     Failed { key: String, reason: String, login: bool, offline: bool },
     /// Whether the connection came back (`true`) or is gone.
@@ -120,8 +121,12 @@ impl Real {
             let _ = reach.send_blocking(Update::Reach { online: up });
         });
         let forward = out.clone();
+        let loading = Arc::clone(&fleet);
         std::thread::Builder::new().name("fleet-events".into()).spawn(move || {
             while let Ok(event) = events.recv() {
+                if let Event::Message { instance, message: FromMod::State { .. } } = &event {
+                    loading.loaded(instance);
+                }
                 if forward.send_blocking(Update::Ipc(event)).is_err() {
                     return;
                 }
@@ -177,6 +182,7 @@ impl Backend for Real {
     fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>) {
         let (fleet, out, watch, owners) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.owners));
         let owner = target.owner();
+        let parallel = target.batch.as_ref().map_or(0, |b| b.launch_parallel);
         let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut owners = lock(&owners);
@@ -186,6 +192,11 @@ impl Backend for Real {
         }
         let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
             let mine = |key: &str| lock(&owners).get(key) == Some(&run);
+            let release = |key: &str| {
+                if !lock(&owners).get(key).is_some_and(|owner| *owner != run) {
+                    fleet.give_up(key);
+                }
+            };
             let gone = std::cell::OnceCell::new();
             let cut_off = |e: &anyhow::Error, account: &Account| account.proxy.is_none() && net::no_connection(e) && *gone.get_or_init(|| !online::reachable());
             let fail_all = |e: anyhow::Error| {
@@ -210,21 +221,18 @@ impl Backend for Real {
                 Ok(prepared) => prepared,
                 Err(e) => return fail_all(e),
             };
-            let total = accounts.len();
-            let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: 0, total });
-            for (i, account) in accounts.iter().enumerate() {
-                if i > 0 {
-                    let until = Instant::now() + fleet.stagger;
-                    while Instant::now() < until && !cancel.load(Ordering::SeqCst) {
-                        std::thread::sleep(STAGGER_STEP);
+            let _ = out.send_blocking(Update::Prepared { batch: owner.clone() });
+            let keys: Vec<String> = accounts.iter().map(|a| target.key(a.id)).collect();
+            let queued: Vec<String> = keys.iter().filter(|k| mine(k)).cloned().collect();
+            fleet.queue(&queued);
+            for (account, key) in accounts.iter().zip(&keys) {
+                let stand_down = || cancel.load(Ordering::SeqCst) || !mine(key);
+                if !fleet.wait_turn(key, parallel, prepared.plain(), &stand_down) {
+                    if cancel.load(Ordering::SeqCst) {
+                        keys.iter().for_each(|k| release(k));
+                        return;
                     }
-                }
-                if cancel.load(Ordering::SeqCst) {
-                    return;
-                }
-                let key = target.key(account.id);
-                if !mine(&key) {
-                    let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: i + 1, total });
+                    release(key);
                     continue;
                 }
                 let update = match fleet.start_one(&prepared, account) {
@@ -237,14 +245,22 @@ impl Backend for Real {
                         }
                         Some(Update::Launched { key, plain: prepared.plain() })
                     }
-                    Err(_) if fleet.is_running(&key) => Some(Update::Launched { key, plain: prepared.plain() }),
-                    Err(_) if !mine(&key) => None,
-                    Err(e) => Some(Update::Failed { key, login: needs_sign_in(&e), offline: cut_off(&e, account), reason: format!("{e:#}") }),
+                    Err(_) if fleet.is_running(key) => {
+                        release(key);
+                        Some(Update::Launched { key: key.clone(), plain: prepared.plain() })
+                    }
+                    Err(_) if !mine(key) => {
+                        release(key);
+                        None
+                    }
+                    Err(e) => {
+                        release(key);
+                        Some(Update::Failed { key: key.clone(), login: needs_sign_in(&e), offline: cut_off(&e, account), reason: format!("{e:#}") })
+                    }
                 };
                 if let Some(update) = update {
                     let _ = out.send_blocking(update);
                 }
-                let _ = out.send_blocking(Update::Progress { batch: owner.clone(), done: i + 1, total });
             }
         });
     }
@@ -573,11 +589,22 @@ pub fn init(cx: &mut App) {
             for cancel in rt.cancel.values().flatten() {
                 cancel.store(true, Ordering::SeqCst);
             }
-            rt.backend.quit();
+            let backend = Arc::clone(&rt.backend);
+            match std::thread::Builder::new().name("quit".into()).spawn(move || backend.quit()) {
+                Ok(closing) => close_games(closing, cx),
+                Err(_) => rt.backend.quit(),
+            }
         }
         async {}
     })
     .detach();
+}
+
+fn close_games(closing: std::thread::JoinHandle<()>, cx: &mut App) {
+    for window in cx.windows() {
+        let _ = window.update(cx, |_, window, _| native::hide(window, None));
+    }
+    let _ = closing.join();
 }
 
 fn batch_ids(cx: &App) -> Vec<String> {
@@ -1009,14 +1036,14 @@ fn launch(owner: &str, only: Option<&[String]>, restart: bool, cx: &mut App) {
         runs.retain(|c| Arc::strong_count(c) > 1);
         runs.push(Arc::clone(&cancel));
         let total = accounts.len();
-        for account in &accounts {
+        for (n, account) in accounts.iter().enumerate() {
             let key = target.key(account.id);
             if !restart {
                 rt.crash_restarts.remove(&key);
                 *rt.reconnects.entry(key.clone()).or_default() += 1;
             }
             if let Some(i) = m.games.get_mut(&key) {
-                i.phase = Phase::Starting { done: 0, total };
+                i.phase = Phase::Starting { place: n + 1, total };
                 i.reconnect_attempts = 0;
                 i.stopping = false;
             }
@@ -1493,7 +1520,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     change_model(redraw(&updates), cx, |m, rt, _| {
         for update in updates {
             let key = match &update {
-                Update::Preparing { .. } | Update::Progress { .. } | Update::SignIn { .. } | Update::Face { .. } | Update::Reach { .. } => None,
+                Update::Preparing { .. } | Update::Prepared { .. } | Update::SignIn { .. } | Update::Face { .. } | Update::Reach { .. } => None,
                 Update::Launched { key, .. } | Update::Failed { key, .. } | Update::Exited { key, .. } | Update::Preview { key, .. } | Update::Seed { key, .. } | Update::Still { key, .. } | Update::ProxyChecked { key, .. } => Some(key.clone()),
                 Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => Some(instance.clone()),
                 Update::Ipc(Event::Reopen) => None,
@@ -1629,22 +1656,15 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
         Update::Preparing { batch, percent } => {
             m.preparing.insert(batch, percent);
         }
-        Update::Progress { batch, done, total } => {
+        Update::Prepared { batch } => {
             m.preparing.remove(&batch);
-            for i in m.games.values_mut().filter(|i| i.batch_id == batch) {
-                if let Phase::Starting { total: queued, .. } = i.phase
-                    && queued > 0
-                {
-                    i.phase = Phase::Starting { done, total };
-                }
-            }
         }
         Update::Launched { key, plain } => {
             if let Some(i) = m.games.get_mut(&key)
                 && matches!(i.phase, Phase::Starting { .. } | Phase::Failed { .. })
                 && !i.stopping
             {
-                i.phase = if plain { Phase::Plain } else { Phase::Starting { done: 0, total: 0 } };
+                i.phase = if plain { Phase::Plain } else { Phase::Starting { place: 0, total: 0 } };
             }
         }
         Update::Failed { key, reason, login, offline } => {
@@ -2512,7 +2532,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Stopped => tr("Gestoppt"),
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
         Phase::Restarting { attempt, of } => model::restart_status(*attempt, *of),
-        Phase::Starting { done, total } if *total > 1 => trf("Wartet · %lld/%lld gestartet", &[done, total]),
+        Phase::Starting { place, total } if *total > 1 && *place > 0 => trf("Wartet auf Start (%lld von %lld)", &[place, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Im Hauptmenü"),
@@ -2552,9 +2572,9 @@ mod tests {
     fn status_lines_name_the_phase() {
         crate::core::i18n::init("de");
         assert_eq!(status(&instance(Phase::Stopped), None), "Gestoppt");
-        assert_eq!(status(&instance(Phase::Starting { done: 12, total: 50 }), None), "Wartet · 12/50 gestartet");
-        assert_eq!(status(&instance(Phase::Starting { done: 0, total: 0 }), None), "Startet…");
-        assert_eq!(status(&instance(Phase::Starting { done: 1, total: 4 }), Some(45)), "Lädt Minecraft · 45 %");
+        assert_eq!(status(&instance(Phase::Starting { place: 12, total: 50 }), None), "Wartet auf Start (12 von 50)");
+        assert_eq!(status(&instance(Phase::Starting { place: 0, total: 0 }), None), "Startet…");
+        assert_eq!(status(&instance(Phase::Starting { place: 1, total: 4 }), Some(45)), "Lädt Minecraft · 45 %");
         assert_eq!(status(&instance(Phase::Playing { server: "mc.example".into(), since: Instant::now() }), None), "Auf mc.example");
         assert_eq!(status(&instance(Phase::Crashed { code: Some(1) }), None), "Abgestürzt");
         let mut again = instance(Phase::Connecting { server: "s".into() });
@@ -2829,7 +2849,7 @@ mod tests {
 
     #[test]
     fn a_start_without_connection_waits_and_starts_when_it_is_back_unless_stopped() {
-        let (mut m, mut rt, key) = setup(Phase::Starting { done: 0, total: 1 }, AccountKind::Microsoft, &[]);
+        let (mut m, mut rt, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Microsoft, &[]);
         let mut fx = Effects::default();
         apply(&mut m, &mut rt, Update::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true }, &mut fx);
         assert_eq!(m.games[&key].phase, Phase::NoNetwork);
