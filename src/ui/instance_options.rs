@@ -110,7 +110,9 @@ pub(super) struct Options {
     java_items: Option<(Option<PathBuf>, usize)>,
     gpu_focus: FocusHandle,
     renderer_focus: FocusHandle,
-    pub(super) memory_focus: FocusHandle,
+    pub(super) memory_less: FocusHandle,
+    pub(super) memory_more: FocusHandle,
+    pub(super) memory_less_off: Cell<bool>,
     reveal: Option<&'static str>,
     revealed: Rc<Cell<Option<Bounds<Pixels>>>>,
     waited: u8,
@@ -153,7 +155,9 @@ impl Options {
             java_items: None,
             gpu_focus: cx.focus_handle().tab_stop(true),
             renderer_focus: cx.focus_handle().tab_stop(true),
-            memory_focus: cx.focus_handle(),
+            memory_less: cx.focus_handle(),
+            memory_more: cx.focus_handle(),
+            memory_less_off: Cell::new(false),
             reveal: None,
             revealed: Rc::new(Cell::new(None)),
             waited: 0,
@@ -479,7 +483,7 @@ impl InstancePage {
             "window" => self.opts.width.update(cx, |s, cx| s.take_focus(window, cx)),
             "gpu" => window.focus(&self.opts.gpu_focus, cx),
             "renderer" => window.focus(&self.opts.renderer_focus, cx),
-            _ => window.focus(&self.opts.memory_focus, cx),
+            _ => window.focus(if self.opts.memory_less_off.get() { &self.opts.memory_more } else { &self.opts.memory_less }, cx),
         }
         cx.notify();
     }

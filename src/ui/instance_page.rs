@@ -1241,15 +1241,16 @@ impl InstancePage {
         let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
         let less = wait().or_else(|| (shown <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
         let more = wait().or_else(|| (shown >= self.memory_max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])));
-        let focus = self.opts.memory_focus.clone();
-        let (less_first, more_first) = (less.is_none(), less.is_some() && more.is_none());
+        let (less_focus, more_focus) = (self.opts.memory_less.clone(), self.opts.memory_more.clone());
+        let (less_on, more_on) = (less.is_none(), more.is_none());
+        self.opts.memory_less_off.set(!less_on);
         let stepper = div()
             .flex()
             .items_center()
             .gap(px(space::XS))
-            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx).when(less_first, |d| d.track_focus(&focus)))
+            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx).when(less_on, |d| d.track_focus(&less_focus)))
             .child(div().id("memory-value").mark("value", value.clone()).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(value))
-            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx).when(more_first, |d| d.track_focus(&focus)));
+            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx).when(more_on, |d| d.track_focus(&more_focus)));
         div().flex().child(stepper)
     }
 

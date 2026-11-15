@@ -698,6 +698,7 @@ impl RunningInstance {
     fn ended(&mut self, code: Option<i32>) {
         self.exit = Some(code);
         scrub::scrub_logs(&self.logs);
+        scrub::scrub_game_logs(&self.logs);
     }
 }
 
