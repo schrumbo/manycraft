@@ -188,10 +188,7 @@ final class Companion {
 	void tick(Minecraft mc) {
 		try {
 			link.ensureRunning();
-			Protocol.Incoming waiting;
-			while (background != null && (waiting = early.poll()) != null) {
-				handle(mc, waiting);
-			}
+			drain(mc);
 			state.tick(mc);
 			GameWindow.tick();
 			BackgroundController bg = background;
@@ -218,12 +215,27 @@ final class Companion {
 	}
 
 	private void onInbound(Protocol.Incoming message) {
+		early.add(message);
 		Minecraft mc = Minecraft.getInstance();
-		if (mc == null || !early.isEmpty()) {
-			early.add(message);
-			return;
+		if (mc != null) {
+			mc.execute(() -> drain(mc));
 		}
-		mc.execute(() -> handle(mc, message));
+	}
+
+	private void drain(Minecraft mc) {
+		Protocol.Incoming next;
+		while ((next = early.peek()) != null && (background != null || !needsBackground(next))) {
+			early.poll();
+			try {
+				handle(mc, next);
+			} catch (RuntimeException e) {
+				LOGGER.warn("manager message failed", e);
+			}
+		}
+	}
+
+	private static boolean needsBackground(Protocol.Incoming message) {
+		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
 	}
 
 	private void handle(Minecraft mc, Protocol.Incoming message) {
@@ -253,7 +265,6 @@ final class Companion {
 		}
 		BackgroundController bg = background;
 		if (bg == null) {
-			early.add(message);
 			return;
 		}
 		switch (message) {
