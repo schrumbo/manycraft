@@ -42,6 +42,9 @@ struct FileDownloads {
     raw: Option<Artifact>,
 }
 
+/// Every Java runtime Mojang offers, by platform and component.
+pub struct Index(HashMap<String, HashMap<String, Vec<Entry>>>);
+
 /// A Java runtime Mojang offers for this platform, identified by the hash of its file list.
 #[derive(Clone, Debug)]
 pub struct Runtime {
@@ -74,14 +77,19 @@ pub fn executable(os: Os) -> &'static str {
     }
 }
 
-/// Asks Mojang which runtime `component` currently is on this platform.
-pub fn lookup(agent: &ureq::Agent, component: &str) -> Result<Runtime> {
+/// Asks Mojang which Java runtimes it currently offers; fails on a platform it has none for.
+pub fn index(agent: &ureq::Agent) -> Result<Index> {
     let keys = platform_keys(Os::current(), Arch::current());
     if keys.is_empty() {
         bail!("Mojang provides no Java runtime for this platform");
     }
-    let all: HashMap<String, HashMap<String, Vec<Entry>>> = net::get_json(agent, ALL_URL)?;
-    let entry = keys.iter().find_map(|key| all.get(*key)?.get(component)?.first());
+    Ok(Index(net::get_json(agent, ALL_URL)?))
+}
+
+/// The runtime `component` for this platform from `index`.
+pub fn pick(index: &Index, component: &str) -> Result<Runtime> {
+    let keys = platform_keys(Os::current(), Arch::current());
+    let entry = keys.iter().find_map(|key| index.0.get(*key)?.get(component)?.first());
     let Some(entry) = entry else {
         bail!("no Java runtime {component} for this platform");
     };
@@ -204,6 +212,17 @@ mod tests {
         assert!(m.files["bin/java"].executable);
         assert_eq!(m.files["bin/java"].downloads.as_ref().unwrap().raw.as_ref().unwrap().url, "u");
         assert_eq!(m.files["lib/x"].target.as_deref(), Some("../y"));
+    }
+
+    #[test]
+    fn a_runtime_is_picked_from_the_index_for_this_platform() {
+        let key = platform_keys(Os::current(), Arch::current())[0];
+        let json = format!(r#"{{"{key}":{{"comp":[{{"manifest":{{"sha1":"abc","size":1,"url":"u"}}}}],"empty":[]}},"elsewhere":{{"other":[{{"manifest":{{"sha1":"x","size":1,"url":"v"}}}}]}}}}"#);
+        let index = Index(serde_json::from_str(&json).unwrap());
+        let runtime = pick(&index, "comp").unwrap();
+        assert_eq!((runtime.component.as_str(), runtime.sha1.as_str(), runtime.manifest.url.as_str()), ("comp", "abc", "u"));
+        assert!(pick(&index, "empty").is_err());
+        assert!(pick(&index, "other").is_err());
     }
 
     fn fake_runtime(runtimes: &Path, hash: &str, finished: bool) {

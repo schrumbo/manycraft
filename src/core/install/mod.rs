@@ -10,6 +10,7 @@ mod java;
 pub mod meta;
 mod natives;
 mod quilt;
+mod seed;
 
 use std::cmp::Ordering;
 use std::fs::{File, OpenOptions};
@@ -261,8 +262,9 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 /// the network while the connection is known to be gone, and asks it only briefly otherwise.
 pub fn install(game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
     let _in_use = clean::in_use()?;
-    let dl = Downloader::new(net::agent(None)?)?;
-    install_in(&paths::data_dir(), &dl, &net::agent_within(QUICK_METADATA), online::offline(), game_version, loader, progress)
+    let root = paths::data_dir();
+    let dl = Downloader::new(net::agent(None)?)?.seeded(seed::Seeds::new(&root, seed::launchers()));
+    install_in(&root, &dl, &net::agent_within(QUICK_METADATA), online::offline(), game_version, loader, progress)
 }
 
 fn install_in(root: &Path, dl: &Downloader, quick: &ureq::Agent, offline: bool, game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
@@ -373,13 +375,42 @@ fn component(profile: &VersionJson) -> &str {
 }
 
 fn online_plan(dl: &Downloader, meta: &ureq::Agent, versions: &Path, libraries: &Path, game_version: &str, loader: &Loader) -> Result<Plan> {
+    let (vanilla, loaded, runtimes) = std::thread::scope(|s| {
+        let runtimes = s.spawn(|| java::index(meta));
+        let loaded = s.spawn(|| loader_profile(dl, meta, libraries, game_version, loader));
+        let vanilla = vanilla_profile(dl, meta, versions, game_version);
+        (vanilla, joined(loaded), joined(runtimes))
+    });
+    let vanilla = vanilla?;
+    let (version, over, installer) = loaded?;
+    let mut profile = match over {
+        Some(over) => meta::merge(vanilla, over),
+        None => vanilla,
+    };
+    profile.id = version_id(loader, game_version, &version);
+    let runtime = java::pick(&runtimes?, component(&profile))?;
+    if id_prefix(loader).is_some() {
+        let path = join_safe(versions, &profile.id)?.join(format!("{}.json", profile.id));
+        net::write_atomic(&path, &serde_json::to_vec(&profile)?)?;
+    }
+    Ok(Plan { profile, loader: version, runtime: Some(runtime), installer })
+}
+
+fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, Result<T>>) -> Result<T> {
+    handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("the install metadata check stopped unexpectedly")))
+}
+
+fn vanilla_profile(dl: &Downloader, meta: &ureq::Agent, versions: &Path, game_version: &str) -> Result<VersionJson> {
     let manifest: Manifest = net::get_json(meta, MANIFEST_URL)?;
     let entry = manifest.versions.iter().find(|v| v.id == game_version).with_context(|| format!("unknown Minecraft version {game_version}"))?;
     let vanilla_path = join_safe(versions, game_version)?.join(format!("{game_version}.json"));
     dl.one(&Job::new(entry.url.clone(), vanilla_path.clone(), Some(entry.sha1.clone()), None))?;
-    let vanilla: VersionJson = read_json(&vanilla_path)?;
+    read_json(&vanilla_path)
+}
+
+fn loader_profile(dl: &Downloader, meta: &ureq::Agent, libraries: &Path, game_version: &str, loader: &Loader) -> Result<(String, Option<VersionJson>, Option<forge::Installer>)> {
     let pinned = loader.version().map(str::to_owned);
-    let (version, over, installer) = match loader {
+    Ok(match loader {
         Loader::Vanilla => (String::new(), None, None),
         Loader::Fabric(_) => {
             let version = pinned.map_or_else(|| fabric::latest_loader(meta, game_version), Ok)?;
@@ -397,21 +428,10 @@ fn online_plan(dl: &Downloader, meta: &ureq::Agent, versions: &Path, libraries: 
                 Some(v) => v,
                 None => forge::versions(meta, flavor, game_version)?.default.with_context(|| format!("{} does not support Minecraft {game_version}", loader.name()))?,
             };
-            let installer = forge::open(&forge::fetch(dl, libraries, flavor, game_version, &version)?)?.for_game(game_version)?;
+            let installer = forge::open(&forge::fetch(dl, meta, libraries, flavor, game_version, &version)?)?.for_game(game_version)?;
             (version, Some(installer.version.clone()), Some(installer))
         }
-    };
-    let mut profile = match over {
-        Some(over) => meta::merge(vanilla, over),
-        None => vanilla,
-    };
-    profile.id = version_id(loader, game_version, &version);
-    let runtime = java::lookup(meta, component(&profile))?;
-    if id_prefix(loader).is_some() {
-        let path = join_safe(versions, &profile.id)?.join(format!("{}.json", profile.id));
-        net::write_atomic(&path, &serde_json::to_vec(&profile)?)?;
-    }
-    Ok(Plan { profile, loader: version, runtime: Some(runtime), installer })
+    })
 }
 
 fn local_plan(versions: &Path, libraries: &Path, game_version: &str, loader: &Loader) -> Option<Plan> {
@@ -562,11 +582,11 @@ mod tests {
     }
 
     #[test]
-    fn a_cached_version_falls_back_after_one_quick_failed_request() {
+    fn a_cached_version_falls_back_after_one_round_of_quick_failed_requests() {
         let root = cached_root();
         let (installed, downloads, metadata) = offline_install(root.path(), false, Some("0.20.1"));
         assert_eq!(installed.unwrap().loader_version, "0.20.1");
-        assert_eq!((downloads, metadata), (0, 1));
+        assert_eq!((downloads, metadata), (0, 3));
     }
 
     #[test]
@@ -583,7 +603,7 @@ mod tests {
         std::fs::remove_file(root.path().join("runtimes/comp/abc/.complete")).unwrap();
         let (installed, downloads, metadata) = offline_install(root.path(), true, Some("0.20.1"));
         assert!(net::no_connection(&installed.unwrap_err()));
-        assert_eq!((downloads, metadata), (1, 0));
+        assert_eq!((downloads, metadata), (3, 0));
     }
 
     #[test]

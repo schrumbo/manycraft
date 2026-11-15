@@ -161,6 +161,30 @@ pub fn fetch_verified(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<
     persist(tmp, path)
 }
 
+/// Copies `source` to `path` when its SHA-1 is `sha1`, through a unique temporary file in the same folder.
+/// False, with `path` untouched, when the hash differs.
+pub fn copy_verified(source: &Path, path: &Path, sha1: &str) -> Result<bool> {
+    let mut from = std::fs::File::open(source).with_context(|| format!("cannot read {}", source.display()))?;
+    let dir = path.parent().context("path has no parent")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).with_context(|| format!("cannot write {}", path.display()))?;
+    let mut hasher = Sha1::new();
+    let mut buf = vec![0; 64 * 1024];
+    loop {
+        let n = from.read(&mut buf).with_context(|| format!("cannot read {}", source.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        tmp.write_all(&buf[..n]).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    if !hex(&hasher.finalize()).eq_ignore_ascii_case(sha1) {
+        return Ok(false);
+    }
+    persist(tmp, path)?;
+    Ok(true)
+}
+
 /// Writes `bytes` to `path` through a unique temporary file in the same folder, so readers never see a partial file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().context("path has no parent")?;
