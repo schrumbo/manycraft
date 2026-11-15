@@ -235,7 +235,9 @@ pub fn install(game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress)
     let resolved = meta::resolve(&profile.libraries, &env);
     let mut deps = resolved.classpath.clone();
     deps.extend(resolved.natives.iter().map(|n| n.dep.clone()).filter(|d| !resolved.classpath.contains(d)));
-    if let Some(installer) = &installer {
+    let processed = installer.as_ref().is_none_or(|i| i.processed(&version_dir, &libraries));
+    if let Some(installer) = installer.as_ref().filter(|_| !processed) {
+        let _shared = lock(&libraries)?;
         installer.unpack_bundled(&libraries)?;
         let tools: Vec<_> = meta::resolve(installer.libraries(), &env).classpath.into_iter().filter(|d| !deps.contains(d)).collect();
         deps.extend(tools);
@@ -276,9 +278,10 @@ pub fn install(game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress)
         None => java::local(&runtimes, component).with_context(|| format!("Java runtime {component} is not installed and there is no connection"))?,
     };
 
-    if let Some(installer) = &installer {
+    if let Some(installer) = installer.as_ref().filter(|_| !processed) {
+        let _shared = lock(&libraries)?;
         let site = forge::Site { root: &root, libraries: &libraries, version_dir: &version_dir, client_jar: &client_jar, game: game_version, java: &java };
-        if !installer.processed(&site) {
+        if !installer.processed(&version_dir, &libraries) {
             installer.process(&site, progress)?;
         }
     }
@@ -335,7 +338,7 @@ fn online_plan(dl: &Downloader, versions: &Path, libraries: &Path, game_version:
                 Some(v) => v,
                 None => forge::versions(dl.agent(), flavor, game_version)?.default.with_context(|| format!("{} does not support Minecraft {game_version}", loader.name()))?,
             };
-            let installer = forge::open(&forge::fetch(dl, libraries, flavor, game_version, &version)?)?;
+            let installer = forge::open(&forge::fetch(dl, libraries, flavor, game_version, &version)?)?.for_game(game_version)?;
             (version, Some(installer.version.clone()), Some(installer))
         }
     };
@@ -377,7 +380,7 @@ fn local_plan(versions: &Path, libraries: &Path, game_version: &str, loader: &Lo
     let (_, name, json) = found.with_context(|| format!("Minecraft {game_version} with {} is not installed", loader.name()))?;
     let version = name.strip_prefix(prefix).and_then(|n| n.strip_suffix(&suffix)).unwrap_or_default().to_owned();
     let installer = match flavor(loader) {
-        Some(flavor) => Some(forge::open(&forge::installer_path(libraries, flavor, game_version, &version)?)?),
+        Some(flavor) => Some(forge::open(&forge::installer_path(libraries, flavor, game_version, &version)?)?.for_game(game_version)?),
         None => None,
     };
     Ok(Plan { profile: read_json(&json)?, loader: version, runtime: None, installer })
@@ -402,9 +405,11 @@ pub(crate) fn extra_files(version_dir: &Path) -> Vec<String> {
     forge::kept(version_dir)
 }
 
+const LOCK_FILE: &str = ".install.lock";
+
 fn lock(dir: &Path) -> Result<File> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let path = dir.join(".install.lock");
+    let path = dir.join(LOCK_FILE);
     let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path).with_context(|| format!("cannot open {}", path.display()))?;
     file.lock().with_context(|| format!("cannot lock {}", path.display()))?;
     Ok(file)

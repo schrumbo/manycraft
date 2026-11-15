@@ -506,7 +506,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let menu_batch = d.batch_id.clone();
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
-    let reconnectable = running && !matches!(d.phase, Phase::Starting { .. }) && !stopping;
+    let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
     let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
         .relative()

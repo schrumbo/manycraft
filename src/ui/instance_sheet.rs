@@ -519,6 +519,7 @@ impl InstanceSheet {
             return;
         }
         let previous = std::mem::replace(&mut self.version, version);
+        self.loader = self.loader.with_version(None);
         self.rename = true;
         self.load_mods(previous, cx);
     }
@@ -1176,8 +1177,11 @@ impl InstanceSheet {
         if window.focused(cx).is_none() {
             window.focus(&self.root, cx);
         }
-        let (loader, version) = (self.loader.clone(), self.version.clone());
-        self.loader_version.update(cx, |p, cx| p.show(&loader, &version, cx));
+        let (loader, version, why) = (self.loader.clone(), self.version.clone(), self.lock_reason());
+        self.loader_version.update(cx, |p, cx| {
+            p.show(&loader, &version, cx);
+            p.lock(why, cx);
+        });
         if self.pending_versions {
             self.pending_versions = false;
             let list = self.version_list.clone();

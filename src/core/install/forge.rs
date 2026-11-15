@@ -219,6 +219,14 @@ fn entry<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec
 }
 
 impl Installer {
+    /// The installer itself, refused when it was made for another game version than `game`.
+    pub fn for_game(self, game: &str) -> Result<Self> {
+        if !self.profile.minecraft.is_empty() && self.profile.minecraft != game {
+            bail!("this loader version is made for Minecraft {}, not {game}; pick another loader version", self.profile.minecraft);
+        }
+        Ok(self)
+    }
+
     /// Libraries the processors need.
     pub fn libraries(&self) -> &[Library] {
         &self.profile.libraries
@@ -247,8 +255,8 @@ impl Installer {
     }
 
     /// Whether the processors already ran for this installer and their results are still there.
-    pub fn processed(&self, site: &Site) -> bool {
-        read_marker(site.version_dir).is_some_and(|m| m.installer == self.sha1 && m.files.iter().all(|f| join_safe(site.libraries, f).is_ok_and(|p| p.is_file())))
+    pub fn processed(&self, version_dir: &Path, libraries: &Path) -> bool {
+        read_marker(version_dir).is_some_and(|m| m.installer == self.sha1 && m.files.iter().all(|f| join_safe(libraries, f).is_ok_and(|p| p.is_file())))
     }
 
     /// Runs the client processors with the game's Java, skipping those whose outputs are already right.
@@ -266,6 +274,8 @@ impl Installer {
         }
         let _ = std::fs::remove_dir_all(&work);
         let mut files: Vec<String> = self.profile.data.values().filter_map(|s| artifact(&s.client)).filter(|rel| join_safe(site.libraries, rel).is_ok_and(|p| p.is_file())).collect();
+        files.extend(self.path.strip_prefix(site.libraries).ok().and_then(|p| p.to_str()).map(|p| p.replace('\\', "/")));
+        files.extend(super::meta::resolve(&self.profile.libraries, &super::meta::Env::current(Vec::new())).classpath.into_iter().map(|d| d.path));
         files.sort();
         files.dedup();
         let marker = Marker { installer: self.sha1.clone(), files };
@@ -527,6 +537,13 @@ mod tests {
     }
 
     #[test]
+    fn an_installer_for_another_game_is_refused() {
+        let installer = || Installer { path: PathBuf::new(), sha1: String::new(), profile: serde_json::from_str(FORGE_PROFILE).unwrap(), version: serde_json::from_str(FORGE_VERSION).unwrap() };
+        assert!(installer().for_game("1.20.1").is_ok());
+        assert!(installer().for_game("1.21.1").err().is_some_and(|e| e.to_string().contains("1.20.1")));
+    }
+
+    #[test]
     fn forge_install_profile_parses_with_client_processors() {
         let profile: InstallProfile = serde_json::from_str(FORGE_PROFILE).unwrap();
         assert_eq!((profile.spec, profile.minecraft.as_str()), (1, "1.20.1"));
@@ -591,16 +608,15 @@ mod tests {
         let opened = open(&installer(dir.path(), NEO_PROFILE, NEO_VERSION, &[])).unwrap();
         let libraries = dir.path().join("libraries");
         let version_dir = dir.path().join("v");
-        let site = Site { root: dir.path(), libraries: &libraries, version_dir: &version_dir, client_jar: Path::new("c.jar"), game: "26.3", java: Path::new("java") };
-        assert!(!opened.processed(&site));
+        assert!(!opened.processed(&version_dir, &libraries));
         let marker = |installer: &str| net::write_atomic(&version_dir.join(MARKER), &serde_json::to_vec(&Marker { installer: installer.into(), files: vec!["a/b.jar".into()] }).unwrap()).unwrap();
         marker(&opened.sha1);
-        assert!(!opened.processed(&site));
+        assert!(!opened.processed(&version_dir, &libraries));
         net::write_atomic(&libraries.join("a/b.jar"), b"x").unwrap();
-        assert!(opened.processed(&site));
+        assert!(opened.processed(&version_dir, &libraries));
         assert_eq!(kept(&version_dir), ["a/b.jar"]);
         marker("other");
-        assert!(!opened.processed(&site));
+        assert!(!opened.processed(&version_dir, &libraries));
     }
 
     #[test]

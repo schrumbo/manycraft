@@ -49,6 +49,8 @@ const USAGE: &str = "usage: manycraft mrpack import <file.mrpack|prism.zip|prism
 pub enum Refused {
     /// No readable `modrinth.index.json`, or one of another game or format.
     NotAPack,
+    /// The pack brings mods but names no mod loader to run them.
+    NoLoader,
     /// The pack names no Minecraft version.
     NoGame,
     /// A file may only be downloaded from a host the format does not allow.
@@ -68,6 +70,7 @@ impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAPack => write!(f, "not a Modrinth modpack"),
+            Self::NoLoader => write!(f, "the pack brings mods but names no mod loader"),
             Self::NoGame => write!(f, "the pack names no Minecraft version"),
             Self::Host(url) => write!(f, "{url} is not an allowed download host"),
             Self::Hash(path) => write!(f, "{path} does not match its hash"),
@@ -354,6 +357,9 @@ fn parse_index(bytes: &[u8]) -> Result<Pack> {
         let (Some(sha1), Some(sha512)) = (hash("sha1", 40), hash("sha512", 128)) else { bail!(Refused::Hash(file.path)) };
         let url = file.downloads.iter().find(|u| allowed(u)).cloned().ok_or_else(|| Refused::Host(file.downloads.first().cloned().unwrap_or_else(|| file.path.clone())))?;
         files.push(Wanted { rel, sha1, sha512, url });
+    }
+    if loader == Loader::Vanilla && files.iter().any(|f| f.rel.starts_with("mods")) {
+        bail!(Refused::NoLoader);
     }
     Ok(Pack { name: index.name, game, loader, files })
 }
@@ -785,6 +791,17 @@ mod tests {
         idx["dependencies"]["forge"] = " ".into();
         assert_eq!(parse(&idx), Loader::Vanilla);
         assert_eq!(loader_key(&Loader::Vanilla), None);
+    }
+
+    #[test]
+    fn mods_without_a_loader_are_refused() {
+        let mut idx = index(vec![file_entry("mods/a.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        let err = parse_index(&serde_json::to_vec(&idx).unwrap()).unwrap_err();
+        assert_eq!(err.downcast_ref::<Refused>(), Some(&Refused::NoLoader));
+        let mut idx = index(vec![file_entry("resourcepacks/r.zip", b"r", "https://cdn.modrinth.com/r.zip")]);
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        assert_eq!(parse_index(&serde_json::to_vec(&idx).unwrap()).unwrap().loader, Loader::Vanilla);
     }
 
     #[test]

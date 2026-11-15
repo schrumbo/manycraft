@@ -50,6 +50,7 @@ pub fn plan(root: &Path, instances: &[Instance], margin: Duration, now: SystemTi
     let mut components = HashSet::new();
     let mut keep_libraries = HashSet::new();
     let libraries = root.join("libraries");
+    keep_libraries.insert(libraries.join(super::LOCK_FILE));
     for id in &kept {
         let path = versions.join(id).join(format!("{id}.json"));
         let profile: VersionJson = serde_json::from_slice(&std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?).with_context(|| format!("{} is not valid", path.display()))?;

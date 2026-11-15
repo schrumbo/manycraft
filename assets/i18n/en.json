@@ -811,5 +811,7 @@
   "%@-Version": "%@ version",
   "Für %@ mit Minecraft %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.": "Manycraft's mod does not exist for %@ with Minecraft %@ yet: no preview, no saving in the background, no chat.",
   "Läuft · ohne Vorschau": "Running · no preview",
-  "%@-Mods von Modrinth für Minecraft %@": "%@ mods from Modrinth for Minecraft %@"
+  "%@-Mods von Modrinth für Minecraft %@": "%@ mods from Modrinth for Minecraft %@",
+  "%@ läuft in einem eigenen Fenster, ohne Manycrafts Mod. Hier lässt es sich nicht zeigen.": "%@ runs in its own window, without Manycraft's mod. It can't be shown here.",
+  "„%@“ bringt Mods mit, nennt aber keinen Mod-Loader. Nichts wurde importiert.": "“%@” brings mods but names no mod loader. Nothing was imported."
 }

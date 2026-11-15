@@ -8,7 +8,7 @@ use super::account::Account;
 use super::place::{Insets, Mode, Rect};
 
 #[cfg(target_os = "windows")]
-const HOME_POLL: Duration = Duration::from_millis(15);
+const HOME_POLL: Duration = Duration::from_millis(50);
 
 /// How a game's main window sits on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,10 +42,11 @@ pub fn place_hidden(pid: u32, frame: Rect) {
 
 /// Keeps the window of a game without Manycraft's mod, process `pid`, on the monitor of `home`: moves it into the middle
 /// of `home` without activating it whenever it shows up elsewhere, from its first frame until `settle` after the first
-/// move, or until `wait` passed without a window. Returns whether it was moved.
+/// move, or until `wait` passed without a window or the process ended. Returns whether it was moved.
 pub fn bring_home(pid: u32, home: Rect, wait: Duration, settle: Duration) -> bool {
     #[cfg(target_os = "windows")]
     {
+        let Some(process) = win::Process::open(pid) else { return false };
         let start = Instant::now();
         let mut moved: Option<Instant> = None;
         loop {
@@ -53,6 +54,7 @@ pub fn bring_home(pid: u32, home: Rect, wait: Duration, settle: Duration) -> boo
             match moved {
                 Some(at) if now.duration_since(at) > settle => return true,
                 None if now.duration_since(start) > wait => return false,
+                _ if process.ended() => return moved.is_some(),
                 _ => {}
             }
             if let Some(hwnd) = win::game_window(pid)
@@ -66,6 +68,24 @@ pub fn bring_home(pid: u32, home: Rect, wait: Duration, settle: Duration) -> boo
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (pid, home, wait, settle);
+        false
+    }
+}
+
+/// Asks the game of process `pid` to close as if its window's close button was pressed, so it saves first. Returns
+/// whether it was asked.
+pub fn close(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::game_window(pid).is_some_and(win::close)
+    }
+    #[cfg(unix)]
+    {
+        i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, libc::SIGTERM) } == 0)
+    }
+    #[cfg(not(any(target_os = "windows", unix)))]
+    {
+        let _ = pid;
         false
     }
 }
@@ -107,12 +127,13 @@ pub fn tint(pid: u32, account: &Account) {
 pub mod win {
     use super::super::place::{self, Insets, Rect};
     use super::Seen;
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::Foundation::{BOOL, CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
     use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-        SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        PostMessageW, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
     };
 
     const EMPTY: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -207,6 +228,33 @@ pub mod win {
         let mut found: (u32, HWND) = (pid, std::ptr::null_mut());
         unsafe { EnumWindows(Some(each), &raw mut found as LPARAM) };
         (!found.1.is_null()).then_some(found.1)
+    }
+
+    /// A process watched without keeping it alive.
+    pub struct Process(HANDLE);
+
+    impl Process {
+        /// The running process `pid`, or `None` when it is gone.
+        pub fn open(pid: u32) -> Option<Self> {
+            let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            (!handle.is_null()).then_some(Self(handle))
+        }
+
+        /// Whether the process has exited.
+        pub fn ended(&self) -> bool {
+            unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Posts a close request to `hwnd`.
+    pub fn close(hwnd: HWND) -> bool {
+        unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 }
     }
 
     /// Moves a normal `hwnd` into the middle of `home`, keeping its size, unless it is on that monitor already.

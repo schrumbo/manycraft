@@ -1082,7 +1082,7 @@ fn reconnect(key: &str, cx: &mut App) {
     let mut send = false;
     update_model(cx, |m, rt, _| {
         let Some(i) = m.games.get_mut(&key) else { return };
-        if !i.phase.is_running() {
+        if !i.phase.is_running() || matches!(i.phase, Phase::Plain) {
             return;
         }
         *rt.reconnects.entry(key.clone()).or_default() += 1;
@@ -1148,6 +1148,14 @@ fn playable(phase: &Phase) -> bool {
 /// Puts the game window of `key` in the manager's place and hides the manager.
 pub fn play(key: &str, cx: &mut App) {
     let model = model::get(cx);
+    if let Some(i) = model.read(cx).games.get(key).filter(|i| matches!(i.phase, Phase::Plain)) {
+        let text = trf("%@ läuft in einem eigenen Fenster, ohne Manycrafts Mod. Hier lässt es sich nicht zeigen.", &[&i.name]);
+        model.update(cx, |m, cx| {
+            m.error = Some(text);
+            cx.notify();
+        });
+        return;
+    }
     if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) {
         return;
     }

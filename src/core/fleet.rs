@@ -39,6 +39,7 @@ const SRV_TIMEOUT: Duration = Duration::from_secs(1);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
 const QUIT_GRACE: Duration = Duration::from_secs(5);
+const CLOSE_GRACE: Duration = Duration::from_secs(30);
 const QUIT_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
 const MIN_MEMORY_MB: u32 = 512;
@@ -900,10 +901,23 @@ impl Fleet {
         self.stop_all(&keys);
     }
 
-    /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds.
+    /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds. A game without
+    /// Manycraft's mod is asked through its window and gets longer, so it can save its world.
     pub fn stop_all(&self, keys: &[String]) {
-        let asked: Vec<&String> = keys.iter().filter(|k| self.is_running(k) && self.ipc.send(k, &ipc::ToMod::Quit).is_ok()).collect();
-        let deadline = Instant::now() + QUIT_GRACE;
+        let mut closed = false;
+        let asked: Vec<&String> = keys
+            .iter()
+            .filter(|k| self.is_running(k))
+            .filter(|k| {
+                self.ipc.send(k, &ipc::ToMod::Quit).is_ok() || {
+                    let pid = lock(&self.running).get(k.as_str()).map(|r| r.pid);
+                    let asked = pid.is_some_and(super::game_window::close);
+                    closed |= asked;
+                    asked
+                }
+            })
+            .collect();
+        let deadline = Instant::now() + if closed { CLOSE_GRACE } else { QUIT_GRACE };
         while asked.iter().any(|k| self.is_running(k)) && Instant::now() < deadline {
             std::thread::sleep(QUIT_POLL);
         }

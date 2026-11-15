@@ -1019,6 +1019,8 @@ impl InstancePage {
         let busy = self.switching_now();
         let blocked = busy || f.running;
         let why = if busy { Some(tr("Warte, bis die Umstellung fertig ist.")) } else { f.running.then(|| tr("Stoppe zuerst die laufenden Spiele.")) };
+        let lock = why.clone();
+        self.loader_version.update(cx, |p, cx| p.lock(lock, cx));
         let locked = |id: &'static str, control: AnyElement| match &why {
             Some(why) => sheet::unavailable_over(id, control, why.clone()).into_any_element(),
             None => control,

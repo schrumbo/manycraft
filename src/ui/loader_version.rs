@@ -6,8 +6,10 @@ use gpui_kit::component::IndexPath;
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 
+use super::forms;
 use super::remote;
 use super::sheet;
+use super::theme::{Theme, space};
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
 use crate::core::instance::Loader;
@@ -24,6 +26,9 @@ pub struct LoaderVersion {
     versions: Versions,
     newest: String,
     pending: bool,
+    loading: bool,
+    failed: Option<String>,
+    locked: Option<String>,
     _picked: Subscription,
 }
 
@@ -41,12 +46,20 @@ impl LoaderVersion {
                 cx.emit(Picked);
             }
         });
-        Self { select, shown: None, seen: None, pinned: None, versions: Versions::default(), newest, pending: true, _picked: picked }
+        Self { select, shown: None, seen: None, pinned: None, versions: Versions::default(), newest, pending: true, loading: false, failed: None, locked: None, _picked: picked }
     }
 
     /// The picked version; `None` follows the newest stable one.
     pub fn pinned(&self) -> Option<String> {
         self.pinned.clone()
+    }
+
+    /// Locks the picker with the reason shown on it, or unlocks it with `None`.
+    pub fn lock(&mut self, why: Option<String>, cx: &mut Context<Self>) {
+        if self.locked != why {
+            self.locked = why;
+            cx.notify();
+        }
     }
 
     /// Shows the versions of `loader` for `game` and takes over its pinned version when that changed from outside.
@@ -63,6 +76,8 @@ impl LoaderVersion {
         if fresh {
             self.shown = Some((kind.clone(), game.to_owned()));
             self.versions = Versions::default();
+            self.failed = None;
+            self.loading = false;
             if kind.takes_mods() && !game.is_empty() {
                 self.load(kind, game.to_owned(), cx);
             }
@@ -73,18 +88,34 @@ impl LoaderVersion {
 
     fn load(&mut self, kind: Loader, game: String, cx: &mut Context<Self>) {
         let wanted = (kind.clone(), game.clone());
+        self.loading = true;
+        self.failed = None;
         let task = cx.background_executor().spawn(async move { remote::loader_versions(&kind, &game) });
         cx.spawn(async move |this, cx| {
-            let Ok(versions) = task.await else { return };
+            let result = task.await;
             let _ = this.update(cx, |s, cx| {
-                if s.shown.as_ref() == Some(&wanted) {
-                    s.versions = versions;
-                    s.pending = true;
-                    cx.notify();
+                if s.shown.as_ref() != Some(&wanted) {
+                    return;
                 }
+                s.loading = false;
+                match result {
+                    Ok(versions) => {
+                        s.versions = versions;
+                        s.pending = true;
+                    }
+                    Err(e) => s.failed = Some(forms::explain_as(tr("Versionen nicht geladen."), &e).text),
+                }
+                cx.notify();
             });
         })
         .detach();
+    }
+
+    fn retry(&mut self, cx: &mut Context<Self>) {
+        if let Some((kind, game)) = self.shown.clone() {
+            self.load(kind, game, cx);
+            cx.notify();
+        }
     }
 
     fn fill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -111,7 +142,26 @@ impl Render for LoaderVersion {
             self.pending = false;
             self.fill(window, cx);
         }
-        div().child(Select::new(&self.select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")))
+        let t = Theme::get(cx);
+        let select = Select::new(&self.select).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(self.locked.is_some());
+        let control = match &self.locked {
+            Some(why) => sheet::unavailable_over("loader-version-locked", select, why.clone()),
+            None => div().child(select),
+        };
+        let below = if let Some(why) = &self.failed {
+            Some(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(space::S))
+                    .child(div().flex_1().min_w_0().child(sheet::note(None, Some(why.clone()), &t)))
+                    .child(sheet::button("loader-versions-retry", tr("Erneut versuchen"), Some("refresh-cw"), sheet::Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.retry(cx))))
+                    .into_any_element(),
+            )
+        } else {
+            self.loading.then(|| sheet::waiting(tr("Versionen werden geladen …"), &t).into_any_element())
+        };
+        div().flex().flex_col().gap(px(space::XS)).child(control).children(below)
     }
 }
 
