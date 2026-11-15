@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
     AddMods, CloneInstance, DeleteInstance, EditMods, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance,
 };
@@ -343,7 +343,6 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
         ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
         ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),
-        ("download", tr("Instanz aus Prism übernehmen"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
         ("download", tr("Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
     ] {
         if able {
@@ -354,6 +353,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Commands, "undo-2", tr("Rückgängig"), Some(newest), Box::new(Undo), cx));
     }
     out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
+    out.push(entry(Group::Commands, "download", tr("Aus anderem Launcher importieren…"), Some(tr("Prism, Modrinth, CurseForge und mehr")), Box::new(ImportFromLauncher), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
         out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
     }

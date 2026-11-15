@@ -63,6 +63,7 @@ fn main() {
         ui::skin_sheet::init(cx);
         ui::batch_sheet::init(cx);
         ui::instance_sheet::init(cx);
+        ui::import_sheet::init(cx);
         ui::instance_page::init(cx);
         ui::instance_files::init(cx);
         ui::maintenance::init(cx);

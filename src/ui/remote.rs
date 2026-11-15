@@ -19,7 +19,8 @@ use crate::core::options::LaunchOptions;
 use crate::core::versions::{GameVersion, Kind};
 use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
 use crate::core::{mrpack, origin};
-use crate::core::prism::{self, AccountImport, Instance, PrismAccount};
+use crate::core::launchers::{self, Found, Launcher, Library, Take, Unsupported};
+use crate::core::prism::{self, AccountImport, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
 
 use super::forms::{self, Plain, Problem};
@@ -906,25 +907,42 @@ pub fn delete_batch(b: &Batch) -> Result<()> {
     saved(|| fleet::delete_batch(b))
 }
 
-/// The Prism Launcher instances on this machine, Fabric ones first.
-pub fn prism_instances() -> Result<Vec<Instance>> {
-    if drive::fenced("prism instances", "canned") {
+/// The other launchers on this machine with their instances. A driven instance reads only `MANYCRAFT_LAUNCHERS`, and shows made-up ones without it.
+pub fn launcher_libraries() -> Vec<Library> {
+    if drive::on() && std::env::var_os("MANYCRAFT_LAUNCHERS").is_none() {
         std::thread::sleep(CANNED_DELAY);
-        return Ok(canned_instances());
+        return canned_libraries();
     }
-    let mut found = prism::instances()?;
-    found.sort_by_key(|i| i.unsupported.is_some());
-    Ok(found)
+    launchers::scan()
 }
 
-/// Imports `instance` as a new instance named `name`; its version and mods stay the Prism instance's.
-pub fn import_prism(instance: &Instance, name: &str) -> Result<setup::Instance> {
-    saved(|| {
-        if drive::fenced("prism import", &instance.id) {
-            std::thread::sleep(CANNED_DELAY);
-            return canned_import(instance, name);
+/// The launchers in a folder the person chose.
+pub fn launcher_folder(folder: &Path) -> Vec<Library> {
+    launchers::scan_folder(folder)
+}
+
+/// Imports `found` as a new instance of its own name; see `launchers::import`. A driven instance runs the same steps,
+/// then makes an empty instance of the same version and loader without reading the other launcher's files.
+pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+    if !drive::fenced("launcher import", found.key()) {
+        return launchers::import(found, &found.name, take, cancel, progress);
+    }
+    for step in 0..=CANNED_STEPS {
+        if cancel.load(Ordering::SeqCst) {
+            bail!(mrpack::Refused::Cancelled);
         }
-        prism::import_instance(instance, name).map_err(|e| if format!("{e:#}").contains("exists already") { gone(crate::core::i18n::trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name])) } else { e })
+        progress(step, CANNED_STEPS);
+        std::thread::sleep(CANNED_DELAY);
+    }
+    saved(|| {
+        let taken: Vec<String> = setup::load_all()?.into_iter().map(|b| b.name).collect();
+        let game = found.game_version.clone().context("no Minecraft version")?;
+        let mut made = setup::Instance::new(&mrpack::free_name(&found.name, &taken), &game, found.loader.clone());
+        if found.mods > 0 && found.loader.takes_mods() {
+            made.local_mods = vec!["my-private-mod-1.0.jar".into()];
+        }
+        setup::save(&made)?;
+        Ok(made)
     })
 }
 
@@ -1016,41 +1034,36 @@ fn canned_prism_accounts() -> Vec<PrismAccount> {
     vec![one("Steve", AccountKind::Offline), one("Notch", AccountKind::Microsoft), one("AltTwo", AccountKind::Microsoft), one("Farm_Bot3", AccountKind::Offline), one("Ünicode", AccountKind::Offline)]
 }
 
-fn canned_instances() -> Vec<Instance> {
-    let one = |id: &str, name: &str, game: &str, mods: usize, unsupported: Option<&str>| Instance {
+fn canned_libraries() -> Vec<Library> {
+    let one = |launcher, id: &str, name: &str, game: &str, loader: Loader, mods: usize, unsupported: Option<Unsupported>| Found {
+        launcher,
         id: id.into(),
         name: name.into(),
-        dir: std::path::PathBuf::from("canned").join(id),
-        game_dir: std::path::PathBuf::from("canned").join(id).join(".minecraft"),
+        game_dir: PathBuf::from("canned").join(id),
         game_version: Some(game.into()),
-        loader: Loader::Fabric(Some("0.16.5".to_owned())),
+        loader,
         mods,
-        icon: "default".into(),
-        unsupported: unsupported.map(Into::into),
+        unsupported,
     };
+    let lib = |launcher, instances| Library { launcher, root: PathBuf::from("canned"), instances };
     vec![
-        one("farm-alts", "Farm Alts", "26.2", 12, None),
-        one("creative", "Creative Build", "1.21.4", 7, None),
-        one("old-forge", "Old Forge Pack", "1.20.1", 41, Some("uses Forge, only Fabric is supported")),
-        one("vanilla", "Vanilla", "1.21.1", 0, Some("no mod loader, only Fabric instances can be imported")),
+        lib(
+            Launcher::Prism,
+            vec![
+                one(Launcher::Prism, "farm-alts", "Farm Alts", "1.21.4", Loader::Fabric(Some("0.16.9".into())), 12, None),
+                one(Launcher::Prism, "creative", "Creative Build", "1.21.4", Loader::Fabric(Some("0.16.9".into())), 7, None),
+                one(Launcher::Prism, "old-lite", "Old Pack", "1.7.10", Loader::Vanilla, 3, Some(Unsupported::Loader("LiteLoader".into()))),
+            ],
+        ),
+        lib(
+            Launcher::Modrinth,
+            vec![
+                one(Launcher::Modrinth, "tech", "Tech Pack", "1.21.1", Loader::NeoForge(Some("21.1.77".into())), 48, None),
+                one(Launcher::Modrinth, "light", "Light", "1.20.1", Loader::Quilt(None), 0, None),
+            ],
+        ),
+        lib(Launcher::Vanilla, vec![one(Launcher::Vanilla, "latest", "Minecraft 1.21.4", "1.21.4", Loader::Vanilla, 0, None)]),
     ]
-}
-
-fn canned_import(instance: &Instance, name: &str) -> Result<setup::Instance> {
-    if let Some(reason) = &instance.unsupported {
-        bail!("{} cannot be imported: {reason}", instance.name);
-    }
-    if setup::load_all()?.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
-        return Err(gone(crate::core::i18n::trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name])));
-    }
-    let game = instance.game_version.clone().context("no Minecraft version")?;
-    let mut b = setup::Instance::new(name, &game, instance.loader.clone());
-    b.mods = vec![canned_ref("fabric-api", "Fabric API", &game), canned_ref("lithium", "Lithium", &game), canned_ref("sodium", "Sodium", &game)];
-    if instance.mods > 0 {
-        b.local_mods = vec!["my-private-mod-1.0.jar".into(), "friend-build-1.2.jar".into()];
-    }
-    setup::save(&b)?;
-    Ok(b)
 }
 
 fn canned_update(m: &ModRef) -> Update {

@@ -1,4 +1,4 @@
-//! The sheets that create an instance and that edit the mods of one: version, loader, mods, memory and Prism import.
+//! The sheets that create an instance and that edit the mods of one: version, loader, mods and memory.
 
 use std::collections::HashSet;
 
@@ -10,7 +10,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{AddMods, EditMods, NewBatchFromPrism, NewInstance, Reload};
+use super::actions::{AddMods, EditMods, ImportFromLauncher, NewInstance, Reload};
 use super::batch_sheet::{Load, body_max, list_max};
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -27,13 +27,10 @@ use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
 use crate::core::modrinth::Update;
-use crate::core::prism::Instance;
 use crate::core::versions::{GameVersion, Kind};
 
 const DEFAULT_TITLES: [(&str, &str); 5] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton")];
 const VERSION_WIDTH: f32 = 232.;
-const RESULTS_MAX: f32 = 340.;
-const PRISM_FILTER_FROM: usize = 6;
 const SNUG_PERCENT: u64 = 80;
 const SAVE_ERROR_MAX: f32 = 220.;
 const DEFAULT_ROWS: f32 = 4.;
@@ -42,28 +39,6 @@ const NOTE_LINE: &str = "\u{a0}";
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &NewInstance, cx| open(Mode::Create, false, cx));
-    cx.on_action(|_: &NewBatchFromPrism, cx| {
-        let task = cx.background_executor().spawn(async { remote::prism_instances() });
-        cx.spawn(async move |cx| {
-            let list = task.await.unwrap_or_default();
-            cx.update(|cx| {
-                sheet::in_window(cx, move |window, cx| {
-                    if sheet::busy(window, cx) {
-                        return;
-                    }
-                    let view = cx.new(|cx| InstanceSheet::new(Mode::Create, window, cx));
-                    sheet::show(view.clone(), sheet::WIDE, window, cx);
-                    if !list.is_empty() {
-                        view.update(cx, |s, cx| {
-                            s.prism_list = list;
-                            s.open_prism(true, window, cx);
-                        });
-                    }
-                })
-            })
-        })
-        .detach();
-    });
     cx.on_action(|action: &EditMods, cx| {
         if super::model::get(cx).read(cx).instance(&action.0).is_some() {
             open(Mode::Mods(action.0.clone()), false, cx);
@@ -130,10 +105,6 @@ pub(super) struct InstanceSheet {
     notes: Vec<String>,
     pub(super) searching: bool,
     direct: bool,
-    prism_list: Vec<Instance>,
-    prism_filter: Entity<InputState>,
-    prism_sel: usize,
-    prism_scroll: ScrollHandle,
     name_auto: String,
     rename: bool,
     pub(super) body_scroll: ScrollHandle,
@@ -141,8 +112,6 @@ pub(super) struct InstanceSheet {
     local_scroll: ScrollHandle,
     pub(super) saved_scroll: Option<Point<Pixels>>,
     list_max: f32,
-    prism_choice: Option<Instance>,
-    prism_picking: bool,
     imported: Option<setup::Instance>,
     pub(super) updates: Option<Load<Vec<Update>>>,
     updates_gen: u64,
@@ -183,7 +152,6 @@ impl InstanceSheet {
         let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let jvm_args = cx.new(|cx| InputState::new(window, cx));
         let (browser, browser_sub) = Browser::new(window, cx);
-        let prism_filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Instanzen filtern")));
         let changed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
             if matches!(e, InputEvent::Change) {
                 s.save_error = None;
@@ -209,12 +177,6 @@ impl InstanceSheet {
             cx.subscribe(&jvm_args, changed),
             browser_sub,
             cx.observe(&super::model::get(cx), |_, _, cx| cx.notify()),
-            cx.subscribe(&prism_filter, |s: &mut Self, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
-                    s.prism_sel = s.first_supported(cx);
-                    cx.notify();
-                }
-            }),
             cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<VersionItem>>, _, cx| {
                 let SelectEvent::Confirm(Some(v)) = e else { return };
                 s.change_version(v.clone(), cx);
@@ -258,10 +220,6 @@ impl InstanceSheet {
             notes: Vec::new(),
             searching: false,
             direct: false,
-            prism_list: Vec::new(),
-            prism_filter,
-            prism_sel: 0,
-            prism_scroll: ScrollHandle::new(),
             name_auto: String::new(),
             rename: false,
             body_scroll: ScrollHandle::new(),
@@ -269,8 +227,6 @@ impl InstanceSheet {
             local_scroll: ScrollHandle::new(),
             saved_scroll: None,
             list_max: sheet::LIST_MAX,
-            prism_choice: None,
-            prism_picking: false,
             imported: None,
             updates: None,
             updates_gen: 0,
@@ -293,7 +249,6 @@ impl InstanceSheet {
             sheet.load_updates(cx);
         } else {
             sheet.load_versions(cx);
-            sheet.load_prism(cx);
         }
         sheet
     }
@@ -306,20 +261,6 @@ impl InstanceSheet {
         !self.creating() || self.loader.takes_mods()
     }
 
-    fn load_prism(&mut self, cx: &mut Context<Self>) {
-        let task = cx.background_executor().spawn(async { remote::prism_instances() });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |s, cx| {
-                if let Ok(list) = result {
-                    s.prism_list = list;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
     fn toggle(&mut self, key: &'static str, cx: &mut Context<Self>) {
         if !self.details.remove(key) {
             self.details.insert(key);
@@ -329,57 +270,6 @@ impl InstanceSheet {
 
     pub(super) fn problem(&self, key: &'static str, icon_name: &str, color: Hsla, problem: &Problem, cx: &mut Context<Self>, t: &Theme) -> Div {
         sheet::problem(key, icon_name, color, problem, self.details.contains(key), cx.listener(move |s, _, _, cx| s.toggle(key, cx)), t)
-    }
-
-    fn open_prism(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if open && !self.prism_picking {
-            self.saved_scroll = Some(self.body_scroll.offset());
-        }
-        self.prism_picking = open;
-        self.focus_next = !open;
-        if open {
-            self.prism_sel = self.first_supported(cx);
-            if self.prism_list.len() > PRISM_FILTER_FROM {
-                self.prism_filter.update(cx, |q, cx| q.take_focus(window, cx));
-            } else {
-                window.focus(&self.root, cx);
-            }
-        }
-        cx.notify();
-    }
-
-    fn prism_shown(&self, cx: &App) -> Vec<Instance> {
-        let query = if self.prism_list.len() > PRISM_FILTER_FROM { self.prism_filter.read(cx).value().trim().to_lowercase() } else { String::new() };
-        self.prism_list.iter().filter(|i| query.is_empty() || i.name.to_lowercase().contains(&query)).cloned().collect()
-    }
-
-    fn first_supported(&self, cx: &App) -> usize {
-        self.prism_shown(cx).iter().position(|i| i.unsupported.is_none()).unwrap_or(0)
-    }
-
-    fn step_prism(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let shown = self.prism_shown(cx);
-        let mut at = self.prism_sel.min(shown.len().saturating_sub(1)) as i32;
-        loop {
-            let next = at + delta;
-            if next < 0 || next >= shown.len() as i32 {
-                return;
-            }
-            at = next;
-            if shown[at as usize].unsupported.is_none() {
-                break;
-            }
-        }
-        self.prism_sel = at as usize;
-        self.prism_scroll.scroll_to_item(self.prism_sel);
-        cx.notify();
-    }
-
-    fn choose_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let shown = self.prism_shown(cx);
-        if let Some(instance) = shown.get(self.prism_sel.min(shown.len().saturating_sub(1))).cloned() {
-            self.choose_prism(instance, window, cx);
-        }
     }
 
     fn closable(&self) -> bool {
@@ -397,50 +287,11 @@ impl InstanceSheet {
     }
 
     fn lock_reason(&self) -> Option<String> {
-        self.wait_reason().or_else(|| self.prism_choice.is_some().then(|| tr("Kommt aus Prism.")))
+        self.wait_reason()
     }
 
     fn taken_names(&self, cx: &App) -> Vec<String> {
         super::model::get(cx).read(cx).instances.iter().map(|i| i.name.clone()).collect()
-    }
-
-    fn choose_prism(&mut self, instance: Instance, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mods_busy.is_some() || self.saving {
-            return;
-        }
-        let Some(game) = instance.game_version.clone().filter(|_| instance.unsupported.is_none()) else { return };
-        let taken = self.taken_names(cx);
-        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
-        let name = forms::unique_name(&instance.name, &taken);
-        let typed = self.name.read(cx).value().trim().to_string();
-        if typed.is_empty() || typed == self.name_auto {
-            self.name.update(cx, |s, cx| s.set_value(name.clone(), window, cx));
-            self.name_auto = name;
-        }
-        if !self.version_list.iter().any(|v| v.id == game) {
-            self.version_list.insert(0, GameVersion { id: game.clone(), kind: Kind::Release });
-        }
-        self.version = game;
-        self.loader = Loader::default();
-        self.pending_versions = true;
-        self.mods.clear();
-        self.notes.clear();
-        self.mods_error = None;
-        self.mods_touched = true;
-        self.prism_choice = Some(instance);
-        self.prism_picking = false;
-        self.focus_next = true;
-        cx.notify();
-    }
-
-    fn drop_prism(&mut self, cx: &mut Context<Self>) {
-        if self.mods_busy.is_some() || self.saving || self.prism_choice.take().is_none() {
-            return;
-        }
-        let version = std::mem::take(&mut self.version);
-        self.mods_touched = false;
-        self.mods.clear();
-        self.change_version(version, cx);
     }
 
     fn load_updates(&mut self, cx: &mut Context<Self>) {
@@ -638,7 +489,7 @@ impl InstanceSheet {
 
     fn pick_loader(&mut self, n: usize, cx: &mut Context<Self>) {
         let Some(loader) = LOADERS.get(n) else { return };
-        if self.saving || self.mods_busy.is_some() || self.prism_choice.is_some() || self.loader.same_kind(loader) {
+        if self.saving || self.mods_busy.is_some() || self.loader.same_kind(loader) {
             return;
         }
         self.loader = loader.clone();
@@ -697,16 +548,10 @@ impl InstanceSheet {
     fn create(&mut self, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().trim().to_string();
         let edit = self.edit(cx);
-        let prism = self.prism_choice.clone();
         self.saving = true;
         self.save_error = None;
         cx.notify();
-        let task = cx.background_executor().spawn(async move {
-            match prism {
-                Some(instance) => remote::import_prism(&instance, &name),
-                None => remote::create_instance(edit),
-            }
-        });
+        let task = cx.background_executor().spawn(async move { remote::create_instance(edit) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
@@ -799,10 +644,6 @@ impl InstanceSheet {
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.prism_picking && !self.searching {
-            self.choose_selected(window, cx);
-            return;
-        }
         if !sheet::typing(window) {
             cx.propagate();
             return;
@@ -853,27 +694,22 @@ impl InstanceSheet {
                 div().flex().flex_col().gap(px(space::XS)).child(select).child(everything)
             }
         };
-        if let Some(entry) = self.render_prism_entry(cx, t) {
+        if let Some(entry) = self.render_import_entry(cx, t) {
             body = body.child(entry);
         }
-        let version_hint = self.prism_choice.is_some().then(|| tr("Kommt aus Prism."));
         body = body
             .child(
                 div()
                     .flex()
                     .gap(px(space::M))
                     .child(div().flex_1().min_w_0().child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Name"), t)).child(Input::new(&self.name)).child(sheet::note(None, name_problem, t).min_h(px(font::CAPTION * font::LINE * 2.)))))
-                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, version_hint, version_problem, t))),
+                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, None, version_problem, t))),
             )
             .child(self.render_loader(cx, t));
-        if let Some(instance) = self.prism_choice.clone() {
-            body = body.child(self.render_prism_mods(&instance, t));
-        } else if self.has_mods() {
+        if self.has_mods() {
             body = body.child(self.render_mods(cx, t));
         }
-        if self.prism_choice.is_none() {
-            body = body.child(self.render_advanced(cx, t));
-        }
+        body = body.child(self.render_advanced(cx, t));
         body
     }
 
@@ -1025,7 +861,7 @@ impl InstanceSheet {
         col
     }
 
-    fn render_prism_entry(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
+    fn render_import_entry(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
         let blocked = self.mods_busy.clone().or_else(|| self.saving.then(|| tr("Wird gerade gesichert …")));
         let card = |id: &'static str, glyph: &'static str, title: String, subtitle: String| {
             div()
@@ -1042,29 +878,29 @@ impl InstanceSheet {
                 .border_color(t.separator)
                 .child(div().size(px(control::M)).flex_none().rounded(px(radius::INNER)).bg(with_alpha(t.accent, tint::ATTENTION)).flex().items_center().justify_center().child(icon(glyph, iconsize::M, t.accent_text)))
                 .child(div().flex_1().min_w_0().flex().flex_col().child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title)).child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)))
+                .child(icon("chevron-right", iconsize::M, t.tertiary))
         };
-        let entry = match self.prism_choice.clone() {
-            None if self.prism_list.is_empty() => None,
-            None => {
-                let row = card("prism-pick", "download", tr("Aus Prism importieren"), tr("Version, Mods und Einstellungen aus Prism Launcher")).child(icon("chevron-right", iconsize::M, t.tertiary));
-                Some(if let Some(why) = blocked.clone() { sheet::unavailable_over("prism-pick-locked", row.opacity(tint::DISABLED), why).into_any_element() } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))).into_any_element() })
-            }
-            Some(instance) => {
-                let subtitle = trf("Aus Prism · Minecraft %@ · %lld Mods", &[&instance.game_version.clone().unwrap_or_default(), &instance.mods]);
-                Some(
-                    card("prism-chosen", "download", instance.name.clone(), subtitle)
-                        .child(sheet::icon_button("prism-change", "list", tr("Andere Instanz wählen"), t.secondary, t).on_click(cx.listener(|s, _, window, cx| s.open_prism(true, window, cx))))
-                        .child(sheet::icon_button("prism-drop", "x", tr("Nicht aus Prism übernehmen"), t.secondary, t).on_click(cx.listener(|s, _, _, cx| s.drop_prism(cx))))
-                        .into_any_element(),
-                )
-            }
+        let launcher = card("launcher-pick", "download", tr("Aus anderem Launcher importieren…"), tr("Prism, Modrinth, CurseForge, ATLauncher und mehr"));
+        let launcher = match blocked.clone() {
+            Some(why) => sheet::unavailable_over("launcher-pick-locked", launcher.opacity(tint::DISABLED), why).into_any_element(),
+            None => launcher
+                .cursor_pointer()
+                .key_nav()
+                .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(Dismissed);
+                    cx.defer(|cx| cx.dispatch_action(&ImportFromLauncher));
+                }))
+                .into_any_element(),
         };
-        let file = self.prism_choice.is_none().then(|| {
-            let row = card("file-pick", "file-down", tr("Datei importieren…"), tr("Modpack (.mrpack) oder Prism-Export")).child(icon("chevron-right", iconsize::M, t.tertiary));
-            if let Some(why) = blocked.clone() {
-                sheet::unavailable_over("file-pick-locked", row.opacity(tint::DISABLED), why).into_any_element()
-            } else {
-                row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(|_, _, _, cx| {
+        let row = card("file-pick", "file-down", tr("Datei importieren…"), tr("Modpack (.mrpack) oder Prism-Export"));
+        let file = if let Some(why) = blocked {
+            sheet::unavailable_over("file-pick-locked", row.opacity(tint::DISABLED), why).into_any_element()
+        } else {
+            row.cursor_pointer()
+                .key_nav()
+                .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
+                .on_click(cx.listener(|_, _, _, cx| {
                     let sheet = cx.weak_entity();
                     super::transfer::pick(cx, move |cx| {
                         cx.defer(move |cx| {
@@ -1073,18 +909,8 @@ impl InstanceSheet {
                     });
                 }))
                 .into_any_element()
-            }
-        });
-        Some(div().flex().flex_col().gap(px(space::S)).children(entry).children(file))
-    }
-
-    fn render_prism_mods(&self, instance: &Instance, t: &Theme) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(space::XS))
-            .child(sheet::label(trf("Mods (%lld)", &[&instance.mods]), t))
-            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Mods und Einstellungen werden aus der Instanz kopiert; Prism bleibt unverändert. Beim Erstellen wird geprüft, welche Mods auf Modrinth liegen. Die übrigen bleiben als eigene Dateien in der Instanz.")))
+        };
+        Some(div().flex().flex_col().gap(px(space::S)).child(launcher).child(file))
     }
 
     fn render_updates(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
@@ -1174,61 +1000,6 @@ impl InstanceSheet {
         Some(col)
     }
 
-    fn render_prism_picker(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let shown = self.prism_shown(cx);
-        let selected = self.prism_sel.min(shown.len().saturating_sub(1));
-        let mut list = div().id("prism-list").flex().flex_col().gap(px(space::XXS)).max_h(px(RESULTS_MAX)).overflow_y_scroll().track_scroll(&self.prism_scroll);
-        for (at, instance) in shown.iter().cloned().enumerate() {
-            let reason = instance.unsupported.as_deref().map(unsupported_text);
-            let ok = reason.is_none();
-            let subtitle = match &reason {
-                Some(r) => r.clone(),
-                None => trf("Minecraft %@ · %lld Mods", &[&instance.game_version.clone().unwrap_or_default(), &instance.mods]),
-            };
-            let row = div()
-                .id(SharedString::from(format!("prism-row-{}", instance.id)))
-                .mark("result", instance.name.clone())
-                .flex()
-                .items_center()
-                .gap(px(space::M))
-                .px(px(space::M))
-                .py(px(space::S))
-                .rounded(px(radius::CONTROL))
-                .when(at == selected, |d| d.bg(t.ink.opacity(tint::HOVER)));
-            let chosen = self.prism_choice.as_ref().is_some_and(|c| c.id == instance.id);
-            let busy = self.mods_busy.clone().or_else(|| self.saving.then(|| tr("Wird gerade gesichert …")));
-            let row = row
-                .child(icon(if ok { "package" } else { "circle-alert" }, iconsize::M, t.tertiary))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(space::XXS))
-                        .child(div().truncate().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).child(instance.name.clone()))
-                        .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)),
-                )
-                .when(chosen, |d| d.child(icon("check", iconsize::S, t.success_text)));
-            list = list.child(match reason.clone().or(busy) {
-                None => {
-                    let picked = instance.clone();
-                    row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CONTROL).on_click(cx.listener(move |s, _, window, cx| s.choose_prism(picked.clone(), window, cx))).into_any_element()
-                }
-                Some(why) => sheet::unavailable_over(SharedString::from(format!("prism-row-locked-{}", instance.id)), row.opacity(tint::DISABLED), why).into_any_element(),
-            });
-        }
-        let mut col = div().flex().flex_col().gap(px(space::S));
-        if self.prism_list.len() > PRISM_FILTER_FROM {
-            col = col.child(Input::new(&self.prism_filter).prefix(icon("search", iconsize::S, t.tertiary)).cleanable(true));
-        }
-        if shown.is_empty() {
-            let query = self.prism_filter.read(cx).value().trim().to_string();
-            return col.child(div().py(px(space::L)).text_size(px(font::CALLOUT)).text_color(t.secondary).child(trf("Keine Instanz passt zu „%@“. Lösche den Filter oder suche anders.", &[&query])));
-        }
-        col.child(list)
-    }
-
     fn render_imported(&mut self, t: &Theme) -> Div {
         let Some(made) = &self.imported else { return div() };
         let matched = made.mods.len();
@@ -1244,7 +1015,7 @@ impl InstanceSheet {
     }
 
     fn apply_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.searching && !self.prism_picking && self.imported.is_none() && let Some(offset) = self.saved_scroll.take() {
+        if !self.searching && self.imported.is_none() && let Some(offset) = self.saved_scroll.take() {
             self.body_scroll.set_offset(offset);
         }
         if std::mem::take(&mut self.focus_done) && self.imported.is_some() {
@@ -1278,7 +1049,7 @@ impl InstanceSheet {
                 }
             });
         }
-        if std::mem::take(&mut self.rename) && self.creating() && self.prism_choice.is_none() && !self.version.is_empty() {
+        if std::mem::take(&mut self.rename) && self.creating() && !self.version.is_empty() {
             let typed = self.name.read(cx).value().trim().to_string();
             if typed == self.name_auto {
                 let name = trf("Minecraft %@", &[&self.version]);
@@ -1349,20 +1120,6 @@ fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, max: f
     div().contain_scroll(scroll).child(list)
 }
 
-fn unsupported_text(reason: &str) -> String {
-    if let Some(loader) = reason.strip_prefix("uses ").and_then(|r| r.split(',').next()) {
-        trf("Nutzt %@. Nur Fabric geht.", &[&loader])
-    } else if reason.contains("no mod loader") {
-        tr("Läuft ohne Fabric. Nur Fabric-Instanzen gehen.")
-    } else if reason.contains("Minecraft version") {
-        tr("Ohne Minecraft-Version.")
-    } else if reason.contains("mmc-pack") {
-        tr("Die Instanz ist unvollständig oder beschädigt.")
-    } else {
-        tr("Diese Instanz lässt sich nicht übernehmen.")
-    }
-}
-
 fn default_note(note: &str, version: &str) -> String {
     let Some(rest) = note.strip_prefix("skipped ") else { return note.to_owned() };
     let slug = rest.split(':').next().unwrap_or(rest);
@@ -1378,8 +1135,6 @@ impl Render for InstanceSheet {
         let creating = self.creating();
         let (title, subtitle) = if self.imported.is_some() {
             (tr("Instanz erstellt"), None)
-        } else if self.prism_picking {
-            (tr("Aus Prism übernehmen"), Some(tr("Instanzen aus Prism Launcher. Nur Fabric-Instanzen lassen sich übernehmen.")))
         } else if self.searching {
             (tr("Mod hinzufügen"), Some(trf("%@-Mods von Modrinth für Minecraft %@", &[&self.loader.name(), &self.version])))
         } else if let Some(made) = self.setup.as_ref().filter(|_| !creating) {
@@ -1389,8 +1144,6 @@ impl Render for InstanceSheet {
         };
         let body = if self.imported.is_some() {
             self.render_imported(&t)
-        } else if self.prism_picking {
-            self.render_prism_picker(cx, &t)
         } else if self.searching {
             self.render_search(cx, &t)
         } else {
@@ -1399,8 +1152,6 @@ impl Render for InstanceSheet {
         let max_body = body_max(window.viewport_size().height.as_f32());
         let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = if self.imported.is_some() {
             (Vec::new(), vec![sheet::button("import-done", tr("Fertig"), None, Look::Primary, false, false, &t).track_focus(&self.done_focus).on_click(cx.listener(|s, _, _, cx| s.done(cx))).into_any_element()])
-        } else if self.prism_picking {
-            (vec![sheet::button("prism-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_prism(false, window, cx))).into_any_element()], Vec::new())
         } else if self.searching {
             (
                 vec![sheet::button("search-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.leave_search(window, cx))).into_any_element()],
@@ -1425,25 +1176,6 @@ impl Render for InstanceSheet {
                 let handled = me.update(cx, |s, cx| s.browse_key(e.keystroke.key.as_str(), e.keystroke.modifiers, window, cx));
                 if handled.unwrap_or(false) {
                     cx.stop_propagation();
-                    return;
-                }
-                let delta = match e.keystroke.key.as_str() {
-                    "up" => -1,
-                    "down" => 1,
-                    _ => return,
-                };
-                if e.keystroke.modifiers.modified() {
-                    return;
-                }
-                let stepped = me.update(cx, |s, cx| {
-                    let picking = s.prism_picking;
-                    if picking {
-                        s.step_prism(delta, cx);
-                    }
-                    picking
-                });
-                if stepped.unwrap_or(false) {
-                    cx.stop_propagation();
                 }
             })
             .w_full()
@@ -1457,9 +1189,7 @@ impl Render for InstanceSheet {
             }))
             .on_action(cx.listener(|s, _: &Confirm, window, cx| s.confirm(window, cx)))
             .on_action(cx.listener(|s, _: &Cancel, window, cx| {
-                if s.prism_picking {
-                    s.open_prism(false, window, cx);
-                } else if s.searching {
+                if s.searching {
                     s.browse_cancel(window, cx);
                 } else if s.imported.is_some() {
                     s.done(cx);

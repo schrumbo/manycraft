@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -168,7 +168,7 @@ impl MainWindow {
 
     fn look_for_prism(cx: &mut Context<Self>) {
         let task = cx.background_executor().spawn(async {
-            let instances = super::remote::prism_instances().map_or(0, |l| l.iter().filter(|i| i.unsupported.is_none()).count());
+            let instances = super::remote::launcher_libraries().iter().flat_map(|l| &l.instances).filter(|i| i.importable()).count();
             (instances, super::remote::prism_accounts().map_or(0, |l| l.len()))
         });
         cx.spawn(async move |this, cx| {
@@ -395,7 +395,7 @@ impl MainWindow {
                 "new-instance",
                 tr("Instanz erstellen"),
                 Box::new(NewInstance),
-                (self.prism.0 > 0).then(|| (tr("Oder aus Prism übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
+                (self.prism.0 > 0).then(|| (tr("Oder aus anderem Launcher übernehmen"), Box::new(ImportFromLauncher) as Box<dyn Action>)),
             )
         } else {
             return None;

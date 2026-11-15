@@ -1,4 +1,4 @@
-//! Batches in and out: importing packs and Prism instances, exporting packs, opening folders in the file manager.
+//! Instances in and out: importing packs, Prism instances and instances of other launchers, exporting packs, opening folders in the file manager.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,7 @@ use super::{forms, model, remote};
 use crate::core::instance::Instance;
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
+use crate::core::launchers::{Found, Take};
 use crate::core::mrpack::{self, Refused};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -104,30 +105,66 @@ fn start(path: PathBuf, cx: &mut App) {
         };
         remote::import_instance(&path, &stop, &progress)
     });
-    cx.spawn(async move |cx| {
-        while let Ok(mut percent) = rx.recv().await {
-            while let Ok(next) = rx.try_recv() {
-                percent = next;
-            }
-            let _ = cx.update(|cx| {
-                model::get(cx).update(cx, |m, cx| {
-                    if let Some(i) = m.imports.iter_mut().find(|i| i.id == id)
-                        && i.percent != Some(percent)
-                    {
-                        i.percent = Some(percent);
-                        cx.notify();
-                    }
-                });
-            });
+    cx.spawn(async move |cx| follow(id, rx, job, &cancel, &label, Some(&source), true, cx).await).detach();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn follow(id: u64, rx: async_channel::Receiver<u8>, job: Task<anyhow::Result<Instance>>, cancel: &AtomicBool, label: &str, source: Option<&Path>, show: bool, cx: &mut AsyncApp) {
+    while let Ok(mut percent) = rx.recv().await {
+        while let Ok(next) = rx.try_recv() {
+            percent = next;
         }
-        let result = job.await;
-        let gone = result.is_err() && !source.exists();
-        let _ = cx.update(|cx| finish(id, &label, gone, &cancel, result, cx));
+        let _ = cx.update(|cx| {
+            model::get(cx).update(cx, |m, cx| {
+                if let Some(i) = m.imports.iter_mut().find(|i| i.id == id)
+                    && i.percent != Some(percent)
+                {
+                    i.percent = Some(percent);
+                    cx.notify();
+                }
+            });
+        });
+    }
+    let result = job.await;
+    let gone = result.is_err() && source.is_some_and(|s| !s.exists());
+    let _ = cx.update(|cx| finish(id, label, gone, cancel, result, show, cx));
+}
+
+/// Imports `items` from other launchers one after another, each as its own instance with its own entry in the
+/// import list; once the last one is done it opens.
+pub fn import_found(items: Vec<Found>, take: Take, cx: &mut App) {
+    if items.is_empty() {
+        return;
+    }
+    let queue: Vec<(u64, Arc<AtomicBool>, Found)> = items.into_iter().map(|f| (NEXT.fetch_add(1, Ordering::SeqCst), Arc::new(AtomicBool::new(false)), f)).collect();
+    model::get(cx).update(cx, |m, cx| {
+        if m.imports.is_empty() {
+            m.error = None;
+        }
+        for (id, cancel, found) in &queue {
+            m.imports.push(model::Import { id: *id, name: found.name.clone(), percent: None, cancel: Arc::clone(cancel) });
+        }
+        cx.notify();
+    });
+    cx.spawn(async move |cx| {
+        let last = queue.len() - 1;
+        for (at, (id, cancel, found)) in queue.into_iter().enumerate() {
+            let (tx, rx) = async_channel::unbounded::<u8>();
+            let stop = Arc::clone(&cancel);
+            let item = found.clone();
+            let job = cx.background_spawn(async move {
+                let progress = |done: usize, total: usize| {
+                    let _ = tx.try_send((done * 100).checked_div(total).unwrap_or(0).min(100) as u8);
+                };
+                remote::import_found(&item, take, &stop, &progress)
+            });
+            follow(id, rx, job, &cancel, &found.name, None, at == last, cx).await;
+        }
     })
     .detach();
 }
 
-fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow::Result<Instance>, cx: &mut App) {
+fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow::Result<Instance>, show: bool, cx: &mut App) {
     let cancelled = cancel.load(Ordering::SeqCst);
     model::get(cx).update(cx, |m, cx| {
         m.imports.retain(|i| i.id != id);
@@ -166,7 +203,9 @@ fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow:
                 cx.notify();
             });
             super::state::reload_keeping_error(cx);
-            super::main_window::show_instance(&id, cx);
+            if show {
+                super::main_window::show_instance(&id, cx);
+            }
         }
         Err(_) => {}
     }
@@ -198,7 +237,7 @@ fn explain(label: &str, e: &anyhow::Error) -> String {
         Refused::Host(_) => trf("„%@“ lädt Dateien von einer Seite, die Manycraft nicht kennt. Nichts wurde importiert.", &[&label]),
         Refused::Hash(_) => trf("Eine Datei aus „%@“ kam verändert an. Nichts wurde importiert. Versuche es noch einmal.", &[&label]),
         Refused::Path(_) => trf("„%@“ enthält Dateien, die außerhalb des Instanzordners landen würden. Nichts wurde importiert.", &[&label]),
-        Refused::Prism(_) => trf("„%@“ lässt sich nicht übernehmen. Nur Fabric-Instanzen gehen.", &[&label]),
+        Refused::Prism(_) => trf("„%@“ lässt sich nicht übernehmen.", &[&label]),
         Refused::Unknown => trf("„%@“ ist weder ein Modpack von Modrinth noch etwas aus Prism. Wähle eine .mrpack-Datei, einen Prism-Export oder einen Prism-Instanzordner.", &[&label]),
         Refused::Cancelled => String::new(),
     }
