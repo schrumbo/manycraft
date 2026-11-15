@@ -145,6 +145,10 @@ def is_ui(path):
     return path.startswith("src/ui/") and path.endswith(".rs")
 
 
+def is_core(path):
+    return path.startswith("src/app/") and path.endswith(".rs")
+
+
 def match_back(text, close):
     depth = 0
     for i in range(close, -1, -1):
@@ -230,9 +234,14 @@ def clickable_without_feedback(text, offset):
 def ui_lint(scope):
     findings = []
     for path, numbers in sorted(scope.items()):
-        if not is_ui(path) or not os.path.exists(path):
+        if not (is_ui(path) or is_core(path)) or not os.path.exists(path):
             continue
         src = open(path, encoding="utf-8").read().splitlines()
+        if is_core(path):
+            for n in sorted(numbers):
+                if n <= len(src) and re.search(r"\b(error|notice) = Some\(\"|\b(title|body): \"[^\"]*[A-Za-zÄÖÜäöü]", src[n - 1]):
+                    findings.append(f"{path}:{n}: untranslated text, use tr()")
+            continue
         name = os.path.basename(path)
         for n in sorted(numbers):
             if n > len(src):
@@ -387,10 +396,15 @@ def cli(args):
 def yield_to_owner():
     if os.name == "nt":
         import ctypes
-        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x40)
+        k = ctypes.windll.kernel32
+        k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)
+        cores = int(os.environ.get("MANYCRAFT_GATE_CORES", "0")) or os.cpu_count() or 8
+        k.SetProcessAffinityMask(k.GetCurrentProcess(), ctypes.c_size_t((1 << min(cores, 64)) - 1))
     else:
         with contextlib.suppress(OSError):
             os.nice(19)
+        with contextlib.suppress(AttributeError, OSError):
+            os.sched_setaffinity(0, set(range(int(os.environ.get("MANYCRAFT_GATE_CORES", "0")) or os.cpu_count() or 8)))
 
 
 def main():

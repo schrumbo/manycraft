@@ -1,4 +1,4 @@
-//! Undo history and its notices: one offer per account removal, deleted, cloned, reset or changed instance, removed mod and colour change. A notice
+//! Undo history and its notices: one offer per account removal, deleted, cloned, reset or changed instance, removed mod, colour change and stop of many games. A notice
 //! hides after a while; its offer stays reachable with Ctrl+Z and the palette until Manycraft quits.
 
 use std::time::Instant;
@@ -44,6 +44,8 @@ pub enum Kind {
     Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
     /// Accounts by id with the colour they had before they all got `color`; `name` is the account's when it was one.
     Colored { before: Vec<(String, u8)>, color: u8, name: Option<String> },
+    /// Games one stop of many ended, by key; `name` is the account's when it was one.
+    Stopped { keys: Vec<String>, name: Option<String> },
 }
 
 struct Offer {
@@ -288,6 +290,11 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
                 let many = trf("%lld Accounts", &[&before.len()]);
                 (many.clone(), trf("Farbe von %lld Accounts auf %@ gesetzt.", &[&before.len(), &super::identity::name(*color)]), trf("%@ wurde nicht zurückgestellt.", &[&many]))
             }
+            Kind::Stopped { name: Some(name), .. } => (name.clone(), trf("„%@“ gestoppt.", &[name]), trf("„%@“ wurde nicht neu gestartet.", &[name])),
+            Kind::Stopped { keys, name: None } => {
+                let many = trf("%lld Spiele", &[&keys.len()]);
+                (many.clone(), trf("%lld Spiele gestoppt.", &[&keys.len()]), trf("%@ wurden nicht neu gestartet.", &[&many]))
+            }
             Kind::Edited { name, what, .. } => {
                 let done = match what {
                     Edit::Renamed => trf("Umbenannt in „%@“.", &[name]),
@@ -348,6 +355,7 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::Files { name, undo } => super::instance_files::undo(name, undo, at, cx),
         Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
         Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
+        Kind::Stopped { keys, .. } => state::start_again(keys, cx),
         Kind::Colored { before, .. } => {
             let mut colors: Vec<u8> = before.iter().map(|(_, c)| *c).collect();
             colors.sort_unstable();

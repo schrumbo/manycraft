@@ -86,6 +86,53 @@ pub fn confirm_danger(window: &mut Window, cx: &mut App, title: String, message:
     alert(window, cx, title, message, ok_text, true, true, blocked, ok);
 }
 
+/// Asks between two outcomes of something the user chose: `main` is the default (trailing, focused, Enter), `other` beside it in red as the outcome the user did not ask for, and Abbrechen or Esc do neither.
+pub fn choose(window: &mut Window, cx: &mut App, title: String, message: String, other_text: String, other: impl Fn(&mut Window, &mut App) + 'static, main_text: String, main: impl Fn(&mut Window, &mut App) + 'static) {
+    let (main, other) = (std::rc::Rc::new(main), std::rc::Rc::new(other));
+    let accept = cx.focus_handle();
+    let first = accept.clone();
+    window.open_alert_dialog(cx, move |dialog, _, cx| {
+        let (main, other) = (main.clone(), other.clone());
+        let rings = super::theme::rings(cx);
+        let confirm = Button::new("alert-ok").label(main_text.clone()).primary().focus_ring(rings).track_focus(&accept).on_click(move |_, window, cx| {
+            window.close_dialog(cx);
+            main(window, cx);
+        });
+        let second = Button::new("alert-other").label(other_text.clone()).danger().focus_ring(rings).on_click(move |_, window, cx| {
+            window.close_dialog(cx);
+            other(window, cx);
+        });
+        dialog.title(title.clone()).description(message.clone()).on_ok(pass_enter).footer(
+            DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).focus_ring(rings).on_click(|_, window, cx| window.close_dialog(cx))).child(second).child(confirm),
+        )
+    });
+    first.focus(window, cx);
+}
+
+/// Tells something once, with one button; the button and Esc both run `done`, once.
+pub fn inform(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, done: impl Fn(&mut Window, &mut App) + 'static) {
+    let done: std::rc::Rc<dyn Fn(&mut Window, &mut App)> = std::rc::Rc::new(done);
+    let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+    let once = move |window: &mut Window, cx: &mut App| {
+        if !ran.replace(true) {
+            done(window, cx);
+        }
+    };
+    let once = std::rc::Rc::new(once);
+    let accept = cx.focus_handle();
+    let first = accept.clone();
+    window.open_alert_dialog(cx, move |dialog, _, cx| {
+        let (on_click, on_close) = (once.clone(), once.clone());
+        let rings = super::theme::rings(cx);
+        let confirm = Button::new("alert-ok").label(ok_text.clone()).primary().focus_ring(rings).track_focus(&accept).on_click(move |_, window, cx| {
+            window.close_dialog(cx);
+            on_click(window, cx);
+        });
+        dialog.title(title.clone()).description(message.clone()).on_ok(pass_enter).on_close(move |_, window, cx| on_close(window, cx)).footer(DialogFooter::new().child(confirm))
+    });
+    first.focus(window, cx);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, danger: bool, focus_confirm: bool, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
     let (ok, blocked) = (std::rc::Rc::new(ok), std::rc::Rc::new(blocked));

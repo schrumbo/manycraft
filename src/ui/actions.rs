@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks]);
+actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks, Quit, QuitAll, OpenFromTray]);
 
 /// Gives these accounts (ids) colour `color`, an index into `core::account::COLORS`.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -58,6 +58,16 @@ pub struct StartBatch(pub String);
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
 pub struct StopBatch(pub String);
+
+/// Cancels the bulk start of a batch, of every batch when `None`: what has not launched yet stops.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct CancelStart(pub Option<String>);
+
+/// Starts the games of a batch, of every batch when `None`, that wait for free memory, whether they fit or not.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct StartAnyway(pub Option<String>);
 
 /// Opens the batch sheet for an existing batch.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]

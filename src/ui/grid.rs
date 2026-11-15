@@ -12,10 +12,11 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{ClearSelection, EditBatch, MessageSelected, NewInstance, Play, ShowInstance, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartBatch, StartSelected, StopSelected};
+use super::actions::{CancelStart, ClearSelection, EditBatch, MessageSelected, NewInstance, Play, ShowInstance, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartAnyway, StartBatch, StartSelected, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
 use super::model::{self, Game, Model, Phase};
+use super::sheet::{self, Look};
 use super::motion::{SLOW, Soft};
 use super::theme::{Theme, control, font, iconsize, radius, selection, shell, space, tile, tint, with_alpha};
 use super::tile::{Geometry, TileData};
@@ -346,7 +347,7 @@ pub fn matches(i: &Game, batch: Option<&str>, filter: Filter) -> bool {
         && match filter {
             Filter::All => true,
             Filter::Attention => i.phase.needs_attention(),
-            Filter::Running => i.phase.is_active() && !i.phase.needs_attention(),
+            Filter::Running => i.phase.is_active() && !i.phase.waiting() && !i.phase.needs_attention(),
             Filter::Stopped => !i.phase.is_active() && !i.phase.needs_attention(),
         }
 }
@@ -424,7 +425,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
     if i.stopping {
         return tr("Stoppt…");
     }
-    let hint = model::hint(&i.key);
+    let hint = i.hint;
     if hint.proxy.is_some() && matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. }) {
         return tr("Proxy-Fehler");
     }
@@ -435,6 +436,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
     match &i.phase {
         _ if banned => tr("Gesperrt"),
         Phase::Stopped => tr("Gestoppt"),
+        Phase::Starting { .. } if i.memory_wait.is_some() => tr("Wartet auf Arbeitsspeicher"),
         Phase::Starting { .. } if preparing.is_some() => trf("Lädt %lld %%", &[&preparing.unwrap_or(0)]),
         Phase::Starting { place, total } if *total > 1 && *place > 0 => trf("Wartet %lld/%lld", &[place, total]),
         Phase::Starting { .. } => tr("Startet…"),
@@ -469,8 +471,8 @@ fn data(i: &Game, m: &Model, selected: &Option<String>, picked: &HashSet<String>
         detail: ban.unwrap_or_else(|| super::state::status(i, preparing)),
         stopping: i.stopping,
         whispers: i.unread_whispers,
-        preview: i.preview.clone(),
-        live: i.live,
+        preview: m.preview(&i.key).cloned(),
+        live: m.live(&i.key),
         face: m.faces.get(&i.account_id).cloned(),
         selected: selected.as_deref() == Some(i.key.as_str()),
         picked: picked.contains(&i.key),
@@ -552,9 +554,12 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     let mine = || m.games.values().filter(|i| i.batch_id == batch);
     let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
     let attention = m.attention_count(Some(batch));
-    let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
+    let fine = mine().filter(|i| i.phase.is_active() && !i.phase.waiting() && !i.phase.needs_attention()).count();
     let stoppable = mine().filter(|i| i.phase.stoppable()).count();
-    let state = if running == 0 && stoppable > 0 {
+    let run = m.run(Some(batch));
+    let state = if let Some(run) = &run {
+        model::run_line(run)
+    } else if running == 0 && stoppable > 0 {
         tr("Keine Verbindung")
     } else if running == 0 {
         tr("gestoppt")
@@ -573,6 +578,24 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         .gap(px(space::S))
         .child(div().min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(name))
         .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(summary))
+        .when_some(run, |d, run| {
+            let anyway = id.clone();
+            let cancel = id.clone();
+            d.when(run.memory > 0, |d| {
+                d.child(
+                    sheet::button(format!("heading-anyway-{batch}"), tr("Trotzdem alle starten"), None, Look::Plain, false, false, t)
+                        .tooltip(tip(tr("Startet auch die Spiele, für die der Arbeitsspeicher gerade nicht reicht.")))
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            window.dispatch_action(Box::new(StartAnyway(Some(anyway.clone()))), cx);
+                        }),
+                )
+            })
+            .child(sheet::button(format!("heading-cancel-{batch}"), tr("Abbrechen"), None, Look::Plain, false, false, t).on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                window.dispatch_action(Box::new(CancelStart(Some(cancel.clone()))), cx);
+            }))
+        })
         .when(attention > 0, |d| {
             d.child(
                 div()
@@ -594,7 +617,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         .when_some(solo.clone(), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
         .context_menu(move |menu, _, cx| match &solo {
             Some(instance) => super::sidebar::instance_menu(menu, instance, cx),
-            None => super::sidebar::batch_menu(menu, &id, stoppable, stopped, exporting),
+            None => super::sidebar::batch_menu(menu, &id, stoppable, stopped, exporting, run),
         })
         .into_any_element()
 }
@@ -620,7 +643,7 @@ fn build(this: &mut MainWindow, batch: Option<&str>, scope: (Option<String>, Fil
     drop(held);
     let batch_of = |k: &String| m.games.get(k).map(|i| i.batch_id.clone()).unwrap_or_default();
     let alone = |k: &String| m.games.get(k).is_some_and(|i| i.batch_id == fleet::solo_owner(&i.instance_id));
-    let headed = batch.is_none() && (keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1 || keys.iter().any(alone));
+    let headed = (batch.is_none() && (keys.iter().map(&batch_of).collect::<HashSet<_>>().len() > 1 || keys.iter().any(alone))) || m.run(batch).is_some();
     if headed {
         let rank: HashMap<&str, usize> = m.batches.iter().enumerate().map(|(n, b)| (b.id.as_str(), n)).collect();
         keys.sort_by_cached_key(|k| {
@@ -1183,7 +1206,7 @@ mod tests {
     }
 
     fn mk(phase: Phase) -> Game {
-        Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
+        Game { phase, ..Game::new("k".into(), "b".into(), "b".into(), uuid::Uuid::nil(), "AltOne".into()) }
     }
 
     fn fleet(list: &[(&str, Phase)]) -> Model {

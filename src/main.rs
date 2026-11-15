@@ -1,5 +1,6 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod app;
 mod core;
 mod ui;
 
@@ -78,6 +79,7 @@ fn main() {
         ui::main_window::open(cx);
         ui::drive::init(cx);
         ui::updates::init(cx);
+        ui::tray::init(cx);
         if let Some(play) = play {
             ui::state::request_play(play.instance, play.account, cx);
         }

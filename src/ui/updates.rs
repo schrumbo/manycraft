@@ -337,7 +337,7 @@ fn restart(window: &mut Window, cx: &mut App) {
         quit(Quit::Install, cx);
         return;
     }
-    sheet::ask_blocked(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
+    sheet::confirm(window, cx, tr("Jetzt neu starten?"), tr("Deine Spiele laufen weiter und erscheinen danach wieder hier."), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
 }
 
 fn go_back(window: &mut Window, cx: &mut App) {
@@ -365,7 +365,10 @@ fn quit_unless_launching(how: Quit, cx: &mut App) {
 
 fn quit(how: Quit, cx: &mut App) {
     cx.global_mut::<Flight>().quit = Some(how);
-    cx.quit();
+    match how {
+        Quit::Install => super::state::restart_for_update(cx),
+        Quit::Back => super::state::quit_ending_games(cx),
+    }
 }
 
 fn on_quit(cx: &mut App) {

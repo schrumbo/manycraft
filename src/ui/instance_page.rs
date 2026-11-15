@@ -310,6 +310,7 @@ struct InstancePage {
     select_applied: Option<(String, u64, bool, bool)>,
     opts: Options,
     jvm: Entity<InputState>,
+    typed: u64,
     loader_version: Entity<LoaderVersion>,
     name: Entity<InputState>,
     renaming: bool,
@@ -342,10 +343,10 @@ impl InstancePage {
         let jvm = cx.new(|cx| InputState::new(window, cx));
         let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let name = cx.new(|cx| InputState::new(window, cx));
-        let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
-            if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                s.commit_inputs(cx);
-            }
+        let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| match e {
+            InputEvent::PressEnter { .. } | InputEvent::Blur => s.commit_inputs(cx),
+            InputEvent::Change => s.commit_soon(cx),
+            _ => {}
         };
         let subs = vec![
             cx.observe_global::<remote::Back>(|s, cx| {
@@ -403,6 +404,7 @@ impl InstancePage {
             select_applied: None,
             opts,
             jvm,
+            typed: 0,
             loader_version,
             name,
             renaming: false,
@@ -435,6 +437,8 @@ impl InstancePage {
         if self.id == id {
             return;
         }
+        self.commit_inputs(cx);
+        self.commit_options(cx);
         self.id = id.to_owned();
         self.mods.update(cx, |m, cx| m.bind(id, window, cx));
         self.hold_mods(cx);
@@ -615,6 +619,21 @@ impl InstancePage {
         }
         self.loader_version.update(cx, |p, cx| p.show(&made.loader, &made.game_version, cx));
         self.sync_options(made, window, cx);
+    }
+
+    pub(super) fn commit_soon(&mut self, cx: &mut Context<Self>) {
+        self.typed += 1;
+        let typed = self.typed;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.typed == typed {
+                    s.commit_inputs(cx);
+                    s.commit_options(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {

@@ -2,9 +2,10 @@
 //! plus a preview file the mod writes and the manager reads.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,10 +14,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub use super::preview::{Preview, PreviewChanges, read_preview};
 use super::batch::Background;
 use super::place::Mode;
 
+const PREVIEW_MAGIC: u32 = 0x4D43_5056;
+const PREVIEW_HEADER: usize = 16;
+const MAX_PREVIEW_SIDE: u32 = 4096;
 const MAX_LINE: u64 = 64 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -336,6 +339,129 @@ fn read_message<T: serde::de::DeserializeOwned>(lines: &mut BufReader<std::io::T
     }
 }
 
+/// One preview frame: RGBA8 rows, top-down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub seq: u32,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+enum Frame {
+    Ready(Preview),
+    Torn,
+    Invalid,
+}
+
+fn read_frame(file: &mut std::fs::File) -> Frame {
+    let mut header = [0; PREVIEW_HEADER];
+    if file.seek(SeekFrom::Start(0)).is_err() || file.read_exact(&mut header).is_err() {
+        return Frame::Invalid;
+    }
+    let word = |i: usize| header.get(i..i + 4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes);
+    let (magic, seq, width, height) = (word(0), word(4), word(8), word(12));
+    if magic != PREVIEW_MAGIC || width > MAX_PREVIEW_SIDE || height > MAX_PREVIEW_SIDE {
+        return Frame::Invalid;
+    }
+    if seq % 2 == 1 || width == 0 || height == 0 {
+        return Frame::Torn;
+    }
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    if file.read_exact(&mut rgba).is_err() {
+        return Frame::Invalid;
+    }
+    let mut again = [0; 4];
+    if file.seek(SeekFrom::Start(4)).is_err() || file.read_exact(&mut again).is_err() {
+        return Frame::Invalid;
+    }
+    if u32::from_le_bytes(again) == seq { Frame::Ready(Preview { seq, width, height, rgba }) } else { Frame::Torn }
+}
+
+/// Keeps one handle per instance on the preview file the mod writes and reads only the frame from it. Reopening a file under constant write costs milliseconds on Windows, so a handle is dropped only when the read fails, the path changed, a read that brought no new frame finds the path holding a different file, or [`release`](Self::release) is called.
+#[derive(Default)]
+pub struct PreviewReader(HashMap<String, Open>);
+
+struct Open {
+    file: std::fs::File,
+    path: PathBuf,
+    seq: u32,
+}
+
+impl Open {
+    fn stale(&self) -> bool {
+        match (self.file.metadata(), std::fs::metadata(&self.path)) {
+            (Ok(open), Ok(now)) => open.len() != now.len() || identity(&open) != identity(&now),
+            _ => true,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(windows)]
+fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    (meta.creation_time(), 0)
+}
+
+impl PreviewReader {
+    /// Reads the latest frame of `key`'s preview file. Returns `None` while the file is missing, incomplete or being rewritten.
+    pub fn read(&mut self, key: &str, path: &Path) -> Option<Preview> {
+        if self.0.get(key).is_some_and(|open| open.path != path) {
+            self.0.remove(key);
+        }
+        if !self.0.contains_key(key) {
+            let file = std::fs::File::open(path).ok()?;
+            self.0.insert(key.to_owned(), Open { file, path: path.to_owned(), seq: 0 });
+        }
+        let open = self.0.get_mut(key)?;
+        match read_frame(&mut open.file) {
+            Frame::Ready(preview) if preview.seq != open.seq => {
+                open.seq = preview.seq;
+                Some(preview)
+            }
+            Frame::Ready(preview) => {
+                if open.stale() {
+                    self.0.remove(key);
+                    return None;
+                }
+                Some(preview)
+            }
+            Frame::Torn => None,
+            Frame::Invalid => {
+                self.0.remove(key);
+                None
+            }
+        }
+    }
+
+    /// Closes the handle of `key`, so a stopped instance's folder can be deleted.
+    pub fn release(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+}
+
+/// Remembers the last frame shown per instance, so a frame that repeats the last one is not drawn again.
+#[derive(Default)]
+pub struct PreviewChanges(HashMap<String, (u32, u64)>);
+
+impl PreviewChanges {
+    /// Whether `preview` differs from the last frame passed for `key`. A `seq` that did not rise means a new game process or a read again and counts as a change.
+    pub fn changed(&mut self, key: &str, preview: &Preview) -> bool {
+        let mut hasher = std::hash::DefaultHasher::new();
+        (preview.width, preview.height, &preview.rgba).hash(&mut hasher);
+        let print = hasher.finish();
+        let fresh = self.0.get(key).is_none_or(|&(seq, last)| last != print || preview.seq <= seq);
+        self.0.insert(key.to_owned(), (preview.seq, print));
+        fresh
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +627,133 @@ mod tests {
         server.register_with("a", &token);
         let _link = connect(&server, &hello("a", &token));
         assert!(matches!(events.recv_timeout(Duration::from_secs(5)).unwrap(), Event::Connected { instance, .. } if instance == "a"));
+    }
+
+    fn preview_bytes(seq: u32, width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [PREVIEW_MAGIC, seq, width, height] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(rgba);
+        bytes
+    }
+
+    fn write_preview(path: &Path, seq: u32, rgba: &[u8; 8]) {
+        std::fs::write(path, preview_bytes(seq, 2, 1, rgba)).unwrap();
+    }
+
+    #[test]
+    fn preview_reader_reads_a_valid_frame_and_follows_in_place_rewrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.bin");
+        let mut reader = PreviewReader::default();
+        assert!(reader.read("a", &path).is_none());
+        write_preview(&path, 8, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(reader.read("a", &path).unwrap(), Preview { seq: 8, width: 2, height: 1, rgba: vec![1, 2, 3, 4, 5, 6, 7, 8] });
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(&preview_bytes(10, 2, 1, &[9; 8])).unwrap();
+        assert_eq!(reader.read("a", &path).unwrap(), Preview { seq: 10, width: 2, height: 1, rgba: vec![9; 8] });
+    }
+
+    #[test]
+    fn preview_reader_keeps_its_handle_while_the_file_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.bin");
+        write_preview(&path, 2, &[1; 8]);
+        let mut reader = PreviewReader::default();
+        assert!(reader.read("a", &path).is_some());
+        let first = reader.0["a"].file.metadata().unwrap();
+        assert!(reader.read("a", &path).is_some());
+        let second = reader.0["a"].file.metadata().unwrap();
+        assert_eq!(identity(&first), identity(&second));
+        assert_eq!(reader.0.len(), 1);
+    }
+
+    #[test]
+    fn preview_reader_rejects_bad_headers_and_torn_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.bin");
+        let mut reader = PreviewReader::default();
+        let frame = [1, 2, 3, 4, 5, 6, 7, 8];
+        std::fs::write(&path, preview_bytes(9, 2, 1, &frame)).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(reader.0.contains_key("a"));
+        std::fs::write(&path, preview_bytes(0, 0, 0, &[])).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(reader.0.contains_key("a"));
+        let mut wrong_magic = preview_bytes(8, 2, 1, &frame);
+        wrong_magic[0] ^= 1;
+        std::fs::write(&path, wrong_magic).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(!reader.0.contains_key("a"));
+        std::fs::write(&path, preview_bytes(8, u32::MAX, 1, &frame)).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(!reader.0.contains_key("a"));
+    }
+
+    #[test]
+    fn preview_reader_drops_the_handle_on_a_short_file_and_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.bin");
+        let mut reader = PreviewReader::default();
+        let mut short = preview_bytes(8, 2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        short.pop();
+        std::fs::write(&path, &short).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(!reader.0.contains_key("a"));
+        std::fs::write(&path, &short[..PREVIEW_HEADER - 1]).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(!reader.0.contains_key("a"));
+        write_preview(&path, 8, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(reader.read("a", &path).unwrap().seq, 8);
+    }
+
+    #[test]
+    fn preview_reader_reopens_a_recreated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.bin");
+        write_preview(&path, 2, &[1; 8]);
+        let mut reader = PreviewReader::default();
+        assert_eq!(reader.read("a", &path).unwrap().rgba, vec![1; 8]);
+        std::fs::remove_file(&path).unwrap();
+        assert!(reader.read("a", &path).is_none());
+        assert!(!reader.0.contains_key("a"));
+        write_preview(&path, 4, &[2; 8]);
+        assert_eq!(reader.read("a", &path).unwrap().rgba, vec![2; 8]);
+        let bigger = dir.path().join("bigger.bin");
+        std::fs::write(&bigger, preview_bytes(6, 2, 1, &[3; 16])).unwrap();
+        let old = reader.read("b", &path).unwrap();
+        assert_eq!(old.seq, 4);
+        std::fs::copy(&bigger, &path).unwrap();
+        assert_eq!(reader.read("b", &path).unwrap().rgba, vec![3; 8]);
+    }
+
+    #[test]
+    fn preview_reader_follows_a_changed_path_and_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (dir.path().join("one.bin"), dir.path().join("two.bin"));
+        write_preview(&one, 2, &[1; 8]);
+        write_preview(&two, 4, &[2; 8]);
+        let mut reader = PreviewReader::default();
+        assert_eq!(reader.read("a", &one).unwrap().seq, 2);
+        assert_eq!(reader.read("a", &two).unwrap().seq, 4);
+        reader.release("a");
+        assert!(reader.0.is_empty());
+    }
+
+    #[test]
+    fn a_repeated_frame_is_no_change_until_the_game_restarts() {
+        let frame = |seq, rgba: &[u8]| Preview { seq, width: 1, height: 1, rgba: rgba.to_vec() };
+        let mut changes = PreviewChanges::default();
+        assert!(changes.changed("a", &frame(2, &[1, 2, 3, 4])));
+        assert!(!changes.changed("a", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("a", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("b", &frame(4, &[1, 2, 3, 4])));
+        assert!(changes.changed("a", &frame(6, &[1, 2, 3, 5])));
+        assert!(!changes.changed("a", &frame(8, &[1, 2, 3, 5])));
+        assert!(changes.changed("a", &frame(2, &[1, 2, 3, 5])));
+        assert!(!changes.changed("a", &frame(4, &[1, 2, 3, 5])));
+        let wide = Preview { seq: 6, width: 2, height: 1, rgba: vec![1, 2, 3, 5] };
+        assert!(changes.changed("a", &wide));
     }
 }

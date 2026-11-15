@@ -52,6 +52,7 @@ def write_config(folder, port):
     (folder / "eula.txt").write_text("eula=true\n")
     props = {
         "online-mode": "false",
+        "server-ip": "127.0.0.1",
         "server-port": str(port),
         "enable-rcon": "true",
         "rcon.port": str(RCON_PORT),

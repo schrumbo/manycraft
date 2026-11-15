@@ -43,7 +43,12 @@ pub struct Entry {
 impl Entry {
     /// An event that happens now; the reason is cut to a sane length.
     pub fn now(kind: Kind, server: Option<String>, reason: &str) -> Self {
-        Self { at: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()), kind, server, reason: reason.chars().take(MAX_REASON).collect() }
+        Self::at(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()), kind, server, reason)
+    }
+
+    /// An event at `at` seconds since 1970; the reason is cut to a sane length.
+    pub fn at(at: u64, kind: Kind, server: Option<String>, reason: &str) -> Self {
+        Self { at, kind, server, reason: reason.chars().take(MAX_REASON).collect() }
     }
 }
 

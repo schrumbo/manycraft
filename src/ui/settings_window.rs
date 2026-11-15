@@ -44,7 +44,7 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(Box::leak(format!("{m}-,").into_boxed_str()), OpenSettings, None), KeyBinding::new("escape", Close, Some("Settings"))]);
     cx.on_action(|_: &OpenSettings, cx| cx.defer(open));
     #[cfg(target_os = "macos")]
-    cx.set_menus([Menu::new("Manycraft").items([MenuItem::action(tr("Einstellungen …"), OpenSettings)]), Menu::new(tr("Darstellung")).items([MenuItem::action(tr("Vollbild"), super::actions::ToggleFullscreen)])]);
+    cx.set_menus([Menu::new("Manycraft").items([MenuItem::action(tr("Einstellungen …"), OpenSettings), MenuItem::separator(), MenuItem::action(tr("Manycraft beenden"), super::actions::Quit)]), Menu::new(tr("Darstellung")).items([MenuItem::action(tr("Vollbild"), super::actions::ToggleFullscreen)])]);
 }
 
 fn existing(cx: &App) -> Option<AnyWindowHandle> {

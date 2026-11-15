@@ -312,7 +312,7 @@ fn locked(file: &std::fs::File) -> bool {
     lock.l_type = libc::F_WRLCK as _;
     lock.l_whence = libc::SEEK_SET as _;
     let ok = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) } == 0;
-    (ok && lock.l_type != libc::F_UNLCK as _) || file.try_lock().is_err()
+    (ok && lock.l_type != libc::F_UNLCK as libc::c_short) || file.try_lock().is_err()
 }
 
 #[cfg(not(unix))]
