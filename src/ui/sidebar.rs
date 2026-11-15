@@ -282,6 +282,9 @@ pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, e
         .when(!exporting, |menu| menu.menu(tr("Als .mrpack exportieren…"), Box::new(ExportBatch(id.to_owned()))))
 }
 
+/// How many running imports the sidebar lists one by one; the rest are counted in one line.
+const IMPORT_ROWS_MAX: usize = 4;
+
 fn import_row(import: &model::Import, t: &Theme) -> Stateful<Div> {
     let stopping = import.cancel.load(std::sync::atomic::Ordering::SeqCst);
     let state = if stopping {
@@ -446,7 +449,8 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None, running: false };
     let updates = m.updates.clone();
     let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None, running: false };
-    let imports: Vec<AnyElement> = m.imports.iter().map(|import| {
+    let waiting = m.imports.len().saturating_sub(IMPORT_ROWS_MAX);
+    let mut imports: Vec<AnyElement> = m.imports.iter().take(IMPORT_ROWS_MAX).map(|import| {
         let id = import.id;
         let stopping = import.cancel.load(std::sync::atomic::Ordering::SeqCst);
         import_row(import, &t).context_menu(move |menu, _, _| menu.menu_with_disabled(tr("Import abbrechen"), Box::new(CancelImport(id)), stopping)).into_any_element()
@@ -456,6 +460,21 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         let key = r.id.clone();
         let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, stoppable, stopped, exporting), window, cx));
         batch_rows.push(element.into_any_element());
+    }
+    if waiting > 0 {
+        imports.push(
+            div()
+                .id("nav-import-more")
+                .h(px(shell::ROW))
+                .px(px(space::S))
+                .flex()
+                .flex_none()
+                .items_center()
+                .text_size(px(font::CAPTION))
+                .text_color(t.tertiary)
+                .child(trf("und %lld weitere", &[&waiting]))
+                .into_any_element(),
+        );
     }
     batch_rows.extend(imports);
     let instance_rows = instance_list(instances, this.page.clone(), cx);

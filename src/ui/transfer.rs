@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use gpui_kit::*;
@@ -110,6 +111,9 @@ pub(super) fn start(path: PathBuf, cx: &mut App) {
     cx.spawn(async move |cx| follow(id, rx, job, &cancel, &label, Some(&source), true, cx).await).detach();
 }
 
+/// How often a running import may redraw the window.
+const PROGRESS_EVERY: Duration = Duration::from_millis(120);
+
 #[allow(clippy::too_many_arguments)]
 async fn follow(id: u64, rx: async_channel::Receiver<u8>, job: Task<anyhow::Result<Instance>>, cancel: &AtomicBool, label: &str, source: Option<&Path>, show: bool, cx: &mut AsyncApp) {
     while let Ok(mut percent) = rx.recv().await {
@@ -126,6 +130,7 @@ async fn follow(id: u64, rx: async_channel::Receiver<u8>, job: Task<anyhow::Resu
                 }
             });
         });
+        cx.background_executor().timer(PROGRESS_EVERY).await;
     }
     let result = job.await;
     let gone = result.is_err() && source.is_some_and(|s| !s.exists());
@@ -204,8 +209,8 @@ fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow:
                 }
                 cx.notify();
             });
-            super::state::reload_keeping_error(cx);
             if show {
+                super::state::reload_keeping_error(cx);
                 super::main_window::show_instance(&id, cx);
             }
         }

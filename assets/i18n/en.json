@@ -1272,5 +1272,6 @@
   "Farbe für %@ suchen": "Search a color for %@",
   "Vollbild": "Full screen",
   "Vollbild beenden": "Exit full screen",
-  "Darstellung": "View"
+  "Darstellung": "View",
+  "und %lld weitere": "and %lld more"
 }

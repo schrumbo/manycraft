@@ -44,6 +44,10 @@ fn same_profile(found: &Found) -> (PathBuf, String) {
     (dir, format!("{:?} {:?}", found.game_version, found.loader))
 }
 
+fn on_control(root: &FocusHandle, window: &Window, cx: &App) -> bool {
+    window.focused(cx).is_some_and(|f| &f != root) && !sheet::typing(window)
+}
+
 struct ImportSheet {
     libs: Vec<Library>,
     loading: bool,
@@ -401,19 +405,21 @@ impl Render for ImportSheet {
             sheet::button_unless("launcher-import", label, None, Look::Primary, (count == 0).then(|| tr("Wähle mindestens eine Instanz.").into()), false, &t).on_click(cx.listener(|s, _, _, cx| s.start(cx))).into_any_element(),
         ];
         let me = cx.entity().downgrade();
+        let (keys_root, action_root) = (self.root.clone(), self.root.clone());
         div()
             .id("import-sheet")
             .track_focus(&self.root)
             .capture_key_down(move |e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
                 let typing = sheet::typing(window);
+                let control = on_control(&keys_root, window, cx);
                 let m = e.keystroke.modifiers;
                 let handled = me.update(cx, |s, cx| match key {
                     "up" | "down" if !m.modified() => {
                         s.step(if key == "up" { -1 } else { 1 }, cx);
                         true
                     }
-                    "space" if !typing && !m.modified() => {
+                    "space" if !typing && !control && !m.modified() => {
                         if let Some(at) = s.cursor.clone() {
                             s.toggle(&at, cx);
                         }
@@ -433,8 +439,10 @@ impl Render for ImportSheet {
             .flex()
             .flex_col()
             .text_color(t.primary)
-            .on_action(cx.listener(|s, _: &Confirm, window, cx| {
-                if !sheet::typing(window) {
+            .on_action(cx.listener(move |s, _: &Confirm, window, cx| {
+                if on_control(&action_root, window, cx) {
+                    cx.propagate();
+                } else if !sheet::typing(window) {
                     s.start(cx);
                 }
             }))
