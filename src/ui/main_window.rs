@@ -184,7 +184,6 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// Notes what the next start restores and writes it once the window has been left alone for a moment.
     fn remember(&mut self, window: &Window, cx: &mut Context<Self>) {
         native::note_center(window);
         let mut saved = self.saved.clone();
@@ -219,7 +218,6 @@ impl MainWindow {
         }));
     }
 
-    /// Writes what `remember` noted behind the write before it.
     fn flush(&mut self, cx: &mut Context<Self>) {
         if !std::mem::take(&mut self.dirty) {
             return;
@@ -235,7 +233,6 @@ impl MainWindow {
         }));
     }
 
-    /// Writes what `remember` noted right now, as the window or the app goes away.
     fn write_now(&mut self) {
         if std::mem::take(&mut self.dirty) {
             let _ = winstate::save(&self.saved);
@@ -642,7 +639,6 @@ fn rect_of(b: Bounds<Pixels>) -> Rect {
     Rect { x: at(b.origin.x) as i32, y: at(b.origin.y) as i32, w: at(b.size.width).max(1.) as u32, h: at(b.size.height).max(1.) as u32 }
 }
 
-/// Where the remembered window opens on the monitors there are now, and on which one.
 fn restored(saved: &Saved, cx: &App) -> Option<(WindowBounds, DisplayId)> {
     let frame = saved.frame?;
     let displays = cx.displays();
