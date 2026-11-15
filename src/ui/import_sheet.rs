@@ -39,8 +39,9 @@ pub fn init(cx: &mut App) {
     });
 }
 
-fn same_dir(path: &std::path::Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+fn same_profile(found: &Found) -> (PathBuf, String) {
+    let dir = std::fs::canonicalize(&found.game_dir).unwrap_or_else(|_| found.game_dir.clone());
+    (dir, format!("{:?} {:?}", found.game_version, found.loader))
 }
 
 struct ImportSheet {
@@ -177,7 +178,7 @@ impl ImportSheet {
 
     fn picked(&self) -> Vec<Found> {
         let mut seen = HashSet::new();
-        self.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && self.chosen.contains(&i.key())).filter(|i| seen.insert(same_dir(&i.game_dir))).cloned().collect()
+        self.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && self.chosen.contains(&i.key())).filter(|i| seen.insert(same_profile(i))).cloned().collect()
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -216,11 +217,11 @@ impl ImportSheet {
             let _ = this.update(cx, |s, cx| {
                 s.loading = false;
                 s.scanning = false;
-                let known: HashSet<PathBuf> = s.libs.iter().flat_map(|l| &l.instances).map(|i| same_dir(&i.game_dir)).collect();
+                let known: HashSet<(PathBuf, String)> = s.libs.iter().flat_map(|l| &l.instances).map(same_profile).collect();
                 let found: Vec<Library> = found
                     .into_iter()
                     .map(|mut lib| {
-                        lib.instances.retain(|i| !known.contains(&same_dir(&i.game_dir)));
+                        lib.instances.retain(|i| !known.contains(&same_profile(i)));
                         lib
                     })
                     .filter(|lib| !lib.instances.is_empty())
