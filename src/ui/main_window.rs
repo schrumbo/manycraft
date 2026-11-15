@@ -340,7 +340,7 @@ impl Render for MainWindow {
             Page::Chat => super::chat::page(window, cx).into_any_element(),
             Page::Grid(batch) => match self.onboarding(cx) {
                 Some(empty) => match model::get(cx).read(cx).error.clone() {
-                    Some(error) => div().size_full().flex().flex_col().child(notice(error, &t, cx)).child(div().flex_1().min_h_0().child(empty)).into_any_element(),
+                    Some(error) => div().size_full().flex().flex_col().child(div().h(px(shell::TOOLBAR)).flex_none()).child(notice(error, &t, cx)).child(div().flex_1().min_h_0().child(empty)).into_any_element(),
                     None => empty,
                 },
                 None => {
