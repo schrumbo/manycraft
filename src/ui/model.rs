@@ -141,6 +141,8 @@ pub struct Model {
     pub imports: Vec<Import>,
     /// Batches being written as a `.mrpack`, by id.
     pub exporting: HashSet<String>,
+    /// Why the last message to the phone did not arrive, until one does.
+    pub phone_trouble: Option<String>,
 }
 
 /// An import as the sidebar shows it.
@@ -180,6 +182,8 @@ pub struct Updates {
     pub offline: bool,
     /// The user asked for the running check or download, so its progress shows in the sidebar too.
     pub asked: bool,
+    /// The running download was stopped and is winding down.
+    pub cancelling: bool,
 }
 
 impl Model {

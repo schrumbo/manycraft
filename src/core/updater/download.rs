@@ -3,17 +3,24 @@
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
+
+use super::Skip;
 
 const ATTEMPTS: u32 = 4;
 
 /// Downloads `url` into `part`, keeping what an earlier attempt already wrote there. Stops above `max` bytes.
-/// `progress` hears the bytes on disk and the full size when the server tells it.
-pub fn resumable(agent: &ureq::Agent, url: &str, part: &Path, max: u64, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<()> {
+/// `progress` hears the bytes on disk and the full size when the server tells it. Setting `cancel` ends the download
+/// with [`Skip::Cancelled`] at the next chunk and leaves `part` for a later resume.
+pub fn resumable(agent: &ureq::Agent, url: &str, part: &Path, max: u64, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<()> {
     let mut last = None;
     for _ in 0..ATTEMPTS {
-        match attempt(agent, url, part, max, progress) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(Skip::Cancelled.into());
+        }
+        match attempt(agent, url, part, max, cancel, progress) {
             Ok(()) => return Ok(()),
             Err(Fault::Fatal(e)) => return Err(e),
             Err(Fault::Again(e)) => last = Some(e),
@@ -27,7 +34,7 @@ enum Fault {
     Fatal(anyhow::Error),
 }
 
-fn attempt(agent: &ureq::Agent, url: &str, part: &Path, max: u64, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), Fault> {
+fn attempt(agent: &ureq::Agent, url: &str, part: &Path, max: u64, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), Fault> {
     let have = std::fs::metadata(part).map_or(0, |m| m.len());
     let mut request = agent.get(url);
     if have > 0 {
@@ -56,6 +63,10 @@ fn attempt(agent: &ureq::Agent, url: &str, part: &Path, max: u64, progress: &mut
     let mut buf = vec![0; 64 * 1024];
     progress(done, total);
     loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = file.sync_all();
+            return Err(Fault::Fatal(Skip::Cancelled.into()));
+        }
         let n = reader.read(&mut buf).map_err(|e| Fault::Again(e.into()))?;
         if n == 0 {
             break;
@@ -151,7 +162,7 @@ pub mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("x.part");
         let mut seen = Vec::new();
-        resumable(&agent(), &server.url, &part, 1 << 20, &mut |done, total| seen.push((done, total))).unwrap();
+        resumable(&agent(), &server.url, &part, 1 << 20, &AtomicBool::new(false), &mut |done, total| seen.push((done, total))).unwrap();
         assert_eq!(std::fs::read(&part).unwrap(), body());
         let ranges = server.ranges_seen.lock().unwrap().clone();
         assert_eq!(ranges, vec![None, Some("70000".into())]);
@@ -164,7 +175,7 @@ pub mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("x.part");
         std::fs::write(&part, vec![9u8; 5000]).unwrap();
-        resumable(&agent(), &server.url, &part, 1 << 20, &mut |_, _| {}).unwrap();
+        resumable(&agent(), &server.url, &part, 1 << 20, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&part).unwrap(), body());
     }
 
@@ -174,8 +185,39 @@ pub mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("x.part");
         std::fs::write(&part, body()).unwrap();
-        resumable(&agent(), &server.url, &part, 1 << 20, &mut |_, _| {}).unwrap();
+        resumable(&agent(), &server.url, &part, 1 << 20, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&part).unwrap(), body());
+    }
+
+    #[test]
+    fn a_cancelled_download_stops_and_keeps_its_part_for_a_resume() {
+        let server = serve(body(), true, None);
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("x.part");
+        let cancel = AtomicBool::new(false);
+        let e = resumable(&agent(), &server.url, &part, 1 << 20, &cancel, &mut |done, _| {
+            if done > 0 {
+                cancel.store(true, Ordering::SeqCst);
+            }
+        })
+        .unwrap_err();
+        assert_eq!(e.downcast_ref::<Skip>(), Some(&Skip::Cancelled));
+        let kept = std::fs::metadata(&part).unwrap().len();
+        assert!(kept > 0 && kept < 200_000, "{kept}");
+        resumable(&agent(), &server.url, &part, 1 << 20, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), body());
+        assert_eq!(server.ranges_seen.lock().unwrap().last(), Some(&Some(kept.to_string())));
+    }
+
+    #[test]
+    fn a_download_cancelled_before_it_starts_asks_nothing() {
+        let server = serve(body(), true, None);
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("x.part");
+        let e = resumable(&agent(), &server.url, &part, 1 << 20, &AtomicBool::new(true), &mut |_, _| panic!("started")).unwrap_err();
+        assert_eq!(e.downcast_ref::<Skip>(), Some(&Skip::Cancelled));
+        assert!(server.ranges_seen.lock().unwrap().is_empty());
+        assert!(!part.exists());
     }
 
     #[test]
@@ -183,7 +225,7 @@ pub mod tests {
         let server = serve(body(), true, None);
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("x.part");
-        assert!(resumable(&agent(), &server.url, &part, 1000, &mut |_, _| {}).is_err());
+        assert!(resumable(&agent(), &server.url, &part, 1000, &AtomicBool::new(false), &mut |_, _| {}).is_err());
         assert!(std::fs::metadata(&part).map_or(0, |m| m.len()) <= 1000);
     }
 }

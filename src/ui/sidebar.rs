@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelImport, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -220,7 +220,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                 .child(label);
             let row = base(tr("Update bereit"), "download");
             if launching {
-                return Some(row.opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(tr("Geht, sobald keine Instanz mehr startet."))).child(pill));
+                return Some(row.opacity(tint::DISABLED).cursor_not_allowed().tooltip(tip(super::updates::launching_line())).child(trailing(tr("Wartet"))));
             }
             Some(
                 row.cursor_pointer()
@@ -251,8 +251,22 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
         ),
         UpdateStatus::Checking if updates.asked => Some(base(tr("Sucht …"), "refresh-cw")),
         UpdateStatus::Downloading { version, percent } if updates.asked => {
-            let done = percent.map_or_else(|| version.clone(), |p| format!("{p} %"));
-            Some(base(tr("Update wird geladen"), "download").child(trailing(done)).tooltip(tip(trf("Version %@ wird geladen.", &[&version]))))
+            let stopping = updates.cancelling;
+            let done = if stopping { tr("Bricht ab …") } else { percent.map_or_else(|| version.clone(), |p| format!("{p} %")) };
+            let cancel = tr("Laden abbrechen");
+            let button = div().id("nav-update-cancel").mark("button", cancel.clone()).size(px(shell::PILL)).flex_none().rounded(px(radius::INNER)).flex().items_center().justify_center();
+            let button = if stopping {
+                button.opacity(tint::DISABLED).cursor_not_allowed().child(icon("x", iconsize::S, t.tertiary))
+            } else {
+                button
+                    .cursor_pointer()
+                    .key_nav()
+                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+                    .child(icon("x", iconsize::S, t.tertiary))
+                    .tooltip(tip(cancel))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(CancelUpdate), cx))
+            };
+            Some(base(tr("Update lädt"), "download").child(trailing(done)).child(button).tooltip(tip(if stopping { trf("Laden von Version %@ wird abgebrochen …", &[&version]) } else { trf("Version %@ wird geladen.", &[&version]) })))
         }
         _ => None,
     }

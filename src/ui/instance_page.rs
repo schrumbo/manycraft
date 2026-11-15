@@ -93,7 +93,7 @@ fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let id = id.to_owned();
-    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht. Solange Manycraft offen ist, kannst du das rückgängig machen."), tr("Löschen"), move |window, cx| {
+    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht. Solange Manycraft offen ist, kannst du das rückgängig machen."), tr("Löschen"), |_| None, move |window, cx| {
         let next = after(&model::get(cx).read(cx).instances, &id);
         match next {
             Some(next) => window.dispatch_action(Box::new(ShowInstance(next)), cx),
@@ -721,7 +721,7 @@ impl InstancePage {
             Switch::Loader(l) => trf("Auf %@ umstellen?", &[&l.name()]),
         };
         let page = cx.entity().downgrade();
-        sheet::confirm(window, cx, title, tr("Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben."), tr("Umstellen"), move |_, cx| {
+        sheet::confirm(window, cx, title, tr("Mods, die es dafür nicht gibt, werden entfernt. Welten bleiben."), tr("Umstellen"), |_| None, move |_, cx| {
             let switch = switch.clone();
             let _ = page.update(cx, |s, cx| {
                 if !s.blocked(cx) {

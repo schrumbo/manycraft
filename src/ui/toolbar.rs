@@ -34,8 +34,19 @@ pub fn slot() -> Div {
 /// The sidebar toggle, drawn once by the main window at the same place on every page.
 pub fn toggle(this: &MainWindow, t: &Theme, cx: &App) -> Div {
     let shown = if this.narrow_now { this.overlay } else { this.sidebar };
+    let note = if shown { None } else { super::updates::offer(&model::get(cx).read(cx).updates) };
     let hint = hint(if shown { tr("Seitenleiste ausblenden") } else { tr("Seitenleiste einblenden") }, &ToggleSidebar, cx);
-    div().absolute().occlude().top(px((shell::TOOLBAR - control::M) / 2.)).left(px(lead() + if this.narrow_now && this.overlay { shell::SIDEBAR } else { 0. })).child(icon_button("toggle-sidebar", "panel-left", hint, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx)))
+    let hint = match &note {
+        Some(note) => format!("{hint} · {note}"),
+        None => hint,
+    };
+    div()
+        .absolute()
+        .occlude()
+        .top(px((shell::TOOLBAR - control::M) / 2.))
+        .left(px(lead() + if this.narrow_now && this.overlay { shell::SIDEBAR } else { 0. }))
+        .child(icon_button("toggle-sidebar", "panel-left", hint, t).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx)))
+        .when(note.is_some(), |d| d.child(div().absolute().top(px(space::XS)).right(px(space::XS)).size(px(shell::DOT)).rounded(px(radius::FULL)).bg(t.accent)))
 }
 
 fn icon_button(id: &'static str, name: &'static str, hint: String, t: &Theme) -> Stateful<Div> {

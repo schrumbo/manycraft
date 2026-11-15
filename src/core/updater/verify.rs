@@ -10,6 +10,15 @@ use sha2::{Digest, Sha256};
 /// The public half of the key every release file is signed with in CI.
 pub const RELEASE_KEY: &str = "RWRbJqLBcsELLUfxnCzjjWf8RnLlRHGlZubizV3WPi+8fG39+E2P1znA";
 
+/// The key updates are checked against. Debug builds take `MANYCRAFT_UPDATE_KEY` instead, for tests against a local release server.
+pub fn release_key() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(key) = std::env::var("MANYCRAFT_UPDATE_KEY").ok().filter(|k| !k.trim().is_empty()) {
+        return key;
+    }
+    RELEASE_KEY.to_owned()
+}
+
 /// The trusted comment CI signs into every release file, which ties a signature to one version and file name.
 pub fn comment(version: &str, name: &str) -> String {
     format!("Manycraft {version} {name}")

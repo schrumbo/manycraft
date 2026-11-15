@@ -3,7 +3,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogEntrance, DialogFooter};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{FocusableExt, Sizable, WindowExt};
+use gpui_kit::component::{Disableable, FocusableExt, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -67,33 +67,40 @@ pub fn typing(window: &Window) -> bool {
 
 /// Asks before a change that cannot be taken back. Focus starts on Abbrechen, so Enter alone never runs `ok`.
 pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    alert(window, cx, title, message, ok_text, true, false, ok);
+    alert(window, cx, title, message, ok_text, true, false, |_| None, ok);
 }
 
-/// Asks before a change that is easy to redo or undo. Focus starts on the confirm button, so Enter confirms and Esc cancels.
-pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    alert(window, cx, title, message, ok_text, false, true, ok);
+/// Asks before a change that is easy to redo or undo. Focus starts on the confirm button, so Enter confirms and Esc
+/// cancels. While `blocked` names a reason the button is off and the reason shows in the alert, redrawn as that changes.
+pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, false, true, blocked, ok);
 }
 
 /// Like [`confirm`] with the red look, for a removal the user can take back right after.
-pub fn confirm_danger(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    alert(window, cx, title, message, ok_text, true, true, ok);
+pub fn confirm_danger(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, true, true, blocked, ok);
 }
 
-fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, danger: bool, focus_confirm: bool, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    let ok = std::rc::Rc::new(ok);
+#[allow(clippy::too_many_arguments)]
+fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, danger: bool, focus_confirm: bool, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    let (ok, blocked) = (std::rc::Rc::new(ok), std::rc::Rc::new(blocked));
     let cancel = cx.focus_handle();
     let accept = cx.focus_handle();
-    let first = if focus_confirm { accept.clone() } else { cancel.clone() };
-    window.open_alert_dialog(cx, move |alert, _, cx| {
-        let ok = ok.clone();
+    let first = if focus_confirm && blocked(cx).is_none() { accept.clone() } else { cancel.clone() };
+    window.open_alert_dialog(cx, move |dialog, _, cx| {
+        let (ok, check) = (ok.clone(), blocked.clone());
+        let reason = blocked(cx);
         let rings = super::theme::rings(cx);
-        let confirm = Button::new("alert-ok").label(ok_text.clone()).focus_ring(rings).track_focus(&accept).on_click(move |_, window, cx| {
-            window.close_dialog(cx);
-            ok(window, cx);
+        let t = Theme::get(cx);
+        let confirm = Button::new("alert-ok").label(ok_text.clone()).focus_ring(rings).track_focus(&accept).disabled(reason.is_some()).on_click(move |_, window, cx| {
+            if check(cx).is_none() {
+                window.close_dialog(cx);
+                ok(window, cx);
+            }
         });
         let confirm = if danger { confirm.danger() } else { confirm.primary() };
-        alert.title(title.clone()).description(message.clone()).on_ok(pass_enter).footer(
+        let body = div().flex().flex_col().gap(px(space::XS)).child(message.clone()).children(reason.map(|r| div().text_color(t.attention_text).child(r)));
+        dialog.title(title.clone()).description(body).on_ok(pass_enter).footer(
             DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).focus_ring(rings).track_focus(&cancel).on_click(|_, window, cx| window.close_dialog(cx))).child(confirm),
         )
     });
@@ -113,21 +120,29 @@ pub enum Look {
     Plain,
 }
 
-/// Says why `element` does nothing: not-allowed cursor, a Tab stop with the focus ring, `reason` as tooltip and as the label of its automation mark, and `content` dimmed inside it. Leave `element` unmarked and give it no content of its own; it is never dimmed itself, so its ring keeps full contrast.
+/// Says why `element` does nothing: not-allowed cursor, a Tab stop with the focus ring, `reason` as tooltip, as the label of its automation mark and, after Enter outside a sheet, as a notice, and `content` dimmed inside it. Leave `element` unmarked and give it no content of its own; it is never dimmed itself, so its ring keeps full contrast.
 pub fn unavailable(element: Stateful<Div>, content: impl IntoElement, reason: impl Into<SharedString>) -> Stateful<Div> {
     let reason: SharedString = reason.into();
     dim(element, "disabled", reason.clone(), reason).child(div().opacity(tint::DISABLED).child(content))
 }
 
 fn dim(element: Stateful<Div>, role: &'static str, reason: SharedString, label: SharedString) -> Stateful<Div> {
-    element.cursor_not_allowed().key_nav().tooltip(tip(reason)).mark(role, label)
+    said(element.cursor_not_allowed().key_nav().tooltip(tip(reason.clone())).mark(role, label), reason)
+}
+
+fn said(element: Stateful<Div>, reason: SharedString) -> Stateful<Div> {
+    element.on_click(move |e, window, cx| {
+        if e.is_keyboard() && !window.has_active_dialog(cx) {
+            super::undo::note(reason.to_string(), cx);
+        }
+    })
 }
 
 /// Covers a disabled `control` that takes hover itself, such as a select or a segmented control, so the cover carries the reason as tooltip, the Tab stop and the ring.
 pub fn unavailable_over(id: impl Into<SharedString>, control: impl IntoElement, reason: impl Into<SharedString>) -> Div {
     let reason: SharedString = reason.into();
-    let cover = div().id(id.into()).absolute().inset_0().occlude().cursor_not_allowed().key_nav_inside().tooltip(tip(reason.clone())).mark("disabled", reason);
-    div().relative().child(control).child(cover)
+    let cover = div().id(id.into()).absolute().inset_0().occlude().cursor_not_allowed().key_nav_inside().tooltip(tip(reason.clone())).mark("disabled", reason.clone());
+    div().relative().child(control).child(said(cover, reason))
 }
 
 /// A labelled button. A disabled one keeps its place and takes no input; a busy one keeps its label beside a spinner.
@@ -181,7 +196,7 @@ fn button_for(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_
                     .when_some(icon_name, |d, name| d.child(icon(name, iconsize::S, fg)))
                     .child(label.clone()),
             ),
-            None => inner(base.opacity(tint::DISABLED)),
+            None => inner(base.opacity(tint::DISABLED).cursor_not_allowed()),
         };
     }
     if busy {

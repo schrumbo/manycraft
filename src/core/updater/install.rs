@@ -70,18 +70,21 @@ pub struct Plan {
     /// The version running now.
     pub from: String,
     pub relaunch: bool,
+    /// When the app that starts the helper began, to tell it from a later process that got its id.
+    #[serde(default)]
+    pub started: Option<String>,
 }
 
 /// The plan that installs the ready update over the running `current`, when there is one this install can take.
 pub fn install_plan(state: &State, dir: &Path, here: &Here, current: &str, relaunch: bool) -> Option<Plan> {
     let ready = super::ready_for(state, dir, current)?;
-    here.kind.installs_itself().then(|| Plan { rollback: false, kind: here.kind, target: here.target.clone(), file: dir.join(&ready.file), version: ready.version, notes: ready.notes, from: current.to_owned(), relaunch })
+    here.kind.installs_itself().then(|| Plan { rollback: false, kind: here.kind, target: here.target.clone(), file: dir.join(&ready.file), version: ready.version, notes: ready.notes, from: current.to_owned(), relaunch, started: None })
 }
 
 /// The plan that puts the kept previous version back.
 pub fn rollback_plan(state: &State, here: &Here, current: &str, relaunch: bool) -> Option<Plan> {
     let previous = super::previous(state)?;
-    here.kind.installs_itself().then(|| Plan { rollback: true, kind: here.kind, target: here.target.clone(), file: previous.path, version: previous.version, notes: String::new(), from: current.to_owned(), relaunch })
+    here.kind.installs_itself().then(|| Plan { rollback: true, kind: here.kind, target: here.target.clone(), file: previous.path, version: previous.version, notes: String::new(), from: current.to_owned(), relaunch, started: None })
 }
 
 /// Starts the helper that carries out `plan` once this process has ended.
@@ -92,7 +95,8 @@ pub fn spawn(dir: &Path, plan: &Plan) -> Result<()> {
     let exe = std::env::current_exe().context("cannot find the running program")?;
     std::fs::copy(&exe, &helper).with_context(|| format!("cannot copy the updater to {}", helper.display()))?;
     let plan_path = dir.join(PLAN);
-    super::net::write_atomic(&plan_path, &serde_json::to_vec_pretty(plan)?)?;
+    let plan = Plan { started: started(std::process::id()), ..plan.clone() };
+    super::net::write_atomic(&plan_path, &serde_json::to_vec_pretty(&plan)?)?;
     let mut command = Command::new(&helper);
     command.arg("apply-update").arg(&plan_path).arg(std::process::id().to_string());
     detached(&mut command).with_context(|| format!("cannot start {}", helper.display()))
@@ -133,12 +137,12 @@ pub fn cli(args: &[String]) -> i32 {
         }
     };
     let _ = std::fs::remove_file(&plan_path);
-    let ended = pid.parse().is_ok_and(wait_gone);
+    let ended = pid.parse().is_ok_and(|pid| wait_gone(pid, plan.started.as_deref()));
     let result = if !ended {
         Err(anyhow::anyhow!("Manycraft did not end"))
     } else {
         match crate::core::lock::exclusive_within(&dir.join(RUNNING), WAIT) {
-            Ok(_alone) => apply(&dir, &plan, verify::RELEASE_KEY),
+            Ok(_alone) => apply(&dir, &plan, &verify::release_key()),
             Err(_) => Err(anyhow::anyhow!("another Manycraft is still running")),
         }
     };
@@ -153,15 +157,50 @@ pub fn cli(args: &[String]) -> i32 {
     i32::from(result.is_err())
 }
 
-fn wait_gone(pid: u32) -> bool {
+fn wait_gone(pid: u32, started: Option<&str>) -> bool {
     let until = Instant::now() + WAIT;
-    while crate::core::drive::alive(pid) {
+    while !gone(pid, started) {
         if Instant::now() >= until {
             return false;
         }
         std::thread::sleep(POLL);
     }
     true
+}
+
+/// Whether the process that began at `started` as `pid` has ended; a later process with the same id does not count as it.
+fn gone(pid: u32, started: Option<&str>) -> bool {
+    !crate::core::drive::alive(pid) || started.is_some_and(|then| self::started(pid).is_none_or(|now| now != then))
+}
+
+#[cfg(windows)]
+fn started(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut times: [FILETIME; 4] = std::mem::zeroed();
+        let [created, exited, kernel, user] = &mut times;
+        let ok = GetProcessTimes(handle, created, exited, kernel, user) != 0;
+        CloseHandle(handle);
+        ok.then(|| ((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)).to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn started(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19).map(str::to_owned)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn started(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-o", "lstart=", "-p"]).arg(pid.to_string()).stdin(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !text.is_empty()).then_some(text)
 }
 
 fn note(dir: &Path, line: &str) {
@@ -255,10 +294,15 @@ fn install(dir: &Path, plan: &Plan, key: &str, kept: &Path) -> Result<()> {
     match plan.kind {
         Kind::Installer => {
             keep_copy(&plan.target, kept)?;
-            let result = run_installer(&plan.file, plan.target.parent().context("the install has no folder")?);
-            match result {
-                Err(e) if place_file(kept, &plan.target).is_err() => Err(e.context(Unrestored)),
-                result => result,
+            match run_installer(&plan.file, plan.target.parent().context("the install has no folder")?) {
+                Err(e) => match place_file(kept, &plan.target) {
+                    Ok(()) => {
+                        show_version(&plan.from);
+                        Err(e)
+                    }
+                    Err(_) => Err(e.context(Unrestored)),
+                },
+                ok => ok,
             }
         }
         Kind::AppImage => {
@@ -273,9 +317,59 @@ fn install(dir: &Path, plan: &Plan, key: &str, kept: &Path) -> Result<()> {
 fn roll_back(plan: &Plan) -> Result<()> {
     ensure!(plan.file.exists(), "the previous version is gone");
     match plan.kind {
-        Kind::Installer | Kind::AppImage => place_file(&plan.file, &plan.target),
+        Kind::Installer => {
+            place_file(&plan.file, &plan.target)?;
+            show_version(&plan.version);
+            Ok(())
+        }
+        Kind::AppImage => place_file(&plan.file, &plan.target),
         Kind::Bundle => swap_bundle(&|new| copy_bundle(&plan.file, new), &plan.target, None),
         Kind::Package | Kind::Unknown => bail!("this install cannot go back by itself"),
+    }
+}
+
+#[cfg(windows)]
+const UNINSTALL: &str =r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft";
+
+/// Makes the version Windows lists for Manycraft under Apps match the files in place; nothing changes without an installed entry.
+#[cfg(windows)]
+fn show_version(version: &str) {
+    registry::set_version(&uninstall_key(), version);
+}
+
+/// The registry key of the install entry. Debug builds take `MANYCRAFT_UNINSTALL_KEY`, for tests with an installer of their own.
+#[cfg(windows)]
+fn uninstall_key() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(key) = std::env::var("MANYCRAFT_UNINSTALL_KEY").ok().filter(|k| !k.trim().is_empty()) {
+        return key;
+    }
+    UNINSTALL.to_owned()
+}
+
+#[cfg(not(windows))]
+fn show_version(_: &str) {}
+
+#[cfg(windows)]
+mod registry {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegOpenKeyExW, RegSetValueExW};
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain([0]).collect()
+    }
+
+    pub fn set_version(key: &str, version: &str) -> bool {
+        let mut handle: HKEY = std::ptr::null_mut();
+        unsafe {
+            if RegOpenKeyExW(HKEY_CURRENT_USER, wide(key).as_ptr(), 0, KEY_SET_VALUE, &mut handle) != ERROR_SUCCESS {
+                return false;
+            }
+            let data = wide(version);
+            let status = RegSetValueExW(handle, wide("DisplayVersion").as_ptr(), 0, REG_SZ, data.as_ptr().cast(), u32::try_from(data.len() * 2).unwrap_or(0));
+            RegCloseKey(handle);
+            status == ERROR_SUCCESS
+        }
     }
 }
 
@@ -366,11 +460,23 @@ fn install_bundle(dir: &Path, dmg: &Path, bundle: &Path, keep: &Path) -> Result<
     remove_all(&mount);
     std::fs::create_dir_all(&mount)?;
     run(Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"]).arg(&mount).arg(dmg))?;
-    let source = mount.join(bundle.file_name().context("no bundle name")?);
+    let name = bundle.file_name().context("no bundle name")?;
+    let source = app_in(&mount, name).unwrap_or_else(|| mount.join(name));
     let result = if source.is_dir() { swap_bundle(&|new| copy_bundle(&source, new), bundle, Some(keep)) } else { Err(anyhow::anyhow!("the disk image holds no {}", source.display())) };
     let _ = run(Command::new("hdiutil").arg("detach").arg(&mount).arg("-force"));
     let _ = std::fs::remove_dir(&mount);
     result
+}
+
+/// The app a mounted disk image holds: the one called `name`, else the only one with another name.
+fn app_in(mount: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
+    let same = mount.join(name);
+    if same.is_dir() {
+        return Some(same);
+    }
+    let mut apps = std::fs::read_dir(mount).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.extension().is_some_and(|e| e == "app"));
+    let first = apps.next()?;
+    apps.next().is_none().then_some(first)
 }
 
 #[cfg(target_os = "macos")]
@@ -407,15 +513,26 @@ fn remove_all(path: &Path) {
     }
 }
 
+fn relaunch_command(kind: Kind, target: &Path) -> Command {
+    match kind {
+        Kind::Bundle => {
+            let mut open = Command::new("open");
+            open.arg(target);
+            open
+        }
+        Kind::AppImage => {
+            let mut command = Command::new(target);
+            for var in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {
+                command.env_remove(var);
+            }
+            command
+        }
+        _ => Command::new(target),
+    }
+}
+
 fn relaunch(kind: Kind, target: &Path) -> Result<()> {
-    let mut command = if kind == Kind::Bundle {
-        let mut open = Command::new("open");
-        open.arg(target);
-        open
-    } else {
-        Command::new(target)
-    };
-    detached(&mut command).with_context(|| format!("cannot start {}", target.display()))
+    detached(&mut relaunch_command(kind, target)).with_context(|| format!("cannot start {}", target.display()))
 }
 
 /// Counts this start of `current` if it is a fresh update that has not yet proven itself. True when the earlier
@@ -647,7 +764,7 @@ mod tests {
         std::fs::write(&target, b"old version").unwrap();
         let (file, key) = signed(&dir);
         std::fs::write(&file, b"swapped after the download").unwrap();
-        let plan = Plan { rollback: false, kind: Kind::AppImage, target: target.clone(), file: file.clone(), version: "0.6.0".into(), notes: String::new(), from: "0.5.0".into(), relaunch: false };
+        let plan = Plan { rollback: false, kind: Kind::AppImage, target: target.clone(), file: file.clone(), version: "0.6.0".into(), notes: String::new(), from: "0.5.0".into(), relaunch: false, started: None };
         assert!(apply(&dir, &plan, &key).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"old version");
         let state = super::super::load(&dir);
@@ -673,6 +790,59 @@ mod tests {
         assert_eq!(std::fs::read(keep.join("Contents").join("v")).unwrap(), b"old");
         let leftovers: Vec<_> = std::fs::read_dir(root.path()).unwrap().flatten().map(|e| e.file_name()).filter(|n| n.to_string_lossy().starts_with('.')).collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn a_process_that_reused_the_id_is_not_waited_for() {
+        let me = std::process::id();
+        let stamp = started(me);
+        assert!(stamp.is_some());
+        assert!(!gone(me, stamp.as_deref()));
+        assert!(!gone(me, None));
+        assert!(gone(me, Some("an earlier process")));
+        assert!(wait_gone(me, Some("an earlier process")));
+    }
+
+    #[test]
+    fn a_plan_without_a_start_time_still_reads() {
+        let old = r#"{"rollback":false,"kind":"Installer","target":"x","file":"y","version":"0.9.0","notes":"","from":"0.8.0","relaunch":true}"#;
+        assert_eq!(serde_json::from_str::<Plan>(old).unwrap().started, None);
+    }
+
+    #[test]
+    fn a_disk_image_with_a_renamed_app_is_still_found() {
+        let mount = tempfile::tempdir().unwrap();
+        assert_eq!(app_in(mount.path(), "Manycraft.app".as_ref()), None);
+        std::fs::create_dir(mount.path().join("Manycraft Beta.app")).unwrap();
+        std::fs::write(mount.path().join("README.txt"), b"").unwrap();
+        assert_eq!(app_in(mount.path(), "Manycraft.app".as_ref()), Some(mount.path().join("Manycraft Beta.app")));
+        std::fs::create_dir(mount.path().join("Other.app")).unwrap();
+        assert_eq!(app_in(mount.path(), "Manycraft.app".as_ref()), None);
+        std::fs::create_dir(mount.path().join("Manycraft.app")).unwrap();
+        assert_eq!(app_in(mount.path(), "Manycraft.app".as_ref()), Some(mount.path().join("Manycraft.app")));
+    }
+
+    #[test]
+    fn an_app_image_starts_without_the_old_images_environment() {
+        let command = relaunch_command(Kind::AppImage, Path::new("Manycraft.AppImage"));
+        let removed: Vec<_> = command.get_envs().filter(|(_, value)| value.is_none()).map(|(name, _)| name.to_string_lossy().into_owned()).collect();
+        assert_eq!(removed, ["APPDIR", "APPIMAGE", "ARGV0", "OWD"]);
+        assert_eq!(relaunch_command(Kind::Bundle, Path::new("Manycraft.app")).get_program(), "open");
+        assert_eq!(relaunch_command(Kind::Installer, Path::new("manycraft.exe")).get_envs().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_listed_version_follows_a_rollback() {
+        let key = format!(r"Software\ManycraftUpdaterTest{}", std::process::id());
+        let reg = |args: &[&str]| Command::new("reg").args(args).output().unwrap();
+        let path = format!(r"HKCU\{key}");
+        assert!(!registry::set_version(&key, "0.5.0"));
+        assert!(reg(&["add", &path, "/v", "DisplayVersion", "/d", "0.9.0", "/f"]).status.success());
+        assert!(registry::set_version(&key, "0.5.0"));
+        let shown = String::from_utf8_lossy(&reg(&["query", &path, "/v", "DisplayVersion"]).stdout).into_owned();
+        reg(&["delete", &path, "/f"]);
+        assert!(shown.contains("0.5.0") && !shown.contains("0.9.0"), "{shown}");
     }
 
     #[test]

@@ -1,10 +1,12 @@
 //! The updater as the app shows it: the daily check, the download in the background, the restart that installs, going back.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::*;
 
-use super::actions::{CheckForUpdates, DismissNews, PreviousVersion, RestartToUpdate};
+use super::actions::{CancelUpdate, CheckForUpdates, DismissNews, PreviousVersion, RestartToUpdate};
 use super::model::{self, Phase, UpdateStatus, Updates};
 use super::sheet;
 use crate::core::i18n::{tr, trf};
@@ -25,6 +27,8 @@ enum Quit {
 struct Flight {
     busy: bool,
     quit: Option<Quit>,
+    cancel: Option<Arc<AtomicBool>>,
+    declined: Option<String>,
 }
 
 impl Global for Flight {}
@@ -39,6 +43,7 @@ pub fn init(cx: &mut App) {
     cx.set_global(Flight::default());
     cx.background_spawn(async { install::hold() }).detach();
     cx.on_action(|_: &CheckForUpdates, cx| check(true, cx));
+    cx.on_action(|_: &CancelUpdate, cx| cancel(cx));
     cx.on_action(|_: &RestartToUpdate, cx| sheet::in_window(cx, restart));
     cx.on_action(|_: &PreviousVersion, cx| sheet::in_window(cx, go_back));
     cx.on_action(|_: &DismissNews, cx| dismiss_news(cx));
@@ -143,7 +148,8 @@ pub fn check(asked: bool, cx: &mut App) {
                 Ok((Some(found), kind, _)) => {
                     let installs = kind.installs_itself() && release::pick(&found.assets, kind, std::env::consts::ARCH).is_some();
                     set(cx, |u| u.status = UpdateStatus::Available { version: found.version.clone(), page: found.page.clone(), installs });
-                    if installs && (auto || asked) {
+                    let declined = cx.global::<Flight>().declined.as_deref().is_some_and(|d| release::same(d, &found.version));
+                    if installs && (asked || (auto && !declined)) {
                         download(found, kind, asked, cx);
                     } else {
                         set(cx, |u| u.asked = false);
@@ -177,11 +183,14 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
     set(cx, |u| {
         u.status = UpdateStatus::Downloading { version: version.clone(), percent: None };
         u.asked = asked;
+        u.cancelling = false;
     });
+    let stop = Arc::new(AtomicBool::new(false));
+    cx.global_mut::<Flight>().cancel = Some(stop.clone());
     let (tx, rx) = async_channel::unbounded();
     let spawned = std::thread::Builder::new().name("update-download".into()).spawn(move || {
         let mut last = None;
-        let result = updater::prepare(&found, kind, asked, &mut |done, total| {
+        let result = updater::prepare(&found, kind, asked, &stop, &mut |done, total| {
             let percent = total.filter(|t| *t > 0).map(|t| u8::try_from((done.saturating_mul(100) / t).min(100)).unwrap_or(100));
             if percent != last {
                 last = percent;
@@ -196,6 +205,8 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
     });
     if spawned.is_err() {
         busy(cx, false);
+        cx.global_mut::<Flight>().cancel = None;
+        set(cx, |u| u.status = UpdateStatus::Idle);
         return;
     }
     let page = found_page(&version, cx);
@@ -209,8 +220,14 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
                 }),
                 Msg::Done(result) => {
                     busy(cx, false);
+                    let flight = cx.global_mut::<Flight>();
+                    flight.cancel = None;
+                    if matches!(result, Err((Some(Skip::Cancelled), _))) {
+                        flight.declined = Some(version.clone());
+                    }
                     set(cx, |u| {
                         u.asked = false;
+                        u.cancelling = false;
                         match result {
                             Ok(version) => {
                                 u.status = UpdateStatus::Ready { version };
@@ -229,6 +246,31 @@ fn download(found: Release, kind: Kind, asked: bool, cx: &mut App) {
         }
     })
     .detach();
+}
+
+fn cancel(cx: &mut App) {
+    let Some(stop) = cx.global::<Flight>().cancel.clone() else { return };
+    stop.store(true, Ordering::SeqCst);
+    set(cx, |u| u.cancelling = true);
+}
+
+/// Whether a download is running that [`CancelUpdate`] can stop.
+pub fn cancellable(u: &Updates) -> bool {
+    matches!(u.status, UpdateStatus::Downloading { .. }) && !u.cancelling
+}
+
+/// What the sidebar's update row says, for places that show it only as a hint when the sidebar is hidden.
+pub fn offer(u: &Updates) -> Option<String> {
+    match &u.status {
+        UpdateStatus::Ready { .. } => Some(tr("Update bereit")),
+        UpdateStatus::Available { .. } => Some(tr("Update verfügbar")),
+        _ => None,
+    }
+}
+
+/// Why starting or going back waits while instances are still starting.
+pub fn launching_line() -> String {
+    tr("Das geht, sobald keine Instanz mehr startet.")
 }
 
 fn found_page(version: &str, cx: &App) -> String {
@@ -262,7 +304,7 @@ fn restart(window: &mut Window, cx: &mut App) {
         quit(Quit::Install, cx);
         return;
     }
-    sheet::ask(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), |_, cx| quit_unless_launching(Quit::Install, cx));
+    sheet::confirm(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
 }
 
 fn go_back(window: &mut Window, cx: &mut App) {
@@ -275,7 +317,11 @@ fn go_back(window: &mut Window, cx: &mut App) {
     if running > 0 {
         message = format!("{message} {}", stops(running));
     }
-    sheet::ask(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), |_, cx| quit_unless_launching(Quit::Back, cx));
+    sheet::confirm(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), blocked, |_, cx| quit_unless_launching(Quit::Back, cx));
+}
+
+fn blocked(cx: &App) -> Option<String> {
+    (counts(cx).0 > 0).then(launching_line)
 }
 
 fn quit_unless_launching(how: Quit, cx: &mut App) {
@@ -305,6 +351,7 @@ pub fn status_line(u: &Updates) -> String {
         UpdateStatus::Current => tr("Das ist die neueste Version."),
         UpdateStatus::Available { version, installs: true, .. } => trf("Version %@ ist verfügbar.", &[version]),
         UpdateStatus::Available { version, installs: false, .. } => trf("Version %@ ist verfügbar. Diese Installation aktualisiert sich nicht selbst.", &[version]),
+        UpdateStatus::Downloading { version, .. } if u.cancelling => trf("Laden von Version %@ wird abgebrochen …", &[version]),
         UpdateStatus::Downloading { version, percent: Some(p) } => trf("Version %@ wird geladen: %@", &[version, &format!("{p} %")]),
         UpdateStatus::Downloading { version, percent: None } => trf("Version %@ wird geladen …", &[version]),
         UpdateStatus::Ready { version } => trf("Version %@ ist bereit und wird beim Beenden installiert.", &[version]),

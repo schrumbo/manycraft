@@ -8,6 +8,7 @@ pub mod verify;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -151,6 +152,8 @@ pub enum Skip {
     NoInstaller,
     /// The last attempt failed less than a day ago.
     Waiting,
+    /// The user stopped the download; what was loaded stays for the next try.
+    Cancelled,
 }
 
 impl std::fmt::Display for Skip {
@@ -158,6 +161,7 @@ impl std::fmt::Display for Skip {
         f.write_str(match self {
             Skip::NoInstaller => "no signed installer for this system",
             Skip::Waiting => "the last attempt failed less than a day ago",
+            Skip::Cancelled => "the download was cancelled",
         })
     }
 }
@@ -166,13 +170,14 @@ impl std::error::Error for Skip {}
 
 /// Downloads the installer of `release` that fits `kind`, checks it against its SHA-256 and the release signature, and
 /// remembers it as ready. A verified copy already there is reused; a failure waits a day unless `force`.
-pub fn prepare(release: &Release, kind: Kind, force: bool, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Ready> {
+/// Setting `cancel` stops it with [`Skip::Cancelled`], which counts as no failure.
+pub fn prepare(release: &Release, kind: Kind, force: bool, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Ready> {
     let agent = net::agent(None)?;
-    prepare_in(&dir(), release, kind, std::env::consts::ARCH, verify::RELEASE_KEY, force, now(), &agent, progress)
+    prepare_in(&dir(), release, kind, std::env::consts::ARCH, &verify::release_key(), force, now(), &agent, cancel, progress)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_in(dir: &Path, release: &Release, kind: Kind, arch: &str, key: &str, force: bool, now: u64, agent: &ureq::Agent, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Ready> {
+fn prepare_in(dir: &Path, release: &Release, kind: Kind, arch: &str, key: &str, force: bool, now: u64, agent: &ureq::Agent, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Ready> {
     let state = load(dir);
     if let Some(ready) = state.ready.filter(|r| release::same(&r.version, &release.version) && dir.join(&r.file).is_file()) {
         return Ok(ready);
@@ -198,13 +203,16 @@ fn prepare_in(dir: &Path, release: &Release, kind: Kind, arch: &str, key: &str, 
         let sig = release::sidecar(&release.assets, &asset.name, "minisig").context("no signature")?;
         Ok((download::text(agent, &sha.url)?, download::text(agent, &sig.url)?))
     })();
-    let (sha, sig) = sidecars.map_err(|e| fail(Trouble::Download, e))?;
+    let (sha, sig) = sidecars.map_err(|e| if cancel.load(Ordering::SeqCst) { Skip::Cancelled.into() } else { fail(Trouble::Download, e) })?;
     let part = dir.join(format!("{}.part", asset.name));
     let max = if asset.size > 0 { asset.size.min(MAX_SIZE) } else { MAX_SIZE };
-    download::resumable(agent, &asset.url, &part, max, progress).map_err(|e| fail(Trouble::Download, e))?;
+    download::resumable(agent, &asset.url, &part, max, cancel, progress).map_err(|e| if e.downcast_ref::<Skip>() == Some(&Skip::Cancelled) { e } else { fail(Trouble::Download, e) })?;
     if let Err(e) = verify::file(&part, &sha, &sig, key, &verify::comment(&release.version, &asset.name)) {
         let _ = std::fs::remove_file(&part);
         return Err(fail(Trouble::Damaged, e));
+    }
+    if cancel.load(Ordering::SeqCst) {
+        bail!(Skip::Cancelled);
     }
     let file = dir.join(&asset.name);
     std::fs::write(sidecar_path(&file, "sha256"), &sha)?;
@@ -275,6 +283,7 @@ mod tests {
     use serde_json::json;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/testdata/update");
+    const NO: AtomicBool = AtomicBool::new(false);
 
     fn list(tag: &str) -> serde_json::Value {
         json!([{ "tag_name": tag, "html_url": format!("https://github.com/schrumbo/manycraft/releases/tag/{tag}"), "draft": false, "prerelease": false, "body": "Faster." }])
@@ -370,7 +379,7 @@ mod tests {
         let hosted = host(body.clone(), sha, sig);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Manycraft-Setup-0.8.0-windows-x64.exe"), b"old").unwrap();
-        let ready = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100, &agent(), &mut |_, _| {}).unwrap();
+        let ready = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100, &agent(), &NO, &mut |_, _| {}).unwrap();
         assert_eq!(ready.version, "0.9.0");
         assert_eq!(std::fs::read(dir.path().join(&ready.file)).unwrap(), body);
         assert!(sidecar_path(&dir.path().join(&ready.file), "minisig").is_file());
@@ -379,7 +388,7 @@ mod tests {
         assert_eq!(state.ready.as_ref(), Some(&ready));
         assert_eq!(ready_for(&state, dir.path(), "0.5.0"), Some(ready.clone()));
         assert_eq!(ready_for(&state, dir.path(), "0.9.0"), None);
-        let again = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", "unused", false, 101, &agent(), &mut |_, _| panic!("downloaded twice")).unwrap();
+        let again = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", "unused", false, 101, &agent(), &NO, &mut |_, _| panic!("downloaded twice")).unwrap();
         assert_eq!(again, ready);
     }
 
@@ -389,14 +398,14 @@ mod tests {
         body[3] ^= 0x20;
         let hosted = host(body, sha, sig);
         let dir = tempfile::tempdir().unwrap();
-        assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100, &agent(), &mut |_, _| {}).is_err());
+        assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100, &agent(), &NO, &mut |_, _| {}).is_err());
         let state = load(dir.path());
         assert_eq!(state.trouble, Some(Trouble::Damaged));
         assert_eq!(state.ready, None);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name() != STATE && e.file_name() != DOWNLOADING).count(), 0);
-        let waiting = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100 + DAY - 1, &agent(), &mut |_, _| {}).unwrap_err();
+        let waiting = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100 + DAY - 1, &agent(), &NO, &mut |_, _| {}).unwrap_err();
         assert_eq!(waiting.downcast_ref::<Skip>(), Some(&Skip::Waiting));
-        assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100 + DAY - 1, &agent(), &mut |_, _| {}).unwrap_err().downcast_ref::<Skip>().is_none());
+        assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100 + DAY - 1, &agent(), &NO, &mut |_, _| {}).unwrap_err().downcast_ref::<Skip>().is_none());
     }
 
     #[test]
@@ -405,10 +414,24 @@ mod tests {
         let hosted = host(body, sha, sig);
         let dir = tempfile::tempdir().unwrap();
         let held = crate::core::lock::try_exclusive(&dir.path().join(DOWNLOADING)).unwrap().unwrap();
-        let e = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100, &agent(), &mut |_, _| {}).unwrap_err();
+        let e = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100, &agent(), &NO, &mut |_, _| {}).unwrap_err();
         assert_eq!(e.downcast_ref::<Skip>(), Some(&Skip::Waiting));
         drop(held);
-        prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100, &agent(), &mut |_, _| {}).unwrap();
+        prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, true, 100, &agent(), &NO, &mut |_, _| {}).unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_download_is_no_failure_and_resumes() {
+        let (body, sha, sig, key) = fixture();
+        let hosted = host(body.clone(), sha, sig);
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(true);
+        let e = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 100, &agent(), &cancel, &mut |_, _| {}).unwrap_err();
+        assert_eq!(e.downcast_ref::<Skip>(), Some(&Skip::Cancelled));
+        let state = load(dir.path());
+        assert_eq!((state.trouble, state.failed_at, state.ready), (None, 0, None));
+        let ready = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", &key, false, 101, &agent(), &NO, &mut |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(dir.path().join(&ready.file)).unwrap(), body);
     }
 
     #[test]
@@ -416,7 +439,7 @@ mod tests {
         let (body, sha, sig, _) = fixture();
         let hosted = host(body, sha, sig);
         let dir = tempfile::tempdir().unwrap();
-        assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", verify::RELEASE_KEY, false, 100, &agent(), &mut |_, _| {}).is_err());
+        assert!(prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", verify::RELEASE_KEY, false, 100, &agent(), &NO, &mut |_, _| {}).is_err());
         assert_eq!(load(dir.path()).trouble, Some(Trouble::Damaged));
     }
 
@@ -426,7 +449,7 @@ mod tests {
         let hosted = host(body, sha, sig);
         let dir = tempfile::tempdir().unwrap();
         for kind in [Kind::Package, Kind::Unknown, Kind::Bundle] {
-            let e = prepare_in(dir.path(), &hosted.release, kind, "x86_64", &key, true, 100, &agent(), &mut |_, _| {}).unwrap_err();
+            let e = prepare_in(dir.path(), &hosted.release, kind, "x86_64", &key, true, 100, &agent(), &NO, &mut |_, _| {}).unwrap_err();
             assert_eq!(e.downcast_ref::<Skip>(), Some(&Skip::NoInstaller));
         }
     }

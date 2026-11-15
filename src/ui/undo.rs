@@ -104,7 +104,7 @@ pub fn retry(kind: Kind, at: Instant, cx: &mut App) {
     push(kind, true, at, cx);
 }
 
-/// Shows `text` in the notice stack for a while, without an undo: why an undo did not work.
+/// Shows `text` in the notice stack for a while, without an undo: why an undo or a disabled control did not work.
 pub fn note(text: String, cx: &mut App) {
     let id = toasts(cx).update(cx, |t, cx| {
         t.next_note += 1;
