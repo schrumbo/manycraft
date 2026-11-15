@@ -1277,6 +1277,7 @@ fn build_edit(name: &str, version: &str, loader: &Loader, loader_version: &str, 
         loader: loader.with_version(pinned),
         memory_mb,
         jvm_args: args.split_whitespace().map(str::to_owned).collect(),
+        options: Default::default(),
         mods: if matches!(loader, Loader::Fabric(_)) { mods } else { Vec::new() },
     }
 }

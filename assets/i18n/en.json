@@ -867,5 +867,15 @@
   "%@ zurücksetzen…": "Reset %@…",
   "%@ lädt keine Mods.": "%@ does not load mods.",
   "Mods verwalten…": "Manage mods…",
-  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open."
+  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open.",
+  "Das gewählte Java fehlt: %@": "The chosen Java is missing: %@",
+  "Minecraft %@ braucht Java %@, gewählt ist Java %@.": "Minecraft %@ needs Java %@, Java %@ is chosen.",
+  "In %@ ist kein Java.": "There is no Java in %@.",
+  "Die Java-Version „%@“ ist unbekannt.": "The Java version “%@” is unknown.",
+  "Den Arbeitsspeicher stellst du unter „Arbeitsspeicher“ ein.": "Set the memory under “Memory”.",
+  "Gib Breite und Höhe an.": "Enter width and height.",
+  "Jedes Java-Argument beginnt mit „-“, „%@“ nicht.": "Every Java argument starts with “-”, “%@” does not.",
+  "„%@“ setzt Manycraft selbst.": "Manycraft sets “%@” itself.",
+  "Breite und Höhe sind ganze Zahlen von %@ bis %@.": "Width and height are whole numbers from %@ to %@.",
+  "Dort ist kein Java. Wähle die Datei „java“ im Ordner „bin“ eines Java.": "There is no Java there. Choose the file “java” in the “bin” folder of a Java."
 }

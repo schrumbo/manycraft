@@ -1,6 +1,6 @@
 //! Installs a game version with Fabric: version metadata, libraries, assets, natives and the Java runtime.
 
-mod assets;
+pub mod assets;
 pub mod clean;
 mod download;
 mod fabric;
