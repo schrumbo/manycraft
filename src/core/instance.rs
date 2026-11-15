@@ -12,6 +12,7 @@ use super::{paths, store};
 
 /// File holding an instance in its folder.
 pub const FILE: &str = "instance.json";
+const IN_USE: &str = "in-use.lock";
 /// Memory a new instance gets.
 pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
@@ -255,7 +256,13 @@ pub(super) fn save_in(root: &Path, instance: &Instance) -> Result<()> {
     if !valid_id(&instance.id) {
         bail!("invalid instance id {:?}", instance.id);
     }
-    store::write::<Instance>(&root.join(&instance.id).join(FILE), &serde_json::to_vec_pretty(instance)?, |_| Ok(()))
+    let file = root.join(&instance.id).join(FILE);
+    let created = std::fs::symlink_metadata(&file).is_err();
+    store::write::<Instance>(&file, &serde_json::to_vec_pretty(instance)?, |_| Ok(()))?;
+    if created && let Err(e) = super::origin::record(root, instance) {
+        eprintln!("the start of {} was not kept: {e:#}", instance.name);
+    }
+    Ok(())
 }
 
 /// Whether `id` can name a folder without escaping it.
@@ -290,6 +297,10 @@ pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
 /// returns the entry name [`untrash`] and [`purge`] take. Callers check first that no batch uses it and no game of it runs.
 pub fn trash(instance: &Instance) -> Result<String> {
     trash_in(&instances_dir(), instance, now_millis())
+}
+
+pub(super) fn trash_dir(root: &Path) -> PathBuf {
+    root.join(TRASH)
 }
 
 pub(super) fn trash_in(root: &Path, instance: &Instance, millis: u64) -> Result<String> {
@@ -372,7 +383,7 @@ pub(super) fn purge_in(root: &Path, entry: &str) -> Result<()> {
     remove_dir(&root.join(TRASH).join(entry))
 }
 
-/// Deletes the trash entries older than `older_than` or stamped more than a day ahead of now, one entry at a time; names that are not entries stay.
+/// Deletes the trash entries of deleted instances and of resets older than `older_than` or stamped more than a day ahead of now, one entry at a time; names that are not entries stay.
 pub fn purge_stale(older_than: Duration) -> Result<()> {
     purge_stale_in(&instances_dir(), now_millis(), older_than)
 }
@@ -389,7 +400,10 @@ pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Res
     let mut first = Ok(());
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
-        let Some((_, millis)) = name.to_str().and_then(parse_entry) else { continue };
+        let Some(millis) = name.to_str().and_then(|n| parse_entry(n).map(|(_, millis)| millis).or_else(|| super::origin::parse_reset(n))) else { continue };
+        if entry.path().join(super::origin::KEEP).exists() {
+            continue;
+        }
         if (millis < cutoff || millis > ahead)
             && let Err(e) = remove_dir(&entry.path())
             && first.is_ok()
@@ -400,7 +414,24 @@ pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Res
     first
 }
 
-fn parse_entry(entry: &str) -> Option<(&str, u64)> {
+/// Held, besides the shared one of the install, while a game of instance `id` runs; a reset of that instance refuses while it is held.
+pub(super) fn hold(id: &str) -> Option<super::lock::Guard> {
+    hold_in(&instances_dir(), id)
+}
+
+fn hold_in(root: &Path, id: &str) -> Option<super::lock::Guard> {
+    if !valid_id(id) {
+        return None;
+    }
+    super::lock::try_shared(&root.join(id).join(IN_USE)).ok().flatten()
+}
+
+/// Takes the exclusive hold on instance `id`; refused with a short reason while a game of it runs, here or in another window.
+pub(super) fn quiet_in(root: &Path, id: &str) -> Result<super::lock::Guard> {
+    super::lock::try_exclusive(&root.join(id).join(IN_USE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))
+}
+
+pub(super) fn parse_entry(entry: &str) -> Option<(&str, u64)> {
     let (id, millis) = entry.split_once('-')?;
     if !valid_id(id) || millis.is_empty() || !millis.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -408,7 +439,7 @@ fn parse_entry(entry: &str) -> Option<(&str, u64)> {
     Some((id, millis.parse().ok()?))
 }
 
-fn now_millis() -> u64 {
+pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
@@ -445,7 +476,7 @@ pub(super) fn clone_in(root: &Path, source: &Instance, name: &str) -> Result<Ins
     Ok(made)
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+pub(super) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     let Ok(meta) = std::fs::symlink_metadata(from) else { return Ok(()) };
     if meta.is_dir() {
         std::fs::create_dir_all(to).with_context(|| format!("cannot create {}", to.display()))?;
@@ -751,6 +782,41 @@ mod tests {
         assert!(!root.join(TRASH).join(&fresh).exists());
         assert!(root.join(TRASH).is_dir());
         purge_stale_in(&dir.path().join("none"), 1, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn a_game_of_one_instance_blocks_the_hold_of_that_instance_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for id in ["a", "b"] {
+            std::fs::create_dir_all(root.join(id)).unwrap();
+        }
+        let running = hold_in(root, "a").unwrap();
+        let second = hold_in(root, "a").unwrap();
+        assert!(quiet_in(root, "a").is_err());
+        drop(running);
+        assert!(quiet_in(root, "a").is_err());
+        drop(second);
+        let quiet = quiet_in(root, "a").unwrap();
+        assert!(hold_in(root, "a").is_none());
+        let other = hold_in(root, "b");
+        assert!(other.is_some() && quiet_in(root, "b").is_err());
+        drop(quiet);
+        assert!(hold_in(root, "../a").is_none());
+    }
+
+    #[test]
+    fn purge_stale_leaves_an_entry_marked_as_kept_and_a_reset_entry_goes_when_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("instances");
+        let (kept, old) = (root.join(TRASH).join("abc-1.reset"), root.join(TRASH).join("abc-2.reset"));
+        for entry in [&kept, &old] {
+            std::fs::create_dir_all(entry.join("mods")).unwrap();
+        }
+        std::fs::write(kept.join(super::super::origin::KEEP), b"").unwrap();
+        purge_stale_in(&root, 800_000, Duration::from_secs(600)).unwrap();
+        assert!(kept.join("mods").is_dir());
+        assert!(!old.exists());
     }
 
     #[test]

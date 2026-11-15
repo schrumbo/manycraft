@@ -516,11 +516,12 @@ impl Process for Child {
 struct Held {
     child: Child,
     in_use: Option<lock::Guard>,
+    instance_in_use: Option<lock::Guard>,
 }
 
 impl Held {
-    fn new(child: Child) -> Self {
-        Self { child, in_use: install::clean::in_use().ok() }
+    fn new(child: Child, instance: &str) -> Self {
+        Self { child, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(instance) }
     }
 }
 
@@ -533,6 +534,7 @@ impl Process for Held {
         let exit = Process::try_wait(&mut self.child)?;
         if exit.is_some() {
             self.in_use = None;
+            self.instance_in_use = None;
         }
         Ok(exit)
     }
@@ -544,6 +546,7 @@ impl Process for Held {
     fn wait(&mut self) -> io::Result<Option<i32>> {
         let code = Process::wait(&mut self.child);
         self.in_use = None;
+        self.instance_in_use = None;
         code
     }
 }
@@ -551,6 +554,7 @@ impl Process for Held {
 struct Adopted {
     process: adopt::Process,
     in_use: Option<lock::Guard>,
+    instance_in_use: Option<lock::Guard>,
 }
 
 impl Process for Adopted {
@@ -562,6 +566,7 @@ impl Process for Adopted {
         let exit = self.process.try_wait()?;
         if exit.is_some() {
             self.in_use = None;
+            self.instance_in_use = None;
         }
         Ok(exit)
     }
@@ -573,6 +578,7 @@ impl Process for Adopted {
     fn wait(&mut self) -> io::Result<Option<i32>> {
         let code = self.process.wait();
         self.in_use = None;
+        self.instance_in_use = None;
         code
     }
 }
@@ -710,7 +716,7 @@ impl Fleet {
                 batch: run.batch.clone(),
                 instance: run.instance.clone(),
                 account: run.account,
-                child: Box::new(Adopted { process, in_use: install::clean::in_use().ok() }),
+                child: Box::new(Adopted { process, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(&run.instance) }),
                 pid,
                 server_addr: run.server_addrs.first().copied(),
                 server_addrs: run.server_addrs.clone(),
@@ -764,7 +770,7 @@ impl Fleet {
         let ipc_address = self.ipc.address();
         let ipc_file = self.ipc_file();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
         };
         Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
@@ -791,7 +797,7 @@ impl Fleet {
         let ipc_address = self.ipc.address();
         let ipc_file = self.ipc_file();
         self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?)))
+            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
         })
     }
 
