@@ -542,17 +542,18 @@ impl InstanceSheet {
         cx.notify();
         let v = version.clone();
         let loader = self.loader.clone();
+        let wanted = loader.clone();
         let task = cx.background_executor().spawn(async move {
             if touched {
-                remote::move_mods(&mods, &v, &loader).map(|(mods, missing)| (mods, missing.into_iter().map(|m| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&m, &v])).collect::<Vec<_>>()))
+                remote::move_mods(&mods, &v, &wanted).map(|(mods, missing)| (mods, missing.into_iter().map(|m| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&m, &v])).collect::<Vec<_>>()))
             } else {
-                remote::defaults(&v, &loader).map(|d| (d.mods, d.notes.iter().map(|n| default_note(n, &v)).collect()))
+                remote::defaults(&v, &wanted).map(|d| (d.mods, d.notes.iter().map(|n| default_note(n, &v)).collect()))
             }
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
-                if s.version != version {
+                if s.version != version || !s.loader.same_kind(&loader) {
                     return;
                 }
                 s.mods_busy = None;
@@ -589,7 +590,7 @@ impl InstanceSheet {
         }
         self.loader = loader.clone();
         self.save_error = None;
-        if self.has_mods() && self.mods.is_empty() && !self.mods_touched {
+        if self.has_mods() {
             self.load_mods(self.version.clone(), cx);
         }
         cx.notify();

@@ -20,7 +20,7 @@ use super::batch_sheet::Load;
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::loader_version::{self, LoaderVersion, Picked};
-use super::model::{self, Game};
+use super::model::{self, Game, Phase};
 use super::motion::Soft;
 use super::remote::{self, InstanceEdit};
 use super::sheet::{self, Look};
@@ -467,8 +467,9 @@ impl InstancePage {
         let made = m.instance(&self.id)?.clone();
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
-        let solo = super::state::solo_account(m, &made);
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
+        let solo = super::state::solo_account(m, &made).filter(|a| !live.iter().any(|g| g.account_id == *a && matches!(g.phase, Phase::Plain)));
+        let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
         let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
         Some(Facts { made, batches, accounts, solo, shown, running })

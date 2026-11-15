@@ -526,6 +526,9 @@ pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
         std::thread::sleep(CANNED_DELAY);
         let mut mods = vec![canned_ref("fabric-api", "Fabric API", game_version), canned_ref("lithium", "Lithium", game_version), canned_ref("ferrite-core", "FerriteCore", game_version), canned_ref("modernfix", "ModernFix", game_version)];
         let mut notes = Vec::new();
+        if !matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
+            mods.remove(0);
+        }
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
             notes.push(format!("skipped lithium: no Fabric version for {game_version}"));

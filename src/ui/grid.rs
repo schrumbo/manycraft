@@ -406,7 +406,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Starting { done, total } if *total > 1 => trf("Wartet %lld/%lld", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Restarting { .. } => tr("Startet neu…"),
-        Phase::Plain => tr("Läuft"),
+        Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Hauptmenü"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Versuch %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } => tr("Verbindet…"),
