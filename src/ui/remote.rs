@@ -981,7 +981,7 @@ pub fn create_shortcut(play: &shortcut::Play, name: &str) -> Result<Option<PathB
         None if drive::fenced("shortcut", name) => return Ok(None),
         None => shortcut::desktop_dir().context(tr("Der Desktop-Ordner wurde nicht gefunden."))?,
     };
-    let exe = std::env::current_exe().context(tr("Das Programm lässt sich nicht finden."))?;
+    let exe = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()).map(PathBuf::from).map_or_else(std::env::current_exe, Ok).context(tr("Das Programm lässt sich nicht finden."))?;
     shortcut::create(play, name, &exe, &dir).map(Some)
 }
 

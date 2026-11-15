@@ -849,6 +849,12 @@ fn run_waiting_plays(cx: &mut App) {
     }
 }
 
+fn forget_show_when_ready(rt: &mut Runtime, key: &str) {
+    if rt.show_when_ready.as_ref().is_some_and(|(k, _)| k == key) {
+        rt.show_when_ready = None;
+    }
+}
+
 fn show_ready(cx: &mut App) {
     let Some((key, since)) = cx.try_global::<Runtime>().and_then(|rt| rt.show_when_ready.clone()) else { return };
     let model = model::get(cx);
@@ -1340,6 +1346,7 @@ fn swap_to(key: &str, place: Place, cx: &mut App) {
     let mut client = place.frame;
     update_model(cx, |m, rt, _| {
         rt.place = Some(place);
+        rt.show_when_ready = None;
         let before = m.playing.replace(key.clone());
         let mut reveal = match rt.reveal.take() {
             Some(r) if r.key != key => {
@@ -1392,6 +1399,7 @@ pub fn show_grid(cx: &mut App) {
     let mut pending = Vec::new();
     update_model(cx, |m, rt, _| {
         previous = m.playing.take();
+        rt.show_when_ready = None;
         pending = rt.reveal.take().map(|r| r.hide).unwrap_or_default();
     });
     if let Some(backend) = backend(cx) {
@@ -1724,6 +1732,7 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
         }
         Update::Failed { key, reason, login, offline } => {
+            forget_show_when_ready(rt, &key);
             if let Some(i) = m.games.get_mut(&key) {
                 m.preparing.remove(&i.batch_id);
                 i.phase = if login {
@@ -1756,7 +1765,10 @@ fn apply(m: &mut Model, rt: &mut Runtime, update: Update, fx: &mut Effects) {
             }
             m.order_seq += 1;
         }
-        Update::Exited { key, code } => on_exit(m, rt, fx, key, code),
+        Update::Exited { key, code } => {
+            forget_show_when_ready(rt, &key);
+            on_exit(m, rt, fx, key, code)
+        }
         Update::Preview { key, seq, image } => match m.games.get_mut(&key) {
             Some(i) if i.phase.is_running() => {
                 fx.stills.push((key, Arc::clone(&image), false));

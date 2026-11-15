@@ -39,9 +39,14 @@ pub fn init(cx: &mut App) {
     });
 }
 
+fn same_dir(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 struct ImportSheet {
     libs: Vec<Library>,
     loading: bool,
+    scanning: bool,
     chosen: HashSet<String>,
     cursor: Option<String>,
     filter: Entity<InputState>,
@@ -79,7 +84,7 @@ impl ImportSheet {
             });
         })
         .detach();
-        Self { libs: Vec::new(), loading: true, chosen: HashSet::new(), cursor: None, filter, settings: true, worlds: false, note: None, scroll: ScrollHandle::new(), root: cx.focus_handle(), _subs: subs }
+        Self { libs: Vec::new(), loading: true, scanning: false, chosen: HashSet::new(), cursor: None, filter, settings: true, worlds: false, note: None, scroll: ScrollHandle::new(), root: cx.focus_handle(), _subs: subs }
     }
 
     fn total(&self) -> usize {
@@ -171,7 +176,8 @@ impl ImportSheet {
     }
 
     fn picked(&self) -> Vec<Found> {
-        self.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && self.chosen.contains(&i.key())).cloned().collect()
+        let mut seen = HashSet::new();
+        self.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && self.chosen.contains(&i.key())).filter(|i| seen.insert(same_dir(&i.game_dir))).cloned().collect()
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -202,16 +208,28 @@ impl ImportSheet {
     }
 
     fn scan_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        self.scanning = true;
+        cx.notify();
         let task = cx.background_executor().spawn(async move { remote::launcher_folder(&folder) });
         cx.spawn(async move |this, cx| {
             let found = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.loading = false;
+                s.scanning = false;
+                let known: HashSet<PathBuf> = s.libs.iter().flat_map(|l| &l.instances).map(|i| same_dir(&i.game_dir)).collect();
+                let found: Vec<Library> = found
+                    .into_iter()
+                    .map(|mut lib| {
+                        lib.instances.retain(|i| !known.contains(&same_dir(&i.game_dir)));
+                        lib
+                    })
+                    .filter(|lib| !lib.instances.is_empty())
+                    .collect();
                 let fresh: Vec<String> = found.iter().flat_map(|l| &l.instances).filter(|i| i.importable()).map(Found::key).collect();
-                s.note = found.is_empty().then(|| tr("In diesem Ordner liegt keine Instanz, die sich übernehmen lässt."));
+                s.note = found.is_empty().then(|| tr("In diesem Ordner liegt keine neue Instanz, die sich übernehmen lässt."));
                 for lib in found {
                     match s.libs.iter_mut().find(|l| l.launcher == lib.launcher && l.root == lib.root) {
-                        Some(have) => *have = lib,
+                        Some(have) => have.instances.extend(lib.instances),
                         None => s.libs.push(lib),
                     }
                 }
@@ -306,7 +324,7 @@ impl ImportSheet {
                 .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).text_color(t.secondary).child(name))
                 .when(any, |d| {
                     d.child(
-                        sheet::button(SharedString::from(format!("launcher-all-{at}")), if all { tr("Keine") } else { tr("Alle") }, None, Look::Plain, false, false, t)
+                        sheet::button(SharedString::from(format!("launcher-all-{at}")), if all { tr("Keine abwählen") } else { tr("Alle wählen") }, None, Look::Plain, false, false, t)
                             .h(px(control::S))
                             .on_click(cx.listener(move |s, _, _, cx| s.toggle_library(at, cx))),
                     )
@@ -374,7 +392,9 @@ impl Render for ImportSheet {
             1 => tr("Instanz importieren"),
             n => trf("%lld Instanzen importieren", &[&n]),
         };
-        let leading = vec![sheet::button("launcher-folder", tr("Ordner wählen…"), Some("folder-open"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.choose_folder(cx))).into_any_element()];
+        let folder = sheet::button_unless("launcher-folder", if self.scanning { tr("Suche …") } else { tr("Ordner wählen…") }, Some("folder-open"), Look::Secondary, self.scanning.then(|| tr("Der Ordner wird gerade durchsucht.").into()), false, &t);
+        let folder = if self.scanning { folder } else { folder.on_click(cx.listener(|s, _, _, cx| s.choose_folder(cx))) };
+        let leading = vec![folder.into_any_element()];
         let trailing = vec![
             sheet::button("launcher-cancel", tr("Abbrechen"), None, Look::Secondary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))).into_any_element(),
             sheet::button_unless("launcher-import", label, None, Look::Primary, (count == 0).then(|| tr("Wähle mindestens eine Instanz.").into()), false, &t).on_click(cx.listener(|s, _, _, cx| s.start(cx))).into_any_element(),
@@ -412,7 +432,11 @@ impl Render for ImportSheet {
             .flex()
             .flex_col()
             .text_color(t.primary)
-            .on_action(cx.listener(|s, _: &Confirm, _, cx| s.start(cx)))
+            .on_action(cx.listener(|s, _: &Confirm, window, cx| {
+                if !sheet::typing(window) {
+                    s.start(cx);
+                }
+            }))
             .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.propagate()))
             .child(sheet::header(tr("Aus anderem Launcher importieren"), Some(tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen.")), &t))
             .child(div().px(px(space::XL)).flex().flex_col().gap(px(space::S)).children(filter).children(note).child(body))

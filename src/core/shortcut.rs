@@ -8,6 +8,9 @@ const PLAY_FLAG: &str = "--play";
 const ACCOUNT_FLAG: &str = "--account";
 const NAME_MAX: usize = 80;
 const FALLBACK_NAME: &str = "Manycraft";
+const FREE_NAMES: usize = 99;
+#[cfg(any(test, target_os = "macos"))]
+const BUNDLE_ID: &str = "io.github.schrumbo.manycraft.shortcut";
 
 /// An instance to play and, when the shortcut names one, the account to play it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +71,17 @@ fn quoted(arg: &str) -> String {
     if arg.chars().any(|c| c.is_whitespace() || c == '"') { format!("\"{}\"", arg.replace('"', "\\\"")) } else { arg.to_owned() }
 }
 
+/// The path `stem.ext` in `dir`, or `stem (2).ext` and on while a file of the person's own is there; a shortcut of ours (`ours`) is replaced.
+fn free_path(dir: &Path, stem: &str, ext: &str, ours: &dyn Fn(&Path) -> bool) -> Result<PathBuf> {
+    for n in 1..=FREE_NAMES {
+        let path = dir.join(if n == 1 { format!("{stem}.{ext}") } else { format!("{stem} ({n}).{ext}") });
+        if std::fs::symlink_metadata(&path).is_err() || ours(&path) {
+            return Ok(path);
+        }
+    }
+    bail!("the desktop has too many files named {stem}")
+}
+
 /// Writes a shortcut named `name` into `dir` that starts `exe` with `play`'s arguments, replacing an older one of that name. Returns what it wrote.
 pub fn create(play: &Play, name: &str, exe: &Path, dir: &Path) -> Result<PathBuf> {
     play.checked()?;
@@ -79,12 +93,15 @@ pub fn create(play: &Play, name: &str, exe: &Path, dir: &Path) -> Result<PathBuf
 
 #[cfg(windows)]
 fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Result<PathBuf> {
-    let path = dir.join(format!("{stem}.lnk"));
     let line = args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(" ");
-    let (target, written) = (exe.to_path_buf(), path.clone());
-    let description = name.to_owned();
-    std::thread::spawn(move || windows_link::write(&written, &target, &line, &description)).join().map_err(|_| anyhow::anyhow!("the shortcut writer stopped"))??;
-    Ok(path)
+    let (target, dir, stem, description) = (exe.to_path_buf(), dir.to_path_buf(), stem.to_owned(), name.to_owned());
+    std::thread::spawn(move || {
+        let path = free_path(&dir, &stem, "lnk", &|p| windows_link::read(p).is_ok_and(|(_, args)| args.split(' ').any(|a| a == PLAY_FLAG)))?;
+        windows_link::write(&path, &target, &line, &description)?;
+        Ok(path)
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("the shortcut writer stopped"))?
 }
 
 #[cfg(windows)]
@@ -118,12 +135,12 @@ mod windows_link {
         }
     }
 
-    #[cfg(test)]
     pub fn read(path: &Path) -> Result<(String, String)> {
         use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
         use windows::Win32::System::Com::STGM_READ;
         unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().ok();
+            let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+            let read = || -> Result<(String, String)> {
             let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| anyhow!("{e}"))?;
             let file: IPersistFile = link.cast().map_err(|e| anyhow!("{e}"))?;
             file.Load(&HSTRING::from(path.as_os_str()), STGM_READ).map_err(|e| anyhow!("{e}"))?;
@@ -134,6 +151,12 @@ mod windows_link {
             link.GetArguments(&mut args).map_err(|e| anyhow!("{e}"))?;
             let text = |buf: &[u16]| String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(buf.len())]);
             Ok((text(&target), text(&args)))
+            };
+            let result = read();
+            if initialized {
+                CoUninitialize();
+            }
+            result
         }
     }
 }
@@ -141,21 +164,26 @@ mod windows_link {
 #[cfg(target_os = "macos")]
 fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let app = dir.join(format!("{stem}.app"));
-    let _ = std::fs::remove_dir_all(&app);
-    let (macos, contents) = (app.join("Contents").join("MacOS"), app.join("Contents"));
+    let app = free_path(dir, stem, "app", &|p| std::fs::read_to_string(p.join("Contents").join("Info.plist")).is_ok_and(|t| t.contains(BUNDLE_ID)))?;
+    let building = dir.join(format!(".{stem}.shortcut-building"));
+    let _ = std::fs::remove_dir_all(&building);
+    let (macos, contents) = (building.join("Contents").join("MacOS"), building.join("Contents"));
     std::fs::create_dir_all(&macos)?;
     std::fs::write(contents.join("Info.plist"), bundle_plist(name))?;
     let launcher = macos.join("launcher");
     std::fs::write(&launcher, launcher_script(exe, args))?;
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))?;
+    if app.exists() {
+        std::fs::remove_dir_all(&app)?;
+    }
+    std::fs::rename(&building, &app)?;
     Ok(app)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(format!("{stem}.desktop"));
+    let path = free_path(dir, stem, "desktop", &|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains(PLAY_FLAG)))?;
     std::fs::write(&path, desktop_entry(name, exe, args))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     Ok(path)
@@ -163,9 +191,17 @@ fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Resu
 
 #[cfg(any(test, all(unix, not(target_os = "macos"))))]
 fn desktop_entry(name: &str, exe: &Path, args: &[String]) -> String {
-    let field = |text: &str| text.chars().filter(|c| !c.is_control()).collect::<String>();
+    let field = |text: &str| text.chars().filter(|c| !c.is_control()).flat_map(|c| if c == '\\' { vec!['\\', '\\'] } else { vec![c] }).collect::<String>();
     let escape = |text: &str| {
-        let inner: String = text.chars().flat_map(|c| if matches!(c, '"' | '`' | '$' | '\\') { vec!['\\', c] } else if c == '%' { vec!['%', '%'] } else { vec![c] }).collect();
+        let inner: String = text
+            .chars()
+            .flat_map(|c| match c {
+                '"' | '`' | '$' => vec!['\\', '\\', c],
+                '\\' => vec!['\\'; 4],
+                '%' => vec!['%', '%'],
+                c => vec![c],
+            })
+            .collect();
         format!("\"{inner}\"")
     };
     let exec = std::iter::once(escape(&exe.to_string_lossy())).chain(args.iter().map(|a| escape(a))).collect::<Vec<_>>().join(" ");
@@ -187,7 +223,7 @@ fn bundle_plist(name: &str) -> String {
         '>' => "&gt;".chars().collect(),
         c => vec![c],
     }).collect();
-    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n<key>CFBundleExecutable</key><string>launcher</string>\n<key>CFBundleIdentifier</key><string>io.github.schrumbo.manycraft.shortcut</string>\n<key>CFBundleName</key><string>{xml}</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>LSUIElement</key><true/>\n</dict>\n</plist>\n")
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n<key>CFBundleExecutable</key><string>launcher</string>\n<key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>\n<key>CFBundleName</key><string>{xml}</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>LSUIElement</key><true/>\n</dict>\n</plist>\n")
 }
 
 #[cfg(test)]
@@ -230,7 +266,8 @@ mod tests {
         assert!(entry.contains("Name=My Farm\n"));
         assert!(entry.contains("Exec=\"/opt/many craft/manycraft\" \"--play\" \"0a1b2c3d4e5f60718293a4b5c6d7e8f9\" \"--account\" \"acc-1\"\n"));
         let tricky = desktop_entry("x", Path::new("/a\"b$c"), &[]);
-        assert!(tricky.contains("Exec=\"/a\\\"b\\$c\""));
+        assert!(tricky.contains("Exec=\"/a\\\\\"b\\\\$c\""));
+        assert!(desktop_entry("A\\B", Path::new("/x"), &[]).contains("Name=A\\\\B\n"));
     }
 
     #[test]
@@ -238,6 +275,26 @@ mod tests {
         let script = launcher_script(Path::new("/Apps/It's/manycraft"), &play(None).args());
         assert_eq!(script, "#!/bin/sh\nexec '/Apps/It'\\''s/manycraft' '--play' '0a1b2c3d4e5f60718293a4b5c6d7e8f9'\n");
         assert!(bundle_plist("A & <B>").contains("<string>A &amp; &lt;B&gt;</string>"));
+    }
+
+    #[test]
+    fn a_file_of_the_person_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = if cfg!(windows) { "lnk" } else if cfg!(target_os = "macos") { "app" } else { "desktop" };
+        let theirs = dir.path().join(format!("Farm.{ext}"));
+        std::fs::create_dir_all(&theirs).ok();
+        if !theirs.is_dir() || ext != "app" {
+            let _ = std::fs::remove_dir_all(&theirs);
+            std::fs::write(&theirs, "mine").unwrap();
+        }
+        let exe = std::env::current_exe().unwrap();
+        let first = create(&play(None), "Farm", &exe, dir.path()).unwrap();
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), format!("Farm (2).{ext}"));
+        assert_eq!(create(&play(None), "Farm", &exe, dir.path()).unwrap(), first);
+        assert!(theirs.exists());
+        if ext != "app" {
+            assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "mine");
+        }
     }
 
     #[test]

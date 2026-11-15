@@ -260,7 +260,7 @@ fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn F
         step();
     }
     check()?;
-    copy_folder(&spec.game_dir.join("config"), &dest.join("config"))?;
+    copy_folder(&spec.game_dir.join("config"), &dest.join("config"), check)?;
     step();
     if spec.take.settings {
         let options = spec.game_dir.join(prism::OPTIONS_FILE);
@@ -269,7 +269,7 @@ fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn F
         }
         for folder in ["resourcepacks", "shaderpacks"] {
             check()?;
-            copy_folder(&spec.game_dir.join(folder), &dest.join(folder))?;
+            copy_folder(&spec.game_dir.join(folder), &dest.join(folder), check)?;
         }
     }
     step();
@@ -277,16 +277,16 @@ fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn F
         check()?;
         let saves = spec.game_dir.join("saves");
         if saves.is_dir() {
-            prism::copy_tree(&saves, &dest.join(SAVES_SEED), 0)?;
+            prism::copy_tree(&saves, &dest.join(SAVES_SEED), 0, check)?;
         }
     }
     step();
     Ok(())
 }
 
-fn copy_folder(from: &Path, to: &Path) -> Result<()> {
+fn copy_folder(from: &Path, to: &Path, check: &dyn Fn() -> Result<()>) -> Result<()> {
     if from.is_dir() {
-        prism::copy_tree(from, to, 0)
+        prism::copy_tree(from, to, 0, check)
     } else {
         std::fs::create_dir_all(to).with_context(|| format!("cannot create {}", to.display()))
     }

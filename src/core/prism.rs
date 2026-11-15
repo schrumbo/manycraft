@@ -244,17 +244,18 @@ pub(super) fn copy_file(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn copy_tree(from: &Path, to: &Path, depth: usize) -> Result<()> {
+pub(super) fn copy_tree(from: &Path, to: &Path, depth: usize, check: &dyn Fn() -> Result<()>) -> Result<()> {
     if depth > MAX_DEPTH {
         bail!("{} is nested too deeply", from.display());
     }
     std::fs::create_dir_all(to).with_context(|| format!("cannot create {}", to.display()))?;
     for entry in std::fs::read_dir(from).with_context(|| format!("cannot read {}", from.display()))? {
         let entry = entry?;
+        check()?;
         let kind = entry.file_type()?;
         let target = to.join(entry.file_name());
         if kind.is_dir() {
-            copy_tree(&entry.path(), &target, depth + 1)?;
+            copy_tree(&entry.path(), &target, depth + 1, check)?;
         } else if kind.is_file() {
             copy_file(&entry.path(), &target)?;
         }
@@ -889,7 +890,23 @@ mod tests {
             deep = deep.join("d");
         }
         fs::create_dir_all(&deep).unwrap();
-        assert!(copy_tree(&dir.path().join("from"), &dir.path().join("to"), 0).is_err());
+        assert!(copy_tree(&dir.path().join("from"), &dir.path().join("to"), 0, &|| Ok(())).is_err());
+    }
+
+    #[test]
+    fn a_copy_stops_between_entries_when_asked_to() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..6 {
+            fs::create_dir_all(dir.path().join("from")).unwrap();
+            fs::write(dir.path().join("from").join(format!("f{n}")), "x").unwrap();
+        }
+        let calls = std::cell::Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            if calls.get() > 2 { bail!("stop") } else { Ok(()) }
+        };
+        assert!(copy_tree(&dir.path().join("from"), &dir.path().join("to"), 0, &check).is_err());
+        assert!(fs::read_dir(dir.path().join("to")).unwrap().count() < 6);
     }
 
     fn zip_of(entries: &[(&str, &[u8])]) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {

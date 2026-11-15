@@ -289,13 +289,48 @@ fn newest_installed(root: &Path) -> Option<String> {
     found.pop().map(|(_, n)| n)
 }
 
+fn version_json(root: &Path, id: &str) -> Option<serde_json::Value> {
+    if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
+        return None;
+    }
+    let text = std::fs::read_to_string(root.join("versions").join(id).join(format!("{id}.json"))).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn newest_snapshot(root: &Path) -> Option<String> {
+    let mut found: Vec<(String, String)> = std::fs::read_dir(root.join("versions"))
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|name| {
+            let json = version_json(root, &name)?;
+            let plain = json.get("inheritsFrom").is_none() && matches!(json.get("type").and_then(|t| t.as_str()), Some("release" | "snapshot"));
+            plain.then(|| (json.get("releaseTime").and_then(|t| t.as_str()).unwrap_or_default().to_owned(), name))
+        })
+        .collect();
+    found.sort();
+    found.pop().map(|(_, name)| name)
+}
+
+fn inherited(root: &Path, id: &str) -> Option<String> {
+    version_json(root, id)?.get("inheritsFrom")?.as_str().map(str::to_owned)
+}
+
 fn parse_version_id(id: &str, root: &Path) -> Result<(String, Loader), Unsupported> {
     let id = id.trim();
+    if id == "latest-snapshot" {
+        return newest_snapshot(root).or_else(|| newest_installed(root)).map(|v| (v, Loader::Vanilla)).ok_or(Unsupported::NoVersion);
+    }
     if id.is_empty() || id.starts_with("latest-") {
         return newest_installed(root).map(|v| (v, Loader::Vanilla)).ok_or(Unsupported::NoVersion);
     }
     for (prefix, make) in [("fabric-loader-", Loader::Fabric as fn(Option<String>) -> Loader), ("quilt-loader-", Loader::Quilt)] {
         if let Some(rest) = id.strip_prefix(prefix) {
+            if let Some(game) = inherited(root, id)
+                && let Some(loader) = rest.strip_suffix(game.as_str()).and_then(|l| l.strip_suffix('-'))
+            {
+                return Ok((game, make(Some(loader.to_owned()))));
+            }
             let (loader, game) = rest.rsplit_once('-').ok_or(Unsupported::NoVersion)?;
             return Ok((game.to_owned(), make(Some(loader.to_owned()))));
         }
@@ -448,6 +483,19 @@ mod tests {
         assert_eq!((by("d").game_version.as_deref(), by("d").loader.clone()), (Some("24w14a"), Loader::Vanilla));
         assert_eq!((by("e").game_version.as_deref(), by("e").loader.clone()), (Some("1.21.1"), Loader::NeoForge(Some("21.1.77".into()))));
         assert!(matches!(by("f").unsupported, Some(Unsupported::Loader(_))));
+    }
+
+    #[test]
+    fn version_files_give_the_game_of_loader_ids_and_the_newest_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let version = |id: &str, json: &str| write(&root.path().join("versions").join(id).join(format!("{id}.json")), json);
+        version("fabric-loader-0.16.5-1.21-pre1", r#"{"inheritsFrom":"1.21-pre1"}"#);
+        version("1.21", r#"{"type":"release","releaseTime":"2024-06-13T00:00:00+00:00"}"#);
+        version("24w40a", r#"{"type":"snapshot","releaseTime":"2024-10-02T00:00:00+00:00"}"#);
+        version("24w14a", r#"{"type":"snapshot","releaseTime":"2024-04-03T00:00:00+00:00"}"#);
+        assert_eq!(parse_version_id("fabric-loader-0.16.5-1.21-pre1", root.path()), Ok(("1.21-pre1".to_owned(), Loader::Fabric(Some("0.16.5".into())))));
+        assert_eq!(parse_version_id("latest-snapshot", root.path()), Ok(("24w40a".to_owned(), Loader::Vanilla)));
+        assert_eq!(parse_version_id("latest-release", root.path()), Ok(("1.21".to_owned(), Loader::Vanilla)));
     }
 
     #[test]

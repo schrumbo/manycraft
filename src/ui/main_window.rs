@@ -395,7 +395,7 @@ impl MainWindow {
                 "new-instance",
                 tr("Instanz erstellen"),
                 Box::new(NewInstance),
-                (self.prism.0 > 0).then(|| (tr("Oder aus anderem Launcher übernehmen"), Box::new(ImportFromLauncher) as Box<dyn Action>)),
+                (self.prism.0 > 0).then(|| (tr("Oder aus anderem Launcher importieren"), Box::new(ImportFromLauncher) as Box<dyn Action>)),
             )
         } else {
             return None;
