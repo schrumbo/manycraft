@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -251,14 +252,20 @@ pub fn run(options: Options) {
             }
         });
     let crash_log = options.dir.join("crash.log");
+    let children = Rc::new(RefCell::new(children));
+    let crashed_children = children.clone();
     launch(LaunchConfig::new().with_plugin(Meter).with_window(window).with_fatal_error_handler(move |message| {
         eprintln!("freya_proto crashed: {message}");
-        let _ = std::fs::write(&crash_log, format!("{message}
-"));
+        if let Err(error) = std::fs::write(&crash_log, &message) {
+            eprintln!("freya_proto could not write {}: {error}", crash_log.display());
+        }
         swap::hide();
+        for child in crashed_children.borrow_mut().iter_mut() {
+            let _ = child.kill();
+        }
     }));
     swap::hide();
-    for mut child in children {
+    for mut child in children.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -506,6 +513,7 @@ impl App for Manager {
                         (Some("previews"), Some(state)) => FEEDING.store(state == "on", Ordering::Relaxed),
                         (Some("redraw"), _) => Platform::get().current_window().request_redraw(),
                         (Some("quit"), _) => Platform::get().exit(),
+                        (Some("panic"), _) => panic!("panic requested over the control port"),
                         _ => {}
                     }
                 }

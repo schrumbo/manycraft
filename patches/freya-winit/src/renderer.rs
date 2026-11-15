@@ -559,6 +559,7 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                         }
                         NativeWindowEventAction::User(user_event) => match user_event {
                             UserEvent::RequestRedraw => {
+                                app.damage.invalidate();
                                 app.window.request_redraw();
                             }
                             UserEvent::FocusAccessibilityNode(strategy) => {
@@ -733,10 +734,12 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                             scale_factor,
                             (window_size.width as f32, window_size.height as f32).into(),
                         );
+                        let mut rendered = false;
                         let present_result = app.driver.present(
                             window_size.cast(),
                             &app.window,
                             |surface| {
+                                rendered = true;
                                 self.plugins.send(
                                     PluginEvent::BeforeRender {
                                         window: &app.window,
@@ -829,6 +832,9 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                                 );
                             },
                         );
+                        if !rendered {
+                            app.damage.invalidate();
+                        }
                         if let Err(error) = present_result {
                             tracing::warn!(
                                 "Graphics driver lost ({error:?}), rebuilding on the same window"

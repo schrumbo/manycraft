@@ -13,7 +13,10 @@ use torin::prelude::{
 };
 
 use crate::{
-    element::PaintAreaContext,
+    element::{
+        ElementExt,
+        PaintAreaContext,
+    },
     node_id::NodeId,
     tree::Tree,
 };
@@ -27,15 +30,37 @@ const MAX_RECTS: usize = 16;
 /// Damage covering more than this share of the window repaints the whole window.
 const FULL_SHARE: f32 = 0.6;
 
-/// What a node painted in a frame, compared between frames to find what changed.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// What a node painted in a frame, compared between frames to find what changed. Holds the
+/// element so its allocation cannot be reused by a later element and compare as unchanged.
+#[derive(Clone)]
 struct Painted {
-    element: *const (),
+    element: Rc<dyn ElementExt>,
     area: Area,
     layer: i16,
     opacity: f32,
     blur: Option<f32>,
     rotation: Option<[f32; 9]>,
+}
+
+impl PartialEq for Painted {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(Rc::as_ptr(&self.element), Rc::as_ptr(&other.element))
+            && self.area == other.area
+            && self.layer == other.layer
+            && self.opacity == other.opacity
+            && self.blur == other.blur
+            && self.rotation == other.rotation
+    }
+}
+
+impl std::fmt::Debug for Painted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Painted")
+            .field("element", &Rc::as_ptr(&self.element))
+            .field("area", &self.area)
+            .field("layer", &self.layer)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Finds the parts of a window that changed since the last frame, so a renderer that keeps the
@@ -116,20 +141,29 @@ impl DamageTracker {
         self.painted = painted;
 
         let window = Area::from_size(size);
+        if window.is_empty() {
+            self.full = true;
+            self.rects.clear();
+            return;
+        }
         if self.full {
             self.full = false;
             self.rects = vec![window];
             return;
         }
 
-        let blurs = self
+        let mut blurs = self
             .painted
             .values()
             .filter(|painted| painted.blur.is_some())
             .map(|painted| painted.area)
-            .filter(|area| damage.iter().any(|rect| rect.intersects(area)))
             .collect::<Vec<_>>();
-        damage.extend(blurs);
+        while let Some(index) = blurs
+            .iter()
+            .position(|area| damage.iter().any(|rect| rect.intersects(area)))
+        {
+            damage.push(blurs.swap_remove(index));
+        }
 
         self.rects = merge(damage, window);
     }
@@ -209,7 +243,7 @@ fn paint_of(
         scale_factor,
     });
     let mut painted = Painted {
-        element: Rc::as_ptr(element) as *const (),
+        element: element.clone(),
         area,
         layer,
         opacity: 1.,
@@ -218,7 +252,7 @@ fn paint_of(
     };
 
     if let Some(effect_state) = tree.effect_state.get(&node_id) {
-        area = scale_transformed_area(tree, area, &effect_state.scales);
+        area = normalized(scale_transformed_area(tree, area, &effect_state.scales));
 
         if !effect_state.rotations.is_empty() {
             let mut matrix = SkMatrix::new_identity();
@@ -257,11 +291,11 @@ fn paint_of(
                 None => {
                     let clip_layout_node = tree.layout.get(clip_node_id)?;
                     let clip_effect = tree.effect_state.get(clip_node_id)?;
-                    let clip_area = scale_transformed_area(
+                    let clip_area = normalized(scale_transformed_area(
                         tree,
                         clip_layout_node.visible_area(),
                         &clip_effect.scales,
-                    );
+                    ));
                     clip_areas.insert(*clip_node_id, clip_area);
                     clip_area
                 }
@@ -307,6 +341,11 @@ pub(crate) fn text_paint_area(paragraph: &SkParagraph, x: f32, y: f32, context: 
         .visible_area()
         .union(&text)
         .inflate(reach + 1., reach + 1.)
+}
+
+/// The same area with a positive size, as a negative scale mirrors it into a negative size.
+fn normalized(area: Area) -> Area {
+    Area::from_points([area.origin, area.origin + area.size.to_vector()])
 }
 
 /// Transforms an area with the accumulated scale effects of the given nodes.
@@ -436,6 +475,22 @@ mod tests {
         frames.next();
         state.set(3);
         assert_eq!(frames.next(), vec![area(0., 99., 101., 102.)]);
+    }
+
+    #[test]
+    fn a_frame_without_a_window_size_repaints_everything_after() {
+        let (mut frames, mut state) = Frames::new(two_squares);
+        frames.next();
+        state.set(1);
+        frames.tree.apply_mutations(frames.runner.sync_and_update(), 1.0);
+        frames.tracker.collect(&mut frames.tree, 1.0, Size2D::new(0., 0.));
+        assert!(frames.tracker.rects().is_empty());
+        assert_eq!(frames.next(), vec![WINDOW]);
+    }
+
+    #[test]
+    fn mirrored_areas_keep_a_positive_size() {
+        assert_eq!(normalized(area(10., 10., -5., 20.)), area(5., 10., 5., 20.));
     }
 
     #[test]
