@@ -128,7 +128,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::Play(key) => show::play(model, &key, &mut out),
         Event::PlayInstance { instance, account } => {
-            show::play_instance(model, &instance, account, &mut out);
+            show::play_and_show(model, env, &instance, account, &mut out);
         }
         Event::RequestPlay { instance, account } => show::request_play(model, env, instance, account, &mut out),
         Event::ShowGrid => show::show_grid(model, &mut out),

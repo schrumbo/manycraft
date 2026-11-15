@@ -3,7 +3,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::super::effect::{Effect, Redraw, Unshown};
-use super::super::model::{Game, Model};
+use super::super::model::{Game, Model, Phase};
 use super::super::session::Reveal;
 use super::{Env, fleet};
 use crate::core::fleet as fleets;
@@ -15,7 +15,7 @@ const SHOW_READY_FOR: Duration = Duration::from_secs(600);
 
 /// Puts the game window of `key` in the manager's place and hides the manager.
 pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
-    if let Some(i) = m.games.get(key).filter(|i| matches!(i.phase, super::super::model::Phase::Plain)) {
+    if let Some(i) = m.games.get(key).filter(|i| matches!(i.phase, Phase::Plain)) {
         m.error = Some(trf("%@ läuft in einem eigenen Fenster, ohne Manycrafts Mod. Hier lässt es sich nicht zeigen.", &[&i.name]));
         out.push(Effect::Redraw(Redraw::All));
         return;
@@ -24,7 +24,8 @@ pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
         return;
     }
     let s = &mut m.session;
-    let unshown = Unshown { playing: m.playing.clone(), reveal: s.reveal.clone(), show_when_ready: s.show_when_ready.take() };
+    let whispers = m.games.get(key).map_or(0, |i| i.unread_whispers);
+    let unshown = Unshown { playing: m.playing.clone(), reveal: s.reveal.clone(), show_when_ready: s.show_when_ready.take(), whispers };
     let before = m.playing.replace(key.to_owned());
     let mut skipped = None;
     let mut reveal = match s.reveal.take() {
@@ -46,6 +47,11 @@ pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
 
 /// The game could not be shown because the manager has no place yet: what changed for it goes back.
 pub(super) fn not_shown(m: &mut Model, unshown: Unshown, out: &mut Vec<Effect>) {
+    if let Some(key) = m.playing.take()
+        && let Some(i) = m.games.get_mut(&key)
+    {
+        i.unread_whispers += unshown.whispers;
+    }
     m.playing = unshown.playing;
     m.session.reveal = unshown.reveal;
     m.session.show_when_ready = unshown.show_when_ready;
@@ -108,6 +114,11 @@ pub(super) fn step(m: &mut Model, action: HotkeyAction, out: &mut Vec<Effect>) {
     }
 }
 
+/// Whether a game in `phase` may still become ready to show, so a pending show keeps waiting for it.
+fn on_the_way(phase: &Phase) -> bool {
+    (phase.is_active() && !matches!(phase, Phase::Banned { .. })) || matches!(phase, Phase::NoNetwork)
+}
+
 /// The account `made` is played with alone when none is named: the one that played it last, else the only one.
 pub fn solo_account(m: &Model, made: &Instance) -> Option<Uuid> {
     made.last_account.filter(|id| m.account(*id).is_some()).or_else(|| match m.accounts.as_slice() {
@@ -152,18 +163,26 @@ pub(super) fn request_play(m: &mut Model, env: &Env, instance: String, account: 
         return;
     }
     let account = account.as_deref().and_then(|id| id.parse().ok());
-    match play_instance(m, &instance, account, out) {
-        Some(key) => m.session.show_when_ready = Some((key, env.now)),
-        None => show_grid(m, out),
+    if play_and_show(m, env, &instance, account, out).is_none() {
+        show_grid(m, out);
     }
+}
+
+/// Plays instance `id` alone like [`play_instance`] and shows the game as soon as it can be shown.
+pub(super) fn play_and_show(m: &mut Model, env: &Env, id: &str, account: Option<Uuid>, out: &mut Vec<Effect>) -> Option<String> {
+    let key = play_instance(m, id, account, out)?;
+    m.session.show_when_ready = Some((key.clone(), env.now));
+    Some(key)
 }
 
 /// Shows the game a play request asked for once it can be shown, or gives up on it after a while.
 pub(super) fn show_ready(m: &mut Model, env: &Env, out: &mut Vec<Effect>) {
     let Some((key, since)) = m.session.show_when_ready.clone() else { return };
     let shown = m.playing.as_deref() == Some(key.as_str());
-    let ready = m.games.get(&key).is_some_and(|g| g.phase.playable() && !g.hint.link_lost);
-    if !shown && !ready && env.now.saturating_duration_since(since) < SHOW_READY_FOR {
+    let phase = m.games.get(&key).map(|g| (&g.phase, g.hint.link_lost));
+    let ready = phase.is_some_and(|(p, lost)| p.playable() && !lost);
+    let waiting = phase.is_some_and(|(p, _)| on_the_way(p));
+    if !shown && !ready && waiting && env.now.saturating_duration_since(since) < SHOW_READY_FOR {
         return;
     }
     m.session.show_when_ready = None;
@@ -243,4 +262,28 @@ mod tests {
         let fx = report(&mut m, &s, Report::Reopen);
         assert!(fx.iter().any(|e| matches!(e, Effect::ShowManager)));
     }
+
+    #[test]
+    fn a_pending_show_waits_only_while_the_game_is_on_its_way() {
+        for phase in [Phase::Starting { place: 0, total: 0 }, Phase::Restarting { attempt: 1, of: 3 }, Phase::NoNetwork, Phase::Menu] {
+            assert!(super::on_the_way(&phase), "{phase:?}");
+        }
+        for phase in [Phase::Stopped, Phase::Failed { reason: "x".into() }, Phase::Crashed { code: None }, Phase::LoginNeeded, Phase::Banned { server: None, reason: "x".into() }] {
+            assert!(!super::on_the_way(&phase), "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_show_that_finds_no_place_leaves_everything_as_it_was() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.games.get_mut(&key).unwrap().unread_whispers = 2;
+        let fx = run(&mut m, &s, std::time::Instant::now(), super::super::super::event::Event::Play(key.clone()));
+        let Some(Effect::Show { unshown, .. }) = fx.into_iter().find(|e| matches!(e, Effect::Show { .. })) else { panic!("no show") };
+        assert_eq!(m.games[&key].unread_whispers, 0);
+        run(&mut m, &s, std::time::Instant::now(), super::super::super::event::Event::NotShown(unshown));
+        assert_eq!(m.games[&key].unread_whispers, 2);
+        assert!(m.playing.is_none() && m.session.reveal.is_none());
+    }
 }
+

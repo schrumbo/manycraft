@@ -519,7 +519,7 @@ fn dispatch(event: AppEvent, cx: &mut App) {
 }
 
 fn dispatch_with(event: AppEvent, mut images: Vec<Option<Arc<RenderImage>>>, cx: &mut App) {
-    if !cx.has_global::<Runtime>() && !matches!(event, AppEvent::PhoneOutcome(_) | AppEvent::Error(_)) {
+    if !cx.has_global::<Runtime>() && !matches!(event, AppEvent::PhoneOutcome(_) | AppEvent::Error(_) | AppEvent::Loaded(_) | AppEvent::Recolor { .. } | AppEvent::ClearWhispers(_) | AppEvent::InstanceAdded(_) | AppEvent::InstanceRemoved(_) | AppEvent::ShowGrid) {
         return;
     }
     let effects = reduce_now(event, cx);

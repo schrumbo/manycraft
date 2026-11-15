@@ -27,6 +27,8 @@ pub struct Unshown {
     pub playing: Option<String>,
     pub reveal: Option<Reveal>,
     pub show_when_ready: Option<(String, Instant)>,
+    /// The whispers the game had unread.
+    pub whispers: u32,
 }
 
 /// Something only the front end can do.

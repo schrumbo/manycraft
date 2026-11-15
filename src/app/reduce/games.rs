@@ -51,7 +51,7 @@ pub(super) enum Later {
 }
 
 pub(super) fn reports(m: &mut Model, env: &Env, reports: Vec<Report>, out: &mut Vec<Effect>) {
-    let frames_only = reports.iter().all(|r| matches!(r, Report::Frame { .. }));
+    let frames_only = !reports.is_empty() && reports.iter().all(|r| matches!(r, Report::Frame { .. }));
     if !frames_only {
         out.push(Effect::Redraw(redraw(m, env, &reports)));
     }
@@ -859,6 +859,54 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1 && accounts[0].id == account(&m))));
         report(&mut m, &s, Report::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false });
         assert!(matches!(m.games[&key].phase, Phase::Failed { .. }));
+    }
+
+    #[test]
+    fn an_empty_batch_still_shows_a_requested_game_once_ready() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.session.show_when_ready = Some((key.clone(), Instant::now()));
+        let fx = run(&mut m, &s, Instant::now(), Event::Reports(Vec::new()));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Show { key: k, .. } if *k == key)));
+    }
+
+    #[test]
+    fn a_waiting_start_retries_by_itself_when_its_timer_comes() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::NoNetwork, AccountKind::Microsoft, &[]);
+        let fx = run(&mut m, &s, Instant::now(), Event::WaitingStartDue { key: key.clone() });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { .. })), "a waiting start must not stay stuck");
+        assert_eq!(m.games[&key].phase, Phase::Starting { place: 1, total: 1 });
+    }
+
+    #[test]
+    fn stale_timers_do_not_touch_a_newer_state() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &["/home"]);
+        m.session.pids.insert(key.clone(), 1);
+        report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example"), Some(DisconnectCause::ServerDown)));
+        let old = m.session.reconnects[&key];
+        run(&mut m, &s, Instant::now(), Event::Reconnect(key.clone()));
+        assert!(run(&mut m, &s, Instant::now(), Event::ReconnectDue { key: key.clone(), generation: old }).is_empty());
+        m.games.get_mut(&key).unwrap().phase = Phase::Restarting { attempt: 1, of: 3 };
+        let stale = m.session.reconnects[&key] - 1;
+        assert!(run(&mut m, &s, Instant::now(), Event::RestartDue { key: key.clone(), generation: stale }).is_empty());
+        assert_eq!(m.games[&key].phase, Phase::Restarting { attempt: 1, of: 3 });
+        m.games.get_mut(&key).unwrap().phase = Phase::Playing { server: "mc.example".into(), since: Instant::now() };
+        let stale = m.session.joins.get(&key).copied().unwrap_or_default().wrapping_sub(1);
+        assert!(run(&mut m, &s, Instant::now(), Event::JoinDue { key: key.clone(), generation: stale, lines: vec!["/home".into()], delay: Duration::ZERO }).is_empty());
+    }
+
+    #[test]
+    fn a_late_launch_or_failure_after_a_stop_is_ignored() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 2, total: 3 }, AccountKind::Microsoft, &[]);
+        run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        report(&mut m, &s, Report::Failed { key: key.clone(), reason: "cancelled".into(), login: false, offline: true });
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        report(&mut m, &s, Report::Launched { key: key.clone(), plain: false });
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
     }
 
     #[test]

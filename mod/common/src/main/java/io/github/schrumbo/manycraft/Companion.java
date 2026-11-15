@@ -1,5 +1,7 @@
 package io.github.schrumbo.manycraft;
 
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
@@ -41,6 +43,7 @@ final class Companion {
 	private final AudioPause audio = new AudioPause();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
+	private final Queue<Protocol.Incoming> early = new ConcurrentLinkedQueue<>();
 
 	private Companion(Config config, String version) {
 		this.config = config;
@@ -185,6 +188,7 @@ final class Companion {
 	void tick(Minecraft mc) {
 		try {
 			link.ensureRunning();
+			drain(mc);
 			state.tick(mc);
 			GameWindow.tick();
 			BackgroundController bg = background;
@@ -211,7 +215,27 @@ final class Companion {
 	}
 
 	private void onInbound(Protocol.Incoming message) {
-		Minecraft.getInstance().execute(() -> handle(Minecraft.getInstance(), message));
+		early.add(message);
+		Minecraft mc = Minecraft.getInstance();
+		if (mc != null) {
+			mc.execute(() -> drain(mc));
+		}
+	}
+
+	private void drain(Minecraft mc) {
+		Protocol.Incoming next;
+		while ((next = early.peek()) != null && (background != null || !needsBackground(next))) {
+			early.poll();
+			try {
+				handle(mc, next);
+			} catch (RuntimeException e) {
+				LOGGER.warn("manager message failed", e);
+			}
+		}
+	}
+
+	private static boolean needsBackground(Protocol.Incoming message) {
+		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
 	}
 
 	private void handle(Minecraft mc, Protocol.Incoming message) {

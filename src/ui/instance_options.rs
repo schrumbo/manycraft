@@ -125,10 +125,10 @@ impl Options {
         let game_args = cx.new(|cx| InputState::new(window, cx));
         let width = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Breite")));
         let height = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Höhe")));
-        let committed = |s: &mut InstancePage, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<InstancePage>| {
-            if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                s.commit_options(cx);
-            }
+        let committed = |s: &mut InstancePage, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<InstancePage>| match e {
+            InputEvent::PressEnter { .. } | InputEvent::Blur => s.commit_options(cx),
+            InputEvent::Change => s.commit_soon(cx),
+            _ => {}
         };
         let subs = vec![
             cx.subscribe(&game_args, committed),
