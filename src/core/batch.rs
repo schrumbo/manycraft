@@ -228,7 +228,10 @@ pub fn save(batch: &Batch) -> Result<()> {
 
 /// Deletes the batch's folder including its shared mods and config. Use `fleet::delete_batch` to keep those.
 pub fn delete(batch: &Batch) -> Result<()> {
-    let dir = batch.dir();
+    delete_in(&batch.dir())
+}
+
+fn delete_in(dir: &Path) -> Result<()> {
     for file in [store::backup_path(&dir.join(FILE)), dir.join(FILE)] {
         match std::fs::remove_file(file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
@@ -236,7 +239,7 @@ pub fn delete(batch: &Batch) -> Result<()> {
         }
     }
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).with_context(|| format!("cannot delete {}", dir.display()))?;
+        std::fs::remove_dir_all(dir).with_context(|| format!("cannot delete {}", dir.display()))?;
     }
     Ok(())
 }
@@ -302,6 +305,22 @@ mod tests {
         std::fs::write(dir.path().join("x").join(FILE), b"{").unwrap();
         assert!(load_all_in(dir.path()).unwrap().is_empty());
         assert!(store::damaged_path(&dir.path().join("x").join(FILE)).exists());
+    }
+
+    #[test]
+    fn a_deleted_batch_stays_deleted_with_or_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let once = Batch::new("Once", "26.3");
+        let twice = Batch::new("Twice", "26.3");
+        save_in(dir.path(), &once).unwrap();
+        save_in(dir.path(), &twice).unwrap();
+        save_in(dir.path(), &Batch { server: Some("example.org".into()), ..twice.clone() }).unwrap();
+        assert!(store::backup_path(&dir.path().join(&twice.id).join(FILE)).exists());
+        delete_in(&dir.path().join(&once.id)).unwrap();
+        delete_in(&dir.path().join(&twice.id)).unwrap();
+        assert!(!dir.path().join(&once.id).exists() && !dir.path().join(&twice.id).exists());
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
+        delete_in(&dir.path().join(&once.id)).unwrap();
     }
 
     #[test]

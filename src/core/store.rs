@@ -355,6 +355,16 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_file_without_any_backup_is_set_aside_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        std::fs::write(&path, b"[1,").unwrap();
+        assert_eq!(load::<Doc>(&path).unwrap(), None);
+        assert_eq!(recovered(&path), vec![Recovery::Lost]);
+        assert_eq!(std::fs::read(damaged_path(&path)).unwrap(), b"[1,");
+    }
+
+    #[test]
     fn a_damaged_file_never_replaces_the_backup() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.json");
