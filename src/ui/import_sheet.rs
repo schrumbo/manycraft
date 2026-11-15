@@ -271,7 +271,6 @@ impl ImportSheet {
         let toggled = key.clone();
         let clicked = key.clone();
         row.cursor_pointer()
-            .key_nav()
             .soft(t.ink.opacity(tint::HOVER), radius::CONTROL)
             .on_click(cx.listener(move |s, _, _, cx| s.toggle(&clicked, cx)))
             .child(Checkbox::new(SharedString::from(format!("launcher-check-{key}"))).checked(chosen).tab_stop(false).on_click(cx.listener(move |s, _: &bool, _, cx| {

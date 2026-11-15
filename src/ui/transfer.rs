@@ -276,7 +276,11 @@ fn shortcut(a: &CreateShortcut, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = job.await;
         let _ = cx.update(|cx| match result {
-            Ok(Some(path)) => cx.reveal_path(&path),
+            Ok(Some(path)) => {
+                if !drive::fenced("reveal", path.display()) {
+                    cx.reveal_path(&path);
+                }
+            }
             Ok(None) => {}
             Err(e) => model::get(cx).update(cx, |m, cx| {
                 m.error = Some(forms::explain_as(trf("Verknüpfung für „%@“ nicht erstellt.", &[&name]), &e).text);
