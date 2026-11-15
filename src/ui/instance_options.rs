@@ -369,7 +369,7 @@ impl InstancePage {
         div().relative().flex().flex_col().gap(px(space::XS)).child(head).child(control).child(sheet::note(hint, problem, t)).children(probe)
     }
 
-    fn choice_row<T: Copy + PartialEq + 'static>(&self, id: &'static str, focus: &FocusHandle, now: Option<T>, choices: &[(Option<T>, String)], cx: &mut Context<Self>, wrap: fn(Option<T>) -> OptionChange, t: &Theme) -> Stateful<Div> {
+    fn choice_row<T: Copy + PartialEq + 'static>(&self, id: &'static str, focus: &FocusHandle, now: Option<T>, choices: &[(Option<T>, String)], cx: &mut Context<Self>, wrap: fn(Option<T>) -> OptionChange, t: &Theme) -> Div {
         let segments = choices.iter().enumerate().map(|(n, (value, label))| {
             let selected = *value == now;
             segment((id, n), label.clone(), selected, true, t).when(selected, |d| d.track_focus(focus))
@@ -380,7 +380,7 @@ impl InstancePage {
                 s.change_option(wrap(*value), cx);
             }
         });
-        segmented(id, segments, move |n, window, cx| pick(&n, window, cx), t)
+        div().flex().child(segmented(id, segments, move |n, window, cx| pick(&n, window, cx), t))
     }
 
     /// The settings inside "Erweitert".
