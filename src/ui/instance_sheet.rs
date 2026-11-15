@@ -87,6 +87,7 @@ fn open(mode: Mode, search: bool, cx: &mut App) {
                 s.direct = true;
                 s.open_search(true, window, cx);
             });
+            window.on_next_frame(move |window, cx| window.on_next_frame(move |window, cx| drop(view.update(cx, |s, cx| s.focus_search(window, cx)))));
         }
     });
 }

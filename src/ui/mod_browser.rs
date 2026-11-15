@@ -267,6 +267,10 @@ impl InstanceSheet {
         cx.notify();
     }
 
+    pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.browser.query.update(cx, |q, cx| q.take_focus(window, cx));
+    }
+
     pub(super) fn browse_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.browser.query.read(cx).value().is_empty() {
             self.open_search(false, window, cx);
