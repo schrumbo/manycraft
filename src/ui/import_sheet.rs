@@ -1,6 +1,6 @@
 //! The sheet that imports instances of other launchers: the launchers found with their instances, a choice among them and what to take along.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -47,9 +47,20 @@ pub fn init(cx: &mut App) {
     });
 }
 
-fn same_profile(found: &Found) -> (PathBuf, String) {
-    let dir = std::fs::canonicalize(&found.game_dir).unwrap_or_else(|_| found.game_dir.clone());
-    (dir, format!("{:?} {:?}", found.game_version, found.loader))
+type Profile = (PathBuf, String);
+
+fn profile_key(found: &Found) -> String {
+    format!("{}|{}", found.key(), found.game_dir.display())
+}
+
+fn profiles(libs: &[Library]) -> HashMap<String, Profile> {
+    libs.iter()
+        .flat_map(|l| &l.instances)
+        .map(|found| {
+            let dir = std::fs::canonicalize(&found.game_dir).unwrap_or_else(|_| found.game_dir.clone());
+            (profile_key(found), (dir, format!("{:?} {:?}", found.game_version, found.loader)))
+        })
+        .collect()
 }
 
 fn on_control(root: &FocusHandle, window: &Window, cx: &App) -> bool {
@@ -67,6 +78,8 @@ struct ImportSheet {
     worlds: bool,
     note: Option<String>,
     scroll: UniformListScrollHandle,
+    profiles: HashMap<String, Profile>,
+    took_focus: bool,
     root: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -79,15 +92,21 @@ impl ImportSheet {
         let subs = vec![cx.subscribe(&filter, |s: &mut Self, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 s.cursor = s.first_key(cx);
+                s.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             }
         })];
-        let task = cx.background_executor().spawn(async { remote::launcher_libraries() });
+        let task = cx.background_executor().spawn(async {
+            let libs = remote::launcher_libraries();
+            let known = profiles(&libs);
+            (libs, known)
+        });
         cx.spawn(async move |this, cx| {
-            let libs = task.await;
+            let (libs, known) = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.loading = false;
                 s.libs = libs;
+                s.profiles = known;
                 let all: Vec<String> = s.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable()).map(Found::key).collect();
                 if let [only] = all.as_slice() {
                     s.chosen.insert(only.clone());
@@ -97,7 +116,7 @@ impl ImportSheet {
             });
         })
         .detach();
-        Self { libs: Vec::new(), loading: true, scanning: false, chosen: HashSet::new(), cursor: None, filter, settings: true, worlds: false, note: None, scroll: UniformListScrollHandle::new(), root: cx.focus_handle(), _subs: subs }
+        Self { libs: Vec::new(), loading: true, scanning: false, chosen: HashSet::new(), cursor: None, filter, settings: true, worlds: false, note: None, scroll: UniformListScrollHandle::new(), profiles: HashMap::new(), took_focus: false, root: cx.focus_handle(), _subs: subs }
     }
 
     fn total(&self) -> usize {
@@ -188,9 +207,13 @@ impl ImportSheet {
         0
     }
 
+    fn profile(&self, found: &Found) -> Profile {
+        self.profiles.get(&profile_key(found)).cloned().unwrap_or_else(|| (found.game_dir.clone(), String::new()))
+    }
+
     fn picked(&self) -> Vec<Found> {
         let mut seen = HashSet::new();
-        self.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && self.chosen.contains(&i.key())).filter(|i| seen.insert(same_profile(i))).cloned().collect()
+        self.libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && self.chosen.contains(&i.key())).filter(|i| seen.insert(self.profile(i))).cloned().collect()
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -223,23 +246,28 @@ impl ImportSheet {
     fn scan_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.scanning = true;
         cx.notify();
-        let task = cx.background_executor().spawn(async move { remote::launcher_folder(&folder) });
+        let task = cx.background_executor().spawn(async move {
+            let found = remote::launcher_folder(&folder);
+            let known = profiles(&found);
+            (found, known)
+        });
         cx.spawn(async move |this, cx| {
-            let found = task.await;
+            let (found, scanned) = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.loading = false;
                 s.scanning = false;
-                let known: HashSet<(PathBuf, String)> = s.libs.iter().flat_map(|l| &l.instances).map(same_profile).collect();
+                let known: HashSet<Profile> = s.libs.iter().flat_map(|l| &l.instances).map(|i| s.profile(i)).collect();
                 let found: Vec<Library> = found
                     .into_iter()
                     .map(|mut lib| {
-                        lib.instances.retain(|i| !known.contains(&same_profile(i)));
+                        lib.instances.retain(|i| !known.contains(scanned.get(&profile_key(i)).unwrap_or(&(i.game_dir.clone(), String::new()))));
                         lib
                     })
                     .filter(|lib| !lib.instances.is_empty())
                     .collect();
                 let fresh: Vec<String> = found.iter().flat_map(|l| &l.instances).filter(|i| i.importable()).map(Found::key).collect();
                 s.note = found.is_empty().then(|| tr("In diesem Ordner liegt keine neue Instanz, die sich übernehmen lässt."));
+                s.profiles.extend(scanned);
                 for lib in found {
                     match s.libs.iter_mut().find(|l| l.launcher == lib.launcher && l.root == lib.root) {
                         Some(have) => have.instances.extend(lib.instances),
@@ -401,7 +429,8 @@ impl ImportSheet {
 
 impl Render for ImportSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if window.focused(cx).is_none() {
+        if !self.took_focus || window.focused(cx).is_none() {
+            self.took_focus = true;
             window.focus(&self.root, cx);
         }
         let t = Theme::get(cx);
