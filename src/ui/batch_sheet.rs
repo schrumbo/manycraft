@@ -538,7 +538,7 @@ impl BatchSheet {
             .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(like));
         let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
             if let Some(reason) = reason {
-                return sheet::stepper_end(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
+                return sheet::stepper_end(div().id(SharedString::from(format!("{id}-end"))).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 s.memory = forms::memory_step(s.memory, delta, s.memory_max);
@@ -662,7 +662,7 @@ impl BatchSheet {
                 None
             };
             if let Some(reason) = reason {
-                return sheet::stepper_end(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
+                return sheet::stepper_end(div().id(SharedString::from(format!("{id}-end"))).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
             }
             sheet::icon_button(id, icon_name, label, t.secondary, t).on_click(cx.listener(move |s, _, _, cx| {
                 if s.saving {

@@ -269,7 +269,7 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
                     .tooltip(tip(cancel))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(CancelUpdate), cx))
             };
-            Some(base("nav-update-downloading", tr("Update wird geladen"), "download").child(trailing(done)).child(button).tooltip(tip(if stopping { trf("Laden von Version %@ wird abgebrochen …", &[&version]) } else { trf("Version %@ wird geladen.", &[&version]) })))
+            Some(base("nav-update-downloading", tr("Wird geladen"), "download").child(trailing(done)).child(button).tooltip(tip(if stopping { trf("Laden von Version %@ wird abgebrochen …", &[&version]) } else { trf("Version %@ wird geladen.", &[&version]) })))
         }
         _ => None,
     }
