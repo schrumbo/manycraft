@@ -38,6 +38,7 @@ final class Companion {
 	private final PreviewService preview;
 	private final GameIdentity identity = new GameIdentity();
 	private final OptionSync options = new OptionSync();
+	private final AudioPause audio = new AudioPause();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 
@@ -89,13 +90,12 @@ final class Companion {
 		return bg != null && bg.hidden();
 	}
 
-	int hiddenFramerate() {
-		return background.hiddenFramerate();
+	void audioClosed() {
+		audio.closed();
 	}
 
-	boolean skipsAmbience() {
-		BackgroundController bg = background;
-		return bg != null && bg.skipsAmbience();
+	int hiddenFramerate() {
+		return background.hiddenFramerate();
 	}
 
 	void saveOptions(Options gameOptions, Runnable save) {
@@ -191,6 +191,7 @@ final class Companion {
 			if (bg != null) {
 				bg.tick();
 			}
+			audio.sync(mc, bg != null && bg.hidden());
 		} catch (RuntimeException e) {
 			LOGGER.warn("tick failed", e);
 		}
