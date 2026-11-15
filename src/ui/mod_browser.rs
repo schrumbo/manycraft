@@ -273,7 +273,7 @@ impl InstanceSheet {
 
     pub(super) fn browse_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.browser.query.read(cx).value().is_empty() {
-            self.open_search(false, window, cx);
+            self.leave_search(window, cx);
         } else {
             self.browser.query.update(cx, |q, cx| q.set_value("", window, cx));
             self.browse_refresh(false, cx);

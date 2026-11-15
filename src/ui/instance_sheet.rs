@@ -727,6 +727,14 @@ impl InstanceSheet {
         });
     }
 
+    pub(super) fn leave_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.direct && self.wait_reason().is_none() && self.setup.as_ref().is_some_and(|made| made.mods == self.mods) {
+            cx.emit(Dismissed);
+        } else {
+            self.open_search(false, window, cx);
+        }
+    }
+
     fn search_done(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.direct {
             self.open_search(false, window, cx);
@@ -1326,7 +1334,7 @@ impl Render for InstanceSheet {
             (vec![sheet::button("prism-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_prism(false, window, cx))).into_any_element()], Vec::new())
         } else if self.searching {
             (
-                vec![sheet::button("search-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_search(false, window, cx))).into_any_element()],
+                vec![sheet::button("search-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.leave_search(window, cx))).into_any_element()],
                 vec![sheet::button_unless("search-done", tr("Fertig"), None, Look::Primary, self.wait_reason().filter(|_| self.direct).map(Into::into), false, &t).on_click(cx.listener(|s, _, window, cx| s.search_done(window, cx))).into_any_element()],
             )
         } else {
