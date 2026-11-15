@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{net, paths};
+use super::{net, paths, phone};
 
 const FILE: &str = "settings.json";
 const BACKUP: &str = "settings.json.bak";
@@ -76,6 +76,8 @@ pub struct Settings {
     /// Whether the Chat page can send a line to one instance or a whole batch.
     pub broadcast: bool,
     pub notifications: Notifications,
+    /// Whether attention also goes to the phone, and how.
+    pub phone: phone::Phone,
     /// Whether a newer release found by the daily check is downloaded right away and installed when the app quits.
     #[serde(alias = "update_check")]
     pub auto_update: bool,
@@ -89,7 +91,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true }
     }
 }
 

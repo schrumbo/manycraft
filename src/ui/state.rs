@@ -24,6 +24,7 @@ use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, HotkeyAction, 
 use crate::core::place::{self, Insets, Place, Rect};
 use crate::core::proxy::{self, Fault};
 use crate::core::reconnect::{self, Decision, Reaction};
+use crate::core::phone::{self, Incident, What};
 use crate::core::settings;
 use crate::core::{companion, drive, install, ipc};
 
@@ -362,6 +363,8 @@ struct Runtime {
     notice: Option<String>,
     whispers: Vec<Whisper>,
     reveal: Option<Reveal>,
+    phone: phone::Coalescer,
+    outbox: Option<phone::Outbox>,
 }
 
 
@@ -419,6 +422,8 @@ pub fn init(cx: &mut App) {
         badge: 0,
         notice: None,
         whispers: Vec::new(),
+        phone: phone::Coalescer::default(),
+        outbox: None,
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
@@ -800,6 +805,7 @@ fn stop_keys(keys: Vec<String>, cx: &mut App) {
             rt.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
             rt.crash_restarts.remove(key);
             rt.joined.remove(key);
+            rt.phone.forget(key);
             let Some(i) = m.instances.get_mut(key) else { continue };
             match i.phase {
                 Phase::Starting { .. } if !rt.pids.contains_key(key) => {
@@ -1191,6 +1197,7 @@ struct Effects {
     stills: Vec<(String, Arc<RenderImage>, bool)>,
     check_proxy: Vec<(String, String)>,
     whispers: Vec<Whisper>,
+    phone: Vec<(String, Incident)>,
     placed: Vec<String>,
     game_focused: bool,
     revealed: Option<Reveal>,
@@ -1220,6 +1227,9 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
             }
             if after.1 && !seeded && before.is_some_and(|b| !b.1) {
                 fresh.push((i.batch_id.clone(), i.name.clone(), Alert::of(&i.phase)));
+                if let Some(what) = phone_what(&i.phase) {
+                    fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, what, phase_reason(&i.phase), i.phase.server())));
+                }
             }
         }
     });
@@ -1254,6 +1264,7 @@ fn apply_all(updates: Vec<Update>, cx: &mut App) {
     for whisper in fx.whispers {
         queue_whisper(whisper, cx);
     }
+    queue_phone(fx.phone, cx);
     for key in fx.placed {
         place_new(&key, cx);
     }
@@ -1535,6 +1546,7 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
                 rt.started.entry(key.clone()).or_insert_with(Instant::now);
                 if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() && rt.joined.insert(key.clone()) {
                     event = Some((Kind::Connected, server.clone(), String::new()));
+                    fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, What::Back, "", server.as_deref())));
                     if let Some((lines, delay)) = join {
                         let generation = *rt.joins.entry(key.clone()).or_default();
                         fx.later.push(Deferred::Join { key: key.clone(), generation, lines, delay });
@@ -1567,6 +1579,9 @@ fn on_state(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, kind
             event = Some((kind, server.clone(), reason_text.clone()));
             match reaction {
                 Reaction::Retry(delay) => {
+                    let what = if cause == DisconnectCause::Kicked { What::Kicked } else { What::Dropped };
+                    let said = if reason_text.trim().is_empty() { cause_text(cause) } else { reason_text.clone() };
+                    fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, what, &said, server.as_deref())));
                     i.reconnect_attempts += 1;
                     fx.later.push(Deferred::Reconnect { key: key.clone(), delay, generation: *generation });
                     Phase::Connecting { server: server_text }
@@ -1813,7 +1828,11 @@ const WHISPER_TAG: &str = "whisper";
 const WHISPER_PREVIEW: usize = 90;
 
 fn queue_whisper(whisper: Whisper, cx: &mut App) {
-    if !cx.has_global::<Runtime>() || !settings::active().notifications.whispers {
+    let wanted = {
+        let s = settings::active();
+        s.notifications.whispers || (s.phone.enabled && s.phone.whispers)
+    };
+    if !cx.has_global::<Runtime>() || !wanted {
         return;
     }
     let rt = cx.global_mut::<Runtime>();
@@ -1834,6 +1853,13 @@ fn flush_whispers(cx: &mut App) {
         return;
     }
     let list = std::mem::take(&mut cx.global_mut::<Runtime>().whispers);
+    let phone = settings::active().phone.clone();
+    if phone.enabled && phone.whispers {
+        let lines: Vec<(String, Option<String>, String)> = list.iter().map(|w| (w.account.clone(), w.from.clone(), w.text.clone())).collect();
+        if let Some(text) = phone::whispers(&lines) {
+            send_phone(text, cx);
+        }
+    }
     if list.is_empty() || !settings::active().notifications.whispers || (super::main_window::is_active(cx) && model::get(cx).read(cx).playing.is_none()) {
         return;
     }
@@ -1859,6 +1885,119 @@ fn flush_whispers(cx: &mut App) {
         return;
     }
     cx.show_system_notification(SystemNotification { tag: WHISPER_TAG.into(), title: title.into(), body: body.into(), actions: Vec::new() });
+}
+
+fn phone_what(phase: &Phase) -> Option<What> {
+    Some(match phase {
+        Phase::Disconnected { .. } => What::GaveUp,
+        Phase::Banned { .. } => What::Banned,
+        Phase::LoginNeeded => What::Login,
+        Phase::Crashed { .. } => What::Crashed,
+        Phase::Failed { .. } => What::Failed,
+        Phase::Dead { .. } => What::Died,
+        _ => return None,
+    })
+}
+
+fn phase_reason(phase: &Phase) -> &str {
+    match phase {
+        Phase::Disconnected { reason, .. } | Phase::Banned { reason, .. } => reason,
+        _ => "",
+    }
+}
+
+fn cause_text(cause: DisconnectCause) -> String {
+    match cause {
+        DisconnectCause::ServerDown => tr("Server nicht erreichbar"),
+        DisconnectCause::ServerFull => tr("Server voll"),
+        _ => String::new(),
+    }
+}
+
+fn queue_phone(incidents: Vec<(String, Incident)>, cx: &mut App) {
+    if incidents.is_empty() || !settings::active().phone.enabled || !cx.has_global::<Runtime>() {
+        return;
+    }
+    let now = Instant::now();
+    let rt = cx.global_mut::<Runtime>();
+    let Some(due) = incidents.into_iter().filter_map(|(batch, incident)| rt.phone.push(&batch, incident, now)).max() else { return };
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(due.saturating_duration_since(Instant::now())).await;
+        cx.update(flush_phone);
+    })
+    .detach();
+}
+
+fn flush_phone(cx: &mut App) {
+    if !cx.has_global::<Runtime>() {
+        return;
+    }
+    let mut coalescer = std::mem::take(&mut cx.global_mut::<Runtime>().phone);
+    let model = model::get(cx);
+    let due: Vec<(String, Vec<Incident>)> = {
+        let m = model.read(cx);
+        let current = |e: &Incident| {
+            m.instances.get(&e.key).is_some_and(|i| {
+                !i.stopping
+                    && match e.what {
+                        _ if e.healed => i.phase.on_server(),
+                        What::Back => i.phase.on_server(),
+                        What::Dropped | What::Kicked => !i.phase.on_server() && i.phase.is_active(),
+                        _ => i.phase.needs_attention(),
+                    }
+            })
+        };
+        let batches = coalescer.take_due(Instant::now(), current);
+        batches.into_iter().map(|(id, list)| (m.batch(&id).map(|b| b.name.clone()).unwrap_or_default(), list)).collect()
+    };
+    cx.global_mut::<Runtime>().phone = coalescer;
+    let phone = settings::active().phone.clone();
+    if !phone.enabled {
+        return;
+    }
+    for (batch, list) in due {
+        if let Some(text) = phone::format(&batch, &list, phone.reconnected) {
+            send_phone(text, cx);
+        }
+    }
+}
+
+fn send_phone(text: String, cx: &mut App) {
+    if !cx.has_global::<Runtime>() {
+        return;
+    }
+    drive::note(format!("phone {}", text.replace('\n', " | ")));
+    if cx.global::<Runtime>().outbox.is_none() {
+        let (tx, rx) = async_channel::unbounded::<phone::Outcome>();
+        cx.global_mut::<Runtime>().outbox = Some(phone::Outbox::start(move |outcome| {
+            let _ = tx.send_blocking(outcome);
+        }));
+        cx.spawn(async move |cx| {
+            while let Ok(outcome) = rx.recv().await {
+                cx.update(|cx| {
+                    let trouble = match outcome {
+                        phone::Outcome::Arrived => None,
+                        phone::Outcome::Lost(why) => Some(why),
+                    };
+                    set_phone_trouble(trouble, cx);
+                });
+            }
+        })
+        .detach();
+    }
+    if let Some(outbox) = &cx.global::<Runtime>().outbox {
+        outbox.send(text);
+    }
+}
+
+/// Sets or clears why the last message to the phone did not arrive, as Settings shows it.
+pub fn set_phone_trouble(trouble: Option<String>, cx: &mut App) {
+    model::get(cx).update(cx, |m, cx| {
+        if m.phone_trouble != trouble {
+            m.phone_trouble = trouble;
+            cx.notify();
+        }
+    });
 }
 
 fn refresh_badge(cx: &mut App) {
@@ -2070,6 +2209,8 @@ mod tests {
             badge: 0,
             notice: None,
             whispers: Vec::new(),
+        phone: crate::core::phone::Coalescer::default(),
+        outbox: None,
         }
     }
 

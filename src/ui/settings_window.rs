@@ -1,6 +1,11 @@
 //! The settings window: the few options that rarely change, saved the moment they are touched.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -11,8 +16,9 @@ use super::motion::Soft;
 use super::model::{self, UpdateStatus};
 use super::sheet::{self, Look};
 use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
-use super::widgets::{KeyNav, icon, tip};
+use super::widgets::{KeyNav, icon, segment, segmented, tip};
 use crate::core::i18n::{tr, trf};
+use crate::core::phone::{self, Secret, Service, Slot};
 use crate::core::settings::{self, HOTKEYS, Settings};
 
 const WIDTH: f32 = 560.;
@@ -23,6 +29,8 @@ const MIN_WIDTH: f32 = 440.;
 const MIN_HEIGHT: f32 = 360.;
 const PAGE_MAX: f32 = 520.;
 const ATTEMPTS: std::ops::RangeInclusive<u32> = 1..=100;
+const DISCORD_EXAMPLE: &str = "https://discord.com/api/webhooks/…";
+const SAVE_AFTER: Duration = Duration::from_millis(400);
 
 actions!(settings_window, [Close]);
 
@@ -74,7 +82,73 @@ struct SettingsView {
     focus: FocusHandle,
     scroll: ScrollHandle,
     error: Option<String>,
+    phone: PhoneForm,
     _subs: Vec<Subscription>,
+}
+
+/// A typed field of the phone settings: a keychain secret or a plain setting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Discord,
+    Token,
+    Chat,
+    Server,
+    Topic,
+}
+
+impl Field {
+    const ALL: [Field; 5] = [Field::Discord, Field::Token, Field::Chat, Field::Server, Field::Topic];
+
+    fn slot(self) -> Option<Slot> {
+        match self {
+            Field::Discord => Some(Slot::DiscordUrl),
+            Field::Token => Some(Slot::TelegramToken),
+            Field::Topic => Some(Slot::NtfyTopic),
+            Field::Chat | Field::Server => None,
+        }
+    }
+
+    fn of(service: Service) -> Self {
+        match service {
+            Service::Discord => Field::Discord,
+            Service::Telegram => Field::Token,
+            Service::Ntfy => Field::Topic,
+        }
+    }
+
+    fn save(self, value: String) -> Result<(), String> {
+        if let Some(slot) = self.slot() {
+            return phone::store_secret(slot, &Secret::new(value));
+        }
+        let mut next = settings::active().clone();
+        if self == Field::Chat {
+            next.phone.telegram_chat = value;
+        } else {
+            next.phone.ntfy_server = value;
+        }
+        settings::set(next);
+        settings::persist().map_err(|e| trf("Die Einstellungen wurden nicht gespeichert: %@", &[&format!("{e:#}")]))
+    }
+}
+
+struct PhoneForm {
+    inputs: [Entity<InputState>; 5],
+    saved: [String; 5],
+    typing: [Arc<AtomicU64>; 5],
+    testing: bool,
+    tested: Option<Result<String, String>>,
+    finding: bool,
+    found: Option<Result<String, String>>,
+}
+
+impl PhoneForm {
+    fn input(&self, field: Field) -> &Entity<InputState> {
+        &self.inputs[field as usize]
+    }
+
+    fn value(&self, field: Field, cx: &App) -> String {
+        self.input(field).read(cx).value().trim().to_owned()
+    }
 }
 
 impl SettingsView {
@@ -89,7 +163,195 @@ impl SettingsView {
         let focus = cx.focus_handle();
         let first = focus.clone();
         window.on_next_frame(move |window, cx| window.focus(&first, cx));
-        Self { focus, scroll: ScrollHandle::new(), error: None, _subs: subs }
+        let current = settings::active().phone.clone();
+        let inputs = Field::ALL.map(|field| {
+            cx.new(|cx| {
+                let input = InputState::new(window, cx);
+                match field {
+                    Field::Discord => input.masked(true).placeholder(DISCORD_EXAMPLE),
+                    Field::Token => input.masked(true).placeholder(tr("z. B. 123456789:AAF…")),
+                    Field::Chat => input.placeholder(tr("z. B. 123456789")).default_value(current.telegram_chat.clone()),
+                    Field::Server => input.placeholder(phone::NTFY_DEFAULT).default_value(current.ntfy_server.clone()),
+                    Field::Topic => input.masked(true).placeholder(tr("z. B. farm-alarm-7f3k9q")),
+                }
+            })
+        });
+        let mut subs = subs;
+        for field in Field::ALL {
+            subs.push(cx.subscribe(&inputs[field as usize], move |s: &mut Self, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    s.typed(field, cx);
+                }
+            }));
+        }
+        let phone = PhoneForm {
+            inputs,
+            saved: [String::new(), String::new(), current.telegram_chat.clone(), current.ntfy_server.clone(), String::new()],
+            typing: Field::ALL.map(|_| Arc::new(AtomicU64::new(0))),
+            testing: false,
+            tested: None,
+            finding: false,
+            found: None,
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let secrets = cx.background_spawn(async { [Field::Discord, Field::Token, Field::Topic].map(|f| (f, f.slot().map(phone::read_secret))) }).await;
+            let _ = this.update_in(cx, |s, window, cx| {
+                for (field, read) in secrets {
+                    match read {
+                        Some(Ok(secret)) => {
+                            s.phone.saved[field as usize] = secret.expose().to_owned();
+                            s.phone.input(field).update(cx, |i, cx| i.set_value(secret.expose().to_owned(), window, cx));
+                        }
+                        Some(Err(e)) => s.error = Some(e),
+                        None => {}
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        Self { focus, scroll: ScrollHandle::new(), error: None, phone, _subs: subs }
+    }
+
+    fn typed(&mut self, field: Field, cx: &mut Context<Self>) {
+        let ix = field as usize;
+        let value = self.phone.value(field, cx);
+        if field == Field::Token {
+            self.phone.found = None;
+        }
+        self.phone.tested = None;
+        cx.notify();
+        if value == self.phone.saved[ix] {
+            return;
+        }
+        let counter = Arc::clone(&self.phone.typing[ix]);
+        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            if counter.load(Ordering::SeqCst) != n {
+                return;
+            }
+            let kept = value.clone();
+            let result = cx.background_spawn(async move { field.save(kept) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if result.is_ok() {
+                    s.phone.saved[ix] = value;
+                    super::state::set_phone_trouble(None, cx);
+                }
+                s.error = result.err();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn test(&mut self, cx: &mut Context<Self>) {
+        if self.phone.testing {
+            return;
+        }
+        let mut current = settings::active().phone.clone();
+        current.telegram_chat = self.phone.value(Field::Chat, cx);
+        current.ntfy_server = self.phone.value(Field::Server, cx);
+        let secret = Secret::new(self.phone.value(Field::of(current.service), cx));
+        self.phone.testing = true;
+        self.phone.tested = None;
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { phone::Target::new(&current, secret).and_then(|t| phone::send_now(&t, &phone::test_text())) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.phone.testing = false;
+                if result.is_ok() {
+                    super::state::set_phone_trouble(None, cx);
+                }
+                s.phone.tested = Some(result.map(|()| tr("Gesendet. Schau aufs Handy.")));
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn find_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.phone.finding {
+            return;
+        }
+        let token = Secret::new(self.phone.value(Field::Token, cx));
+        self.phone.finding = true;
+        self.phone.found = None;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_spawn(async move { phone::find_chat(&token) }).await;
+            let _ = this.update_in(cx, |s, window, cx| {
+                s.phone.finding = false;
+                let found = result.map(|chat| {
+                    s.phone.input(Field::Chat).update(cx, |i, cx| i.set_value(chat.id.clone(), window, cx));
+                    s.typed(Field::Chat, cx);
+                    if chat.name.is_empty() { tr("Chat gefunden.") } else { trf("Gefunden: %@", &[&chat.name]) }
+                });
+                s.phone.found = Some(found);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn field_row(&self, field: Field, label: String, trailing: Option<Stateful<Div>>, note: Div, t: &Theme) -> Row {
+        let masked = field.slot().is_some();
+        let input = Input::new(self.phone.input(field)).when(masked, |i| i.mask_toggle());
+        let line = div().flex().items_center().gap(px(space::S)).child(div().flex_1().min_w_0().child(input)).children(trailing);
+        let below = div().flex().flex_col().gap(px(space::XS)).child(line).child(note);
+        Row { below: Some(below.into_any_element()), ..row(label, None, div(), t) }
+    }
+
+    fn phone_group(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
+        let current = settings::active().phone.clone();
+        let mut rows = vec![self.toggle("set-phone", tr("Aufs Handy schicken"), tr("Schickt dieselben Meldungen über Discord, Telegram oder ntfy, gesammelt pro Batch."), current.enabled, |st, on| st.phone.enabled = on, t, cx)];
+        if !current.enabled {
+            return group(tr("Aufs Handy"), rows, None, t);
+        }
+        let service = current.service;
+        let segments = Service::ALL.map(|sv| segment(SharedString::from(format!("set-phone-{}", sv.name().to_lowercase())), sv.name().to_owned(), sv == service, true, t));
+        let pick = cx.listener(|s, n: &usize, _, cx| {
+            let next = Service::ALL.get(*n).copied().unwrap_or_default();
+            s.phone.tested = None;
+            s.change(|st| st.phone.service = next, cx);
+        });
+        rows.push(row(tr("Dienst"), None, segmented("set-phone-service", segments, move |n, window, cx| pick(&n, window, cx), t), t));
+        match service {
+            Service::Discord => {
+                let url = self.phone.value(Field::Discord, cx);
+                let odd = (!url.is_empty() && !url.contains("/api/webhooks/")).then(|| tr("Das sieht nicht wie eine Webhook-Adresse aus. Sie enthält /api/webhooks/."));
+                let hint = tr("In Discord: Servereinstellungen › Integrationen › Webhooks › Neuer Webhook › Webhook-URL kopieren.");
+                rows.push(self.field_row(Field::Discord, tr("Webhook-Adresse"), None, sheet::note(Some(hint), odd, t), t));
+            }
+            Service::Telegram => {
+                rows.push(self.field_row(Field::Token, tr("Bot-Token"), None, sheet::note(Some(tr("Schreib @BotFather in Telegram /newbot und kopiere den Token hierher.")), None, t), t));
+                let finding = self.phone.finding;
+                let find = sheet::button("set-phone-find", tr("Chat-ID finden"), None, Look::Secondary, false, finding, t).when(!finding, |b| b.on_click(cx.listener(|s, _, window, cx| s.find_chat(window, cx))));
+                let note = match &self.phone.found {
+                    Some(Ok(found)) => sheet::status("circle-check", t.success_text, found.clone()).text_size(px(font::CAPTION)),
+                    Some(Err(e)) => sheet::note(None, Some(e.clone()), t),
+                    None => sheet::note(Some(tr("Schreib deinem Bot zuerst eine Nachricht, dann „Chat-ID finden“.")), None, t),
+                };
+                rows.push(self.field_row(Field::Chat, tr("Chat-ID"), Some(find), note, t));
+            }
+            Service::Ntfy => {
+                rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Meistens passt https://ntfy.sh.")), None, t), t));
+                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.")), None, t), t));
+            }
+        }
+        let testing = self.phone.testing;
+        let send = sheet::button("set-phone-test", tr("Testnachricht senden"), None, Look::Secondary, false, testing, t).when(!testing, |b| b.on_click(cx.listener(|s, _, _, cx| s.test(cx))));
+        let trouble = model::get(cx).read(cx).phone_trouble.clone();
+        let outcome = match (&self.phone.tested, trouble) {
+            (Some(Ok(done)), _) => Some(sheet::status("circle-check", t.success_text, done.clone())),
+            (Some(Err(e)), _) => Some(sheet::status("circle-alert", t.danger_text, e.clone())),
+            (None, Some(trouble)) => Some(sheet::status("circle-alert", t.danger_text, trf("Zuletzt nicht angekommen: %@", &[&trouble]))),
+            (None, None) => None,
+        };
+        rows.push(Row { below: outcome.map(IntoElement::into_any_element), ..row(tr("Testnachricht"), Some(tr("Prüft, ob Meldungen auf dem Handy ankommen.")), send, t) });
+        rows.push(self.toggle("set-phone-back", tr("Wieder verbunden"), tr("Meldet auch, wenn getrennte Accounts zurück auf dem Server sind."), current.reconnected, |st, on| st.phone.reconnected = on, t, cx));
+        rows.push(self.toggle("set-phone-whispers", tr("Flüstern"), tr("Schickt Flüsternachrichten weiter."), current.whispers, |st, on| st.phone.whispers = on, t, cx));
+        group(tr("Aufs Handy"), rows, Some(tr("Webhook-Adresse, Token und Thema liegen nur im Passwortspeicher des Systems.")), t)
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
@@ -165,11 +427,12 @@ struct Row {
     text: Div,
     control: AnyElement,
     press: Option<(SharedString, Press)>,
+    below: Option<AnyElement>,
 }
 
 fn row(label: String, hint: Option<String>, control: impl IntoElement, t: &Theme) -> Row {
     let text = div().flex_1().min_w_0().flex().flex_col().child(div().text_size(px(font::BODY)).text_color(t.primary).child(label)).children(hint.map(|h| div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(h)));
-    Row { text, control: control.into_any_element(), press: None }
+    Row { text, control: control.into_any_element(), press: None, below: None }
 }
 
 fn group(title: String, rows: Vec<Row>, footer: Option<String>, t: &Theme) -> Div {
@@ -187,15 +450,16 @@ fn group(title: String, rows: Vec<Row>, footer: Option<String>, t: &Theme) -> Di
         div()
             .relative()
             .flex()
-            .items_center()
-            .gap(px(space::L))
+            .flex_col()
+            .justify_center()
+            .gap(px(space::S))
             .px(px(space::L))
             .py(px(space::M))
             .min_h(px(control::L + space::M))
             .when(i < last, |d| d.border_b_1().border_color(t.separator))
             .children(press)
-            .child(r.text)
-            .child(control)
+            .child(div().flex().items_center().gap(px(space::L)).child(r.text).child(control))
+            .children(r.below)
     });
     div()
         .flex()
@@ -305,6 +569,7 @@ impl Render for SettingsView {
             Some(tr("Meldungen kommen gesammelt und nie mit Ton.")),
             &t,
         );
+        let phone = self.phone_group(&t, cx);
         let connection = group(
             tr("Verbindung"),
             vec![
@@ -347,6 +612,7 @@ impl Render for SettingsView {
                     .child(general)
                     .child(chat)
                     .child(notices)
+                    .child(phone)
                     .child(connection)
                     .child(hotkeys)
                     .child(follows),
