@@ -46,3 +46,4 @@ pub mod store;
 pub mod sync;
 pub mod updater;
 pub mod webauth;
+pub mod winstate;

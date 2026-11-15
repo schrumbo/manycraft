@@ -374,9 +374,12 @@ impl WindowsWindowInner {
         };
         match open_status.state {
             WindowOpenState::Maximized => unsafe {
-                SetWindowPlacement(self.hwnd, &open_status.placement)
+                // Show it maximized in one step; showing it normal first and
+                // maximizing afterwards flashes the unmaximized window.
+                let mut placement = open_status.placement;
+                placement.showCmd = SW_SHOWMAXIMIZED.0 as u32;
+                SetWindowPlacement(self.hwnd, &placement)
                     .context("failed to set window placement")?;
-                ShowWindowAsync(self.hwnd, SW_MAXIMIZE).ok()?;
             },
             WindowOpenState::Fullscreen => {
                 unsafe {

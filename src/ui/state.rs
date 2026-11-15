@@ -564,6 +564,7 @@ fn reload_with(cx: &mut App, keep: bool) {
                     (Ok(accounts), Ok(batches)) => {
                         m.accounts = accounts;
                         m.batches = batches;
+                        m.loaded = true;
                         m.error = if keep { notice.or(m.error.take()) } else { notice };
                     }
                     (Err(e), _) | (_, Err(e)) => m.error = Some(format!("{e:#}")),

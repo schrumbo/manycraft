@@ -17,7 +17,9 @@ use super::native;
 use super::theme::{self, Theme, chat, control, font, iconsize, selection, shell, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button};
 use crate::core::i18n::{tr, trf};
-use crate::core::place::{Mode, Place, Rect};
+use crate::core::settings;
+use crate::core::place::{self, Mode, Place, Rect};
+use crate::core::winstate::{self, Saved};
 
 actions!(main_window, [FocusSearch, ClearSearch, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
 
@@ -54,6 +56,11 @@ pub struct MainWindow {
     pub(super) grid: Grid,
     pub(super) palette: Option<super::palette::Palette>,
     fit: Option<(FitScope, Option<String>)>,
+    saved: Saved,
+    restoring: Option<String>,
+    dirty: bool,
+    saving: Option<Task<()>>,
+    writing: Option<Task<()>>,
     /// Prism Launcher instances that can become a batch, and accounts Prism lists, as found at startup.
     pub(super) prism: (usize, usize),
     pub(super) search_roomy: bool,
@@ -63,7 +70,7 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(saved: Saved, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = model::get(cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Name, Batch, Server, Status")));
         let me = cx.entity().downgrade();
@@ -83,7 +90,20 @@ impl MainWindow {
                 theme::refresh(window, cx);
                 cx.notify();
             }),
+            cx.observe_window_bounds(window, |this, window, cx| this.remember(window, cx)),
+            cx.on_app_quit(|this, _| {
+                this.write_now();
+                async {}
+            }),
+            cx.on_release(|this, _| this.write_now()),
             cx.observe(&model, |this, model, cx| {
+                if model.read(cx).loaded
+                    && let Some(batch) = this.restoring.take()
+                    && this.page == Page::Grid(None)
+                    && model.read(cx).batches.iter().any(|b| b.id == batch)
+                {
+                    this.page = Page::Grid(Some(batch));
+                }
                 let playing = model.read(cx).playing.clone();
                 if let Some(left) = std::mem::replace(&mut this.last_playing, playing.clone()).filter(|_| playing.is_none()) {
                     this.grid.reveal(left);
@@ -103,11 +123,22 @@ impl MainWindow {
             typed,
         ];
         Self::look_for_prism(cx);
+        native::note_center(window);
+        let page = match saved.page {
+            winstate::Page::Accounts => Page::Accounts,
+            winstate::Page::Chat if settings::active().merged_chat => Page::Chat,
+            _ => Page::Grid(None),
+        };
         Self {
             focus: cx.focus_handle(),
-            page: Page::Grid(None),
+            restoring: saved.batch.clone().filter(|_| page == Page::Grid(None)),
+            page,
+            sidebar: saved.sidebar,
+            saved,
+            dirty: false,
+            saving: None,
+            writing: None,
             filter: Filter::All,
-            sidebar: true,
             overlay: false,
             narrow_now: false,
             search,
@@ -141,6 +172,7 @@ impl MainWindow {
     /// Shows `page`; switching between grids keeps the filter but drops the keyboard selection.
     pub(super) fn go(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = false;
+        self.restoring = None;
         if self.page != page {
             self.page = page;
             self.grid.forget();
@@ -148,7 +180,66 @@ impl MainWindow {
         }
         self.focus_page(window, cx);
         cx.defer_in(window, |this, window, cx| this.focus_page(window, cx));
+        self.remember(window, cx);
         cx.notify();
+    }
+
+    /// Notes what the next start restores and writes it once the window has been left alone for a moment.
+    fn remember(&mut self, window: &Window, cx: &mut Context<Self>) {
+        native::note_center(window);
+        let mut saved = self.saved.clone();
+        if self.restoring.is_none() {
+            (saved.page, saved.batch) = match &self.page {
+                Page::Grid(batch) => (winstate::Page::Grid, batch.clone()),
+                Page::Accounts => (winstate::Page::Accounts, None),
+                Page::Chat => (winstate::Page::Chat, None),
+            };
+        }
+        saved.sidebar = self.sidebar;
+        if !crate::core::drive::away() && !window.is_fullscreen() && native::place_of(window).is_some() {
+            let shown = match window.window_bounds() {
+                WindowBounds::Windowed(b) => Some((b, false)),
+                WindowBounds::Maximized(b) => Some((b, true)),
+                WindowBounds::Fullscreen(_) => None,
+            };
+            if let Some((b, maximized)) = shown {
+                saved.frame = Some(winstate::Frame { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) });
+                saved.maximized = maximized;
+                saved.display = window.display(cx).and_then(|d| d.uuid().ok()).map(|u| u.to_string());
+            }
+        }
+        if saved == self.saved {
+            return;
+        }
+        self.saved = saved;
+        self.dirty = true;
+        self.saving = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            let _ = this.update(cx, |this, cx| this.flush(cx));
+        }));
+    }
+
+    /// Writes what `remember` noted behind the write before it.
+    fn flush(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.dirty) {
+            return;
+        }
+        self.saving = None;
+        let saved = self.saved.clone();
+        let before = self.writing.take();
+        self.writing = Some(cx.background_spawn(async move {
+            if let Some(before) = before {
+                before.await;
+            }
+            let _ = winstate::save(&saved);
+        }));
+    }
+
+    /// Writes what `remember` noted right now, as the window or the app goes away.
+    fn write_now(&mut self) {
+        if std::mem::take(&mut self.dirty) {
+            let _ = winstate::save(&self.saved);
+        }
     }
 
     /// Hands the keyboard to the page: the grid when it shows, the window otherwise.
@@ -383,6 +474,7 @@ impl Render for MainWindow {
                     this.overlay = !this.overlay;
                 } else {
                     this.sidebar = !this.sidebar;
+                    this.remember(window, cx);
                 }
                 cx.notify();
             }))
@@ -513,6 +605,7 @@ fn driven_size() -> Option<(f32, f32)> {
 }
 
 const FULLSCREEN_SETTLES: Duration = Duration::from_millis(150);
+const SAVE_AFTER: Duration = Duration::from_millis(500);
 
 fn bind_keys(cx: &mut App) {
     let m = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
@@ -544,13 +637,39 @@ fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// Opens the main window.
+fn rect_of(b: Bounds<Pixels>) -> Rect {
+    let at = |p: Pixels| f32::from(p).round();
+    Rect { x: at(b.origin.x) as i32, y: at(b.origin.y) as i32, w: at(b.size.width).max(1.) as u32, h: at(b.size.height).max(1.) as u32 }
+}
+
+/// Where the remembered window opens on the monitors there are now, and on which one.
+fn restored(saved: &Saved, cx: &App) -> Option<(WindowBounds, DisplayId)> {
+    let frame = saved.frame?;
+    let displays = cx.displays();
+    let works: Vec<Rect> = displays.iter().map(|d| rect_of(d.visible_bounds())).collect();
+    let prefer = saved.display.as_deref().and_then(|u| displays.iter().position(|d| d.uuid().is_ok_and(|id| id.to_string() == u)));
+    let bounds = Bounds::new(point(px(frame.x), px(frame.y)), size(px(frame.w), px(frame.h)));
+    let asked = rect_of(bounds);
+    let (fitted, at) = place::restore(asked, &works, prefer)?;
+    let bounds = if fitted == asked { bounds } else { Bounds::new(point(px(fitted.x as f32), px(fitted.y as f32)), size(px(fitted.w as f32), px(fitted.h as f32))) };
+    Some((if saved.maximized { WindowBounds::Maximized(bounds) } else { WindowBounds::Windowed(bounds) }, displays[at].id()))
+}
+
+/// Opens the main window where it was last, else centred.
 pub fn open(cx: &mut App) {
     bind_keys(cx);
-    let (w, h) = driven_size().filter(|_| crate::core::drive::on()).unwrap_or((1280., 800.));
-    let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+    let driven = crate::core::drive::on();
+    let (w, h) = driven_size().filter(|_| driven).unwrap_or((1280., 800.));
+    let saved = winstate::load();
+    let (window_bounds, display_id) = match restored(&saved, cx) {
+        Some((bounds, display)) => (bounds, Some(display)),
+        None => (WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx)), None),
+    };
+    let maximized = matches!(window_bounds, WindowBounds::Maximized(_));
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(window_bounds),
+        display_id,
+        show: !(maximized && !driven),
         window_min_size: Some(size(px(640.), px(420.))),
         app_id: Some("io.github.schrumbo.manycraft".into()),
         ..Default::default()
@@ -558,10 +677,18 @@ pub fn open(cx: &mut App) {
     let options = super::chrome::window_options(options, "Manycraft");
     if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::refresh(window, cx);
-        cx.new(|cx| MainWindow::new(window, cx))
+        if maximized && !driven {
+            window.activate_window();
+        }
+        cx.new(|cx| MainWindow::new(saved, window, cx))
     }) {
         cx.set_global(MainHandle(handle));
     }
+}
+
+/// The monitor the main window is on.
+pub fn display(cx: &mut App) -> Option<DisplayId> {
+    handle(cx)?.update(cx, |_, window, cx| window.display(cx).map(|d| d.id())).ok().flatten()
 }
 
 fn handle(cx: &App) -> Option<AnyWindowHandle> {

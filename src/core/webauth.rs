@@ -86,6 +86,9 @@ pub struct Request {
     /// Holds back every passkey prompt, for automated runs that must never raise a system dialog.
     #[serde(default)]
     pub quiet: bool,
+    /// A point in screen pixels on the monitor the window should open on, where the manager is.
+    #[serde(default)]
+    pub near: Option<(i32, i32)>,
 }
 
 /// One line the window sends back on its stdout.
@@ -399,7 +402,7 @@ mod tests {
 
     #[test]
     fn request_is_one_json_line() {
-        let request = Request { url: authorize_url(), title: "Bei Microsoft\nanmelden".into(), browser_label: "Im Browser öffnen".into(), quiet: true };
+        let request = Request { url: authorize_url(), title: "Bei Microsoft\nanmelden".into(), browser_label: "Im Browser öffnen".into(), quiet: true, near: Some((-1200, 400)) };
         let line = serde_json::to_string(&request).unwrap();
         assert!(!line.contains('\n'));
         assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), request);
@@ -431,7 +434,7 @@ mod tests {
     fn window(body: &str) -> Window {
         let mut command = script(body);
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        Window::start(command, &Request { url: "u".into(), title: "t".into(), browser_label: "b".into(), quiet: false }).unwrap()
+        Window::start(command, &Request { url: "u".into(), title: "t".into(), browser_label: "b".into(), quiet: false, near: None }).unwrap()
     }
 
     #[test]
