@@ -14,8 +14,11 @@ use freya_core::{
     prelude::GlobalTasks,
 };
 use freya_engine::prelude::{
+    BlendMode,
     FontCollection,
     FontMgr,
+    Paint,
+    SamplingOptions,
     SkData,
     TypefaceFontProvider,
     register_font_typeface,
@@ -613,6 +616,13 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
         if let Some(app) = &mut self.windows.get_mut(&window_id) {
             #[cfg(feature = "accessibility")]
             app.accessibility_adapter.process_event(&app.window, &event);
+            self.plugins.send(
+                PluginEvent::WindowEvent {
+                    window: &app.window,
+                    event: &event,
+                },
+                PluginHandle::new(&self.proxy),
+            );
             match event {
                 WindowEvent::ThemeChanged(theme) => {
                     app.platform.preferred_theme.set(match theme {
@@ -717,8 +727,14 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                         );
 
                         let resource_cache = app.driver.resource_cache_usage();
+                        let window_size = app.window.inner_size();
+                        app.damage.collect(
+                            &mut app.tree,
+                            scale_factor,
+                            (window_size.width as f32, window_size.height as f32).into(),
+                        );
                         let present_result = app.driver.present(
-                            app.window.inner_size().cast(),
+                            window_size.cast(),
                             &app.window,
                             |surface| {
                                 self.plugins.send(
@@ -731,16 +747,49 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                                     PluginHandle::new(&self.proxy),
                                 );
 
-                                let render_pipeline = RenderPipeline {
-                                    font_collection: &mut self.font_collection,
-                                    font_manager: &self.font_manager,
-                                    tree: &app.tree,
-                                    canvas: surface.canvas(),
-                                    scale_factor,
-                                    background: app.background,
-                                };
+                                let kept = app.kept_frame.as_ref().is_some_and(|kept| {
+                                    kept.width() == surface.width()
+                                        && kept.height() == surface.height()
+                                });
+                                if !kept {
+                                    app.kept_frame = surface.new_surface_with_dimensions((
+                                        surface.width(),
+                                        surface.height(),
+                                    ));
+                                }
 
-                                render_pipeline.render();
+                                match app.kept_frame.as_mut() {
+                                    Some(frame) => {
+                                        RenderPipeline {
+                                            font_collection: &mut self.font_collection,
+                                            font_manager: &self.font_manager,
+                                            tree: &app.tree,
+                                            canvas: frame.canvas(),
+                                            scale_factor,
+                                            background: app.background,
+                                            damage: kept.then_some(&app.damage),
+                                        }
+                                        .render();
+                                        let mut paint = Paint::default();
+                                        paint.set_blend_mode(BlendMode::Src);
+                                        frame.draw(
+                                            surface.canvas(),
+                                            (0, 0),
+                                            SamplingOptions::default(),
+                                            Some(&paint),
+                                        );
+                                    }
+                                    None => RenderPipeline {
+                                        font_collection: &mut self.font_collection,
+                                        font_manager: &self.font_manager,
+                                        tree: &app.tree,
+                                        canvas: surface.canvas(),
+                                        scale_factor,
+                                        background: app.background,
+                                        damage: None,
+                                    }
+                                    .render(),
+                                }
 
                                 let cached_assets = app.runner.with_root_context(|| {
                                     AssetCacher::try_get()
@@ -1061,6 +1110,7 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
         // Rebuild on the same window.
         if needs_recovery && let Some(mut app) = self.windows.remove(&window_id) {
             // Drop the lost driver first to release its GPU surface.
+            app.kept_frame = None;
             drop(app.driver);
             app.driver = GraphicsDriver::recover_reusing_window(
                 event_loop,

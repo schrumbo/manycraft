@@ -100,6 +100,8 @@ pub struct Tree {
     pub accessibility_state: FxHashMap<NodeId, AccessibilityState>,
     pub effect_state: FxHashMap<NodeId, EffectState>,
     pub text_style_state: FxHashMap<NodeId, TextStyleState>,
+    /// Nodes whose inherited text style changed since a [`DamageTracker`](crate::damage::DamageTracker) last looked.
+    pub text_style_changed: FxHashSet<NodeId>,
 
     // Other
     pub layout: Torin<NodeId>,
@@ -329,6 +331,7 @@ impl Tree {
                     self.heights.remove(&node_id);
                     self.effect_state.remove(&node_id);
                     self.text_style_state.remove(&node_id);
+                    self.text_style_changed.remove(&node_id);
                     self.text_cache.remove(&node_id);
                 }
             }
@@ -641,6 +644,9 @@ impl Tree {
                                 element,
                                 &mut self.layout,
                             );
+                            if changed {
+                                self.text_style_changed.insert(*node_id);
+                            }
                             if changed
                                 && self
                                     .listeners

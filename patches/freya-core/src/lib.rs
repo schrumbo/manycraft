@@ -1,6 +1,7 @@
 pub mod accessibility;
 pub mod animation_clock;
 pub mod current_context;
+pub mod damage;
 pub mod data;
 pub mod debug;
 pub mod diff_key;
@@ -212,6 +213,7 @@ pub mod integration {
         },
         node_id::NodeId,
         platform::*,
+        damage::DamageTracker,
         render_pipeline::RenderPipeline,
         rendering_ticker::*,
         runner::{

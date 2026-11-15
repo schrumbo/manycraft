@@ -18,6 +18,7 @@ pub use keyboard_types::{
     Modifiers,
 };
 use winit::{
+    event::WindowEvent,
     event_loop::EventLoopProxy,
     window::{
         Window,
@@ -227,6 +228,13 @@ pub enum PluginEvent<'a> {
         window: &'a Window,
         font_collection: &'a FontCollection,
         tree: &'a Tree,
+    },
+
+    /// A raw winit event for a window, sent before Freya handles it. Lets plugins follow
+    /// events Freya does not act on itself, such as `Moved` or `Occluded`.
+    WindowEvent {
+        window: &'a Window,
+        event: &'a WindowEvent,
     },
 
     /// A keyboard input was received.

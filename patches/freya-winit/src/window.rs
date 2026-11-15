@@ -135,6 +135,10 @@ pub struct AppWindow {
 
     pub(crate) background: Color,
 
+    pub(crate) damage: DamageTracker,
+
+    pub(crate) kept_frame: Option<SkiaSurface>,
+
     pub(crate) dropped_file_paths: Vec<PathBuf>,
 
     pub(crate) on_close: Option<OnCloseHook>,
@@ -235,7 +239,8 @@ impl AppWindow {
             window_attributes = window_attributes.with_name(&app_id, &app_id);
         }
         if let Some(window_attributes_hook) = window_config.window_attributes_hook.take() {
-            window_attributes = window_attributes_hook(window_attributes, active_event_loop);
+            window_attributes = window_attributes_hook(window_attributes, active_event_loop)
+                .with_visible(false);
         }
         let (driver, mut window) = GraphicsDriver::new(
             active_event_loop,
@@ -451,6 +456,10 @@ impl AppWindow {
 
             background: window_config.background,
 
+            damage: DamageTracker::new(),
+
+            kept_frame: None,
+
             dropped_file_paths: Vec::new(),
 
             on_close,
@@ -505,6 +514,7 @@ impl AppWindow {
         self.tree.set_scale_factor(scale_factor as f32);
         self.tree.layout.reset();
         self.tree.text_cache.reset();
+        self.damage.invalidate();
         self.window.request_redraw();
     }
 

@@ -291,7 +291,7 @@ impl OpenGLDriver {
         render(&mut self.surface);
 
         window.pre_present_notify();
-        self.gr_context.flush_submit_and_sync_cpu();
+        self.gr_context.flush_and_submit();
         if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
             tracing::error!("Failed to swap buffers: {:?}", error);
         }

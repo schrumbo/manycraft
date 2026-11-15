@@ -20,6 +20,7 @@ use torin::prelude::{
 };
 
 use crate::{
+    damage::text_paint_area,
     data::{
         AccessibilityData,
         EffectData,
@@ -34,6 +35,7 @@ use crate::{
         ElementExt,
         EventHandlers,
         LayoutContext,
+        PaintAreaContext,
         RenderContext,
     },
     elements::paragraph::ParagraphPaintExt,
@@ -292,6 +294,21 @@ impl ElementExt for LabelElement {
             ClipOp::Intersect,
             true,
         );
+    }
+
+    fn paint_area(&self, context: PaintAreaContext) -> Area {
+        let paragraph = context
+            .layout_node
+            .data
+            .as_ref()
+            .and_then(|data| data.downcast_ref::<SkParagraph>());
+        match paragraph {
+            Some(paragraph) => {
+                let origin = context.layout_node.inner_area.origin;
+                text_paint_area(paragraph, origin.x, origin.y, &context)
+            }
+            None => context.layout_node.visible_area(),
+        }
     }
 
     fn render(&self, context: RenderContext) {

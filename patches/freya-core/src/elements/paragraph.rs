@@ -42,6 +42,7 @@ use torin::prelude::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
+    damage::text_paint_area,
     data::{
         AccessibilityData,
         CursorStyleData,
@@ -58,6 +59,7 @@ use crate::{
         EventHandlers,
         IntoElement,
         LayoutContext,
+        PaintAreaContext,
         PostMeasureContext,
         RenderContext,
     },
@@ -468,6 +470,26 @@ impl ElementExt for ParagraphElement {
 
     fn events_handlers(&'_ self) -> Option<Cow<'_, EventHandlers>> {
         Some(Cow::Borrowed(&self.event_handlers))
+    }
+
+    fn paint_area(&self, context: PaintAreaContext) -> Area {
+        let area = context.layout_node.area.union(&context.layout_node.visible_area());
+        let holder = self.sk_paragraph.0.borrow();
+        let Some(ParagraphHolderInner { paragraph, .. }) = holder.as_ref() else {
+            return area;
+        };
+        let inner_area = context.layout_node.inner_area;
+        let vertical_offset = match self.vertical_align {
+            VerticalAlign::Start => 0.0,
+            VerticalAlign::Center => (inner_area.height() - paragraph.height()).max(0.0) / 2.0,
+        };
+        text_paint_area(
+            paragraph,
+            inner_area.min_x(),
+            inner_area.min_y() + vertical_offset,
+            &context,
+        )
+        .union(&area)
     }
 
     fn render(&self, context: RenderContext) {

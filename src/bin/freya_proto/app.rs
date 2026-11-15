@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use freya::engine::prelude::{AlphaType, ColorType, IPoint, ISize, ImageInfo};
 use freya::elements::image::ImageHandle;
 use freya::prelude::*;
+use freya::winit::event::WindowEvent;
 use freya_winit::plugins::{FreyaPlugin, PluginEvent, PluginHandle};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::HWND;
@@ -32,6 +33,8 @@ static MISSES: AtomicU64 = AtomicU64::new(0);
 static SAME: AtomicU64 = AtomicU64::new(0);
 static PRESSES: AtomicU64 = AtomicU64::new(0);
 static FRAME_TIMES: Mutex<Vec<f32>> = Mutex::new(Vec::new());
+static PHASE_US: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()];
+const PHASES: [&str; 9] = ["tree", "tasks", "layout", "events", "accessibility", "render", "present", "collect", "redraw"];
 static OS_SCALE: Mutex<f64> = Mutex::new(1.0);
 
 type Batch = Vec<(usize, Preview)>;
@@ -41,6 +44,7 @@ thread_local! {
     static BATCH: RefCell<Option<async_channel::Receiver<Batch>>> = const { RefCell::new(None) };
     static TILE_FRAMES: RefCell<HashMap<usize, State<Option<ImageHandle>>>> = RefCell::new(HashMap::new());
     static PAINT_START: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    static PHASE_START: RefCell<[Option<Instant>; PHASES.len()]> = const { RefCell::new([None; PHASES.len()]) };
 }
 
 /// Command line of the prototype.
@@ -134,8 +138,38 @@ impl FreyaPlugin for Meter {
     }
 
     fn on_event(&mut self, event: &mut PluginEvent, _: PluginHandle) {
+        let phases: &[(usize, bool)] = match event {
+            PluginEvent::StartedUpdatingTree { .. } => &[(0, true)],
+            PluginEvent::FinishedUpdatingTree { .. } => &[(0, false)],
+            PluginEvent::StartedPollingTasks { .. } => &[(1, true)],
+            PluginEvent::FinishedPollingTasks { .. } => &[(1, false)],
+            PluginEvent::StartedMeasuringLayout { .. } => &[(2, true), (8, true)],
+            PluginEvent::FinishedMeasuringLayout { .. } => &[(2, false), (7, true)],
+            PluginEvent::StartedMeasuringEvents { .. } => &[(3, true)],
+            PluginEvent::FinishedMeasuringEvents { .. } => &[(3, false)],
+            PluginEvent::BeforeAccessibility { .. } => &[(4, true)],
+            PluginEvent::AfterAccessibility { .. } => &[(4, false)],
+            PluginEvent::BeforeRender { .. } => &[(5, true), (7, false)],
+            PluginEvent::AfterRender { .. } => &[(5, false)],
+            PluginEvent::BeforePresenting { .. } => &[(6, true)],
+            PluginEvent::AfterPresenting { .. } => &[(6, false), (8, false)],
+            _ => &[],
+        };
+        for &(index, start) in phases {
+            PHASE_START.with(|s| {
+                let mut s = s.borrow_mut();
+                if start {
+                    s[index] = Some(Instant::now());
+                } else if let Some(t) = s[index].take() {
+                    PHASE_US[index].fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+                }
+            });
+        }
         match event {
             PluginEvent::BeforeRender { .. } => PAINT_START.with(|s| *s.borrow_mut() = Some(Instant::now())),
+            PluginEvent::WindowEvent { window, event: WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Occluded(_) } => {
+                swap::follow_window(window.is_minimized().unwrap_or(false));
+            }
             PluginEvent::BeforePresenting { .. } => {
                 FRAMES.fetch_add(1, Ordering::Relaxed);
                 if let Some(start) = PAINT_START.with(|s| s.borrow_mut().take()) {
@@ -200,6 +234,7 @@ pub fn run(options: Options) {
         .with_title("Manycraft Freya prototype")
         .with_background((24, 24, 26))
         .with_window_attributes(move |attributes, _| {
+            let attributes = attributes.with_visible(true);
             match pos {
                 Some((x, y)) => attributes.with_position(freya::winit::dpi::PhysicalPosition::new(x, y)),
                 None => attributes,
@@ -215,7 +250,13 @@ pub fn run(options: Options) {
                 swap::attach(h.hwnd.get() as HWND);
             }
         });
-    launch(LaunchConfig::new().with_plugin(Meter).with_window(window));
+    let crash_log = options.dir.join("crash.log");
+    launch(LaunchConfig::new().with_plugin(Meter).with_window(window).with_fatal_error_handler(move |message| {
+        eprintln!("freya_proto crashed: {message}");
+        let _ = std::fs::write(&crash_log, format!("{message}
+"));
+        swap::hide();
+    }));
     swap::hide();
     for mut child in children {
         let _ = child.kill();
@@ -294,8 +335,10 @@ fn write_stats(path: &PathBuf) {
         let manager = swap::client_on_screen(swap::manager());
         let rect = |r: Option<swap::Px>| r.map_or("null".to_owned(), |r| format!("[{},{},{},{}]", r.x, r.y, r.w, r.h));
         let tiles: Vec<String> = (0..256).filter_map(|i| swap::tile_on_screen(i).map(|r| format!("[{},{},{},{}]", r.x, r.y, r.w, r.h))).collect();
+        let phases: Vec<String> = PHASES.iter().zip(&PHASE_US).map(|(name, us)| format!("\"{name}\":{}", us.load(Ordering::Relaxed))).collect();
         let text = format!(
-            "{{\"read_us\":{},\"reads\":{},\"misses\":{},\"same\":{},\"presses\":{},\"frames\":{},\"renders\":{},\"previews\":{},\"placed\":{},\"p50\":{:.3},\"p95\":{:.3},\"max\":{:.3},\"samples\":{},\"active\":{},\"visible\":{},\"tile\":{},\"game\":{},\"manager\":{},\"tiles\":[{}]}}",
+            "{{\"phases_us\":{{{}}},\"read_us\":{},\"reads\":{},\"misses\":{},\"same\":{},\"presses\":{},\"frames\":{},\"renders\":{},\"previews\":{},\"placed\":{},\"p50\":{:.3},\"p95\":{:.3},\"max\":{:.3},\"samples\":{},\"active\":{},\"visible\":{},\"tile\":{},\"game\":{},\"manager\":{},\"tiles\":[{}]}}",
+            phases.join(","),
             READ_US.load(Ordering::Relaxed),
             READS.load(Ordering::Relaxed),
             MISSES.load(Ordering::Relaxed),

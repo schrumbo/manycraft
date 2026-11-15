@@ -106,3 +106,5 @@ objc2-foundation = "0.3"
 [patch.crates-io]
 gpui-pre = { path = "patches/gpui-pre" }
 gpui-pre-windows = { path = "patches/gpui-pre-windows" }
+freya-core = { path = "patches/freya-core" }
+freya-winit = { path = "patches/freya-winit" }

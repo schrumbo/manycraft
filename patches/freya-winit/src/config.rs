@@ -340,6 +340,8 @@ pub type TaskHandler =
 
 pub type GlobalContextInserter = Box<dyn FnOnce(&GlobalContexts)>;
 
+pub type FatalErrorHandler = Box<dyn FnOnce(String)>;
+
 /// Configuration for the initial state of the application.
 ///
 /// Use this to register windows, plugins, fonts, and other settings
@@ -356,6 +358,7 @@ pub struct LaunchConfig {
     pub(crate) exit_on_close: bool,
     pub(crate) event_loop: Option<winit::event_loop::EventLoop<crate::renderer::NativeEvent>>,
     pub(crate) gpu_resource_cache_limit: usize,
+    pub(crate) fatal_error_handler: Option<FatalErrorHandler>,
 }
 
 impl Default for LaunchConfig {
@@ -372,6 +375,7 @@ impl Default for LaunchConfig {
             exit_on_close: true,
             event_loop: None,
             gpu_resource_cache_limit: GpuResourceCacheLimit::default().bytes(),
+            fatal_error_handler: None,
         }
     }
 }
@@ -492,6 +496,14 @@ impl LaunchConfig {
     /// Set to `false` to keep the event loop alive even when no windows remain.
     pub fn with_exit_on_close(mut self, exit_on_close: bool) -> Self {
         self.exit_on_close = exit_on_close;
+        self
+    }
+
+    /// Handle a panic that ends the app in release builds, instead of showing the default
+    /// "Fatal Error" dialog. The handler gets the panic message; the process exits with code 1
+    /// once it returns.
+    pub fn with_fatal_error_handler(mut self, handler: impl FnOnce(String) + 'static) -> Self {
+        self.fatal_error_handler = Some(Box::new(handler));
         self
     }
 

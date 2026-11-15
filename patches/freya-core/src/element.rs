@@ -61,7 +61,11 @@ use crate::{
         ImePreeditEventData,
         MaybeExt,
     },
-    style::fill::Fill,
+    style::{
+        border::BorderAlignment,
+        fill::Fill,
+        shadow::ShadowPosition,
+    },
     text_cache::TextCache,
     tree::DiffModifies,
 };
@@ -196,6 +200,36 @@ pub trait ElementExt: Any {
         )
     }
 
+    /// Returns the area this element paints into, in device pixels. Freya repaints only what
+    /// changed between frames, so this must cover everything [`render`](Self::render) draws.
+    /// The default covers the visible area plus outset shadows and outer borders.
+    fn paint_area(&self, context: PaintAreaContext) -> Area {
+        let style = self.style();
+        let scale_factor = context.scale_factor as f32;
+        let mut outset = (0f32, 0f32);
+        for shadow in style.shadows.iter() {
+            if shadow.position == ShadowPosition::Normal {
+                let reach = shadow.spread + shadow.blur * 1.5;
+                outset.0 = outset.0.max(shadow.x.abs() + reach);
+                outset.1 = outset.1.max(shadow.y.abs() + reach);
+            }
+        }
+        for border in style.borders.iter() {
+            let share = match border.alignment {
+                BorderAlignment::Inner => 0.,
+                BorderAlignment::Center => 0.5,
+                BorderAlignment::Outer => 1.,
+            };
+            let width = border.width;
+            outset.0 = outset.0.max(width.left.max(width.right) * share);
+            outset.1 = outset.1.max(width.top.max(width.bottom) * share);
+        }
+        context
+            .layout_node
+            .visible_area()
+            .inflate(outset.0 * scale_factor + 1., outset.1 * scale_factor + 1.)
+    }
+
     /// Mutates the accessibility node immediately before it enters the accessibility tree.
     fn finish_accessibility(&self, _builder: &mut accesskit::Node) {}
 }
@@ -211,6 +245,13 @@ pub struct LayoutContext<'a> {
     pub fallback_fonts: &'a [Cow<'static, str>],
     pub scale_factor: f64,
     pub text_cache: &'a mut TextCache,
+}
+
+/// What [`ElementExt::paint_area`] gets to find the area an element paints into.
+pub struct PaintAreaContext<'a> {
+    pub layout_node: &'a LayoutNode,
+    pub text_style_state: &'a TextStyleState,
+    pub scale_factor: f64,
 }
 
 #[allow(dead_code)]

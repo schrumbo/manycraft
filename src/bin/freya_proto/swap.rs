@@ -8,7 +8,7 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GW_HWNDPREV, GetWindowLongW, WS_EX_TOPMOST, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, HWND_TOP, IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos, ShowWindow, WINDOWPOS, WM_DPICHANGED, WM_NCDESTROY, WM_SIZE, WM_WINDOWPOSCHANGED, SIZE_MINIMIZED,
+    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos, ShowWindow, WINDOWPOS, WM_NCDESTROY, WM_WINDOWPOSCHANGED,
 };
 
 /// A rectangle in screen pixels.
@@ -55,7 +55,8 @@ pub fn configure(games: HashMap<usize, u32>, asynchronous: bool) {
     with(|s| s.games = games);
 }
 
-/// Hooks the manager window so the game window follows every move, resize and DPI change in the same message.
+/// Hooks the manager window so the game window stays directly above it when the manager changes z-order, which winit
+/// does not report. Moves, resizes and minimizing reach [`follow_window`] through Freya instead.
 pub fn attach(manager: HWND) {
     with(|s| s.manager = manager as usize);
     unsafe { SetWindowSubclass(manager, Some(follow), 1, 0) };
@@ -139,6 +140,25 @@ pub fn client_on_screen(hwnd: HWND) -> Option<Px> {
     ok.then_some(Px { x: origin.x, y: origin.y, w: client.right, h: client.bottom })
 }
 
+/// Keeps the game window on its tile after a manager window event: moves it along, hides it while the manager is
+/// minimized and shows it again on restore.
+pub fn follow_window(minimized: bool) {
+    if minimized {
+        if with(|s| s.parked.is_none()) {
+            let index = active();
+            hide();
+            with(|s| s.parked = index);
+        }
+        return;
+    }
+    match with(|s| s.parked.take()) {
+        Some(index) => {
+            play(index);
+        }
+        None => place(),
+    }
+}
+
 fn place() {
     let Some((index, game)) = with(|s| s.active) else { return };
     let game = game as HWND;
@@ -163,23 +183,12 @@ fn place() {
 
 unsafe extern "system" fn follow(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {
     match msg {
-        WM_WINDOWPOSCHANGED | WM_DPICHANGED => {
+        WM_WINDOWPOSCHANGED => {
             let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-            place();
-            if msg == WM_WINDOWPOSCHANGED && unsafe { (*(lparam as *const WINDOWPOS)).flags } & SWP_NOZORDER == 0 {
+            if unsafe { (*(lparam as *const WINDOWPOS)).flags } & SWP_NOZORDER == 0 {
                 raise(hwnd);
             }
             return result;
-        }
-        WM_SIZE if wparam == SIZE_MINIMIZED as usize => {
-            let index = active();
-            hide();
-            with(|s| s.parked = index);
-        }
-        WM_SIZE => {
-            if let Some(index) = with(|s| s.parked.take()) {
-                play(index);
-            }
         }
         WM_NCDESTROY => unsafe {
             RemoveWindowSubclass(hwnd, Some(follow), 1);

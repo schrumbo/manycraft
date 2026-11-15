@@ -6,12 +6,17 @@ use freya_engine::prelude::{
     SaveLayerRec,
     SkMatrix,
     SkPoint,
+    SkRect,
     blur,
 };
 use rustc_hash::FxHashMap;
 use torin::prelude::Area;
 
 use crate::{
+    damage::{
+        DamageTracker,
+        scale_transformed_area,
+    },
     element::{
         ClipContext,
         RenderContext,
@@ -29,36 +34,53 @@ pub struct RenderPipeline<'a> {
     pub tree: &'a Tree,
     pub scale_factor: f64,
     pub background: Color,
+    /// Repaint only what this tracker found changed, on a canvas that still holds the last
+    /// frame. `None` repaints everything.
+    pub damage: Option<&'a DamageTracker>,
 }
 
 impl RenderPipeline<'_> {
     /// Transform an area with the accumulated scale effects of the given nodes.
-    fn scale_transformed_area(&self, mut area: Area, scale_node_ids: &[NodeId]) -> Area {
-        for node_id in scale_node_ids {
-            let layout_node = self.tree.layout.get(node_id).unwrap();
-            let effect = self.tree.effect_state.get(node_id).unwrap();
-            let node_area = layout_node.visible_area();
-            let origin = effect.transform_origin.origin(&node_area);
-            let scale = effect.scale.unwrap();
-
-            area = area.translate(-origin.to_vector());
-            area = area.scale(scale.x, scale.y);
-            area = area.translate(origin.to_vector());
-        }
-        area
+    fn scale_transformed_area(&self, area: Area, scale_node_ids: &[NodeId]) -> Area {
+        scale_transformed_area(self.tree, area, scale_node_ids)
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    pub fn render(self) {
-        self.canvas.clear(self.background);
+    pub fn render(mut self) {
+        let Some(damage) = self.damage else {
+            self.canvas.clear(self.background);
+            self.render_nodes(None);
+            return;
+        };
+        for rect in damage.rects() {
+            let layer = self.canvas.save();
+            self.canvas.clip_rect(
+                SkRect::new(rect.min_x(), rect.min_y(), rect.max_x(), rect.max_y()),
+                ClipOp::Intersect,
+                false,
+            );
+            self.canvas.clear(self.background);
+            self.render_nodes(Some((damage, rect)));
+            self.canvas.restore_to_count(layer);
+        }
+    }
 
+    /// Paints every node, or only those whose painted area meets `damaged`.
+    fn render_nodes(&mut self, damaged: Option<(&DamageTracker, &Area)>) {
         // Clip areas are deterministic no matter what node inherits them
         let mut clip_areas: FxHashMap<NodeId, Area> = FxHashMap::default();
 
-        // TODO: Use incremental rendering
         for i16 in itertools::sorted(self.tree.layers.keys()) {
             let nodes = self.tree.layers.get(i16).unwrap();
             'rendering: for node_id in nodes {
+                if let Some((damage, rect)) = damaged
+                    && !damage
+                        .painted_area(node_id)
+                        .is_some_and(|area| area.intersects(rect))
+                {
+                    continue 'rendering;
+                }
+
                 let layout_node = self.tree.layout.get(node_id).unwrap();
 
                 if layout_node.hidden {

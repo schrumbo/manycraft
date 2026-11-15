@@ -2458,8 +2458,6 @@ dependencies = [
 [[package]]
 name = "freya-core"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7dbc32481ad013899760d0c0cf1bd56865ecbc19de9df2daa67e9205587668d"
 dependencies = [
  "accesskit 0.25.2",
  "async-io",
@@ -2577,8 +2575,6 @@ dependencies = [
 [[package]]
 name = "freya-winit"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "068f5f6647f6bc494931404edf8517ef101b44710281fc05d91a273aad331a77"
 dependencies = [
  "accesskit 0.25.2",
  "accesskit_winit",
