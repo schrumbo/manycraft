@@ -33,6 +33,7 @@ const PRISM_FILTER_FROM: usize = 6;
 const SNUG_PERCENT: u64 = 80;
 const SAVE_ERROR_MAX: f32 = 220.;
 const DEFAULT_ROWS: f32 = 4.;
+const NOTE_LINE: &str = "\u{a0}";
 
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
@@ -896,7 +897,7 @@ impl InstanceSheet {
         if let Some(text) = busy {
             let rows = if self.mods.is_empty() { DEFAULT_ROWS } else { self.mods.len() as f32 };
             let height = (rows * control::M + space::XXS * 2. + 2.).min(self.list_max);
-            return col.child(div().h(px(height)).flex().items_center().child(sheet::waiting(text, t)));
+            return col.child(div().h(px(height)).flex().items_center().child(sheet::waiting(text, t))).child(div().text_size(px(font::CAPTION)).child(NOTE_LINE));
         }
         if let Some(e) = &self.mods_error {
             col = col.child(self.problem("mods-error", "circle-alert", t.danger_text, e, cx, t));

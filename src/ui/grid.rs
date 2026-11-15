@@ -552,8 +552,8 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
             )
         })
         .when_some(solo.as_ref().map(|(instance, _)| instance.clone()), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
-        .context_menu(move |menu, _, _| match &solo {
-            Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable),
+        .context_menu(move |menu, _, cx| match &solo {
+            Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable, cx),
             None => super::sidebar::batch_menu(menu, &id, running, stopped, exporting),
         })
         .into_any_element()

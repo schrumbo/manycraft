@@ -736,6 +736,8 @@
   "Schließen": "Close",
   "Der Name darf nicht leer sein.": "The name cannot be empty.",
   "„%@“ ist schon wieder da.": "“%@” is already back.",
+  "„%@“ lässt sich nicht mehr zurückholen: Die Mods wurden inzwischen geändert.": "“%@” can no longer be restored: The mods have changed since.",
+  "Die Instanz im Papierkorb ist beschädigt. Ihre Dateien bleiben dort unverändert.": "The instance in the trash is damaged. Its files stay there unchanged.",
   "„%@“ passt nicht mehr zu dieser Version.": "“%@” no longer fits this version.",
   "Mods, Welten und Screenshots dieser Instanz werden gelöscht. Solange Manycraft offen ist, kannst du das rückgängig machen.": "This instance's mods, worlds and screenshots will be deleted. You can undo this while Manycraft is open.",
   "Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.": "Server and accounts apply at the next start. Only a stopped batch can change its instance.",

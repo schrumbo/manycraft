@@ -35,10 +35,19 @@ struct Offer {
     round: u64,
 }
 
+struct Note {
+    id: u64,
+    text: String,
+    at: Instant,
+    hovered: bool,
+    round: u64,
+}
+
 #[derive(Clone, Copy)]
 enum Target {
     Account(u64),
     Instance(u64),
+    Note(u64),
 }
 
 struct Line {
@@ -49,6 +58,7 @@ struct Line {
     text: String,
     failed: bool,
     shown: bool,
+    hovered: bool,
 }
 
 struct Toasts(Entity<UndoToasts>);
@@ -63,6 +73,8 @@ pub fn init(cx: &mut App) {
 /// The undo notices: a stack above the content, bottom centre, that never moves the content under it.
 pub struct UndoToasts {
     items: Pending<Offer>,
+    notes: Vec<Note>,
+    next_note: u64,
 }
 
 /// The entity the main window draws.
@@ -70,7 +82,7 @@ pub fn toasts(cx: &mut App) -> Entity<UndoToasts> {
     if let Some(toasts) = cx.try_global::<Toasts>() {
         return toasts.0.clone();
     }
-    let toasts = cx.new(|_| UndoToasts { items: Pending::new() });
+    let toasts = cx.new(|_| UndoToasts { items: Pending::new(), notes: Vec::new(), next_note: 0 });
     cx.set_global(Toasts(toasts.clone()));
     toasts
 }
@@ -84,19 +96,72 @@ pub fn changed(cx: &mut App) {
 
 /// Offers to undo `kind` until Manycraft quits; its notice hides after a while.
 pub fn offer(kind: Kind, cx: &mut App) {
-    push(kind, false, cx);
+    push(kind, false, Instant::now(), cx);
 }
 
-/// Offers `kind` again after an undo failed, with a retry in its notice.
-pub fn retry(kind: Kind, cx: &mut App) {
-    push(kind, true, cx);
+/// Offers `kind` again after an undo failed, with a retry in its notice; it keeps its place in the history, which `at` was.
+pub fn retry(kind: Kind, at: Instant, cx: &mut App) {
+    push(kind, true, at, cx);
 }
 
-fn push(kind: Kind, failed: bool, cx: &mut App) {
+/// Shows `text` in the notice stack for a while, without an undo: why an undo did not work.
+pub fn note(text: String, cx: &mut App) {
     let id = toasts(cx).update(cx, |t, cx| {
-        let id = t.items.push(Offer { kind, failed, at: Instant::now(), shown: true, hovered: false, round: 0 });
-        if t.items.items.len() > MAX_OFFERS {
-            t.items.items.remove(0);
+        t.next_note += 1;
+        let id = t.next_note;
+        t.notes.push(Note { id, text, at: Instant::now(), hovered: false, round: 0 });
+        cx.notify();
+        id
+    });
+    arm_note(id, cx);
+}
+
+fn arm_note(id: u64, cx: &mut App) {
+    let round = toasts(cx).update(cx, |t, _| {
+        t.notes.iter_mut().find(|n| n.id == id).map(|n| {
+            n.round += 1;
+            n.round
+        })
+    });
+    let Some(round) = round else { return };
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(accounts::UNDO_FOR).await;
+        cx.update(|cx| {
+            toasts(cx).update(cx, |t, cx| {
+                let before = t.notes.len();
+                t.notes.retain(|n| n.id != id || n.round != round || n.hovered);
+                if t.notes.len() != before {
+                    cx.notify();
+                }
+            })
+        });
+    })
+    .detach();
+}
+
+/// Whether `e` is a refusal no retry changes: the thing is gone, taken, damaged or changed since.
+pub(super) fn permanent(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<forms::Plain>() || c.is::<crate::core::instance::Final>())
+}
+
+fn slot(ats: impl Iterator<Item = Instant>, at: Instant) -> usize {
+    ats.take_while(|a| *a <= at).count()
+}
+
+fn evict(items: &[(u64, Offer)]) -> Option<usize> {
+    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. });
+    if items.iter().filter(|(_, o)| capped(o)).count() <= MAX_OFFERS {
+        return None;
+    }
+    items.iter().position(|(_, o)| capped(o))
+}
+
+fn push(kind: Kind, failed: bool, at: Instant, cx: &mut App) {
+    let id = toasts(cx).update(cx, |t, cx| {
+        let place = slot(t.items.items.iter().map(|(_, o)| o.at), at);
+        let id = t.items.insert(place, Offer { kind, failed, at, shown: true, hovered: false, round: 0 });
+        if let Some(oldest) = evict(&t.items.items) {
+            t.items.items.remove(oldest);
         }
         cx.notify();
         id
@@ -144,6 +209,19 @@ fn hover(target: Target, on: bool, cx: &mut App) {
                 arm(id, cx);
             }
         }
+        Target::Note(id) => {
+            let changed = toasts(cx).update(cx, |t, _| match t.notes.iter_mut().find(|n| n.id == id) {
+                Some(n) if n.hovered != on => {
+                    n.hovered = on;
+                    n.round += 1;
+                    true
+                }
+                _ => false,
+            });
+            if changed && !on {
+                arm_note(id, cx);
+            }
+        }
     }
 }
 
@@ -157,6 +235,10 @@ fn close(target: Target, cx: &mut App) {
                 cx.notify();
             }
         }),
+        Target::Note(id) => toasts(cx).update(cx, |t, cx| {
+            t.notes.retain(|n| n.id != id);
+            cx.notify();
+        }),
     }
 }
 
@@ -165,7 +247,7 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
         .into_iter()
         .map(|r| {
             let text = if r.failed { trf("„%@“ wurde nicht zurückgeholt.", &[&r.name]) } else { trf("„%@“ entfernt.", &[&r.name]) };
-            Line { at: r.at, target: Target::Account(r.id), key: format!("remove-{}", r.id), text, name: r.name, failed: r.failed, shown: r.shown }
+            Line { at: r.at, target: Target::Account(r.id), key: format!("remove-{}", r.id), text, name: r.name, failed: r.failed, shown: r.shown, hovered: r.hovered }
         })
         .collect();
     for (id, offer) in &items.items {
@@ -175,7 +257,7 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::ModRemoved { mod_ref, .. } => (mod_ref.title.clone(), trf("„%@“ entfernt.", &[&mod_ref.title]), trf("„%@“ wurde nicht zurückgeholt.", &[&mod_ref.title])),
         };
         let text = if offer.failed { undone } else { done };
-        lines.push(Line { at: offer.at, target: Target::Instance(*id), key: format!("offer-{id}"), text, name, failed: offer.failed, shown: offer.shown });
+        lines.push(Line { at: offer.at, target: Target::Instance(*id), key: format!("offer-{id}"), text, name, failed: offer.failed, shown: offer.shown, hovered: offer.hovered });
     }
     lines.sort_by_key(|l| l.at);
     lines
@@ -203,6 +285,7 @@ fn undo(target: Target, cx: &mut App) {
     match target {
         Target::Account(id) => accounts::undo_removal(id, cx),
         Target::Instance(id) => undo_offer(id, cx),
+        Target::Note(_) => {}
     }
 }
 
@@ -212,14 +295,15 @@ fn undo_offer(id: u64, cx: &mut App) {
         t.items.take(id)
     });
     let Some(offer) = taken else { return };
+    let at = offer.at;
     match offer.kind {
-        Kind::Deleted { id, name, entry } => restore(id, name, entry, cx),
-        Kind::Cloned { id, name, source } => discard(id, name, source, cx),
-        Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, cx),
+        Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
+        Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
+        Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, at, cx),
     }
 }
 
-fn restore(id: String, name: String, entry: String, cx: &mut App) {
+fn restore(id: String, name: String, entry: String, at: Instant, cx: &mut App) {
     let task = cx.background_spawn({
         let entry = entry.clone();
         async move { remote::restore_instance(&entry) }
@@ -240,8 +324,10 @@ fn restore(id: String, name: String, entry: String, cx: &mut App) {
                     main_window::show_instance(&id, cx);
                 }
                 Err(e) => {
-                    state::tell(forms::explain_as(tr("Nicht zurückgeholt."), &e).text, cx);
-                    retry(Kind::Deleted { id, name, entry }, cx);
+                    note(forms::explain_as(tr("Nicht zurückgeholt."), &e).text, cx);
+                    if !permanent(&e) {
+                        retry(Kind::Deleted { id, name, entry }, at, cx);
+                    }
                 }
             }
             state::reload(cx);
@@ -250,19 +336,19 @@ fn restore(id: String, name: String, entry: String, cx: &mut App) {
     .detach();
 }
 
-fn discard(id: String, name: String, source: String, cx: &mut App) {
+fn discard(id: String, name: String, source: String, at: Instant, cx: &mut App) {
     let (exists, running) = {
         let m = model::get(cx).read(cx);
         (m.instance(&id).is_some(), m.games.values().any(|g| g.instance_id == id && g.phase.is_active()))
     };
     if !exists {
-        state::tell(tr("Diese Instanz gibt es nicht mehr."), cx);
+        note(tr("Diese Instanz gibt es nicht mehr."), cx);
         state::reload(cx);
         return;
     }
     if running {
-        state::tell(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
-        retry(Kind::Cloned { id, name, source }, cx);
+        note(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+        retry(Kind::Cloned { id, name, source }, at, cx);
         state::reload(cx);
         return;
     }
@@ -282,8 +368,10 @@ fn discard(id: String, name: String, source: String, cx: &mut App) {
                     main_window::leave_instance(&id, &source, cx);
                 }
                 Err(e) => {
-                    state::tell(forms::explain_as(tr("Nicht gelöscht."), &e).text, cx);
-                    retry(Kind::Cloned { id, name, source }, cx);
+                    note(forms::explain_as(tr("Nicht gelöscht."), &e).text, cx);
+                    if !permanent(&e) {
+                        retry(Kind::Cloned { id, name, source }, at, cx);
+                    }
                 }
             }
             state::reload(cx);
@@ -293,9 +381,9 @@ fn discard(id: String, name: String, source: String, cx: &mut App) {
 }
 
 /// One notice: its text, the button that undoes it or retries after a failed undo, and a close button.
-pub(super) fn toast(key: &str, name: String, text: String, failed: bool, on_undo: impl Fn(&mut App) + 'static, on_close: impl Fn(&mut App) + 'static, on_hover: impl Fn(bool, &mut App) + 'static, t: &Theme) -> Stateful<Div> {
+pub(super) fn toast(key: &str, name: String, text: String, failed: bool, on_undo: Option<Box<dyn Fn(&mut App)>>, on_close: impl Fn(&mut App) + 'static, on_hover: impl Fn(bool, &mut App) + 'static, t: &Theme) -> Stateful<Div> {
     let label = if failed { tr("Erneut versuchen") } else { tr("Rückgängig") };
-    let undo = sheet::button(SharedString::from(format!("undo-{key}")), label, Some("undo-2"), Look::Plain, false, false, t).on_click(move |_, _, cx| on_undo(cx));
+    let undo = on_undo.map(|on_undo| sheet::button(SharedString::from(format!("undo-{key}")), label, Some("undo-2"), Look::Plain, false, false, t).on_click(move |_, _, cx| on_undo(cx)));
     let close = sheet::icon_button(SharedString::from(format!("undo-close-{key}")), "x", tr("Schließen"), t.tertiary, t).on_click(move |_, _, cx| on_close(cx));
     div()
         .id(SharedString::from(format!("undo-note-{key}")))
@@ -315,23 +403,90 @@ pub(super) fn toast(key: &str, name: String, text: String, failed: bool, on_undo
         .shadow_md()
         .on_hover(move |on, _, cx| on_hover(*on, cx))
         .child(div().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if failed { t.danger_text } else { t.primary }).child(text))
-        .child(undo)
+        .children(undo)
         .child(close)
 }
 
 impl Render for UndoToasts {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let shown: Vec<Line> = lines(&self.items, cx).into_iter().filter(|l| l.shown).collect();
+        let mut shown: Vec<Line> = lines(&self.items, cx).into_iter().filter(|l| l.shown).collect();
+        shown.extend(self.notes.iter().map(|n| Line { at: n.at, target: Target::Note(n.id), key: format!("note-{}", n.id), name: n.text.clone(), text: n.text.clone(), failed: true, shown: true, hovered: n.hovered }));
+        shown.sort_by_key(|l| l.at);
         let skip = shown.len().saturating_sub(MAX_TOASTS);
+        let released: Vec<Target> = shown.iter().take(skip).filter(|l| l.hovered).map(|l| l.target).collect();
+        if !released.is_empty() {
+            cx.defer(move |cx| {
+                for target in released {
+                    hover(target, false, cx);
+                }
+            });
+        }
         let toasts: Vec<Stateful<Div>> = shown
             .into_iter()
             .skip(skip)
             .map(|l| {
                 let target = l.target;
-                toast(&l.key, l.name, l.text, l.failed, move |cx| undo(target, cx), move |cx| close(target, cx), move |on, cx| hover(target, on, cx), &t)
+                let on_undo: Option<Box<dyn Fn(&mut App)>> = match target {
+                    Target::Note(_) => None,
+                    _ => Some(Box::new(move |cx| undo(target, cx))),
+                };
+                toast(&l.key, l.name, l.text, l.failed, on_undo, move |cx| close(target, cx), move |on, cx| hover(target, on, cx), &t)
             })
             .collect();
         div().w_full().px(px(space::XL)).flex().flex_col().items_center().gap(px(space::S)).children(toasts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{Kind, MAX_OFFERS, Offer, evict, forms, permanent, slot};
+
+    fn offer_of(kind: Kind) -> (u64, Offer) {
+        (0, Offer { kind, failed: false, at: Instant::now(), shown: true, hovered: false, round: 0 })
+    }
+
+    fn cloned() -> Offer {
+        offer_of(Kind::Cloned { id: "a".into(), name: "A".into(), source: "b".into() }).1
+    }
+
+    fn deleted() -> Offer {
+        offer_of(Kind::Deleted { id: "a".into(), name: "A".into(), entry: "a-1".into() }).1
+    }
+
+    #[test]
+    fn a_retried_offer_goes_back_to_its_place_by_time() {
+        let base = Instant::now();
+        let ats: Vec<Instant> = [1, 2, 4, 5].iter().map(|s| base + Duration::from_secs(*s)).collect();
+        assert_eq!(slot(ats.iter().copied(), base + Duration::from_secs(3)), 2);
+        assert_eq!(slot(ats.iter().copied(), base), 0);
+        assert_eq!(slot(ats.iter().copied(), base + Duration::from_secs(9)), 4);
+        assert_eq!(slot(ats.iter().copied(), ats[1]), 2);
+    }
+
+    #[test]
+    fn the_cap_evicts_the_oldest_offer_that_is_not_a_deletion() {
+        let mut items: Vec<(u64, Offer)> = vec![(0, deleted()), (1, deleted())];
+        items.extend((0..MAX_OFFERS).map(|i| (i as u64 + 2, cloned())));
+        assert_eq!(evict(&items), None);
+        items.push((99, cloned()));
+        assert_eq!(evict(&items), Some(2));
+        items.retain(|(_, o)| matches!(o.kind, Kind::Deleted { .. }));
+        items.extend((0..MAX_OFFERS * 2).map(|_| (0, deleted())));
+        assert_eq!(evict(&items), None);
+    }
+
+    #[test]
+    fn only_refusals_that_no_retry_changes_are_permanent() {
+        let plain = anyhow::Error::new(forms::Plain("gone".into())).context("saving");
+        let fixed = anyhow::Error::new(crate::core::instance::Final("taken".into()));
+        let io = anyhow::Error::new(std::io::Error::other("disk")).context("cannot move");
+        let busy = anyhow::anyhow!("another Manycraft is using it");
+        assert!(permanent(&plain));
+        assert!(permanent(&fixed));
+        assert!(!permanent(&io));
+        assert!(!permanent(&busy));
     }
 }

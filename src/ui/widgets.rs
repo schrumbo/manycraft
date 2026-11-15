@@ -1,4 +1,5 @@
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -140,6 +141,31 @@ pub fn segmented(id: impl Into<ElementId>, segments: impl IntoIterator<Item = St
         })
     });
     div().id(id).p(px(space::XXS)).rounded(px(radius::CONTROL)).bg(t.raised).flex().flex_none().items_center().gap(px(space::XXS)).children(items)
+}
+
+struct MenuOpen(Option<SharedString>);
+
+impl Global for MenuOpen {}
+
+/// Whether the context menu of the element `key` is open. Its tooltip steps aside meanwhile, since it would cover the first item.
+pub fn menu_open(key: &str, cx: &App) -> bool {
+    cx.try_global::<MenuOpen>().is_some_and(|open| open.0.as_deref() == Some(key))
+}
+
+/// Marks the context menu being built as the one of the element `key` until it closes. Call it in the menu builder.
+pub fn menu_of(key: &str, menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let key = SharedString::from(key.to_owned());
+    cx.set_global(MenuOpen(Some(key.clone())));
+    let entity = cx.entity();
+    window
+        .subscribe(&entity, cx, move |_, _: &DismissEvent, window, cx| {
+            if menu_open(&key, cx) {
+                cx.set_global(MenuOpen(None));
+                window.refresh();
+            }
+        })
+        .detach();
+    menu
 }
 
 /// Tooltip builder for `.tooltip(...)`.

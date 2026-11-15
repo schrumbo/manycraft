@@ -10,7 +10,7 @@ use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, radius, shell, space, tint};
-use super::widgets::{KeyNav, icon, tip};
+use super::widgets::{KeyNav, icon, menu_of, menu_open, tip};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
 
@@ -27,7 +27,10 @@ struct Row {
     running: bool,
 }
 
-fn row(this: &MainWindow, r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn row(this: &MainWindow, mut r: Row, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    if menu_open(&r.id, cx) {
+        r.hint = None;
+    }
     let page = r.page.clone();
     row_body(r, this.page == page, t).on_click(cx.listener(move |this, _, window, cx| this.go(page.clone(), window, cx)))
 }
@@ -103,12 +106,16 @@ impl Global for InstanceRowsView {}
 impl Render for InstanceRows {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let rows = self.rows.iter().cloned().map(|(r, id, launchable)| {
+        let rows = self.rows.iter().cloned().map(|(mut r, id, launchable)| {
+            if menu_open(&r.id, cx) {
+                r.hint = None;
+            }
             let page = r.page.clone();
             let main = self.main.clone();
+            let key = r.id.clone();
             row_body(r, self.selected == page, &t)
                 .on_click(move |_, window, cx| drop(main.update(cx, |this, cx| this.go(page.clone(), window, cx))))
-                .context_menu(move |menu, _, _| instance_menu(menu, &id, launchable))
+                .context_menu(move |menu, window, cx| menu_of(&key, instance_menu(menu, &id, launchable, cx), window, cx))
         });
         div().size_full().flex().flex_col().gap(px(space::XXS)).children(rows)
     }
@@ -328,15 +335,20 @@ fn new_row(id: &'static str, label: String, action: Box<dyn Action>, t: &Theme) 
 }
 
 /// The menu of an instance, in the sidebar and over the tiles it plays alone.
-pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool) -> PopupMenu {
-    menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
+pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool, cx: &App) -> PopupMenu {
+    let users: Vec<String> = model::get(cx).read(cx).batches.iter().filter(|b| b.instance_id == id).map(|b| b.name.clone()).collect();
+    let menu = menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
         .menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
         .menu(tr("Klonen"), Box::new(CloneInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenInstanceFolder(id.to_owned())))
         .menu(tr("Als .mrpack exportieren…"), Box::new(ExportInstance(id.to_owned())))
-        .separator()
-        .menu(tr("Löschen…"), Box::new(DeleteInstance(id.to_owned())))
+        .separator();
+    if users.is_empty() {
+        menu.menu(tr("Löschen…"), Box::new(DeleteInstance(id.to_owned())))
+    } else {
+        menu.menu_element_with_disabled(Box::new(DeleteInstance(id.to_owned())), true, super::palette::menu_row(tr("Löschen…"), Some(crate::core::fleet::used_by(&users)), true))
+    }
 }
 
 fn heading(text: String, t: &Theme) -> Div {
@@ -409,7 +421,8 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     }).collect();
     let mut batch_rows = Vec::new();
     for (r, id, running, stopped, exporting) in batches {
-        let element = row(this, r, &t, cx).context_menu(move |menu, _, _| batch_menu(menu, &id, running, stopped, exporting));
+        let key = r.id.clone();
+        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, running, stopped, exporting), window, cx));
         batch_rows.push(element.into_any_element());
     }
     batch_rows.extend(imports);

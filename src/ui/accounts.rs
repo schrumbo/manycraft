@@ -100,12 +100,13 @@ pub struct Removal {
     pub name: String,
     pub failed: bool,
     pub shown: bool,
+    pub hovered: bool,
 }
 
 /// The removals that can still be undone, oldest first.
 pub fn removals(cx: &App) -> Vec<Removal> {
     let Some(page) = cx.try_global::<Page>() else { return Vec::new() };
-    page.0.read(cx).removed.items.iter().map(|(id, o)| Removal { id: *id, at: o.at, name: o.removed.account.name.clone(), failed: o.failed, shown: !o.hidden }).collect()
+    page.0.read(cx).removed.items.iter().map(|(id, o)| Removal { id: *id, at: o.at, name: o.removed.account.name.clone(), failed: o.failed, shown: !o.hidden, hovered: o.hovered }).collect()
 }
 
 /// Brings the removed account `id` back.
@@ -185,9 +186,16 @@ impl<T> Pending<T> {
         Self { items: Vec::new(), next: 0 }
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, item: T) -> u64 {
         self.next += 1;
         self.items.push((self.next, item));
+        self.next
+    }
+
+    pub(super) fn insert(&mut self, at: usize, item: T) -> u64 {
+        self.next += 1;
+        self.items.insert(at.min(self.items.len()), (self.next, item));
         self.next
     }
 
@@ -1239,7 +1247,7 @@ impl AccountsPage {
             let _ = this.update(cx, |s, cx| {
                 s.removing = None;
                 match result {
-                    Ok(Some(removed)) => s.offer_undo(removed, false, cx),
+                    Ok(Some(removed)) => s.offer_undo(removed, false, Instant::now(), cx),
                     Ok(None) => {}
                     Err(e) => s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig entfernt."), &e)),
                 }
@@ -1250,8 +1258,9 @@ impl AccountsPage {
         .detach();
     }
 
-    fn offer_undo(&mut self, removed: remote::Removed, failed: bool, cx: &mut Context<Self>) {
-        let id = self.removed.push(Offer { removed, failed, at: Instant::now(), hidden: false, hovered: false, round: 0 });
+    fn offer_undo(&mut self, removed: remote::Removed, failed: bool, at: Instant, cx: &mut Context<Self>) {
+        let place = self.removed.items.iter().take_while(|(_, o)| o.at <= at).count();
+        let id = self.removed.insert(place, Offer { removed, failed, at, hidden: false, hovered: false, round: 0 });
         self.arm_removal(id, cx);
         cx.notify();
         super::undo::changed(cx);
@@ -1294,6 +1303,7 @@ impl AccountsPage {
 
     fn undo_remove(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(offer) = self.removed.take(id) else { return };
+        let at = offer.at;
         cx.notify();
         super::undo::changed(cx);
         let removed = Arc::new(offer.removed);
@@ -1307,7 +1317,7 @@ impl AccountsPage {
                 if let Err(e) = result {
                     s.fail(forms::explain_as(tr("Der Account wurde nicht vollständig zurückgeholt."), &e));
                     if let Ok(removed) = Arc::try_unwrap(removed) {
-                        s.offer_undo(removed, true, cx);
+                        s.offer_undo(removed, true, at, cx);
                     }
                 }
                 cx.dispatch_action(&Reload);

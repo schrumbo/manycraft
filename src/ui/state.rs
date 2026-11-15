@@ -435,6 +435,9 @@ pub fn init(cx: &mut App) {
         });
     }
     cx.background_spawn(async {
+        if !crate::core::updater::install::running_alone() {
+            return;
+        }
         if let Err(e) = instance::purge_stale(TRASH_KEPT) {
             eprintln!("trash: {e:#}");
         }

@@ -1,6 +1,7 @@
 //! The page of one instance: what it plays, its batches, mods and settings.
 
 use std::collections::{HashSet, VecDeque};
+use std::time::Instant;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
@@ -110,31 +111,37 @@ fn after(instances: &[Instance], id: &str) -> Option<String> {
 }
 
 /// Puts removed mod `mod_ref` back into instance `id` at `index`. `base` is the instance as it was right after the
-/// removal, so a change since then is refused instead of merged. Says why when it cannot, and offers a retry when that may help.
-pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, base: InstanceEdit, cx: &mut App) {
+/// removal, so a change of the mods, version or loader since then is refused for good instead of merged. Says why when
+/// it cannot, and offers a retry in its old place only when that may help.
+pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, base: InstanceEdit, at: Instant, cx: &mut App) {
     let again = |mod_ref: ModRef, base: InstanceEdit| super::undo::Kind::ModRemoved { instance_id: id.to_owned(), mod_ref, index, base };
     let (made, running) = {
         let m = model::get(cx).read(cx);
         (m.instance(id).cloned(), m.games.values().any(|g| g.instance_id == id && g.phase.is_active()))
     };
     let Some(made) = made else {
-        super::state::tell(tr("Diese Instanz gibt es nicht mehr."), cx);
+        super::undo::note(tr("Diese Instanz gibt es nicht mehr."), cx);
         super::state::reload(cx);
         return;
     };
     if made.mods.iter().any(|m| m.project_id == mod_ref.project_id) {
-        super::state::tell(trf("„%@“ ist schon wieder da.", &[&mod_ref.title]), cx);
+        super::undo::note(trf("„%@“ ist schon wieder da.", &[&mod_ref.title]), cx);
         super::state::reload(cx);
         return;
     }
     if made.game_version != base.game_version || !made.loader.same_kind(&base.loader) {
-        super::state::tell(trf("„%@“ passt nicht mehr zu dieser Version.", &[&mod_ref.title]), cx);
+        super::undo::note(trf("„%@“ passt nicht mehr zu dieser Version.", &[&mod_ref.title]), cx);
+        super::state::reload(cx);
+        return;
+    }
+    if made.mods != base.mods {
+        super::undo::note(trf("„%@“ lässt sich nicht mehr zurückholen: Die Mods wurden inzwischen geändert.", &[&mod_ref.title]), cx);
         super::state::reload(cx);
         return;
     }
     if running {
-        super::state::tell(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
-        super::undo::retry(again(mod_ref, base), cx);
+        super::undo::note(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+        super::undo::retry(again(mod_ref, base), at, cx);
         super::state::reload(cx);
         return;
     }
@@ -156,8 +163,10 @@ pub fn restore_mod(id: &str, mod_ref: ModRef, index: usize, base: InstanceEdit, 
                     cx.notify();
                 }),
                 Err(e) => {
-                    super::state::tell(forms::explain_as(tr("Nicht gespeichert."), &e).text, cx);
-                    super::undo::retry(super::undo::Kind::ModRemoved { instance_id: instance, mod_ref, index, base }, cx);
+                    super::undo::note(forms::explain_as(tr("Nicht gespeichert."), &e).text, cx);
+                    if !super::undo::permanent(&e) {
+                        super::undo::retry(super::undo::Kind::ModRemoved { instance_id: instance, mod_ref, index, base }, at, cx);
+                    }
                 }
             }
             super::state::reload(cx);
@@ -292,6 +301,7 @@ struct InstancePage {
     notes: Vec<String>,
     error: Option<Problem>,
     rename_error: Option<Problem>,
+    rename_error_for: String,
     details: HashSet<&'static str>,
     memory_max: u32,
     scroll: ScrollHandle,
@@ -317,11 +327,16 @@ impl InstancePage {
             cx.subscribe_in(&name, window, |s: &mut Self, _, e: &InputEvent, window, cx| match e {
                 InputEvent::PressEnter { .. } => {
                     s.commit_rename(cx);
+                    if s.renaming && s.rename_error.is_some() {
+                        s.focus_name = true;
+                        cx.notify();
+                        return;
+                    }
                     let root = s.root.clone();
                     window.on_next_frame(move |window, cx| window.focus(&root, cx));
                 }
                 InputEvent::Blur => s.commit_rename(cx),
-                InputEvent::Change if s.rename_error.is_some() => {
+                InputEvent::Change if s.rename_error.is_some() && s.name.read(cx).value().as_ref() != s.rename_error_for => {
                     s.rename_error = None;
                     cx.notify();
                 }
@@ -357,6 +372,7 @@ impl InstancePage {
             notes: Vec::new(),
             error: None,
             rename_error: None,
+            rename_error_for: String::new(),
             details: HashSet::new(),
             memory_max: forms::memory_max(forms::total_ram_mb()),
             scroll: ScrollHandle::new(),
@@ -424,6 +440,7 @@ impl InstancePage {
         let typed = self.name.read(cx).value().trim().to_owned();
         if typed.is_empty() {
             self.rename_error = Some(Problem::plain(tr("Der Name darf nicht leer sein.")));
+            self.rename_error_for = self.name.read(cx).value().to_string();
             cx.notify();
             return;
         }
@@ -634,6 +651,7 @@ impl InstancePage {
                 self.queue.retain(|(queued, _)| queued != id);
                 if id == self.id {
                     if rename_failed {
+                        self.rename_error_for = self.name.read(cx).value().to_string();
                         self.rename_error = Some(problem);
                     } else {
                         self.error = Some(problem);
@@ -749,7 +767,7 @@ impl InstancePage {
                 .text_size(px(font::TITLE3))
                 .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
-                .tooltip(tip(tr("Doppelklicken zum Umbenennen")))
+                .when(!super::widgets::menu_open("instance-title", cx), |d| d.tooltip(tip(tr("Doppelklicken zum Umbenennen"))))
                 .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
                 .on_click(cx.listener(|s, e: &ClickEvent, window, cx| {
                     if e.click_count() == 2 {
@@ -759,7 +777,7 @@ impl InstancePage {
                 .child(made.name.clone())
                 .context_menu({
                     let (id, launchable) = (made.id.clone(), made.loader.launchable());
-                    move |menu, _, _| super::sidebar::instance_menu(menu, &id, launchable)
+                    move |menu, window, cx| super::widgets::menu_of("instance-title", super::sidebar::instance_menu(menu, &id, launchable, cx), window, cx)
                 })
                 .into_any_element()
         };
@@ -1165,7 +1183,7 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
 impl Render for InstancePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
+        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
         self.sync(&f.made, window, cx);
         if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {

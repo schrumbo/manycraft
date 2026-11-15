@@ -16,6 +16,7 @@ pub const FILE: &str = "instance.json";
 pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
 const TRASH: &str = ".trash";
+const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
 const COPIED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
 
 /// The mod loader of an instance, with its pinned version; `None` follows the newest one.
@@ -307,25 +308,47 @@ pub(super) fn trash_in(root: &Path, instance: &Instance, millis: u64) -> Result<
     Ok(entry)
 }
 
-/// Moves the trash entry `entry` back to `instances/` and returns the instance. Refused when an instance with that id exists again.
+/// A refusal no retry changes; its text is plain German.
+#[derive(Debug)]
+pub struct Final(pub String);
+
+impl std::fmt::Display for Final {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Final {}
+
+/// Moves the trash entry `entry` back to `instances/` and returns the instance. Refused for good ([`Final`]) when an
+/// instance with that id exists again, the entry is gone or its instance file is damaged.
 pub fn untrash(entry: &str) -> Result<Instance> {
     untrash_in(&instances_dir(), entry)
 }
 
 pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Instance> {
-    let (id, _) = parse_entry(entry).with_context(|| format!("invalid trash entry {entry:?}"))?;
+    let missing = || Final(super::i18n::tr("Die Instanz liegt nicht mehr im Papierkorb."));
+    let (id, _) = parse_entry(entry).ok_or_else(|| anyhow::Error::new(missing()).context(format!("invalid trash entry {entry:?}")))?;
     let (from, to) = (root.join(TRASH).join(entry), root.join(id));
     if std::fs::symlink_metadata(&to).is_ok() {
-        bail!(super::i18n::tr("Es gibt schon eine Instanz mit dieser Kennung."));
+        bail!(Final(super::i18n::tr("Es gibt schon eine Instanz mit dieser Kennung.")));
     }
     if std::fs::symlink_metadata(&from).is_err() {
-        bail!(super::i18n::tr("Die Instanz liegt nicht mehr im Papierkorb."));
+        bail!(missing());
     }
     std::fs::rename(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
     let file = to.join(FILE);
+    let damaged = |e: Option<serde_json::Error>| {
+        let text = Final(super::i18n::tr("Die Instanz im Papierkorb ist beschädigt. Ihre Dateien bleiben dort unverändert."));
+        let raw = anyhow::Error::new(text);
+        match e {
+            Some(e) => raw.context(format!("{} is damaged: {e}", file.display())),
+            None => raw.context(format!("{} is missing", file.display())),
+        }
+    };
     let loaded = store::read(&file).and_then(|bytes| {
-        let bytes = bytes.with_context(|| format!("cannot read {}", file.display()))?;
-        serde_json::from_slice::<Instance>(&bytes).with_context(|| format!("{} is damaged", file.display()))
+        let bytes = bytes.ok_or_else(|| damaged(None))?;
+        serde_json::from_slice::<Instance>(&bytes).map_err(|e| damaged(Some(e)))
     });
     match loaded {
         Ok(instance) => Ok(instance),
@@ -346,7 +369,7 @@ pub(super) fn purge_in(root: &Path, entry: &str) -> Result<()> {
     remove_dir(&root.join(TRASH).join(entry))
 }
 
-/// Deletes the trash entries older than `older_than`, one entry at a time; names that are not entries stay.
+/// Deletes the trash entries older than `older_than` or stamped more than a day ahead of now, one entry at a time; names that are not entries stay.
 pub fn purge_stale(older_than: Duration) -> Result<()> {
     purge_stale_in(&instances_dir(), now_millis(), older_than)
 }
@@ -359,11 +382,12 @@ pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Res
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", trash.display())),
     };
     let cutoff = now.saturating_sub(u64::try_from(older_than.as_millis()).unwrap_or(u64::MAX));
+    let ahead = now.saturating_add(FUTURE_MILLIS);
     let mut first = Ok(());
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
         let Some((_, millis)) = name.to_str().and_then(parse_entry) else { continue };
-        if millis < cutoff
+        if (millis < cutoff || millis > ahead)
             && let Err(e) = remove_dir(&entry.path())
             && first.is_ok()
         {
@@ -680,6 +704,33 @@ mod tests {
         assert!(!root.join(TRASH).join(&fresh).exists());
         assert!(root.join(TRASH).is_dir());
         purge_stale_in(&dir.path().join("none"), 1, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn purge_stale_also_removes_entries_stamped_more_than_a_day_ahead() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, root) = trashed_setup(dir.path());
+        let b = Instance::new("B", "26.3", Loader::Vanilla);
+        save_in(&root, &b).unwrap();
+        let now = 5 * FUTURE_MILLIS;
+        let (soon, far) = (trash_in(&root, &a, now + FUTURE_MILLIS).unwrap(), trash_in(&root, &b, now + FUTURE_MILLIS + 1).unwrap());
+        purge_stale_in(&root, now, Duration::from_secs(600)).unwrap();
+        assert!(root.join(TRASH).join(&soon).join(FILE).is_file());
+        assert!(!root.join(TRASH).join(&far).exists());
+    }
+
+    #[test]
+    fn untrash_failures_that_no_retry_changes_are_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let (made, root) = trashed_setup(dir.path());
+        let entry = trash_in(&root, &made, 7).unwrap();
+        let is_final = |e: anyhow::Error| e.chain().any(|c| c.downcast_ref::<Final>().is_some());
+        assert!(is_final(untrash_in(&root, "nothere-1").unwrap_err()));
+        assert!(is_final(untrash_in(&root, "bad entry").unwrap_err()));
+        std::fs::write(root.join(TRASH).join(&entry).join(FILE), "{").unwrap();
+        assert!(is_final(untrash_in(&root, &entry).unwrap_err()));
+        std::fs::create_dir_all(root.join(&made.id)).unwrap();
+        assert!(is_final(untrash_in(&root, &entry).unwrap_err()));
     }
 
     #[test]
