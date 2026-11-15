@@ -7,7 +7,7 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PickColor, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
-    ToggleFullscreen, ToggleSidebar,
+    ToggleFullscreen, ToggleSidebar, Quit,
 };
 use super::drive::Mark;
 use super::grid::Grid;
@@ -661,6 +661,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("j"), ReconnectSelected, Some("InstanceGrid")),
         KeyBinding::new(k("enter"), MessageSelected, Some("InstanceGrid")),
         KeyBinding::new("escape", ClearSearch, Some("Toolbar")),
+        KeyBinding::new(k("q"), Quit, None),
     ]);
 }
 
@@ -709,6 +710,7 @@ pub fn open(cx: &mut App) {
         if maximized && !driven {
             window.activate_window();
         }
+        window.on_window_should_close(cx, close_requested);
         cx.new(|cx| MainWindow::new(saved, window, cx))
     }) {
         cx.set_global(MainHandle(handle));
@@ -749,11 +751,48 @@ pub fn hide(place: Option<Place>, cx: &mut App) {
     }
 }
 
+/// Closing the main window hides it on macOS, where the app stays in the Dock; elsewhere the app core decides.
+fn close_requested(window: &mut Window, cx: &mut App) -> bool {
+    if cfg!(target_os = "macos") {
+        native::hide(window, None);
+    } else {
+        cx.defer(super::state::close_window);
+    }
+    false
+}
+
+/// Runs `f` in the main window once the current update is over.
+pub fn in_main(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.defer(move |cx| {
+        if let Some(h) = handle(cx) {
+            let _ = h.update(cx, |_, window, cx| f(window, cx));
+        }
+    });
+}
+
+/// Puts the main window away behind the notification-area icon, or minimizes it where the system has no notification area.
+pub fn stow(cx: &mut App) {
+    let tray = super::tray::show(cx);
+    let Some(h) = handle(cx) else { return };
+    let _ = h.update(cx, |_, window, _| if tray { native::stow(window) } else { window.minimize_window() });
+}
+
+/// Brings the main window back from the notification area and takes the icon down; a driven window comes back without taking the focus.
+pub fn unstow(cx: &mut App) {
+    if !super::tray::shown(cx) {
+        return;
+    }
+    super::tray::hide(cx);
+    let Some(h) = handle(cx) else { return };
+    let _ = h.update(cx, |_, window, cx| if crate::core::drive::on() { native::unhide_quietly(window) } else { native::show(window, None, cx) });
+}
+
 /// Brings the main window back at `place`, where the game was.
 pub fn show(place: Option<Place>, cx: &mut App) {
     if crate::core::drive::fenced("show", "main window") {
         return;
     }
+    super::tray::hide(cx);
     let Some(h) = handle(cx) else { return };
     let _ = h.update(cx, |_, window, cx| {
         let fullscreen = window.is_fullscreen();

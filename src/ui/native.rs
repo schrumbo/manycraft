@@ -161,11 +161,36 @@ pub fn hide(window: &mut Window, place: Option<Place>) {
     window.minimize_window();
 }
 
+/// Puts the manager away while its icon waits in the notification area: hidden with its taskbar button on Windows, out of sight on macOS, minimized elsewhere.
+pub fn stow(window: &mut Window) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = hwnd(window) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+        unsafe { ShowWindow(hwnd, SW_HIDE) };
+    }
+    #[cfg(not(target_os = "windows"))]
+    hide(window, None);
+}
+
+/// Shows a stowed window again without bringing it to the front, for driven instances.
+pub fn unhide_quietly(window: &mut Window) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = hwnd(window) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
+        unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
+}
+
 /// Brings the manager back to the front, at `place` when given, else where it was.
 pub fn show(window: &mut Window, place: Option<Place>, cx: &mut App) {
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = hwnd(window) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow};
+        if unsafe { IsWindowVisible(hwnd) } == 0 {
+            unsafe { ShowWindow(hwnd, SW_SHOW) };
+        }
         match place {
             Some(place) => put(window, place),
             None if unsafe { IsIconic(hwnd) } != 0 => unsafe {

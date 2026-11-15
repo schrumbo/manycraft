@@ -86,11 +86,13 @@ pub struct Settings {
     pub game_badge: bool,
     /// Whether the computer is kept from sleeping on its own while a game runs.
     pub prevent_sleep: bool,
+    /// Whether the hint that closing the window keeps Manycraft in the notification area was seen.
+    pub tray_explained: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false }
     }
 }
 

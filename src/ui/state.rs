@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, CloneInstance, NextAttention, NextInstance, OpenChat, Play, PlayInstance, PreviousInstance, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{Broadcast, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
@@ -82,6 +82,8 @@ pub trait Backend: Send + Sync {
     fn release_preview(&self, key: String);
     /// Stops every instance and waits for them, at quit.
     fn quit(&self);
+    /// Refuses new starts and lets the running games be, at a quit that keeps them for the next start.
+    fn leave(&self) {}
     /// Learns the instances the model holds, by key and account name.
     fn known(&self, _instances: Vec<(String, String)>) {}
     /// Refreshes the sign-in of `accounts` one after another and reports each that works or needs a new sign-in.
@@ -368,6 +370,14 @@ impl Backend for Real {
             self.fleet.stop_all(&keys);
         }
     }
+
+    fn leave(&self) {
+        self.fleet.close();
+        let until = Instant::now() + QUIT_WAIT;
+        while self.fleet.launching() && Instant::now() < until {
+            std::thread::sleep(STAGGER_STEP);
+        }
+    }
 }
 
 fn needs_sign_in(e: &anyhow::Error) -> bool {
@@ -397,6 +407,8 @@ struct Runtime {
     spread: Option<Rect>,
     badge: usize,
     outbox: Option<phone::Outbox>,
+    /// Whether the games keep running when Manycraft quits now; true unless the user chose to end them, so a quit from outside keeps them.
+    keep_games: bool,
 }
 
 impl Global for Runtime {}
@@ -421,7 +433,7 @@ pub fn init(cx: &mut App) {
             }
         }
     };
-    cx.set_global(Runtime { backend, cancel: HashMap::new(), shared_visible, history: history::Writer::start().ok(), place: None, insets: HashMap::new(), spread: None, badge: 0, outbox: None });
+    cx.set_global(Runtime { backend, cancel: HashMap::new(), shared_visible, history: history::Writer::start().ok(), place: None, insets: HashMap::new(), spread: None, badge: 0, outbox: None, keep_games: true });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
         dispatch(AppEvent::Notice(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))), cx);
@@ -460,6 +472,14 @@ pub fn init(cx: &mut App) {
     cx.on_action(|a: &StopBatch, cx| dispatch(AppEvent::StopBatch(a.0.clone()), cx));
     cx.on_action(|_: &StartAll, cx| dispatch(AppEvent::StartAll, cx));
     cx.on_action(|_: &StopAll, cx| dispatch(AppEvent::StopAll, cx));
+    cx.on_action(|_: &Quit, cx| cx.defer(|cx| dispatch(AppEvent::Quit, cx)));
+    cx.on_action(|_: &QuitAll, cx| cx.defer(|cx| dispatch(AppEvent::QuitChosen { keep: false }, cx)));
+    cx.on_action(|_: &OpenFromTray, cx| {
+        cx.defer(|cx| {
+            super::main_window::unstow(cx);
+            show_grid(cx);
+        })
+    });
     cx.on_action(|a: &Reconnect, cx| dispatch(AppEvent::Reconnect(a.0.clone()), cx));
     cx.on_action(|a: &Respawn, cx| dispatch(AppEvent::Respawn(a.0.clone()), cx));
     cx.on_action(|a: &Play, cx| {
@@ -509,15 +529,70 @@ pub fn init(cx: &mut App) {
             for cancel in rt.cancel.values().flatten() {
                 cancel.store(true, Ordering::SeqCst);
             }
-            let backend = Arc::clone(&rt.backend);
-            match std::thread::Builder::new().name("quit".into()).spawn(move || backend.quit()) {
+            let (backend, keep) = (Arc::clone(&rt.backend), rt.keep_games);
+            let end = move |backend: &dyn Backend| if keep { backend.leave() } else { backend.quit() };
+            match std::thread::Builder::new().name("quit".into()).spawn(move || end(&*backend)) {
                 Ok(closing) => close_games(closing, cx),
-                Err(_) => rt.backend.quit(),
+                Err(_) => end(&*rt.backend),
             }
         }
         async {}
     })
     .detach();
+}
+
+/// Quits for the restart that installs an update, keeping the games for the new version to find again.
+pub fn restart_for_update(cx: &mut App) {
+    dispatch(AppEvent::RestartForUpdate, cx);
+}
+
+/// Quits and ends every game, for going back to a version that may not find them again.
+pub fn quit_ending_games(cx: &mut App) {
+    dispatch(AppEvent::QuitChosen { keep: false }, cx);
+}
+
+/// Closing the main window: it quits, or goes to the notification area while games run.
+pub fn close_window(cx: &mut App) {
+    dispatch(AppEvent::CloseWindow, cx);
+}
+
+fn explain_tray(cx: &mut App) {
+    if !super::tray::show(cx) {
+        super::main_window::stow(cx);
+        return;
+    }
+    super::main_window::in_main(cx, |window, cx| {
+        if super::sheet::busy(window, cx) {
+            cx.defer(super::main_window::stow);
+            return;
+        }
+        let place = if cfg!(target_os = "windows") { tr("Solange Spiele laufen, findest du Manycraft im Infobereich der Taskleiste.") } else { tr("Solange Spiele laufen, findest du Manycraft im Infobereich.") };
+        super::sheet::inform(window, cx, tr("Manycraft läuft weiter"), place, tr("Verstanden"), |_, cx| cx.defer(|cx| dispatch(AppEvent::TrayExplained, cx)));
+    });
+}
+
+fn ask_quit(running: usize, cx: &mut App) {
+    if super::tray::shown(cx) {
+        super::main_window::unstow(cx);
+    } else {
+        super::main_window::show(None, cx);
+    }
+    super::main_window::in_main(cx, move |window, cx| {
+        if super::sheet::busy(window, cx) {
+            return;
+        }
+        let title = if running == 1 { tr("1 Spiel läuft noch") } else { trf("%lld Spiele laufen noch", &[&running]) };
+        super::sheet::choose(
+            window,
+            cx,
+            title,
+            if running == 1 { tr("Beim nächsten Start findet Manycraft es wieder.") } else { tr("Beim nächsten Start findet Manycraft sie wieder.") },
+            tr("Alle beenden"),
+            |_, cx| cx.defer(|cx| dispatch(AppEvent::QuitChosen { keep: false }, cx)),
+            tr("Weiterlaufen lassen"),
+            |_, cx| cx.defer(|cx| dispatch(AppEvent::QuitChosen { keep: true }, cx)),
+        );
+    });
 }
 
 fn close_games(closing: std::thread::JoinHandle<()>, cx: &mut App) {
@@ -541,7 +616,7 @@ fn dispatch(event: AppEvent, cx: &mut App) {
 }
 
 fn dispatch_with(event: AppEvent, mut images: Vec<Option<Arc<RenderImage>>>, cx: &mut App) {
-    if !cx.has_global::<Runtime>() && !matches!(event, AppEvent::PhoneOutcome(_) | AppEvent::Error(_) | AppEvent::Loaded(_) | AppEvent::Recolor { .. } | AppEvent::ClearWhispers(_) | AppEvent::InstanceAdded(_) | AppEvent::InstanceRemoved(_) | AppEvent::ShowGrid) {
+    if !cx.has_global::<Runtime>() && !matches!(event, AppEvent::PhoneOutcome(_) | AppEvent::Error(_) | AppEvent::Loaded(_) | AppEvent::Recolor { .. } | AppEvent::ClearWhispers(_) | AppEvent::InstanceAdded(_) | AppEvent::InstanceRemoved(_) | AppEvent::ShowGrid | AppEvent::CloseWindow | AppEvent::TrayExplained | AppEvent::Quit | AppEvent::QuitChosen { .. } | AppEvent::RestartForUpdate) {
         return;
     }
     let effects = reduce_now(event, cx);
@@ -716,6 +791,24 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             if let Some(backend) = backend {
                 backend.refresh(accounts);
             }
+        }
+        Effect::ToTray { explain: false } => super::main_window::stow(cx),
+        Effect::ToTray { explain: true } => explain_tray(cx),
+        Effect::RememberTrayExplained => {
+            settings::set(settings::Settings { tray_explained: true, ..settings::active().clone() });
+            cx.background_spawn(async {
+                if let Err(e) = settings::persist() {
+                    eprintln!("settings: {e:#}");
+                }
+            })
+            .detach();
+        }
+        Effect::AskQuit { running } => ask_quit(running, cx),
+        Effect::Quit { keep } => {
+            if let Some(rt) = runtime(cx) {
+                rt.keep_games = keep;
+            }
+            cx.quit();
         }
         Effect::Trace(text) => drive::note(text),
         Effect::Log(text) => eprintln!("{text}"),

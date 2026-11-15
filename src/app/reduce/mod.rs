@@ -4,6 +4,7 @@ mod data;
 mod fleet;
 mod games;
 mod notify;
+mod quit;
 mod show;
 
 use std::cell::Cell;
@@ -161,6 +162,14 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::Visible(keys) => games::visible(model, env, keys, &mut out),
         Event::TellGames => games::tell_games(model, env, &mut out),
+        Event::CloseWindow => quit::close_window(model, env.settings.tray_explained, &mut out),
+        Event::TrayExplained => {
+            out.push(Effect::RememberTrayExplained);
+            quit::close_window(model, true, &mut out);
+        }
+        Event::Quit => quit::ask(model, &mut out),
+        Event::QuitChosen { keep } => out.push(Effect::Quit { keep }),
+        Event::RestartForUpdate => quit::restart_for_update(model, &mut out),
     }
     out
 }
