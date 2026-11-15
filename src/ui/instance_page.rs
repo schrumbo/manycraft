@@ -204,18 +204,56 @@ pub fn page(id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Mods,
+    Worlds,
+    Shots,
+    Logs,
     Settings,
 }
 
-const TABS: [Tab; 2] = [Tab::Mods, Tab::Settings];
+const TABS: [Tab; 5] = [Tab::Mods, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings];
 
 impl Tab {
     fn label(self) -> String {
         match self {
             Self::Mods => tr("Mods"),
+            Self::Worlds => tr("Welten"),
+            Self::Shots => tr("Screenshots"),
+            Self::Logs => tr("Protokolle"),
             Self::Settings => tr("Einstellungen"),
         }
     }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Mods => "mods",
+            Self::Worlds => "worlds",
+            Self::Shots => "screenshots",
+            Self::Logs => "logs",
+            Self::Settings => "settings",
+        }
+    }
+}
+
+struct WantsTab(String, Tab);
+
+impl Global for WantsTab {}
+
+/// Shows the page of instance `id` on tab `key` ("worlds", "screenshots", "logs", "mods" or "settings").
+pub fn show_tab(id: &str, key: &str, cx: &mut App) {
+    let Some(tab) = TABS.into_iter().find(|t| t.key() == key) else { return };
+    cx.set_global(WantsTab(id.to_owned(), tab));
+    if !super::main_window::show_instance(id, cx) {
+        cx.remove_global::<WantsTab>();
+        return;
+    }
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// The key of the tab the instance page shows, while one is shown.
+pub fn tab_key(cx: &App) -> Option<&'static str> {
+    cx.try_global::<Page>().map(|p| p.0.read(cx).tab.key())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +322,7 @@ struct Facts {
 struct InstancePage {
     id: String,
     tab: Tab,
+    entered: bool,
     advanced: bool,
     versions: Load<()>,
     version_list: Vec<String>,
@@ -368,6 +407,7 @@ impl InstancePage {
         let mut page = Self {
             id: id.to_owned(),
             tab: Tab::Mods,
+            entered: true,
             advanced: false,
             versions: Load::Loading,
             version_list: Vec::new(),
@@ -409,6 +449,7 @@ impl InstancePage {
             return;
         }
         self.id = id.to_owned();
+        self.entered = true;
         self.renaming = false;
         self.rename_saving = false;
         self.rename_error = None;
@@ -964,6 +1005,7 @@ impl InstancePage {
         let segments = TABS.iter().enumerate().map(|(n, tab)| segment(("instance-tab", n), tab.label(), *tab == self.tab, true, t));
         let pick = cx.listener(|s, n: &usize, _, cx| {
             if let Some(tab) = TABS.get(*n) {
+                s.entered |= s.tab != *tab;
                 s.tab = *tab;
                 s.scroll.set_offset(point(px(0.), px(0.)));
                 cx.notify();
@@ -1277,6 +1319,13 @@ impl Render for InstancePage {
         let t = Theme::get(cx);
         let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
+        if let Some(WantsTab(id, tab)) = cx.try_global::<WantsTab>()
+            && *id == self.id
+        {
+            self.entered |= self.tab != *tab;
+            self.tab = *tab;
+            cx.remove_global::<WantsTab>();
+        }
         self.sync(&f.made, window, cx);
         self.check_loader(&f.made, cx);
         if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {
@@ -1295,11 +1344,22 @@ impl Render for InstancePage {
         }
         let header = self.header(&f, cx, &t);
         let hint = super::instance_sheet::companion_hint(&f.made.loader, &f.made.game_version).map(|hint| sheet::status("info", t.secondary, hint));
-        let content = match self.tab {
-            Tab::Mods => self.render_mods(&f, cx, &t),
-            Tab::Settings => self.render_settings(&f, cx, &t),
+        let fresh = std::mem::take(&mut self.entered);
+        let files = match self.tab {
+            Tab::Worlds => Some(super::instance_worlds::view(&self.id, fresh, window, cx)),
+            Tab::Shots => Some(super::instance_shots::view(&self.id, fresh, window, cx)),
+            Tab::Logs => Some(super::instance_logs::view(&self.id, fresh, window, cx)),
+            Tab::Mods | Tab::Settings => None,
         };
         let error = self.error.clone().filter(|_| self.tab != Tab::Settings).map(|e| sheet::problem("instance-error", "circle-alert", t.danger_text, &e, self.details.contains("instance-error"), cx.listener(|s, _, _, cx| s.toggle("instance-error", cx)), &t));
+        if let Some(files) = files {
+            let body = div().size_full().max_w(px(PAGE_MAX)).px(px(space::XL)).py(px(space::L)).flex().flex_col().gap(px(space::M)).children(self.batch_links(&f, &t)).children(hint).child(self.tabs(cx, &t)).children(error).child(div().flex_1().min_h_0().child(files));
+            return root.flex().flex_col().child(header).child(div().id("instance-body").flex_1().min_h_0().flex().justify_center().child(body)).into_any_element();
+        }
+        let content = match self.tab {
+            Tab::Settings => self.render_settings(&f, cx, &t),
+            _ => self.render_mods(&f, cx, &t),
+        };
         let body = div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).py(px(space::L)).flex().flex_col().gap(px(space::M)).children(self.batch_links(&f, &t)).children(hint).child(self.tabs(cx, &t)).children(error).child(content);
         root.flex().flex_col().child(header).child(div().id("instance-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(div().w_full().flex().justify_center().child(body))).into_any_element()
     }

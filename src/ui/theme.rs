@@ -216,6 +216,34 @@ pub mod wardrobe {
     pub const BODY: f32 = 260.;
 }
 
+/// The Welten, Screenshots and Protokolle tabs of the instance page.
+pub mod files {
+    /// Height of a world row.
+    pub const WORLD_ROW: f32 = 52.;
+    /// Side of a world icon.
+    pub const WORLD_ICON: f32 = 36.;
+    /// Pixels a world icon is decoded at.
+    pub const WORLD_ICON_PX: u32 = 72;
+    /// Narrowest a screenshot cell gets before the grid drops a column.
+    pub const SHOT_MIN: f32 = 168.;
+    /// Height of the caption under a screenshot.
+    pub const SHOT_CAPTION: f32 = 22.;
+    /// Pixels a screenshot thumbnail is decoded at, on its long side.
+    pub const THUMB_PX: u32 = 256;
+    /// Decoded screenshot thumbnails kept in memory.
+    pub const THUMBS_KEPT: usize = 160;
+    /// Thumbnails decoded at once.
+    pub const DECODERS: usize = 4;
+    /// Width of the log file picker.
+    pub const LOG_PICKER: f32 = 220.;
+    /// Width of the account picker of the logs.
+    pub const ACCOUNT_PICKER: f32 = 160.;
+    /// Width of the search field of the logs.
+    pub const FIND_FIELD: f32 = 220.;
+    /// Lines shown of a log, the newest; older ones stay in the file.
+    pub const LOG_LINES: usize = 200_000;
+}
+
 /// Opacities that tint states.
 pub mod tint {
     /// A control that waits for something.

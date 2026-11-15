@@ -35,6 +35,7 @@ pub enum Kind {
     Deleted { id: String, name: String, entry: String },
     Cloned { id: String, name: String, source: String },
     ModRemoved { instance_id: String, mod_ref: ModRef, index: usize, base: InstanceEdit },
+    Files { name: String, undo: super::instance_files::FileUndo },
     Edited { instance_id: String, name: String, what: Edit, before: InstanceEdit, after: InstanceEdit },
     Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
 }
@@ -268,6 +269,9 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Cloned { name, .. } => (name.clone(), trf("„%@“ geklont.", &[name]), trf("„%@“ wurde nicht gelöscht.", &[name])),
             Kind::ModRemoved { mod_ref, .. } => (mod_ref.title.clone(), trf("„%@“ entfernt.", &[&mod_ref.title]), trf("„%@“ wurde nicht zurückgeholt.", &[&mod_ref.title])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Deleted { .. } } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Restored { .. } } => (name.clone(), trf("„%@“ wiederhergestellt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Copied { .. } } => (name.clone(), trf("„%@“ kopiert.", &[name]), trf("Die Kopie von „%@“ wurde nicht entfernt.", &[name])),
             Kind::Reset { name, .. } => (name.clone(), trf("„%@“ zurückgesetzt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Edited { name, what, .. } => {
                 let done = match what {
@@ -323,6 +327,7 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
         Kind::ModRemoved { instance_id, mod_ref, index, base } => super::instance_page::restore_mod(&instance_id, mod_ref, index, base, at, cx),
+        Kind::Files { name, undo } => super::instance_files::undo(name, undo, at, cx),
         Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
         Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
     }
