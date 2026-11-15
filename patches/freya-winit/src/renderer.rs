@@ -559,7 +559,6 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                         }
                         NativeWindowEventAction::User(user_event) => match user_event {
                             UserEvent::RequestRedraw => {
-                                app.damage.invalidate();
                                 app.window.request_redraw();
                             }
                             UserEvent::FocusAccessibilityNode(strategy) => {
