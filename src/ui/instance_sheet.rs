@@ -835,12 +835,13 @@ impl InstanceSheet {
             _ => {
                 let lock = self.lock_reason();
                 let select = Select::new(&self.version_select).menu_width(px(control::VERSION_MENU)).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(lock.is_some());
+                let enabled = lock.is_none();
                 let select = match lock {
                     Some(why) => sheet::unavailable_over("instance-version-locked", select, why),
                     None => div().child(select),
                 };
                 let sheet = cx.entity().downgrade();
-                let everything = picker::everything_toggle("sheet-versions-all", self.everything, move |_, cx| {
+                let everything = picker::everything_toggle("sheet-versions-all", self.everything, enabled, move |_, cx| {
                     let _ = sheet.update(cx, |s, cx| {
                         s.everything = !s.everything;
                         s.pending_versions = true;

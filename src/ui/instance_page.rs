@@ -1131,19 +1131,20 @@ impl InstancePage {
             Some(why) => sheet::unavailable_over(id, control, why.clone()).into_any_element(),
             None => control,
         };
+        let listed = !self.version_list.is_empty() || !matches!(self.versions, Load::Failed(_) | Load::Loading);
         let version_control = match &self.versions {
             Load::Failed(_) if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.game_version.clone())).into_any_element(),
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)).into_any_element(),
             _ => locked("instance-version-locked", div().child(Select::new(&self.version_select).menu_width(px(control::VERSION_MENU)).menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Version suchen")).disabled(blocked)).into_any_element()),
         };
         let page = cx.entity().downgrade();
-        let everything = picker::everything_toggle("instance-versions-all", self.everything, move |_, cx| {
+        let everything = listed.then(|| picker::everything_toggle("instance-versions-all", self.everything, !blocked, move |_, cx| {
             let _ = page.update(cx, |s, cx| {
                 s.everything = !s.everything;
                 cx.notify();
             });
-        }, t);
-        let version_control = div().flex().flex_col().gap(px(space::XS)).child(version_control).child(everything).into_any_element();
+        }, t));
+        let version_control = div().flex().flex_col().gap(px(space::XS)).child(version_control).children(everything).into_any_element();
         let loader_focus = self.loader_focus.clone();
         let segments = LOADERS.iter().enumerate().map(|(n, l)| {
             let selected = made.loader.same_kind(l);
@@ -1240,13 +1241,15 @@ impl InstancePage {
         let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
         let less = wait().or_else(|| (shown <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
         let more = wait().or_else(|| (shown >= self.memory_max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])));
+        let focus = self.opts.memory_focus.clone();
+        let (less_first, more_first) = (less.is_none(), less.is_some() && more.is_none());
         let stepper = div()
             .flex()
             .items_center()
             .gap(px(space::XS))
-            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx))
+            .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), less, -1, cx).when(less_first, |d| d.track_focus(&focus)))
             .child(div().id("memory-value").mark("value", value.clone()).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(value))
-            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx));
+            .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), more, 1, cx).when(more_first, |d| d.track_focus(&focus)));
         div().flex().child(stepper)
     }
 

@@ -25,6 +25,7 @@ use crate::ui::widgets::{TakeFocus, segment, segmented};
 
 /// Settings a palette entry can open.
 pub(super) const SETTINGS: [&str; 7] = ["memory", "java", "jvm_args", "game_args", "window", "gpu", "renderer"];
+const REVEAL_FRAMES: u8 = 3;
 
 /// One change of the start options, applied onto the instance as it is when the save runs.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,9 +110,10 @@ pub(super) struct Options {
     java_items: Option<(Option<PathBuf>, usize)>,
     gpu_focus: FocusHandle,
     renderer_focus: FocusHandle,
-    memory_focus: FocusHandle,
+    pub(super) memory_focus: FocusHandle,
     reveal: Option<&'static str>,
     revealed: Rc<Cell<Option<Bounds<Pixels>>>>,
+    waited: u8,
 }
 
 impl Options {
@@ -154,6 +156,7 @@ impl Options {
             memory_focus: cx.focus_handle(),
             reveal: None,
             revealed: Rc::new(Cell::new(None)),
+            waited: 0,
         };
         (options, subs)
     }
@@ -177,6 +180,7 @@ impl Options {
     pub(super) fn reveal(&mut self, setting: &str) {
         self.reveal = SETTINGS.into_iter().find(|s| *s == setting);
         self.revealed.set(None);
+        self.waited = 0;
     }
 }
 
@@ -352,6 +356,7 @@ impl InstancePage {
                 (Some(path.display().to_string()), problem)
             }
             Some((probed, _, Err(e), _)) if probed == path && !e.is_empty() => (None, Some(e.clone())),
+            Some((probed, _, Err(_), _)) if probed == path => (Some(tr("Java wird geprüft …")), None),
             _ => (Some(path.display().to_string()), None),
         }
     }
@@ -387,7 +392,7 @@ impl InstancePage {
     pub(super) fn render_options(&mut self, made: &Instance, memory: Div, cx: &mut Context<Self>, t: &Theme) -> Div {
         let now = self.options_now(made);
         let memory_reset = (self.pending_memory().unwrap_or(made.memory_mb) != DEFAULT_MEMORY_MB).then(|| self.reset_button("memory-reset", tr("Arbeitsspeicher"), cx, |s, cx| s.enqueue(Job::Save(Change::Memory(DEFAULT_MEMORY_MB)), cx), t));
-        let memory = self.setting("memory", tr("Arbeitsspeicher"), memory_reset, div().track_focus(&self.opts.memory_focus).child(memory), Some(tr("Pro Account.")), None, t);
+        let memory = self.setting("memory", tr("Arbeitsspeicher"), memory_reset, memory, Some(tr("Pro Account.")), None, t);
 
         let (java_hint, java_problem) = self.java_note(made, now.java.as_ref());
         let java_reset = now.java.is_some().then(|| {
@@ -453,6 +458,10 @@ impl InstancePage {
     pub(super) fn finish_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.opts.reveal else { return };
         let Some(bounds) = self.opts.revealed.get() else {
+            self.opts.waited += 1;
+            if self.opts.waited > REVEAL_FRAMES {
+                self.opts.reveal = None;
+            }
             cx.notify();
             return;
         };

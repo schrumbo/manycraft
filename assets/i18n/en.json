@@ -903,7 +903,7 @@
   "Automatisch nimmt, was im Spiel eingestellt ist.": "Automatic uses what is set in the game.",
   "Java %@ · %@": "Java %@ · %@",
   "Java %@": "Java %@",
-  "Testversion": "Snapshot",
+  "Snapshot": "Snapshot",
   "Vorabversion": "Pre-release",
   "Alte Beta": "Old beta",
   "Alte Alpha": "Old alpha",
@@ -913,5 +913,6 @@
   "Spielargumente bearbeiten": "Edit game arguments",
   "Fenstergröße einstellen": "Set window size",
   "Grafikkarte wählen": "Choose graphics card",
-  "Grafikschnittstelle wählen": "Choose graphics API"
+  "Grafikschnittstelle wählen": "Choose graphics API",
+  "Java wird geprüft …": "Checking Java …"
 }

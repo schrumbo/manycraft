@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use gpui_kit::component::Disableable;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::prelude::*;
@@ -25,7 +26,7 @@ pub struct VersionItem {
 pub fn kind_label(kind: Kind) -> Option<String> {
     match kind {
         Kind::Release => None,
-        Kind::Snapshot => Some(tr("Testversion")),
+        Kind::Snapshot => Some(tr("Snapshot")),
         Kind::PreRelease => Some(tr("Vorabversion")),
         Kind::OldBeta => Some(tr("Alte Beta")),
         Kind::OldAlpha => Some(tr("Alte Alpha")),
@@ -59,8 +60,8 @@ pub fn items(catalog: &[GameVersion], everything: bool, supported: Option<&HashS
     shown(catalog, everything, supported, keep).into_iter().map(|v| VersionItem { id: v.id, kind: v.kind }).collect()
 }
 
-/// The checkbox under the picker that adds snapshots and old versions.
-pub fn everything_toggle(id: &'static str, on: bool, toggle: impl Fn(&mut Window, &mut App) + Clone + 'static, t: &Theme) -> Stateful<Div> {
+/// The checkbox under the picker that adds snapshots and old versions, dimmed and inert unless `enabled`.
+pub fn everything_toggle(id: &'static str, on: bool, enabled: bool, toggle: impl Fn(&mut Window, &mut App) + Clone + 'static, t: &Theme) -> Stateful<Div> {
     let label = tr("Snapshots und alte Versionen zeigen");
     let check = toggle.clone();
     div()
@@ -74,11 +75,9 @@ pub fn everything_toggle(id: &'static str, on: bool, toggle: impl Fn(&mut Window
         .items_center()
         .gap(px(space::XS))
         .rounded(px(radius::INNER))
-        .cursor_pointer()
-        .key_nav()
-        .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-        .on_click(move |_, window, cx| toggle(window, cx))
-        .child(Checkbox::new(SharedString::from(format!("{id}-check"))).checked(on).tab_stop(false).on_click(move |_: &bool, window, cx| {
+        .when(!enabled, |d| d.opacity(tint::DISABLED))
+        .when(enabled, |d| d.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::INNER).on_click(move |_, window, cx| toggle(window, cx)))
+        .child(Checkbox::new(SharedString::from(format!("{id}-check"))).checked(on).disabled(!enabled).tab_stop(false).on_click(move |_: &bool, window, cx| {
             check(window, cx);
             cx.stop_propagation();
         }))
