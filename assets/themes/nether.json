@@ -1,0 +1,41 @@
+{
+  "name": "Nether",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "signature": "glow",
+  "identity": [
+    "#B5302F",
+    "#2FA79A",
+    "#E8742A",
+    "#EDE6DC",
+    "#6B4F3A",
+    "#F2C94C",
+    "#4A4550",
+    "#D4A73C"
+  ],
+  "dark": {
+    "surface": "#1C0F0F",
+    "sidebar": "#160B0B",
+    "raised": "#261413",
+    "sunken": "#120808",
+    "control": "#3A1A18",
+    "separator": "#4A2420",
+    "text-1": "#F5E6DC",
+    "text-2": "#D9B8A8",
+    "text-3": "#B08C7C",
+    "accent": "#FF7A1A",
+    "accent-text": "#FF7A1A",
+    "on-accent": "#1C0F0F",
+    "attention": "#FFD23F",
+    "attention-text": "#FFD23F",
+    "on-attention": "#000000",
+    "danger": "#FF4D4D",
+    "danger-text": "#FF4D4D",
+    "on-danger": "#000000",
+    "success": "#2FC4B2",
+    "success-text": "#2FC4B2",
+    "focus-ring": "#FF9A3C",
+    "tile-ring": "#FF9A3C",
+    "scrim": "#0A040499"
+  }
+}

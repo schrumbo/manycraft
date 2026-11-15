@@ -64,6 +64,8 @@ pub mod skin_change;
 pub mod still;
 pub mod store;
 pub mod sync;
+#[allow(dead_code)]
+pub mod themes;
 pub mod trash;
 pub mod updater;
 pub mod versions;

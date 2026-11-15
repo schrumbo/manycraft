@@ -1,0 +1,43 @@
+{
+  "name": "Windows 98",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "radius": 0.2,
+  "density": "compact",
+  "identity": [
+    "#008080",
+    "#000080",
+    "#800080",
+    "#808000",
+    "#800000",
+    "#008000",
+    "#808080",
+    "#0000FF"
+  ],
+  "light": {
+    "surface": "#C0C0C0",
+    "sidebar": "#B8B8B8",
+    "raised": "#D4D0C8",
+    "sunken": "#FFFFFF",
+    "control": "#DCDCDC",
+    "separator": "#808080",
+    "text-1": "#000000",
+    "text-2": "#1F1F1F",
+    "text-3": "#404040",
+    "accent": "#000080",
+    "accent-text": "#000080",
+    "on-accent": "#FFFFFF",
+    "attention": "#6A6A00",
+    "attention-text": "#505000",
+    "on-attention": "#E6E6E6",
+    "danger": "#800000",
+    "danger-text": "#800000",
+    "on-danger": "#FFFFFF",
+    "success": "#008000",
+    "success-text": "#005A00",
+    "focus-ring": "#000080",
+    "tile-ring": "#007373",
+    "selection": "#00008033",
+    "scrim": "#00000059"
+  }
+}

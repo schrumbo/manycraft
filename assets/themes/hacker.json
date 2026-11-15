@@ -1,0 +1,42 @@
+{
+  "name": "Hacker",
+  "author": "Manycraft",
+  "license": "Manycraft",
+  "radius": 0.5,
+  "density": "compact",
+  "identity": [
+    "#33FF66",
+    "#00CC44",
+    "#99FFB3",
+    "#66FF99",
+    "#00FF88",
+    "#1AFF8C",
+    "#4DFF79",
+    "#B3FFC6"
+  ],
+  "dark": {
+    "surface": "#050805",
+    "sidebar": "#030503",
+    "raised": "#0A100A",
+    "sunken": "#000000",
+    "control": "#112011",
+    "separator": "#1C3A1C",
+    "text-1": "#7CFF9A",
+    "text-2": "#4FD873",
+    "text-3": "#2EA04F",
+    "accent": "#33FF66",
+    "accent-text": "#33FF66",
+    "on-accent": "#001A08",
+    "attention": "#FFB000",
+    "attention-text": "#FFB000",
+    "on-attention": "#000000",
+    "danger": "#FF3355",
+    "danger-text": "#FF3355",
+    "on-danger": "#000000",
+    "success": "#B3FFC6",
+    "success-text": "#B3FFC6",
+    "focus-ring": "#33FF66",
+    "tile-ring": "#33FF66",
+    "scrim": "#000000B3"
+  }
+}

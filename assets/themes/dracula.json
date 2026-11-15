@@ -1,0 +1,32 @@
+{
+  "name": "Dracula",
+  "author": "Dracula Theme",
+  "license": "MIT",
+  "source": "https://draculatheme.com",
+  "dark": {
+    "surface": "#282A36",
+    "sidebar": "#21222C",
+    "raised": "#303341",
+    "sunken": "#191A21",
+    "control": "#44475A",
+    "separator": "#44475A",
+    "text-1": "#F8F8F2",
+    "text-2": "#D7D7E0",
+    "text-3": "#919CBF",
+    "accent": "#BD93F9",
+    "accent-text": "#BD93F9",
+    "on-accent": "#282A36",
+    "attention": "#FFB86C",
+    "attention-text": "#FFB86C",
+    "on-attention": "#000000",
+    "danger": "#FF5555",
+    "danger-text": "#FF6E6E",
+    "on-danger": "#000000",
+    "success": "#50FA7B",
+    "success-text": "#50FA7B",
+    "focus-ring": "#FF79C6",
+    "tile-ring": "#FF79C6",
+    "selection": "#44475A",
+    "scrim": "#191A2199"
+  }
+}
