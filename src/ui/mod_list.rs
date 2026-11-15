@@ -870,12 +870,17 @@ impl ModList {
             let _ = this.update(cx, |s, cx| {
                 match result {
                     Ok((made, taken)) => {
+                        let fresh: Vec<String> = added.into_iter().filter(|name| !taken.contains(name)).collect();
                         if s.id == id {
-                            s.reveal = added.into_iter().find(|name| !taken.contains(name));
+                            s.reveal = fresh.first().cloned();
                         }
                         put(made, cx);
                         if !taken.is_empty() {
                             super::undo::note(trf("Schon da: %@.", &[&listing(&taken)]), cx);
+                        }
+                        if !fresh.is_empty() {
+                            let label = if let [one] = fresh.as_slice() { quoted(one) } else { count_mods(fresh.len()) };
+                            super::undo::offer(super::undo::Kind::ModsAdded { instance_id: id.clone(), files: fresh, label }, cx);
                         }
                     }
                     Err(e) if s.id == id => s.fail(forms::explain_as(tr("Nicht hinzugefügt."), &e)),
@@ -1298,6 +1303,26 @@ pub fn undo_switch(id: String, files: Vec<String>, on: bool, label: String, at: 
 }
 
 /// Puts deleted mods back after an undo; says why when it cannot and offers a retry when that may help.
+pub fn undo_add(id: String, files: Vec<String>, label: String, at: Instant, cx: &mut App) {
+    let task = cx.background_spawn({
+        let (id, files) = (id.clone(), files.clone());
+        async move { content::trash(&id, &files) }
+    });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| match result {
+            Ok((made, _)) => put(made, cx),
+            Err(e) => {
+                super::undo::note(forms::explain_as(tr("Nicht entfernt."), &e).text, cx);
+                if !super::undo::permanent(&e) {
+                    super::undo::retry(super::undo::Kind::ModsAdded { instance_id: id, files, label }, at, cx);
+                }
+            }
+        });
+    })
+    .detach();
+}
+
 pub fn undo_trash(id: String, trashed: Trashed, label: String, at: Instant, cx: &mut App) {
     let task = cx.background_spawn({
         let (id, trashed) = (id.clone(), trashed.clone());
