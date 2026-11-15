@@ -3,7 +3,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogEntrance, DialogFooter};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{FocusableExt, Sizable, WindowExt};
+use gpui_kit::component::{Disableable, FocusableExt, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -67,17 +67,34 @@ pub fn typing(window: &Window) -> bool {
 
 /// Asks before a change that cannot be taken back. Focus starts on Abbrechen, so Enter alone never runs `ok`.
 pub fn ask(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, ok: impl Fn(&mut Window, &mut App) + 'static) {
-    let ok = std::rc::Rc::new(ok);
+    alert(window, cx, title, message, ok_text, true, |_| None, ok);
+}
+
+/// Asks before a change the user chose on purpose, so the confirm button is the accent one, not red. While `blocked`
+/// names a reason the button is off and the reason shows in the alert, redrawn as that changes.
+pub fn confirm(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    alert(window, cx, title, message, ok_text, false, blocked, ok);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn alert(window: &mut Window, cx: &mut App, title: String, message: String, ok_text: String, danger: bool, blocked: impl Fn(&App) -> Option<String> + 'static, ok: impl Fn(&mut Window, &mut App) + 'static) {
+    let (ok, blocked) = (std::rc::Rc::new(ok), std::rc::Rc::new(blocked));
     let cancel = cx.focus_handle();
     let first = cancel.clone();
-    window.open_alert_dialog(cx, move |alert, _, cx| {
-        let ok = ok.clone();
+    window.open_alert_dialog(cx, move |dialog, _, cx| {
+        let (ok, check) = (ok.clone(), blocked.clone());
+        let reason = blocked(cx);
         let rings = super::theme::rings(cx);
-        let confirm = Button::new("alert-ok").label(ok_text.clone()).danger().focus_ring(rings).on_click(move |_, window, cx| {
-            window.close_dialog(cx);
-            ok(window, cx);
+        let t = Theme::get(cx);
+        let confirm = Button::new("alert-ok").label(ok_text.clone()).focus_ring(rings).disabled(reason.is_some()).on_click(move |_, window, cx| {
+            if check(cx).is_none() {
+                window.close_dialog(cx);
+                ok(window, cx);
+            }
         });
-        alert.title(title.clone()).description(message.clone()).on_ok(pass_enter).footer(
+        let confirm = if danger { confirm.danger() } else { confirm.primary() };
+        let body = div().flex().flex_col().gap(px(space::XS)).child(message.clone()).children(reason.map(|r| div().text_color(t.attention_text).child(r)));
+        dialog.title(title.clone()).description(body).on_ok(pass_enter).footer(
             DialogFooter::new().child(Button::new("alert-cancel").label(tr("Abbrechen")).focus_ring(rings).track_focus(&cancel).on_click(|_, window, cx| window.close_dialog(cx))).child(confirm),
         )
     });
@@ -127,7 +144,7 @@ pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, icon_
             .child(label.clone())
     };
     if disabled || busy {
-        return inner(base.when(disabled && !busy, |d| d.opacity(tint::DISABLED)));
+        return inner(base.when(disabled && !busy, |d| d.opacity(tint::DISABLED).cursor_not_allowed()));
     }
     inner(base.cursor_pointer().key_nav().soft(shade, radius::INNER))
 }
