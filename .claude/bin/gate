@@ -395,10 +395,15 @@ def cli(args):
 def yield_to_owner():
     if os.name == "nt":
         import ctypes
-        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
+        k = ctypes.windll.kernel32
+        k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)
+        k.SetProcessAffinityMask(k.GetCurrentProcess(), ctypes.c_size_t((1 << min(8, os.cpu_count() or 8)) - 1))
     else:
         with contextlib.suppress(OSError):
             os.nice(19)
+        with contextlib.suppress(AttributeError, OSError):
+            os.sched_setaffinity(0, set(range(min(8, os.cpu_count() or 8))))
+    os.environ.setdefault("CARGO_BUILD_JOBS", "8")
 
 
 def main():
