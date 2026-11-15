@@ -26,7 +26,7 @@ use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::proxy::{self, Kind};
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
-use super::{adopt, auth, ipc, lock, net, paths, scrub, stagger};
+use super::{adopt, auth, gpu, ipc, javas, lock, net, paths, scrub, stagger};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
@@ -470,7 +470,7 @@ fn extra_arguments(instance: &Instance, account: &Account, game_dir: &Path, ipc_
         format!("-Dmanycraft.preview={}", game_dir.join(PREVIEW_FILE).display()),
         "-Dmanycraft.hidden=true".to_owned(),
     ]);
-    let mut game = Vec::new();
+    let mut game = instance.options.game_arguments(&instance.game_version);
     let mut secrets = vec![(TOKEN_VAR.to_owned(), token.to_owned())];
     if let Some(url) = &account.proxy {
         let proxy = proxy::parse(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
@@ -481,6 +481,25 @@ fn extra_arguments(instance: &Instance, account: &Account, game_dir: &Path, ipc_
         }
     }
     Ok(Extra { jvm, game, secrets })
+}
+
+/// Starts with the Java the user picked for `instance` when it fits the game, and gives that Java the graphics card
+/// the user picked.
+fn choose_java(installed: &mut Installed, instance: &Instance) -> Result<()> {
+    if let Some(picked) = &instance.options.java {
+        let home = javas::home_of(picked).with_context(|| super::i18n::trf("Das gewählte Java fehlt: %@", &[&picked.display()]))?;
+        let java = javas::probe(&home)?;
+        let declared = installed.profile.java_version.as_ref();
+        let required = javas::required_major(declared.and_then(|j| j.major_version), declared.map(|j| j.component.as_str()));
+        if let Some(reason) = javas::mismatch(required, java.major, &instance.game_version) {
+            bail!(reason);
+        }
+        installed.java = java.path;
+    }
+    if let Err(e) = gpu::apply(&installed.java, &instance.id, instance.options.gpu) {
+        eprintln!("graphics card preference: {e:#}");
+    }
+    Ok(())
 }
 
 fn sync_mods(instance: &Instance) -> Result<()> {
@@ -680,6 +699,7 @@ impl RunningInstance {
     fn ended(&mut self, code: Option<i32>) {
         self.exit = Some(code);
         scrub::scrub_logs(&self.logs);
+        scrub::scrub_game_logs(&self.logs);
     }
 }
 
@@ -843,7 +863,8 @@ impl Fleet {
             sync_mods(instance)?;
         }
         let server_addrs = server_addresses(target.server(), accounts, resolve_all, || !super::online::reachable())?;
-        let installed = install::install(&instance.game_version, &instance.loader, progress)?;
+        let mut installed = install::install(&instance.game_version, &instance.loader, progress)?;
+        choose_java(&mut installed, instance)?;
         let companion_jar = match companion_jar {
             Some(jar) => Some(jar.to_path_buf()),
             None => super::companion::jar(&instance.loader, &instance.game_version)?,
@@ -1509,14 +1530,26 @@ fn check_unused(doomed: &Instance) -> Result<()> {
 pub fn remove_instance(doomed: &Instance) -> Result<String> {
     check_unused(doomed)?;
     let _quiet = lock::try_exclusive(&paths::data_dir().join(install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))?;
-    instance::trash(doomed)
+    let entry = instance::trash(doomed)?;
+    release_gpu(doomed);
+    Ok(entry)
+}
+
+fn release_gpu(gone: &Instance) {
+    if gone.options.gpu.is_some()
+        && let Err(e) = super::gpu::release(&gone.id)
+    {
+        eprintln!("graphics card preference of {} not released: {e:#}", gone.id);
+    }
 }
 
 /// Moves `doomed` to the trash and returns its trash entry like [`remove_instance`], but without waiting for every game
 /// to stop; refused only while a batch plays it. Callers check first that no game of it runs.
 pub fn discard_instance(doomed: &Instance) -> Result<String> {
     check_unused(doomed)?;
-    instance::trash(doomed)
+    let entry = instance::trash(doomed)?;
+    release_gpu(doomed);
+    Ok(entry)
 }
 
 /// Brings the trash entry `entry` back out of the trash.
@@ -2249,6 +2282,71 @@ mod tests {
         assert!(!fleet.is_running(&keys[1]));
         assert_eq!(fleet.exit_code(&keys[1]), Some(Some(1)));
         assert!(fleet.stop("nope").is_err());
+    }
+
+    #[test]
+    fn start_options_reach_the_game_before_the_proxy() {
+        let mut batch = target("A");
+        batch.instance.game_version = "26.3".into();
+        batch.instance.options = super::super::options::LaunchOptions {
+            game_args: vec!["--fullscreen".into()],
+            window: Some(super::super::options::WindowSize { width: 1280, height: 720 }),
+            renderer: Some(super::super::options::Renderer::OpenGl),
+            ..Default::default()
+        };
+        let mut alt = Account::offline("AltOne").unwrap();
+        alt.proxy = Some("socks5://10.1.1.1:1081".into());
+        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        assert_eq!(extra.game, ["--fullscreen", "--width", "1280", "--height", "720", "--graphicsBackend", "opengl", "--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
+    }
+
+    fn installed_needing(component: &str, major: u32) -> Installed {
+        let profile: install::meta::VersionJson = serde_json::from_value(serde_json::json!({"id": "1.21.5", "javaVersion": {"component": component, "majorVersion": major}})).unwrap();
+        Installed {
+            game_version: "1.21.5".into(),
+            loader_version: "0.20.1".into(),
+            id: profile.id.clone(),
+            version_name: profile.id.clone(),
+            libraries_dir: PathBuf::new(),
+            profile,
+            java: PathBuf::from("mojang-java"),
+            classpath: Vec::new(),
+            natives_dir: PathBuf::new(),
+            assets_dir: PathBuf::new(),
+            asset_index: String::new(),
+            log_config: None,
+            downloaded: 0,
+        }
+    }
+
+    fn java_home(dir: &Path, version: &str) -> PathBuf {
+        let bin = dir.join(format!("jdk-{version}")).join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let launcher = bin.join(if cfg!(windows) { "javaw.exe" } else { "java" });
+        fs::write(&launcher, b"").unwrap();
+        fs::write(bin.parent().unwrap().join("release"), format!("JAVA_VERSION=\"{version}\"
+")).unwrap();
+        launcher
+    }
+
+    #[test]
+    fn an_own_java_replaces_mojangs_only_when_it_fits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut instance = target("A").instance;
+        instance.game_version = "1.21.5".into();
+        let mut installed = installed_needing("java-runtime-delta", 21);
+        choose_java(&mut installed, &instance).unwrap();
+        assert_eq!(installed.java, PathBuf::from("mojang-java"));
+        instance.options.java = Some(java_home(dir.path(), "25.0.1"));
+        choose_java(&mut installed, &instance).unwrap();
+        assert_eq!(Some(installed.java.clone()), instance.options.java);
+        let mut installed = installed_needing("java-runtime-delta", 21);
+        instance.options.java = Some(java_home(dir.path(), "17.0.2"));
+        let reason = choose_java(&mut installed, &instance).unwrap_err().to_string();
+        assert!(reason.contains("Java 21") && reason.contains("Java 17"), "{reason}");
+        assert_eq!(installed.java, PathBuf::from("mojang-java"));
+        instance.options.java = Some(dir.path().join("gone").join("bin").join("javaw.exe"));
+        assert!(choose_java(&mut installed, &instance).is_err());
     }
 
     #[test]

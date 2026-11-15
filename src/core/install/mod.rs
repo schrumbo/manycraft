@@ -1,7 +1,7 @@
 //! Installs a game version with its mod loader: version metadata, libraries, assets, natives, the Java runtime and,
 //! for Forge and NeoForge, the installer's processors.
 
-mod assets;
+pub mod assets;
 pub mod clean;
 mod download;
 mod fabric;

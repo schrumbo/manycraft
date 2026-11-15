@@ -38,6 +38,7 @@ pub mod toolbar;
 pub mod transfer;
 pub mod undo;
 pub mod updates;
+pub mod versions;
 #[allow(dead_code)]
 pub mod theme;
 #[allow(dead_code)]

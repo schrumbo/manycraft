@@ -15,6 +15,7 @@ pub mod fit;
 pub mod fleet;
 pub mod game_icon;
 pub mod game_window;
+pub mod gpu;
 #[allow(dead_code)]
 pub mod history;
 pub mod i18n;
@@ -22,6 +23,7 @@ pub mod instance;
 pub mod install;
 #[allow(dead_code)]
 pub mod ipc;
+pub mod javas;
 pub mod launch;
 pub mod logs;
 #[allow(dead_code)]
@@ -32,6 +34,7 @@ pub mod modrinth;
 pub mod mrpack;
 pub mod net;
 pub mod online;
+pub mod options;
 pub mod origin;
 pub mod paths;
 pub mod phone;
@@ -55,6 +58,7 @@ pub mod store;
 pub mod sync;
 pub mod trash;
 pub mod updater;
+pub mod versions;
 pub mod webauth;
 pub mod winstate;
 pub mod worlds;

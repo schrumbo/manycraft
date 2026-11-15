@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
 
-use super::install::meta::{Env, expand, substitute};
+use super::install::meta::{Env, Os, expand, substitute};
 use super::account::{self, AccountKind};
 use super::auth;
 use super::install::{self, Installed};
@@ -101,7 +101,14 @@ impl LaunchSpec {
         };
         let classpath = installed.classpath.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(CLASSPATH_SEPARATOR);
         let version_type = installed.profile.kind.clone().unwrap_or_else(|| "release".to_owned());
+        let session = match &self.session {
+            Some(s) => format!("token:{}:{}", s.access_token, s.uuid.replace('-', "")),
+            None => "-".to_owned(),
+        };
+        let game_assets = install::assets::legacy_dir(&installed.assets_dir, &installed.asset_index, &self.game_dir).unwrap_or_else(|| installed.assets_dir.clone());
         HashMap::from([
+            ("auth_session", session),
+            ("game_assets", game_assets.to_string_lossy().into_owned()),
             ("auth_player_name", name),
             ("auth_uuid", uuid),
             ("auth_access_token", token),
@@ -133,6 +140,9 @@ impl LaunchSpec {
         let main_class = profile.main_class.as_deref().context("version has no main class")?;
         let declared = profile.arguments.clone().unwrap_or_default();
         let mut jvm = expand(&declared.jvm, &env);
+        if declared.jvm.is_empty() {
+            jvm.extend(legacy_jvm(env.os));
+        }
         if !jvm.iter().any(|a| a.starts_with("-Djava.library.path")) {
             jvm.push("-Djava.library.path=${natives_directory}".to_owned());
         }
@@ -164,10 +174,22 @@ impl LaunchSpec {
     }
 }
 
-/// Starts the game with output going to `logs/manycraft-launch.log` in the game folder.
+/// JVM arguments that versions without an `arguments` block expect from the launcher, as Mojang's launcher passes them.
+fn legacy_jvm(os: Os) -> Vec<String> {
+    let mut out = vec!["-Dminecraft.launcher.brand=${launcher_name}".to_owned(), "-Dminecraft.launcher.version=${launcher_version}".to_owned()];
+    match os {
+        Os::Windows => out.push("-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump".to_owned()),
+        Os::Osx | Os::Linux => {}
+    }
+    out
+}
+
+/// Starts the game with output going to `logs/manycraft-launch.log` in the game folder. Old versions get their assets
+/// laid out by name first.
 pub fn spawn(spec: &LaunchSpec) -> Result<Child> {
     let logs = spec.game_dir.join("logs");
     std::fs::create_dir_all(&logs).with_context(|| format!("cannot create {}", logs.display()))?;
+    install::assets::place_legacy(&spec.installed.assets_dir, &spec.installed.asset_index, &spec.game_dir)?;
     let log_path = logs.join("manycraft-launch.log");
     let log = File::create(&log_path).with_context(|| format!("cannot write {}", log_path.display()))?;
     let log_err = log.try_clone().context("cannot write the launch log")?;
@@ -457,6 +479,56 @@ mod tests {
         assert_eq!(after(args, "-cp").split(if cfg!(windows) { ';' } else { ':' }).count(), 3);
         assert_eq!(after(args, "--username"), "Dev");
         assert!(args.contains(&"-Djava.library.path=versions/f/natives".to_owned()));
+    }
+
+    fn legacy(json: &str) -> LaunchSpec {
+        let mut spec = spec(None, None);
+        spec.installed.profile = serde_json::from_str(json).unwrap();
+        spec.installed.id = spec.installed.profile.id.clone();
+        spec.installed.version_name = spec.installed.profile.id.clone();
+        spec.installed.asset_index = spec.installed.profile.asset_index.as_ref().unwrap().id.clone();
+        spec.installed.log_config = None;
+        spec.extra_jvm.clear();
+        spec.extra_game.clear();
+        spec
+    }
+
+    #[test]
+    fn a_1_8_9_game_gets_its_legacy_argument_string_and_launcher_defaults() {
+        let spec = legacy(include_str!("testdata/install/legacy-1.8.9.json"));
+        let args = spec.arguments().unwrap();
+        let args = args.as_slice();
+        assert!(args.iter().all(|a| !a.contains("${")), "{args:?}");
+        let main = args.iter().position(|a| a == "net.minecraft.client.main.Main").unwrap();
+        for jvm in ["-cp", "-Djava.library.path=versions/f/natives", "-Dminecraft.launcher.brand=Manycraft", "-Xmx3072M"] {
+            assert!(args.iter().position(|a| a == jvm).unwrap() < main, "{jvm}");
+        }
+        assert_eq!(args.iter().any(|a| a.starts_with("-XX:HeapDumpPath=")), cfg!(windows));
+        let game: Vec<&str> = args[main + 1..].iter().map(String::as_str).collect();
+        let name_uuid = crate::core::account::offline_uuid("Dev").to_string();
+        assert_eq!(
+            game,
+            ["--username", "Dev", "--version", "1.8.9", "--gameDir", "inst", "--assetsDir", "data/assets", "--assetIndex", "1.8", "--uuid", &name_uuid, "--accessToken", "0", "--userProperties", "{}", "--userType", "legacy"]
+        );
+    }
+
+    #[test]
+    fn a_pre_1_6_game_gets_the_session_and_its_resources_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = legacy(include_str!("testdata/install/legacy-1.5.2.json"));
+        spec.installed.assets_dir = dir.path().join("assets");
+        std::fs::create_dir_all(spec.installed.assets_dir.join("indexes")).unwrap();
+        std::fs::write(spec.installed.assets_dir.join("indexes").join("pre-1.6.json"), r#"{"map_to_resources":true,"objects":{}}"#).unwrap();
+        let args = spec.arguments().unwrap();
+        let args = args.as_slice();
+        let main = args.iter().position(|a| a == "net.minecraft.launchwrapper.Launch").unwrap();
+        assert_eq!(&args[main + 1..main + 3], ["Dev", "-"]);
+        assert_eq!(after(args, "--assetsDir"), Path::new("inst").join("resources").to_string_lossy());
+        let mut online = spec.clone();
+        online.session = Some(session());
+        let args = online.arguments().unwrap();
+        assert_eq!(args.as_slice()[main + 2], format!("token:{TOKEN}:11111111222233334444555555555555"));
+        assert!(!format!("{args:?}").contains(TOKEN));
     }
 
     #[test]

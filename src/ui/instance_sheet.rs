@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Undo};
-use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -20,6 +20,7 @@ use super::motion::Soft;
 use super::remote;
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
+use super::versions::{self as picker, VersionItem};
 use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
 use crate::core::companion;
@@ -27,9 +28,10 @@ use crate::core::i18n::{tr, trf};
 use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
 use crate::core::modrinth::Update;
 use crate::core::prism::Instance;
+use crate::core::versions::{GameVersion, Kind};
 
 const DEFAULT_TITLES: [(&str, &str); 5] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton")];
-const VERSION_WIDTH: f32 = 168.;
+const VERSION_WIDTH: f32 = 232.;
 const RESULTS_MAX: f32 = 340.;
 const PRISM_FILTER_FROM: usize = 6;
 const SNUG_PERCENT: u64 = 80;
@@ -108,9 +110,12 @@ pub(super) struct InstanceSheet {
     jvm_args: Entity<InputState>,
     pub(super) browser: Browser,
     versions: Load<()>,
-    version_list: Vec<String>,
-    version_select: Entity<SelectState<SearchableVec<String>>>,
+    version_list: Vec<GameVersion>,
+    version_select: Entity<SelectState<SearchableVec<VersionItem>>>,
     pending_versions: bool,
+    everything: bool,
+    supported: Option<(String, Option<HashSet<String>>)>,
+    supported_asked: Option<String>,
     pub(super) version: String,
     pub(super) loader: Loader,
     memory: u32,
@@ -171,9 +176,9 @@ impl InstanceSheet {
         let memory = forms::memory_step(DEFAULT_MEMORY_MB, 0, memory_max);
         let version = setup.as_ref().map(|i| i.game_version.clone()).unwrap_or_default();
         let loader = setup.as_ref().map_or_else(Loader::default, |i| i.loader.clone());
-        let initial: Vec<String> = if version.is_empty() { Vec::new() } else { vec![version.clone()] };
+        let initial: Vec<GameVersion> = if version.is_empty() { Vec::new() } else { vec![GameVersion { id: version.clone(), kind: Kind::Release }] };
         let selected = (!initial.is_empty()).then(|| IndexPath::new(0));
-        let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(initial.clone()), selected, window, cx).searchable(true));
+        let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(picker::items(&initial, true, None, &version)), selected, window, cx).searchable(true));
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. Technik")));
         let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let jvm_args = cx.new(|cx| InputState::new(window, cx));
@@ -210,7 +215,7 @@ impl InstanceSheet {
                     cx.notify();
                 }
             }),
-            cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<String>>, _, cx| {
+            cx.subscribe_in(&version_select, window, |s: &mut Self, _, e: &SelectEvent<SearchableVec<VersionItem>>, _, cx| {
                 let SelectEvent::Confirm(Some(v)) = e else { return };
                 s.change_version(v.clone(), cx);
             }),
@@ -238,6 +243,9 @@ impl InstanceSheet {
             version_list: initial,
             version_select,
             pending_versions: false,
+            everything: false,
+            supported: None,
+            supported_asked: None,
             version,
             loader,
             memory,
@@ -409,8 +417,8 @@ impl InstanceSheet {
             self.name.update(cx, |s, cx| s.set_value(name.clone(), window, cx));
             self.name_auto = name;
         }
-        if !self.version_list.contains(&game) {
-            self.version_list.insert(0, game.clone());
+        if !self.version_list.iter().any(|v| v.id == game) {
+            self.version_list.insert(0, GameVersion { id: game.clone(), kind: Kind::Release });
         }
         self.version = game;
         self.loader = Loader::default();
@@ -512,21 +520,17 @@ impl InstanceSheet {
     fn load_versions(&mut self, cx: &mut Context<Self>) {
         self.versions = Load::Loading;
         cx.notify();
-        let task = cx.background_executor().spawn(async { remote::versions() });
+        let task = cx.background_executor().spawn(async { remote::catalog() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 match result {
                     Ok(list) if !list.is_empty() => {
-                        let mut list = list;
-                        if !s.version.is_empty() && !list.contains(&s.version) {
-                            list.insert(0, s.version.clone());
-                        }
+                        let newest = list.iter().find(|v| v.kind == Kind::Release).unwrap_or(&list[0]).id.clone();
                         s.version_list = list;
                         s.pending_versions = true;
                         s.versions = Load::Ready(());
                         if s.version.is_empty() {
-                            let newest = s.version_list[0].clone();
                             s.change_version(newest, cx);
                         }
                     }
@@ -534,6 +538,27 @@ impl InstanceSheet {
                     Err(e) => s.versions = Load::Failed(forms::explain_as(tr("Versionen nicht geladen."), &e)),
                 }
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn check_supported(&mut self, cx: &mut Context<Self>) {
+        let kind = self.loader.name().to_owned();
+        if !self.creating() || self.supported_asked.as_ref() == Some(&kind) {
+            return;
+        }
+        self.supported_asked = Some(kind.clone());
+        let loader = self.loader.clone();
+        let task = cx.background_executor().spawn(async move { remote::supported_versions(&loader) });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.supported_asked.as_ref() == Some(&kind) {
+                    s.supported = Some((kind, found));
+                    s.pending_versions = true;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -811,11 +836,21 @@ impl InstanceSheet {
             Load::Loading if self.version_list.is_empty() => div().h(px(control::M)).flex().items_center().child(sheet::waiting(tr("Versionen werden geladen …"), t)),
             _ => {
                 let lock = self.lock_reason();
-                let select = Select::new(&self.version_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(lock.is_some());
-                match lock {
+                let select = Select::new(&self.version_select).menu_width(px(control::VERSION_MENU)).menu_max_h(px(self.list_max)).search_placeholder(tr("Version suchen")).disabled(lock.is_some());
+                let enabled = lock.is_none();
+                let select = match lock {
                     Some(why) => sheet::unavailable_over("instance-version-locked", select, why),
                     None => div().child(select),
-                }
+                };
+                let sheet = cx.entity().downgrade();
+                let everything = picker::everything_toggle("sheet-versions-all", self.everything, enabled, move |_, cx| {
+                    let _ = sheet.update(cx, |s, cx| {
+                        s.everything = !s.everything;
+                        s.pending_versions = true;
+                        cx.notify();
+                    });
+                }, t);
+                div().flex().flex_col().gap(px(space::XS)).child(select).child(everything)
             }
         };
         if let Some(entry) = self.render_prism_entry(cx, t) {
@@ -1230,10 +1265,12 @@ impl InstanceSheet {
             p.show(&loader, &version, cx);
             p.lock(why, cx);
         });
+        self.check_supported(cx);
         if self.pending_versions {
             self.pending_versions = false;
-            let list = self.version_list.clone();
-            let at = list.iter().position(|v| *v == self.version);
+            let supported = self.supported.as_ref().filter(|(kind, _)| kind == self.loader.name()).and_then(|(_, s)| s.as_ref());
+            let list = picker::items(&self.version_list, self.everything, supported, &self.version);
+            let at = list.iter().position(|v| v.value() == &self.version);
             self.version_select.update(cx, |s, cx| {
                 s.set_items(SearchableVec::new(list), window, cx);
                 if let Some(at) = at {
@@ -1299,6 +1336,7 @@ fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: 
         loader: loader.clone(),
         memory_mb,
         jvm_args: args.split_whitespace().map(str::to_owned).collect(),
+        options: Default::default(),
         mods: if loader.takes_mods() { mods } else { Vec::new() },
     }
 }

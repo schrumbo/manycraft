@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::batch::ModRef;
+use super::options::LaunchOptions;
 use super::{paths, store};
 
 /// File holding an instance in its folder.
@@ -104,6 +105,8 @@ pub struct Instance {
     pub memory_mb: u32,
     #[serde(default)]
     pub jvm_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "LaunchOptions::is_default")]
+    pub options: LaunchOptions,
     /// The account that last played this instance alone.
     #[serde(default)]
     pub last_account: Option<Uuid>,
@@ -126,6 +129,7 @@ impl Instance {
             local_mods: Vec::new(),
             memory_mb: DEFAULT_MEMORY_MB,
             jvm_args: Vec::new(),
+            options: LaunchOptions::default(),
             last_account: None,
         }
     }
@@ -264,7 +268,11 @@ pub fn valid_id(id: &str) -> bool {
 /// Deletes the instance with its mods, configs, worlds and game folders. Callers check first that no batch uses
 /// it and no game of it runs.
 pub fn delete(instance: &Instance) -> Result<()> {
-    delete_in(&instances_dir(), instance)
+    delete_in(&instances_dir(), instance)?;
+    if instance.options.gpu.is_some() {
+        let _ = super::gpu::release(&instance.id);
+    }
+    Ok(())
 }
 
 pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
