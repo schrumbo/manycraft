@@ -92,10 +92,15 @@ fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
     serde_json::from_slice(bytes).ok()
 }
 
+/// Whether `e` from reading `bytes` means a damaged file rather than valid JSON of another shape.
+pub fn damage(bytes: &[u8], e: &serde_json::Error) -> bool {
+    bytes.is_empty() || e.is_syntax() || e.is_eof() || serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_err()
+}
+
 fn readable<T: DeserializeOwned>(bytes: &[u8], path: &Path) -> Result<Option<T>> {
     match serde_json::from_slice(bytes) {
         Ok(value) => Ok(Some(value)),
-        Err(e) if e.is_syntax() || e.is_eof() => Ok(None),
+        Err(e) if damage(bytes, &e) => Ok(None),
         Err(source) => Err(Untouched { path: path.to_owned(), source }.into()),
     }
 }
@@ -320,6 +325,18 @@ mod tests {
         assert_eq!(std::fs::read(backup_path(&path)).unwrap(), b"[7]");
         assert!(!damaged_path(&path).exists());
         assert!(recovered(&path).is_empty());
+    }
+
+    #[test]
+    fn a_cut_off_file_of_another_shape_is_damage_not_a_newer_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        put(&path, b"[1]").unwrap();
+        put(&path, b"[1,2]").unwrap();
+        std::fs::write(&path, br#"{"a":[{"id":"#).unwrap();
+        assert_eq!(load::<Doc>(&path).unwrap(), Some(vec![1]));
+        assert_eq!(std::fs::read(damaged_path(&path)).unwrap(), br#"{"a":[{"id":"#);
+        assert_eq!(recovered(&path), vec![Recovery::Restored]);
     }
 
     #[test]
