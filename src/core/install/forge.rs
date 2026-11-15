@@ -181,11 +181,11 @@ pub fn installer_path(libraries: &Path, flavor: Flavor, game: &str, version: &st
 }
 
 /// Downloads the installer into the libraries folder, checked against the SHA-1 its repository publishes.
-pub fn fetch(dl: &Downloader, libraries: &Path, flavor: Flavor, game: &str, version: &str) -> Result<PathBuf> {
+pub fn fetch(dl: &Downloader, meta: &ureq::Agent, libraries: &Path, flavor: Flavor, game: &str, version: &str) -> Result<PathBuf> {
     let path = installer_path(libraries, flavor, game, version)?;
     let rel = maven_path(&flavor.installer(game, version)).context("bad installer coordinates")?;
     let url = format!("{}{rel}", flavor.maven());
-    let sha1 = published_sha1(dl.agent(), &format!("{url}.sha1"));
+    let sha1 = published_sha1(meta, &format!("{url}.sha1"));
     dl.one(&Job::new(url, path.clone(), sha1, None).strict()).with_context(|| format!("cannot download the {} {version} installer", flavor.name()))?;
     Ok(path)
 }

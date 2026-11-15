@@ -43,6 +43,13 @@ public final class CompanionHooks {
 		return c != null && c.hidden() ? c.hiddenFramerate() : 0;
 	}
 
+	public static void audioClosed() {
+		Companion c = Companion.get();
+		if (c != null) {
+			c.audioClosed();
+		}
+	}
+
 	public static String title() {
 		Companion c = Companion.get();
 		return c == null ? null : c.title();

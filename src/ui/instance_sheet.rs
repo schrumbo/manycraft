@@ -29,7 +29,7 @@ use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
 use crate::core::modrinth::{self, Update};
 use crate::core::versions::{GameVersion, Kind};
 
-const DEFAULT_TITLES: [(&str, &str); 5] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton")];
+const DEFAULT_TITLES: [(&str, &str); 6] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton"), ("sodium", "Sodium")];
 const VERSION_WIDTH: f32 = 232.;
 const SNUG_PERCENT: u64 = 80;
 const SAVE_ERROR_MAX: f32 = 220.;

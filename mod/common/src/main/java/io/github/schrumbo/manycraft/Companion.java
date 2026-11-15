@@ -38,6 +38,7 @@ final class Companion {
 	private final PreviewService preview;
 	private final GameIdentity identity = new GameIdentity();
 	private final OptionSync options = new OptionSync();
+	private final AudioPause audio = new AudioPause();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 
@@ -87,6 +88,10 @@ final class Companion {
 	boolean hidden() {
 		BackgroundController bg = background;
 		return bg != null && bg.hidden();
+	}
+
+	void audioClosed() {
+		audio.closed();
 	}
 
 	int hiddenFramerate() {
@@ -186,6 +191,7 @@ final class Companion {
 			if (bg != null) {
 				bg.tick();
 			}
+			audio.sync(mc, bg != null && bg.hidden());
 		} catch (RuntimeException e) {
 			LOGGER.warn("tick failed", e);
 		}

@@ -585,7 +585,7 @@ pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> R
 pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
     if drive::fenced("modrinth defaults", game_version) && !drive::live() {
         std::thread::sleep(CANNED_DELAY);
-        let mut mods = vec![canned_ref("fabric-api", "Fabric API", game_version), canned_ref("lithium", "Lithium", game_version), canned_ref("ferrite-core", "FerriteCore", game_version), canned_ref("modernfix", "ModernFix", game_version)];
+        let mut mods = vec![canned_ref("fabric-api", "Fabric API", game_version), canned_ref("lithium", "Lithium", game_version), canned_ref("ferrite-core", "FerriteCore", game_version), canned_ref("modernfix", "ModernFix", game_version), canned_ref("sodium", "Sodium", game_version)];
         let mut notes = Vec::new();
         if !matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
             mods.remove(0);

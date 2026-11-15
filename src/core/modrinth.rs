@@ -14,8 +14,8 @@ use super::instance::{Instance, Loader};
 use super::{install, net, online, paths};
 
 const API: &str = "https://api.modrinth.com/v2";
-const FABRIC_DEFAULTS: [&str; 5] = ["fabric-api", "lithium", "ferrite-core", "modernfix", "krypton"];
-const FORGE_DEFAULTS: [&str; 3] = ["lithium", "ferrite-core", "modernfix"];
+const FABRIC_DEFAULTS: [&[&str]; 6] = [&["fabric-api"], &["lithium"], &["ferrite-core"], &["modernfix"], &["krypton"], &["sodium"]];
+const FORGE_DEFAULTS: [&[&str]; 4] = [&["lithium"], &["ferrite-core"], &["modernfix"], &["sodium", "embeddium"]];
 /// Modrinth project id of Fabric API, which the companion mod needs in every instance.
 pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
@@ -88,7 +88,7 @@ fn keys(loader: &Loader) -> &'static [&'static str] {
     }
 }
 
-fn defaults_for(loader: &Loader) -> &'static [&'static str] {
+fn defaults_for(loader: &Loader) -> &'static [&'static [&'static str]] {
     match loader {
         Loader::Vanilla => &[],
         Loader::Fabric(_) | Loader::Quilt(_) => &FABRIC_DEFAULTS,
@@ -564,20 +564,27 @@ fn resolve_all<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str,
 }
 
 fn defaults_from(src: &dyn Source, game_version: &str, loader: &Loader) -> Result<Defaults> {
+    let slot = |choices: &&[&str]| -> Result<Result<Vec<Entry>, String>> {
+        let mut first = None;
+        for slug in *choices {
+            match resolve_all(src, &[slug], game_version, loader) {
+                Ok((found, _)) => return Ok(Ok(found)),
+                Err(e) if is_unavailable(&e) => {
+                    first.get_or_insert_with(|| format!("skipped {slug}: {e:#}"));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Err(first.unwrap_or_default()))
+    };
+    let slots = pool()?.install(|| defaults_for(loader).par_iter().map(slot).collect::<Result<Vec<_>>>())?;
     let mut entries: Vec<Entry> = Vec::new();
     let mut seen = HashSet::new();
     let mut notes = Vec::new();
-    for slug in defaults_for(loader) {
-        match resolve_all(src, &[slug], game_version, loader) {
-            Ok((found, _)) => {
-                for entry in found {
-                    if seen.insert(entry.found.project_id.clone()) {
-                        entries.push(entry);
-                    }
-                }
-            }
-            Err(e) if is_unavailable(&e) => notes.push(format!("skipped {slug}: {e:#}")),
-            Err(e) => return Err(e),
+    for slot in slots {
+        match slot {
+            Ok(found) => entries.extend(found.into_iter().filter(|entry| seen.insert(entry.found.project_id.clone()))),
+            Err(note) => notes.push(note),
         }
     }
     check_compatible(&entries)?;
@@ -948,8 +955,8 @@ pub fn resolve_with_dependencies<S: AsRef<str>>(list: &[S], game_version: &str, 
     Ok(entries.into_iter().map(|e| e.found).collect())
 }
 
-/// For Fabric and Quilt Fabric API, Lithium, FerriteCore, ModernFix and Krypton, for Forge and NeoForge Lithium,
-/// FerriteCore and ModernFix, for Vanilla none, each with its dependencies.
+/// For Fabric and Quilt Fabric API, Lithium, FerriteCore, ModernFix, Krypton and Sodium, for Forge and NeoForge Lithium,
+/// FerriteCore, ModernFix and Sodium or else Embeddium, for Vanilla none, each with its dependencies.
 /// A default without a version for `game_version` is skipped and explained in `notes`.
 pub fn default_mods(game_version: &str, loader: &Loader) -> Result<Defaults> {
     if defaults_for(loader).is_empty() {
@@ -1233,6 +1240,7 @@ Connection: close
                 ("modmenu", fixture!("project_modmenu"), fixture!("versions_modmenu")),
                 ("iris", fixture!("project_iris"), fixture!("versions_iris")),
                 ("placeholder-api", fixture!("project_placeholder-api"), fixture!("versions_placeholder-api")),
+                ("embeddium", fixture!("project_embeddium"), fixture!("versions_embeddium")),
             ] {
                 fx.add(slug, project, versions);
             }
@@ -1300,6 +1308,8 @@ Connection: close
         Loader::Fabric(None)
     }
 
+    const FABRIC_TITLES: [&str; 5] = ["Fabric API", "Lithium", "FerriteCore", "Krypton", "Sodium"];
+
     fn titles(mods: &[ModRef]) -> Vec<&str> {
         mods.iter().map(|m| m.title.as_str()).collect()
     }
@@ -1345,8 +1355,10 @@ Connection: close
     fn defaults_differ_by_loader() {
         let fx = Fixtures::recorded();
         let quilt = defaults_from(&fx, "26.3", &Loader::Quilt(None)).unwrap();
-        assert_eq!(titles(&quilt.mods), ["Fabric API", "Lithium", "FerriteCore", "Krypton"]);
-        assert_eq!(defaults_for(&Loader::Forge(None)), ["lithium", "ferrite-core", "modernfix"]);
+        assert_eq!(titles(&quilt.mods), FABRIC_TITLES);
+        let neoforge = defaults_from(&fx, "26.3", &Loader::NeoForge(None)).unwrap();
+        assert_eq!(titles(&neoforge.mods), ["Lithium", "FerriteCore", "Sodium"]);
+        assert!(neoforge.mods.iter().all(|m| !m.file_name.contains("fabric")), "{:?}", neoforge.mods);
         assert_eq!(defaults_for(&Loader::NeoForge(None)), defaults_for(&Loader::Forge(None)));
         assert!(defaults_for(&Loader::Vanilla).is_empty());
         let vanilla = default_mods("26.3", &Loader::Vanilla).unwrap();
@@ -1450,7 +1462,7 @@ Connection: close
     fn defaults_skip_a_mod_without_a_version() {
         let fx = Fixtures::recorded();
         let defaults = defaults_from(&fx, "26.3", &fabric()).unwrap();
-        assert_eq!(titles(&defaults.mods), ["Fabric API", "Lithium", "FerriteCore", "Krypton"]);
+        assert_eq!(titles(&defaults.mods), FABRIC_TITLES);
         assert_eq!(defaults.notes.len(), 1);
         assert!(defaults.notes[0].contains("modernfix") && defaults.notes[0].contains("26.3"), "{:?}", defaults.notes);
     }
@@ -1461,9 +1473,23 @@ Connection: close
         fx.projects.retain(|(slug, _, _)| slug != "krypton");
         let defaults = defaults_from(&fx, "26.3", &fabric()).unwrap();
         assert_eq!(defaults.notes.len(), 2);
-        assert_eq!(defaults.mods.len(), 3);
+        assert_eq!(defaults.mods.len(), FABRIC_TITLES.len() - 1);
         let fx = Fixtures::synthetic(&[("fabric-api", &[("id-lithium", "incompatible")]), ("lithium", &[])]);
         assert!(defaults_from(&fx, "26.3", &fabric()).unwrap_err().to_string().contains("incompatible"));
+    }
+
+    #[test]
+    fn a_slot_takes_its_first_available_choice_and_names_the_first_when_none_is() {
+        let mut fx = Fixtures::recorded();
+        fx.projects.retain(|(slug, _, _)| slug != "sodium");
+        let without = defaults_from(&fx, "26.3", &Loader::NeoForge(None)).unwrap();
+        assert!(!titles(&without.mods).contains(&"Embeddium"));
+        assert!(without.notes.iter().any(|n| n.starts_with("skipped sodium:")), "{:?}", without.notes);
+        assert!(!without.notes.iter().any(|n| n.contains("embeddium")), "{:?}", without.notes);
+        fx.versions.push(serde_json::from_str(r#"{"id":"v-emb","project_id":"sk9rgfiA","version_number":"1","version_type":"release","date_published":"2026-01-01T00:00:00Z","game_versions":["26.3"],"loaders":["neoforge"],"files":[{"url":"https://x/embeddium.jar","filename":"embeddium.jar","primary":true,"hashes":{"sha1":"00"}}],"dependencies":[]}"#).unwrap());
+        let with = defaults_from(&fx, "26.3", &Loader::NeoForge(None)).unwrap();
+        assert_eq!(titles(&with.mods)[2], "Embeddium");
+        assert!(!with.notes.iter().any(|n| n.contains("sodium")), "{:?}", with.notes);
     }
 
     fn pinned(fx: &Fixtures, id: &str) -> ModRef {
