@@ -44,6 +44,7 @@ pub mod packs;
 pub mod paths;
 pub mod phone;
 pub mod place;
+pub mod preview;
 pub mod launchers;
 pub mod prism;
 pub mod proxy;
