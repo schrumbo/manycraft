@@ -38,6 +38,7 @@ pub enum Kind {
     ModsSwitched { instance_id: String, files: Vec<String>, on: bool, label: String },
     ModsTrashed { instance_id: String, trashed: Trashed, label: String },
     ModsUpdated { instance_id: String, updates: Vec<Update>, label: String },
+    Files { name: String, undo: super::instance_files::FileUndo },
     Edited { instance_id: String, name: String, what: Edit, before: InstanceEdit, after: InstanceEdit },
     Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
 }
@@ -274,6 +275,9 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::ModsSwitched { label, on: false, .. } => (label.clone(), trf("%@ ausgeschaltet.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
             Kind::ModsTrashed { label, .. } => (label.clone(), trf("%@ gelöscht.", &[label]), trf("%@ wurde nicht zurückgeholt.", &[label])),
             Kind::ModsUpdated { label, .. } => (label.clone(), trf("%@ aktualisiert.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Deleted { .. } } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Restored { .. } } => (name.clone(), trf("„%@“ wiederhergestellt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Files { name, undo: super::instance_files::FileUndo::Copied { .. } } => (name.clone(), trf("„%@“ kopiert.", &[name]), trf("Die Kopie von „%@“ wurde nicht entfernt.", &[name])),
             Kind::Reset { name, .. } => (name.clone(), trf("„%@“ zurückgesetzt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Edited { name, what, .. } => {
                 let done = match what {
@@ -331,6 +335,7 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::ModsSwitched { instance_id, files, on, label } => super::mod_list::undo_switch(instance_id, files, on, label, at, cx),
         Kind::ModsTrashed { instance_id, trashed, label } => super::mod_list::undo_trash(instance_id, trashed, label, at, cx),
         Kind::ModsUpdated { instance_id, updates, label } => super::mod_updates::undo_updates(instance_id, updates, label, at, cx),
+        Kind::Files { name, undo } => super::instance_files::undo(name, undo, at, cx),
         Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
         Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
     }

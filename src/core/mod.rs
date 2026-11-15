@@ -25,6 +25,7 @@ pub mod install;
 #[allow(dead_code)]
 pub mod ipc;
 pub mod launch;
+pub mod logs;
 #[allow(dead_code)]
 pub mod lock;
 pub mod migrate;
@@ -34,6 +35,7 @@ pub mod modmeta;
 pub mod modrinth;
 pub mod mrpack;
 pub mod net;
+pub mod online;
 pub mod origin;
 pub mod paths;
 pub mod phone;
@@ -45,6 +47,7 @@ pub mod scrub;
 pub mod skins;
 #[allow(dead_code)]
 pub mod settings;
+pub mod shots;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod signin_window;
 pub mod skin;
@@ -52,6 +55,8 @@ pub mod skin_change;
 pub mod still;
 pub mod store;
 pub mod sync;
+pub mod trash;
 pub mod updater;
 pub mod webauth;
 pub mod winstate;
+pub mod worlds;

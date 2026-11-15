@@ -339,6 +339,8 @@ pub fn found(i: &Game, m: &Model, words: &[String]) -> bool {
     }
     let state = if i.phase.needs_attention() {
         "braucht dich"
+    } else if matches!(i.phase, Phase::NetworkLost { .. } | Phase::NoNetwork) {
+        "Keine Verbindung"
     } else if i.phase.is_active() {
         "läuft"
     } else {
@@ -406,6 +408,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Starting { done, total } if *total > 1 => trf("Wartet %lld/%lld", &[done, total]),
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Restarting { .. } => tr("Startet neu…"),
+        Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Hauptmenü"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Versuch %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } => tr("Verbindet…"),
@@ -417,6 +420,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Banned { .. } => tr("Gesperrt"),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
+        Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
     }
 }
 
@@ -512,13 +516,18 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         (None, Some(made)) => trf("%@ · allein", &[&made.name]),
         (None, None) => String::new(),
     };
-    let solo = alone.map(|made| (made.id.clone(), made.loader.launchable()));
+    let solo = alone.map(|made| made.id.clone());
     let server = m.batch(batch).and_then(|b| b.server.clone()).filter(|s| !s.is_empty());
     let mine = || m.games.values().filter(|i| i.batch_id == batch);
     let (total, running) = (mine().count(), mine().filter(|i| i.phase.is_active()).count());
     let attention = m.attention_count(Some(batch));
     let fine = mine().filter(|i| i.phase.is_active() && !i.phase.needs_attention()).count();
-    let state = if running == 0 { tr("gestoppt") } else { trf("%lld von %lld laufen", &[&fine, &total]) };
+    let stoppable = mine().filter(|i| i.phase.stoppable()).count();
+    let state = if running == 0 && stoppable > 0 {
+        tr("Keine Verbindung")
+    } else if running == 0 {
+        tr("gestoppt")
+    } else { trf("%lld von %lld laufen", &[&fine, &total]) };
     let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let id = batch.to_owned();
     let exporting = m.batch(batch).is_some_and(|b| m.exporting.contains(&b.instance_id));
@@ -551,10 +560,10 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                     .child(attention.to_string()),
             )
         })
-        .when_some(solo.as_ref().map(|(instance, _)| instance.clone()), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
+        .when_some(solo.clone(), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
         .context_menu(move |menu, _, cx| match &solo {
-            Some((instance, launchable)) => super::sidebar::instance_menu(menu, instance, *launchable, cx),
-            None => super::sidebar::batch_menu(menu, &id, running, stopped, exporting),
+            Some(instance) => super::sidebar::instance_menu(menu, instance, cx),
+            None => super::sidebar::batch_menu(menu, &id, stoppable, stopped, exporting),
         })
         .into_any_element()
 }
@@ -855,7 +864,7 @@ fn able(keys: &[String], m: &Model) -> [usize; 5] {
     for i in keys.iter().filter_map(|k| m.games.get(k)) {
         let running = i.phase.is_running();
         n[0] += usize::from(!running && !i.stopping && i.phase != Phase::LoginNeeded);
-        n[1] += usize::from(i.phase.is_active() && !i.stopping);
+        n[1] += usize::from(i.phase.stoppable() && !i.stopping);
         n[2] += usize::from(!i.stopping && i.phase != Phase::LoginNeeded);
         n[3] += usize::from(running && !i.stopping && !matches!(i.phase, Phase::Starting { .. }));
         n[4] += usize::from(i.phase.on_server());

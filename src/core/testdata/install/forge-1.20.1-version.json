@@ -1,0 +1,186 @@
+{
+ "id": "1.20.1-forge-47.4.28",
+ "time": "2026-10-13T16:25:27+00:00",
+ "releaseTime": "2026-10-13T16:25:27+00:00",
+ "type": "release",
+ "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+ "inheritsFrom": "1.20.1",
+ "logging": {},
+ "arguments": {
+  "game": [
+   "--launchTarget",
+   "forgeclient",
+   "--fml.forgeVersion",
+   "47.4.28",
+   "--fml.mcVersion",
+   "1.20.1",
+   "--fml.forgeGroup",
+   "net.minecraftforge",
+   "--fml.mcpVersion",
+   "20230612.114412"
+  ],
+  "jvm": [
+   "-Djava.net.preferIPv6Addresses=system",
+   "-DignoreList=bootstraplauncher,securejarhandler,asm-commons,asm-util,asm-analysis,asm-tree,asm,JarJarFileSystems,client-extra,fmlcore,javafmllanguage,lowcodelanguage,mclanguage,forge-,${version_name}.jar",
+   "-DmergeModules=jna-5.10.0.jar,jna-platform-5.10.0.jar",
+   "-DlibraryDirectory=${library_directory}",
+   "-p",
+   "${library_directory}/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar${classpath_separator}${library_directory}/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar${classpath_separator}${library_directory}/org/ow2/asm/asm-commons/9.9.1/asm-commons-9.9.1.jar${classpath_separator}${library_directory}/org/ow2/asm/asm-util/9.9.1/asm-util-9.9.1.jar${classpath_separator}${library_directory}/org/ow2/asm/asm-analysis/9.9.1/asm-analysis-9.9.1.jar${classpath_separator}${library_directory}/org/ow2/asm/asm-tree/9.9.1/asm-tree-9.9.1.jar${classpath_separator}${library_directory}/org/ow2/asm/asm/9.9.1/asm-9.9.1.jar${classpath_separator}${library_directory}/net/minecraftforge/JarJarFileSystems/0.3.19/JarJarFileSystems-0.3.19.jar",
+   "--add-modules",
+   "ALL-MODULE-PATH",
+   "--add-opens",
+   "java.base/java.util.jar=cpw.mods.securejarhandler",
+   "--add-opens",
+   "java.base/java.lang.invoke=cpw.mods.securejarhandler",
+   "--add-exports",
+   "java.base/sun.security.util=cpw.mods.securejarhandler",
+   "--add-exports",
+   "jdk.naming.dns/com.sun.jndi.dns=java.naming"
+  ]
+ },
+ "libraries": [
+  {
+   "name": "cpw.mods:securejarhandler:2.1.10",
+   "downloads": {
+    "artifact": {
+     "path": "cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar",
+     "url": "https://maven.minecraftforge.net/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar",
+     "sha1": "51e6a22c6c716beb11e244bf5b8be480f51dd6b5",
+     "size": 88749
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:accesstransformers:8.0.4",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/accesstransformers/8.0.4/accesstransformers-8.0.4.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/accesstransformers/8.0.4/accesstransformers-8.0.4.jar",
+     "sha1": "272d240aa73f42195b2a68e2ebd8b701ecf41f63",
+     "size": 77756
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:eventbus:6.2.33",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/eventbus/6.2.33/eventbus-6.2.33.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/eventbus/6.2.33/eventbus-6.2.33.jar",
+     "sha1": "3fae69cfa9c5095bcc25c0a8a3ed9b26c156f922",
+     "size": 64014
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:forgespi:7.0.1",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/forgespi/7.0.1/forgespi-7.0.1.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/forgespi/7.0.1/forgespi-7.0.1.jar",
+     "sha1": "3b4972a0cdb135853dba219be61a79b22cff1309",
+     "size": 29831
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:coremods:5.2.4",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/coremods/5.2.4/coremods-5.2.4.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/coremods/5.2.4/coremods-5.2.4.jar",
+     "sha1": "e30bab269d896613e38396274711410b3a0e4b87",
+     "size": 31872
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:unsafe:0.2.0",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/unsafe/0.2.0/unsafe-0.2.0.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/unsafe/0.2.0/unsafe-0.2.0.jar",
+     "sha1": "54d7a0a5e8fdb71b973025caa46f341ae5904f39",
+     "size": 2834
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:mergetool:1.1.5:api",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/mergetool/1.1.5/mergetool-1.1.5-api.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/mergetool/1.1.5/mergetool-1.1.5-api.jar",
+     "sha1": "f3da18e12c696d35a47c82cbb2cc8b5aa15e1154",
+     "size": 2572
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:JarJarSelector:0.3.19",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/JarJarSelector/0.3.19/JarJarSelector-0.3.19.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/JarJarSelector/0.3.19/JarJarSelector-0.3.19.jar",
+     "sha1": "376cc9c8ea60720cf027c01fc033de915699801c",
+     "size": 17374
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:JarJarMetadata:0.3.19",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/JarJarMetadata/0.3.19/JarJarMetadata-0.3.19.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/JarJarMetadata/0.3.19/JarJarMetadata-0.3.19.jar",
+     "sha1": "0083feaa9b770e6ac0e96ee4fc23fa89325c5fe2",
+     "size": 15895
+    }
+   }
+  },
+  {
+   "name": "cpw.mods:bootstraplauncher:1.1.2",
+   "downloads": {
+    "artifact": {
+     "path": "cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar",
+     "url": "https://maven.minecraftforge.net/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar",
+     "sha1": "0c546e00443d8432cda6baa1c860346980742628",
+     "size": 8284
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:JarJarFileSystems:0.3.19",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/JarJarFileSystems/0.3.19/JarJarFileSystems-0.3.19.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/JarJarFileSystems/0.3.19/JarJarFileSystems-0.3.19.jar",
+     "sha1": "2464eb7d6b9ddb9db36a82cf8a95193e5c6fe020",
+     "size": 32195
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:fmlloader:1.20.1-47.4.28",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/fmlloader/1.20.1-47.4.28/fmlloader-1.20.1-47.4.28.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/fmlloader/1.20.1-47.4.28/fmlloader-1.20.1-47.4.28.jar",
+     "sha1": "ef60cc90bbcd259cb40881e459c49a7350ed2002",
+     "size": 270955
+    }
+   }
+  },
+  {
+   "name": "net.minecraftforge:fmlearlydisplay:1.20.1-47.4.28",
+   "downloads": {
+    "artifact": {
+     "path": "net/minecraftforge/fmlearlydisplay/1.20.1-47.4.28/fmlearlydisplay-1.20.1-47.4.28.jar",
+     "url": "https://maven.minecraftforge.net/net/minecraftforge/fmlearlydisplay/1.20.1-47.4.28/fmlearlydisplay-1.20.1-47.4.28.jar",
+     "sha1": "3dadce8bfe5d10799189cac6196ea1162a04b9ae",
+     "size": 170512
+    }
+   }
+  }
+ ]
+}

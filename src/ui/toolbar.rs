@@ -22,7 +22,8 @@ pub fn lead() -> f32 {
     tile::INSET - (control::M - iconsize::M) / 2.
 }
 
-fn tabular() -> FontFeatures {
+/// Font features for figures of equal width, so changing numbers do not shift their neighbours.
+pub fn tabular() -> FontFeatures {
     FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
@@ -159,7 +160,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let title = batch.and_then(|b| m.batch(b)).map(|b| b.name.clone()).unwrap_or_else(|| tr("Alle"));
     let title_w = title.chars().count() as f32 * font::TITLE3;
     let scope: Vec<_> = m.games.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
-    let running = scope.iter().filter(|i| i.phase.is_active() && !i.stopping).count();
+    let running = scope.iter().filter(|i| i.phase.stoppable() && !i.stopping).count();
     let startable = scope.iter().filter(|i| !i.phase.is_active()).count();
     let attention = m.attention_count(batch);
     let count = |f: Filter| scope.iter().filter(|i| super::grid::matches(i, None, f)).count();

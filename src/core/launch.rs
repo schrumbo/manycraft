@@ -12,6 +12,7 @@ use super::install::meta::{Env, expand, substitute};
 use super::account::{self, AccountKind};
 use super::auth;
 use super::install::{self, Installed};
+use super::instance::Loader;
 use super::paths;
 
 const LAUNCHER_NAME: &str = "Manycraft";
@@ -108,7 +109,8 @@ impl LaunchSpec {
             ("user_type", user_type.to_owned()),
             ("user_properties", "{}".to_owned()),
             ("clientid", String::new()),
-            ("version_name", installed.id.clone()),
+            ("version_name", installed.version_name.clone()),
+            ("library_directory", installed.libraries_dir.to_string_lossy().into_owned()),
             ("version_type", version_type),
             ("game_directory", self.game_dir.to_string_lossy().into_owned()),
             ("assets_root", installed.assets_dir.to_string_lossy().into_owned()),
@@ -245,7 +247,7 @@ fn run(args: &[String]) -> Result<i32> {
             println!("{}: {}/{}", p.stage.label(), p.done, p.total);
         }
     };
-    let installed = install::install(&version, None, &report)?;
+    let installed = install::install(&version, &Loader::default(), &report)?;
     println!("Minecraft {} with Fabric {}: downloaded {} files", installed.game_version, installed.loader_version, installed.downloaded);
     let game_dir = paths::instances_dir().join(format!("dev-{}", id.simple()));
     let spec = LaunchSpec {
@@ -286,6 +288,8 @@ mod tests {
             game_version: "26.3".into(),
             loader_version: "0.20.1".into(),
             id: profile.id.clone(),
+            version_name: profile.id.clone(),
+            libraries_dir: PathBuf::from("libs"),
             profile,
             java: PathBuf::from("java"),
             classpath: vec![PathBuf::from("libs/a.jar"), PathBuf::from("libs/b.jar"), PathBuf::from("versions/26.3/26.3.jar")],
@@ -424,6 +428,23 @@ mod tests {
         let shown = format!("{args:?} {spec:?} {:?}", spec.session);
         assert!(!shown.contains(TOKEN), "{shown}");
         assert!(shown.contains(REDACTED));
+    }
+
+    #[test]
+    fn forge_arguments_find_the_libraries_and_skip_the_game_jar_by_name() {
+        let vanilla: VersionJson = serde_json::from_str(include_str!("testdata/install/vanilla.json")).unwrap();
+        let forge: VersionJson = serde_json::from_str(include_str!("testdata/install/forge-1.20.1-version.json")).unwrap();
+        let mut spec = spec(None, None);
+        spec.installed.profile = merge(vanilla, forge);
+        spec.installed.version_name = "26.3".into();
+        let args = spec.arguments().unwrap();
+        let args = args.as_slice();
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        assert!(after(args, "-p").split(sep).all(|p| p.starts_with("libs/")), "{}", after(args, "-p"));
+        assert!(args.iter().any(|a| a.starts_with("-DignoreList=") && a.ends_with(",26.3.jar")));
+        assert!(args.contains(&"-DlibraryDirectory=libs".to_owned()));
+        assert_eq!(after(args, "--launchTarget"), "forgeclient");
+        assert!(args.contains(&"cpw.mods.bootstraplauncher.BootstrapLauncher".to_owned()));
     }
 
     #[test]

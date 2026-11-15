@@ -39,10 +39,15 @@ const SRV_TIMEOUT: Duration = Duration::from_secs(1);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
 const QUIT_GRACE: Duration = Duration::from_secs(5);
+const CLOSE_GRACE: Duration = Duration::from_secs(30);
 const QUIT_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
 const MIN_MEMORY_MB: u32 = 512;
 const PREVIEW_FILE: &str = "manycraft-preview.bin";
+const FML_CONFIG: &str = "fml.toml";
+const HOME_WAIT: Duration = Duration::from_secs(600);
+const HOME_SETTLE: Duration = Duration::from_secs(20);
+const EARLY_WINDOW: &str = "earlyWindowControl";
 const ICON_FILE: &str = "manycraft-icon.png";
 const TOKEN_VAR: &str = "MANYCRAFT_TOKEN";
 const PROXY_VAR: &str = "MANYCRAFT_PROXY";
@@ -147,8 +152,9 @@ fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, sibling
         }
         link(&dir.join(name), target)?;
     }
-    if let Some(jar) = companion_jar {
-        install_companion(jar, &shared.mods)?;
+    match companion_jar {
+        Some(jar) => install_companion(jar, &shared.mods)?,
+        None => drop_companion(&shared.mods),
     }
     sync::adopt_options(&shared.options, dir, siblings)?;
     copy_options(&shared.options, &dir.join(OPTIONS_FILE))?;
@@ -261,6 +267,46 @@ fn install_companion(jar: &Path, mods: &Path) -> Result<()> {
         Err(_) if dest.is_file() => Ok(()),
         result => result,
     }
+}
+
+fn drop_companion(mods: &Path) {
+    let _ = fs::remove_file(mods.join(COMPANION_FILE));
+}
+
+/// Keeps Forge and NeoForge from opening their own loading window, which would show the game before Manycraft places it.
+fn quiet_early_window(config: &Path) -> Result<()> {
+    let path = config.join(FML_CONFIG);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let quiet = early_window_off(&text);
+    if quiet != text {
+        net::write_atomic(&path, quiet.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn early_window_off(text: &str) -> String {
+    let wanted = format!("{EARLY_WINDOW} = false");
+    let mut found = false;
+    let mut out: Vec<String> = text
+        .lines()
+        .map(|l| match l.split_once('=') {
+            Some((key, _)) if key.trim() == EARLY_WINDOW => {
+                found = true;
+                wanted.clone()
+            }
+            _ => l.to_owned(),
+        })
+        .collect();
+    if !found {
+        out.push(wanted);
+    }
+    out.join("
+") + "
+"
 }
 
 /// The address of `server` ("host", "host:port", an IP or "[v6]:port"): a SRV record `_minecraft._tcp.<host>`
@@ -493,6 +539,9 @@ trait Process: Send {
     fn try_wait(&mut self) -> io::Result<Option<Option<i32>>>;
     fn kill(&mut self) -> io::Result<()>;
     fn wait(&mut self) -> io::Result<Option<i32>>;
+    fn close(&self) -> bool {
+        super::game_window::close(self.id())
+    }
 }
 
 impl Process for Child {
@@ -641,6 +690,13 @@ pub struct Prepared {
     companion_jar: Option<PathBuf>,
 }
 
+impl Prepared {
+    /// Whether the games run without the companion mod: no preview, no background mode, no swapping.
+    pub fn plain(&self) -> bool {
+        self.companion_jar.is_none()
+    }
+}
+
 /// A game an earlier manager launched that still runs and is tracked again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Adoption {
@@ -763,7 +819,8 @@ impl Fleet {
         self.ledger.is_some().then(adopt::address_file)
     }
 
-    /// Installs the target's game, then prepares and starts every account `stagger` apart. Blocks until the last one is started.
+    /// Installs the target's game, then prepares and starts every account `stagger` apart. `companion_jar` replaces the
+    /// built-in companion mod; without either the games run plain. Blocks until the last one is started.
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
     pub fn start_batch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
         let prepared = self.prepare_launch(target, accounts, companion_jar, progress)?;
@@ -776,18 +833,20 @@ impl Fleet {
     }
 
     /// Syncs the instance's mods, finds the server and installs the game, once before `start_one` launches the accounts.
-    /// Leaves the mods alone while games of the instance run, since they hold the jars open.
+    /// Leaves the mods alone while games of the instance run, since they hold the jars open. `companion_jar` replaces the
+    /// built-in companion mod for the instance's loader and game.
     pub fn prepare_launch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         let instance = &target.instance;
-        let Loader::Fabric(loader_version) = &instance.loader else {
-            bail!(super::i18n::trf("Manycraft kann %@ noch nicht starten. Das kommt mit einem der nächsten Updates.", &[&instance.loader.name()]));
-        };
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
         }
-        let server_addrs = server_addresses(target.server(), accounts, resolve_all)?;
-        let installed = install::install(&instance.game_version, loader_version.as_deref(), progress)?;
-        Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar: companion_jar.map(Path::to_path_buf) })
+        let server_addrs = server_addresses(target.server(), accounts, resolve_all, || !super::online::reachable())?;
+        let installed = install::install(&instance.game_version, &instance.loader, progress)?;
+        let companion_jar = match companion_jar {
+            Some(jar) => Some(jar.to_path_buf()),
+            None => super::companion::jar(&instance.loader, &instance.game_version)?,
+        };
+        Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar })
     }
 
     /// Prepares and starts `account` in the prepared target right away and returns its key.
@@ -954,6 +1013,13 @@ impl Fleet {
     }
 
     /// Whether the instance `key` runs.
+    /// Keeps the window of the game `key`, which runs without the companion mod, on the monitor of `home` while it
+    /// opens, in the background.
+    pub fn bring_home(&self, key: &str, home: super::place::Rect) {
+        let Some(pid) = lock(&self.running).get(key).map(|r| r.pid) else { return };
+        let _ = std::thread::Builder::new().name("bring-home".into()).spawn(move || super::game_window::bring_home(pid, home, HOME_WAIT, HOME_SETTLE));
+    }
+
     pub fn is_running(&self, key: &str) -> bool {
         lock(&self.running).get_mut(key).is_some_and(RunningInstance::poll)
     }
@@ -986,10 +1052,22 @@ impl Fleet {
         self.stop_all(&keys);
     }
 
-    /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds.
+    /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds. A game without
+    /// Manycraft's mod is asked through its window and gets longer, so it can save its world.
     pub fn stop_all(&self, keys: &[String]) {
-        let asked: Vec<&String> = keys.iter().filter(|k| self.is_running(k) && self.ipc.send(k, &ipc::ToMod::Quit).is_ok()).collect();
-        let deadline = Instant::now() + QUIT_GRACE;
+        let mut closed = false;
+        let asked: Vec<&String> = keys
+            .iter()
+            .filter(|k| self.is_running(k))
+            .filter(|k| {
+                self.ipc.send(k, &ipc::ToMod::Quit).is_ok() || {
+                    let asked = lock(&self.running).get(k.as_str()).is_some_and(|r| r.child.close());
+                    closed |= asked;
+                    asked
+                }
+            })
+            .collect();
+        let deadline = Instant::now() + if closed { CLOSE_GRACE } else { QUIT_GRACE };
         while asked.iter().any(|k| self.is_running(k)) && Instant::now() < deadline {
             std::thread::sleep(QUIT_POLL);
         }
@@ -1031,6 +1109,9 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     let instance = &target.instance;
     let game_dir = prepare(instance, account, companion_jar)?;
     require_companion_for_proxy(account, &instance.mods_dir())?;
+    if matches!(instance.loader, Loader::Forge(_) | Loader::NeoForge(_)) {
+        quiet_early_window(&instance.config_dir())?;
+    }
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
     if let Some(file) = ipc_file {
@@ -1060,7 +1141,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
 /// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
 /// resolve the name through it, still clash across batches. The lookup is skipped when all accounts have a proxy and
 /// may fail when some do.
-fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>) -> Result<Vec<SocketAddr>> {
+fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(&str) -> Result<Vec<SocketAddr>>, offline: impl Fn() -> bool) -> Result<Vec<SocketAddr>> {
     let Some(server) = server else { return Ok(Vec::new()) };
     let name = name_stand_in(server)?;
     let proxied = accounts.iter().filter(|a| a.proxy.is_some()).count();
@@ -1068,7 +1149,7 @@ fn server_addresses(server: Option<&str>, accounts: &[Account], lookup: impl Fn(
         return Ok(vec![name]);
     }
     let mut found = match lookup(server) {
-        Err(_) if proxied > 0 => Vec::new(),
+        Err(_) if proxied > 0 || offline() => Vec::new(),
         found => found.with_context(|| format!("cannot find the server {server}"))?,
     };
     found.push(name);
@@ -1209,8 +1290,8 @@ fn new_instance(name: &str, version: Option<&str>, loader: Loader, memory: Optio
     if let Some(mb) = memory {
         made.memory_mb = mb;
     }
-    if made.loader.has_companion() {
-        let defaults = super::modrinth::default_mods(&made.game_version)?;
+    if super::companion::available(&made.loader, &made.game_version) {
+        let defaults = super::modrinth::default_mods(&made.game_version, &made.loader)?;
         for note in &defaults.notes {
             println!("{note}");
         }
@@ -1431,11 +1512,8 @@ fn run_target(target: &Target, accounts: &[Account], flags: &HashMap<&str, &str>
     };
     let names: HashMap<String, String> = accounts.iter().map(|a| (target.key(a.id), a.name.clone())).collect();
     let mut live = Vec::new();
-    let companion = match flags.get("--companion") {
-        Some(path) => PathBuf::from(path),
-        None => super::companion::jar()?,
-    };
-    for (id, outcome) in fleet.start_batch(target, accounts, Some(&companion), &report)? {
+    let companion = flags.get("--companion").map(PathBuf::from);
+    for (id, outcome) in fleet.start_batch(target, accounts, companion.as_deref(), &report)? {
         let name = accounts.iter().find(|a| a.id == id).map_or("?", |a| a.name.as_str());
         match outcome {
             Ok(key) => {
@@ -1690,6 +1768,27 @@ mod tests {
     }
 
     #[test]
+    fn a_game_without_companion_drops_a_stale_one() {
+        let d = dirs();
+        let jar = d.inst.parent().unwrap().join("companion.jar");
+        fs::write(&jar, b"v1").unwrap();
+        prep(&d, Some(&jar)).unwrap();
+        fs::write(d.mods.join("other.jar"), b"mod").unwrap();
+        prep(&d, None).unwrap();
+        assert!(!d.mods.join(COMPANION_FILE).exists() && d.mods.join("other.jar").is_file());
+    }
+
+    #[test]
+    fn the_fml_loading_window_is_turned_off_and_the_rest_stays() {
+        assert_eq!(early_window_off(""), "earlyWindowControl = false\n");
+        assert_eq!(early_window_off("#c\nearlyWindowControl = true\nmaxThreads = -1\n"), "#c\nearlyWindowControl = false\nmaxThreads = -1\n");
+        assert_eq!(early_window_off("versionCheck = true"), "versionCheck = true\nearlyWindowControl = false\n");
+        let dir = tempfile::tempdir().unwrap();
+        quiet_early_window(dir.path()).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join(FML_CONFIG)).unwrap(), "earlyWindowControl = false\n");
+    }
+
+    #[test]
     fn companion_goes_into_the_shared_mods_only_when_missing_or_different() {
         let d = dirs();
         let jar = d.inst.parent().unwrap().join("companion.jar");
@@ -1815,6 +1914,10 @@ mod tests {
     }
 
     impl Process for FakeProcess {
+        fn close(&self) -> bool {
+            false
+        }
+
         fn id(&self) -> u32 {
             self.pid
         }
@@ -2259,18 +2362,20 @@ mod tests {
         let mut proxied = Account::offline("AltTwo").unwrap();
         proxied.proxy = Some("socks5://10.1.1.1:1080".into());
         let name = name_stand_in("s").unwrap();
-        assert_eq!(server_addresses(None, &[direct.clone()], found).unwrap(), []);
-        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found).unwrap(), [addr, name]);
-        assert!(server_addresses(Some("s"), &[direct.clone()], missing).is_err());
-        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found).unwrap(), [addr, name]);
-        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing).unwrap(), [name]);
+        let online = || false;
+        assert_eq!(server_addresses(None, &[direct.clone()], found, online).unwrap(), []);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], found, online).unwrap(), [addr, name]);
+        assert!(server_addresses(Some("s"), &[direct.clone()], missing, online).is_err());
+        assert_eq!(server_addresses(Some("s"), &[direct.clone()], missing, || true).unwrap(), [name]);
+        assert_eq!(server_addresses(Some("s"), &[direct.clone(), proxied.clone()], found, online).unwrap(), [addr, name]);
+        assert_eq!(server_addresses(Some("s"), &[direct, proxied.clone()], missing, online).unwrap(), [name]);
         let never = |_: &str| -> Result<Vec<SocketAddr>> { panic!("looked up on this machine") };
-        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never).unwrap(), [name]);
+        assert_eq!(server_addresses(Some("s"), &[proxied.clone()], never, online).unwrap(), [name]);
         assert_eq!(name_stand_in("S").unwrap(), name);
         assert_eq!(name_stand_in("s:25565").unwrap(), name);
         assert_ne!(name_stand_in("s:25566").unwrap(), name);
         assert_ne!(name_stand_in("t").unwrap(), name);
-        let other = server_addresses(Some("S"), &[proxied], never).unwrap();
+        let other = server_addresses(Some("S"), &[proxied], never, online).unwrap();
         let reserved = HashMap::from([("k".to_owned(), Reservation { account: Uuid::nil(), instance: "i".into(), server_addrs: vec![name] })]);
         let mut account = Account::offline("AltThree").unwrap();
         account.id = Uuid::nil();

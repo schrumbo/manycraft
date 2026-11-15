@@ -14,6 +14,7 @@ use super::actions::{AddMods, EditMods, NewBatchFromPrism, NewInstance, Reload};
 use super::batch_sheet::{Load, body_max, list_max};
 use super::drive::Mark;
 use super::forms::{self, Problem};
+use super::loader_version::{self, LoaderVersion, Picked};
 use super::mod_browser::Browser;
 use super::motion::Soft;
 use super::remote;
@@ -21,6 +22,7 @@ use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
 use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment, segmented};
 use crate::core::batch::ModRef;
+use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
 use crate::core::modrinth::Update;
@@ -102,7 +104,7 @@ pub(super) struct InstanceSheet {
     mode: Mode,
     pub(super) setup: Option<setup::Instance>,
     name: Entity<InputState>,
-    loader_version: Entity<InputState>,
+    loader_version: Entity<LoaderVersion>,
     jvm_args: Entity<InputState>,
     pub(super) browser: Browser,
     versions: Load<()>,
@@ -110,7 +112,7 @@ pub(super) struct InstanceSheet {
     version_select: Entity<SelectState<SearchableVec<String>>>,
     pending_versions: bool,
     pub(super) version: String,
-    loader: Loader,
+    pub(super) loader: Loader,
     memory: u32,
     advanced: bool,
     memory_max: u32,
@@ -173,7 +175,7 @@ impl InstanceSheet {
         let selected = (!initial.is_empty()).then(|| IndexPath::new(0));
         let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(initial.clone()), selected, window, cx).searchable(true));
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr("z. B. Technik")));
-        let loader_version = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Neueste")));
+        let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let jvm_args = cx.new(|cx| InputState::new(window, cx));
         let (browser, browser_sub) = Browser::new(window, cx);
         let prism_filter = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Instanzen filtern")));
@@ -184,8 +186,21 @@ impl InstanceSheet {
             }
         };
         let subs = vec![
+            cx.observe_global::<remote::Back>(|s, cx| {
+                if matches!(s.versions, Load::Failed(_)) {
+                    s.load_versions(cx);
+                }
+                if s.searching && s.browser.stale() {
+                    s.browser.forget_saved();
+                    s.browse_refresh(false, cx);
+                }
+            }),
             cx.subscribe(&name, changed),
-            cx.subscribe(&loader_version, changed),
+            cx.subscribe(&loader_version, |s: &mut Self, picker, _: &Picked, cx| {
+                s.loader = s.loader.with_version(picker.read(cx).pinned());
+                s.save_error = None;
+                cx.notify();
+            }),
             cx.subscribe(&jvm_args, changed),
             browser_sub,
             cx.observe(&super::model::get(cx), |_, _, cx| cx.notify()),
@@ -280,7 +295,7 @@ impl InstanceSheet {
     }
 
     pub(super) fn has_mods(&self) -> bool {
-        !self.creating() || matches!(self.loader, Loader::Fabric(_))
+        !self.creating() || self.loader.takes_mods()
     }
 
     fn load_prism(&mut self, cx: &mut Context<Self>) {
@@ -530,6 +545,7 @@ impl InstanceSheet {
             return;
         }
         let previous = std::mem::replace(&mut self.version, version);
+        self.loader = self.loader.with_version(None);
         self.rename = true;
         self.load_mods(previous, cx);
     }
@@ -552,17 +568,19 @@ impl InstanceSheet {
         self.mods_busy = Some(if touched { trf("Mods werden für %@ angepasst …", &[&version]) } else { tr("Standard-Mods werden geladen …") });
         cx.notify();
         let v = version.clone();
+        let loader = self.loader.clone();
+        let wanted = loader.clone();
         let task = cx.background_executor().spawn(async move {
             if touched {
-                remote::move_mods(&mods, &v).map(|(mods, missing)| (mods, missing.into_iter().map(|m| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&m, &v])).collect::<Vec<_>>()))
+                remote::move_mods(&mods, &v, &wanted).map(|(mods, missing)| (mods, missing.into_iter().map(|m| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&m, &v])).collect::<Vec<_>>()))
             } else {
-                remote::defaults(&v).map(|d| (d.mods, d.notes.iter().map(|n| default_note(n, &v)).collect()))
+                remote::defaults(&v, &wanted).map(|d| (d.mods, d.notes.iter().map(|n| default_note(n, &v)).collect()))
             }
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
-                if s.version != version {
+                if s.version != version || !s.loader.same_kind(&loader) {
                     return;
                 }
                 s.mods_busy = None;
@@ -599,7 +617,7 @@ impl InstanceSheet {
         }
         self.loader = loader.clone();
         self.save_error = None;
-        if self.has_mods() && self.mods.is_empty() && !self.mods_touched {
+        if self.has_mods() {
             self.load_mods(self.version.clone(), cx);
         }
         cx.notify();
@@ -622,7 +640,6 @@ impl InstanceSheet {
             &self.name.read(cx).value(),
             &self.version,
             &self.loader,
-            &self.loader_version.read(cx).value(),
             self.memory,
             &self.jvm_args.read(cx).value(),
             if self.has_mods() { self.mods.clone() } else { Vec::new() },
@@ -834,11 +851,8 @@ impl InstanceSheet {
             None => control.into_any_element(),
         };
         let mut col = div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Loader"), t)).child(div().flex().child(control));
-        if !self.loader.has_companion() {
-            col = col.child(sheet::status("info", t.secondary, trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&self.loader.name()])));
-        }
-        if !self.loader.launchable() {
-            col = col.child(sheet::status("info", t.secondary, trf("Manycraft kann %@ noch nicht starten. Das kommt mit einem der nächsten Updates.", &[&self.loader.name()])));
+        if let Some(hint) = companion_hint(&self.loader, &self.version) {
+            col = col.child(sheet::status("info", t.secondary, hint));
         }
         col
     }
@@ -884,7 +898,7 @@ impl InstanceSheet {
                 .flex()
                 .flex_col()
                 .gap(px(space::M))
-                .when(self.loader.takes_mods(), |d| d.child(labelled(tr("Loader-Version"), &self.loader_version)))
+                .when(self.loader.takes_mods(), |d| d.child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(loader_version::label(&self.loader), t)).child(self.loader_version.clone())))
                 .child(self.render_memory(over, tight, snug, cx, t))
                 .child(labelled(tr("Java-Argumente"), &self.jvm_args)),
         )
@@ -1209,6 +1223,11 @@ impl InstanceSheet {
         if window.focused(cx).is_none() {
             window.focus(&self.root, cx);
         }
+        let (loader, version, why) = (self.loader.clone(), self.version.clone(), self.lock_reason());
+        self.loader_version.update(cx, |p, cx| {
+            p.show(&loader, &version, cx);
+            p.lock(why, cx);
+        });
         if self.pending_versions {
             self.pending_versions = false;
             let list = self.version_list.clone();
@@ -1260,15 +1279,25 @@ fn name_problem(name: &str, taken: &[&str]) -> Option<String> {
     taken.iter().any(|t| t.trim().to_lowercase() == lower).then(|| trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name]))
 }
 
-fn build_edit(name: &str, version: &str, loader: &Loader, loader_version: &str, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> remote::InstanceEdit {
-    let pinned = Some(loader_version.trim().to_owned()).filter(|v| !v.is_empty());
+/// Why games of `loader` on `game` run without Manycraft's mod, or nothing when they have it.
+pub(super) fn companion_hint(loader: &Loader, game: &str) -> Option<String> {
+    if game.is_empty() || companion::available(loader, game) {
+        return None;
+    }
+    Some(match loader {
+        Loader::Vanilla => trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&loader.name()]),
+        _ => trf("Für %@ mit Minecraft %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&loader.name(), &game]),
+    })
+}
+
+fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> remote::InstanceEdit {
     remote::InstanceEdit {
         name: name.trim().to_owned(),
         game_version: version.to_owned(),
-        loader: loader.with_version(pinned),
+        loader: loader.clone(),
         memory_mb,
         jvm_args: args.split_whitespace().map(str::to_owned).collect(),
-        mods: if matches!(loader, Loader::Fabric(_)) { mods } else { Vec::new() },
+        mods: if loader.takes_mods() { mods } else { Vec::new() },
     }
 }
 
@@ -1312,7 +1341,7 @@ impl Render for InstanceSheet {
         } else if self.prism_picking {
             (tr("Aus Prism übernehmen"), Some(tr("Instanzen aus Prism Launcher. Nur Fabric-Instanzen lassen sich übernehmen.")))
         } else if self.searching {
-            (tr("Mod hinzufügen"), Some(trf("Fabric-Mods von Modrinth für Minecraft %@", &[&self.version])))
+            (tr("Mod hinzufügen"), Some(trf("%@-Mods von Modrinth für Minecraft %@", &[&self.loader.name(), &self.version])))
         } else if let Some(made) = self.setup.as_ref().filter(|_| !creating) {
             (trf("Mods von %@", &[&made.name]), None)
         } else {
@@ -1432,24 +1461,25 @@ mod tests {
     }
 
     #[test]
-    fn only_fabric_keeps_the_mods() {
-        let fabric = build_edit(" Farm ", "26.3", &Loader::Fabric(None), "", 2048, "", vec![a_mod()]);
+    fn every_mod_loader_keeps_the_mods() {
+        let fabric = build_edit(" Farm ", "26.3", &Loader::Fabric(None), 2048, "", vec![a_mod()]);
         assert_eq!(fabric.name, "Farm");
         assert_eq!(fabric.mods.len(), 1);
-        for loader in [Loader::Vanilla, Loader::Quilt(None), Loader::Forge(None), Loader::NeoForge(None)] {
-            assert!(build_edit("Farm", "26.3", &loader, "", 2048, "", vec![a_mod()]).mods.is_empty());
+        for loader in [Loader::Quilt(None), Loader::Forge(None), Loader::NeoForge(None)] {
+            assert_eq!(build_edit("Farm", "26.3", &loader, 2048, "", vec![a_mod()]).mods.len(), 1);
         }
+        assert!(build_edit("Farm", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()]).mods.is_empty());
     }
 
     #[test]
-    fn the_loader_version_is_pinned_only_when_typed() {
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), "  0.17.1 ", 2048, "", Vec::new()).loader, Loader::Fabric(Some("0.17.1".into())));
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), "   ", 2048, "", Vec::new()).loader, Loader::Fabric(None));
-        assert_eq!(build_edit("A", "26.3", &Loader::Vanilla, "1.0", 2048, "", Vec::new()).loader, Loader::Vanilla);
+    fn the_picked_loader_version_is_saved_and_vanilla_takes_no_mods() {
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(Some("0.17.1".into())), 2048, "", Vec::new()).loader, Loader::Fabric(Some("0.17.1".into())));
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, "", Vec::new()).loader, Loader::Fabric(None));
+        assert!(build_edit("A", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()]).mods.is_empty());
     }
 
     #[test]
     fn java_arguments_split_on_whitespace() {
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), "", 2048, " -Xss1M  -Dx=1 ", Vec::new()).jvm_args, ["-Xss1M", "-Dx=1"]);
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, " -Xss1M  -Dx=1 ", Vec::new()).jvm_args, ["-Xss1M", "-Dx=1"]);
     }
 }

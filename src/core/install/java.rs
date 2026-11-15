@@ -75,12 +75,12 @@ pub fn executable(os: Os) -> &'static str {
 }
 
 /// Asks Mojang which runtime `component` currently is on this platform.
-pub fn lookup(dl: &Downloader, component: &str) -> Result<Runtime> {
+pub fn lookup(agent: &ureq::Agent, component: &str) -> Result<Runtime> {
     let keys = platform_keys(Os::current(), Arch::current());
     if keys.is_empty() {
         bail!("Mojang provides no Java runtime for this platform");
     }
-    let all: HashMap<String, HashMap<String, Vec<Entry>>> = net::get_json(dl.agent(), ALL_URL)?;
+    let all: HashMap<String, HashMap<String, Vec<Entry>>> = net::get_json(agent, ALL_URL)?;
     let entry = keys.iter().find_map(|key| all.get(*key)?.get(component)?.first());
     let Some(entry) = entry else {
         bail!("no Java runtime {component} for this platform");
@@ -230,7 +230,7 @@ mod tests {
     fn finished_runtime_is_returned_without_network() {
         let dir = tempfile::tempdir().unwrap();
         fake_runtime(dir.path(), "abc123", true);
-        let dl = Downloader::new().unwrap();
+        let dl = Downloader::new(net::agent(None).unwrap()).unwrap();
         let runtime = Runtime { component: "comp".into(), manifest: Artifact { url: "http://127.0.0.1:1/m".into(), ..Artifact::default() }, sha1: "abc123".into() };
         let java = ensure(&dl, dir.path(), &runtime, &|_| {}).unwrap();
         assert!(java.is_file());

@@ -26,7 +26,7 @@ use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment, segmented}
 use crate::core::account::AccountKind;
 use crate::core::batch::{Background, Batch};
 use crate::core::i18n::{tr, trf};
-use crate::core::instance::DEFAULT_MEMORY_MB;
+use crate::core::instance::{DEFAULT_MEMORY_MB, Loader};
 use crate::core::skins;
 
 type PickRow = (Uuid, String, String, Option<PathBuf>, u8);
@@ -180,6 +180,11 @@ impl BatchSheet {
             }
         };
         let subs = vec![
+            cx.observe_global::<remote::Back>(|s, cx| {
+                if matches!(s.versions, Load::Failed(_)) {
+                    s.load_versions(cx);
+                }
+            }),
             cx.subscribe(&name, changed),
             cx.subscribe(&server, changed),
             cx.subscribe(&filter, changed),
@@ -343,7 +348,7 @@ impl BatchSheet {
             let mut edit = edit;
             if let remote::InstancePick::New { game_version, .. } = &edit.instance {
                 let game_version = game_version.clone();
-                let defaults = remote::defaults(&game_version)?;
+                let defaults = remote::defaults(&game_version, &Loader::default())?;
                 edit.instance = remote::InstancePick::New { game_version, mods: defaults.mods };
             }
             remote::save_batch(id.as_deref(), edit)

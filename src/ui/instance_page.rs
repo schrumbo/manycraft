@@ -20,7 +20,8 @@ use super::batch_sheet::Load;
 use super::mod_list::ModList;
 use super::drive::Mark;
 use super::forms::{self, Problem};
-use super::model::{self, Game};
+use super::loader_version::{self, LoaderVersion, Picked};
+use super::model::{self, Game, Phase};
 use super::motion::Soft;
 use super::remote::{self, InstanceEdit};
 use super::sheet::{self, Look};
@@ -150,18 +151,56 @@ pub fn page(id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Mods,
+    Worlds,
+    Shots,
+    Logs,
     Settings,
 }
 
-const TABS: [Tab; 2] = [Tab::Mods, Tab::Settings];
+const TABS: [Tab; 5] = [Tab::Mods, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings];
 
 impl Tab {
     fn label(self) -> String {
         match self {
             Self::Mods => tr("Mods"),
+            Self::Worlds => tr("Welten"),
+            Self::Shots => tr("Screenshots"),
+            Self::Logs => tr("Protokolle"),
             Self::Settings => tr("Einstellungen"),
         }
     }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Mods => "mods",
+            Self::Worlds => "worlds",
+            Self::Shots => "screenshots",
+            Self::Logs => "logs",
+            Self::Settings => "settings",
+        }
+    }
+}
+
+struct WantsTab(String, Tab);
+
+impl Global for WantsTab {}
+
+/// Shows the page of instance `id` on tab `key` ("worlds", "screenshots", "logs", "mods" or "settings").
+pub fn show_tab(id: &str, key: &str, cx: &mut App) {
+    let Some(tab) = TABS.into_iter().find(|t| t.key() == key) else { return };
+    cx.set_global(WantsTab(id.to_owned(), tab));
+    if !super::main_window::show_instance(id, cx) {
+        cx.remove_global::<WantsTab>();
+        return;
+    }
+    if let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// The key of the tab the instance page shows, while one is shown.
+pub fn tab_key(cx: &App) -> Option<&'static str> {
+    cx.try_global::<Page>().map(|p| p.0.read(cx).tab.key())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -213,10 +252,6 @@ fn split_args(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_owned).collect()
 }
 
-fn loader_version_of(text: &str) -> Option<String> {
-    Some(text.trim().to_owned()).filter(|v| !v.is_empty())
-}
-
 type LoaderKey = (String, String, String, Option<String>);
 
 struct Facts {
@@ -226,11 +261,13 @@ struct Facts {
     solo: Option<Uuid>,
     shown: Option<String>,
     running: bool,
+    plain: Vec<Uuid>,
 }
 
 struct InstancePage {
     id: String,
     tab: Tab,
+    entered: bool,
     advanced: bool,
     versions: Load<()>,
     version_list: Vec<String>,
@@ -239,7 +276,7 @@ struct InstancePage {
     select_target: Option<String>,
     select_applied: Option<(String, u64)>,
     jvm: Entity<InputState>,
-    loader_version: Entity<InputState>,
+    loader_version: Entity<LoaderVersion>,
     name: Entity<InputState>,
     renaming: bool,
     rename_saving: bool,
@@ -268,7 +305,7 @@ impl InstancePage {
     fn new(id: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let version_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
         let jvm = cx.new(|cx| InputState::new(window, cx));
-        let loader_version = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Neueste")));
+        let loader_version = cx.new(|cx| LoaderVersion::new(window, cx));
         let name = cx.new(|cx| InputState::new(window, cx));
         let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| {
             if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
@@ -276,9 +313,19 @@ impl InstancePage {
             }
         };
         let subs = vec![
+            cx.observe_global::<remote::Back>(|s, cx| {
+                if matches!(s.versions, Load::Failed(_)) {
+                    s.load_versions(cx);
+                }
+            }),
             cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
             cx.subscribe(&jvm, committed),
-            cx.subscribe(&loader_version, committed),
+            cx.subscribe(&loader_version, |s: &mut Self, picker, _: &Picked, cx| {
+                if s.instance(cx).is_some_and(|made| made.loader.takes_mods()) {
+                    let pinned = picker.read(cx).pinned();
+                    s.enqueue(Job::Save(Change::LoaderVersion(pinned)), cx);
+                }
+            }),
             cx.subscribe_in(&name, window, |s: &mut Self, _, e: &InputEvent, window, cx| match e {
                 InputEvent::PressEnter { .. } => {
                     s.commit_rename(cx);
@@ -305,6 +352,7 @@ impl InstancePage {
         let mut page = Self {
             id: id.to_owned(),
             tab: Tab::Mods,
+            entered: true,
             advanced: false,
             versions: Load::Loading,
             version_list: Vec::new(),
@@ -348,6 +396,7 @@ impl InstancePage {
         self.id = id.to_owned();
         self.mods.update(cx, |m, cx| m.bind(id, window, cx));
         self.hold_mods(cx);
+        self.entered = true;
         self.renaming = false;
         self.rename_saving = false;
         self.rename_error = None;
@@ -427,11 +476,13 @@ impl InstancePage {
         let made = m.instance(&self.id)?.clone();
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
-        let solo = super::state::solo_account(m, &made);
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
+        let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
+        let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
+        let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
         let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-        Some(Facts { made, batches, accounts, solo, shown, running })
+        Some(Facts { made, batches, accounts, solo, shown, running, plain })
     }
 
     fn instance(&self, cx: &App) -> Option<Instance> {
@@ -496,26 +547,21 @@ impl InstancePage {
         }
         let shown = (made.id.clone(), made.jvm_args.join(" "), made.loader.version().unwrap_or_default().to_owned());
         if self.synced.as_ref() != Some(&shown) {
-            let (jvm, version) = (shown.1.clone(), shown.2.clone());
+            let jvm = shown.1.clone();
             self.synced = Some(shown);
             self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
-            self.loader_version.update(cx, |s, cx| s.set_value(version, window, cx));
         }
+        self.loader_version.update(cx, |p, cx| p.show(&made.loader, &made.game_version, cx));
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {
-        let Some((id, jvm, version)) = self.synced.clone() else { return };
+        let Some((id, jvm, _)) = self.synced.clone() else { return };
         if id != self.id {
             return;
         }
         let args = split_args(&self.jvm.read(cx).value());
         if args != split_args(&jvm) {
             self.enqueue(Job::Save(Change::JvmArgs(args)), cx);
-        }
-        let Some(made) = self.instance(cx).filter(|made| !matches!(made.loader, Loader::Vanilla)) else { return };
-        let pinned = loader_version_of(&self.loader_version.read(cx).value());
-        if pinned != loader_version_of(&version) && made.loader.version() == loader_version_of(&version).as_deref() {
-            self.enqueue(Job::Save(Change::LoaderVersion(pinned)), cx);
         }
     }
 
@@ -742,8 +788,8 @@ impl InstancePage {
                 }))
                 .child(made.name.clone())
                 .context_menu({
-                    let (id, launchable) = (made.id.clone(), made.loader.launchable());
-                    move |menu, window, cx| super::widgets::menu_of("instance-title", super::sidebar::instance_menu(menu, &id, launchable, cx), window, cx)
+                    let id = made.id.clone();
+                    move |menu, window, cx| super::widgets::menu_of("instance-title", super::sidebar::instance_menu(menu, &id, cx), window, cx)
                 })
                 .into_any_element()
         };
@@ -790,15 +836,17 @@ impl InstancePage {
             (None, Some(name)) => (trf("Spielen als %@", &[name]), Some(Box::new(PlayInstance { instance: made.id.clone(), account: f.solo.map(|a| a.to_string()) }))),
             (None, None) => (tr("Spielen"), None),
         };
-        if !made.loader.launchable() {
-            return sheet::button_unless("play", label, None, Look::Primary, Some(trf("Manycraft kann %@ noch nicht starten.", &[&made.loader.name()]).into()), false, t).into_any_element();
-        }
         let rings = super::theme::rings(cx);
-        let (instance, accounts, current) = (made.id.clone(), f.accounts.clone(), f.solo);
+        let (instance, accounts, current, plain) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone());
         let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
             for (account, name) in &accounts {
-                menu = menu.menu_with_check(name.clone(), current == Some(*account), Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) }));
+                let action = Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) });
+                menu = if plain.contains(account) {
+                    menu.menu_element_with_disabled(action, true, super::palette::menu_row(name.clone(), Some(tr("Läuft · ohne Vorschau")), true))
+                } else {
+                    menu.menu_with_check(name.clone(), current == Some(*account), action)
+                };
             }
             menu
         };
@@ -894,6 +942,7 @@ impl InstancePage {
         let segments = TABS.iter().enumerate().map(|(n, tab)| segment(("instance-tab", n), tab.label(), *tab == self.tab, true, t));
         let pick = cx.listener(|s, n: &usize, _, cx| {
             if let Some(tab) = TABS.get(*n) {
+                s.entered |= s.tab != *tab;
                 s.tab = *tab;
                 s.scroll.set_offset(point(px(0.), px(0.)));
                 cx.notify();
@@ -914,6 +963,8 @@ impl InstancePage {
         let busy = self.switching_now();
         let blocked = busy || f.running;
         let why = if busy { Some(tr("Warte, bis die Umstellung fertig ist.")) } else { f.running.then(|| tr("Stoppe zuerst die laufenden Spiele.")) };
+        let lock = why.clone();
+        self.loader_version.update(cx, |p, cx| p.lock(lock, cx));
         let locked = |id: &'static str, control: AnyElement| match &why {
             Some(why) => sheet::unavailable_over(id, control, why.clone()).into_any_element(),
             None => control,
@@ -1065,7 +1116,7 @@ impl InstancePage {
                 .flex_col()
                 .gap(px(space::M))
                 .child(labelled(tr("Java-Argumente"), &self.jvm))
-                .when(!matches!(made.loader, Loader::Vanilla), |d| d.child(labelled(tr("Loader-Version"), &self.loader_version))),
+                .when(made.loader.takes_mods(), |d| d.child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(loader_version::label(&made.loader), t)).child(self.loader_version.clone()))),
         )
     }
 
@@ -1111,7 +1162,7 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
             edit.game_version.clone_from(version);
             edit.loader = edit.loader.with_version(None);
             if edit.loader.takes_mods() && !edit.mods.is_empty() {
-                let (mods, gone) = remote::move_mods(&edit.mods, version)?;
+                let (mods, gone) = remote::move_mods(&edit.mods, version, &edit.loader)?;
                 edit.mods = mods;
                 missing = gone.into_iter().map(|title| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&title, version])).collect();
             }
@@ -1129,6 +1180,13 @@ impl Render for InstancePage {
         let t = Theme::get(cx);
         let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
+        if let Some(WantsTab(id, tab)) = cx.try_global::<WantsTab>()
+            && *id == self.id
+        {
+            self.entered |= self.tab != *tab;
+            self.tab = *tab;
+            cx.remove_global::<WantsTab>();
+        }
         self.sync(&f.made, window, cx);
         self.check_loader(&f.made, cx);
         if cx.try_global::<WantsRename>().is_some_and(|w| w.0 == self.id) {
@@ -1146,12 +1204,23 @@ impl Render for InstancePage {
             });
         }
         let header = self.header(&f, cx, &t);
-        let hint = (!f.made.loader.has_companion()).then(|| sheet::status("info", t.secondary, trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&f.made.loader.name()])));
-        let content = match self.tab {
-            Tab::Mods => self.render_mods(&f, cx, &t),
-            Tab::Settings => self.render_settings(&f, cx, &t).into_any_element(),
+        let hint = super::instance_sheet::companion_hint(&f.made.loader, &f.made.game_version).map(|hint| sheet::status("info", t.secondary, hint));
+        let fresh = std::mem::take(&mut self.entered);
+        let files = match self.tab {
+            Tab::Worlds => Some(super::instance_worlds::view(&self.id, fresh, window, cx)),
+            Tab::Shots => Some(super::instance_shots::view(&self.id, fresh, window, cx)),
+            Tab::Logs => Some(super::instance_logs::view(&self.id, fresh, window, cx)),
+            Tab::Mods | Tab::Settings => None,
         };
         let error = self.error.clone().filter(|_| self.tab != Tab::Settings).map(|e| sheet::problem("instance-error", "circle-alert", t.danger_text, &e, self.details.contains("instance-error"), cx.listener(|s, _, _, cx| s.toggle("instance-error", cx)), &t));
+        if let Some(files) = files {
+            let body = div().size_full().max_w(px(PAGE_MAX)).px(px(space::XL)).py(px(space::L)).flex().flex_col().gap(px(space::M)).children(self.batch_links(&f, &t)).children(hint).child(self.tabs(cx, &t)).children(error).child(div().flex_1().min_h_0().child(files));
+            return root.flex().flex_col().child(header).child(div().id("instance-body").flex_1().min_h_0().flex().justify_center().child(body)).into_any_element();
+        }
+        let content = match self.tab {
+            Tab::Settings => self.render_settings(&f, cx, &t).into_any_element(),
+            _ => self.render_mods(&f, cx, &t),
+        };
         let body = div().w_full().max_w(px(PAGE_MAX)).px(px(space::XL)).py(px(space::L)).flex().flex_col().gap(px(space::M)).children(self.batch_links(&f, &t)).children(hint).child(self.tabs(cx, &t)).children(error).child(content);
         let scroller = div().id("instance-body").flex_1().min_h_0();
         let scroller = if self.tab == Tab::Mods && f.made.loader.takes_mods() { scroller.flex().justify_center().child(body.h_full()) } else { scroller.overflow_y_scroll().track_scroll(&self.scroll).child(div().w_full().flex().justify_center().child(body)) };
@@ -1161,7 +1230,7 @@ impl Render for InstancePage {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, InstanceEdit, Loader, ModRef, after, loader_version_of, mods_after_loader, split_args};
+    use super::{Change, InstanceEdit, Loader, ModRef, after, mods_after_loader, split_args};
     use crate::core::instance::Instance;
 
     fn mod_ref(id: &str) -> ModRef {
@@ -1219,12 +1288,6 @@ mod tests {
         assert_eq!(split_args("  -Xss1m \t -XX:+UseZGC\n"), ["-Xss1m", "-XX:+UseZGC"]);
         assert!(split_args("   ").is_empty());
         assert_eq!(split_args("-Dname=Müller"), ["-Dname=Müller"]);
-    }
-
-    #[test]
-    fn an_empty_loader_version_means_the_newest() {
-        assert_eq!(loader_version_of("  "), None);
-        assert_eq!(loader_version_of(" 0.17.2 "), Some("0.17.2".into()));
     }
 
     #[test]
