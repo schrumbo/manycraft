@@ -42,8 +42,17 @@ pub enum Page {
 pub enum Filter {
     All,
     Attention,
+    /// What needs attention, narrowed to one kind of work.
+    Need(model::Need),
     Running,
     Stopped,
+}
+
+impl Filter {
+    /// The filter the toolbar shows as picked: a kind of work counts as what needs attention.
+    pub fn base(self) -> Self {
+        if let Filter::Need(_) = self { Filter::Attention } else { self }
+    }
 }
 
 pub struct MainWindow {
@@ -457,7 +466,14 @@ impl Render for MainWindow {
                 },
                 None => {
                     let error = model::get(cx).read(cx).error.clone();
+                    if let Filter::Need(need) = self.filter
+                        && !model::get(cx).read(cx).needs(batch.as_deref()).iter().any(|(n, _)| *n == need)
+                    {
+                        self.filter = Filter::Attention;
+                    }
                     let fit = self.fit_line(batch.as_deref(), cx).filter(|_| error.is_none());
+                    let outages = super::needs::outages(batch.as_deref(), &t, cx);
+                    let chips = super::needs::chips(self, batch.as_deref(), cx);
                     div()
                         .size_full()
                         .flex()
@@ -465,6 +481,8 @@ impl Render for MainWindow {
                         .child(super::toolbar::render(self, batch.as_deref(), window, cx))
                         .children(error.map(|e| notice(e, &t, cx)))
                         .children(fit.map(|line| fit_note(line, &t)))
+                        .children(outages)
+                        .children(chips)
                         .child(div().relative().flex_1().min_h_0().child(super::grid::render(self, batch.as_deref(), window, cx)).children(super::grid::selection_bar(self, window, cx)))
                         .into_any_element()
                 }
@@ -550,6 +568,11 @@ impl Render for MainWindow {
                     return;
                 }
                 this.grid.select_all();
+                window.focus(&this.grid.focus, cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, a: &super::actions::ShowHistory, window, cx| {
+                this.grid.toggle_history(&a.0);
                 window.focus(&this.grid.focus, cx);
                 cx.notify();
             }))

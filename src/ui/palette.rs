@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway,
+    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectMany, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway,
     AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
 };
 use super::drive::Mark;
@@ -391,7 +391,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             [one] => m.games.get(one).map(|i| i.name.clone()),
             many => Some(trf("%lld Accounts", &[&many.len()])),
         };
-        let n = super::grid::offers(&chosen, m).map(|o| o.3);
+        let n = super::grid::offers(&chosen, m).map(|o| o.able);
         let several = chosen.len() > 1;
         for (icon, label, action, able) in [
             ("play", tr("Ausgewählte starten"), Box::new(StartSelected) as Box<dyn Action>, n[0] > 0),
@@ -401,6 +401,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             ("message-square", tr("Nachricht senden…"), Box::new(MessageSelected), several && n[4] > 0),
             ("x", tr("Auswahl aufheben"), Box::new(ClearSelection), true),
             ("folder-open", tr("Spielordner öffnen"), Box::new(OpenGameFolder(chosen[0].clone())), !several),
+            ("rotate-ccw-clock", tr("Verlauf"), Box::new(super::actions::ShowHistory(chosen[0].clone())), !several),
         ] {
             if able {
                 out.push(entry(Group::Selection, icon, label, detail.clone(), action, cx));
@@ -449,6 +450,23 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     ] {
         if able {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
+        }
+    }
+    let scope = if let Page::Grid(batch) = &this.page { batch.clone() } else { None };
+    for (need, count, fix) in super::needs::fixes(scope.as_deref(), m) {
+        if let Some((label, action)) = fix {
+            let (_, _, icon) = super::needs::look(need, &Theme::get(cx));
+            out.push(entry(Group::Commands, icon, label, Some(super::needs::label(need, count)), action, cx));
+        }
+    }
+    let outages: Vec<String> = match scope.as_deref() {
+        Some(b) => vec![b.to_owned()],
+        None => m.batches.iter().map(|b| b.id.clone()).collect(),
+    };
+    for id in outages {
+        if let Some(outage) = m.outage(&id) {
+            let name = m.batch(&id).map(|b| b.name.clone());
+            out.push(entry(Group::Commands, "refresh-cw", tr("Jetzt alle verbinden"), Some(super::needs::outage_line(&outage, name.as_deref(), m)), Box::new(ReconnectMany(outage.keys)), cx));
         }
     }
     if let Some(newest) = super::undo::newest(cx) {

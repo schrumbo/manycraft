@@ -171,8 +171,8 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         None => (Box::new(StartAll), Box::new(StopAll)),
     };
     let filters = [(Filter::All, tr("Alle")), (Filter::Attention, tr("Brauchen dich")), (Filter::Running, tr("Läuft")), (Filter::Stopped, tr("Gestoppt"))];
-    let picked_label = filters.iter().find(|(f, _)| *f == this.filter).map(|(_, l)| l.clone()).unwrap_or_default();
-    let picked_count = count(this.filter);
+    let picked_label = filters.iter().find(|(f, _)| *f == this.filter.base()).map(|(_, l)| l.clone()).unwrap_or_default();
+    let picked_count = count(this.filter.base());
     let counts: Vec<(Filter, String, usize)> = filters.iter().map(|(f, label)| (*f, label.clone(), count(*f))).collect();
     let filter_segments = filters
         .iter()
@@ -181,7 +181,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             label: label.clone(),
             count: count(*f),
             loud: *f == Filter::Attention && attention > 0,
-            selected: this.filter == *f,
+            selected: this.filter.base() == *f,
         })
         .collect();
     let picks = [Filter::All, Filter::Attention, Filter::Running, Filter::Stopped];
@@ -191,7 +191,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     let segments = space::XXS * 2.
         + space::XXS * (counts.len() - 1) as f32
         + counts.iter().map(|(f, label, n)| segment_w(label, *n, *n > 0 || *f != Filter::Attention)).sum::<f32>();
-    let suffix = if attention > 0 && this.filter != Filter::Attention { space::XS + text_w(&trf("%lld brauchen dich", &[&attention]), font::CAPTION) } else { 0. };
+    let suffix = if attention > 0 && this.filter.base() != Filter::Attention { space::XS + text_w(&trf("%lld brauchen dich", &[&attention]), font::CAPTION) } else { 0. };
     let menu = space::S * 2. + text_w(&picked_label, font::CALLOUT) + space::XS + text_w(&picked_count.to_string(), font::CAPTION) + suffix + space::XS + iconsize::XS;
     let labelled = |label: &str| space::M * 2. + iconsize::S + space::XS + text_w(label, font::BODY);
     let widths = Widths {
@@ -203,7 +203,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
     };
     let Plan { search: search_w, menu: compact_filter, icons: compact } = plan(this.content_width(window), &widths);
     let filter = if compact_filter {
-        let current = this.filter;
+        let current = this.filter.base();
         let grid_focus = this.grid.focus.clone();
         Button::new("filter")
             .ghost()
@@ -213,8 +213,8 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
             .px(px(space::S))
             .gap(px(space::XS))
             .child(div().text_size(px(font::CALLOUT)).font_weight(FontWeight::MEDIUM).text_color(t.primary).child(picked_label))
-            .child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(if this.filter == Filter::Attention && attention > 0 { t.attention_text } else { t.secondary }).child(picked_count.to_string()))
-            .when(attention > 0 && this.filter != Filter::Attention, |b| {
+            .child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(if this.filter.base() == Filter::Attention && attention > 0 { t.attention_text } else { t.secondary }).child(picked_count.to_string()))
+            .when(attention > 0 && this.filter.base() != Filter::Attention, |b| {
                 b.child(div().text_size(px(font::CAPTION)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(t.attention_text).child(trf("%lld brauchen dich", &[&attention])))
             })
             .child(icon("chevron-down", iconsize::XS, t.tertiary))
@@ -224,7 +224,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 for (f, label, n) in counts.clone() {
                     let action: Box<dyn Action> = match f {
                         Filter::All => Box::new(FilterAll),
-                        Filter::Attention => Box::new(FilterAttention),
+                        Filter::Attention | Filter::Need(_) => Box::new(FilterAttention),
                         Filter::Running => Box::new(FilterRunning),
                         Filter::Stopped => Box::new(FilterStopped),
                     };

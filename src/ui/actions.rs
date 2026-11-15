@@ -79,6 +79,11 @@ pub struct EditBatch(pub String);
 #[action(namespace = manycraft)]
 pub struct SignInAgain(pub String);
 
+/// Signs these Microsoft accounts in again, one after another, each through its own proxy.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct SignInAgainEach(pub Vec<String>);
+
 /// Opens the skin sheet of this Microsoft account (id).
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
@@ -120,10 +125,20 @@ pub struct StopMany(pub Vec<String>);
 #[action(namespace = manycraft)]
 pub struct RestartMany(pub Vec<String>);
 
-/// Joins the last server again on each of these instances that runs.
+/// Joins the last server again on each of these instances that runs, one after another.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
 pub struct ReconnectMany(pub Vec<String>);
+
+/// Opens or closes the history of this instance's tile.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ShowHistory(pub String);
+
+/// Respawns the dead player of each of these instances.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct RespawnMany(pub Vec<String>);
 
 /// Sends one chat line or command to each of these instances that is on a server.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]

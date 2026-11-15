@@ -128,7 +128,7 @@ pub enum Event {
     /// Stops the running ones of these games and starts them all again, those that ran once they are down.
     Restart(Vec<String>),
     Reconnect(String),
-    /// Reconnects these games, leaving out banned ones.
+    /// Reconnects these games one after another, leaving out banned ones and those without a process.
     ReconnectMany(Vec<String>),
     Respawn(String),
     Play(String),

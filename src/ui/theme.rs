@@ -91,6 +91,8 @@ pub mod tile {
     pub const WORDLESS: f32 = 240.;
     /// Height of the overlay strip at the top of a tile.
     pub const BAR: f32 = 28.;
+    /// Height of the line under the strip that says why an account dropped.
+    pub const REASON: f32 = 16.;
     /// Height of the dark gradient that carries the overlay strip.
     pub const BAR_SHADE: f32 = 44.;
     /// The account chip in the overlay strip.
@@ -103,6 +105,12 @@ pub mod tile {
     pub const INSET: f32 = 16.;
     /// Width of the selection, hover and attention outline inside a tile.
     pub const RING: f32 = 2.;
+    /// Width of the history popover a tile opens with Space.
+    pub const HISTORY: f32 = 300.;
+    /// Events the history popover lists.
+    pub const HISTORY_EVENTS: usize = 5;
+    /// Width of the time column in the history popover.
+    pub const HISTORY_WHEN: f32 = 92.;
     /// How bright the preview stays behind an account that needs work.
     pub const DIMMED: f32 = 0.7;
     /// The status dot in the overlay strip.
@@ -125,6 +133,8 @@ pub mod shell {
     pub const TOOLBAR: f32 = 48.;
     /// Height of the quiet notice line under the toolbar.
     pub const NOTICE: f32 = 32.;
+    /// Height of the row of attention kinds under the toolbar.
+    pub const NEEDS: f32 = 44.;
     pub const ROW: f32 = 28.;
     /// Widths the toolbar's search field steps down through as room shrinks; only the first keeps the full placeholder.
     pub const SEARCH: f32 = 240.;
@@ -372,6 +382,8 @@ pub struct Theme {
     pub on_accent: Hsla,
     /// The aqua behind selected rows and chips; text and icons on it use `accent_text`.
     pub highlight: Hsla,
+    /// The ring around the selected tiles, in place of the accent ring.
+    pub selection_ring: Hsla,
     /// An account that needs work. Never the accent, so it stands out from selection and actions.
     pub attention: Hsla,
     pub attention_text: Hsla,
@@ -430,6 +442,7 @@ impl Theme {
             accent_text: if dark { c(0xA0E0EF) } else { c(0x005A9C) },
             on_accent: if dark { c(0x0E1B2C) } else { c(0xFFFFFF) },
             highlight: c(0x60C1E5),
+            selection_ring: if dark { c(0x60C1E5) } else { c(0x005A9C) },
             attention: if dark { c(0xFFB020) } else { c(0xC77800) },
             attention_text: if dark { c(0xFFB020) } else { c(0x8A5200) },
             on_attention: c(0x0E1B2C),

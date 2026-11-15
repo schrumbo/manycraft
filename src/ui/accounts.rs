@@ -14,7 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMicrosoft, ChangeSkin, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
+use super::actions::{AddAccount, AddMicrosoft, ChangeSkin, Reload, SignInAgain, SignInAgainEach, SignInEach, UndoRemoveAccount};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::identity;
@@ -57,6 +57,25 @@ pub fn init(cx: &mut App) {
         if let Some(account) = account.filter(|a| a.kind == AccountKind::Microsoft) {
             sheet::in_window(cx, move |window, cx| open_add(Some(account), false, Vec::new(), window, cx));
         }
+    });
+    cx.on_action(|action: &SignInAgainEach, cx| {
+        let m = super::model::get(cx).read(cx);
+        let mut accounts: Vec<Account> = action.0.iter().filter_map(|id| Uuid::parse_str(id).ok()).filter_map(|id| m.account(id)).filter(|a| a.kind == AccountKind::Microsoft).cloned().collect();
+        if accounts.is_empty() {
+            return;
+        }
+        let first = accounts.remove(0);
+        sheet::in_window(cx, move |window, cx| {
+            if sheet::busy(window, cx) {
+                return;
+            }
+            let view = cx.new(|cx| {
+                let mut sheet = AddAccountSheet::new(Some(first), Vec::new(), window, cx);
+                sheet.later = accounts;
+                sheet
+            });
+            sheet::show(view, sheet::NARROW, window, cx);
+        });
     });
 }
 
@@ -279,6 +298,7 @@ struct AddAccountSheet {
     save_error: Option<Problem>,
     details: bool,
     queue: Vec<String>,
+    later: Vec<Account>,
     added: Vec<String>,
     copied: Option<Copied>,
     windowed: bool,
@@ -331,6 +351,7 @@ impl AddAccountSheet {
             save_error: None,
             details: false,
             queue,
+            later: Vec::new(),
             added: Vec::new(),
             copied: None,
             windowed: false,
@@ -376,7 +397,9 @@ impl AddAccountSheet {
     }
 
     fn skip(&mut self, cx: &mut Context<Self>) {
-        if !self.queue.is_empty() {
+        if self.again.is_some() && !self.later.is_empty() {
+            self.again = Some(self.later.remove(0));
+        } else if !self.queue.is_empty() {
             self.queue.remove(0);
         }
         self.start(self.via, cx);
@@ -434,7 +457,11 @@ impl AddAccountSheet {
             SignIn::Done(name) => {
                 cx.dispatch_action(&Reload);
                 if self.again.is_some() {
-                    return self.finish(cx);
+                    if self.later.is_empty() {
+                        return self.finish(cx);
+                    }
+                    self.again = Some(self.later.remove(0));
+                    return self.start_microsoft(cx);
                 }
                 self.private_left_open = self.opened_private;
                 self.queue.retain(|n| !n.eq_ignore_ascii_case(&name));
@@ -748,7 +775,7 @@ impl AddAccountSheet {
                 more_lines = match next {
                     Some(next) => {
                         let rest = self.queue.len();
-                        more_lines.child(div().line_clamp(2).text_size(px(font::BODY)).text_color(t.primary).child(if rest == 1 { trf("Als Nächstes: %@. Das ist der letzte Prism-Account.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }))
+                        more_lines.child(div().line_clamp(2).text_size(px(font::BODY)).text_color(t.primary).child(if rest == 1 { trf("Als Nächstes: %@. Das ist das letzte Konto.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }))
                     }
                     None => more_lines.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."))),
                 };
@@ -766,7 +793,7 @@ impl AddAccountSheet {
                     SignInError::Other(p) => p.detail.clone(),
                     _ => None,
                 };
-                let skip = (self.queue.len() > 1 && self.again.is_none()).then(|| div().flex().child(sheet::button("skip", tr("Überspringen"), None, Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.skip(cx)))));
+                let skip = ((self.queue.len() > 1 && self.again.is_none()) || (self.again.is_some() && !self.later.is_empty())).then(|| div().flex().child(sheet::button("skip", tr("Überspringen"), None, Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.skip(cx)))));
                 let to_browser = matches!(e, SignInError::Closed).then(|| div().flex().ml(px(-space::S)).child(sheet::button("use-browser", tr("Im Browser anmelden"), Some("external-link"), Look::Plain, false, false, t).on_click(cx.listener(|s, _, _, cx| s.start(Via::Browser, cx)))));
                 if offline {
                     trailing.push(sheet::button("to-offline", tr("Offline-Konto hinzufügen"), None, Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))).into_any_element());
@@ -829,7 +856,7 @@ impl Render for AddAccountSheet {
         let (title, subtitle) = match (&self.step, &self.again) {
             (Step::Microsoft(_), Some(a)) => (tr("Erneut anmelden"), Some(a.name.clone())),
             (Step::Microsoft(Ms::Added(_)), None) => (trf("Konto %lld hinzugefügt", &[&self.added.len()]), None),
-            (Step::Microsoft(_), None) => (tr("Mit Microsoft anmelden"), self.queue.first().map(|n| trf("Für das Prism-Konto „%@“", &[n]))),
+            (Step::Microsoft(_), None) => (tr("Mit Microsoft anmelden"), self.queue.first().map(|n| trf("Für das Konto „%@“", &[n]))),
             (Step::Offline, _) => (tr("Offline-Konto"), Some(tr("Ohne Anmeldung, nur mit Namen. Für Server ohne Online-Mode."))),
             (Step::Choose, _) => (tr("Account hinzufügen"), None),
         };
