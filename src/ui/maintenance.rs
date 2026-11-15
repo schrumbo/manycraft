@@ -49,13 +49,14 @@ fn ask_reset(id: &str, window: &mut Window, cx: &mut App) {
     } else {
         tr("Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
     };
-    let id = id.to_owned();
-    sheet::ask(
+    let (id, blocked_id) = (id.to_owned(), id.to_owned());
+    sheet::ask_blocked(
         window,
         cx,
         trf("„%@“ zurücksetzen?", &[&made.name]),
         message,
         tr("Zurücksetzen"),
+        move |cx| running(&blocked_id, cx).then(|| tr("Stoppe zuerst die laufenden Spiele.")),
         move |_, cx| reset(&id, cx),
     );
 }

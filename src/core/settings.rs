@@ -3,13 +3,12 @@
 use std::path::Path;
 use std::sync::{Mutex, OnceLock, RwLock};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::{net, paths, phone};
+use super::{paths, phone, store};
 
 const FILE: &str = "settings.json";
-const BACKUP: &str = "settings.json.bak";
 const MAX_ATTEMPTS: u32 = 100;
 const MAX_SECS: u64 = 24 * 3600;
 
@@ -121,36 +120,22 @@ impl Settings {
     }
 }
 
-/// Loads `settings.json` from the data folder; an absent file gives the defaults, an unreadable one an error.
+/// Loads `settings.json` from the data folder; an absent file gives the defaults, a damaged one its backup or the defaults.
 pub fn load() -> Result<Settings> {
     load_from(&paths::data_dir())
 }
 
 fn load_from(dir: &Path) -> Result<Settings> {
-    let path = dir.join(FILE);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
-    };
-    let settings: Settings = match serde_json::from_slice(&bytes) {
-        Ok(settings) => settings,
-        Err(e) => {
-            let kept = net::write_atomic(&dir.join(BACKUP), &bytes).is_ok();
-            let note = if kept { format!("a copy is in {BACKUP}") } else { "it was left untouched".to_owned() };
-            return Err(anyhow::Error::new(e).context(format!("{} is damaged, so the defaults apply; {note}", path.display())));
-        }
-    };
-    Ok(settings.sanitized())
+    Ok(store::load::<Settings>(&dir.join(FILE))?.unwrap_or_default().sanitized())
 }
 
 fn save_to(dir: &Path, settings: &Settings) -> Result<()> {
-    net::write_atomic(&dir.join(FILE), &serde_json::to_vec_pretty(settings)?)
+    store::replace::<Settings>(&dir.join(FILE), &serde_json::to_vec_pretty(settings)?)
 }
 
 static ACTIVE: RwLock<Option<&'static Settings>> = RwLock::new(None);
 
-/// Loads the settings once for the whole run. A damaged file leaves the defaults in force and is returned as the error.
+/// Loads the settings once for the whole run. An unreadable file leaves the defaults in force and is returned as the error.
 pub fn activate() -> Result<&'static Settings> {
     if let Some(settings) = *ACTIVE.read().unwrap_or_else(|e| e.into_inner()) {
         return Ok(settings);
@@ -219,11 +204,12 @@ mod tests {
     }
 
     #[test]
-    fn damaged_file_is_an_error_and_stays() {
+    fn a_damaged_file_without_backup_gives_the_defaults_and_is_set_aside() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(FILE), b"{").unwrap();
-        assert!(load_from(dir.path()).is_err());
-        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), b"{");
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, br#"{"reconnect": oops"#).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), Settings::default());
+        assert_eq!(std::fs::read(store::damaged_path(&path)).unwrap(), br#"{"reconnect": oops"#);
     }
 
     #[test]
@@ -241,25 +227,25 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_file_is_kept_as_a_backup_and_named_in_the_error() {
+    fn a_file_of_another_shape_is_an_error_and_stays() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(FILE), br#"{"reconnect": oops"#).unwrap();
-        let error = format!("{:#}", load_from(dir.path()).unwrap_err());
-        assert!(error.contains(BACKUP) && error.contains("defaults apply"), "{error}");
-        assert_eq!(std::fs::read(dir.path().join(BACKUP)).unwrap(), br#"{"reconnect": oops"#);
-        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"reconnect": oops"#);
+        std::fs::write(dir.path().join(FILE), br#"{"reconnect":5}"#).unwrap();
+        assert!(load_from(dir.path()).unwrap_err().downcast_ref::<store::Untouched>().is_some());
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"reconnect":5}"#);
+        save_to(dir.path(), &Settings::default()).unwrap();
+        assert_eq!(std::fs::read(store::damaged_path(&dir.path().join(FILE))).unwrap(), br#"{"reconnect":5}"#);
     }
 
     #[test]
-    fn saving_after_a_damaged_load_keeps_the_backup() {
+    fn a_damaged_file_comes_back_from_the_previous_save() {
         let dir = tempfile::tempdir().unwrap();
+        let mut first = Settings::default();
+        first.merged_chat = false;
+        save_to(dir.path(), &first).unwrap();
+        save_to(dir.path(), &Settings::default()).unwrap();
         std::fs::write(dir.path().join(FILE), b"{ hand edited").unwrap();
-        assert!(load_from(dir.path()).is_err());
-        let mut changed = Settings::default();
-        changed.merged_chat = false;
-        save_to(dir.path(), &changed).unwrap();
-        assert_eq!(std::fs::read(dir.path().join(BACKUP)).unwrap(), b"{ hand edited");
-        assert_eq!(load_from(dir.path()).unwrap(), changed);
+        assert_eq!(load_from(dir.path()).unwrap(), first);
+        assert_eq!(load_from(dir.path()).unwrap(), first);
     }
 
     #[test]
@@ -267,7 +253,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         save_to(dir.path(), &Settings::default()).unwrap();
         load_from(dir.path()).unwrap();
-        assert!(!dir.path().join(BACKUP).exists());
+        assert!(!store::backup_path(&dir.path().join(FILE)).exists());
     }
 
     #[test]

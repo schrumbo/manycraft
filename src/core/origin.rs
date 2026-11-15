@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::batch::ModRef;
 use super::instance::{self, Final, Instance, Loader};
-use super::{lock, net, paths, store};
+use super::{lock, store};
 
 const DIR: &str = "origin";
 const FILE: &str = "origin.json";
@@ -58,6 +58,17 @@ impl Origin {
     }
 }
 
+fn read_raw(file: &Path) -> Result<Option<Vec<u8>>> {
+    for path in [file.to_owned(), store::backup_path(file)] {
+        match std::fs::read(&path) {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        }
+    }
+    Ok(None)
+}
+
 fn origin_dir(root: &Path, id: &str) -> PathBuf {
     root.join(id).join(DIR)
 }
@@ -83,7 +94,7 @@ pub(super) fn record(root: &Path, made: &Instance) -> Result<()> {
             }
         }
         let origin = Origin { game_version: made.game_version.clone(), loader: made.loader.clone(), mods: made.mods.clone(), local_mods: made.local_mods.clone() };
-        net::write_atomic(&staging.join(FILE), &serde_json::to_vec_pretty(&origin)?)?;
+        store::replace::<Origin>(&staging.join(FILE), &serde_json::to_vec_pretty(&origin)?)?;
         std::fs::rename(&staging, &target).with_context(|| format!("cannot move {} into place", staging.display()))
     })();
     if kept.is_err() {
@@ -99,16 +110,13 @@ pub fn load(made: &Instance) -> Result<Origin> {
 
 /// Whether the start of `made` was kept; without it a reset leaves mods, config and packs empty.
 pub fn is_kept(made: &Instance) -> bool {
-    std::fs::symlink_metadata(origin_dir(&instance::instances_dir(), &made.id).join(FILE)).is_ok()
+    store::exists(&origin_dir(&instance::instances_dir(), &made.id).join(FILE))
 }
 
-fn quiet() -> Result<lock::Guard> {
-    lock::try_exclusive(&paths::data_dir().join(super::install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))
-}
 
 pub(super) fn load_in(root: &Path, made: &Instance) -> Result<Origin> {
     let file = origin_dir(root, &made.id).join(FILE);
-    match store::read(&file)? {
+    match read_raw(&file)? {
         None => Ok(Origin { game_version: made.game_version.clone(), loader: made.loader.clone(), mods: Vec::new(), local_mods: Vec::new() }),
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| anyhow::Error::new(Final(super::i18n::tr("Der Anfangszustand dieser Instanz ist beschädigt. Ihre Dateien bleiben unverändert."))).context(format!("{} is damaged: {e}", file.display()))),
     }
@@ -118,7 +126,7 @@ pub(super) fn load_in(root: &Path, made: &Instance) -> Result<Origin> {
 /// gives `made` the mods `mods`. Worlds, screenshots, `servers.dat` and `options.txt` stay. Returns the saved instance and
 /// the trash entry [`unreset`] takes. Callers check first that no game of it runs.
 pub fn reset(made: &Instance, mods: Vec<ModRef>) -> Result<(Instance, String)> {
-    let _quiet = quiet()?;
+    let _quiet = instance::quiet_in(&instance::instances_dir(), &made.id)?;
     reset_in(&instance::instances_dir(), made, mods, instance::now_millis())
 }
 
@@ -176,7 +184,7 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
 /// own, and gives `now`, the instance as it is saved, the mods and own files of `before`. Refused for good when the
 /// entry is gone.
 pub fn unreset(now: &Instance, before: &Instance, entry: &str) -> Result<Instance> {
-    let _quiet = quiet()?;
+    let _quiet = instance::quiet_in(&instance::instances_dir(), &now.id)?;
     unreset_in(&instance::instances_dir(), now, before, entry, instance::now_millis())
 }
 
@@ -368,7 +376,7 @@ mod tests {
         let entry_dir = instance::trash_dir(root).join(&entry);
         assert_eq!(read(&entry_dir.join("config/new.json")), "new");
         assert_eq!(read(&folder.join("config/sodium.json")), "{\"first\":true}");
-        store::read(&file).unwrap();
+        store::load::<Instance>(&file).unwrap();
         let back = unreset_in(root, &after, &now, &entry, 3000).unwrap();
         assert_eq!(back.mods, now.mods);
         assert_eq!((read(&folder.join("config/new.json")), read(&folder.join("mods/extra.jar"))), ("new".to_owned(), "extra".to_owned()));

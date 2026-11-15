@@ -170,8 +170,8 @@ pub fn batches_dir() -> PathBuf {
     paths::data_dir().join("batches")
 }
 
-/// All saved batches, sorted by name. A batch whose file cannot be read is an error, never skipped silently; one the
-/// migration has not reached yet is left out.
+/// All saved batches, sorted by name. A damaged batch file falls back to its backup; one without a good backup is left out and
+/// reported through `store::take_recovered`. One the migration has not reached yet is left out.
 pub fn load_all() -> Result<Vec<Batch>> {
     load_all_in(&batches_dir())
 }
@@ -191,9 +191,11 @@ pub(super) fn delete_in(root: &Path, batch: &Batch) -> Result<()> {
         bail!("invalid batch id {:?}", batch.id);
     }
     let dir = root.join(&batch.id);
-    match std::fs::remove_file(dir.join(FILE)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
-        _ => {}
+    for file in [store::backup_path(&dir.join(FILE)), dir.join(FILE)] {
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
+            _ => {}
+        }
     }
     let _ = std::fs::remove_file(dir.join(format!("{FILE}.lock")));
     let _ = std::fs::remove_dir(&dir);
@@ -209,12 +211,12 @@ pub(super) fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
     let mut batches = Vec::new();
     for entry in entries {
         let file = entry?.path().join(FILE);
-        if !file.is_file() {
+        if !store::exists(&file) {
             continue;
         }
-        let bytes = store::read(&file)?.with_context(|| format!("cannot read {}", file.display()))?;
-        let batch: Batch = serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", file.display()))?;
-        if !batch.instance_id.is_empty() {
+        if let Some(batch) = store::load::<Batch>(&file)?
+            && !batch.instance_id.is_empty()
+        {
             batches.push(batch);
         }
     }
@@ -229,7 +231,7 @@ pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
     if !super::instance::valid_id(&batch.instance_id) {
         bail!("batch {} has no instance", batch.id);
     }
-    store::write(&root.join(&batch.id).join(FILE), &serde_json::to_vec_pretty(batch)?, |_| Ok(()))
+    store::write::<Batch>(&root.join(&batch.id).join(FILE), &serde_json::to_vec_pretty(batch)?, |_| Ok(()))
 }
 
 #[cfg(test)]
@@ -259,12 +261,44 @@ mod tests {
     }
 
     #[test]
-    fn missing_folder_is_empty_and_damaged_file_is_an_error() {
+    fn missing_folder_is_empty_and_damaged_file_without_backup_is_left_out() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_all_in(&dir.path().join("none")).unwrap().is_empty());
         std::fs::create_dir_all(dir.path().join("x")).unwrap();
         std::fs::write(dir.path().join("x").join(FILE), b"{").unwrap();
-        assert!(load_all_in(dir.path()).is_err());
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
+        assert!(store::damaged_path(&dir.path().join("x").join(FILE)).exists());
+    }
+
+    #[test]
+    fn a_deleted_batch_stays_deleted_with_or_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let once = Batch::new("Once", "i1");
+        let twice = Batch::new("Twice", "i1");
+        save_in(dir.path(), &once).unwrap();
+        save_in(dir.path(), &twice).unwrap();
+        save_in(dir.path(), &Batch { server: Some("example.org".into()), ..twice.clone() }).unwrap();
+        assert!(store::backup_path(&dir.path().join(&twice.id).join(FILE)).exists());
+        delete_in(dir.path(), &once).unwrap();
+        delete_in(dir.path(), &twice).unwrap();
+        assert!(!dir.path().join(&once.id).exists() && !dir.path().join(&twice.id).exists());
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
+        delete_in(dir.path(), &once).unwrap();
+    }
+
+    #[test]
+    fn damaged_or_missing_file_comes_back_from_the_previous_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("A", "i1");
+        save_in(dir.path(), &b).unwrap();
+        let first = b.clone();
+        b.server = Some("example.org".into());
+        save_in(dir.path(), &b).unwrap();
+        let file = dir.path().join(&b.id).join(FILE);
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![first.clone()]);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![first]);
     }
 
     #[test]
