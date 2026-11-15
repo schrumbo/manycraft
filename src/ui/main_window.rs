@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PickColor, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -117,6 +117,7 @@ impl MainWindow {
                 if let Some(left) = std::mem::replace(&mut this.last_playing, playing.clone()).filter(|_| playing.is_none()) {
                     this.grid.reveal(left);
                 }
+                this.grid.touch();
                 cx.notify();
             }),
             cx.subscribe(&model, |this, _, _: &model::ChatArrived, cx| {
@@ -435,6 +436,7 @@ impl Render for MainWindow {
         let t = Theme::get(cx);
         let narrow = Self::narrow(window);
         if !matches!(self.page, Page::Grid(_)) {
+            self.grid.hide();
             super::state::set_visible(Default::default(), cx);
         }
         let content = match self.page.clone() {
@@ -512,6 +514,7 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_action(cx.listener(|this, a: &PickColor, window, cx| super::palette::colors(this, &a.0, window, cx)))
             .on_drag_move::<ExternalPaths>(|_, window, cx| {
                 if window.last_input_was_keyboard() {
                     let position = window.mouse_position();
@@ -606,7 +609,7 @@ impl Render for MainWindow {
             .children(dropping)
             .children(palette);
         let root = super::perf::frame_end(root);
-        super::chrome::frame("Manycraft", root, &t)
+        super::chrome::frame("Manycraft", root, window.is_fullscreen(), &t)
     }
 }
 
@@ -749,6 +752,23 @@ pub fn show(place: Option<Place>, cx: &mut App) {
         let fullscreen = window.is_fullscreen();
         native::show(window, place.filter(|_| !fullscreen), cx);
         let Some(place) = place else { return };
+        let elsewhere = fullscreen
+            && place.mode == Mode::Fullscreen
+            && native::place_of(window).is_some_and(|(frame, _)| !crate::core::place::same_work_area(frame, place.frame, &crate::core::game_window::work_areas()));
+        if elsewhere {
+            window.toggle_fullscreen();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(FULLSCREEN_SETTLES).await;
+                let _ = h.update(cx, |_, window, cx| {
+                    if model::get(cx).read(cx).playing.is_none() && !window.is_fullscreen() {
+                        native::put(window, place);
+                        window.toggle_fullscreen();
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         if (place.mode == Mode::Fullscreen) != fullscreen {
             window.toggle_fullscreen();
         }

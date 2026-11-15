@@ -119,6 +119,7 @@ struct Shared {
     config: PathBuf,
     resourcepacks: PathBuf,
     shaderpacks: PathBuf,
+    datapacks: PathBuf,
     options: PathBuf,
     servers: PathBuf,
     saves: PathBuf,
@@ -131,6 +132,7 @@ impl Shared {
             config: instance.config_dir(),
             resourcepacks: instance.resourcepacks_dir(),
             shaderpacks: instance.shaderpacks_dir(),
+            datapacks: instance.datapacks_dir(),
             options: instance.options_template(),
             servers: instance.servers_template(),
             saves: instance.dir().join(super::launchers::SAVES_SEED),
@@ -138,8 +140,8 @@ impl Shared {
     }
 }
 
-/// Readies the game folder of `account` in `instance` and returns it: shared `mods`, `config`, `resourcepacks` and
-/// `shaderpacks` linked in, `options.txt` and `servers.dat` from the instance templates, the companion mod in the shared mods folder.
+/// Readies the game folder of `account` in `instance` and returns it: shared `mods`, `config`, `resourcepacks`,
+/// `shaderpacks` and `datapacks` linked in, `options.txt` and `servers.dat` from the instance templates, the companion mod in the shared mods folder.
 pub fn prepare(instance: &Instance, account: &Account, companion_jar: Option<&Path>) -> Result<PathBuf> {
     let dir = instance.game_dir(account.id);
     prepare_in(&dir, &Shared::of(instance), companion_jar, &instance.other_games(account.id))?;
@@ -148,7 +150,7 @@ pub fn prepare(instance: &Instance, account: &Account, companion_jar: Option<&Pa
 
 fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, siblings: &[PathBuf]) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    for (name, target, merge) in [("mods", &shared.mods, false), ("config", &shared.config, false), ("resourcepacks", &shared.resourcepacks, true), ("shaderpacks", &shared.shaderpacks, true)] {
+    for (name, target, merge) in [("mods", &shared.mods, false), ("config", &shared.config, false), ("resourcepacks", &shared.resourcepacks, true), ("shaderpacks", &shared.shaderpacks, true), ("datapacks", &shared.datapacks, true)] {
         fs::create_dir_all(target).with_context(|| format!("cannot create {}", target.display()))?;
         if merge {
             merge_into(&dir.join(name), target)?;
@@ -1726,6 +1728,7 @@ mod tests {
             config: batch.join("config"),
             resourcepacks: batch.join("resourcepacks"),
             shaderpacks: batch.join("shaderpacks"),
+            datapacks: batch.join("datapacks"),
             options: batch.join(OPTIONS_FILE),
             servers: batch.join(sync::SERVERS_FILE),
             saves: batch.join(super::super::launchers::SAVES_SEED),

@@ -25,6 +25,12 @@ pub const SERVERS_FILE: &str = "servers.dat";
 
 static TEMPLATES: Mutex<()> = Mutex::new(());
 
+/// Runs `f` while no game writes an instance template.
+pub(super) fn with_templates<T>(f: impl FnOnce() -> T) -> T {
+    let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
+    f()
+}
+
 /// Which instance and account each game plays, by key; the fleet fills it before a game starts.
 #[derive(Clone, Default)]
 pub struct Games(Arc<Mutex<HashMap<String, (String, String)>>>);

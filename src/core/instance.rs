@@ -18,8 +18,8 @@ const IN_USE: &str = "in-use.lock";
 pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
 const TRASH: &str = ".trash";
-const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
-const COPIED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
+pub(super) const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
+const COPIED: [&str; 7] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks", "options.txt", "servers.dat"];
 
 /// The mod loader of an instance, with its pinned version; `None` follows the newest one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,7 +86,7 @@ impl Loader {
 }
 
 /// What a game is played with: version, loader, mods and memory. Its folder holds the shared `mods/`, `config/`,
-/// `resourcepacks/` and `shaderpacks/`, the `options.txt` and `servers.dat` templates, and one game folder per account.
+/// `resourcepacks/`, `shaderpacks/` and `datapacks/`, the `options.txt` and `servers.dat` templates, and one game folder per account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Instance {
     pub id: String,
@@ -101,6 +101,9 @@ pub struct Instance {
     /// File names in the shared mods folder that are not on Modrinth; syncing never deletes them.
     #[serde(default)]
     pub local_mods: Vec<String>,
+    /// File names (as listed in `mods` or `local_mods`) of mods that are switched off; in the shared mods folder their file ends in `.disabled`.
+    #[serde(default)]
+    pub disabled: Vec<String>,
     #[serde(default = "default_memory")]
     pub memory_mb: u32,
     #[serde(default)]
@@ -127,6 +130,7 @@ impl Instance {
             loader,
             mods: Vec::new(),
             local_mods: Vec::new(),
+            disabled: Vec::new(),
             memory_mb: DEFAULT_MEMORY_MB,
             jvm_args: Vec::new(),
             options: LaunchOptions::default(),
@@ -157,6 +161,11 @@ impl Instance {
     /// Shared shader pack folder every game of the instance links to.
     pub fn shaderpacks_dir(&self) -> PathBuf {
         self.dir().join("shaderpacks")
+    }
+
+    /// Shared data pack folder every game of the instance links to, loaded into new worlds by a mod like Global Packs.
+    pub fn datapacks_dir(&self) -> PathBuf {
+        self.dir().join("datapacks")
     }
 
     /// Game options every game starts from; a game that saves its options updates the keys it changed.
@@ -418,7 +427,7 @@ pub(super) fn hold(id: &str) -> Option<super::lock::Guard> {
     hold_in(&instances_dir(), id)
 }
 
-fn hold_in(root: &Path, id: &str) -> Option<super::lock::Guard> {
+pub(super) fn hold_in(root: &Path, id: &str) -> Option<super::lock::Guard> {
     if !valid_id(id) {
         return None;
     }
@@ -442,7 +451,7 @@ pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn remove_dir(dir: &Path) -> Result<()> {
+pub(super) fn remove_dir(dir: &Path) -> Result<()> {
     match std::fs::remove_dir_all(dir) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("cannot delete {}", dir.display())),
         _ => Ok(()),
@@ -543,7 +552,7 @@ mod tests {
         let i: Instance = serde_json::from_str(r#"{"id":"a1","name":"A","game_version":"26.3"}"#).unwrap();
         assert_eq!(i.loader, Loader::Fabric(None));
         assert_eq!(i.memory_mb, DEFAULT_MEMORY_MB);
-        assert!(i.mods.is_empty() && i.local_mods.is_empty() && i.jvm_args.is_empty() && i.icon.is_none() && i.last_account.is_none());
+        assert!(i.mods.is_empty() && i.local_mods.is_empty() && i.disabled.is_empty() && i.jvm_args.is_empty() && i.icon.is_none() && i.last_account.is_none());
     }
 
     #[test]

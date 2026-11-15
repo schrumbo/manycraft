@@ -2,6 +2,7 @@ pub mod accounts;
 #[allow(dead_code)]
 pub mod actions;
 pub mod batch_sheet;
+mod catalog;
 pub mod chat;
 pub mod chrome;
 pub mod drive;
@@ -20,6 +21,8 @@ pub mod loader_version;
 pub mod main_window;
 pub mod maintenance;
 pub mod mod_browser;
+pub mod mod_list;
+pub mod mod_updates;
 #[allow(dead_code)]
 pub mod model;
 #[allow(dead_code)]
@@ -27,6 +30,7 @@ pub mod motion;
 pub mod native;
 pub mod palette;
 pub mod perf;
+mod project_page;
 pub mod remote;
 pub mod settings_window;
 pub mod sheet;

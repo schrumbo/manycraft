@@ -9,6 +9,8 @@ pub mod cli;
 #[allow(dead_code)]
 pub mod companion;
 #[allow(dead_code)]
+pub mod content;
+#[allow(dead_code)]
 pub mod drive;
 #[allow(dead_code)]
 pub mod fit;
@@ -30,12 +32,15 @@ pub mod logs;
 pub mod lock;
 pub mod migrate;
 pub mod modicons;
+#[allow(dead_code)]
+pub mod modmeta;
 pub mod modrinth;
 pub mod mrpack;
 pub mod net;
 pub mod online;
 pub mod options;
 pub mod origin;
+pub mod packs;
 pub mod paths;
 pub mod phone;
 pub mod place;

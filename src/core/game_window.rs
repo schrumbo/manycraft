@@ -187,12 +187,14 @@ pub fn tint(pid: u32, account: &Account) {
 pub mod win {
     use super::super::place::{self, Insets, Rect};
     use super::Seen;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use windows_sys::Win32::Foundation::{BOOL, CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
     use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+        EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
         PostMessageW, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
     };
 
@@ -207,26 +209,45 @@ pub mod win {
         RECT { left: frame.x - margins.left, top: frame.y - margins.top, right: frame.x + frame.w as i32 + margins.right, bottom: frame.y + frame.h as i32 + margins.bottom }
     }
 
-    /// The top-level SDL window of process `pid`.
+    /// The top-level SDL window of process `pid`. Remembers every game's window from one pass over all windows, so finding
+    /// the windows of many games costs one pass, not one per game.
     pub fn main_window(pid: u32) -> Option<HWND> {
+        static KNOWN: Mutex<Option<HashMap<u32, usize>>> = Mutex::new(None);
+        let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hwnd) = known.as_ref().and_then(|k| k.get(&pid)).map(|h| *h as HWND).filter(|h| game(*h) == Some(pid)) {
+            return Some(hwnd);
+        }
+        let all = sdl_windows();
+        let hwnd = all.get(&pid).map(|h| *h as HWND);
+        *known = Some(all);
+        hwnd
+    }
+
+    fn game(hwnd: HWND) -> Option<u32> {
+        if unsafe { IsWindow(hwnd) } == 0 || !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+            return None;
+        }
+        let mut class = [0u16; 16];
+        let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+        if String::from_utf16_lossy(&class[..n.max(0) as usize]) != "SDL_app" {
+            return None;
+        }
+        let mut owner = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
+        Some(owner)
+    }
+
+    fn sdl_windows() -> HashMap<u32, usize> {
         unsafe extern "system" fn each(hwnd: HWND, data: LPARAM) -> BOOL {
-            let found = unsafe { &mut *(data as *mut (u32, HWND)) };
-            let mut owner = 0;
-            unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
-            if owner != found.0 || !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
-                return 1;
-            }
-            let mut class = [0u16; 16];
-            let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
-            if String::from_utf16_lossy(&class[..n.max(0) as usize]) == "SDL_app" {
-                found.1 = hwnd;
-                return 0;
+            let found = unsafe { &mut *(data as *mut HashMap<u32, usize>) };
+            if let Some(pid) = game(hwnd) {
+                found.entry(pid).or_insert(hwnd as usize);
             }
             1
         }
-        let mut found: (u32, HWND) = (pid, std::ptr::null_mut());
+        let mut found: HashMap<u32, usize> = HashMap::new();
         unsafe { EnumWindows(Some(each), &raw mut found as LPARAM) };
-        (!found.1.is_null()).then_some(found.1)
+        found
     }
 
     /// The visible frame of `hwnd`, without the invisible resize borders.

@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent]);
+actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks]);
 
 /// Gives these accounts (ids) colour `color`, an index into `core::account::COLORS`.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -13,6 +13,11 @@ pub struct SetColor {
     pub accounts: Vec<String>,
     pub color: u8,
 }
+
+/// Shows the colours to pick from for this account (id) in the palette.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct PickColor(pub String);
 
 /// Opens the sign-in sheet for these Microsoft accounts one after another.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -212,6 +217,16 @@ pub struct CreateShortcut {
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
 pub struct AddMods(pub String);
+
+/// Opens the content browser of this instance (id) on resource packs.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct FindResourcePacks(pub String);
+
+/// Opens the content browser of this instance (id) on shaders.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct FindShaders(pub String);
 
 /// Asks, then sets an instance (id) back to its mods, config and packs from when it was created. Worlds stay.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]

@@ -17,7 +17,7 @@ use crate::core::instance::{self as setup, Loader};
 use crate::core::javas::Java;
 use crate::core::options::LaunchOptions;
 use crate::core::versions::{GameVersion, Kind};
-use crate::core::modrinth::{self, Defaults, Hit, Page, Sort, Support, Update};
+use crate::core::modrinth::{self, Defaults, Hit, Support, Update};
 use crate::core::{mrpack, origin, shortcut};
 use crate::core::i18n::tr;
 use crate::core::launchers::{self, Found, Launcher, Library, Take, Unsupported};
@@ -28,9 +28,7 @@ use super::forms::{self, Plain, Problem};
 
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
-const CANNED_DELAY: Duration = Duration::from_millis(450);
-const CANNED_SEARCH_DELAY: Duration = Duration::from_millis(300);
-const CANNED_PAGE: usize = 6;
+pub(super) const CANNED_DELAY: Duration = Duration::from_millis(450);
 const CANNED_STEPS: usize = 8;
 
 static SAVING: Mutex<()> = Mutex::new(());
@@ -558,27 +556,6 @@ pub fn loader_versions(loader: &Loader, game: &str) -> Result<install::Versions>
     install::loader_versions(loader, game)
 }
 
-/// One page of Modrinth mods matching `query` (the most downloaded ones when it is empty) from result `offset` on.
-/// Unless `all`, only mods for `loader` with a version for `game_version`.
-pub fn search_page(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> Result<Page> {
-    if drive::fenced("modrinth search", query) && !drive::live() {
-        std::thread::sleep(CANNED_SEARCH_DELAY);
-        if query.contains("offline") {
-            bail!("failed to lookup address");
-        }
-        let q = query.to_lowercase();
-        let mut hits: Vec<Hit> = canned_hits(game_version).into_iter().filter(|h| h.title.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q)).filter(|h| all || h.support(game_version, loader) == Support::Fits).collect();
-        if sort == Sort::Downloads {
-            hits.sort_by_key(|h| std::cmp::Reverse(h.downloads));
-        } else {
-            hits.sort_by_key(|h| !h.title.to_lowercase().starts_with(&q));
-        }
-        let total = hits.len();
-        return Ok(Page { hits: hits.into_iter().skip(offset).take(CANNED_PAGE).collect(), total, saved: None });
-    }
-    modrinth::search_page(query, game_version, loader, sort, all, offset)
-}
-
 /// `project_ids` resolved for `game_version` and `loader`, with their required dependencies.
 pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
     if drive::fenced("modrinth resolve", project_ids.join(",")) && !drive::live() {
@@ -586,7 +563,12 @@ pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> R
         let hits = canned_hits(game_version);
         let mut out: Vec<ModRef> = Vec::new();
         for id in project_ids {
-            let hit = hits.iter().find(|h| &h.project_id == id || &h.slug == id).with_context(|| format!("{id} has no version for {game_version}"))?;
+            let id = match id.as_str() {
+                "YL57xq9U" => "iris",
+                "NRLPy2mk" => "global-packs",
+                other => other,
+            };
+            let hit = hits.iter().find(|h| h.project_id == id || h.slug == id).with_context(|| format!("{id} has no version for {game_version}"))?;
             out.push(canned_ref(&hit.slug, &hit.title, game_version));
             if hit.slug == "iris" {
                 out.push(canned_ref("sodium", "Sodium", game_version));
@@ -1080,10 +1062,15 @@ fn canned_libraries() -> Vec<Library> {
 
 fn canned_update(m: &ModRef) -> Update {
     let latest = ModRef { version_id: format!("{}-new", m.version_id), file_name: m.file_name.replace(".jar", "-b.jar"), sha1: "1".repeat(40), ..m.clone() };
-    Update { current: m.clone(), latest }
+    let notes = "## Fixes
+- **Crash** when joining a server
+- `render()` is faster
+  - fewer allocations
+See [the issue](https://example.invalid/1).";
+    Update { current: m.clone(), latest, changelog: vec![("1.1.0".into(), notes.into()), ("1.0.1".into(), String::new())] }
 }
 
-fn canned_hits(game_version: &str) -> Vec<Hit> {
+pub(super) fn canned_hits(game_version: &str) -> Vec<Hit> {
     let hit = |slug: &str, title: &str, author: &str, description: &str, downloads: u64, support: Support| {
         let (versions, loader) = match support {
             Support::Fits => (game_version, "fabric"),
@@ -1117,10 +1104,11 @@ fn canned_hits(game_version: &str) -> Vec<Hit> {
         hit("sodium-legacy", "Sodium Legacy", "someone", "An old Sodium build kept for older versions", 410_000, Support::OtherVersion),
         hit("optifine-bridge", "OptiFine Bridge", "someone", "Shaders and zoom for Forge", 2_100_000, Support::OtherLoader),
         hit("tiny-tweak", "Tiny Tweak", "nobody", "A very small mod", 940, Support::Fits),
+        hit("global-packs", "Global Packs", "someone", "Loads data packs into every new world", 1_400_000, Support::Fits),
     ]
 }
 
-fn canned_ref(slug: &str, title: &str, game_version: &str) -> ModRef {
+pub(super) fn canned_ref(slug: &str, title: &str, game_version: &str) -> ModRef {
     ModRef {
         project_id: format!("id-{slug}"),
         version_id: format!("v-{slug}-{game_version}"),

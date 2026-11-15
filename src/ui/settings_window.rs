@@ -38,13 +38,13 @@ struct Open(AnyWindowHandle);
 
 impl Global for Open {}
 
-/// Registers the shortcut, the macOS app menu entry and the action that opens the window.
+/// Registers the shortcut, the macOS menu bar and the action that opens the window.
 pub fn init(cx: &mut App) {
     let m = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
     cx.bind_keys([KeyBinding::new(Box::leak(format!("{m}-,").into_boxed_str()), OpenSettings, None), KeyBinding::new("escape", Close, Some("Settings"))]);
     cx.on_action(|_: &OpenSettings, cx| cx.defer(open));
     #[cfg(target_os = "macos")]
-    cx.set_menus([Menu::new("Manycraft").items([MenuItem::action(tr("Einstellungen …"), OpenSettings)])]);
+    cx.set_menus([Menu::new("Manycraft").items([MenuItem::action(tr("Einstellungen …"), OpenSettings)]), Menu::new(tr("Darstellung")).items([MenuItem::action(tr("Vollbild"), super::actions::ToggleFullscreen)])]);
 }
 
 fn existing(cx: &App) -> Option<AnyWindowHandle> {
@@ -680,6 +680,7 @@ impl Render for SettingsView {
             .key_context("Settings")
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &Close, window, _| window.remove_window()))
+            .on_action(|_: &super::actions::ToggleFullscreen, window, _| window.toggle_fullscreen())
             .size_full()
             .bg(t.window)
             .text_color(t.primary)
@@ -689,7 +690,7 @@ impl Render for SettingsView {
             .relative()
             .child(page)
             .child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Scrolling));
-        super::chrome::frame(title(), super::perf::frame_end(root), &t)
+        super::chrome::frame(title(), super::perf::frame_end(root), window.is_fullscreen(), &t)
     }
 }
 

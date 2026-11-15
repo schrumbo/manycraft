@@ -8,9 +8,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
+    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
     StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
-    AddMods, CloneInstance, DeleteInstance, EditMods, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -72,6 +72,7 @@ pub struct Palette {
     rows: Rc<Vec<Row>>,
     cursor: usize,
     scroll: UniformListScrollHandle,
+    nested: bool,
     _typed: Subscription,
 }
 
@@ -109,9 +110,31 @@ pub fn toggle(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
         close(this, window, cx);
         return;
     }
+    let entries = entries(this, cx);
+    open(this, entries, tr("Befehl, Batch oder Account suchen"), false, window, cx);
+}
+
+/// Opens the palette on the colours of account `id`, so the keyboard picks one like the colour menu does.
+pub fn colors(this: &mut MainWindow, id: &str, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let current = model::get(cx).read(cx).accounts.iter().find(|a| a.id.to_string() == id).map(|a| (a.name.clone(), a.color()));
+    let Some((name, current)) = current else { return };
+    let entries = (0..crate::core::account::COLORS.len() as u8)
+        .map(|color| {
+            let mut e = entry(Group::Accounts, "palette", super::identity::name(color), None, Box::new(SetColor { accounts: vec![id.to_owned()], color }), cx);
+            if color == current {
+                e.detail = Some(tr("Aktuelle Farbe"));
+                e.enabled = false;
+            }
+            e
+        })
+        .collect();
+    open(this, entries, trf("Farbe für %@ suchen", &[&name]), true, window, cx);
+}
+
+fn open(this: &mut MainWindow, entries: Vec<Entry>, placeholder: String, nested: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
     this.overlay = false;
-    let entries = Rc::new(entries(this, cx));
-    let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Befehl, Batch oder Account suchen")));
+    let entries = Rc::new(entries);
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
     let me = cx.entity().downgrade();
     let app: &mut App = cx;
     let typed = app.subscribe(&input, move |s, e: &InputEvent, cx| {
@@ -126,9 +149,9 @@ pub fn toggle(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
         }
     });
     let rows = Rc::new(rows(&entries, ""));
-    let cursor = rows.iter().position(|r| matches!(r, Row::Entry(_))).unwrap_or(0);
+    let cursor = rows.iter().position(|r| matches!(r, Row::Entry(ix) if entries[*ix].enabled)).or_else(|| rows.iter().position(|r| matches!(r, Row::Entry(_)))).unwrap_or(0);
     input.update(cx, |s, cx| s.take_focus(window, cx));
-    this.palette = Some(Palette { input, entries, rows, cursor, scroll: UniformListScrollHandle::new(), _typed: typed });
+    this.palette = Some(Palette { input, entries, rows, cursor, scroll: UniformListScrollHandle::new(), nested, _typed: typed });
     cx.notify();
 }
 
@@ -358,6 +381,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
         ("plus", tr("Neue Instanz"), Box::new(NewInstance), true),
+        ("search", tr("Modpacks suchen…"), Box::new(FindModpacks), true),
         ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
         ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.games.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
@@ -379,6 +403,13 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     }
     if let Some(newest) = super::undo::newest(cx) {
         out.push(entry(Group::Commands, "undo-2", tr("Rückgängig"), Some(newest), Box::new(Undo), cx));
+    }
+    if matches!(this.page, Page::Instance(_)) {
+        for c in super::mod_list::commands(cx) {
+            let mut e = entry(Group::Commands, c.icon, c.label, c.blocked.clone(), c.action, cx);
+            e.enabled = c.blocked.is_none();
+            out.push(e);
+        }
     }
     out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
     match &this.page {
@@ -445,6 +476,8 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(AddMods(id.clone())), cx));
             out.push(entry(Group::Instances, "package", trf("Mods von %@ verwalten…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
         }
+        out.push(entry(Group::Instances, "image", tr("Ressourcenpakete suchen…"), Some(name.clone()), Box::new(FindResourcePacks(id.clone())), cx));
+        out.push(entry(Group::Instances, "sun", tr("Shader suchen…"), Some(name.clone()), Box::new(FindShaders(id.clone())), cx));
         if matches!(made.loader, Loader::Fabric(Some(_)) | Loader::Quilt(Some(_))) {
             out.push(entry(Group::Instances, "refresh-cw", trf("Loader von %@ aktualisieren…", &[name]), detail.clone(), Box::new(UpdateLoader(id.clone())), cx));
         }
@@ -467,8 +500,11 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         }
         out.push(delete);
     }
-    for a in m.accounts.iter().filter(|a| a.kind == crate::core::account::AccountKind::Microsoft) {
-        out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));
+    for a in &m.accounts {
+        out.push(entry(Group::Accounts, "palette", trf("%@ — Farbe ändern…", &[&a.name]), Some(super::identity::name(a.color())), Box::new(PickColor(a.id.to_string())), cx));
+        if a.kind == crate::core::account::AccountKind::Microsoft {
+            out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));
+        }
     }
     let mut instances: Vec<_> = m.games.values().collect();
     instances.sort_by_cached_key(|i| (i.name.to_lowercase(), m.batch(&i.batch_id).map(|b| b.name.to_lowercase())));
@@ -586,7 +622,16 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                         let by = match e.keystroke.key.as_str() {
                             "escape" => {
                                 cx.stop_propagation();
+                                if this.palette.as_ref().is_some_and(|p| p.nested) {
+                                    this.palette = None;
+                                    return toggle(this, window, cx);
+                                }
                                 return close(this, window, cx);
+                            }
+                            "backspace" if this.palette.as_ref().is_some_and(|p| p.nested && p.input.read(cx).value().is_empty()) => {
+                                cx.stop_propagation();
+                                this.palette = None;
+                                return toggle(this, window, cx);
                             }
                             "enter" => {
                                 cx.stop_propagation();

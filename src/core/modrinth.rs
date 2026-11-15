@@ -1,7 +1,7 @@
 //! Mods from Modrinth: search, version resolution with required dependencies, verified downloads into an instance.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use super::batch::ModRef;
+use super::i18n::tr;
 use super::instance::{Instance, Loader};
 use super::{install, net, online, paths};
 
@@ -23,6 +24,9 @@ const PROJECT_CHUNK: usize = 100;
 const KEPT_PAGES: usize = 300;
 /// How many results one search page holds.
 pub const PAGE: usize = 20;
+const CHANGELOGS: usize = 5;
+pub(super) const DISABLED: &str = ".disabled";
+const LEDGER: &str = "mods.managed";
 const USAGE: &str = "usage: manycraft mods search <query> [--version <version>]\n       manycraft mods resolve <slug>... [--version <version>]";
 
 /// One search result.
@@ -56,9 +60,17 @@ pub enum Support {
 impl Hit {
     /// Whether the mod has a file for `game_version` and `loader`, and if not, which of the two is missing.
     pub fn support(&self, game_version: &str, loader: &Loader) -> Support {
-        if !self.categories.iter().any(|c| keys(loader).contains(&c.as_str())) {
+        if keys(loader).is_empty() {
+            return Support::OtherLoader;
+        }
+        self.fits(&Filter::of(Kind::Mod, game_version, loader, None))
+    }
+
+    /// Whether the project has a file the filter asks for, and if not, which of loader and version is missing.
+    pub fn fits(&self, filter: &Filter) -> Support {
+        if !filter.loaders.is_empty() && !self.categories.iter().any(|c| filter.loaders.contains(c)) {
             Support::OtherLoader
-        } else if !self.versions.iter().any(|v| v == game_version) {
+        } else if filter.game_version.as_ref().is_some_and(|wanted| !self.versions.contains(wanted)) {
             Support::OtherVersion
         } else {
             Support::Fits
@@ -89,15 +101,97 @@ fn defaults_for(loader: &Loader) -> &'static [&'static str] {
 pub enum Sort {
     Relevance,
     Downloads,
+    Updated,
+    Newest,
 }
 
 impl Sort {
+    /// Every order, in the order the browser offers them.
+    pub const ALL: [Sort; 4] = [Sort::Relevance, Sort::Downloads, Sort::Updated, Sort::Newest];
+
     fn index(self) -> &'static str {
         match self {
             Sort::Relevance => "relevance",
             Sort::Downloads => "downloads",
+            Sort::Updated => "updated",
+            Sort::Newest => "newest",
         }
     }
+}
+
+/// The kinds of projects the browser finds on Modrinth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Mod,
+    ResourcePack,
+    Shader,
+    DataPack,
+    Modpack,
+}
+
+impl Kind {
+    /// Every kind, in the order of the browser's tabs.
+    pub const ALL: [Kind; 5] = [Kind::Mod, Kind::ResourcePack, Kind::Shader, Kind::DataPack, Kind::Modpack];
+
+    /// Modrinth's name for this kind of project.
+    pub fn project_type(self) -> &'static str {
+        match self {
+            Kind::Mod => "mod",
+            Kind::ResourcePack => "resourcepack",
+            Kind::Shader => "shader",
+            Kind::DataPack => "datapack",
+            Kind::Modpack => "modpack",
+        }
+    }
+
+    /// Modrinth's categories for the kind that the browser offers as a filter.
+    pub fn categories(self) -> &'static [&'static str] {
+        match self {
+            Kind::Mod | Kind::DataPack => &["adventure", "decoration", "economy", "equipment", "food", "game-mechanics", "library", "magic", "management", "minigame", "mobs", "optimization", "social", "storage", "technology", "transportation", "utility", "worldgen"],
+            Kind::ResourcePack => &["combat", "decoration", "modded", "realistic", "simplistic", "themed", "tweaks", "utility", "vanilla-like"],
+            Kind::Shader => &["cartoon", "fantasy", "realistic", "semi-realistic", "vanilla-like"],
+            Kind::Modpack => &["adventure", "challenging", "combat", "kitchen-sink", "lightweight", "magic", "multiplayer", "optimization", "quests", "technology"],
+        }
+    }
+}
+
+/// What a search looks for: a kind of project with a file for a game version and one of some loaders.
+/// No game version or no loaders means any.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Filter {
+    pub kind: Kind,
+    pub game_version: Option<String>,
+    pub loaders: Vec<String>,
+}
+
+impl Filter {
+    /// What fits an instance on `game_version` with `loader`: mods and modpacks for its loader, resource packs and data
+    /// packs as such, shader packs for `shader_loader` (Iris when it has none yet).
+    pub fn of(kind: Kind, game_version: &str, loader: &Loader, shader_loader: Option<&str>) -> Self {
+        let loaders: Vec<String> = match kind {
+            Kind::Mod | Kind::Modpack => keys(loader).iter().map(|k| (*k).to_owned()).collect(),
+            Kind::ResourcePack => vec!["minecraft".into()],
+            Kind::Shader => vec![shader_loader.unwrap_or("iris").to_owned()],
+            Kind::DataPack => vec!["datapack".into()],
+        };
+        Self { kind, game_version: (!game_version.is_empty()).then(|| game_version.to_owned()), loaders }
+    }
+
+    /// Every project of `kind`, for any version and loader.
+    pub fn any(kind: Kind) -> Self {
+        Self { kind, game_version: None, loaders: Vec::new() }
+    }
+}
+
+/// One search: what it filters for, the words, the order and an optional category.
+/// With `all` the version and loader filters are left out and [`Hit::fits`] tells the results apart.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Search {
+    pub filter: Filter,
+    pub query: String,
+    pub sort: Sort,
+    pub category: Option<String>,
+    pub all: bool,
 }
 
 /// One page of search results and how many results the whole search has.
@@ -121,6 +215,8 @@ pub struct Defaults {
 pub struct Update {
     pub current: ModRef,
     pub latest: ModRef,
+    /// Version number and changelog (Markdown) of every version after the current one up to the latest, newest first, at most 5.
+    pub changelog: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -151,42 +247,90 @@ struct Project {
     title: String,
 }
 
-#[derive(Clone, Deserialize)]
-struct Version {
-    id: String,
-    project_id: String,
+/// One version of a project: its files, what it runs on and what it needs.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Version {
+    pub id: String,
+    pub project_id: String,
     #[serde(default)]
-    version_number: String,
-    version_type: String,
-    date_published: String,
-    game_versions: Vec<String>,
-    loaders: Vec<String>,
-    files: Vec<File>,
+    pub name: String,
     #[serde(default)]
-    dependencies: Vec<Dependency>,
+    pub version_number: String,
+    pub version_type: String,
+    pub date_published: String,
+    pub game_versions: Vec<String>,
+    pub loaders: Vec<String>,
+    pub files: Vec<File>,
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
+    #[serde(default)]
+    pub changelog: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
-struct File {
-    url: String,
-    filename: String,
+/// One file of a version.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct File {
+    pub url: String,
+    pub filename: String,
     #[serde(default)]
-    primary: bool,
-    hashes: Hashes,
+    pub primary: bool,
+    pub hashes: Hashes,
+    #[serde(default)]
+    pub size: u64,
 }
 
-#[derive(Clone, Deserialize)]
-struct Hashes {
-    sha1: String,
+/// The hashes Modrinth publishes for a file.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Hashes {
+    pub sha1: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct Dependency {
+/// Another project a version needs, may use, or cannot run with: `dependency_type` is `required`, `optional`,
+/// `incompatible` or `embedded`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Dependency {
     #[serde(default)]
-    project_id: Option<String>,
+    pub project_id: Option<String>,
     #[serde(default)]
-    version_id: Option<String>,
-    dependency_type: String,
+    pub version_id: Option<String>,
+    pub dependency_type: String,
+}
+
+/// What a project page shows: texts, numbers, dates and the gallery.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Details {
+    pub id: String,
+    #[serde(default)]
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// The long description, in Markdown with some HTML.
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub downloads: u64,
+    #[serde(default)]
+    pub followers: u64,
+    /// RFC 3339.
+    #[serde(default)]
+    pub updated: String,
+    #[serde(default)]
+    pub gallery: Vec<Shot>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+}
+
+/// One picture of a project's gallery.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Shot {
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub featured: bool,
+    #[serde(default)]
+    pub ordering: i64,
 }
 
 trait Source: Sync {
@@ -251,13 +395,27 @@ fn encode(s: &str) -> String {
 }
 
 fn search_url(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> String {
-    let mut facets = vec![vec!["project_type:mod".to_owned()]];
-    if !all {
-        facets.push(keys(loader).iter().map(|key| format!("categories:{key}")).collect());
-        facets.push(vec![format!("versions:{game_version}")]);
+    search_url_for(&Search { filter: Filter::of(Kind::Mod, game_version, loader, None), query: query.to_owned(), sort, category: None, all }, offset)
+}
+
+fn search_url_for(search: &Search, offset: usize) -> String {
+    let filter = &search.filter;
+    let mut facets = vec![vec![format!("project_type:{}", filter.kind.project_type())]];
+    if !search.all {
+        if !filter.loaders.is_empty() {
+            facets.push(filter.loaders.iter().map(|key| format!("categories:{key}")).collect());
+        }
+        if let Some(version) = &filter.game_version {
+            facets.push(vec![format!("versions:{version}")]);
+        }
     }
-    facets.push(vec!["client_side:required".to_owned(), "client_side:optional".to_owned()]);
-    format!("{API}/search?query={}&facets={}&index={}&offset={offset}&limit={PAGE}", encode(query), encode(&serde_json::json!(facets).to_string()), sort.index())
+    if let Some(category) = &search.category {
+        facets.push(vec![format!("categories:{category}")]);
+    }
+    if matches!(filter.kind, Kind::Mod | Kind::Modpack) {
+        facets.push(vec!["client_side:required".to_owned(), "client_side:optional".to_owned()]);
+    }
+    format!("{API}/search?query={}&facets={}&index={}&offset={offset}&limit={PAGE}", encode(search.query.trim()), encode(&serde_json::json!(facets).to_string()), search.sort.index())
 }
 
 fn versions_url(project_id: &str, game_version: &str, loader: &Loader) -> String {
@@ -269,6 +427,31 @@ fn versions_url(project_id: &str, game_version: &str, loader: &Loader) -> String
     )
 }
 
+fn versions_url_for(project_id: &str, filter: &Filter) -> String {
+    let mut url = format!("{API}/project/{}/version", encode(project_id));
+    let mut query = Vec::new();
+    if !filter.loaders.is_empty() {
+        query.push(format!("loaders={}", encode(&serde_json::json!(filter.loaders).to_string())));
+    }
+    if let Some(version) = &filter.game_version {
+        query.push(format!("game_versions={}", encode(&serde_json::json!([version]).to_string())));
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    url
+}
+
+/// The newest version of `versions` the filter takes, releases before betas before alphas.
+pub fn newest_for<'a>(versions: &'a [Version], filter: &Filter) -> Option<&'a Version> {
+    versions
+        .iter()
+        .filter(|v| filter.loaders.is_empty() || v.loaders.iter().any(|l| filter.loaders.contains(l)))
+        .filter(|v| filter.game_version.as_ref().is_none_or(|g| v.game_versions.contains(g)))
+        .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
+}
+
 fn rank(version_type: &str) -> u8 {
     match version_type {
         "release" => 2,
@@ -277,10 +460,14 @@ fn rank(version_type: &str) -> u8 {
     }
 }
 
+fn fits(version: &Version, game_version: &str, loader: &Loader) -> bool {
+    version.loaders.iter().any(|l| keys(loader).contains(&l.as_str())) && version.game_versions.iter().any(|g| g == game_version)
+}
+
 fn newest<'a>(versions: &'a [Version], game_version: &str, loader: &Loader) -> Option<&'a Version> {
     versions
         .iter()
-        .filter(|v| v.loaders.iter().any(|l| keys(loader).contains(&l.as_str())) && v.game_versions.iter().any(|g| g == game_version))
+        .filter(|v| fits(v, game_version, loader))
         .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
 }
 
@@ -410,10 +597,20 @@ fn updates_from(src: &dyn Source, game_version: &str, loader: &Loader, mods: &[M
         if published.is_some_and(|date| latest.date_published.as_str() <= date) {
             return Ok(None);
         }
-        Ok(Some(Update { current: current.clone(), latest: mod_ref(&current.title, latest)? }))
+        Ok(Some(Update { current: current.clone(), latest: mod_ref(&current.title, latest)?, changelog: changelog_since(&versions, latest, published, game_version, loader) }))
     };
     let found = pool()?.install(|| mods.par_iter().map(check).collect::<Result<Vec<_>>>())?;
     Ok(found.into_iter().flatten().collect())
+}
+
+fn changelog_since(versions: &[Version], latest: &Version, published: Option<&str>, game_version: &str, loader: &Loader) -> Vec<(String, String)> {
+    let mut newer: Vec<&Version> = match published {
+        Some(date) => versions.iter().filter(|v| fits(v, game_version, loader) && v.date_published.as_str() > date && v.date_published <= latest.date_published).collect(),
+        None => vec![latest],
+    };
+    newer.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+    newer.truncate(CHANGELOGS);
+    newer.into_iter().map(|v| (v.version_number.clone(), v.changelog.clone().unwrap_or_default())).collect()
 }
 
 fn matched_from(src: &dyn Source, hashes: &[String]) -> Result<HashMap<String, ModRef>> {
@@ -459,6 +656,9 @@ fn replaced(instance: &Instance, selection: &[Update]) -> Result<Instance> {
             .find(|m| m.project_id == current.project_id && m.version_id == current.version_id)
             .with_context(|| format!("{} is no longer in the instance at that version", current.title))?;
         *slot = update.latest.clone();
+        if let Some(kept) = next.disabled.iter_mut().find(|name| name.eq_ignore_ascii_case(&current.file_name)) {
+            kept.clone_from(&update.latest.file_name);
+        }
     }
     Ok(next)
 }
@@ -484,42 +684,135 @@ pub(super) fn safe_file_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], dir: &Path) -> Result<usize> {
-    let local: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
+pub(super) struct Found {
+    pub name: String,
+    pub on: Option<PathBuf>,
+    pub off: Option<PathBuf>,
+}
+
+pub(super) fn jar_name(name: &str) -> Option<(&str, bool)> {
+    let (base, off) = match name.len().checked_sub(DISABLED.len()).and_then(|at| Some((name.get(..at)?, name.get(at..)?))) {
+        Some((base, tail)) if tail.eq_ignore_ascii_case(DISABLED) => (base, true),
+        _ => (name, false),
+    };
+    let at = base.len().checked_sub(4)?;
+    base.get(at..)?.eq_ignore_ascii_case(".jar").then_some((base, off))
+}
+
+pub(super) fn list_jars(dir: &Path) -> Result<HashMap<String, Found>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
+    };
+    let mut found: HashMap<String, Found> = HashMap::new();
+    for entry in entries {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+        let Some((base, off)) = jar_name(&name) else { continue };
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let slot = found.entry(base.to_lowercase()).or_insert_with(|| Found { name: base.to_owned(), on: None, off: None });
+        if off {
+            slot.off = Some(entry.path());
+        } else {
+            slot.on = Some(entry.path());
+            base.clone_into(&mut slot.name);
+        }
+    }
+    Ok(found)
+}
+
+pub(super) fn rename(from: &Path, to: &Path) -> Result<()> {
+    std::fs::rename(from, to).with_context(|| format!("cannot rename {} to {}", from.display(), to.display()))
+}
+
+fn place_local(local: &[String], disabled: &HashSet<String>, dir: &Path) -> Result<()> {
+    let found = list_jars(dir)?;
+    for name in local {
+        if safe_file_name(name).is_err() {
+            continue;
+        }
+        let key = name.to_lowercase();
+        let Some(file) = found.get(&key) else { continue };
+        match (&file.on, &file.off, disabled.contains(&key)) {
+            (Some(on), None, true) => rename(on, &dir.join(format!("{}{DISABLED}", file.name)))?,
+            (None, Some(off), false) => rename(off, &dir.join(&file.name))?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn place(agent: &ureq::Agent, m: &ModRef, off: bool, dir: &Path) -> Result<bool> {
+    let (on_path, off_path) = (dir.join(&m.file_name), dir.join(format!("{}{DISABLED}", m.file_name)));
+    let (want, other) = if off { (off_path, on_path) } else { (on_path, off_path) };
+    let right = |path: &Path| -> Result<bool> { Ok(path.is_file() && net::file_sha1(path)?.eq_ignore_ascii_case(&m.sha1)) };
+    if right(&want)? {
+        return Ok(false);
+    }
+    if right(&other)? {
+        rename(&other, &want)?;
+        return Ok(false);
+    }
+    net::fetch_verified(agent, &m.url, &want, Some(&m.sha1)).with_context(|| format!("cannot download {}", m.title))?;
+    if other.is_file() {
+        std::fs::remove_file(&other).with_context(|| format!("cannot delete {}", other.display()))?;
+    }
+    Ok(true)
+}
+
+fn read_ledger(path: &Path) -> HashMap<String, String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let (name, hash) = line.trim().rsplit_once(char::is_whitespace)?;
+            let (name, hash) = (name.trim().to_lowercase(), hash.to_lowercase());
+            (!name.is_empty() && hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some((name, hash))
+        })
+        .collect()
+}
+
+pub(super) fn managed_files(instance_dir: &Path) -> HashMap<String, String> {
+    read_ledger(&instance_dir.join(LEDGER))
+}
+
+pub(super) fn is_managed(managed: &HashMap<String, String>, name: &str, path: &Path) -> bool {
+    managed.get(&name.to_lowercase()).is_some_and(|hash| net::file_sha1(path).is_ok_and(|actual| actual == *hash))
+}
+
+fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
+    let local_keys: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
+    let off: HashSet<String> = disabled.iter().map(|name| name.to_lowercase()).collect();
     let mut keep = HashSet::new();
     let mut jobs = Vec::new();
     for m in mods {
         safe_file_name(&m.file_name)?;
-        if local.contains(&m.file_name.to_lowercase()) {
+        if local_keys.contains(&m.file_name.to_lowercase()) {
             bail!("{} is called {} like a local mod; rename or remove the local one", m.title, m.file_name);
         }
         if keep.insert(m.file_name.to_lowercase()) {
             jobs.push(m);
         }
     }
-    keep.extend(local);
+    let mut synced: Vec<(String, String)> = jobs.iter().map(|m| (m.file_name.to_lowercase(), m.sha1.to_lowercase())).collect();
+    synced.sort_unstable();
+    keep.extend(local_keys);
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let fetched = pool()?.install(|| {
-        jobs.par_iter()
-            .map(|m| -> Result<bool> {
-                let path = dir.join(&m.file_name);
-                let current = path.is_file() && net::file_sha1(&path)?.eq_ignore_ascii_case(&m.sha1);
-                if !current {
-                    net::fetch_verified(agent, &m.url, &path, Some(&m.sha1)).with_context(|| format!("cannot download {}", m.title))?;
-                }
-                Ok(!current)
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
-    for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_lowercase) else {
+    place_local(local, &off, dir)?;
+    let fetched = pool()?.install(|| jobs.par_iter().map(|m| place(agent, m, off.contains(&m.file_name.to_lowercase()), dir)).collect::<Result<Vec<_>>>())?;
+    let managed = read_ledger(ledger);
+    for (name, file) in list_jars(dir)? {
+        if keep.contains(&name) || name == super::fleet::COMPANION_FILE {
             continue;
-        };
-        if name.ends_with(".jar") && !keep.contains(&name) && name != super::fleet::COMPANION_FILE && entry.file_type()?.is_file() {
-            std::fs::remove_file(entry.path()).with_context(|| format!("cannot delete {}", entry.path().display()))?;
+        }
+        for path in file.on.iter().chain(&file.off).filter(|path| is_managed(&managed, &name, path)) {
+            std::fs::remove_file(path).with_context(|| format!("cannot delete {}", path.display()))?;
         }
     }
+    let lines: String = synced.iter().map(|(name, sha1)| format!("{name} {sha1}\n")).collect();
+    net::write_atomic(ledger, lines.as_bytes())?;
     Ok(fetched.into_iter().filter(|downloaded| *downloaded).count())
 }
 
@@ -528,33 +821,102 @@ pub fn search(query: &str, game_version: &str, loader: &Loader) -> Result<Vec<Hi
     Api::new()?.search(query, game_version, loader)
 }
 
-/// One page of mods matching `query`, starting at result `offset`. With `all` false only mods for `loader` with a
-/// version for `game_version` come back; with `all` true the others do too, and [`Hit::support`] tells them apart.
+/// One page of projects for `search`, starting at result `offset`.
 /// Every page that arrives is kept on disk; without a connection the kept page comes back with [`Page::saved`].
-pub fn search_page(query: &str, game_version: &str, loader: &Loader, sort: Sort, all: bool, offset: usize) -> Result<Page> {
-    search_page_in(&paths::data_dir().join("cache").join("modrinth"), &Api::new()?.agent, online::offline(), &search_url(query, game_version, loader, sort, all, offset))
+pub fn search_for(search: &Search, offset: usize) -> Result<Page> {
+    search_page_in(&cache_dir(), &Api::new()?.agent, online::offline(), &search_url_for(search, offset))
+}
+
+/// A project's page, and when it was fetched if it comes from the disk because there is no connection.
+pub fn details(project_id: &str) -> Result<(Details, Option<SystemTime>)> {
+    cached_in(&cache_dir(), &Api::new()?.agent, online::offline(), &format!("{API}/project/{}", encode(project_id)))
+}
+
+/// Every version of a project, newest first, and when they were fetched if they come from the disk.
+pub fn versions(project_id: &str) -> Result<(Vec<Version>, Option<SystemTime>)> {
+    cached_in(&cache_dir(), &Api::new()?.agent, online::offline(), &format!("{API}/project/{}/version", encode(project_id)))
+}
+
+/// The titles of projects by id; ids Modrinth does not know are absent.
+pub fn titles(ids: &[String]) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let agent = Api::new()?.agent;
+    for chunk in ids.chunks(PROJECT_CHUNK) {
+        let url = format!("{API}/projects?ids={}", encode(&serde_json::json!(chunk).to_string()));
+        let (projects, _): (Vec<Project>, _) = cached_in(&cache_dir(), &agent, online::offline(), &url)?;
+        out.extend(projects.into_iter().map(|p| (p.id, p.title)));
+    }
+    Ok(out)
+}
+
+/// The newest file of a project that `filter` takes, as a reference with its hash.
+pub fn file_for(project_id: &str, title: &str, filter: &Filter) -> Result<ModRef> {
+    let api = Api::new()?;
+    let versions: Vec<Version> = net::get_json(&api.agent, &versions_url_for(project_id, filter))?;
+    let version = newest_for(&versions, filter).ok_or_else(|| {
+        Unavailable(match &filter.game_version {
+            Some(game) => format!("{title} has no version for {game}"),
+            None => format!("{title} has no version"),
+        })
+    })?;
+    mod_ref(title, version)
+}
+
+/// Newer files for `current`, files of projects `filter` describes; those without a newer one are left out.
+pub fn updates_for(filter: &Filter, current: &[ModRef]) -> Result<Vec<Update>> {
+    let api = Api::new()?;
+    let check = |m: &ModRef| -> Result<Option<Update>> {
+        let versions: Vec<Version> = net::get_json(&api.agent, &versions_url_for(&m.project_id, filter))?;
+        Ok(newer(&versions, filter, m)?.map(|latest| Update { current: m.clone(), latest, changelog: Vec::new() }))
+    };
+    let found = pool()?.install(|| current.par_iter().map(check).collect::<Result<Vec<_>>>())?;
+    Ok(found.into_iter().flatten().collect())
+}
+
+fn newer(versions: &[Version], filter: &Filter, current: &ModRef) -> Result<Option<ModRef>> {
+    let Some(latest) = newest_for(versions, filter) else { return Ok(None) };
+    if latest.id == current.version_id {
+        return Ok(None);
+    }
+    let published = versions.iter().find(|v| v.id == current.version_id).map(|v| v.date_published.as_str());
+    if published.is_some_and(|date| latest.date_published.as_str() <= date) {
+        return Ok(None);
+    }
+    mod_ref(&current.title, latest).map(Some)
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    paths::data_dir().join("cache").join("modrinth")
 }
 
 fn search_page_in(cache: &Path, agent: &ureq::Agent, offline: bool, url: &str) -> Result<Page> {
+    let (response, saved): (SearchResponse, _) = cached_in(cache, agent, offline, url)?;
+    Ok(Page { hits: response.hits, total: response.total_hits, saved })
+}
+
+fn cached_in<T: serde::de::DeserializeOwned>(cache: &Path, agent: &ureq::Agent, offline: bool, url: &str) -> Result<(T, Option<SystemTime>)> {
     let path = cache.join(format!("{}.json", sha1_hex(url.as_bytes())));
-    let saved = || -> Option<Page> {
+    let saved = || -> Option<(T, Option<SystemTime>)> {
         let at = path.metadata().and_then(|m| m.modified()).ok()?;
-        let response: SearchResponse = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-        Some(Page { hits: response.hits, total: response.total_hits, saved: Some(at) })
+        let value: T = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        Some((value, Some(at)))
     };
-    if offline && let Some(page) = saved() {
-        return Ok(page);
+    if offline && let Some(kept) = saved() {
+        return Ok(kept);
     }
     let bytes = match net::get_bytes(agent, url) {
         Ok(bytes) => bytes,
         Err(e) if net::no_connection(&e) => return saved().ok_or(e),
         Err(e) => return Err(e),
     };
-    let response: SearchResponse = serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))?;
+    let value: T = serde_json::from_slice(&bytes).with_context(|| format!("unexpected response from {url}"))?;
     if net::write_atomic(&path, &bytes).is_ok() {
         prune(cache, KEPT_PAGES);
     }
-    Ok(Page { hits: response.hits, total: response.total_hits, saved: None })
+    Ok((value, None))
 }
 
 fn sha1_hex(bytes: &[u8]) -> String {
@@ -611,7 +973,14 @@ pub fn sync_mods(instance: &Instance) -> Result<usize> {
     with_mods_lock(&instance.dir(), || sync_locked(&saved(instance)))
 }
 
-fn with_mods_lock<T>(instance_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+fn not_searching(instance_dir: &Path) -> Result<()> {
+    if super::content::searching(instance_dir) {
+        bail!(tr("Beende zuerst die Fehlersuche."));
+    }
+    Ok(())
+}
+
+pub(super) fn with_mods_lock<T>(instance_dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
     let _held = super::lock::exclusive(&instance_dir.join("mods.lock"))?;
     work()
 }
@@ -638,7 +1007,7 @@ fn sync_locked(instance: &Instance) -> Result<usize> {
             },
         }
     }
-    sync_into(&net::agent(None)?, &mods, &local, &instance.mods_dir())
+    sync_into(&net::agent(None)?, &mods, &local, &instance.disabled, &instance.mods_dir(), &instance.dir().join(LEDGER))
 }
 
 fn fabric_api_on_disk(dir: &Path) -> Option<String> {
@@ -669,6 +1038,7 @@ pub fn match_hashes(hashes: &[String]) -> Result<HashMap<String, ModRef>> {
 pub fn update_mods(instance: &mut Instance, selection: &[Update]) -> Result<usize> {
     update_with(instance, selection, |next| {
         with_mods_lock(&next.dir(), || {
+            not_searching(&next.dir())?;
             let fetched = sync_locked(next)?;
             super::instance::save(next)?;
             Ok(fetched)
@@ -680,6 +1050,7 @@ pub fn update_mods(instance: &mut Instance, selection: &[Update]) -> Result<usiz
 /// games run. The files change at the next start, when the mod folder is synced.
 pub fn update_mods_later(instance: &mut Instance, selection: &[Update]) -> Result<()> {
     update_with(instance, selection, |next| {
+        not_searching(&next.dir())?;
         super::instance::save(next)?;
         Ok(0)
     })
@@ -1176,7 +1547,7 @@ Connection: close
     }
 
     fn update_for(fx: &Fixtures, from: &str, to: &str) -> Update {
-        Update { current: pinned(fx, from), latest: pinned(fx, to) }
+        Update { current: pinned(fx, from), latest: pinned(fx, to), changelog: Vec::new() }
     }
 
     #[test]
@@ -1222,11 +1593,11 @@ Connection: close
         let b = ModRef { project_id: "p2".into(), version_id: "v2".into(), ..jar("b.jar", b"b") };
         batch.mods = vec![a.clone(), b.clone()];
         let latest = ModRef { version_id: "v9".into(), ..jar("a2.jar", b"a2") };
-        let same_project_other_version = Update { current: ModRef { version_id: "vX".into(), ..a.clone() }, latest: latest.clone() };
+        let same_project_other_version = Update { current: ModRef { version_id: "vX".into(), ..a.clone() }, latest: latest.clone(), changelog: Vec::new() };
         assert!(replaced(&batch, &[same_project_other_version]).is_err());
-        let same_version_other_project = Update { current: ModRef { project_id: "pX".into(), ..a.clone() }, latest: latest.clone() };
+        let same_version_other_project = Update { current: ModRef { project_id: "pX".into(), ..a.clone() }, latest: latest.clone(), changelog: Vec::new() };
         assert!(replaced(&batch, &[same_version_other_project]).is_err());
-        let next = replaced(&batch, &[Update { current: a, latest: latest.clone() }]).unwrap();
+        let next = replaced(&batch, &[Update { current: a, latest: latest.clone(), changelog: Vec::new() }]).unwrap();
         assert_eq!(next.mods, [latest, b]);
     }
 
@@ -1236,7 +1607,8 @@ Connection: close
         std::fs::write(dir.path().join("Foo.jar"), b"mine").unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"stray").unwrap();
         let agent = net::agent(None).unwrap();
-        let err = sync_into(&agent, &[jar("foo.jar", b"theirs")], &["FOO.jar".into()], dir.path()).unwrap_err().to_string();
+        let (_held, ledger) = ledger(&[]);
+        let err = sync_into(&agent, &[jar("foo.jar", b"theirs")], &["FOO.jar".into()], &[], dir.path(), &ledger).unwrap_err().to_string();
         assert!(err.contains("local mod"), "{err}");
         assert_eq!(std::fs::read(dir.path().join("Foo.jar")).unwrap(), b"mine");
         assert!(dir.path().join("stray.jar").is_file());
@@ -1269,9 +1641,10 @@ Connection: close
         let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
         batch.mods = vec![jar("old.jar", b"old")];
         batch.local_mods = vec!["MINE.jar".into(), "other.jar".into()];
-        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") } };
+        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") }, changelog: Vec::new() };
         let agent = net::agent(None).unwrap();
-        let fetched = update_with(&mut batch, &[update], |next| sync_into(&agent, &next.mods, &next.local_mods, dir.path())).unwrap();
+        let (_held, ledger) = ledger(&[("old.jar", &b"old"[..]), ("stray.jar", &b"stray"[..])]);
+        let fetched = update_with(&mut batch, &[update], |next| sync_into(&agent, &next.mods, &next.local_mods, &next.disabled, dir.path(), &ledger)).unwrap();
         assert_eq!(fetched, 0);
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
@@ -1315,6 +1688,70 @@ Connection: close
         assert!(versions_url("lithium", "26.3", &Loader::NeoForge(None)).contains("loaders=%5B%22neoforge%22%5D"));
     }
 
+    fn facets_of(url: &str) -> Vec<Vec<String>> {
+        let raw = url.split("&facets=").nth(1).unwrap().split('&').next().unwrap();
+        let mut bytes = Vec::new();
+        let mut it = raw.bytes();
+        while let Some(b) = it.next() {
+            if b == b'%' {
+                let hex = [it.next().unwrap(), it.next().unwrap()];
+                bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).unwrap(), 16).unwrap());
+            } else {
+                bytes.push(b);
+            }
+        }
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn each_kind_searches_its_project_type_with_the_instance_filters() {
+        let search = |kind, shader: Option<&str>, loader: &Loader| Search { filter: Filter::of(kind, "26.3", loader, shader), query: " fresh ".into(), sort: Sort::Updated, category: None, all: false };
+        let facets = |s: &Search| facets_of(&search_url_for(s, 0));
+        let v = || vec!["versions:26.3".to_owned()];
+        assert_eq!(facets(&search(Kind::Mod, None, &fabric())), [vec!["project_type:mod".to_owned()], vec!["categories:fabric".into()], v(), vec!["client_side:required".into(), "client_side:optional".into()]]);
+        assert_eq!(facets(&search(Kind::ResourcePack, None, &fabric())), [vec!["project_type:resourcepack".to_owned()], vec!["categories:minecraft".into()], v()]);
+        assert_eq!(facets(&search(Kind::Shader, None, &Loader::Vanilla)), [vec!["project_type:shader".to_owned()], vec!["categories:iris".into()], v()]);
+        assert_eq!(facets(&search(Kind::Shader, Some("optifine"), &fabric())), [vec!["project_type:shader".to_owned()], vec!["categories:optifine".into()], v()]);
+        assert_eq!(facets(&search(Kind::DataPack, None, &fabric())), [vec!["project_type:datapack".to_owned()], vec!["categories:datapack".into()], v()]);
+        assert_eq!(facets(&search(Kind::Modpack, None, &Loader::Quilt(None)))[1], ["categories:quilt", "categories:fabric"]);
+        let url = search_url_for(&search(Kind::ResourcePack, None, &fabric()), 20);
+        assert!(url.contains("query=fresh&") && url.ends_with("&index=updated&offset=20&limit=20"), "{url}");
+        let newest = Search { sort: Sort::Newest, category: Some("vanilla-like".into()), ..search(Kind::Shader, None, &fabric()) };
+        assert!(search_url_for(&newest, 0).contains("&index=newest&"));
+        assert_eq!(facets_of(&search_url_for(&newest, 0)).last().unwrap(), &["categories:vanilla-like"]);
+        let anything = Search { filter: Filter::any(Kind::Modpack), query: String::new(), sort: Sort::Downloads, category: None, all: false };
+        assert_eq!(facets_of(&search_url_for(&anything, 0)), [vec!["project_type:modpack".to_owned()], vec!["client_side:required".into(), "client_side:optional".into()]]);
+        let all = Search { all: true, ..search(Kind::DataPack, None, &fabric()) };
+        assert_eq!(facets_of(&search_url_for(&all, 0)), [vec!["project_type:datapack".to_owned()]]);
+    }
+
+    #[test]
+    fn version_lookups_follow_the_filter() {
+        assert_eq!(versions_url_for("fresh", &Filter::of(Kind::ResourcePack, "26.3", &fabric(), None)), "https://api.modrinth.com/v2/project/fresh/version?loaders=%5B%22minecraft%22%5D&game_versions=%5B%2226.3%22%5D");
+        assert_eq!(versions_url_for("fo", &Filter::any(Kind::Modpack)), "https://api.modrinth.com/v2/project/fo/version");
+        let version = |id: &str, kind: &str, date: &str, loaders: &[&str], games: &[&str]| Version {
+            id: id.into(),
+            project_id: "p".into(),
+            name: String::new(),
+            version_number: id.into(),
+            version_type: kind.into(),
+            date_published: date.into(),
+            game_versions: games.iter().map(|s| (*s).to_owned()).collect(),
+            loaders: loaders.iter().map(|s| (*s).to_owned()).collect(),
+            files: Vec::new(),
+            dependencies: Vec::new(),
+            changelog: None,
+        };
+        let list = [version("a", "release", "2026-01", &["iris"], &["26.3"]), version("b", "beta", "2026-03", &["iris"], &["26.3"]), version("c", "release", "2026-05", &["optifine"], &["26.3"]), version("d", "release", "2026-06", &["iris"], &["26.2"])];
+        let shader = Filter::of(Kind::Shader, "26.3", &fabric(), None);
+        assert_eq!(newest_for(&list, &shader).map(|v| v.id.as_str()), Some("a"));
+        assert_eq!(newest_for(&list, &Filter::any(Kind::Shader)).map(|v| v.id.as_str()), Some("d"));
+        let hit = Hit { title: "t".into(), slug: "s".into(), project_id: "p".into(), description: String::new(), downloads: 0, icon_url: None, author: String::new(), versions: vec!["26.3".into()], categories: vec!["optifine".into()] };
+        assert_eq!(hit.fits(&shader), Support::OtherLoader);
+        assert_eq!(hit.fits(&Filter::of(Kind::ResourcePack, "26.2", &fabric(), None)), Support::OtherLoader);
+        assert_eq!(hit.fits(&Filter::any(Kind::Shader)), Support::Fits);
+    }
+
     #[test]
     fn showing_all_drops_the_version_and_loader_filters_and_pages_by_offset() {
         let url = search_url("", "26.3", &fabric(), Sort::Downloads, true, 40);
@@ -1354,6 +1791,20 @@ Connection: close
         }
     }
 
+    fn ledger(entries: &[(&str, &[u8])]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mods.managed");
+        let text: String = entries.iter().map(|(name, bytes)| format!("{name} {}\n", jar(name, bytes).sha1)).collect();
+        std::fs::write(&path, text).unwrap();
+        (dir, path)
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut left: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        left
+    }
+
     fn jar(name: &str, bytes: &[u8]) -> ModRef {
         use sha1::{Digest, Sha1};
         let sha1: String = Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
@@ -1381,12 +1832,13 @@ Connection: close
         std::fs::write(mods.join("manual").join("mine.jar"), b"keep").unwrap();
         let list = [jar("a.jar", b"aaa"), jar("b.jar", b"bbb"), jar("a.jar", b"aaa")];
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &list, &[], &mods).unwrap(), 0);
+        let (_held, ledger) = ledger(&[("stray.jar", &b"old"[..]), ("stray2.jar", &b"old"[..])]);
+        assert_eq!(sync_into(&agent, &list, &[], &[], &mods, &ledger).unwrap(), 0);
         let mut left: Vec<String> = std::fs::read_dir(&mods).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
         assert_eq!(left, ["a.jar", "b.jar", "folder.jar", "manual", "notes.txt"]);
         assert!(mods.join("manual").join("mine.jar").is_file());
-        assert_eq!(sync_into(&agent, &[], &[], &mods).unwrap(), 0);
+        assert_eq!(sync_into(&agent, &[], &[], &[], &mods, &ledger).unwrap(), 0);
         assert!(!mods.join("a.jar").exists() && !mods.join("b.jar").exists());
         assert!(mods.join("folder.jar").is_dir() && mods.join("notes.txt").is_file());
     }
@@ -1396,11 +1848,12 @@ Connection: close
         let dir = tempfile::tempdir().unwrap();
         let mods = dir.path().join("new").join("mods");
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &[], &[], &mods).unwrap(), 0);
+        let (_held, ledger) = ledger(&[]);
+        assert_eq!(sync_into(&agent, &[], &[], &[], &mods, &ledger).unwrap(), 0);
         assert!(mods.is_dir());
         let mut evil = jar("x.jar", b"x");
         evil.file_name = "../x.jar".into();
-        assert!(sync_into(&agent, &[evil], &[], &mods).is_err());
+        assert!(sync_into(&agent, &[evil], &[], &[], &mods, &ledger).is_err());
         assert!(!dir.path().join("new").join("x.jar").exists());
     }
 
@@ -1430,7 +1883,8 @@ Connection: close
             ModRef { url: url("changed.jar"), ..jar("changed.jar", b"updated") },
         ];
         let agent = net::agent(None).unwrap();
-        assert_eq!(sync_into(&agent, &list, &[], dir.path()).unwrap(), 2);
+        let (_held, ledger) = ledger(&[("stray.jar", &b"x"[..])]);
+        assert_eq!(sync_into(&agent, &list, &[], &[], dir.path(), &ledger).unwrap(), 2);
         server.join().unwrap();
         assert_eq!(std::fs::read(dir.path().join("new.jar")).unwrap(), b"fresh");
         assert_eq!(std::fs::read(dir.path().join("changed.jar")).unwrap(), b"updated");
@@ -1443,8 +1897,183 @@ Connection: close
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("stray.jar"), b"x").unwrap();
         let agent = net::agent(None).unwrap();
-        assert!(sync_into(&agent, &[jar("missing.jar", b"m")], &[], dir.path()).is_err());
+        let (_held, ledger) = ledger(&[("stray.jar", &b"x"[..])]);
+        assert!(sync_into(&agent, &[jar("missing.jar", b"m")], &[], &[], dir.path(), &ledger).is_err());
         assert!(dir.path().join("stray.jar").is_file());
+    }
+
+    #[test]
+    fn a_disabled_modrinth_mod_is_downloaded_as_a_disabled_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 2048];
+            let _ = stream.read(&mut buf).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(b"fresh").unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let list = [ModRef { url: format!("http://127.0.0.1:{port}/new.jar"), ..jar("new.jar", b"fresh") }];
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[]);
+        assert_eq!(sync_into(&agent, &list, &[], &["NEW.jar".into()], dir.path(), &ledger).unwrap(), 1);
+        server.join().unwrap();
+        assert_eq!(names(dir.path()), ["new.jar.disabled"]);
+        assert_eq!(std::fs::read(dir.path().join("new.jar.disabled")).unwrap(), b"fresh");
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), format!("new.jar {}\n", jar("new.jar", b"fresh").sha1));
+        assert_eq!(sync_into(&agent, &list, &[], &["new.jar".into()], dir.path(), &ledger).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_mod_switched_on_or_off_is_renamed_in_place_and_not_downloaded_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path();
+        for (name, body) in [("a.jar", "aaa"), ("b.jar.disabled", "bbb"), ("own.jar", "own"), ("back.JAR.disabled", "back"), ("both.jar", "x"), ("both.jar.disabled", "y")] {
+            std::fs::write(mods.join(name), body).unwrap();
+        }
+        let list = [jar("a.jar", b"aaa"), jar("b.jar", b"bbb")];
+        let local: Vec<String> = ["own.jar", "back.jar", "both.jar"].map(String::from).to_vec();
+        let off: Vec<String> = ["a.jar", "own.jar", "both.jar"].map(String::from).to_vec();
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[]);
+        assert_eq!(sync_into(&agent, &list, &local, &off, mods, &ledger).unwrap(), 0);
+        assert_eq!(names(mods), ["a.jar.disabled", "b.jar", "back.JAR", "both.jar", "both.jar.disabled", "own.jar.disabled"]);
+        assert_eq!(std::fs::read(mods.join("b.jar")).unwrap(), b"bbb");
+    }
+
+    #[test]
+    fn a_stray_jar_the_user_added_survives_a_sync_and_one_an_earlier_sync_placed_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path();
+        for name in ["a.jar", "user.jar", "User2.jar.disabled", "old.jar", "Old2.jar.disabled", crate::core::fleet::COMPANION_FILE] {
+            std::fs::write(mods.join(name), "x").unwrap();
+        }
+        std::fs::write(mods.join("a.jar"), b"aaa").unwrap();
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[("old.jar", &b"x"[..]), ("old2.jar", &b"x"[..]), ("OLD3.jar", &b"x"[..]), (crate::core::fleet::COMPANION_FILE, &b"x"[..])]);
+        sync_into(&agent, &[jar("a.jar", b"aaa")], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["User2.jar.disabled", "a.jar", "manycraft-companion.jar", "user.jar"]);
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), format!("a.jar {}\n", jar("a.jar", b"aaa").sha1));
+        sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["User2.jar.disabled", "manycraft-companion.jar", "user.jar"]);
+    }
+
+    #[test]
+    fn a_jar_with_a_ledger_name_is_deleted_only_when_its_hash_is_the_recorded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path();
+        for (name, body) in [("x.jar", "synced"), ("x.jar.disabled", "mine"), ("y.jar", "mine"), ("z.jar.disabled", "synced"), ("z.jar", "mine")] {
+            std::fs::write(mods.join(name), body).unwrap();
+        }
+        let agent = net::agent(None).unwrap();
+        let (_held, ledger) = ledger(&[("x.jar", &b"synced"[..]), ("y.jar", &b"synced"[..]), ("z.jar", &b"synced"[..])]);
+        sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["x.jar.disabled", "y.jar", "z.jar"]);
+        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "");
+        sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
+        assert_eq!(names(mods), ["x.jar.disabled", "y.jar", "z.jar"]);
+    }
+
+    #[test]
+    fn the_ledger_keeps_a_lowercase_hash_per_name_and_ignores_lines_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mods.managed");
+        let hash = "AB".repeat(20);
+        std::fs::write(&path, format!("old.jar\nbad name.jar zz\nOk Name.JAR {hash}\n\n{hash}\n")).unwrap();
+        let read = read_ledger(&path);
+        assert_eq!(read.len(), 1);
+        assert_eq!(read.get("ok name.jar"), Some(&hash.to_lowercase()));
+        assert!(read_ledger(&dir.path().join("none")).is_empty());
+        let (_held, written) = ledger(&[]);
+        let agent = net::agent(None).unwrap();
+        let mut api = jar("Fabric-API.jar", b"api");
+        api.sha1 = api.sha1.to_uppercase();
+        let mods = dir.path().join("mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::write(mods.join("Fabric-API.jar"), b"api").unwrap();
+        sync_into(&agent, &[api.clone()], &[], &[], &mods, &written).unwrap();
+        assert_eq!(read_ledger(&written).get("fabric-api.jar"), Some(&jar("Fabric-API.jar", b"api").sha1));
+    }
+
+    #[test]
+    fn updates_are_refused_while_the_troubleshooter_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(not_searching(dir.path()).is_ok());
+        let mut state = crate::core::content::Bisect { before: Vec::new(), suspects: Vec::new(), off: Vec::new(), round: 0, rounds: 1, outcome: None };
+        std::fs::write(dir.path().join("bisect.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        let err = not_searching(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("Fehlersuche") || err.contains("troubleshooter"), "{err}");
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
+        let current = jar("a.jar", b"a");
+        batch.mods = vec![current.clone()];
+        let update = Update { current, latest: ModRef { version_id: "v2".into(), ..jar("a2.jar", b"a2") }, changelog: Vec::new() };
+        let before = batch.clone();
+        assert!(update_with(&mut batch, &[update], |_| not_searching(dir.path()).map(|()| 0)).is_err());
+        assert_eq!(batch, before);
+        state.outcome = Some(crate::core::content::Outcome::Nothing);
+        std::fs::write(dir.path().join("bisect.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        assert!(not_searching(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn an_update_keeps_a_disabled_mod_disabled_under_its_new_file_name() {
+        let mut batch = Instance::new("b", "26.3", crate::core::instance::Loader::default());
+        batch.mods = vec![jar("old.jar", b"old"), jar("other.jar", b"other")];
+        batch.disabled = vec!["OLD.jar".into(), "gone.jar".into()];
+        let update = Update { current: batch.mods[0].clone(), latest: ModRef { version_id: "v2".into(), ..jar("new.jar", b"new") }, changelog: Vec::new() };
+        let next = replaced(&batch, &[update]).unwrap();
+        assert_eq!(next.disabled, ["new.jar", "gone.jar"]);
+        let other = Update { current: batch.mods[1].clone(), latest: ModRef { version_id: "v2".into(), ..jar("other2.jar", b"o2") }, changelog: Vec::new() };
+        assert_eq!(replaced(&batch, &[other]).unwrap().disabled, batch.disabled);
+    }
+
+    fn versions_json(rows: &[(&str, &str, &str, Option<&str>)]) -> Vec<Version> {
+        let items: Vec<String> = rows
+            .iter()
+            .map(|(id, kind, date, log)| {
+                let log = log.map_or("null".to_owned(), |l| format!("{l:?}"));
+                format!(
+                    r#"{{"id":"{id}","project_id":"p","version_number":"n-{id}","version_type":"{kind}","date_published":"{date}","game_versions":["26.3"],"loaders":["fabric"],"files":[],"dependencies":[],"changelog":{log}}}"#
+                )
+            })
+            .collect();
+        serde_json::from_str(&format!("[{}]", items.join(","))).unwrap()
+    }
+
+    #[test]
+    fn the_changelog_is_every_version_after_the_current_one_up_to_the_latest_newest_first_and_capped() {
+        let versions = versions_json(&[
+            ("v1", "release", "2026-01-01T00:00:00Z", Some("one")),
+            ("v2", "release", "2026-01-02T00:00:00Z", None),
+            ("v3", "release", "2026-01-03T00:00:00Z", Some("three")),
+            ("v4", "release", "2026-01-04T00:00:00Z", Some("four")),
+            ("v5", "release", "2026-01-05T00:00:00Z", Some("five")),
+            ("v6", "release", "2026-01-06T00:00:00Z", Some("six")),
+            ("v7", "release", "2026-01-07T00:00:00Z", Some("seven")),
+            ("v8", "beta", "2026-01-08T00:00:00Z", Some("beta")),
+        ]);
+        let latest = newest(&versions, "26.3", &fabric()).unwrap();
+        assert_eq!(latest.id, "v7");
+        let from = |date: Option<&str>| changelog_since(&versions, latest, date, "26.3", &fabric());
+        let all = from(Some("2026-01-01T00:00:00Z"));
+        assert_eq!(all.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["n-v7", "n-v6", "n-v5", "n-v4", "n-v3"]);
+        assert_eq!(all[0].1, "seven");
+        assert_eq!(from(Some("2026-01-05T00:00:00Z")), [("n-v7".to_owned(), "seven".to_owned()), ("n-v6".to_owned(), "six".to_owned())]);
+        assert_eq!(from(Some("2026-01-01T12:00:00Z")).last().unwrap(), &("n-v3".to_owned(), "three".to_owned()));
+        assert_eq!(from(None), [("n-v7".to_owned(), "seven".to_owned())]);
+        let single = versions_json(&[("a", "release", "2026-01-02T00:00:00Z", None)]);
+        assert_eq!(changelog_since(&single, &single[0], Some("2026-01-01T00:00:00Z"), "26.3", &fabric()), [("n-a".to_owned(), String::new())]);
+    }
+
+    #[test]
+    fn jar_files_are_told_by_their_ending_in_any_case() {
+        assert_eq!(jar_name("a.jar"), Some(("a.jar", false)));
+        assert_eq!(jar_name("A.JAR.Disabled"), Some(("A.JAR", true)));
+        for other in ["a.txt", "a.jar.bak", ".disabled", "jar", "a.jar.disabled.disabled", "é.disabled", "日本.jar.disable"] {
+            assert_eq!(jar_name(other), None, "{other}");
+        }
+        assert_eq!(jar_name("日本.jar.disabled"), Some(("日本.jar", true)));
     }
 
     #[test]

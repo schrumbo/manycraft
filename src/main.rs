@@ -70,6 +70,7 @@ fn main() {
         ui::instance_sheet::init(cx);
         ui::import_sheet::init(cx);
         ui::instance_page::init(cx);
+        ui::mod_list::init(cx);
         ui::instance_files::init(cx);
         ui::maintenance::init(cx);
         ui::transfer::init(cx);
