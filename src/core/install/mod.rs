@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use self::download::{Downloader, Job, join_safe, read_json};
 use self::meta::{Env, VersionJson};
+use super::instance::Loader;
 use super::{net, online, paths};
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -141,6 +142,28 @@ fn release_ids(manifest: Manifest) -> Vec<String> {
 /// Newest stable Fabric loader for `game_version`.
 pub fn latest_loader(game_version: &str) -> Result<String> {
     fabric::latest_loader(&net::agent(None)?, game_version)
+}
+
+/// The newest stable loader of the same kind as `loader` for `game_version`; `None` for kinds Manycraft has no list for, and when only unstable ones exist.
+pub fn newest_loader(loader: &Loader, game_version: &str) -> Result<Option<String>> {
+    let agent = net::agent(None)?;
+    match loader {
+        Loader::Fabric(_) => fabric::stable_loader(&agent, game_version),
+        Loader::Quilt(_) => fabric::stable_quilt(&agent, game_version),
+        _ => Ok(None),
+    }
+}
+
+/// Whether loader version `latest` is newer than `current`, comparing the dotted numbers; unreadable versions are never newer.
+pub fn is_newer(latest: &str, current: &str) -> bool {
+    fn numbers(v: &str) -> Option<Vec<u64>> {
+        let core = v.split(['-', '+']).next()?;
+        core.split('.').map(|p| p.parse().ok()).collect()
+    }
+    match (numbers(latest), numbers(current)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
 }
 
 /// Installs `game_version` with Fabric (`loader_version`, or the newest stable loader) into the shared folders.
@@ -285,6 +308,18 @@ fn lock(dir: &Path) -> Result<File> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_loader_is_newer_by_its_dotted_numbers() {
+        use super::is_newer;
+        assert!(is_newer("0.18.1", "0.17.2"));
+        assert!(is_newer("0.10.0", "0.9.9"));
+        assert!(is_newer("0.17.10", "0.17.9"));
+        assert!(!is_newer("0.17.2", "0.17.2"));
+        assert!(!is_newer("0.17.2", "0.18.0-beta.1"));
+        assert!(!is_newer("latest", "0.17.2"));
+        assert!(!is_newer("0.17.2", ""));
+    }
+
     use super::*;
 
     fn write_version(versions: &Path, id: &str, age_secs: u64) {

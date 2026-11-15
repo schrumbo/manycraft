@@ -10,7 +10,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{EditMods, NewBatchFromPrism, NewInstance, Reload};
+use super::actions::{AddMods, EditMods, NewBatchFromPrism, NewInstance, Reload};
 use super::batch_sheet::{Load, body_max, list_max};
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -37,7 +37,7 @@ const NOTE_LINE: &str = "\u{a0}";
 
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
-    cx.on_action(|_: &NewInstance, cx| open(Mode::Create, cx));
+    cx.on_action(|_: &NewInstance, cx| open(Mode::Create, false, cx));
     cx.on_action(|_: &NewBatchFromPrism, cx| {
         let task = cx.background_executor().spawn(async { remote::prism_instances() });
         cx.spawn(async move |cx| {
@@ -62,18 +62,33 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|action: &EditMods, cx| {
         if super::model::get(cx).read(cx).instance(&action.0).is_some() {
-            open(Mode::Mods(action.0.clone()), cx);
+            open(Mode::Mods(action.0.clone()), false, cx);
         }
+    });
+    cx.on_action(|action: &AddMods, cx| {
+        let Some(made) = super::model::get(cx).read(cx).instance(&action.0).cloned() else { return };
+        if !made.loader.takes_mods() {
+            super::undo::note(trf("%@ lädt keine Mods.", &[&made.loader.name()]), cx);
+            return;
+        }
+        open(Mode::Mods(action.0.clone()), true, cx);
     });
 }
 
-fn open(mode: Mode, cx: &mut App) {
+fn open(mode: Mode, search: bool, cx: &mut App) {
     sheet::in_window(cx, move |window, cx| {
         if sheet::busy(window, cx) {
             return;
         }
         let view = cx.new(|cx| InstanceSheet::new(mode, window, cx));
-        sheet::show(view, sheet::WIDE, window, cx);
+        sheet::show(view.clone(), sheet::WIDE, window, cx);
+        if search {
+            view.update(cx, |s, cx| {
+                s.direct = true;
+                s.open_search(true, window, cx);
+            });
+            window.on_next_frame(move |window, cx| window.on_next_frame(move |window, cx| drop(view.update(cx, |s, cx| s.focus_search(window, cx)))));
+        }
     });
 }
 
@@ -107,6 +122,7 @@ pub(super) struct InstanceSheet {
     mods_error: Option<Problem>,
     notes: Vec<String>,
     pub(super) searching: bool,
+    direct: bool,
     prism_list: Vec<Instance>,
     prism_filter: Entity<InputState>,
     prism_sel: usize,
@@ -227,6 +243,7 @@ impl InstanceSheet {
             mods_error: None,
             notes: Vec::new(),
             searching: false,
+            direct: false,
             prism_list: Vec::new(),
             prism_filter,
             prism_sel: 0,
@@ -717,6 +734,26 @@ impl InstanceSheet {
         cx.defer(move |cx| {
             super::main_window::show_instance(&id, cx);
         });
+    }
+
+    pub(super) fn leave_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.direct && self.wait_reason().is_none() && self.setup.as_ref().is_some_and(|made| made.mods == self.mods) {
+            cx.emit(Dismissed);
+        } else {
+            self.open_search(false, window, cx);
+        }
+    }
+
+    fn search_done(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.direct {
+            self.open_search(false, window, cx);
+        } else if self.wait_reason().is_some() {
+            cx.notify();
+        } else if self.setup.as_ref().is_some_and(|made| made.mods == self.mods) {
+            cx.emit(Dismissed);
+        } else {
+            self.save(cx);
+        }
     }
 
     fn done(&mut self, cx: &mut Context<Self>) {
@@ -1306,8 +1343,8 @@ impl Render for InstanceSheet {
             (vec![sheet::button("prism-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_prism(false, window, cx))).into_any_element()], Vec::new())
         } else if self.searching {
             (
-                vec![sheet::button("search-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_search(false, window, cx))).into_any_element()],
-                vec![sheet::button("search-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.open_search(false, window, cx))).into_any_element()],
+                vec![sheet::button("search-back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, window, cx| s.leave_search(window, cx))).into_any_element()],
+                vec![sheet::button_unless("search-done", tr("Fertig"), None, Look::Primary, self.wait_reason().filter(|_| self.direct).map(Into::into), false, &t).on_click(cx.listener(|s, _, window, cx| s.search_done(window, cx))).into_any_element()],
             )
         } else {
             let invalid = if creating { self.name_problem(cx).or_else(|| self.version.is_empty().then(|| tr("Wähle eine Version."))) } else { None };

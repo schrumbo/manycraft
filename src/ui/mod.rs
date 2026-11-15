@@ -12,6 +12,7 @@ pub mod identity;
 pub mod instance_page;
 pub mod instance_sheet;
 pub mod main_window;
+pub mod maintenance;
 pub mod mod_browser;
 #[allow(dead_code)]
 pub mod model;
