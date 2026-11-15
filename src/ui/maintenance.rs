@@ -10,7 +10,7 @@ use super::remote::{self, InstanceEdit};
 use super::undo::{self, Edit, Kind};
 use super::{forms, model, sheet, state};
 use crate::core::i18n::{tr, trf};
-use crate::core::install;
+use crate::core::{install, origin};
 use crate::core::instance::Instance;
 
 /// Registers the reset and the loader update, which the page, the sidebar menu and the palette start.
@@ -39,17 +39,22 @@ fn ask_reset(id: &str, window: &mut Window, cx: &mut App) {
     if sheet::busy(window, cx) {
         return;
     }
-    let Some(name) = model::get(cx).read(cx).instance(id).map(|made| made.name.clone()) else { return };
+    let Some(made) = model::get(cx).read(cx).instance(id).cloned() else { return };
     if running(id, cx) {
         undo::note(tr("Stoppe zuerst die laufenden Spiele."), cx);
         return;
     }
+    let message = if origin::is_kept(&made) {
+        tr("Mods, Konfiguration, Ressourcen- und Shader-Pakete gehen auf den Stand von der Erstellung zurück. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+    } else {
+        tr("Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+    };
     let id = id.to_owned();
     sheet::ask(
         window,
         cx,
-        trf("„%@“ zurücksetzen?", &[&name]),
-        tr("Mods, Konfiguration, Ressourcen- und Shader-Pakete gehen auf den Stand von der Erstellung zurück. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen."),
+        trf("„%@“ zurücksetzen?", &[&made.name]),
+        message,
         tr("Zurücksetzen"),
         move |_, cx| reset(&id, cx),
     );

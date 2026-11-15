@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::batch::ModRef;
 use super::instance::{self, Final, Instance, Loader};
-use super::{lock, net, store};
+use super::{lock, net, paths, store};
 
 const DIR: &str = "origin";
 const FILE: &str = "origin.json";
@@ -96,6 +96,15 @@ pub fn load(made: &Instance) -> Result<Origin> {
     load_in(&instance::instances_dir(), made)
 }
 
+/// Whether the start of `made` was kept; without it a reset leaves mods, config and packs empty.
+pub fn is_kept(made: &Instance) -> bool {
+    std::fs::symlink_metadata(origin_dir(&instance::instances_dir(), &made.id).join(FILE)).is_ok()
+}
+
+fn quiet() -> Result<lock::Guard> {
+    lock::try_exclusive(&paths::data_dir().join(super::install::clean::LOCK_FILE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))
+}
+
 pub(super) fn load_in(root: &Path, made: &Instance) -> Result<Origin> {
     let file = origin_dir(root, &made.id).join(FILE);
     match store::read(&file)? {
@@ -108,6 +117,7 @@ pub(super) fn load_in(root: &Path, made: &Instance) -> Result<Origin> {
 /// gives `made` the mods `mods`. Worlds, screenshots, `servers.dat` and `options.txt` stay. Returns the saved instance and
 /// the trash entry [`unreset`] takes. Callers check first that no game of it runs.
 pub fn reset(made: &Instance, mods: Vec<ModRef>) -> Result<(Instance, String)> {
+    let _quiet = quiet()?;
     reset_in(&instance::instances_dir(), made, mods, instance::now_millis())
 }
 
@@ -163,6 +173,7 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
 /// own, and gives `now`, the instance as it is saved, the mods and own files of `before`. Refused for good when the
 /// entry is gone.
 pub fn unreset(now: &Instance, before: &Instance, entry: &str) -> Result<Instance> {
+    let _quiet = quiet()?;
     unreset_in(&instance::instances_dir(), now, before, entry, instance::now_millis())
 }
 
@@ -171,7 +182,7 @@ pub(super) fn unreset_in(root: &Path, now: &Instance, before: &Instance, entry: 
         bail!("invalid instance id {:?}", now.id);
     }
     let from = instance::trash_dir(root).join(entry);
-    if !entry.starts_with(&format!("{}-", now.id)) || !entry.ends_with(SUFFIX) || std::fs::symlink_metadata(&from).is_err() {
+    if !entry.starts_with(&format!("{}-", now.id)) || !entry.ends_with(SUFFIX) || !SWAPPED.iter().any(|name| exists(&from.join(name))) {
         bail!(Final(super::i18n::tr("Der Stand vor dem Zurücksetzen liegt nicht mehr im Papierkorb.")));
     }
     let dir = root.join(&now.id);
@@ -180,8 +191,7 @@ pub(super) fn unreset_in(root: &Path, now: &Instance, before: &Instance, entry: 
     exchange(&dir, &from, &kept)?;
     let next = Instance { mods: before.mods.clone(), local_mods: before.local_mods.clone(), ..now.clone() };
     if let Err(e) = instance::save_in(root, &next) {
-        let back = instance::trash_dir(root).join(format!("{}-{}{SUFFIX}", now.id, millis + 1));
-        let _ = exchange(&dir, &kept, &back);
+        let _ = exchange(&dir, &kept, &from);
         return Err(e);
     }
     let _ = std::fs::remove_dir(&from);
@@ -213,16 +223,21 @@ fn exchange(dir: &Path, replacement: &Path, away: &Path) -> Result<()> {
         }
         Ok(())
     })();
-    if result.is_err() {
-        for name in placed {
-            let _ = std::fs::rename(dir.join(name), replacement.join(name));
-        }
-        for name in moved_away {
-            let _ = std::fs::rename(away.join(name), dir.join(name));
-        }
-        let _ = std::fs::remove_dir(away);
+    let Err(error) = result else { return Ok(()) };
+    for name in placed {
+        let _ = std::fs::rename(dir.join(name), replacement.join(name));
     }
-    result
+    for name in moved_away {
+        let _ = std::fs::rename(away.join(name), dir.join(name));
+    }
+    if std::fs::remove_dir(away).is_err() {
+        let kept = away.with_file_name(format!("kept-{}", away.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+        if std::fs::rename(away, &kept).is_ok() {
+            return Err(error.context(format!("the folders that could not be moved back are in {}", kept.display())));
+        }
+        return Err(error.context(format!("the folders that could not be moved back are in {}", away.display())));
+    }
+    Err(error)
 }
 
 /// Whether trash entry name `entry` is one [`reset`] made, and when.
@@ -331,6 +346,43 @@ mod tests {
         assert_eq!((read(&folder.join("shaderpacks/bsl.zip")), read(&folder.join("mods/mine.jar"))), ("<missing>".to_owned(), "<missing>".to_owned()));
         let again = unreset_in(root, &back, &now, &entry, 3000).unwrap_err();
         assert!(again.chain().any(|c| c.is::<Final>()));
+    }
+
+    #[test]
+    fn an_undo_that_cannot_save_keeps_the_files_for_the_next_try_instead_of_emptying_the_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = pack_instance(dir.path());
+        let root = dir.path();
+        let folder = root.join(&made.id);
+        let now = mess_up(root, &made);
+        let (after, entry) = reset_in(root, &now, vec![mod_ref("a")], 1000).unwrap();
+        let file = folder.join(instance::FILE);
+        let text = std::fs::read(&file).unwrap();
+        std::fs::write(&file, [text.as_slice(), b" "].concat()).unwrap();
+        assert!(unreset_in(root, &after, &now, &entry, 2000).is_err());
+        let entry_dir = instance::trash_dir(root).join(&entry);
+        assert_eq!(read(&entry_dir.join("config/new.json")), "new");
+        assert_eq!(read(&folder.join("config/sodium.json")), "{\"first\":true}");
+        store::read(&file).unwrap();
+        let back = unreset_in(root, &after, &now, &entry, 3000).unwrap();
+        assert_eq!(back.mods, now.mods);
+        assert_eq!((read(&folder.join("config/new.json")), read(&folder.join("mods/extra.jar"))), ("new".to_owned(), "extra".to_owned()));
+    }
+
+    #[test]
+    fn an_undo_whose_entry_holds_nothing_is_refused_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = pack_instance(dir.path());
+        let root = dir.path();
+        let now = mess_up(root, &made);
+        let (after, entry) = reset_in(root, &now, vec![mod_ref("a")], 1000).unwrap();
+        let entry_dir = instance::trash_dir(root).join(&entry);
+        for name in SWAPPED {
+            std::fs::remove_dir_all(entry_dir.join(name)).unwrap();
+        }
+        let err = unreset_in(root, &after, &now, &entry, 2000).unwrap_err();
+        assert!(err.chain().any(|c| c.is::<Final>()));
+        assert_eq!(read(&root.join(&made.id).join("config/sodium.json")), "{\"first\":true}");
     }
 
     #[test]

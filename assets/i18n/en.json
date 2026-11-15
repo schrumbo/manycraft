@@ -841,5 +841,7 @@
   "Mods von %@ verwalten…": "Manage mods of %@…",
   "Loader von %@ aktualisieren…": "Update loader of %@…",
   "%@ zurücksetzen…": "Reset %@…",
-  "%@ lädt keine Mods.": "%@ does not load mods."
+  "%@ lädt keine Mods.": "%@ does not load mods.",
+  "Mods verwalten…": "Manage mods…",
+  "Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.": "The starting state of this instance was not saved: mods, config, resource packs and shader packs will be emptied. Worlds, screenshots, server list and options stay. You can undo this while Manycraft is open."
 }
