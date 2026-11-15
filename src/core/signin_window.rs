@@ -39,6 +39,11 @@ pub fn cli(_args: &[String]) -> i32 {
     }
 }
 
+fn on_monitor(at: (i32, i32), origin: (i32, i32), size: (u32, u32)) -> bool {
+    let inside = |p: i32, from: i32, len: u32| p >= from && i64::from(p) < i64::from(from) + i64::from(len);
+    inside(at.0, origin.0, size.0) && inside(at.1, origin.1, size.1)
+}
+
 fn say(reply: &Reply) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{}", reply.line());
@@ -56,7 +61,8 @@ fn show(request: &Request) -> Result<()> {
         .context("cannot open the sign-in window")?;
     set_icon(&window);
     edit_menu();
-    if let Some(monitor) = window.current_monitor().or_else(|| event_loop.primary_monitor()) {
+    let near = request.near.and_then(|at| window.available_monitors().find(|m| on_monitor(at, (m.position().x, m.position().y), (m.size().width, m.size().height))));
+    if let Some(monitor) = near.or_else(|| window.current_monitor()).or_else(|| event_loop.primary_monitor()) {
         let (area, at, size) = (monitor.size(), monitor.position(), window.outer_size());
         let x = at.x + (i32::try_from(area.width).unwrap_or(0) - i32::try_from(size.width).unwrap_or(0)) / 2;
         let y = at.y + (i32::try_from(area.height).unwrap_or(0) - i32::try_from(size.height).unwrap_or(0)) / 2;
@@ -247,6 +253,16 @@ impl Drop for Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_belongs_to_the_monitor_it_lies_on() {
+        let (primary, left) = (((0, 0), (2560, 1440)), ((-1920, 139), (1920, 1080)));
+        let on = |at, m: ((i32, i32), (u32, u32))| on_monitor(at, m.0, m.1);
+        assert!(on((-960, 600), left) && !on((-960, 600), primary));
+        assert!(on((0, 0), primary) && !on((0, 0), left));
+        assert!(on((-1, 139), left) && !on((-1, 138), left) && !on((-1921, 500), left));
+        assert!(on((2559, 1439), primary) && !on((2560, 1439), primary));
+    }
 
     #[test]
     fn passkey_script_holds_only_what_it_should() {

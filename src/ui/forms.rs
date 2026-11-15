@@ -40,12 +40,31 @@ impl fmt::Display for Plain {
 
 impl std::error::Error for Plain {}
 
+/// The plain German for a file of Manycraft that a newer version or a hand edit left in a shape this version cannot read.
+pub fn untouched(e: &anyhow::Error) -> Option<String> {
+    let found = e.chain().find_map(|c| c.downcast_ref::<crate::core::store::Untouched>())?;
+    let name = found.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Some(match name.as_str() {
+        "accounts.json" => tr("Die Accounts stammen von einer neueren Version von Manycraft oder wurden von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig."),
+        "batch.json" => tr("Ein Batch stammt von einer neueren Version von Manycraft oder wurde von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig."),
+        "instance.json" => tr("Eine Instanz stammt von einer neueren Version von Manycraft oder wurde von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig."),
+        "settings.json" => tr("Die Einstellungen stammen von einer neueren Version oder wurden von Hand geändert. Es gelten die Standardwerte. Änderst du etwas, legt Manycraft die alte Datei daneben (settings.json.damaged)."),
+        _ => trf("%@ stammt von einer neueren Version von Manycraft oder wurde von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig.", &[&name]),
+    })
+}
+
 /// Turns any failure into a [`Problem`]: what happened in everyday German and what to do next; the raw cause only as detail.
 pub fn explain(e: &anyhow::Error) -> Problem {
     if let Some(Plain(text)) = e.chain().find_map(|c| c.downcast_ref::<Plain>()) {
         return Problem::plain(text.clone());
     }
+    if let Some(crate::core::instance::Final(text)) = e.chain().find_map(|c| c.downcast_ref::<crate::core::instance::Final>()) {
+        return Problem::plain(text.clone());
+    }
     let raw = format!("{e:#}");
+    if let Some(text) = untouched(e) {
+        return Problem { text, detail: Some(raw) };
+    }
     let io = e.chain().find_map(|c| c.downcast_ref::<std::io::Error>());
     let text = if io.is_some_and(|i| i.kind() == ErrorKind::PermissionDenied) {
         tr("Manycraft darf diese Datei nicht schreiben. Prüfe die Rechte des Ordners und versuche es noch einmal.")
@@ -280,6 +299,26 @@ fn meminfo_mb(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::core::account::Account;
+
+    #[test]
+    fn a_file_from_a_newer_version_reads_as_plain_german_for_each_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seen = Vec::new();
+        for name in ["accounts.json", "batch.json", "instance.json", "settings.json", "history.json"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, br#"{"id":5}"#).unwrap();
+            let e = crate::core::store::load::<Vec<u32>>(&path).unwrap_err().context("cannot load");
+            let problem = explain(&e);
+            assert!(!problem.text.contains("newer Manycraft") && !problem.text.contains(&*dir.path().to_string_lossy()), "{}", problem.text);
+            assert_eq!(untouched(&e).as_deref(), Some(problem.text.as_str()));
+            assert!(problem.detail.is_some_and(|d| d.contains(name)));
+            seen.push(problem.text);
+        }
+        seen.dedup();
+        assert_eq!(seen.len(), 5);
+        assert!(seen[4].contains("history.json"));
+        assert_eq!(untouched(&anyhow::anyhow!("other")), None);
+    }
 
     #[test]
     fn failures_read_as_plain_german_and_keep_the_cause_apart() {

@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use gpui_kit::*;
 
-use super::actions::{CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder};
+use super::actions::{CancelImport, ExportBatch, ExportInstance, ImportBatch, OpenBatchFolder, OpenGameFolder, OpenInstanceFolder};
 use super::{forms, model, remote};
-use crate::core::batch::Batch;
+use crate::core::instance::Instance;
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
 use crate::core::mrpack::{self, Refused};
@@ -19,24 +19,36 @@ static LAST_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// Registers the import, export and folder actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &ImportBatch, cx| pick(cx, |_| {}));
-    cx.on_action(|a: &ExportBatch, cx| export(&a.0, cx));
+    cx.on_action(|a: &ExportBatch, cx| {
+        let made = model::get(cx).read(cx).instance_of(&a.0).map(|i| i.id.clone());
+        if let Some(made) = made {
+            export(&made, cx);
+        }
+    });
+    cx.on_action(|a: &ExportInstance, cx| export(&a.0, cx));
     cx.on_action(|a: &CancelImport, cx| cancel(a.0, cx));
     cx.on_action(|a: &OpenBatchFolder, cx| {
-        let dir = model::get(cx).read(cx).batch(&a.0).map(Batch::dir);
+        let dir = model::get(cx).read(cx).instance_of(&a.0).map(Instance::dir);
+        if let Some(dir) = dir {
+            open_folder(dir, cx);
+        }
+    });
+    cx.on_action(|a: &OpenInstanceFolder, cx| {
+        let dir = model::get(cx).read(cx).instance(&a.0).map(Instance::dir);
         if let Some(dir) = dir {
             open_folder(dir, cx);
         }
     });
     cx.on_action(|a: &OpenGameFolder, cx| {
         let m = model::get(cx).read(cx);
-        let dir = m.instances.get(&a.0).and_then(|i| m.batch(&i.batch_id).map(|b| b.instance_dir(i.account_id)));
+        let dir = m.games.get(&a.0).and_then(|i| m.instance(&i.instance_id).map(|made| made.game_dir(i.account_id)));
         if let Some(dir) = dir {
             open_folder(dir, cx);
         }
     });
 }
 
-/// Imports every dropped file or folder, each as its own batch.
+/// Imports every dropped file or folder, each as its own instance.
 pub fn drop_paths(paths: &ExternalPaths, cx: &mut App) {
     for path in paths.paths() {
         start(path.clone(), cx);
@@ -90,7 +102,7 @@ fn start(path: PathBuf, cx: &mut App) {
         let progress = |done: usize, total: usize| {
             let _ = tx.try_send((done * 100).checked_div(total).unwrap_or(0).min(100) as u8);
         };
-        remote::import_batch(&path, &stop, &progress)
+        remote::import_instance(&path, &stop, &progress)
     });
     cx.spawn(async move |cx| {
         while let Ok(mut percent) = rx.recv().await {
@@ -115,7 +127,7 @@ fn start(path: PathBuf, cx: &mut App) {
     .detach();
 }
 
-fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow::Result<Batch>, cx: &mut App) {
+fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow::Result<Instance>, cx: &mut App) {
     let cancelled = cancel.load(Ordering::SeqCst);
     model::get(cx).update(cx, |m, cx| {
         m.imports.retain(|i| i.id != id);
@@ -146,8 +158,15 @@ fn finish(id: u64, label: &str, gone: bool, cancel: &AtomicBool, result: anyhow:
             .detach();
         }
         Ok(made) => {
+            let id = made.id.clone();
+            model::get(cx).update(cx, |m, cx| {
+                if !m.instances.iter().any(|i| i.id == made.id) {
+                    m.instances.push(made);
+                }
+                cx.notify();
+            });
             super::state::reload_keeping_error(cx);
-            super::main_window::show_batch(&made.id, cx);
+            super::main_window::show_instance(&id, cx);
         }
         Err(_) => {}
     }
@@ -179,7 +198,7 @@ fn explain(label: &str, e: &anyhow::Error) -> String {
         Refused::NoGame => trf("„%@“ nennt keine Minecraft-Version.", &[&label]),
         Refused::Host(_) => trf("„%@“ lädt Dateien von einer Seite, die Manycraft nicht kennt. Nichts wurde importiert.", &[&label]),
         Refused::Hash(_) => trf("Eine Datei aus „%@“ kam verändert an. Nichts wurde importiert. Versuche es noch einmal.", &[&label]),
-        Refused::Path(_) => trf("„%@“ enthält Dateien, die außerhalb des Batch-Ordners landen würden. Nichts wurde importiert.", &[&label]),
+        Refused::Path(_) => trf("„%@“ enthält Dateien, die außerhalb des Instanzordners landen würden. Nichts wurde importiert.", &[&label]),
         Refused::Prism(_) => trf("„%@“ lässt sich nicht übernehmen. Nur Fabric-Instanzen gehen.", &[&label]),
         Refused::Unknown => trf("„%@“ ist weder ein Modpack von Modrinth noch etwas aus Prism. Wähle eine .mrpack-Datei, einen Prism-Export oder einen Prism-Instanzordner.", &[&label]),
         Refused::Cancelled => String::new(),
@@ -204,7 +223,7 @@ fn with_extension(path: PathBuf) -> PathBuf {
 
 fn export(id: &str, cx: &mut App) {
     let m = model::get(cx).read(cx);
-    let Some(made) = m.batch(id).cloned().filter(|b| !m.exporting.contains(&b.id)) else { return };
+    let Some(made) = m.instance(id).cloned().filter(|b| !m.exporting.contains(&b.id)) else { return };
     let suggested = file_name(&made.name);
     if drive::on() {
         if let Some(path) = drive::answer("save").and_then(|p| p.into_iter().next()) {
@@ -224,7 +243,7 @@ fn export(id: &str, cx: &mut App) {
     .detach();
 }
 
-fn write(made: Batch, path: PathBuf, cx: &mut App) {
+fn write(made: Instance, path: PathBuf, cx: &mut App) {
     let id = made.id.clone();
     let started = model::get(cx).update(cx, |m, cx| {
         cx.notify();
@@ -235,7 +254,7 @@ fn write(made: Batch, path: PathBuf, cx: &mut App) {
     }
     let out = path.clone();
     let name = made.name.clone();
-    let job = cx.background_spawn(async move { remote::export_batch(&made, &out) });
+    let job = cx.background_spawn(async move { remote::export_instance(&made, &out) });
     cx.spawn(async move |cx| {
         let result = job.await;
         let _ = cx.update(|cx| {

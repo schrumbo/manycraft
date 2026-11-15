@@ -9,7 +9,8 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, NewBatchFromPrism, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch,
-    StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, UndoRemoveAccount,
+    StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo,
+    CloneInstance, DeleteInstance, EditMods, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, PlayInstance, RenameInstance, ShowInstance,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -17,6 +18,7 @@ use super::model::{self, Phase};
 use super::motion::Soft;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
 use super::widgets::{TakeFocus, icon};
+use crate::core::instance::Loader;
 
 actions!(palette, [PaletteNext, PalettePrevious]);
 use crate::core::i18n::{tr, trf};
@@ -28,6 +30,7 @@ pub enum Group {
     Commands,
     Pages,
     Batches,
+    Instances,
     Accounts,
 }
 
@@ -38,6 +41,7 @@ impl Group {
             Self::Commands => tr("Befehle"),
             Self::Pages => tr("Seiten"),
             Self::Batches => tr("Batches"),
+            Self::Instances => tr("Instanzen"),
             Self::Accounts => tr("Accounts"),
         }
     }
@@ -51,6 +55,8 @@ pub struct Entry {
     pub detail: Option<String>,
     pub keys: Option<String>,
     pub action: Box<dyn Action>,
+    /// Whether the command can run now; a disabled one shows why in its detail and does nothing.
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -87,9 +93,13 @@ impl Palette {
 
     fn chosen(&self) -> Option<Box<dyn Action>> {
         match self.rows.get(self.cursor)? {
-            Row::Entry(ix) => self.entries.get(*ix).map(|e| e.action.boxed_clone()),
+            Row::Entry(ix) => self.entries.get(*ix).filter(|e| e.enabled).map(|e| e.action.boxed_clone()),
             Row::Heading(_) => None,
         }
+    }
+
+    fn blocked(&self) -> bool {
+        matches!(self.rows.get(self.cursor), Some(Row::Entry(ix)) if self.entries.get(*ix).is_some_and(|e| !e.enabled))
     }
 }
 
@@ -129,6 +139,9 @@ fn close(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
 }
 
 fn run(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if this.palette.as_ref().is_some_and(Palette::blocked) {
+        return;
+    }
     let action = this.palette.as_ref().and_then(Palette::chosen);
     close(this, window, cx);
     if let Some(action) = action {
@@ -268,7 +281,7 @@ pub fn menu_row(text: String, keys: Option<String>, disabled: bool) -> impl Fn(&
 
 fn entry(group: Group, icon: &'static str, label: String, detail: Option<String>, action: Box<dyn Action>, cx: &App) -> Entry {
     let keys = shortcut(action.as_ref(), cx);
-    Entry { group, icon, label, detail, keys, action }
+    Entry { group, icon, label, detail, keys, action, enabled: true }
 }
 
 fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
@@ -278,7 +291,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     let chosen = if grid { this.grid.chosen() } else { Vec::new() };
     if !chosen.is_empty() {
         let detail = match chosen.as_slice() {
-            [one] => m.instances.get(one).map(|i| i.name.clone()),
+            [one] => m.games.get(one).map(|i| i.name.clone()),
             many => Some(trf("%lld Accounts", &[&many.len()])),
         };
         let n = super::grid::offers(&chosen, m).map(|o| o.3);
@@ -302,9 +315,9 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             out.push(entry(Group::Selection, "palette", label, detail.clone(), Box::new(SetColor { accounts: accounts.clone(), color }), cx));
         }
     }
-    let stopped = m.instances.values().any(|i| !i.phase.is_active());
-    let active = m.instances.values().any(|i| i.phase.is_active() && !i.stopping);
-    let playable = m.instances.values().any(|i| super::tile::playable(&i.phase));
+    let stopped = m.games.values().any(|i| !i.phase.is_active());
+    let active = m.games.values().any(|i| i.phase.is_active() && !i.stopping);
+    let playable = m.games.values().any(|i| super::tile::playable(&i.phase));
     let attention = m.attention_count(None) > 0;
     let ready = matches!(m.updates.status, model::UpdateStatus::Ready { .. }) && super::updates::counts(cx).0 == 0;
     for (icon, label, action, able) in [
@@ -313,28 +326,31 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("user-plus", tr("Account hinzufügen"), Box::new(AddAccount), true),
         ("user-plus", tr("Microsoft-Account hinzufügen"), Box::new(AddMicrosoft), true),
         ("plus", tr("Neuer Batch"), Box::new(NewBatch), true),
+        ("plus", tr("Neue Instanz"), Box::new(NewInstance), true),
         ("search", tr("Suchen"), Box::new(FocusSearch), this.can_search(cx)),
-        ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.instances.is_empty()),
+        ("square-check", tr("Alles auswählen"), Box::new(SelectAll), grid && !m.games.is_empty()),
         ("gamepad-2", tr("Nächsten Account spielen"), Box::new(NextInstance), playable),
         ("gamepad-2", tr("Vorherigen Account spielen"), Box::new(PreviousInstance), playable),
         ("triangle-alert", tr("Nächsten, der dich braucht"), Box::new(NextAttention), attention),
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
         ("maximize", tr("Vollbild ein- oder ausschalten"), Box::new(ToggleFullscreen), true),
-        ("undo-2", tr("Entfernen rückgängig"), Box::new(UndoRemoveAccount), super::accounts::can_undo(cx)),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
         ("x", tr("Laden abbrechen"), Box::new(CancelUpdate), super::updates::cancellable(&m.updates)),
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
         ("rotate-ccw-clock", tr("Zur vorherigen Version zurückkehren"), Box::new(PreviousVersion), m.updates.previous.is_some()),
         ("x", tr("Hinweis zur neuen Version ausblenden"), Box::new(DismissNews), m.updates.news.is_some()),
-        ("download", tr("Batch aus Prism-Instanz"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
-        ("download", tr("Aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
+        ("download", tr("Instanz aus Prism übernehmen"), Box::new(NewBatchFromPrism), this.prism.0 > 0),
+        ("download", tr("Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts), this.prism.1 > 0),
     ] {
         if able {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
         }
     }
-    out.push(entry(Group::Commands, "download", tr("Batch importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
+    if let Some(newest) = super::undo::newest(cx) {
+        out.push(entry(Group::Commands, "undo-2", tr("Rückgängig"), Some(newest), Box::new(Undo), cx));
+    }
+    out.push(entry(Group::Commands, "download", tr("Instanz importieren…"), Some(tr("Modpack (.mrpack) oder Prism-Export")), Box::new(ImportBatch), cx));
     for i in m.imports.iter().filter(|i| !i.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
         out.push(entry(Group::Commands, "x", tr("Import abbrechen"), Some(i.name.clone()), Box::new(CancelImport(i.id)), cx));
     }
@@ -352,15 +368,41 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Batches, "play", trf("%@ starten", &[&b.name]), server.clone(), Box::new(StartBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "square", trf("%@ stoppen", &[&b.name]), server.clone(), Box::new(StopBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "pencil", trf("%@ bearbeiten", &[&b.name]), server.clone(), Box::new(EditBatch(b.id.clone())), cx));
-        out.push(entry(Group::Batches, "folder-open", trf("Batch-Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
-        if !m.exporting.contains(&b.id) {
+        out.push(entry(Group::Batches, "folder-open", trf("Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
+        if !m.exporting.contains(&b.instance_id) {
             out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server, Box::new(ExportBatch(b.id.clone())), cx));
         }
+    }
+    for made in &m.instances {
+        let id = made.id.clone();
+        let detail = Some(made.version_line());
+        let name = &made.name;
+        out.push(entry(Group::Instances, "package", trf("Instanz %@ öffnen", &[name]), detail.clone(), Box::new(ShowInstance(id.clone())), cx));
+        if made.loader.launchable() {
+            out.push(entry(Group::Instances, "play", trf("%@ spielen", &[name]), detail.clone(), Box::new(PlayInstance { instance: id.clone(), account: None }), cx));
+        }
+        out.push(entry(Group::Instances, "boxes", trf("Neuer Batch mit %@…", &[name]), detail.clone(), Box::new(NewBatchFor(id.clone())), cx));
+        if matches!(made.loader, Loader::Fabric(_)) {
+            out.push(entry(Group::Instances, "plus", trf("Mods zu %@ hinzufügen…", &[name]), detail.clone(), Box::new(EditMods(id.clone())), cx));
+        }
+        out.push(entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx));
+        out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
+        out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
+        if matches!(made.loader, Loader::Fabric(_)) {
+            out.push(entry(Group::Instances, "upload", trf("%@ als .mrpack exportieren…", &[name]), detail.clone(), Box::new(ExportInstance(id.clone())), cx));
+        }
+        let mut delete = entry(Group::Instances, "trash", trf("%@ löschen…", &[name]), detail, Box::new(DeleteInstance(id)), cx);
+        let users: Vec<String> = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| b.name.clone()).collect();
+        if !users.is_empty() {
+            delete.detail = Some(crate::core::fleet::used_by(&users));
+            delete.enabled = false;
+        }
+        out.push(delete);
     }
     for a in m.accounts.iter().filter(|a| a.kind == crate::core::account::AccountKind::Microsoft) {
         out.push(entry(Group::Accounts, "shirt", trf("%@ — Skin ändern", &[&a.name]), None, Box::new(ChangeSkin(a.id.to_string())), cx));
     }
-    let mut instances: Vec<_> = m.instances.values().collect();
+    let mut instances: Vec<_> = m.games.values().collect();
     instances.sort_by_cached_key(|i| (i.name.to_lowercase(), m.batch(&i.batch_id).map(|b| b.name.to_lowercase())));
     for i in instances {
         let batch = m.batch(&i.batch_id).map(|b| b.name.clone()).unwrap_or_default();
@@ -372,7 +414,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         } else {
             ("play", tr("Starten"), Box::new(Start(i.key.clone())))
         };
-        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action });
+        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action, enabled: true });
     }
     out
 }
@@ -410,12 +452,13 @@ pub fn render(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
                                 .flex()
                                 .items_center()
                                 .gap(px(space::S))
-                                .cursor_pointer()
+                                .when(e.enabled, |d| d.cursor_pointer())
+                                .when(!e.enabled, |d| d.cursor_not_allowed())
                                 .when(on, |d| d.bg(t.highlight.opacity(tint::SELECTED)))
                                 .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-                                .child(icon(e.icon, iconsize::M, if on { t.accent_text } else { t.secondary }))
-                                .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if on { t.accent_text } else { t.primary }).child(e.label.clone()))
-                                .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if on { t.accent_text } else { t.secondary }).children(e.detail.clone()))
+                                .child(icon(e.icon, iconsize::M, if !e.enabled { t.tertiary } else if on { t.accent_text } else { t.secondary }))
+                                .child(div().flex_none().max_w(relative(palette::LABEL)).truncate().text_size(px(font::BODY)).text_color(if !e.enabled { t.tertiary } else if on { t.accent_text } else { t.primary }).child(e.label.clone()))
+                                .child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).text_color(if !e.enabled { t.tertiary } else if on { t.accent_text } else { t.secondary }).children(e.detail.clone()))
                                 .children(e.keys.clone().map(|k| div().flex_none().min_w(px(palette::KEYS)).text_right().text_size(px(font::CALLOUT)).text_color(if on { t.accent_text } else { t.tertiary }).child(k)))
                                 .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
                                     if let Some(p) = this.palette.as_mut()

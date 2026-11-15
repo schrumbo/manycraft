@@ -49,8 +49,11 @@ fn main() {
         ui::model::init(cx);
         ui::state::init(cx);
         ui::accounts::init(cx);
+        ui::undo::init(cx);
         ui::skin_sheet::init(cx);
         ui::batch_sheet::init(cx);
+        ui::instance_sheet::init(cx);
+        ui::instance_page::init(cx);
         ui::transfer::init(cx);
         ui::settings_window::init(cx);
         ui::main_window::open(cx);

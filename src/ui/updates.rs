@@ -283,8 +283,8 @@ fn found_page(version: &str, cx: &App) -> String {
 /// Instances still starting, and instances with a running game.
 pub fn counts(cx: &App) -> (usize, usize) {
     let m = model::get(cx).read(cx);
-    let launching = m.instances.values().filter(|i| matches!(i.phase, Phase::Starting { .. })).count();
-    let running = m.instances.values().filter(|i| i.phase.is_running()).count();
+    let launching = m.games.values().filter(|i| matches!(i.phase, Phase::Starting { .. })).count();
+    let running = m.games.values().filter(|i| i.phase.is_running()).count();
     (launching, running)
 }
 
@@ -304,7 +304,7 @@ fn restart(window: &mut Window, cx: &mut App) {
         quit(Quit::Install, cx);
         return;
     }
-    sheet::confirm(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
+    sheet::ask_blocked(window, cx, tr("Jetzt neu starten?"), stops(running), tr("Neu starten"), blocked, |_, cx| quit_unless_launching(Quit::Install, cx));
 }
 
 fn go_back(window: &mut Window, cx: &mut App) {
@@ -317,7 +317,7 @@ fn go_back(window: &mut Window, cx: &mut App) {
     if running > 0 {
         message = format!("{message} {}", stops(running));
     }
-    sheet::confirm(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), blocked, |_, cx| quit_unless_launching(Quit::Back, cx));
+    sheet::ask_blocked(window, cx, trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), blocked, |_, cx| quit_unless_launching(Quit::Back, cx));
 }
 
 fn blocked(cx: &App) -> Option<String> {

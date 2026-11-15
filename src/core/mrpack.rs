@@ -1,4 +1,4 @@
-//! Modrinth modpacks (`.mrpack`): a Fabric pack becomes a batch and a batch becomes a pack.
+//! Modrinth modpacks (`.mrpack`): a Fabric pack becomes an instance and an instance becomes a pack.
 //! Files come only from the hosts the format allows and must match their SHA-1 and SHA-512.
 //! Also the entry point for importing a Prism instance export (`.zip`) or a Prism instance folder.
 
@@ -17,7 +17,8 @@ use sha1::Sha1;
 use sha2::{Digest, Sha512};
 use zip::ZipArchive;
 
-use super::batch::{self, Batch, ModRef};
+use super::batch::ModRef;
+use super::instance::{self, Instance, Loader};
 use super::{fleet, install, modrinth, net, prism};
 
 /// File extension of a Modrinth modpack.
@@ -30,7 +31,7 @@ const FABRIC: &str = "fabric-loader";
 const MINECRAFT: &str = "minecraft";
 const OPTIONS_FILE: &str = "options.txt";
 const SERVERS_FILE: &str = "servers.dat";
-const SKIPPED: [&str; 5] = ["saves", "logs", "crash-reports", "screenshots", "batch.json"];
+const SKIPPED: [&str; 6] = ["saves", "logs", "crash-reports", "screenshots", "games", "instance.json"];
 const SHARED: [&str; 3] = ["config", "resourcepacks", "shaderpacks"];
 const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
 const MAX_INDEX: u64 = 16 << 20;
@@ -42,9 +43,9 @@ const THREADS: usize = 8;
 const FALLBACK_NAME: &str = "Modpack";
 static NAMING: Mutex<()> = Mutex::new(());
 const USAGE: &str = "usage: manycraft mrpack import <file.mrpack|prism.zip|prism folder>
-       manycraft mrpack export <batch> <file.mrpack>";
+       manycraft mrpack export <instance> <file.mrpack>";
 
-/// Why a pack or folder cannot become a batch, in terms the UI can explain.
+/// Why a pack or folder cannot become an instance, in terms the UI can explain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
     /// No readable `modrinth.index.json`, or one of another game or format.
@@ -204,12 +205,12 @@ pub fn free_name(base: &str, taken: &[String]) -> String {
         .unwrap_or(base)
 }
 
-/// Imports `path` as a new batch with a free name: a `.mrpack`, a Prism instance export (`.zip`) or a Prism
+/// Imports `path` as a new instance with a free name: a `.mrpack`, a Prism instance export (`.zip`) or a Prism
 /// instance folder. Reports `(done, total)` steps while it works and stops with [`Refused::Cancelled`] once
 /// `cancel` is set. Nothing is left behind when it fails; the source is only read.
-pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<Batch> {
-    let taken: Vec<String> = batch::load_all()?.into_iter().map(|b| b.name).collect();
-    let root = batch::batches_dir();
+pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<Instance> {
+    let taken: Vec<String> = instance::load_all()?.into_iter().map(|b| b.name).collect();
+    let root = instance::instances_dir();
     let made = if path.is_dir() {
         import_prism_dir(path, &root, &taken, &modrinth::match_hashes, cancel)?
     } else {
@@ -227,36 +228,37 @@ pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<Ba
     Ok(claim_name(&root, made))
 }
 
-fn claim_name(root: &Path, mut made: Batch) -> Batch {
+fn claim_name(root: &Path, mut made: Instance) -> Instance {
     let _naming = NAMING.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(all) = batch::load_all_in(root) else { return made };
+    let Ok(all) = instance::load_all_in(root) else { return made };
     let taken: Vec<String> = all.into_iter().filter(|b| b.id != made.id).map(|b| b.name).collect();
     let name = free_name(&made.name, &taken);
     if name != made.name {
-        let renamed = Batch { name, ..made.clone() };
-        if batch::save_in(root, &renamed).is_ok() {
+        let renamed = Instance { name, ..made.clone() };
+        if instance::save_in(root, &renamed).is_ok() {
             made = renamed;
         }
     }
     made
 }
 
-/// Writes `batch` as a `.mrpack` to `out`: Modrinth mods as downloads with their hashes; the batch's own jars,
-/// config, resource and shader packs and `options.txt` as overrides. Nothing else of the batch folder is read,
-/// so accounts, servers, join commands, logs and saves never end up in the pack. Replaces `out` atomically.
-pub fn export(batch: &Batch, out: &Path) -> Result<()> {
-    let loader = match &batch.loader_version {
-        Some(loader) => loader.clone(),
-        None => install::latest_loader(&batch.game_version).context("cannot find the Fabric loader version")?,
+/// Writes `made` as a `.mrpack` to `out`: Modrinth mods as downloads with their hashes; the instance's own jars,
+/// config, resource and shader packs and `options.txt` as overrides. Nothing else of the instance folder is read,
+/// so accounts, servers, game folders, logs and saves never end up in the pack. Replaces `out` atomically.
+pub fn export(made: &Instance, out: &Path) -> Result<()> {
+    let loader = match &made.loader {
+        Loader::Fabric(Some(loader)) => loader.clone(),
+        Loader::Fabric(None) => install::latest_loader(&made.game_version).context("cannot find the Fabric loader version")?,
+        other => bail!(Refused::Loader(other.name().to_owned())),
     };
-    export_with(batch, &batch.dir(), &loader, out, &download)
+    export_with(made, &made.dir(), &loader, out, &download)
 }
 
 fn download(url: &str, dest: &Path, sha1: &str) -> Result<()> {
     net::fetch_verified(&net::agent(None)?, url, dest, Some(sha1))
 }
 
-fn import_prism_dir(dir: &Path, root: &Path, taken: &[String], lookup: Lookup, cancel: &AtomicBool) -> Result<Batch> {
+fn import_prism_dir(dir: &Path, root: &Path, taken: &[String], lookup: Lookup, cancel: &AtomicBool) -> Result<Instance> {
     if !prism::is_instance(dir) {
         bail!(Refused::Unknown);
     }
@@ -422,7 +424,7 @@ fn place_mod(slots: &mut Vec<Slot>, mut slot: Slot) -> Result<()> {
     Ok(())
 }
 
-fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[String], lookup: Lookup, fetch: Fetch, cancel: &AtomicBool, progress: Progress) -> Result<Batch> {
+fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[String], lookup: Lookup, fetch: Fetch, cancel: &AtomicBool, progress: Progress) -> Result<Instance> {
     let pack = read_index(zip)?;
     let extra = overrides(zip)?;
     let mut total = 0;
@@ -458,8 +460,7 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
         }
     }
 
-    let mut made = Batch::new(&free_name(&pack.name, taken), &pack.game);
-    made.loader_version = Some(pack.loader.clone());
+    let mut made = Instance::new(&free_name(&pack.name, taken), &pack.game, Loader::Fabric(Some(pack.loader.clone())));
     for slot in &slots {
         match &slot.found {
             Some(found) => made.mods.push(found.clone()),
@@ -469,7 +470,7 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
     }
 
     let dest = root.join(&made.id);
-    let result = write_pack(zip, &pack, &placements, &dest, fetch, cancel, progress).and_then(|()| batch::save_in(root, &made));
+    let result = write_pack(zip, &pack, &placements, &dest, fetch, cancel, progress).and_then(|()| instance::save_in(root, &made));
     if let Err(e) = result {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
@@ -555,7 +556,7 @@ fn shared_files(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<(String, P
     Ok(())
 }
 
-fn export_with(batch: &Batch, dir: &Path, loader: &str, out: &Path, fetch: Fetch) -> Result<()> {
+fn export_with(batch: &Instance, dir: &Path, loader: &str, out: &Path, fetch: Fetch) -> Result<()> {
     let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
     let mut files = Vec::new();
     let mut extra: Vec<(String, PathBuf)> = Vec::new();
@@ -612,7 +613,7 @@ fn export_with(batch: &Batch, dir: &Path, loader: &str, out: &Path, fetch: Fetch
     Ok(())
 }
 
-/// `manycraft mrpack`: imports a pack or Prism instance as a batch, or exports a batch as a pack.
+/// `manycraft mrpack`: imports a pack or Prism instance as an instance, or exports an instance as a pack.
 pub fn cli(args: &[String]) -> i32 {
     match run(args) {
         Ok(code) => code,
@@ -637,13 +638,13 @@ fn run(args: &[String]) -> Result<i32> {
                 }
             };
             let made = import(Path::new(path), &AtomicBool::new(false), &report)?;
-            println!("Batch {} ({}) for Minecraft {} with Fabric {}", made.name, made.id, made.game_version, made.loader_version.as_deref().unwrap_or("?"));
+            println!("Instance {} ({}): {}", made.name, made.id, made.version_line());
             println!("{} mods from Modrinth, {} local", made.mods.len(), made.local_mods.len());
             Ok(0)
         }
         ["export", who, out] => {
-            let found = batch::load_all()?;
-            let made = found.iter().find(|b| b.id == *who || b.name.eq_ignore_ascii_case(who)).with_context(|| format!("no batch {who}"))?;
+            let found = instance::load_all()?;
+            let made = found.iter().find(|b| b.id == *who || b.name.eq_ignore_ascii_case(who)).with_context(|| format!("no instance {who}"))?;
             export(made, Path::new(out))?;
             println!("wrote {out}");
             Ok(0)
@@ -802,7 +803,7 @@ mod tests {
         assert_eq!(t("shaderpacks/x.zip"), Some(Path::new("shaderpacks").join("x.zip")));
         assert_eq!(t("kubejs/startup.js"), Some(Path::new("kubejs").join("startup.js")));
         assert_eq!(t("servers.dat"), Some(PathBuf::from("servers.dat")));
-        for skipped in ["batch.json", "saves/w/level.dat", "logs/latest.log", "screenshots/a.png", "crash-reports/c.txt"] {
+        for skipped in ["instance.json", "games/a/options.txt", "saves/w/level.dat", "logs/latest.log", "screenshots/a.png", "crash-reports/c.txt"] {
             assert_eq!(t(skipped), None, "{skipped}");
         }
         assert_eq!(mod_name(&safe_rel("mods/a.JAR").unwrap()).as_deref(), Some("a.JAR"));
@@ -851,7 +852,7 @@ mod tests {
 
         let made = import_pack(&mut zip, out.path(), &["Other".into()], &lookup_of(known.clone()), &fetch, &AtomicBool::new(false), &progress).unwrap();
 
-        assert_eq!((made.name.as_str(), made.game_version.as_str(), made.loader_version.as_deref()), ("Farm Pack", "1.21.1", Some("0.16.5")));
+        assert_eq!((made.name.as_str(), made.game_version.as_str(), made.loader.version()), ("Farm Pack", "1.21.1", Some("0.16.5")));
         assert_eq!(made.mods, known);
         assert_eq!(made.local_mods, ["gh.jar", "mine.jar"]);
         let dest = out.path().join(&made.id);
@@ -863,8 +864,8 @@ mod tests {
         assert_eq!(fs::read(dest.join("shaderpacks").join("s.zip")).unwrap(), b"shader");
         let top: Vec<String> = names(&dest).into_iter().filter(|n| !n.ends_with(".lock")).collect();
         assert_eq!(fs::read(dest.join("servers.dat")).unwrap(), b"servers");
-        assert_eq!(top, ["batch.json", "config", "mods", "options.txt", "resourcepacks", "servers.dat", "shaderpacks"]);
-        let saved: Batch = serde_json::from_slice(&fs::read(dest.join("batch.json")).unwrap()).unwrap();
+        assert_eq!(top, ["config", "instance.json", "mods", "options.txt", "resourcepacks", "servers.dat", "shaderpacks"]);
+        let saved: Instance = serde_json::from_slice(&fs::read(dest.join("instance.json")).unwrap()).unwrap();
         assert_eq!(saved, made);
         let steps = steps.into_inner().unwrap();
         assert_eq!((steps.first(), steps.last()), (Some(&(0, 4)), Some(&(4, 4))));
@@ -892,7 +893,7 @@ mod tests {
         let first = claim_name(out.path(), first);
         let second = claim_name(out.path(), second);
         assert_ne!(first.name, second.name);
-        let mut saved: Vec<String> = batch::load_all_in(out.path()).unwrap().into_iter().map(|b| b.name).collect();
+        let mut saved: Vec<String> = instance::load_all_in(out.path()).unwrap().into_iter().map(|b| b.name).collect();
         saved.sort();
         assert_eq!(saved, ["Farm Pack", "Farm Pack (2)"]);
     }
@@ -1001,14 +1002,10 @@ mod tests {
         fs::write(src.join("logs").join("latest.log"), b"token=SECRET").unwrap();
         let sodium = modref(b"sodium", "sodium-fabric.jar", "Sodium");
         let lithium = modref(b"lithium", "lithium.jar", "Lithium");
-        let mut b = Batch::new("Round Trip", "1.21.1");
-        b.loader_version = Some("0.16.5".into());
+        let mut b = Instance::new("Round Trip", "1.21.1", Loader::Fabric(Some("0.16.5".into())));
         b.mods = vec![sodium.clone(), lithium.clone()];
         b.local_mods = vec!["mine.jar".into()];
-        b.server = Some("play.example.net".into());
-        b.join_commands = vec!["/login hunter2".into()];
-        b.accounts = vec![uuid::Uuid::from_u128(7)];
-        fs::write(src.join("batch.json"), serde_json::to_vec(&b).unwrap()).unwrap();
+        fs::write(src.join("instance.json"), serde_json::to_vec(&b).unwrap()).unwrap();
         let cdn = served(vec![("https://cdn.modrinth.com/data/Sodium/sodium-fabric.jar", b"sodium".to_vec()), ("https://cdn.modrinth.com/data/Lithium/lithium.jar", b"lithium".to_vec())]);
         let file = home.path().join("out.mrpack");
 
@@ -1029,7 +1026,7 @@ mod tests {
 
         let out = tempfile::tempdir().unwrap();
         let back = import_pack(&mut zip, out.path(), &[], &lookup_of(vec![sodium, lithium]), &cdn, &AtomicBool::new(false), &quiet()).unwrap();
-        assert_eq!((&back.name, &back.game_version, &back.loader_version, &back.mods, &back.local_mods), (&b.name, &b.game_version, &b.loader_version, &b.mods, &b.local_mods));
+        assert_eq!((&back.name, &back.game_version, &back.loader, &back.mods, &back.local_mods), (&b.name, &b.game_version, &b.loader, &b.mods, &b.local_mods));
         let dest = out.path().join(&back.id);
         assert_eq!(fs::read(dest.join("config").join("deep").join("a.toml")).unwrap(), b"a=1");
         assert_eq!(fs::read(dest.join("resourcepacks").join("rp.zip")).unwrap(), b"rp");
@@ -1050,7 +1047,7 @@ mod tests {
         let linked = std::os::unix::fs::symlink(&outside, src.join("config").join("link")).is_ok();
         #[cfg(windows)]
         let linked = junction::create(&outside, src.join("config").join("link")).is_ok();
-        let b = Batch::new("Links", "1.21.1");
+        let b = Instance::new("Links", "1.21.1", Loader::default());
         let file = home.path().join("out.mrpack");
         export_with(&b, &src, "0.16.5", &file, &served(Vec::new())).unwrap();
         let zip = ZipArchive::new(File::open(&file).unwrap()).unwrap();

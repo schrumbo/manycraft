@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 use super::model::Phase;
 use super::state::{Backend, Update, render_image};
 use crate::core::account::Account;
-use crate::core::batch::Batch;
-use crate::core::fleet;
+use crate::core::fleet::Target;
 use crate::core::ipc::{ChatKind, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
 
 const PREVIEW_W: u32 = 192;
@@ -38,7 +37,7 @@ const WHISPERS: [&str; 4] = ["kommst du kurz zum Spawn?", "hast du meine Nachric
 
 enum Cmd {
     Known(Vec<(String, String)>),
-    Start(Batch, Vec<Account>, Arc<AtomicBool>),
+    Start(Target, Vec<Account>, Arc<AtomicBool>),
     Stop(Vec<String>),
     Send(String, ToMod),
 }
@@ -57,8 +56,8 @@ impl Fake {
 }
 
 impl Backend for Fake {
-    fn start(&self, batch: Batch, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
-        let _ = self.tx.send(Cmd::Start(batch, accounts, cancel));
+    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>) {
+        let _ = self.tx.send(Cmd::Start(target, accounts, cancel));
     }
 
     fn stop(&self, keys: Vec<String>) {
@@ -150,13 +149,13 @@ impl Sim {
                     self.seed();
                 }
             }
-            Cmd::Start(batch, accounts, cancel) => {
+            Cmd::Start(target, accounts, cancel) => {
                 let total = accounts.len();
                 for (n, account) in accounts.iter().enumerate() {
-                    let key = fleet::instance_key(&batch, account.id);
+                    let key = target.key(account.id);
                     let after = STAGGER * n as u32;
                     self.launch(&key, after, Some(&cancel));
-                    self.at(after, Some(&cancel), Update::Progress { batch: batch.id.clone(), done: n + 1, total });
+                    self.at(after, Some(&cancel), Update::Progress { batch: target.owner(), done: n + 1, total });
                 }
             }
             Cmd::Stop(keys) => {

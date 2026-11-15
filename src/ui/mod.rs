@@ -9,6 +9,8 @@ pub mod fake;
 pub mod forms;
 pub mod grid;
 pub mod identity;
+pub mod instance_page;
+pub mod instance_sheet;
 pub mod main_window;
 pub mod mod_browser;
 #[allow(dead_code)]
@@ -28,6 +30,7 @@ pub mod stills;
 pub mod tile;
 pub mod toolbar;
 pub mod transfer;
+pub mod undo;
 pub mod updates;
 #[allow(dead_code)]
 pub mod theme;

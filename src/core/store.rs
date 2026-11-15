@@ -31,6 +31,21 @@ pub enum Recovery {
     Lost,
 }
 
+/// A file that is valid JSON of another shape, as a newer version or a hand edit leaves it; [`load`] did not touch it.
+#[derive(Debug)]
+pub struct Untouched {
+    pub path: PathBuf,
+    source: serde_json::Error,
+}
+
+impl std::fmt::Display for Untouched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is from a newer Manycraft or was edited by hand; it was left untouched: {}", self.path.display(), self.source)
+    }
+}
+
+impl std::error::Error for Untouched {}
+
 fn fingerprint(bytes: Option<&[u8]>) -> Option<u64> {
     bytes.map(|b| {
         let mut hasher = DefaultHasher::new();
@@ -81,7 +96,7 @@ fn readable<T: DeserializeOwned>(bytes: &[u8], path: &Path) -> Result<Option<T>>
     match serde_json::from_slice(bytes) {
         Ok(value) => Ok(Some(value)),
         Err(e) if e.is_syntax() || e.is_eof() => Ok(None),
-        Err(e) => Err(anyhow::Error::new(e).context(format!("{} is from a newer Manycraft or was edited by hand; it was left untouched", path.display()))),
+        Err(source) => Err(Untouched { path: path.to_owned(), source }.into()),
     }
 }
 
@@ -299,8 +314,8 @@ mod tests {
         let path = dir.path().join("a.json");
         std::fs::write(&path, br#"{"a":1}"#).unwrap();
         std::fs::write(backup_path(&path), b"[7]").unwrap();
-        let error = format!("{:#}", load::<Doc>(&path).unwrap_err());
-        assert!(error.contains("left untouched"), "{error}");
+        let error = load::<Doc>(&path).unwrap_err();
+        assert_eq!(error.downcast_ref::<Untouched>().map(|u| u.path.clone()), Some(path.clone()));
         assert_eq!(std::fs::read(&path).unwrap(), br#"{"a":1}"#);
         assert_eq!(std::fs::read(backup_path(&path)).unwrap(), b"[7]");
         assert!(!damaged_path(&path).exists());
@@ -444,7 +459,7 @@ mod tests {
             account::save(&stress_accounts(generation)).unwrap();
             let mut batches = batch::load_all().unwrap();
             for n in batches.len()..STRESS_BATCHES {
-                let mut made = batch::Batch::new(&format!("Batch {n}"), "26.3");
+                let mut made = batch::Batch::new(&format!("Batch {n}"), "i1");
                 made.id = format!("b{n}");
                 batches.push(made);
             }

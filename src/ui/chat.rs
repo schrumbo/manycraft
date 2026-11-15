@@ -302,8 +302,8 @@ impl ChatPage {
 
     fn running(&self, m: &Model) -> usize {
         match &self.target {
-            Some(Target::Batch(id)) => m.instances.values().filter(|i| i.batch_id == *id && i.phase.on_server()).count(),
-            Some(Target::Instance(key)) => usize::from(m.instances.get(key).is_some_and(|i| i.phase.on_server())),
+            Some(Target::Batch(id)) => m.games.values().filter(|i| i.batch_id == *id && i.phase.on_server()).count(),
+            Some(Target::Instance(key)) => usize::from(m.games.get(key).is_some_and(|i| i.phase.on_server())),
             None => 0,
         }
     }
@@ -537,7 +537,7 @@ impl Render for ChatPage {
         self.sync(model.read(cx));
         if window.is_window_active() || crate::core::drive::on() {
             let scope = self.scope.batch.clone();
-            if model.read(cx).instances.values().any(|i| i.unread_whispers > 0 && scope.as_deref().is_none_or(|b| i.batch_id == b)) {
+            if model.read(cx).games.values().any(|i| i.unread_whispers > 0 && scope.as_deref().is_none_or(|b| i.batch_id == b)) {
                 cx.defer(move |cx| super::state::clear_whispers(scope.as_deref(), cx));
             }
         }
@@ -545,7 +545,7 @@ impl Render for ChatPage {
             let m = model.read(cx);
             let name = match &self.target {
                 Some(Target::Batch(id)) => m.batch(id).map(|b| b.name.clone()),
-                Some(Target::Instance(key)) => m.instances.get(key).map(|i| i.name.clone()),
+                Some(Target::Instance(key)) => m.games.get(key).map(|i| i.name.clone()),
                 None => None,
             };
             (!m.chat.is_empty(), self.running(m), name.unwrap_or_default())
@@ -704,14 +704,14 @@ impl Choices {
             m.batches
                 .iter()
                 .map(|b| {
-                    let total = m.instances.values().filter(|i| i.batch_id == b.id).count();
-                    let running = m.instances.values().filter(|i| i.batch_id == b.id && i.phase.on_server()).count();
+                    let total = m.games.values().filter(|i| i.batch_id == b.id).count();
+                    let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.on_server()).count();
                     trf("Alle in %@ · %lld von %lld laufen", &[&b.name, &running, &total])
                 })
                 .collect(),
         );
         let mut targets: Vec<(String, Target)> = m.batches.iter().zip(batch_labels).map(|(b, label)| (label, Target::Batch(b.id.clone()))).collect();
-        let mut instances: Vec<_> = m.instances.values().collect();
+        let mut instances: Vec<_> = m.games.values().collect();
         instances.sort_by_cached_key(|i| (!i.phase.on_server(), i.name.to_lowercase(), i.key.clone()));
         let instance_labels = unique(
             instances
@@ -760,14 +760,14 @@ fn unique(labels: Vec<String>) -> Vec<String> {
 
 fn choices_signature(m: &Model) -> u64 {
     let mut total = 0u64;
-    for i in m.instances.values() {
+    for i in m.games.values() {
         let mut h = DefaultHasher::new();
         (&i.key, &i.name, &i.batch_id, i.phase.on_server()).hash(&mut h);
         total ^= h.finish();
     }
     let mut h = DefaultHasher::new();
     total.hash(&mut h);
-    m.instances.len().hash(&mut h);
+    m.games.len().hash(&mut h);
     for b in &m.batches {
         (&b.id, &b.name).hash(&mut h);
     }

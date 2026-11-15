@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NewBatch, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, UndoRemoveAccount, ShowAll, ShowBatch, StartMany, StartSelected, StopMany, StopSelected,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, NewBatchFromPrism, NextAttention, NextInstance, OpenChat, OpenPalette, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
     ToggleFullscreen, ToggleSidebar,
 };
 use super::drive::Mark;
@@ -17,7 +17,9 @@ use super::native;
 use super::theme::{self, Theme, chat, control, font, iconsize, selection, shell, space, tint};
 use super::widgets::{KeyNav, TakeFocus, icon, primary_button};
 use crate::core::i18n::{tr, trf};
-use crate::core::place::{Mode, Place, Rect};
+use crate::core::settings;
+use crate::core::place::{self, Mode, Place, Rect};
+use crate::core::winstate::{self, Saved};
 
 actions!(main_window, [FocusSearch, ClearSearch, FilterAll, FilterAttention, FilterRunning, FilterStopped]);
 
@@ -29,6 +31,8 @@ type FitScope = (Option<String>, Vec<(u32, u32)>);
 pub enum Page {
     /// The instance grid of one batch, or of all when `None`.
     Grid(Option<String>),
+    /// The page of one instance.
+    Instance(String),
     Accounts,
     Chat,
 }
@@ -54,6 +58,11 @@ pub struct MainWindow {
     pub(super) grid: Grid,
     pub(super) palette: Option<super::palette::Palette>,
     fit: Option<(FitScope, Option<String>)>,
+    saved: Saved,
+    restoring: Option<Page>,
+    dirty: bool,
+    saving: Option<Task<()>>,
+    writing: Option<Task<()>>,
     /// Prism Launcher instances that can become a batch, and accounts Prism lists, as found at startup.
     pub(super) prism: (usize, usize),
     pub(super) search_roomy: bool,
@@ -63,7 +72,7 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(saved: Saved, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = model::get(cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Name, Batch, Server, Status")));
         let me = cx.entity().downgrade();
@@ -83,7 +92,27 @@ impl MainWindow {
                 theme::refresh(window, cx);
                 cx.notify();
             }),
+            cx.observe_window_bounds(window, |this, window, cx| this.remember(window, cx)),
+            cx.on_app_quit(|this, _| {
+                this.write_now();
+                async {}
+            }),
+            cx.on_release(|this, _| this.write_now()),
             cx.observe(&model, |this, model, cx| {
+                if model.read(cx).loaded
+                    && let Some(page) = this.restoring.take()
+                    && this.page == Page::Grid(None)
+                {
+                    let m = model.read(cx);
+                    let exists = match &page {
+                        Page::Grid(Some(batch)) => m.batches.iter().any(|b| &b.id == batch),
+                        Page::Instance(id) => m.instances.iter().any(|i| &i.id == id),
+                        _ => false,
+                    };
+                    if exists {
+                        this.page = page;
+                    }
+                }
                 let playing = model.read(cx).playing.clone();
                 if let Some(left) = std::mem::replace(&mut this.last_playing, playing.clone()).filter(|_| playing.is_none()) {
                     this.grid.reveal(left);
@@ -103,11 +132,25 @@ impl MainWindow {
             typed,
         ];
         Self::look_for_prism(cx);
+        native::note_center(window);
+        let page = match saved.page {
+            winstate::Page::Accounts => Page::Accounts,
+            winstate::Page::Chat if settings::active().merged_chat => Page::Chat,
+            _ => Page::Grid(None),
+        };
         Self {
             focus: cx.focus_handle(),
-            page: Page::Grid(None),
+            restoring: saved.batch.clone().filter(|_| page == Page::Grid(None)).map(|id| match saved.page {
+                winstate::Page::Instance => Page::Instance(id),
+                _ => Page::Grid(Some(id)),
+            }),
+            page,
+            sidebar: saved.sidebar,
+            saved,
+            dirty: false,
+            saving: None,
+            writing: None,
             filter: Filter::All,
-            sidebar: true,
             overlay: false,
             narrow_now: false,
             search,
@@ -141,6 +184,7 @@ impl MainWindow {
     /// Shows `page`; switching between grids keeps the filter but drops the keyboard selection.
     pub(super) fn go(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = false;
+        self.restoring = None;
         if self.page != page {
             self.page = page;
             self.grid.forget();
@@ -148,7 +192,64 @@ impl MainWindow {
         }
         self.focus_page(window, cx);
         cx.defer_in(window, |this, window, cx| this.focus_page(window, cx));
+        self.remember(window, cx);
         cx.notify();
+    }
+
+    fn remember(&mut self, window: &Window, cx: &mut Context<Self>) {
+        native::note_center(window);
+        let mut saved = self.saved.clone();
+        if self.restoring.is_none() {
+            (saved.page, saved.batch) = match &self.page {
+                Page::Grid(batch) => (winstate::Page::Grid, batch.clone()),
+                Page::Accounts => (winstate::Page::Accounts, None),
+                Page::Chat => (winstate::Page::Chat, None),
+                Page::Instance(id) => (winstate::Page::Instance, Some(id.clone())),
+            };
+        }
+        saved.sidebar = self.sidebar;
+        if !crate::core::drive::away() && !window.is_fullscreen() && native::place_of(window).is_some() {
+            let shown = match window.window_bounds() {
+                WindowBounds::Windowed(b) => Some((b, false)),
+                WindowBounds::Maximized(b) => Some((b, true)),
+                WindowBounds::Fullscreen(_) => None,
+            };
+            if let Some((b, maximized)) = shown {
+                saved.frame = Some(winstate::Frame { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) });
+                saved.maximized = maximized;
+                saved.display = window.display(cx).and_then(|d| d.uuid().ok()).map(|u| u.to_string());
+            }
+        }
+        if saved == self.saved {
+            return;
+        }
+        self.saved = saved;
+        self.dirty = true;
+        self.saving = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            let _ = this.update(cx, |this, cx| this.flush(cx));
+        }));
+    }
+
+    fn flush(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.dirty) {
+            return;
+        }
+        self.saving = None;
+        let saved = self.saved.clone();
+        let before = self.writing.take();
+        self.writing = Some(cx.background_spawn(async move {
+            if let Some(before) = before {
+                before.await;
+            }
+            let _ = winstate::save(&saved);
+        }));
+    }
+
+    fn write_now(&mut self) {
+        if std::mem::take(&mut self.dirty) {
+            let _ = winstate::save(&self.saved);
+        }
     }
 
     /// Hands the keyboard to the page: the grid when it shows, the window otherwise.
@@ -158,7 +259,7 @@ impl MainWindow {
         }
         if matches!(self.page, Page::Grid(_)) && !self.onboarding_shown(cx) {
             window.focus(&self.grid.focus, cx);
-        } else {
+        } else if !matches!(self.page, Page::Instance(_)) || !super::instance_page::focus(window, cx) {
             window.focus(&self.focus, cx);
         }
     }
@@ -185,14 +286,14 @@ impl MainWindow {
     /// The quiet memory line for `batch` while nothing in it runs: worked out off the UI thread once per scope, `None` when everything fits.
     fn fit_line(&mut self, batch: Option<&str>, cx: &mut Context<Self>) -> Option<String> {
         let m = model::get(cx).read(cx);
-        let scope: Vec<_> = m.instances.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
+        let scope: Vec<_> = m.games.values().filter(|i| batch.is_none_or(|b| i.batch_id == b)).collect();
         if scope.is_empty() || scope.iter().any(|i| i.phase.is_active()) {
             self.fit = None;
             return None;
         }
         let mut per: Vec<(u32, u32)> = m.batches.iter().filter_map(|b| {
             let n = scope.iter().filter(|i| i.batch_id == b.id).count();
-            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory_mb))
+            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory_mb))))
         }).collect();
         per.sort_unstable();
         let key: FitScope = (batch.map(str::to_owned), per.clone());
@@ -256,6 +357,7 @@ impl MainWindow {
             Page::Grid(_) => !self.onboarding_shown(cx),
             Page::Accounts => super::accounts::has_filter(cx),
             Page::Chat => super::chat::has_filter(cx),
+            Page::Instance(_) => false,
         }
     }
 
@@ -270,7 +372,7 @@ impl MainWindow {
 
     fn onboarding_shown(&self, cx: &App) -> bool {
         let m = model::get(cx).read(cx);
-        m.accounts.is_empty() || m.batches.is_empty()
+        m.accounts.is_empty() || (m.batches.is_empty() && m.instances.is_empty())
     }
 
     fn onboarding(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -286,14 +388,14 @@ impl MainWindow {
                 Box::new(AddAccount),
                 (self.prism.1 > 0).then(|| (tr("Oder Accounts aus Prism übernehmen"), Box::new(ImportPrismAccounts) as Box<dyn Action>)),
             )
-        } else if m.batches.is_empty() {
+        } else if m.batches.is_empty() && m.instances.is_empty() {
             (
-                tr("Fehlt noch: ein Batch"),
-                tr("Ein Batch legt Version, Server und Mods fest und schickt deine Accounts gemeinsam los."),
-                "new-batch",
-                tr("Batch erstellen"),
-                Box::new(NewBatch),
-                (self.prism.0 > 0).then(|| (tr("Oder aus einer Prism-Instanz übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
+                tr("Fehlt noch: eine Instanz"),
+                tr("Eine Instanz legt Version, Loader und Mods fest. Spiel sie allein oder schick mehrere Accounts als Batch los."),
+                "new-instance",
+                tr("Instanz erstellen"),
+                Box::new(NewInstance),
+                (self.prism.0 > 0).then(|| (tr("Oder aus Prism übernehmen"), Box::new(NewBatchFromPrism) as Box<dyn Action>)),
             )
         } else {
             return None;
@@ -338,6 +440,7 @@ impl Render for MainWindow {
         let content = match self.page.clone() {
             Page::Accounts => super::accounts::page(window, cx).into_any_element(),
             Page::Chat => super::chat::page(window, cx).into_any_element(),
+            Page::Instance(id) => super::instance_page::page(&id, window, cx),
             Page::Grid(batch) => match self.onboarding(cx) {
                 Some(empty) => match model::get(cx).read(cx).error.clone() {
                     Some(error) => div().size_full().flex().flex_col().child(div().h(px(shell::TOOLBAR)).flex_none()).child(notice(error, &t, cx)).child(div().flex_1().min_h_0().child(empty)).into_any_element(),
@@ -386,6 +489,7 @@ impl Render for MainWindow {
                     this.overlay = !this.overlay;
                 } else {
                     this.sidebar = !this.sidebar;
+                    this.remember(window, cx);
                 }
                 cx.notify();
             }))
@@ -397,7 +501,7 @@ impl Render for MainWindow {
                     }
                     Page::Accounts => super::accounts::focus_filter(window, cx),
                     Page::Chat => super::chat::focus_filter(window, cx),
-                    Page::Grid(_) => {}
+                    Page::Grid(_) | Page::Instance(_) => {}
                 }
             }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
@@ -425,6 +529,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ShowAll, window, cx| this.go(Page::Grid(None), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.go(Page::Accounts, window, cx)))
             .on_action(cx.listener(|this, a: &ShowBatch, window, cx| this.go(Page::Grid(Some(a.0.clone())), window, cx)))
+            .on_action(cx.listener(|this, a: &ShowInstance, window, cx| this.go(Page::Instance(a.0.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &FilterAll, window, cx| this.set_filter(Filter::All, window, cx)))
             .on_action(cx.listener(|this, _: &FilterAttention, window, cx| this.set_filter(Filter::Attention, window, cx)))
             .on_action(cx.listener(|this, _: &FilterRunning, window, cx| this.set_filter(Filter::Running, window, cx)))
@@ -467,7 +572,7 @@ impl Render for MainWindow {
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE))
             .when(show_sidebar, |d| d.child(super::sidebar::render(self, window, cx)))
-            .child(div().relative().flex_1().min_w_0().h_full().bg(t.window).child(content).when(!(narrow && self.overlay), |d| d.child(super::toolbar::toggle(self, &t, cx))).children(super::accounts::toasts(cx).map(|toasts| div().absolute().left_0().right_0().bottom(px(self.toast_lift(cx))).child(toasts))))
+            .child(div().relative().flex_1().min_w_0().h_full().bg(t.window).child(content).when(!(narrow && self.overlay), |d| d.child(super::toolbar::toggle(self, &t, cx))).child(div().absolute().left_0().right_0().bottom(px(self.toast_lift(cx))).child(super::undo::toasts(cx))))
             .when(narrow && self.overlay, |d| {
                 d.child(
                     div()
@@ -516,6 +621,7 @@ fn driven_size() -> Option<(f32, f32)> {
 }
 
 const FULLSCREEN_SETTLES: Duration = Duration::from_millis(150);
+const SAVE_AFTER: Duration = Duration::from_millis(500);
 
 fn bind_keys(cx: &mut App) {
     let m = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
@@ -523,13 +629,14 @@ fn bind_keys(cx: &mut App) {
     let k = |key: &str| -> &'static str { Box::leak(format!("{m}-{key}").into_boxed_str()) };
     cx.bind_keys([
         KeyBinding::new(k("b"), ToggleSidebar, Some("MainWindow")),
-        KeyBinding::new(k("z"), UndoRemoveAccount, Some("MainWindow")),
+        KeyBinding::new(k("z"), Undo, Some("MainWindow")),
         KeyBinding::new(k("f"), FocusSearch, Some("MainWindow")),
         KeyBinding::new(k("shift-c"), OpenChat, Some("MainWindow")),
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
         KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
+        KeyBinding::new(k("shift-n"), NewInstance, Some("MainWindow")),
         KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),
@@ -547,13 +654,38 @@ fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// Opens the main window.
+fn rect_of(b: Bounds<Pixels>) -> Rect {
+    let at = |p: Pixels| f32::from(p).round();
+    Rect { x: at(b.origin.x) as i32, y: at(b.origin.y) as i32, w: at(b.size.width).max(1.) as u32, h: at(b.size.height).max(1.) as u32 }
+}
+
+fn restored(saved: &Saved, cx: &App) -> Option<(WindowBounds, DisplayId)> {
+    let frame = saved.frame?;
+    let displays = cx.displays();
+    let works: Vec<Rect> = displays.iter().map(|d| rect_of(d.visible_bounds())).collect();
+    let prefer = saved.display.as_deref().and_then(|u| displays.iter().position(|d| d.uuid().is_ok_and(|id| id.to_string() == u)));
+    let bounds = Bounds::new(point(px(frame.x), px(frame.y)), size(px(frame.w), px(frame.h)));
+    let asked = rect_of(bounds);
+    let (fitted, at) = place::restore(asked, &works, prefer)?;
+    let bounds = if fitted == asked { bounds } else { Bounds::new(point(px(fitted.x as f32), px(fitted.y as f32)), size(px(fitted.w as f32), px(fitted.h as f32))) };
+    Some((if saved.maximized { WindowBounds::Maximized(bounds) } else { WindowBounds::Windowed(bounds) }, displays[at].id()))
+}
+
+/// Opens the main window where it was last, else centred.
 pub fn open(cx: &mut App) {
     bind_keys(cx);
-    let (w, h) = driven_size().filter(|_| crate::core::drive::on()).unwrap_or((1280., 800.));
-    let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+    let driven = crate::core::drive::on();
+    let (w, h) = driven_size().filter(|_| driven).unwrap_or((1280., 800.));
+    let saved = winstate::load();
+    let (window_bounds, display_id) = match restored(&saved, cx) {
+        Some((bounds, display)) => (bounds, Some(display)),
+        None => (WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx)), None),
+    };
+    let maximized = matches!(window_bounds, WindowBounds::Maximized(_));
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(window_bounds),
+        display_id,
+        show: !(maximized && !driven),
         window_min_size: Some(size(px(640.), px(420.))),
         app_id: Some("io.github.schrumbo.manycraft".into()),
         ..Default::default()
@@ -561,10 +693,18 @@ pub fn open(cx: &mut App) {
     let options = super::chrome::window_options(options, "Manycraft");
     if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::refresh(window, cx);
-        cx.new(|cx| MainWindow::new(window, cx))
+        if maximized && !driven {
+            window.activate_window();
+        }
+        cx.new(|cx| MainWindow::new(saved, window, cx))
     }) {
         cx.set_global(MainHandle(handle));
     }
+}
+
+/// The monitor the main window is on.
+pub fn display(cx: &mut App) -> Option<DisplayId> {
+    handle(cx)?.update(cx, |_, window, cx| window.display(cx).map(|d| d.id())).ok().flatten()
 }
 
 fn handle(cx: &App) -> Option<AnyWindowHandle> {
@@ -640,10 +780,12 @@ pub fn select_batch(batch: &str, cx: &mut App) {
     });
 }
 
-/// Shows the grid of `batch` with the window's filter, as after importing it; stays put while the palette or a sheet is open.
-pub fn show_batch(batch: &str, cx: &mut App) {
-    let Some(h) = handle(cx) else { return };
-    let batch = batch.to_owned();
+/// Shows the page of instance `id`, as after creating or importing it; stays put while the palette or a sheet is open.
+/// Returns whether the page is shown now.
+pub fn show_instance(id: &str, cx: &mut App) -> bool {
+    let Some(h) = handle(cx) else { return false };
+    let id = id.to_owned();
+    let mut shown = false;
     let _ = h.update(cx, |view, window, cx| {
         let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
         let content = root.read(cx).view().clone();
@@ -652,8 +794,27 @@ pub fn show_batch(batch: &str, cx: &mut App) {
                 if this.palette.is_some() || window.has_active_dialog(cx) {
                     return;
                 }
-                this.grid.reset_scroll();
-                this.go(Page::Grid(Some(batch)), window, cx);
+                this.go(Page::Instance(id), window, cx);
+                shown = true;
+            });
+        }
+    });
+    shown
+}
+
+/// Moves from the page of instance `gone` to the page of `to`, or to all games when `to` is gone too; any other page stays.
+pub fn leave_instance(gone: &str, to: &str, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let (gone, to) = (gone.to_owned(), to.to_owned());
+    let _ = h.update(cx, |view, window, cx| {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
+            view.update(cx, |this, cx| {
+                if matches!(&this.page, Page::Instance(id) if *id == gone) {
+                    let kept = model::get(cx).read(cx).instance(&to).is_some();
+                    this.go(if kept { Page::Instance(to) } else { Page::Grid(None) }, window, cx);
+                }
             });
         }
     });

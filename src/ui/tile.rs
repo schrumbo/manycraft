@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, Respawn, RestartMany, SignInAgain, Start, StartMany, Stop, StopMany};
+use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, Respawn, RestartMany, ShowInstance, SignInAgain, Start, StartMany, Stop, StopMany};
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
@@ -276,7 +276,7 @@ impl Primary {
 
 /// Runs what the tile's main button would, for Enter on a tile whose game cannot be shown.
 pub fn primary_action(key: &str, window: &mut Window, cx: &mut App) {
-    let Some((phase, stopping, account)) = model::get(cx).read(cx).instances.get(key).map(|i| (i.phase.clone(), i.stopping, i.account_id)) else { return };
+    let Some((phase, stopping, account)) = model::get(cx).read(cx).games.get(key).map(|i| (i.phase.clone(), i.stopping, i.account_id)) else { return };
     if let Some(p) = primary(&phase, stopping) {
         window.dispatch_action(p.action(key, account), cx);
     }
@@ -582,7 +582,10 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
             menu.menu(tr("Starten"), Box::new(Start(menu_key.clone())))
         };
         let menu = menu.menu_with_disabled(tr("Neu starten"), Box::new(RestartMany(vec![menu_key.clone()])), stopping || login);
-        menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone()))).menu(tr("Spielordner öffnen"), Box::new(OpenGameFolder(menu_key.clone())))
+        menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).map(|menu| match crate::core::fleet::solo_instance(&menu_batch) {
+            Some(instance) => menu.menu(tr("Instanz öffnen"), Box::new(ShowInstance(instance.to_owned()))),
+            None => menu.menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone()))),
+        }).menu(tr("Spielordner öffnen"), Box::new(OpenGameFolder(menu_key.clone())))
     })
     .into_any_element()
 }
@@ -591,7 +594,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
 pub fn accounts_of(keys: &[String], cx: &App) -> (Vec<String>, Option<u8>) {
     let m = model::get(cx).read(cx);
     let mut ids: Vec<Uuid> = Vec::new();
-    for id in keys.iter().filter_map(|k| m.instances.get(k)).map(|i| i.account_id) {
+    for id in keys.iter().filter_map(|k| m.games.get(k)).map(|i| i.account_id) {
         if !ids.contains(&id) {
             ids.push(id);
         }

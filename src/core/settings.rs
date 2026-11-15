@@ -230,7 +230,7 @@ mod tests {
     fn a_file_of_another_shape_is_an_error_and_stays() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), br#"{"reconnect":5}"#).unwrap();
-        assert!(format!("{:#}", load_from(dir.path()).unwrap_err()).contains("left untouched"));
+        assert!(load_from(dir.path()).unwrap_err().downcast_ref::<store::Untouched>().is_some());
         assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"reconnect":5}"#);
         save_to(dir.path(), &Settings::default()).unwrap();
         assert_eq!(std::fs::read(store::damaged_path(&dir.path().join(FILE))).unwrap(), br#"{"reconnect":5}"#);

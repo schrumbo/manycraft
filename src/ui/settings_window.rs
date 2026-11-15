@@ -57,10 +57,12 @@ pub fn open(cx: &mut App) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
         return;
     }
-    let roomy = cx.primary_display().is_some_and(|d| f32::from(d.bounds().size.height) >= TALL_SCREEN);
-    let bounds = Bounds::centered(None, size(px(WIDTH), px(if roomy { TALL_HEIGHT } else { HEIGHT })), cx);
+    let display = super::main_window::display(cx);
+    let roomy = display.and_then(|id| cx.find_display(id)).or_else(|| cx.primary_display()).is_some_and(|d| f32::from(d.bounds().size.height) >= TALL_SCREEN);
+    let bounds = Bounds::centered(display, size(px(WIDTH), px(if roomy { TALL_HEIGHT } else { HEIGHT })), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        display_id: display,
         window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
         app_id: Some("io.github.schrumbo.manycraft".into()),
         ..Default::default()
