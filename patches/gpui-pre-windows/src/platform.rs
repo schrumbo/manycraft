@@ -454,6 +454,7 @@ impl WindowsPlatform {
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                let mut swept_at = std::time::Instant::now();
                 loop {
                     let signal_source = vsync_provider.wait_for_vsync();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
@@ -499,13 +500,15 @@ impl WindowsPlatform {
                         }
                     }
                     if !wanted {
-                        let parked_at = std::time::Instant::now();
-                        std::thread::park_timeout(VSYNC_IDLE_TIMEOUT);
-                        if parked_at.elapsed() >= VSYNC_IDLE_TIMEOUT {
-                            for hwnd in all_windows.read().iter() {
-                                hwnd.frame_demand.request_once();
-                            }
+                        std::thread::park_timeout(
+                            VSYNC_IDLE_TIMEOUT.saturating_sub(swept_at.elapsed()),
+                        );
+                    }
+                    if swept_at.elapsed() >= VSYNC_IDLE_TIMEOUT {
+                        for hwnd in all_windows.read().iter() {
+                            hwnd.frame_demand.request_once();
                         }
+                        swept_at = std::time::Instant::now();
                     }
                 }
             })
