@@ -15,9 +15,10 @@ pub const DEFAULT: &str = "lantern";
 
 const MAX_BYTES: u64 = 256 * 1024;
 
-const BUILT_IN: [(&str, &str); 18] = [
+const BUILT_IN: [(&str, &str); 19] = [
     ("lantern", include_str!("../../assets/themes/lantern.json")),
     ("biome", include_str!("../../assets/themes/biome.json")),
+    ("tinte", include_str!("../../assets/themes/tinte.json")),
     ("catppuccin", include_str!("../../assets/themes/catppuccin.json")),
     ("nord", include_str!("../../assets/themes/nord.json")),
     ("dracula", include_str!("../../assets/themes/dracula.json")),
