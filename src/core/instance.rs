@@ -255,7 +255,13 @@ pub(super) fn save_in(root: &Path, instance: &Instance) -> Result<()> {
     if !valid_id(&instance.id) {
         bail!("invalid instance id {:?}", instance.id);
     }
-    store::write(&root.join(&instance.id).join(FILE), &serde_json::to_vec_pretty(instance)?, |_| Ok(()))
+    let file = root.join(&instance.id).join(FILE);
+    let created = std::fs::symlink_metadata(&file).is_err();
+    store::write(&file, &serde_json::to_vec_pretty(instance)?, |_| Ok(()))?;
+    if created && let Err(e) = super::origin::record(root, instance) {
+        eprintln!("the start of {} was not kept: {e:#}", instance.name);
+    }
+    Ok(())
 }
 
 /// Whether `id` can name a folder without escaping it.
@@ -288,6 +294,10 @@ pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
 /// returns the entry name [`untrash`] and [`purge`] take. Callers check first that no batch uses it and no game of it runs.
 pub fn trash(instance: &Instance) -> Result<String> {
     trash_in(&instances_dir(), instance, now_millis())
+}
+
+pub(super) fn trash_dir(root: &Path) -> PathBuf {
+    root.join(TRASH)
 }
 
 pub(super) fn trash_in(root: &Path, instance: &Instance, millis: u64) -> Result<String> {
@@ -369,7 +379,7 @@ pub(super) fn purge_in(root: &Path, entry: &str) -> Result<()> {
     remove_dir(&root.join(TRASH).join(entry))
 }
 
-/// Deletes the trash entries older than `older_than` or stamped more than a day ahead of now, one entry at a time; names that are not entries stay.
+/// Deletes the trash entries of deleted instances and of resets older than `older_than` or stamped more than a day ahead of now, one entry at a time; names that are not entries stay.
 pub fn purge_stale(older_than: Duration) -> Result<()> {
     purge_stale_in(&instances_dir(), now_millis(), older_than)
 }
@@ -386,7 +396,7 @@ pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Res
     let mut first = Ok(());
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
-        let Some((_, millis)) = name.to_str().and_then(parse_entry) else { continue };
+        let Some(millis) = name.to_str().and_then(|n| parse_entry(n).map(|(_, millis)| millis).or_else(|| super::origin::parse_reset(n))) else { continue };
         if (millis < cutoff || millis > ahead)
             && let Err(e) = remove_dir(&entry.path())
             && first.is_ok()
@@ -397,7 +407,7 @@ pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Res
     first
 }
 
-fn parse_entry(entry: &str) -> Option<(&str, u64)> {
+pub(super) fn parse_entry(entry: &str) -> Option<(&str, u64)> {
     let (id, millis) = entry.split_once('-')?;
     if !valid_id(id) || millis.is_empty() || !millis.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -405,7 +415,7 @@ fn parse_entry(entry: &str) -> Option<(&str, u64)> {
     Some((id, millis.parse().ok()?))
 }
 
-fn now_millis() -> u64 {
+pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
@@ -442,7 +452,7 @@ pub(super) fn clone_in(root: &Path, source: &Instance, name: &str) -> Result<Ins
     Ok(made)
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+pub(super) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     let Ok(meta) = std::fs::symlink_metadata(from) else { return Ok(()) };
     if meta.is_dir() {
         std::fs::create_dir_all(to).with_context(|| format!("cannot create {}", to.display()))?;

@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
+use super::actions::{AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -350,14 +350,30 @@ fn new_row(id: &'static str, label: String, action: Box<dyn Action>, t: &Theme) 
 
 /// The menu of an instance, in the sidebar and over the tiles it plays alone.
 pub fn instance_menu(menu: PopupMenu, id: &str, launchable: bool, cx: &App) -> PopupMenu {
-    let users: Vec<String> = model::get(cx).read(cx).batches.iter().filter(|b| b.instance_id == id).map(|b| b.name.clone()).collect();
-    let menu = menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable)
-        .menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
+    let m = model::get(cx).read(cx);
+    let users: Vec<String> = m.batches.iter().filter(|b| b.instance_id == id).map(|b| b.name.clone()).collect();
+    let made = m.instance(id);
+    let takes_mods = made.is_some_and(|made| made.loader.takes_mods());
+    let pinned = made.is_some_and(|made| matches!(made.loader, crate::core::instance::Loader::Fabric(Some(_)) | crate::core::instance::Loader::Quilt(Some(_))));
+    let running = m.games.values().any(|g| g.instance_id == id && g.phase.is_active());
+    let mut menu = menu.menu_with_disabled(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }), !launchable).menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())));
+    if takes_mods {
+        menu = menu.menu(tr("Mods hinzufügen…"), Box::new(AddMods(id.to_owned())));
+    }
+    if pinned {
+        menu = menu.menu(tr("Loader aktualisieren…"), Box::new(UpdateLoader(id.to_owned())));
+    }
+    let menu = menu
         .menu(tr("Klonen"), Box::new(CloneInstance(id.to_owned())))
         .menu(tr("Neuer Batch mit dieser Instanz…"), Box::new(NewBatchFor(id.to_owned())))
         .menu(tr("Ordner öffnen"), Box::new(OpenInstanceFolder(id.to_owned())))
         .menu(tr("Als .mrpack exportieren…"), Box::new(ExportInstance(id.to_owned())))
         .separator();
+    let menu = if running {
+        menu.menu_element_with_disabled(Box::new(ResetInstance(id.to_owned())), true, super::palette::menu_row(tr("Zurücksetzen…"), Some(tr("Stoppe zuerst die laufenden Spiele.")), true))
+    } else {
+        menu.menu(tr("Zurücksetzen…"), Box::new(ResetInstance(id.to_owned())))
+    };
     if users.is_empty() {
         menu.menu(tr("Löschen…"), Box::new(DeleteInstance(id.to_owned())))
     } else {

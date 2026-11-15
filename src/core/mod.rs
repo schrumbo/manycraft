@@ -29,6 +29,7 @@ pub mod modicons;
 pub mod modrinth;
 pub mod mrpack;
 pub mod net;
+pub mod origin;
 pub mod paths;
 pub mod phone;
 pub mod place;
