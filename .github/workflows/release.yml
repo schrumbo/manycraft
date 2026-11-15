@@ -77,11 +77,15 @@ jobs:
           java-version: 25
       - uses: gradle/actions/setup-gradle@v4
       - name: Build
-        run: ./gradlew :fabric:build -PfabricOnly
+        run: ./gradlew build
       - uses: actions/upload-artifact@v4
         with:
           name: companion
-          path: mod/fabric/build/libs/manycraft-companion-*.jar
+          path: |
+            mod/fabric/build/libs/manycraft-companion-*.jar
+            mod/neoforge/build/libs/manycraft-companion-neoforge-*.jar
+            mod/forge/build/libs/manycraft-companion-forge-*.jar
+            !mod/forge/build/libs/*-slim.jar
           if-no-files-found: error
 
   macos:
@@ -102,9 +106,15 @@ jobs:
         with:
           name: companion
           path: ${{ runner.temp }}/companion
-      - name: Use the prebuilt companion mod
+      - name: Use the prebuilt companion mods
         shell: bash
-        run: echo "MANYCRAFT_COMPANION_JAR=$(ls "$RUNNER_TEMP"/companion/*.jar | head -1)" >> "$GITHUB_ENV"
+        run: |
+          d="$RUNNER_TEMP/companion"
+          : > "$d/none.jar"
+          pick() { f=$(find "$d" -name "$1" ! -name '*-slim.jar' | head -1); echo "${f:-$d/none.jar}"; }
+          echo "MANYCRAFT_COMPANION_JAR=$(find "$d" -name 'manycraft-companion-[0-9]*.jar' | head -1)" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_NEOFORGE_JAR=$(pick 'manycraft-companion-neoforge-*.jar')" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_FORGE_JAR=$(pick 'manycraft-companion-forge-*.jar')" >> "$GITHUB_ENV"
       - name: Build universal binary
         run: |
           cargo build --release --locked --target aarch64-apple-darwin
@@ -143,9 +153,15 @@ jobs:
         with:
           name: companion
           path: ${{ runner.temp }}/companion
-      - name: Use the prebuilt companion mod
+      - name: Use the prebuilt companion mods
         shell: bash
-        run: echo "MANYCRAFT_COMPANION_JAR=$(ls "$RUNNER_TEMP"/companion/*.jar | head -1)" >> "$GITHUB_ENV"
+        run: |
+          d="$RUNNER_TEMP/companion"
+          : > "$d/none.jar"
+          pick() { f=$(find "$d" -name "$1" ! -name '*-slim.jar' | head -1); echo "${f:-$d/none.jar}"; }
+          echo "MANYCRAFT_COMPANION_JAR=$(find "$d" -name 'manycraft-companion-[0-9]*.jar' | head -1)" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_NEOFORGE_JAR=$(pick 'manycraft-companion-neoforge-*.jar')" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_FORGE_JAR=$(pick 'manycraft-companion-forge-*.jar')" >> "$GITHUB_ENV"
       - run: cargo build --release --locked
       - name: Install NSIS
         shell: bash
@@ -180,9 +196,15 @@ jobs:
         with:
           name: companion
           path: ${{ runner.temp }}/companion
-      - name: Use the prebuilt companion mod
+      - name: Use the prebuilt companion mods
         shell: bash
-        run: echo "MANYCRAFT_COMPANION_JAR=$(ls "$RUNNER_TEMP"/companion/*.jar | head -1)" >> "$GITHUB_ENV"
+        run: |
+          d="$RUNNER_TEMP/companion"
+          : > "$d/none.jar"
+          pick() { f=$(find "$d" -name "$1" ! -name '*-slim.jar' | head -1); echo "${f:-$d/none.jar}"; }
+          echo "MANYCRAFT_COMPANION_JAR=$(find "$d" -name 'manycraft-companion-[0-9]*.jar' | head -1)" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_NEOFORGE_JAR=$(pick 'manycraft-companion-neoforge-*.jar')" >> "$GITHUB_ENV"
+          echo "MANYCRAFT_COMPANION_FORGE_JAR=$(pick 'manycraft-companion-forge-*.jar')" >> "$GITHUB_ENV"
       - name: Dependencies
         run: |
           sudo apt-get update

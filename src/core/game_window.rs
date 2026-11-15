@@ -1,7 +1,14 @@
 //! The game window seen from outside the game: its border tinted in the account's colour, where it sits and moving it while hidden.
 
+use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::time::Instant;
+
 use super::account::Account;
 use super::place::{Insets, Mode, Rect};
+
+#[cfg(target_os = "windows")]
+const HOME_POLL: Duration = Duration::from_millis(50);
 
 /// How a game's main window sits on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +38,56 @@ pub fn place_hidden(pid: u32, frame: Rect) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = (pid, frame);
+}
+
+/// Keeps the window of a game without Manycraft's mod, process `pid`, on the monitor of `home`: moves it into the middle
+/// of `home` without activating it whenever it shows up elsewhere, from its first frame until `settle` after the first
+/// move, or until `wait` passed without a window or the process ended. Returns whether it was moved.
+pub fn bring_home(pid: u32, home: Rect, wait: Duration, settle: Duration) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Some(process) = win::Process::open(pid) else { return false };
+        let start = Instant::now();
+        let mut moved: Option<Instant> = None;
+        loop {
+            let now = Instant::now();
+            match moved {
+                Some(at) if now.duration_since(at) > settle => return true,
+                None if now.duration_since(start) > wait => return false,
+                _ if process.ended() => return moved.is_some(),
+                _ => {}
+            }
+            if let Some(hwnd) = win::game_window(pid)
+                && win::move_into(hwnd, home)
+            {
+                moved.get_or_insert(now);
+            }
+            std::thread::sleep(HOME_POLL);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (pid, home, wait, settle);
+        false
+    }
+}
+
+/// Asks the game of process `pid` to close as if its window's close button was pressed, so it saves first. Returns
+/// whether it was asked.
+pub fn close(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::game_window(pid).is_some_and(win::close)
+    }
+    #[cfg(unix)]
+    {
+        i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, libc::SIGTERM) } == 0)
+    }
+    #[cfg(not(any(target_os = "windows", unix)))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// The work areas of all monitors, empty where unknown.
@@ -70,12 +127,13 @@ pub fn tint(pid: u32, account: &Account) {
 pub mod win {
     use super::super::place::{self, Insets, Rect};
     use super::Seen;
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::Foundation::{BOOL, CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
     use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-        SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos,
+        PostMessageW, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
     };
 
     const EMPTY: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -148,6 +206,69 @@ pub mod win {
         let monitor = monitor_info(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })?;
         let mode = place::mode_of(unsafe { IsZoomed(hwnd) } != 0, client, rect(monitor.rcMonitor));
         Some(Seen { frame, insets: place::insets(frame, client), mode, visible: unsafe { IsWindowVisible(hwnd) } != 0 })
+    }
+
+    /// The top-level window of process `pid` that a game draws in, SDL for current versions and GLFW for older ones.
+    pub fn game_window(pid: u32) -> Option<HWND> {
+        unsafe extern "system" fn each(hwnd: HWND, data: LPARAM) -> BOOL {
+            let found = unsafe { &mut *(data as *mut (u32, HWND)) };
+            let mut owner = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
+            if owner != found.0 || !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+                return 1;
+            }
+            let mut class = [0u16; 16];
+            let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+            if matches!(String::from_utf16_lossy(&class[..n.max(0) as usize]).as_str(), "SDL_app" | "GLFW30") {
+                found.1 = hwnd;
+                return 0;
+            }
+            1
+        }
+        let mut found: (u32, HWND) = (pid, std::ptr::null_mut());
+        unsafe { EnumWindows(Some(each), &raw mut found as LPARAM) };
+        (!found.1.is_null()).then_some(found.1)
+    }
+
+    /// A process watched without keeping it alive.
+    pub struct Process(HANDLE);
+
+    impl Process {
+        /// The running process `pid`, or `None` when it is gone.
+        pub fn open(pid: u32) -> Option<Self> {
+            let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            (!handle.is_null()).then_some(Self(handle))
+        }
+
+        /// Whether the process has exited.
+        pub fn ended(&self) -> bool {
+            unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Posts a close request to `hwnd`.
+    pub fn close(hwnd: HWND) -> bool {
+        unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 }
+    }
+
+    /// Moves a normal `hwnd` into the middle of `home`, keeping its size, unless it is on that monitor already.
+    pub fn move_into(hwnd: HWND, home: Rect) -> bool {
+        let Some(seen) = seen(hwnd) else { return false };
+        let works = work_areas();
+        if !seen.mode.is_normal() || place::same_work_area(seen.frame, home, &works) {
+            return false;
+        }
+        let Some(margins) = margins(hwnd) else { return false };
+        let target = place::centered(home, seen.frame, &works);
+        let r = grown(target, margins);
+        unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS) };
+        true
     }
 
     /// Moves `hwnd` while hidden so that its frame covers `frame`; a shown, minimized, maximized or fullscreen window stays.

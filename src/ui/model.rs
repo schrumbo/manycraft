@@ -24,6 +24,8 @@ use super::forms;
 pub enum Phase {
     Stopped,
     Starting { done: usize, total: usize },
+    /// Runs as a normal game window without Manycraft's mod: no preview, no background mode, no swap.
+    Plain,
     Menu,
     Connecting { server: String },
     Queue { server: String },

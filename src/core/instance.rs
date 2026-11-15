@@ -21,7 +21,7 @@ const FUTURE_MILLIS: u64 = 24 * 60 * 60 * 1000;
 const COPIED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
 
 /// The mod loader of an instance, with its pinned version; `None` follows the newest one.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Loader {
     Vanilla,
@@ -82,15 +82,6 @@ impl Loader {
         !matches!(self, Self::Vanilla)
     }
 
-    /// Whether Manycraft's companion mod exists for this loader, which previews, background saving and chat need.
-    pub fn has_companion(&self) -> bool {
-        matches!(self, Self::Fabric(_))
-    }
-
-    /// Whether Manycraft can install and start this loader yet.
-    pub fn launchable(&self) -> bool {
-        matches!(self, Self::Fabric(_))
-    }
 }
 
 /// What a game is played with: version, loader, mods and memory. Its folder holds the shared `mods/`, `config/`,
@@ -554,8 +545,7 @@ mod tests {
         assert!(f.same_kind(&Loader::Fabric(None)) && !f.same_kind(&Loader::Quilt(None)));
         assert_eq!(Loader::Vanilla.with_version(Some("1".into())), Loader::Vanilla);
         assert_eq!(Loader::Forge(None).with_version(Some("47".into())), Loader::Forge(Some("47".into())));
-        assert!(f.launchable() && f.has_companion() && f.takes_mods());
-        assert!(!Loader::Quilt(None).launchable() && !Loader::Vanilla.takes_mods());
+        assert!(f.takes_mods() && Loader::Quilt(None).takes_mods() && !Loader::Vanilla.takes_mods());
         let mut i = Instance::new("A", "26.3", f);
         assert_eq!(i.version_line(), "Minecraft 26.3 · Fabric 0.16");
         i.loader = Loader::Fabric(None);
