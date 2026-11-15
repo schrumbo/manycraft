@@ -100,6 +100,7 @@ impl LoaderVersion {
                 s.loading = false;
                 match result {
                     Ok(versions) => {
+                        s.failed = None;
                         s.versions = versions;
                         s.pending = true;
                     }

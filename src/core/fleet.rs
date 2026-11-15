@@ -539,6 +539,9 @@ trait Process: Send {
     fn try_wait(&mut self) -> io::Result<Option<Option<i32>>>;
     fn kill(&mut self) -> io::Result<()>;
     fn wait(&mut self) -> io::Result<Option<i32>>;
+    fn close(&self) -> bool {
+        super::game_window::close(self.id())
+    }
 }
 
 impl Process for Child {
@@ -1058,8 +1061,7 @@ impl Fleet {
             .filter(|k| self.is_running(k))
             .filter(|k| {
                 self.ipc.send(k, &ipc::ToMod::Quit).is_ok() || {
-                    let pid = lock(&self.running).get(k.as_str()).map(|r| r.pid);
-                    let asked = pid.is_some_and(super::game_window::close);
+                    let asked = lock(&self.running).get(k.as_str()).is_some_and(|r| r.child.close());
                     closed |= asked;
                     asked
                 }
@@ -1912,6 +1914,10 @@ mod tests {
     }
 
     impl Process for FakeProcess {
+        fn close(&self) -> bool {
+            false
+        }
+
         fn id(&self) -> u32 {
             self.pid
         }

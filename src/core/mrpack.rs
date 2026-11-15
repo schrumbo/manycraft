@@ -175,7 +175,7 @@ pub fn peek(path: &Path) -> Result<String> {
     let Ok(mut zip) = ZipArchive::new(file) else { bail!(Refused::Unknown) };
     if zip.index_for_name(INDEX).is_some() {
         let pack = read_index(&mut zip)?;
-        overrides(&mut zip)?;
+        pack_overrides(&mut zip, &pack)?;
         return Ok(pack.name);
     }
     let Some(prefix) = prism::export_prefix(&zip) else { bail!(Refused::Unknown) };
@@ -358,7 +358,7 @@ fn parse_index(bytes: &[u8]) -> Result<Pack> {
         let url = file.downloads.iter().find(|u| allowed(u)).cloned().ok_or_else(|| Refused::Host(file.downloads.first().cloned().unwrap_or_else(|| file.path.clone())))?;
         files.push(Wanted { rel, sha1, sha512, url });
     }
-    if loader == Loader::Vanilla && files.iter().any(|f| f.rel.starts_with("mods")) {
+    if loader == Loader::Vanilla && files.iter().any(|f| mod_name(&f.rel).is_some()) {
         bail!(Refused::NoLoader);
     }
     Ok(Pack { name: index.name, game, loader, files })
@@ -377,6 +377,14 @@ fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Pack> {
 struct Override {
     index: usize,
     rel: PathBuf,
+}
+
+fn pack_overrides<R: Read + Seek>(zip: &mut ZipArchive<R>, pack: &Pack) -> Result<Vec<Override>> {
+    let found = overrides(zip)?;
+    if pack.loader == Loader::Vanilla && found.iter().any(|o| mod_name(&o.rel).is_some()) {
+        bail!(Refused::NoLoader);
+    }
+    Ok(found)
 }
 
 fn overrides<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Vec<Override>> {
@@ -436,7 +444,7 @@ fn place_mod(slots: &mut Vec<Slot>, mut slot: Slot) -> Result<()> {
 
 fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[String], lookup: Lookup, fetch: Fetch, cancel: &AtomicBool, progress: Progress) -> Result<Instance> {
     let pack = read_index(zip)?;
-    let extra = overrides(zip)?;
+    let extra = pack_overrides(zip, &pack)?;
     let mut total = 0;
     let mut jars: Vec<(usize, String, String)> = Vec::new();
     for o in &extra {
@@ -802,6 +810,14 @@ mod tests {
         let mut idx = index(vec![file_entry("resourcepacks/r.zip", b"r", "https://cdn.modrinth.com/r.zip")]);
         idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
         assert_eq!(parse_index(&serde_json::to_vec(&idx).unwrap()).unwrap().loader, Loader::Vanilla);
+        let mut idx = index(vec![file_entry("Mods/a.jar", b"a", "https://cdn.modrinth.com/a.jar")]);
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        assert!(parse_index(&serde_json::to_vec(&idx).unwrap()).is_err());
+        let mut idx = index(Vec::new());
+        idx["dependencies"].as_object_mut().unwrap().remove("fabric-loader");
+        let out = tempfile::tempdir().unwrap();
+        let err = import_pack(&mut pack_of(&idx, &[("overrides/mods/b.jar", b"b")]), out.path(), &[], &lookup_of(Vec::new()), &served(Vec::new()), &AtomicBool::new(false), &quiet()).unwrap_err();
+        assert_eq!(err.downcast_ref::<Refused>(), Some(&Refused::NoLoader));
     }
 
     #[test]
