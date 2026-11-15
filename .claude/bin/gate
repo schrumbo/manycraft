@@ -144,6 +144,10 @@ def is_ui(path):
     return path.startswith("src/ui/") and path.endswith(".rs")
 
 
+def is_core(path):
+    return path.startswith("src/app/") and path.endswith(".rs")
+
+
 def match_back(text, close):
     depth = 0
     for i in range(close, -1, -1):
@@ -229,9 +233,14 @@ def clickable_without_feedback(text, offset):
 def ui_lint(scope):
     findings = []
     for path, numbers in sorted(scope.items()):
-        if not is_ui(path) or not os.path.exists(path):
+        if not (is_ui(path) or is_core(path)) or not os.path.exists(path):
             continue
         src = open(path, encoding="utf-8").read().splitlines()
+        if is_core(path):
+            for n in sorted(numbers):
+                if n <= len(src) and re.search(r"\b(error|notice) = Some\(\"|\b(title|body): \"[^\"]*[A-Za-zÄÖÜäöü]", src[n - 1]):
+                    findings.append(f"{path}:{n}: untranslated text, use tr()")
+            continue
         name = os.path.basename(path)
         for n in sorted(numbers):
             if n > len(src):

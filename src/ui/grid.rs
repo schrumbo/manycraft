@@ -424,7 +424,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
     if i.stopping {
         return tr("Stoppt…");
     }
-    let hint = model::hint(&i.key);
+    let hint = i.hint;
     if hint.proxy.is_some() && matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. }) {
         return tr("Proxy-Fehler");
     }
@@ -469,8 +469,8 @@ fn data(i: &Game, m: &Model, selected: &Option<String>, picked: &HashSet<String>
         detail: ban.unwrap_or_else(|| super::state::status(i, preparing)),
         stopping: i.stopping,
         whispers: i.unread_whispers,
-        preview: i.preview.clone(),
-        live: i.live,
+        preview: m.preview(&i.key).cloned(),
+        live: m.live(&i.key),
         face: m.faces.get(&i.account_id).cloned(),
         selected: selected.as_deref() == Some(i.key.as_str()),
         picked: picked.contains(&i.key),
@@ -1183,7 +1183,7 @@ mod tests {
     }
 
     fn mk(phase: Phase) -> Game {
-        Game { key: "k".into(), batch_id: "b".into(), instance_id: "b".into(), account_id: uuid::Uuid::nil(), name: "AltOne".into(), phase, reconnect_attempts: 0, unread_whispers: 0, preview: None, preview_seq: 0, live: false, stopping: false }
+        Game { phase, ..Game::new("k".into(), "b".into(), "b".into(), uuid::Uuid::nil(), "AltOne".into()) }
     }
 
     fn fleet(list: &[(&str, Phase)]) -> Model {
