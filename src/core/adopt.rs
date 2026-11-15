@@ -24,7 +24,7 @@ const EXIT_POLL: Duration = Duration::from_millis(50);
 static MANAGER: OnceLock<lock::Guard> = OnceLock::new();
 
 /// One game as the manager launched it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     pub batch: Option<String>,
     pub instance: String,
@@ -38,6 +38,12 @@ pub struct Run {
     pub token: String,
     #[serde(default)]
     pub server_addrs: Vec<SocketAddr>,
+}
+
+impl std::fmt::Debug for Run {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Run").field("batch", &self.batch).field("instance", &self.instance).field("account", &self.account).field("pid", &self.pid).field("started", &self.started).field("exe", &self.exe).field("game_dir", &self.game_dir).field("token", &"<hidden>").field("server_addrs", &self.server_addrs).finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,7 +66,7 @@ impl Ledger {
         Self::at(paths::data_dir().join(RECORD_FILE))
     }
 
-    fn at(path: PathBuf) -> Self {
+    pub(crate) fn at(path: PathBuf) -> Self {
         let record = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         Self { path, record: Arc::new(Mutex::new(record)) }
     }
@@ -238,13 +244,16 @@ impl Process {
     }
 
     fn exit_code(&self) -> Option<Option<i32>> {
-        use windows_sys::Win32::Foundation::STILL_ACTIVE;
-        use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        if unsafe { WaitForSingleObject(self.raw(), 0) } != WAIT_OBJECT_0 {
+            return None;
+        }
         let mut code = 0u32;
         if unsafe { GetExitCodeProcess(self.raw(), &mut code) } == 0 {
             return Some(None);
         }
-        (code != STILL_ACTIVE as u32).then_some(Some(code as i32))
+        Some(Some(code as i32))
     }
 
     fn identity(&self) -> Option<Identity> {
@@ -371,10 +380,10 @@ fn probe(_pid: u32) -> Option<Identity> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn run(dir: &Path, pid: u32, seen: &Identity) -> Run {
+    pub(crate) fn run(dir: &Path, pid: u32, seen: &Identity) -> Run {
         Run {
             batch: Some("b".into()),
             instance: "i".into(),
@@ -388,7 +397,7 @@ mod tests {
         }
     }
 
-    fn sleeper() -> std::process::Child {
+    pub(crate) fn sleeper() -> std::process::Child {
         #[cfg(windows)]
         let mut command = {
             let mut c = std::process::Command::new("ping");
@@ -434,6 +443,13 @@ mod tests {
         let _ = child.wait();
         assert!(Process::adopt(&game).is_none(), "an ended game is not adopted");
         assert!(identify(child.id()).is_none_or(|now| now != seen), "a pid that comes back is someone else");
+    }
+
+    #[test]
+    fn the_token_never_shows_in_debug_output() {
+        let seen = Identity { started: 7, exe: PathBuf::from("java") };
+        let text = format!("{:?}", Run { token: "secret-token".into(), ..run(Path::new("g"), 1, &seen) });
+        assert!(!text.contains("secret-token") && text.contains("<hidden>"), "{text}");
     }
 
     #[test]

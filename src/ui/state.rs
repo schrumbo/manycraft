@@ -82,6 +82,8 @@ pub trait Backend: Send + Sync {
     fn adopted(&self) -> Vec<fleet::Adoption> {
         Vec::new()
     }
+    /// Lets the adopted games that got a tile talk to the manager again and stops tracking the rest, which keep running.
+    fn settle(&self, _placed: &[String], _dropped: &[String]) {}
 }
 
 struct Real {
@@ -281,7 +283,15 @@ impl Backend for Real {
     }
 
     fn adopted(&self) -> Vec<fleet::Adoption> {
-        std::mem::take(&mut *lock(&self.adopted))
+        let (live, ended): (Vec<_>, Vec<_>) = std::mem::take(&mut *lock(&self.adopted)).into_iter().partition(|a| self.fleet.is_running(&a.key));
+        self.settle(&[], &ended.into_iter().map(|a| a.key).collect::<Vec<_>>());
+        live
+    }
+
+    fn settle(&self, placed: &[String], dropped: &[String]) {
+        self.fleet.admit(placed);
+        self.fleet.release(dropped);
+        lock(&self.watch).retain(|k| !dropped.contains(k));
     }
 
     fn check_proxy(&self, key: String, url: String) {
@@ -385,6 +395,8 @@ struct Runtime {
     phone_at: Option<Instant>,
     /// Games an earlier manager launched whose mod has not reported its state since.
     adopted: HashSet<String>,
+    /// Games an earlier manager launched; where the OS does not tell their exit code, an exit counts as clean.
+    foreign: HashSet<String>,
 }
 
 
@@ -446,6 +458,7 @@ pub fn init(cx: &mut App) {
         outbox: None,
         phone_at: None,
         adopted: HashSet::new(),
+        foreign: HashSet::new(),
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
@@ -618,7 +631,7 @@ fn reload_with(cx: &mut App, keep: bool) {
                 cx.drop_image(image, None);
             }
             if model.read(cx).loaded
-                && let Some(rt) = cx.try_global::<Runtime>().filter(|rt| !rt.refreshed)
+                && let Some(rt) = cx.try_global::<Runtime>()
             {
                 let adopted = rt.backend.adopted();
                 if !adopted.is_empty() {
@@ -1175,7 +1188,7 @@ fn playable(phase: &Phase) -> bool {
 /// Puts the game window of `key` in the manager's place and hides the manager.
 pub fn play(key: &str, cx: &mut App) {
     let model = model::get(cx);
-    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) {
+    if !model.read(cx).games.get(key).is_some_and(|i| playable(&i.phase)) || model::hint(key).link_lost {
         return;
     }
     let shown = model.read(cx).playing.is_some();
@@ -1655,6 +1668,8 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
     rt.unplaced.remove(&key);
     rt.insets.remove(&key);
     rt.joined.remove(&key);
+    rt.adopted.remove(&key);
+    let unknown = rt.foreign.remove(&key) && code.is_none();
     let ran = rt.started.remove(&key).map(|t| t.elapsed());
     let Some(i) = m.games.get_mut(&key) else {
         let keys = drop_restart(rt, &key);
@@ -1664,7 +1679,7 @@ fn on_exit(m: &mut Model, rt: &mut Runtime, fx: &mut Effects, key: String, code:
         return;
     };
     *rt.joins.entry(key.clone()).or_default() += 1;
-    let crashed = !(i.stopping || code == Some(0) || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
+    let crashed = !(i.stopping || code == Some(0) || unknown || matches!(i.phase, Phase::Stopped | Phase::LoginNeeded | Phase::Restarting { .. }));
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
     let restart = if i.stopping { rt.restarts.remove(&key) } else { None };
     i.stopping = false;
@@ -1845,9 +1860,13 @@ fn seed_state(m: &mut Model, rt: &mut Runtime, key: &str, kind: StateKind, serve
 }
 
 fn adopt_games(m: &mut Model, rt: &mut Runtime, adopted: Vec<fleet::Adoption>) {
+    let (mut placed, mut dropped) = (Vec::new(), Vec::new());
     for a in adopted {
         if a.batch.is_none() && !m.games.contains_key(&a.key) {
-            let Some(name) = m.account(a.account).map(|account| account.name.clone()) else { continue };
+            let Some(name) = m.account(a.account).map(|account| account.name.clone()) else {
+                dropped.push(a.key);
+                continue;
+            };
             m.games.insert(a.key.clone(), Game {
                 key: a.key.clone(),
                 batch_id: fleet::solo_owner(&a.instance),
@@ -1863,17 +1882,23 @@ fn adopt_games(m: &mut Model, rt: &mut Runtime, adopted: Vec<fleet::Adoption>) {
                 stopping: false,
             });
         }
-        let Some(i) = m.games.get_mut(&a.key) else { continue };
+        let Some(i) = m.games.get_mut(&a.key) else {
+            dropped.push(a.key);
+            continue;
+        };
         i.phase = Phase::Menu;
         rt.pids.insert(a.key.clone(), a.pid);
         rt.joined.insert(a.key.clone());
         rt.started.insert(a.key.clone(), Instant::now());
         rt.adopted.insert(a.key.clone());
+        rt.foreign.insert(a.key.clone());
         if cfg!(target_os = "windows") && !drive::on() {
             rt.unplaced.insert(a.key.clone());
         }
         model::set_hint(&a.key, |h| h.link_lost = true);
+        placed.push(a.key);
     }
+    rt.backend.settle(&placed, &dropped);
     m.order_seq += 1;
 }
 
@@ -2504,6 +2529,7 @@ mod tests {
             outbox: None,
             phone_at: None,
             adopted: HashSet::new(),
+            foreign: HashSet::new(),
         }
     }
 
@@ -2763,6 +2789,46 @@ mod tests {
         send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Disconnected, Some(DisconnectCause::Banned));
         assert!(matches!(m.games[&key].phase, Phase::Banned { .. }));
         assert!(fx.later.is_empty());
+    }
+
+    #[test]
+    fn an_adopted_game_that_quits_without_an_exit_code_is_not_a_crash() {
+        let (mut m, mut rt, key) = adopted(Phase::Stopped);
+        let mut fx = Effects::default();
+        send_state(&mut m, &mut rt, &mut fx, &key, StateKind::Playing, None);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: None }, &mut fx);
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(fx.later.is_empty());
+        let (mut m, mut rt, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        apply(&mut m, &mut rt, Update::Exited { key: key.clone(), code: None }, &mut fx);
+        assert!(matches!(m.games[&key].phase, Phase::Crashed { .. } | Phase::Restarting { .. }), "a launched game still crashes");
+    }
+
+    #[test]
+    fn adopted_games_without_a_tile_are_let_go_and_the_rest_may_talk() {
+        struct Settled(std::sync::Mutex<(Vec<String>, Vec<String>)>);
+        impl Backend for Settled {
+            fn start(&self, _: fleet::Target, _: Vec<Account>, _: Arc<AtomicBool>) {}
+            fn stop(&self, _: Vec<String>) {}
+            fn send(&self, _: &str, _: ToMod) {}
+            fn read_preview(&self, _: String, _: PathBuf) {}
+            fn quit(&self) {}
+            fn settle(&self, placed: &[String], dropped: &[String]) {
+                *self.0.lock().unwrap() = (placed.to_vec(), dropped.to_vec());
+            }
+        }
+        let (mut m, mut rt, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let settled = Arc::new(Settled(std::sync::Mutex::default()));
+        rt.backend = settled.clone();
+        let game = &m.games[&key];
+        let (batch, instance, account) = (game.batch_id.clone(), game.instance_id.clone(), game.account_id);
+        let gone = fleet::Adoption { key: "removed-member".into(), batch: Some(batch.clone()), instance: instance.clone(), account, pid: 2 };
+        let stranger = fleet::Adoption { key: "solo-of-deleted-account".into(), batch: None, instance: instance.clone(), account: uuid::Uuid::from_u128(99), pid: 3 };
+        adopt_games(&mut m, &mut rt, vec![fleet::Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 1 }, gone, stranger]);
+        let (placed, dropped) = settled.0.lock().unwrap().clone();
+        assert_eq!(placed, [key.clone()]);
+        assert_eq!(dropped, ["removed-member", "solo-of-deleted-account"]);
+        assert!(!m.games.contains_key("removed-member") && !rt.pids.contains_key("removed-member"));
     }
 
     #[test]

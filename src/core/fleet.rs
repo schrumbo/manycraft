@@ -658,6 +658,7 @@ pub struct Fleet {
     reaping: Arc<AtomicBool>,
     closing: AtomicBool,
     ledger: Option<adopt::Ledger>,
+    adopted: Mutex<HashMap<String, String>>,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -695,7 +696,7 @@ impl Fleet {
     fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
         let events = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, stagger: DEFAULT_STAGGER }, events))
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), stagger: DEFAULT_STAGGER }, events))
     }
 
     fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
@@ -704,7 +705,7 @@ impl Fleet {
             let Some(process) = adopt::Process::adopt(run) else { continue };
             let pid = process.id();
             sync::register(&self.games, key, &run.instance, run.account);
-            self.ipc.register_with(key, &run.token);
+            lock(&self.adopted).insert(key.clone(), run.token.clone());
             let instance = RunningInstance {
                 batch: run.batch.clone(),
                 instance: run.instance.clone(),
@@ -721,6 +722,35 @@ impl Fleet {
             adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid });
         }
         adopted
+    }
+
+    /// Lets the companion mods of adopted games connect again, once their tiles exist.
+    pub fn admit(&self, keys: &[String]) {
+        let mut adopted = lock(&self.adopted);
+        for key in keys {
+            if let Some(token) = adopted.remove(key) {
+                self.ipc.register_with(key, &token);
+            }
+        }
+    }
+
+    /// Stops tracking adopted games that have no place any more; they keep running untouched.
+    pub fn release(&self, keys: &[String]) {
+        let mut gone = Vec::new();
+        {
+            let mut running = lock(&self.running);
+            let mut adopted = lock(&self.adopted);
+            for key in keys {
+                if adopted.remove(key).is_some()
+                    && let Some(instance) = running.remove(key)
+                {
+                    gone.push((key.clone(), instance.pid));
+                }
+            }
+        }
+        if let Some(ledger) = &self.ledger {
+            ledger.remove(&gone);
+        }
     }
 
     fn ipc_file(&self) -> Option<PathBuf> {
@@ -1891,6 +1921,36 @@ mod tests {
             launcher(&exits, &tokens)(a, k, t)
         });
         assert_eq!(*clock.slept.borrow(), vec![Duration::from_secs(3)]);
+    }
+
+    #[test]
+    fn adopted_games_wait_for_their_tile_and_released_ones_keep_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = adopt::Ledger::at(dir.path().join("launched.json"));
+        let (ipc, raw) = ipc::Server::start_on(None).unwrap();
+        let (fleet, _events) = Fleet::with(ipc, raw, Some(ledger.clone())).unwrap();
+        let mut kept = adopt::tests::sleeper();
+        let mut freed = adopt::tests::sleeper();
+        let mut runs = BTreeMap::new();
+        for (key, child) in [("kept", &kept), ("freed", &freed)] {
+            let run = adopt::tests::run(dir.path(), child.id(), &adopt::identify(child.id()).unwrap());
+            ledger.add(key, run.clone());
+            runs.insert(key.to_owned(), run);
+        }
+        let adopted = fleet.adopt(&runs);
+        assert_eq!(adopted.len(), 2);
+        assert_eq!(lock(&fleet.adopted).len(), 2, "no mod may connect before its tile exists");
+        fleet.admit(&["kept".to_owned()]);
+        fleet.release(&["freed".to_owned()]);
+        assert!(lock(&fleet.adopted).is_empty());
+        assert!(lock(&fleet.running).contains_key("kept"));
+        assert!(!lock(&fleet.running).contains_key("freed"));
+        assert_eq!(ledger.games().keys().collect::<Vec<_>>(), ["kept"]);
+        assert!(freed.try_wait().unwrap().is_none(), "a released game is left running");
+        let _ = freed.kill();
+        let _ = kept.kill();
+        let _ = freed.wait();
+        let _ = kept.wait();
     }
 
     #[test]
