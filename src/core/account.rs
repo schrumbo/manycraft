@@ -257,8 +257,9 @@ mod tests {
     fn wrong_shape_counts_as_corrupt() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), br#"{"accounts":[]}"#).unwrap();
-        assert!(load_from(dir.path()).unwrap().is_empty());
-        assert!(store::damaged_path(&dir.path().join(FILE)).exists());
+        assert!(load_from(dir.path()).is_err());
+        assert!(save_to(dir.path(), &[account(1, "Alpha", None)]).is_err());
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"accounts":[]}"#);
     }
 
     #[test]

@@ -548,7 +548,7 @@ pub struct BatchEdit {
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`.
-/// Accounts that no longer exist are left out.
+/// Picked accounts that no longer exist are left out; members the sheet could not show, because the account list did not load, stay.
 pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<()> {
     saved(|| {
         let mut b = match id {
@@ -571,7 +571,8 @@ fn apply(b: &mut Batch, edit: BatchEdit, known: &HashSet<Uuid>) {
     if let Some(mb) = edit.memory_mb {
         b.memory_mb = mb;
     }
-    b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).collect();
+    let unseen: Vec<Uuid> = b.accounts.iter().copied().filter(|id| !known.contains(id)).collect();
+    b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).chain(unseen).collect();
     b.mods = edit.mods;
     b.background = edit.background;
 }
@@ -817,6 +818,16 @@ mod tests {
         assert_eq!(b.background, Background::Balanced);
         apply(&mut b, edit("26.3", Some(2048)), &HashSet::from([me]));
         assert_eq!((b.memory_mb, b.loader_version.as_deref()), (2048, None));
+    }
+
+    #[test]
+    fn members_the_sheet_could_not_show_stay_in_the_batch() {
+        let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut b = Batch::new("Farm", "26.3");
+        b.accounts = vec![shown, unseen];
+        let edit = BatchEdit { name: "Farm".into(), game_version: "26.3".into(), server: Some("example.org".into()), memory_mb: None, accounts: Vec::new(), mods: Vec::new(), background: Background::Saving };
+        apply(&mut b, edit, &HashSet::from([shown]));
+        assert_eq!(b.accounts, [unseen]);
     }
 
     #[test]

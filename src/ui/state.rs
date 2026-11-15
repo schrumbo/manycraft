@@ -430,7 +430,12 @@ pub fn init(cx: &mut App) {
     });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
-        cx.global_mut::<Runtime>().notice = Some(format!("{e:#}"));
+        let text = format!("{e:#}");
+        cx.global_mut::<Runtime>().notice = Some(if text.contains("left untouched") {
+            tr("Die Einstellungen stammen von einer neueren Version oder wurden von Hand geändert. Es gelten die Standardwerte; die Datei bleibt unverändert, bis du etwas änderst.")
+        } else {
+            text
+        });
     }
     reload(cx);
     cx.observe(&model::get(cx), |_, cx| keep_awake(cx)).detach();
@@ -615,10 +620,6 @@ fn recovered_notice(found: &[(PathBuf, Recovery)]) -> Option<String> {
             ("batch.json", Recovery::Restored, n) => trf("%lld Batches waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
             ("batch.json", Recovery::Lost, 1) => tr("Ein Batch war beschädigt und ließ sich nicht wiederherstellen. Leg ihn neu an; eine Kopie liegt in seinem Ordner (batch.json.damaged)."),
             ("batch.json", Recovery::Lost, n) => trf("%lld Batches waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (batch.json.damaged).", &[&n]),
-            ("instance.json", Recovery::Restored, 1) => tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
-            ("instance.json", Recovery::Restored, n) => trf("%lld Instanzen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
-            ("instance.json", Recovery::Lost, 1) => tr("Eine Instanz war beschädigt und ließ sich nicht wiederherstellen. Leg sie neu an; eine Kopie liegt in ihrem Ordner (instance.json.damaged)."),
-            ("instance.json", Recovery::Lost, n) => trf("%lld Instanzen waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (instance.json.damaged).", &[&n]),
             (_, Recovery::Restored, _) => trf("%@ war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&name]),
             (_, Recovery::Lost, _) => trf("%@ war beschädigt und ließ sich nicht wiederherstellen. Eine Kopie liegt daneben (%@.damaged).", &[&name, &name]),
         };

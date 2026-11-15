@@ -227,6 +227,14 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_another_shape_is_an_error_and_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), br#"{"reconnect":5}"#).unwrap();
+        assert!(format!("{:#}", load_from(dir.path()).unwrap_err()).contains("left untouched"));
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), br#"{"reconnect":5}"#);
+    }
+
+    #[test]
     fn a_damaged_file_comes_back_from_the_previous_save() {
         let dir = tempfile::tempdir().unwrap();
         let mut first = Settings::default();

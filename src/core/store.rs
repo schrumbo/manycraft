@@ -27,7 +27,7 @@ static RECOVERED: Mutex<Vec<(PathBuf, Recovery)>> = Mutex::new(Vec::new());
 pub enum Recovery {
     /// The backup was good and replaced the file.
     Restored,
-    /// Nothing was usable; the damaged copies were set aside as `<file>.damaged` and `<file>.bak.damaged`.
+    /// Nothing was usable; the damaged copies were set aside as `<file>.damaged` and `<file>.bak.damaged`, or `-2`, `-3`… after those.
     Lost,
 }
 
@@ -58,7 +58,7 @@ pub fn backup_path(path: &Path) -> PathBuf {
     suffixed(path, ".bak")
 }
 
-/// Where a damaged `path` is set aside.
+/// Where a damaged `path` is set aside first; later ones get `-2`, `-3`… appended.
 pub fn damaged_path(path: &Path) -> PathBuf {
     suffixed(path, ".damaged")
 }
@@ -77,13 +77,24 @@ fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
     serde_json::from_slice(bytes).ok()
 }
 
+fn readable<T: DeserializeOwned>(bytes: &[u8], path: &Path) -> Result<Option<T>> {
+    match serde_json::from_slice(bytes) {
+        Ok(value) => Ok(Some(value)),
+        Err(e) if e.is_syntax() || e.is_eof() => Ok(None),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("{} is from a newer Manycraft or was edited by hand; it was left untouched", path.display()))),
+    }
+}
+
 /// Reads `path` as `T`, `None` when neither it nor a backup exists. A missing, empty or damaged file is replaced by its
 /// backup when that parses; when nothing parses, both are set aside and `None` is returned. Either case is reported once
-/// through [`take_recovered`]. This thread's next [`write`] to the file expects it unchanged since.
+/// through [`take_recovered`]. Valid JSON of another shape, as a newer version writes it, is an error and stays untouched.
+/// This thread's next [`write`] to the file expects it unchanged since.
 pub fn load<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     let bytes = read_raw(path)?;
-    if let Some(value) = bytes.as_deref().and_then(parse::<T>) {
-        remember(path, bytes.as_deref());
+    if let Some(bytes) = bytes.as_deref()
+        && let Some(value) = readable::<T>(bytes, path)?
+    {
+        remember(path, Some(bytes));
         return Ok(Some(value));
     }
     let backup = backup_path(path);
@@ -93,8 +104,10 @@ pub fn load<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     }
     let _held = lock::exclusive_within(&lock_path(path), LOCK_WAIT)?;
     let bytes = read_raw(path)?;
-    if let Some(value) = bytes.as_deref().and_then(parse::<T>) {
-        remember(path, bytes.as_deref());
+    if let Some(bytes) = bytes.as_deref()
+        && let Some(value) = readable::<T>(bytes, path)?
+    {
+        remember(path, Some(bytes));
         return Ok(Some(value));
     }
     let saved = read_raw(&backup)?;
@@ -123,7 +136,9 @@ pub fn load<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 }
 
 fn set_aside(from: &Path, to: &Path) -> Result<()> {
-    std::fs::rename(from, to).with_context(|| format!("cannot move {} aside", from.display()))
+    let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let free = std::iter::once(to.to_path_buf()).chain((2..).map(|n| to.with_file_name(format!("{name}-{n}")))).find(|p| std::fs::symlink_metadata(p).is_err()).context("no free name")?;
+    std::fs::rename(from, &free).with_context(|| format!("cannot move {} aside", from.display()))
 }
 
 fn report(path: &Path, recovery: Recovery) {
@@ -276,8 +291,37 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_empty_or_wrong_shaped_file_falls_back_to_the_backup() {
-        for broken in [None, Some(&b""[..]), Some(&br#"{"a":1}"#[..])] {
+    fn a_newer_or_hand_edited_shape_is_an_error_and_touches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        std::fs::write(&path, br#"{"a":1}"#).unwrap();
+        std::fs::write(backup_path(&path), b"[7]").unwrap();
+        let error = format!("{:#}", load::<Doc>(&path).unwrap_err());
+        assert!(error.contains("left untouched"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), br#"{"a":1}"#);
+        assert_eq!(std::fs::read(backup_path(&path)).unwrap(), b"[7]");
+        assert!(!damaged_path(&path).exists());
+        assert!(recovered(&path).is_empty());
+    }
+
+    #[test]
+    fn a_second_incident_keeps_the_first_damaged_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        for (n, broken) in [&b"[1,"[..], b"[2,"].into_iter().enumerate() {
+            std::fs::write(&path, broken).unwrap();
+            std::fs::write(backup_path(&path), b"x").unwrap();
+            assert_eq!(load::<Doc>(&path).unwrap(), None);
+            assert_eq!(recovered(&path), vec![Recovery::Lost], "incident {n}");
+        }
+        assert_eq!(std::fs::read(damaged_path(&path)).unwrap(), b"[1,");
+        assert_eq!(std::fs::read(dir.path().join("a.json.damaged-2")).unwrap(), b"[2,");
+        assert!(dir.path().join("a.json.bak.damaged-2").exists());
+    }
+
+    #[test]
+    fn a_missing_empty_or_cut_off_file_falls_back_to_the_backup() {
+        for broken in [None, Some(&b""[..]), Some(&b"[1,2"[..])] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("a.json");
             std::fs::write(backup_path(&path), b"[7]").unwrap();
@@ -412,7 +456,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
         let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 | 1;
-        let mut restored = 0;
+        let (mut restored, mut injected) = (0, 0);
         for run in 0..100 {
             let ready = home.path().join("ready");
             let _ = std::fs::remove_file(&ready);
@@ -437,27 +481,42 @@ mod tests {
             child.kill().unwrap();
             child.wait().unwrap();
 
-            let accounts = load::<Vec<crate::core::account::Account>>(&home.path().join("accounts.json")).unwrap().unwrap_or_else(|| panic!("run {run}: accounts lost"));
+            let accounts_file = home.path().join("accounts.json");
+            let batch_files: Vec<PathBuf> = (0..STRESS_BATCHES).map(|n| home.path().join("batches").join(format!("b{n}")).join("batch.json")).collect();
+            assert!(parse::<Vec<crate::core::account::Account>>(&std::fs::read(backup_path(&accounts_file)).unwrap_or_else(|_| b"[]".to_vec())).is_some(), "run {run}: accounts backup damaged");
+            for file in &batch_files {
+                if let Ok(bytes) = std::fs::read(backup_path(file)) {
+                    assert!(parse::<crate::core::batch::Batch>(&bytes).is_some(), "run {run}: {} backup damaged", file.display());
+                }
+            }
+            if run % 3 == 0 {
+                for file in [&accounts_file, &batch_files[run % STRESS_BATCHES]] {
+                    if backup_path(file).exists() {
+                        let bytes = std::fs::read(file).unwrap();
+                        std::fs::write(file, &bytes[..bytes.len() / 2]).unwrap();
+                        injected += 1;
+                    }
+                }
+            }
+
+            let accounts = load::<Vec<crate::core::account::Account>>(&accounts_file).unwrap().unwrap_or_else(|| panic!("run {run}: accounts lost"));
             assert_eq!(accounts.iter().map(|a| a.id).collect::<Vec<_>>(), (1..=STRESS_ACCOUNTS).map(uuid::Uuid::from_u128).collect::<Vec<_>>(), "run {run}");
             let generation = accounts[0].proxy.clone().unwrap();
             assert!(accounts.iter().all(|a| a.proxy.as_ref() == Some(&generation)), "run {run}: accounts torn");
-            for n in 0..STRESS_BATCHES {
-                let file = home.path().join("batches").join(format!("b{n}")).join("batch.json");
-                assert!(exists(&file), "run {run}: batch b{n} missing");
-                let b = load::<crate::core::batch::Batch>(&file).unwrap().unwrap_or_else(|| panic!("run {run}: batch b{n} lost"));
+            for (n, file) in batch_files.iter().enumerate() {
+                assert!(exists(file), "run {run}: batch b{n} missing");
+                let b = load::<crate::core::batch::Batch>(file).unwrap().unwrap_or_else(|| panic!("run {run}: batch b{n} lost"));
                 assert_eq!(b.join_commands.len(), 30, "run {run}: batch b{n} torn");
             }
             load::<crate::core::settings::Settings>(&home.path().join("settings.json")).unwrap().unwrap_or_else(|| panic!("run {run}: settings lost"));
-            for (path, recovery) in take_recovered() {
+            for (path, recovery) in take_recovered().into_iter().filter(|(p, _)| p.starts_with(home.path())) {
                 assert_eq!(recovery, Recovery::Restored, "run {run}: {} lost", path.display());
                 restored += 1;
             }
         }
-        let files = walk(home.path());
-        let damaged = files.iter().filter(|p| p.extension().is_some_and(|e| e == "damaged")).count();
-        assert_eq!(damaged, 0, "{restored} files needed their backup");
-        let torn = files.iter().filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".tmp"))).count();
-        println!("100 hard kills, nothing lost, {restored} restores, {torn} writes cut off mid-file");
+        assert_eq!(restored, injected, "only the damage this test made needs a backup; hard kills alone must never");
+        let torn = walk(home.path()).iter().filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".tmp"))).count();
+        println!("100 hard kills, nothing lost, {restored} damaged files restored from backup, {torn} writes cut off mid-file");
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {
