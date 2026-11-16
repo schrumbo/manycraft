@@ -6,7 +6,7 @@ use freya::prelude::*;
 
 use super::text::para;
 use super::{Bounds, after, use_theme};
-use crate::view::theme::{font, frame, space};
+use crate::view::theme::{font, frame, level, space};
 use crate::view::ui::Ui;
 
 const REST: Duration = Duration::from_millis(500);
@@ -92,7 +92,7 @@ pub fn host(ui: Ui) -> Element {
     let y = if below + 40. > h { (tip.anchor.y - 40.).max(space::S) } else { below };
     rect()
         .position(Position::new_global().left(x).top(y))
-        .layer(Layer::Overlay)
+        .layer(Layer::OverlayLevel(level::TIP))
         .width(Size::px(width))
         .cross_align(Alignment::Center)
         .child(

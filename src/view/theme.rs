@@ -6,6 +6,15 @@ use freya::prelude::*;
 pub use crate::core::scale::{control, font, iconsize, motion, radius, space};
 use crate::core::themes::{self, Density, Library, Rgba, Signature, Token};
 
+/// Paint levels of the window-wide overlays; Freya paints nodes that share a level in no fixed order.
+pub mod level {
+    pub const SHEET: u8 = 2;
+    pub const PALETTE: u8 = 3;
+    pub const MENU: u8 = 4;
+    pub const TOAST: u8 = 5;
+    pub const TIP: u8 = 6;
+}
+
 /// Fixed sizes of the window's frame around the content.
 pub mod frame {
     pub const SIDEBAR: f32 = 232.;
@@ -22,6 +31,12 @@ pub mod frame {
     /// The width of a sheet that only asks or tells.
     pub const SHEET_NARROW: f32 = 448.;
     pub const SHEET_TOP: f32 = 72.;
+    /// The width of a picker on a sheet, such as the Minecraft version or the world to install into.
+    pub const PICK_W: f32 = 232.;
+    /// The bars a loading row of the content browser shows in place of its name and its text, and their height.
+    pub const BAR_NAME: f32 = 120.;
+    pub const BAR_TEXT: f32 = 220.;
+    pub const BAR_H: f32 = 10.;
     pub const PALETTE: f32 = 560.;
     pub const PALETTE_ROW: f32 = 36.;
     pub const PALETTE_ROWS: usize = 9;

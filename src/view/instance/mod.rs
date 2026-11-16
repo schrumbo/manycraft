@@ -185,6 +185,11 @@ pub fn blocked(store: Store, id: &str) -> Option<String> {
     store.model.peek().games.values().any(|g| g.instance_id == id && g.phase.is_active()).then(|| tr("Stoppe zuerst die laufenden Spiele."))
 }
 
+/// Why the browser and the mods sheet wait on instance `id`: work on it, such as a restore, that holds it.
+pub fn held(store: Store, id: &str) -> Option<String> {
+    store.ui.instance.busy.read().get(id).map(|b| b.text.clone())
+}
+
 /// "12 Min.", "1 Std.", "1 Std. 5 Min." since `since`; nothing in the first minute.
 pub fn uptime_text(since: Instant) -> Option<String> {
     let minutes = since.elapsed().as_secs() / 60;

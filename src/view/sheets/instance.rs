@@ -39,7 +39,6 @@ use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::Page;
 
 const WIDE: f32 = frame::SHEET;
-const VERSION_WIDTH: f32 = 232.;
 const BODY_MIN: f32 = 160.;
 const BODY_MAX: f32 = 620.;
 const CHROME: f32 = 280.;
@@ -132,6 +131,14 @@ fn waiting_reason(saving: bool, held: Option<String>, updating: bool) -> Option<
     }
 }
 
+fn form_dirty(mods: usize, name: &str, auto: &str) -> bool {
+    mods > 0 || (!name.trim().is_empty() && name.trim() != auto)
+}
+
+fn adding_wait() -> String {
+    tr("Einen Moment, die Mods werden hinzugefügt …")
+}
+
 fn unsaved_reason() -> String {
     tr("Sichere zuerst die Änderungen.")
 }
@@ -141,7 +148,7 @@ fn adding_reason(version: &str, lock: Option<String>) -> Option<String> {
 }
 
 fn add_button(reason: Option<String>) -> Button {
-    Button::new("instance.sheet.mods.add", tr("Mod hinzufügen")).glyph(Icon::Plus).disabled(reason)
+    Button::new("instance.sheet.mods.add", tr("Mods hinzufügen…")).glyph(Icon::Plus).disabled(reason)
 }
 
 fn mods_header(t: &Theme, count: usize, add: Button) -> Element {
@@ -385,7 +392,7 @@ impl Make {
     }
 
     fn change_version(mut self, version: String) {
-        if version == *self.version.peek() || self.busy.peek().is_some() {
+        if version == *self.version.peek() || self.busy.peek().is_some() || !self.adding.peek().is_empty() {
             return;
         }
         let previous = self.version.peek().clone();
@@ -456,7 +463,7 @@ impl Make {
 
     fn pick_loader(mut self, n: usize) {
         let Some(next) = LOADERS.get(n) else { return };
-        if *self.saving.peek() || self.busy.peek().is_some() || self.loader.peek().same_kind(next) {
+        if *self.saving.peek() || self.busy.peek().is_some() || !self.adding.peek().is_empty() || self.loader.peek().same_kind(next) {
             return;
         }
         self.loader.set(next.clone());
@@ -506,7 +513,7 @@ impl Make {
 
     fn create(mut self) {
         self.tried.set(true);
-        if *self.saving.peek() || self.busy.peek().is_some() || self.name_problem().is_some() || self.version.peek().is_empty() {
+        if *self.saving.peek() || self.busy.peek().is_some() || !self.adding.peek().is_empty() || self.name_problem().is_some() || self.version.peek().is_empty() {
             return;
         }
         let edit = self.edit();
@@ -634,7 +641,8 @@ impl Component for Create {
         let tried = *flow.tried.read();
         let name_text = flow.name.read().clone();
         let play = flow.play.read().is_some();
-        let blocked = busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …")));
+        let adding = !flow.adding.read().is_empty();
+        let blocked = busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …"))).or_else(|| adding.then(adding_wait));
 
         if *flow.searching.read() {
             let scope = Scope {
@@ -648,7 +656,10 @@ impl Component for Create {
                 updatable: HashSet::new(),
                 updating: HashSet::new(),
                 saving,
+                held: busy.as_ref().map(|_| tr("Einen Moment, die Mods werden geladen …")),
                 pending: false,
+                dirty: form_dirty(flow.mods.read().len(), &name_text, &flow.name_auto.read()),
+                follow: Some((flow.version, flow.loader)),
                 kind: *flow.kind.read(),
                 on_update: EventHandler::new(|_| {}),
                 back: EventHandler::new(move |_| flow.leave_search()),
@@ -670,7 +681,7 @@ impl Component for Create {
                 let offered = shown(&list, everything, known.as_ref(), &version);
                 let labels = offered.iter().map(version_text).collect();
                 let at = offered.iter().position(|v| v.id == version).unwrap_or(0);
-                let select = Select::new("instance.version", tr("Minecraft-Version"), labels, at).width(VERSION_WIDTH).disabled(blocked.clone()).on_choose(move |i| {
+                let select = Select::new("instance.version", tr("Minecraft-Version"), labels, at).width(frame::PICK_W).disabled(blocked.clone()).on_choose(move |i| {
                     if let Some(v) = offered.get(i) {
                         flow.change_version(v.id.clone());
                     }
@@ -685,7 +696,7 @@ impl Component for Create {
         } else {
             companion_hint(&version).map(|h| WithTip::new(Some(tr("Ab dieser Version spart Manycraft Rechenzeit, solange die Instanz im Hintergrund läuft.")), caption(&t, h)).fill().into_element())
         };
-        let version_column = rect().width(Size::px(VERSION_WIDTH)).spacing(space::XS).child(label(&t, tr("Minecraft-Version"))).child(version_control).children(version_note);
+        let version_column = rect().width(Size::px(frame::PICK_W)).spacing(space::XS).child(label(&t, tr("Minecraft-Version"))).child(version_control).children(version_note);
         let name_error = flow.name_problem().filter(|_| tried || !name_text.is_empty());
         let name_column = rect().width(Size::flex(1.)).child(Field::new("instance.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Technik")).error(name_error).auto_focus());
         let top = rect().width(Size::fill()).horizontal().spacing(space::M).content(Content::flex()).child(name_column).child(version_column);
@@ -1283,7 +1294,7 @@ impl Edit {
     fn save(mut self) {
         let base = self.base.peek().clone();
         let store = self.store;
-        if *self.saving.peek() || !self.updating.peek().is_empty() || snapshotting(store, &base.id) {
+        if *self.saving.peek() || !self.updating.peek().is_empty() || !self.adding.peek().is_empty() || snapshotting(store, &base.id) {
             return;
         }
         if *self.mods.peek() == base.mods {
@@ -1372,8 +1383,9 @@ impl Component for Mods {
         let mods = flow.mods.read().clone();
         let saving = *flow.saving.read();
         let updating = !flow.updating.read().is_empty();
-        let held = store.ui.instance.busy.read().get(&base.id).map(|b| b.text.clone());
+        let held = crate::view::instance::held(store, &base.id);
         let running = store.model.read().games.values().any(|g| g.instance_id == base.id && g.phase.is_active());
+        let adding = !flow.adding.read().is_empty();
         let lock = waiting_reason(saving, held.clone(), updating);
 
         if *flow.searching.read() {
@@ -1390,7 +1402,10 @@ impl Component for Mods {
                 updatable: flow.updatable(),
                 updating: flow.updating.read().clone(),
                 saving,
+                held: held.clone(),
                 pending: mods != base.mods,
+                dirty: mods != base.mods,
+                follow: None,
                 kind: *flow.kind.read(),
                 on_update: EventHandler::new(move |pid: String| flow.apply_updates(Some(pid))),
                 back: EventHandler::new(move |_| flow.leave_search()),
@@ -1427,7 +1442,7 @@ impl Component for Mods {
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
-        let primary = Primary { label: tr("Sichern"), disabled: lock.clone(), danger: false, run: EventHandler::new(move |_| flow.save()) };
+        let primary = Primary { label: tr("Sichern"), disabled: lock.clone().or_else(|| adding.then(adding_wait)), danger: false, run: EventHandler::new(move |_| flow.save()) };
         Card::new("instance", trf("Mods von %@", &[&base.name])).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(waiting_reason(saving, None, updating)).into_element()
     }
 }
@@ -1512,7 +1527,7 @@ fn updates_view(t: &Theme, flow: Edit, running: bool, held: Option<String>) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{build_edit, default_gaps, followed_name, name_problem, pressure, waiting_reason};
+    use super::{build_edit, default_gaps, followed_name, form_dirty, name_problem, pressure, waiting_reason};
     use crate::core::batch::ModRef;
     use crate::core::instance::Loader;
 
@@ -1611,6 +1626,15 @@ mod tests {
     fn memory_that_barely_fits_is_snug_and_unmeasured_memory_is_never_strained() {
         assert!(pressure(3000, 16_384, Some(3500), 14_336).snug.is_some());
         assert!(!pressure(3000, 16_384, None, 14_336).strained());
+    }
+
+    #[test]
+    fn a_form_is_dirty_with_mods_or_a_typed_name() {
+        assert!(!form_dirty(0, "", ""));
+        assert!(!form_dirty(0, "Minecraft 26.3", "Minecraft 26.3"));
+        assert!(!form_dirty(0, "  ", "Minecraft 26.3"));
+        assert!(form_dirty(0, "Farm", "Minecraft 26.3"));
+        assert!(form_dirty(3, "", ""));
     }
 
     #[test]

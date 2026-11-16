@@ -7,7 +7,7 @@ use super::button::Button;
 use super::text::{para, spacer, title};
 use super::use_theme;
 use crate::core::i18n::tr;
-use crate::view::theme::{font, frame, motion, space};
+use crate::view::theme::{font, frame, level, motion, space};
 use crate::view::ui::Ui;
 
 /// The open sheet: a component that draws its content inside a [`Card`].
@@ -176,6 +176,7 @@ impl Component for Card {
             .shadow(t.elevation.float.clone())
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_global_key_down(move |e: Event<KeyboardEventData>| match e.key {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) if ui.menu.peek().is_some() || *ui.palette.peek() => {}
                 Key::Named(NamedKey::Escape) => {
                     e.stop_propagation();
                     if held.is_some() {
@@ -246,7 +247,7 @@ impl Component for Host {
         let (w, h) = *ui.window.read();
         rect()
             .position(Position::new_global().left(0.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::SHEET))
             .width(Size::px(w))
             .height(Size::px(h))
             .background(t.scrim)

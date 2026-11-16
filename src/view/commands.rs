@@ -61,6 +61,7 @@ pub enum Command {
     OpenTrash,
     Import,
     FindModpacks,
+    AddMods,
 }
 
 /// A key combination; `primary` is Ctrl, or Cmd on macOS.
@@ -157,7 +158,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 44] = [
+    pub const ALL: [Command; 45] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -202,6 +203,7 @@ impl Command {
         Command::OpenTrash,
         Command::Import,
         Command::FindModpacks,
+        Command::AddMods,
     ];
 
     /// The name the drive tool and the GPUI shell use for it.
@@ -390,9 +392,9 @@ impl Command {
             Command::NextAttention | Command::ShowAttention => m.attention_count(None) > 0,
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
             Command::FocusSearch => grid,
-            Command::Undo => store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
+            Command::Undo => store.ui.browser_undo.peek().is_some() || store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
             Command::Import => can_want(&Want::Import),
-            c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks) => c.page_available(store),
+            c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks | Command::AddMods) => c.page_available(store),
             _ => true,
         }
     }
@@ -418,7 +420,13 @@ impl Command {
                 ui.sidebar.set(shown);
             }
             Command::Undo => {
-                toast::undo_last(ui);
+                let browser = ui.browser_undo.peek().clone();
+                match browser {
+                    Some(undo) => undo.run.call(()),
+                    None => {
+                        toast::undo_last(ui);
+                    }
+                }
             }
             Command::FocusSearch => {
                 if !matches!(*ui.page.peek(), Page::Grid(_)) {
@@ -632,6 +640,7 @@ impl Command {
             Command::NewInstance => "NewInstance",
             Command::OpenTrash => "OpenTrash",
             Command::FindModpacks => "FindModpacks",
+            Command::AddMods => "AddMods",
             _ => "",
         }
     }
@@ -648,6 +657,7 @@ impl Command {
             Command::NewInstance => tr("Neue Instanz"),
             Command::OpenTrash => tr("Papierkorb öffnen"),
             Command::FindModpacks => tr("Modpacks suchen…"),
+            Command::AddMods => tr("Mods hinzufügen…"),
             _ => String::new(),
         }
     }
@@ -663,6 +673,7 @@ impl Command {
             Command::NewBatch => Icon::Layers,
             Command::NewInstance => Icon::Plus,
             Command::FindModpacks => Icon::Search,
+            Command::AddMods => Icon::Plus,
             _ => Icon::Help,
         }
     }
@@ -674,6 +685,7 @@ impl Command {
             Command::RemoveAccounts => bare(if cfg!(target_os = "macos") { Code::Backspace } else { Code::Delete }),
             Command::AccountsAsList => k(Code::Digit1),
             Command::AccountsAsTable => k(Code::Digit2),
+            Command::AddMods => ks(Code::KeyM),
             _ => return None,
         })
     }
@@ -696,6 +708,7 @@ impl Command {
             Command::NewInstance => can_want(&Want::NewInstance),
             Command::OpenTrash => can_want(&Want::OpenTrash),
             Command::FindModpacks => can_want(&Want::FindModpacks),
+            Command::AddMods => can_want(&Want::AddMods(String::new())) && super::instance::current(store).is_some_and(|id| super::instance::held(store, &id).is_none()),
             _ => true,
         }
     }
@@ -729,6 +742,11 @@ impl Command {
             }
             Command::FindModpacks => {
                 want(store, Want::FindModpacks);
+            }
+            Command::AddMods => {
+                if let Some(id) = super::instance::current(store) {
+                    want(store, Want::AddMods(id));
+                }
             }
             _ => {}
         }

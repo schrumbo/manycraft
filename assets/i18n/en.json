@@ -1778,5 +1778,15 @@
   "Wird gerade geändert.": "Being changed right now.",
   "Läuft in „%@“": "Running in “%@”",
   "ausgewählt": "selected",
-  "nicht ausgewählt": "not selected"
+  "nicht ausgewählt": "not selected",
+  "Entfernen von %@ rückgängig": "Undo removing %@",
+  "Als Instanz hinzufügen": "Add as instance",
+  "%@ fügt es als Instanz hinzu.": "%@ adds it as an instance.",
+  "%@ fügt es hinzu.": "%@ adds it.",
+  "Hinzufügen zu": "Add to",
+  "Wähle eine andere Minecraft-Version, um mehr zu finden.": "Pick another Minecraft version to find more.",
+  "Auch hinzugefügt: %@.": "Also added: %@.",
+  "Shader brauchen Iris, und Iris braucht Fabric oder Quilt. %@ ist keins von beiden.": "Shaders need Iris, and Iris needs Fabric or Quilt. %@ is neither.",
+  "Einen Moment, die Mods werden hinzugefügt …": "One moment, the mods are being added …",
+  "Einen Moment, die Mods werden geladen …": "One moment, the mods are being loaded …"
 }

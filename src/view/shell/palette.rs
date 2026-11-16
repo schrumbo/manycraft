@@ -8,7 +8,7 @@ use crate::view::kit::field::Field;
 use crate::view::kit::text::{line, spacer};
 use crate::view::kit::use_theme;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{font, frame, iconsize, space};
+use crate::view::theme::{font, frame, level, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
 #[derive(Clone, PartialEq)]
@@ -33,7 +33,7 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
     let mut list: Vec<Entry> = Command::ALL
         .into_iter()
         .filter(|c| *c != Command::OpenPalette && c.available(store))
-        .map(|c| Entry { id: format!("palette.{}", c.name()), label: c.label(), glyph: c.glyph(), shortcut: c.shortcut().map(|s| s.label()), target: Target::Command(c) })
+        .map(|c| Entry { id: format!("palette.{}", c.name()), label: if c == Command::Undo { store.ui.browser_undo.peek().as_ref().map_or_else(|| c.label(), |u| u.label.clone()) } else { c.label() }, glyph: c.glyph(), shortcut: c.shortcut().map(|s| s.label()), target: Target::Command(c) })
         .collect();
     list.extend(commands::extras(store).into_iter().map(|x| Entry { id: format!("palette.{}", x.id), label: x.label, glyph: x.glyph, shortcut: x.shortcut.map(|s| s.label()), target: Target::Extra(x.run) }));
     let m = store.model.peek();
@@ -99,7 +99,7 @@ impl Component for Palette {
         body = if count == 0 { body.padding(space::L).center().child(line(&t, tr("Nichts gefunden"), font::BODY, t.text3)) } else { body.children(rows) };
         rect()
             .position(Position::new_global().left(0.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::PALETTE))
             .width(Size::px(w))
             .height(Size::px(h))
             .background(t.scrim.with_a(t.scrim.a() / 2))
@@ -134,7 +134,7 @@ impl Component for Palette {
                     .shadow(t.elevation.float.clone())
                     .overflow(Overflow::Clip)
                     .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
-                    .child(rect().width(Size::fill()).padding(space::S).child(Field::new("palette.query", query).placeholder(tr("Befehl, Account oder Batch suchen")).glyph(Icon::Search).width(Size::fill()).auto_focus()))
+                    .child(rect().width(Size::fill()).padding(space::S).child(Field::new("palette.query", query).placeholder(tr("Befehl, Account oder Batch suchen")).glyph(Icon::Search).rows_through().width(Size::fill()).auto_focus()))
                     .child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator))
                     .child(body),
             )

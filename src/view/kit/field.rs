@@ -33,7 +33,8 @@ pub struct Field {
     secret: bool,
     lines: usize,
     on_submit: Option<EventHandler<String>>,
-    claim: Option<Callback<Event<KeyboardEventData>, bool>>,
+    claim: Option<Callback<(Key, Modifiers), bool>>,
+    rows_through: bool,
     a11y: Option<AccessibilityId>,
 }
 
@@ -54,6 +55,7 @@ impl Field {
             lines: 1,
             on_submit: None,
             claim: None,
+            rows_through: false,
             a11y: None,
         }
     }
@@ -112,9 +114,15 @@ impl Field {
         self
     }
 
-    /// Lets `claim` see each key first; a key it returns true for never reaches the text.
-    pub fn claim(mut self, claim: impl Fn(Event<KeyboardEventData>) -> bool + 'static) -> Self {
-        self.claim = Some(Callback::new(claim));
+    /// Lets `claim` see each key first; a key it returns true for never reaches the text or the app's shortcuts.
+    pub fn claim(mut self, claim: impl Fn(&Key, Modifiers) -> bool + 'static) -> Self {
+        self.claim = Some(Callback::new(move |(key, modifiers): (Key, Modifiers)| claim(&key, modifiers)));
+        self
+    }
+
+    /// Lets Up, Down, Page Up and Page Down pass on to the list this field searches.
+    pub fn rows_through(mut self) -> Self {
+        self.rows_through = true;
         self
     }
 
@@ -123,6 +131,11 @@ impl Field {
         self.a11y = Some(a11y);
         self
     }
+}
+
+fn shortcut_key(key: &Key, modifiers: Modifiers) -> bool {
+    let Key::Character(c) = key else { return false };
+    modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !modifiers.contains(Modifiers::ALT) && !["a", "c", "v", "x", "y", "z"].iter().any(|k| c.eq_ignore_ascii_case(k))
 }
 
 fn colors(t: &Theme, error: bool) -> InputColorsThemePartial {
@@ -186,9 +199,27 @@ impl Component for Field {
             if let Some(h) = self.on_submit.clone() {
                 input = input.on_submit(move |s| h.call(s));
             }
-            if let Some(claim) = self.claim.clone() {
-                input = input.on_pre_key_down(Callback::new(move |e: Event<KeyboardEventData>| !claim.call(e)));
-            }
+            let (claim, rows_through) = (self.claim.clone(), self.rows_through);
+            input = input.on_pre_key_down(Callback::new(move |e: Event<KeyboardEventData>| {
+                let key = e.key.clone();
+                if claim.as_ref().is_some_and(|c| c.call((key.clone(), e.modifiers))) {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    return false;
+                }
+                if shortcut_key(&key, e.modifiers) || rows_through && matches!(key, Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::PageUp | NamedKey::PageDown)) {
+                    return false;
+                }
+                match key {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape | NamedKey::Shift) => true,
+                    Key::Named(NamedKey::Tab) => false,
+                    _ => {
+                        e.stop_propagation();
+                        e.prevent_default();
+                        true
+                    }
+                }
+            }));
         }
         let mut boxed = rect().width(Size::fill()).corner_radius(t.shape.field).on_sized(spot).child(input);
         if let Some(border) = ring(&t, focus()) {
@@ -205,5 +236,24 @@ impl Component for Field {
             column = column.child(caption(&t, h.clone()));
         }
         column
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_letters_leave_the_field_and_editing_keys_stay() {
+        let ctrl = Modifiers::CONTROL;
+        assert!(shortcut_key(&Key::Character("k".into()), ctrl));
+        assert!(shortcut_key(&Key::Character("M".into()), ctrl | Modifiers::SHIFT));
+        assert!(shortcut_key(&Key::Character("q".into()), Modifiers::META));
+        for k in ["a", "c", "v", "x", "y", "z", "Z"] {
+            assert!(!shortcut_key(&Key::Character(k.into()), ctrl));
+        }
+        assert!(!shortcut_key(&Key::Character("k".into()), Modifiers::empty()));
+        assert!(!shortcut_key(&Key::Character("@".into()), ctrl | Modifiers::ALT));
+        assert!(!shortcut_key(&Key::Named(NamedKey::Home), ctrl));
     }
 }

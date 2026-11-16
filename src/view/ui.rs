@@ -51,6 +51,13 @@ pub enum View {
     Table,
 }
 
+/// What the open browser would undo next: how the palette names it, and what it does.
+#[derive(Clone, PartialEq)]
+pub struct BrowserUndo {
+    pub label: String,
+    pub run: EventHandler<()>,
+}
+
 /// The view state every component reaches through the context.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ui {
@@ -83,6 +90,8 @@ pub struct Ui {
     pub menu: State<Option<Menu>>,
     pub toasts: State<Vec<Toast>>,
     pub tip: State<Option<Tip>>,
+    /// The removal the open content browser would undo next; the palette and Ctrl or Cmd+Z reach it from here.
+    pub browser_undo: State<Option<BrowserUndo>>,
     /// When the last tooltip went away, so the next one shows at once.
     pub tip_seen: State<Option<Instant>>,
     /// What the Accounts page shows and has picked.
@@ -117,6 +126,7 @@ impl Ui {
             menu: State::create(None),
             toasts: State::create(Vec::new()),
             tip: State::create(None),
+            browser_undo: State::create(None),
             tip_seen: State::create(None),
             accounts: accounts::Shared::create(),
             chat: chat::Shared::create(),

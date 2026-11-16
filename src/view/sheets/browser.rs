@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 use freya::elements::image::ImageHandle;
@@ -33,9 +34,10 @@ use crate::view::kit::sheet::{Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
-use crate::view::kit::{after, at_least, off_ui, use_theme};
+use crate::view::kit::{after, at_least, off_ui, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
+use crate::view::ui::BrowserUndo;
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const RESULTS_HEIGHT: f32 = 372.;
@@ -47,13 +49,10 @@ const KEPT_SEARCHES: usize = 200;
 const MAX_LOADED: usize = 1000;
 const KEPT_ICONS: usize = 48;
 const DECODERS: usize = 4;
-const NAME_BAR: f32 = 120.;
-const TEXT_BAR: f32 = 220.;
-const BAR_H: f32 = 10.;
+const UNDO_KEPT: usize = 20;
 const AUTHOR_MAX: f32 = 120.;
 const CATEGORY_W: f32 = 168.;
 const SORT_W: f32 = 120.;
-const TARGET_W: f32 = 232.;
 const OTHERS: f32 = control::M * 4. + space::XS * 7. + font::CAPTION * font::LINE + font::BODY * font::LINE;
 
 /// Opens the Mods sheet of instance `id` straight in the browser: on Mods, or on Ressourcenpakete when the loader takes
@@ -89,7 +88,10 @@ pub(super) struct Scope {
     pub updatable: HashSet<String>,
     pub updating: HashSet<String>,
     pub saving: bool,
+    pub held: Option<String>,
     pub pending: bool,
+    pub dirty: bool,
+    pub follow: Option<(State<String>, State<Loader>)>,
     pub kind: Kind,
     pub on_update: EventHandler<String>,
     pub back: EventHandler<()>,
@@ -136,16 +138,80 @@ enum Act {
 
 enum Notice {
     Added(Vec<String>),
-    Removed(ModRef, usize),
-    Trashed { title: String, dir: PathBuf, entry: String },
+    Making(String),
     NeedsShaderMod { id: &'static str, name: &'static str },
     NoShaderMod,
 }
 
-impl Notice {
-    fn undoable(&self) -> bool {
-        matches!(self, Notice::Removed(..) | Notice::Trashed { .. })
+#[derive(Clone, Debug)]
+enum Undo {
+    Removed(ModRef, usize),
+    Trashed { pid: String, title: String, dir: PathBuf, entry: String },
+}
+
+impl Undo {
+    fn pid(&self) -> &str {
+        match self {
+            Undo::Removed(m, _) => &m.project_id,
+            Undo::Trashed { pid, .. } => pid,
+        }
     }
+
+    fn title(&self) -> &str {
+        match self {
+            Undo::Removed(m, _) => &m.title,
+            Undo::Trashed { title, .. } => title,
+        }
+    }
+
+    fn label(&self) -> String {
+        trf("Entfernen von %@ rückgängig", &[&self.title()])
+    }
+}
+
+fn keep_undo(list: &mut Vec<Undo>, next: Undo) {
+    list.push(next);
+    if list.len() > UNDO_KEPT {
+        list.remove(0);
+    }
+}
+
+fn forget_undo(list: &mut Vec<Undo>, ids: &[String]) {
+    list.retain(|u| !ids.iter().any(|id| id == u.pid()));
+}
+
+fn clamp_step(sel: usize, count: usize, delta: i32) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    (sel as i64 + i64::from(delta)).clamp(0, count as i64 - 1) as usize
+}
+
+fn wants_more(count: usize, last: usize, has_more: bool, more: More) -> bool {
+    has_more && more == More::Idle && last + MORE_AHEAD >= count
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shown {
+    Failed,
+    Skeleton,
+    Empty,
+    List { dim: bool },
+}
+
+fn shown_of(has_page: bool, visible_empty: bool, fresh: bool, status: &Status) -> Shown {
+    if !has_page {
+        return if matches!(status, Status::Failed(_)) { Shown::Failed } else { Shown::Skeleton };
+    }
+    if visible_empty {
+        return if fresh { Shown::Empty } else { Shown::Skeleton };
+    }
+    Shown::List { dim: !fresh || matches!(status, Status::Loading) }
+}
+
+fn results_height(store: Store, kind: Kind) -> f32 {
+    let target_h = if kind == Kind::DataPack { control::M + space::XS } else { 0. };
+    (body_max(store) - OTHERS - target_h).clamp(RESULTS_MIN, RESULTS_HEIGHT)
 }
 
 #[derive(Clone)]
@@ -295,8 +361,9 @@ impl<K: std::hash::Hash + Eq + Clone, V: Clone> Lru<K, V> {
 
 thread_local! {
     static ICONS: RefCell<Lru<String, ImageHandle>> = RefCell::new(Lru::new(KEPT_ICONS));
-    static GATE: (async_channel::Sender<()>, async_channel::Receiver<()>) = async_channel::bounded(DECODERS);
 }
+
+static GATE: LazyLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> = LazyLock::new(|| async_channel::bounded(DECODERS));
 
 fn cached(pid: &str) -> Option<ImageHandle> {
     ICONS.with(|i| i.borrow_mut().get(&pid.to_owned()))
@@ -310,17 +377,19 @@ struct Slot;
 
 impl Slot {
     async fn take() -> Self {
-        let gate = GATE.with(|g| g.0.clone());
-        let _ = gate.send(()).await;
+        let _ = GATE.0.send(()).await;
         Self
+    }
+
+    #[cfg(test)]
+    fn try_take() -> Option<Self> {
+        GATE.0.try_send(()).ok().map(|()| Self)
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        GATE.with(|g| {
-            let _ = g.1.try_recv();
-        });
+        let _ = GATE.1.try_recv();
     }
 }
 
@@ -349,16 +418,16 @@ impl Component for Face {
             let Some(url) = url.clone() else { return };
             let pid = pid.clone();
             spawn(async move {
-                let _slot = Slot::take().await;
+                let slot = Slot::take().await;
                 let wanted = vec![(pid.clone(), url)];
-                let path = off_ui(move || {
+                let decoded = off_ui(move || {
+                    let _slot = slot;
                     modicons::prepare(&wanted);
-                    modicons::icon(&wanted[0].0)
+                    modicons::icon(&wanted[0].0).and_then(|path| decode(&path))
                 })
                 .await
                 .flatten();
-                let Some(path) = path else { return };
-                let Some((w, h, rgba)) = off_ui(move || decode(&path)).await.flatten() else { return };
+                let Some((w, h, rgba)) = decoded else { return };
                 if let Some(handle) = ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul) {
                     remember(pid, handle.clone());
                     shown.set(Some(handle));
@@ -461,7 +530,7 @@ fn saved_when(at: SystemTime) -> String {
 }
 
 fn enter_key() -> String {
-    if cfg!(target_os = "macos") { "↩".to_owned() } else { tr("Eingabe") }
+    if cfg!(target_os = "macos") { "Return".to_owned() } else { tr("Eingabe") }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -484,7 +553,9 @@ struct Facts {
     updatable: HashSet<String>,
     adding: HashSet<String>,
     updating: HashSet<String>,
+    restoring: HashSet<String>,
     saving: bool,
+    held: Option<String>,
     pack: Pack,
     global_needed: bool,
     pending: bool,
@@ -493,13 +564,19 @@ struct Facts {
 impl Facts {
     fn install_blocked(&self) -> Option<String> {
         match self.kind {
-            Kind::Mod => self.version.is_empty().then(|| tr("Wähle zuerst eine Version.")),
+            Kind::Mod => {
+                if self.version.is_empty() {
+                    Some(tr("Wähle zuerst eine Version."))
+                } else {
+                    self.held.clone()
+                }
+            }
             Kind::Modpack => self.pending.then(|| tr("Sichere zuerst die Änderungen.")),
             _ if self.global_needed => Some(tr("Für neue Welten braucht es Global Packs.")),
             _ => match self.pack {
                 Pack::None | Pack::Loading => Some(tr("Einen Moment, die Instanz wird gelesen …")),
                 Pack::Failed => Some(tr("Erst muss klar sein, was schon installiert ist.")),
-                Pack::Ready => None,
+                Pack::Ready => self.held.clone(),
             },
         }
     }
@@ -514,7 +591,7 @@ fn act_of(hit: &Hit, f: &Facts) -> Act {
     match f.kind {
         Kind::Mod => {
             if f.have.contains(pid) {
-                return if f.updatable.contains(pid) && f.updating.is_empty() && !f.saving { Act::Update } else { Act::Nothing };
+                return if f.updatable.contains(pid) && f.updating.is_empty() && !f.saving && f.held.is_none() { Act::Update } else { Act::Nothing };
             }
             if fits && f.takes_mods && f.install_blocked().is_none() { Act::Install } else { Act::Nothing }
         }
@@ -524,7 +601,7 @@ fn act_of(hit: &Hit, f: &Facts) -> Act {
                     return Act::Nothing;
                 }
                 if f.have.contains(pid) {
-                    return if f.updatable.contains(pid) { Act::Update } else { Act::Nothing };
+                    return if f.updatable.contains(pid) && f.held.is_none() { Act::Update } else { Act::Nothing };
                 }
             }
             if fits && f.install_blocked().is_none() { Act::Install } else { Act::Nothing }
@@ -540,7 +617,7 @@ struct Refresh {
 
 #[derive(Clone, PartialEq, Debug)]
 enum Trail {
-    Busy(String),
+    Busy { label: String, reason: String },
     Present { update: Option<Refresh>, remove: Option<String> },
     Note(String),
     Install { label: String, blocked: Option<String> },
@@ -551,13 +628,21 @@ fn trail_of(hit: &Hit, f: &Facts) -> Trail {
     let installed = f.kind != Kind::Modpack && f.have.contains(pid);
     let adding = f.adding.contains(pid);
     let busy = adding || (f.kind == Kind::Mod && f.updating.contains(pid));
-    let label = if f.kind == Kind::Modpack { tr("Als Instanz installieren") } else { tr("Installieren") };
+    let label = if f.kind == Kind::Modpack { tr("Als Instanz hinzufügen") } else { tr("Hinzufügen") };
     if adding && !installed {
-        return Trail::Busy(label);
+        let reason = if f.restoring.contains(pid) { trf("„%@“ wird gerade geändert.", &[&hit.title]) } else { tr("Wird hinzugefügt …") };
+        return Trail::Busy { label, reason };
     }
     if installed {
-        let update = (f.updatable.contains(pid) || busy).then(|| Refresh { busy, blocked: (f.kind == Kind::Mod && !busy && (!f.updating.is_empty() || f.saving)).then(|| tr("Eine andere Änderung läuft noch.")) });
-        let remove = (busy || f.saving).then(|| if busy { trf("„%@“ wird gerade geändert.", &[&hit.title]) } else { tr("Eine andere Änderung läuft noch.") });
+        let other = (f.kind == Kind::Mod && (!f.updating.is_empty() || f.saving)).then(|| tr("Eine andere Änderung läuft noch."));
+        let update = (f.updatable.contains(pid) || busy).then(|| Refresh { busy, blocked: if busy { None } else { other.clone().or_else(|| f.held.clone()) } });
+        let remove = if busy {
+            Some(trf("„%@“ wird gerade geändert.", &[&hit.title]))
+        } else if f.saving {
+            Some(tr("Eine andere Änderung läuft noch."))
+        } else {
+            f.held.clone()
+        };
         return Trail::Present { update, remove };
     }
     let support = hit.fits(&f.filter);
@@ -578,15 +663,27 @@ fn val<T: Clone + 'static>(state: State<T>, subscribe: bool) -> T {
     if subscribe { state.read().clone() } else { state.peek().clone() }
 }
 
+/// What the scope says now, for code that outlives the render that made its `Flow`.
+#[derive(Clone, PartialEq)]
+struct Live {
+    version: String,
+    loader: Loader,
+    held: Option<String>,
+    dirty: bool,
+}
+
 /// The browser and what it works on, shared by its parts.
 #[derive(Clone, PartialEq)]
 struct Flow {
     store: Store,
     scope: Rc<Scope>,
+    live: State<Live>,
     core: State<Core>,
     query: State<String>,
     error: State<Option<Problem>>,
     notice: State<Option<Notice>>,
+    undos: State<Vec<Undo>>,
+    restoring: State<HashSet<String>>,
     shelves: State<HashMap<PathBuf, Shelf>>,
     worlds: State<Option<Vec<World>>>,
     target: State<Option<PathBuf>>,
@@ -604,11 +701,34 @@ impl Flow {
     }
 
     fn key(&self) -> Query {
-        self.core.peek().key(&self.query.peek(), &self.scope.version, &self.scope.loader)
+        let live = self.live.peek();
+        self.core.peek().key(&self.query.peek(), &live.version, &live.loader)
     }
 
     fn filter(&self) -> Filter {
-        filter_for(self.core.peek().kind, &self.scope.version, &self.scope.loader)
+        let live = self.live.peek();
+        filter_for(self.core.peek().kind, &live.version, &live.loader)
+    }
+
+    fn rows(&self) -> i32 {
+        let kind = self.core.peek().kind;
+        ((results_height(self.store, kind) / ROW_H) as i32).max(1)
+    }
+
+    fn undoable(&self) -> bool {
+        !self.undos.peek().is_empty()
+    }
+
+    fn keep_undo(&self, next: Undo) {
+        let mut undos = self.undos;
+        keep_undo(&mut undos.write(), next);
+    }
+
+    fn forget_undo(&self, ids: &[String]) {
+        let mut undos = self.undos;
+        if undos.peek().iter().any(|u| ids.iter().any(|id| id == u.pid())) {
+            forget_undo(&mut undos.write(), ids);
+        }
     }
 
     fn instance_dir(&self) -> Option<PathBuf> {
@@ -660,7 +780,9 @@ impl Flow {
             updatable,
             adding: val(self.scope.adding, subscribe),
             updating: self.scope.updating.clone(),
+            restoring: val(self.restoring, subscribe),
             saving: self.scope.saving,
+            held: self.scope.held.clone(),
             pack,
             global_needed,
             pending: self.scope.pending,
@@ -821,8 +943,8 @@ impl Flow {
             }
             let mut error = self.error;
             error.set(None);
-            if !self.notice.peek().as_ref().is_some_and(Notice::undoable) {
-                let mut notice = self.notice;
+            let mut notice = self.notice;
+            if notice.peek().is_some() {
                 notice.set(None);
             }
             self.refresh(false);
@@ -866,7 +988,7 @@ impl Flow {
         if count == 0 {
             return;
         }
-        let at = (self.core.peek().sel as i64 + i64::from(delta)).clamp(0, count as i64 - 1) as usize;
+        let at = clamp_step(self.core.peek().sel, count, delta);
         let mut core = self.core;
         core.write().sel = at;
         if at + 1 >= count {
@@ -943,10 +1065,14 @@ impl Flow {
             notice.set(None);
         }
         let flow = self.clone();
-        let (version, loader) = (self.scope.version.clone(), self.scope.loader.clone());
+        let (version, loader) = {
+            let live = self.live.peek();
+            (live.version.clone(), live.loader.clone())
+        };
         spawn_in_window(async move {
             let ids = vec![id.clone()];
-            let result = off_ui(move || remote::resolve(&ids, &version, &loader)).await;
+            let (asked_version, asked_loader) = (version.clone(), loader.clone());
+            let result = off_ui(move || remote::resolve(&ids, &asked_version, &asked_loader)).await;
             if !flow.mark(&id, false) {
                 return;
             }
@@ -954,9 +1080,14 @@ impl Flow {
             if mods.try_peek().is_none() {
                 return;
             }
+            let moved = flow.scope.follow.as_ref().is_some_and(|(v, l)| v.try_peek().is_none_or(|v| *v != version) || l.try_peek().is_none_or(|l| *l != loader));
+            if moved {
+                return;
+            }
             match result {
                 Some(Ok(found)) => {
                     let mut extra = Vec::new();
+                    let mut put = Vec::new();
                     {
                         let mut list = mods.write();
                         for m in found {
@@ -964,6 +1095,7 @@ impl Flow {
                                 if m.project_id != id {
                                     extra.push(m.title.clone());
                                 }
+                                put.push(m.project_id.clone());
                                 list.push(m);
                             }
                         }
@@ -971,8 +1103,11 @@ impl Flow {
                     if let Some(mut touched) = flow.scope.touched.filter(|t| t.try_peek().is_some()) {
                         touched.set(true);
                     }
-                    if flow.alive() && !extra.is_empty() && !notice.peek().as_ref().is_some_and(Notice::undoable) {
-                        notice.set(Some(Notice::Added(extra)));
+                    if flow.alive() {
+                        flow.forget_undo(&put);
+                        if !extra.is_empty() && !flow.undoable() {
+                            notice.set(Some(Notice::Added(extra)));
+                        }
                     }
                 }
                 other => {
@@ -1009,8 +1144,9 @@ impl Flow {
             if !flow.alive() {
                 return;
             }
-            let what = if update { trf("„%@“ ließ sich nicht aktualisieren.", &[&title]) } else { trf("„%@“ ließ sich nicht installieren.", &[&title]) };
+            let what = if update { trf("„%@“ ließ sich nicht aktualisieren.", &[&title]) } else { trf("„%@“ ließ sich nicht hinzufügen.", &[&title]) };
             if let Some(placed) = flow.fail(what, result) {
+                flow.forget_undo(std::slice::from_ref(&id));
                 let mut shelves = flow.shelves;
                 if let Some(shelf) = shelves.write().get_mut(&dir) {
                     if let Load::Ready(files) = &mut shelf.files {
@@ -1036,7 +1172,7 @@ impl Flow {
     fn offer_shader_mod(&self) {
         let local = self.scope.made.as_ref().map_or(&[][..], |m| m.local_mods.as_slice());
         let mut notice = self.notice;
-        if packs::shader_loader(&self.scope.mods.peek(), local).is_some() || notice.peek().as_ref().is_some_and(Notice::undoable) {
+        if packs::shader_loader(&self.scope.mods.peek(), local).is_some() || self.undoable() {
             return;
         }
         notice.set(Some(match packs::shader_mod(&self.scope.loader) {
@@ -1064,8 +1200,16 @@ impl Flow {
                 return;
             }
             if let Some(path) = flow.fail(trf("„%@“ ließ sich nicht laden.", &[&hit.title]), result) {
-                crate::view::kit::sheet::close(store.ui);
-                import::open_file(store, path);
+                let text = trf("„%@“ wird als neue Instanz angelegt. Den Fortschritt siehst du in der Seitenleiste.", &[&hit.title]);
+                if flow.live.peek().dirty {
+                    import::background(store, path);
+                    let mut notice = flow.notice;
+                    notice.set(Some(Notice::Making(hit.title.clone())));
+                } else {
+                    crate::view::kit::sheet::close(store.ui);
+                    import::open_file(store, path);
+                    toast::show(store.ui, text, None);
+                }
             }
         });
     }
@@ -1083,7 +1227,10 @@ impl Flow {
         }
         self.clear_error();
         let mut notice = self.notice;
-        notice.set(Some(Notice::Removed(removed, at)));
+        if notice.peek().is_some() {
+            notice.set(None);
+        }
+        self.keep_undo(Undo::Removed(removed, at));
     }
 
     fn remove_pack(&self, pid: &str) {
@@ -1110,38 +1257,56 @@ impl Flow {
                     shelf.updates.retain(|u| u.current.project_id != id);
                 }
                 let mut notice = flow.notice;
-                notice.set(Some(Notice::Trashed { title, dir, entry }));
+                if notice.peek().is_some() {
+                    notice.set(None);
+                }
+                flow.keep_undo(Undo::Trashed { pid: id, title, dir, entry });
             }
         });
     }
 
     fn undo(&self) {
-        let mut notice = self.notice;
-        let taken = notice.write().take();
-        match taken {
-            Some(Notice::Removed(m, at)) => {
+        if !self.alive() {
+            return;
+        }
+        let mut undos = self.undos;
+        let Some(next) = undos.peek().last().cloned() else { return };
+        let held = self.live.peek().held.clone();
+        if let Some(why) = held {
+            toast::show(self.store.ui, why, None);
+            return;
+        }
+        match next {
+            Undo::Removed(m, at) => {
+                undos.write().pop();
                 let mut mods = self.scope.mods;
-                if !mods.peek().iter().any(|have| have.project_id == m.project_id) {
+                if mods.try_peek().is_some() && !mods.peek().iter().any(|have| have.project_id == m.project_id) {
                     let mut list = mods.write();
                     let at = at.min(list.len());
                     list.insert(at, m);
                 }
             }
-            Some(Notice::Trashed { title, dir, entry }) => {
+            Undo::Trashed { pid, title, dir, entry } => {
                 let Some(instance_dir) = self.instance_dir() else { return };
+                undos.write().pop();
+                self.mark(&pid, true);
+                let mut restoring = self.restoring;
+                restoring.write().insert(pid.clone());
                 let flow = self.clone();
                 spawn_in_window(async move {
                     let result = off_ui(move || catalog::put_back(&instance_dir, &entry)).await;
+                    flow.mark(&pid, false);
                     if !flow.alive() {
                         return;
                     }
+                    let mut restoring = flow.restoring;
+                    restoring.write().remove(&pid);
                     let mut shelves = flow.shelves;
                     shelves.write().remove(&dir);
                     flow.shelf();
                     flow.fail(trf("„%@“ ließ sich nicht zurückholen.", &[&title]), result);
                 });
             }
-            _ => {}
         }
     }
 
@@ -1235,13 +1400,17 @@ impl Component for Browser {
         let query = use_state(String::new);
         let search = use_hook(AccessibilityId::new_unique);
         let kind = self.scope.kind;
+        let live = use_reactive(&Live { version: self.scope.version.clone(), loader: self.scope.loader.clone(), held: self.scope.held.clone(), dirty: self.scope.dirty });
         let flow = Flow {
             store,
             scope: Rc::new(self.scope.clone()),
+            live,
             core: use_state(move || Core::new(kind)),
             query,
             error: use_state(|| None),
             notice: use_state(|| None),
+            undos: use_state(Vec::new),
+            restoring: use_state(HashSet::new),
             shelves: use_state(HashMap::new),
             worlds: use_state(|| None),
             target: use_state(|| None),
@@ -1250,7 +1419,16 @@ impl Component for Browser {
         };
         let typed = query.read().trim().to_lowercase();
         let again = flow.clone();
-        use_side_effect_with_deps(&typed, move |_| again.refresh(true));
+        let fresh_deps = (typed.clone(), self.scope.version.clone(), self.scope.loader.with_version(None));
+        use_side_effect_with_deps(&fresh_deps, move |_| again.refresh(true));
+        let top = flow.undos.read().last().map(Undo::label);
+        let undo_run = use_hook({
+            let flow = flow.clone();
+            move || EventHandler::new(move |_| flow.undo())
+        });
+        let mut slot = store.ui.browser_undo;
+        use_side_effect_with_deps(&top, move |top| slot.set(top.clone().map(|label| BrowserUndo { label, run: undo_run.clone() })));
+        use_drop(move || slot.set(None));
         let shelf = flow.clone();
         use_hook(move || shelf.shelf());
         let back = *store.back.read();
@@ -1270,18 +1448,8 @@ impl Component for Browser {
                 if flow.store.ui.menu.peek().is_some() || *flow.store.ui.palette.peek() {
                     return;
                 }
-                match &e.key {
-                    Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if e.modifiers.is_empty() && !crate::view::kit::arrows() => {
-                        e.stop_propagation();
-                        flow.step(if e.key == Key::Named(NamedKey::ArrowUp) { -1 } else { 1 });
-                    }
-                    Key::Character(c) if c.eq_ignore_ascii_case("z") && e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !e.modifiers.contains(Modifiers::SHIFT) => {
-                        if flow.notice.peek().as_ref().is_some_and(Notice::undoable) {
-                            e.stop_propagation();
-                            flow.undo();
-                        }
-                    }
-                    _ => {}
+                if drive_rows(&flow, &e.key, e.modifiers) {
+                    e.stop_propagation();
                 }
             }
         });
@@ -1297,28 +1465,20 @@ impl Component for Browser {
             }))));
         }
         let claimer = flow.clone();
-        let field = Field::new("browser.search", query).placeholder(placeholder_text(kind)).glyph(Icon::Search).auto_focus().a11y(search).claim(move |e: Event<KeyboardEventData>| {
-            let undo = matches!(&e.key, Key::Character(c) if c.eq_ignore_ascii_case("z")) && e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !e.modifiers.contains(Modifiers::SHIFT);
-            if undo && claimer.notice.peek().as_ref().is_some_and(Notice::undoable) {
-                claimer.undo();
-                return true;
-            }
-            false
-        });
+        let field = Field::new("browser.search", query).placeholder(placeholder_text(kind)).glyph(Icon::Search).auto_focus().a11y(search).claim(move |key, modifiers| drive_rows(&claimer, key, modifiers));
         column = column.child(field);
         column = column.child(rect().width(Size::fill()).height(Size::px(font::CAPTION * font::LINE)).child(caption(&t, selected.unwrap_or_default())));
         if kind == Kind::DataPack {
             column = column.child(target_row(&t, &flow, &facts));
         }
         column = column.child(controls(&t, &flow, kind, &typed, category.as_deref(), sort, all, if fresh { total } else { None }));
-        let target_h = if kind == Kind::DataPack { control::M + space::XS } else { 0. };
-        let height = (body_max(store) - OTHERS - target_h).clamp(RESULTS_MIN, RESULTS_HEIGHT);
+        let height = results_height(store, kind);
         let region = rect()
             .width(Size::fill())
             .height(Size::px(height))
             .corner_radius(t.shape.tile)
             .overflow(Overflow::Clip)
-            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
+            .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
             .child(results(&t, &flow, &facts, kind, &typed, category.is_some(), all, status, more, sel, epoch, has_more, page, visible, fresh));
         column = column.child(region);
         column = column.child(at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill()));
@@ -1351,6 +1511,35 @@ impl Component for Browser {
     }
 }
 
+fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
+    let primary = modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !modifiers.intersects(Modifiers::SHIFT | Modifiers::ALT);
+    match key {
+        Key::Named(named @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::PageUp | NamedKey::PageDown)) if modifiers.is_empty() && !crate::view::kit::arrows() => {
+            let rows = flow.rows();
+            flow.step(match named {
+                NamedKey::ArrowUp => -1,
+                NamedKey::ArrowDown => 1,
+                NamedKey::PageUp => -rows,
+                _ => rows,
+            });
+            true
+        }
+        Key::Named(NamedKey::Home) if primary => {
+            flow.step(i32::MIN);
+            true
+        }
+        Key::Named(NamedKey::End) if primary => {
+            flow.step(i32::MAX);
+            true
+        }
+        Key::Character(c) if primary && c.eq_ignore_ascii_case("z") && flow.undoable() => {
+            flow.undo();
+            true
+        }
+        _ => false,
+    }
+}
+
 impl Flow {
     fn selected_view(&self, facts: &Facts, fresh: bool, sel: usize, page: &Option<Rc<Page>>, visible: &[usize]) -> Option<String> {
         if !fresh {
@@ -1359,8 +1548,8 @@ impl Flow {
         let hit = page.as_ref()?.hits.get(*visible.get(sel)?)?;
         let key = enter_key();
         match act_of(hit, facts) {
-            Act::Install if facts.kind == Kind::Modpack => Some(trf("%@ legt es als Instanz an.", &[&key])),
-            Act::Install => Some(trf("%@ installiert es.", &[&key])),
+            Act::Install if facts.kind == Kind::Modpack => Some(trf("%@ fügt es als Instanz hinzu.", &[&key])),
+            Act::Install => Some(trf("%@ fügt es hinzu.", &[&key])),
             Act::Update => Some(trf("%@ aktualisiert es.", &[&key])),
             Act::Nothing => None,
         }
@@ -1385,12 +1574,12 @@ fn target_row(t: &Theme, flow: &Flow, facts: &Facts) -> Element {
     let chosen = target.as_ref().and_then(|d| worlds.iter().position(|w| &w.dir == d)).unwrap_or(worlds.len());
     let dirs: Vec<Option<PathBuf>> = worlds.iter().map(|w| Some(w.dir.clone())).chain(std::iter::once(None)).collect();
     let pick = flow.clone();
-    let select = Select::new("browser.target", tr("Installieren in"), options, chosen).width(TARGET_W).on_choose(move |i| {
+    let select = Select::new("browser.target", tr("Hinzufügen zu"), options, chosen).width(frame::PICK_W).on_choose(move |i| {
         if let Some(dir) = dirs.get(i) {
             pick.choose_target(dir.clone());
         }
     });
-    let mut row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(at_least(control::M, line(t, tr("Installieren in"), font::CALLOUT, t.text2))).child(select);
+    let mut row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(at_least(control::M, line(t, tr("Hinzufügen zu"), font::CALLOUT, t.text2))).child(select);
     if facts.global_needed {
         let takes = flow.scope.loader.takes_mods();
         let text = if takes { tr("Dafür braucht es den Mod Global Packs.") } else { tr("Vanilla lädt Datenpakete nur pro Welt.") };
@@ -1398,7 +1587,7 @@ fn target_row(t: &Theme, flow: &Flow, facts: &Facts) -> Element {
         if takes {
             let busy = facts.adding.contains(packs::GLOBAL_PACKS);
             let add = flow.clone();
-            row = row.child(Button::new("browser.globalpacks", tr("Global Packs hinzufügen")).glyph(if busy { Icon::Spinner } else { Icon::Plus }).disabled(busy.then(|| tr("Wird hinzugefügt …"))).on_press(move |_| {
+            row = row.child(Button::new("browser.globalpacks", tr("Global Packs hinzufügen")).glyph(Icon::Plus).busy(busy).disabled(busy.then(|| tr("Wird hinzugefügt …")).or_else(|| facts.held.clone())).on_press(move |_| {
                 add.add_mod(packs::GLOBAL_PACKS.to_owned(), "Global Packs".to_owned());
                 add.focus();
             }));
@@ -1464,7 +1653,7 @@ fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&s
 }
 
 fn skeleton(t: &Theme) -> Element {
-    let bar = |w: f32| rect().width(Size::px(w)).height(Size::px(BAR_H)).corner_radius(t.shape.small).background(t.hover);
+    let bar = |w: f32| rect().width(Size::px(w)).height(Size::px(frame::BAR_H)).corner_radius(t.shape.small).background(t.hover);
     rect()
         .width(Size::fill())
         .height(Size::px(ROW_H))
@@ -1473,7 +1662,7 @@ fn skeleton(t: &Theme) -> Element {
         .cross_align(Alignment::Center)
         .spacing(space::M)
         .child(rect().width(Size::px(control::L)).height(Size::px(control::L)).corner_radius(t.shape.control).background(t.hover))
-        .child(rect().spacing(space::S).child(bar(NAME_BAR)).child(bar(TEXT_BAR)))
+        .child(rect().spacing(space::S).child(bar(frame::BAR_NAME)).child(bar(frame::BAR_TEXT)))
         .into_element()
 }
 
@@ -1486,9 +1675,10 @@ fn results(t: &Theme, flow: &Flow, facts: &Rc<Facts>, kind: Kind, typed: &str, c
     if kind == Kind::Mod && !facts.takes_mods {
         return empty(t, flow, facts, typed, categorised, all);
     }
-    let Some(page) = page.filter(|_| fresh || matches!(status, Status::Loading)) else {
-        return match status {
-            Status::Failed(why) => {
+    let shown = shown_of(page.is_some(), visible.is_empty(), fresh, &status);
+    let (Some(page), Shown::List { dim }) = (page, shown) else {
+        return match (shown, status) {
+            (Shown::Failed, Status::Failed(why)) => {
                 let retry = flow.clone();
                 rect()
                     .width(Size::fill())
@@ -1501,15 +1691,12 @@ fn results(t: &Theme, flow: &Flow, facts: &Rc<Facts>, kind: Kind, typed: &str, c
                     .child(Button::new("browser.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| retry.refresh(false)))
                     .into_element()
             }
+            (Shown::Empty, _) => empty(t, flow, facts, typed, categorised, all),
             _ => rect().width(Size::fill()).children((0..SKELETON_ROWS).map(|_| skeleton(t))).into_element(),
         };
     };
-    if visible.is_empty() {
-        return empty(t, flow, facts, typed, categorised, all);
-    }
-    let dim = matches!(status, Status::Loading);
     let list = ResultList { view: View { flow: flow.clone(), facts: facts.clone(), page, visible, sel, more, has_more, epoch } };
-    rect().width(Size::fill()).height(Size::fill()).padding(space::XXS).opacity(if dim { t.hidden_dim } else { 1. }).child(list).into_element()
+    rect().width(Size::fill()).height(Size::fill()).padding(space::XXS).opacity(if dim { t.hidden_dim } else { 1. }).interactive(!dim).child(list).into_element()
 }
 
 fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, all: bool) -> Element {
@@ -1539,6 +1726,14 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
         let widen = flow.clone();
         column = column.child(Button::new("browser.all.show", tr("Alle zeigen")).on_press(move |_| widen.all(true)));
     }
+    if !widens(facts.kind) && typed.is_empty() {
+        if categorised {
+            let widen = flow.clone();
+            column = column.child(Button::new("browser.category.clear", tr("Alle Kategorien")).on_press(move |_| widen.category(None)));
+        } else {
+            column = column.child(caption(t, tr("Wähle eine andere Minecraft-Version, um mehr zu finden.")));
+        }
+    }
     column.into_element()
 }
 
@@ -1548,7 +1743,7 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
     let note = |glyph: Icon, color: Color, text: String| fill(status_line(t, glyph, color, text));
     let undo = |flow: &Flow| {
         let run = flow.clone();
-        Button::new("browser.undo", tr("Rückgängig")).plain().glyph(Icon::Undo).on_press(move |_| {
+        Button::new("browser.undo", tr("Rückgängig")).plain().glyph(Icon::Undo).disabled(flow.scope.held.clone()).on_press(move |_| {
             run.undo();
             run.focus();
         })
@@ -1557,6 +1752,16 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
         return row().child(fill(problem_view(t, "browser.add", Icon::CircleAlert, &e, flow.details))).into_element();
     }
     let notice = flow.notice.read();
+    let undos = flow.undos.read();
+    if let Some(Notice::Making(title)) = notice.as_ref() {
+        return row().child(note(Icon::CircleCheck, t.success_text, trf("„%@“ wird als neue Instanz angelegt. Den Fortschritt siehst du in der Seitenleiste.", &[title]))).into_element();
+    }
+    if let Some(top) = undos.last() {
+        return match top {
+            Undo::Removed(m, _) => row().child(note(Icon::Check, t.text2, trf("„%@“ entfernt.", &[&m.title]))).child(undo(flow)).into_element(),
+            Undo::Trashed { title, .. } => row().child(note(Icon::Trash, t.text2, trf("„%@“ liegt im Papierkorb der Instanz.", &[title]))).child(undo(flow)).into_element(),
+        };
+    }
     if notice.is_none()
         && let Some(dir) = flow.pack_dir(true)
         && let Some(Shelf { files: Load::Failed(e), .. }) = flow.shelf_of(&dir, true)
@@ -1572,22 +1777,21 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
             .into_element();
     }
     match notice.as_ref() {
-        Some(Notice::Added(titles)) => row().child(note(Icon::CircleCheck, t.success_text, trf("Auch installiert: %@.", &[&titles.join(", ")]))).into_element(),
-        Some(Notice::Removed(m, _)) => row().child(note(Icon::Check, t.text2, trf("„%@“ entfernt.", &[&m.title]))).child(undo(flow)).into_element(),
-        Some(Notice::Trashed { title, .. }) => row().child(note(Icon::Trash, t.text2, trf("„%@“ liegt im Papierkorb der Instanz.", &[title]))).child(undo(flow)).into_element(),
+        Some(Notice::Added(titles)) => row().child(note(Icon::CircleCheck, t.success_text, trf("Auch hinzugefügt: %@.", &[&titles.join(", ")]))).into_element(),
+        Some(Notice::Making(_)) => row().into_element(),
         Some(Notice::NeedsShaderMod { id, name }) => {
             let (id, name) = (*id, *name);
             let busy = val(flow.scope.adding, true).contains(id);
             let add = flow.clone();
             row()
                 .child(note(Icon::Info, t.text2, trf("Shader laufen erst mit %@.", &[&name])))
-                .child(Button::new("browser.shadermod", trf("%@ hinzufügen", &[&name])).glyph(if busy { Icon::Spinner } else { Icon::Plus }).disabled(busy.then(|| tr("Wird hinzugefügt …"))).on_press(move |_| {
+                .child(Button::new("browser.shadermod", trf("%@ hinzufügen", &[&name])).glyph(Icon::Plus).busy(busy).disabled(busy.then(|| tr("Wird hinzugefügt …")).or_else(|| flow.scope.held.clone())).on_press(move |_| {
                     add.add_mod(id.to_owned(), name.to_owned());
                     add.focus();
                 }))
                 .into_element()
         }
-        Some(Notice::NoShaderMod) => row().child(note(Icon::Info, t.text2, trf("Shader brauchen Iris, und Iris braucht einen Mod-Loader. %@ hat keinen.", &[&flow.scope.loader.name()]))).into_element(),
+        Some(Notice::NoShaderMod) => row().child(note(Icon::Info, t.text2, trf("Shader brauchen Iris, und Iris braucht Fabric oder Quilt. %@ ist keins von beiden.", &[&flow.scope.loader.name()]))).into_element(),
         None => match saved {
             Some(at) => {
                 let retry = flow.clone();
@@ -1630,7 +1834,7 @@ impl View {
             .key(hit.project_id.clone())
             .width(Size::fill())
             .height(Size::px(ROW_H))
-            .child(ResultRow { flow: self.flow.clone(), facts: self.facts.clone(), hit: hit.clone(), ix: index, selected: index == self.sel, ahead: self.has_more && index + MORE_AHEAD >= count })
+            .child(ResultRow { flow: self.flow.clone(), facts: self.facts.clone(), hit: hit.clone(), ix: index, selected: index == self.sel })
             .into_element()
     }
 }
@@ -1661,7 +1865,19 @@ impl Component for ResultList {
                 scroll.scroll_to_y(-((bottom - h) as i32));
             }
         });
-        let items = self.view.visible.len() + usize::from(self.view.has_more);
+        let (flow, count) = (self.view.flow.clone(), self.view.visible.len());
+        use_side_effect_with_deps(&(count, self.view.has_more, self.view.more), move |(count, has_more, more)| {
+            let shown = -scroll.position().y;
+            let h = *viewport.read();
+            if h <= 0. || !flow.alive() {
+                return;
+            }
+            let last = ((shown + h) / ROW_H).ceil().max(0.) as usize;
+            if wants_more(*count, last, *has_more, *more) {
+                flow.more();
+            }
+        });
+        let items = count + usize::from(self.view.has_more);
         VirtualScrollView::new_with_data_controlled(self.view.clone(), |item: VirtualItem, view: &View| view.item(item.index), scroll)
             .length(items)
             .item_size(ROW_H)
@@ -1683,7 +1899,11 @@ impl Component for Footer {
         let t = use_theme();
         let flow = self.flow.clone();
         use_hook(move || {
-            spawn_in_window(async move { flow.more() });
+            spawn_in_window(async move {
+                if flow.alive() {
+                    flow.more();
+                }
+            });
         });
         if !self.failed {
             return skeleton(&t);
@@ -1714,22 +1934,16 @@ struct ResultRow {
     hit: Hit,
     ix: usize,
     selected: bool,
-    ahead: bool,
 }
 
 impl Component for ResultRow {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let hit = &self.hit;
         let pid = hit.project_id.clone();
         let spot = use_spot(&format!("browser.row.{pid}"), "row", &hit.title, true);
-        if self.ahead {
-            let flow = self.flow.clone();
-            use_hook(move || {
-                spawn_in_window(async move { flow.more() });
-            });
-        }
         let trail = trail_of(hit, &self.facts);
         let installed = self.facts.kind != Kind::Modpack && self.facts.have.contains(&pid);
         let dim = !installed && hit.fits(&self.facts.filter) != Support::Fits;
@@ -1754,6 +1968,8 @@ impl Component for ResultRow {
         };
         let fill = if self.selected {
             t.selection
+        } else if *pressed.read() {
+            t.press
         } else if *hovered.read() {
             t.hover
         } else {
@@ -1773,7 +1989,12 @@ impl Component for ResultRow {
             .content(Content::flex())
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |_| pressed.set(true))
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_press(move |_| click())
             .child(Face { pid: pid.clone(), url: hit.icon_url.clone() })
             .child(text)
@@ -1795,13 +2016,13 @@ fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: usize) -> El
     };
     let row = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
     match trail {
-        Trail::Busy(label) => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Spinner).disabled(Some(tr("Wird hinzugefügt …")))).into_element(),
+        Trail::Busy { label, reason } => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).busy(true).disabled(Some(reason.clone()))).into_element(),
         Trail::Note(text) => row.child(line(t, text.clone(), font::CALLOUT, t.text3)).into_element(),
         Trail::Install { label, blocked } => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).disabled(blocked.clone()).on_press(move |_| act())).into_element(),
         Trail::Present { update, remove } => {
             let first: Element = match update {
-                Some(Refresh { busy, blocked }) => Button::new(format!("browser.act.{pid}"), tr("Aktualisieren")).primary().glyph(if *busy { Icon::Spinner } else { Icon::Refresh }).disabled(blocked.clone().or_else(|| busy.then(|| tr("Wird gerade geändert.")))).on_press(move |_| act()).into_element(),
-                None => status_line(t, Icon::Check, t.success_text, tr("Installiert")),
+                Some(Refresh { busy, blocked }) => Button::new(format!("browser.act.{pid}"), tr("Aktualisieren")).primary().glyph(Icon::Refresh).busy(*busy).disabled(blocked.clone().or_else(|| busy.then(|| tr("Wird gerade geändert.")))).on_press(move |_| act()).into_element(),
+                None => status_line(t, Icon::Check, t.success_text, tr("Hinzugefügt")),
             };
             let (flow, id) = (flow.clone(), pid.clone());
             let gone = Button::new(format!("browser.remove.{pid}"), tr("Entfernen")).tip(trf("„%@“ entfernen", &[&hit.title])).disabled(remove.clone()).on_press(move |_| {
@@ -1841,7 +2062,9 @@ mod tests {
             updatable: HashSet::new(),
             adding: HashSet::new(),
             updating: HashSet::new(),
+            restoring: HashSet::new(),
             saving: false,
+            held: None,
             pack: Pack::Ready,
             global_needed: false,
             pending: false,
@@ -2024,7 +2247,7 @@ mod tests {
         f.version.clear();
         let h = fitting(Kind::Mod, "a");
         assert_eq!(act_of(&h, &f), Act::Nothing);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: Some(tr("Wähle zuerst eine Version.")) });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: Some(tr("Wähle zuerst eine Version.")) });
     }
 
     #[test]
@@ -2073,13 +2296,13 @@ mod tests {
         let h = fitting(Kind::ResourcePack, "a");
         f.pack = Pack::Loading;
         assert_eq!(act_of(&h, &f), Act::Nothing);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: Some(tr("Einen Moment, die Instanz wird gelesen …")) });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: Some(tr("Einen Moment, die Instanz wird gelesen …")) });
         f.pack = Pack::Failed;
         assert_eq!(act_of(&h, &f), Act::Nothing);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: Some(tr("Erst muss klar sein, was schon installiert ist.")) });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: Some(tr("Erst muss klar sein, was schon installiert ist.")) });
         f.pack = Pack::Ready;
         assert_eq!(act_of(&h, &f), Act::Install);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: None });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: None });
     }
 
     #[test]
@@ -2088,7 +2311,7 @@ mod tests {
         let h = fitting(Kind::DataPack, "a");
         f.global_needed = true;
         assert_eq!(act_of(&h, &f), Act::Nothing);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: Some(tr("Für neue Welten braucht es Global Packs.")) });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: Some(tr("Für neue Welten braucht es Global Packs.")) });
     }
 
     #[test]
@@ -2107,11 +2330,11 @@ mod tests {
     fn modpacks_install_as_instances_and_wait_for_unsaved_changes() {
         let mut f = facts(Kind::Modpack);
         let h = fitting(Kind::Modpack, "a");
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Als Instanz installieren"), blocked: None });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Als Instanz hinzufügen"), blocked: None });
         assert_eq!(act_of(&h, &f), Act::Install);
         f.pending = true;
         assert_eq!(act_of(&h, &f), Act::Nothing);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Als Instanz installieren"), blocked: Some(tr("Sichere zuerst die Änderungen.")) });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Als Instanz hinzufügen"), blocked: Some(tr("Sichere zuerst die Änderungen.")) });
     }
 
     #[test]
@@ -2119,7 +2342,7 @@ mod tests {
         let mut f = facts(Kind::Mod);
         let h = fitting(Kind::Mod, "a");
         f.adding.insert("a".into());
-        assert_eq!(trail_of(&h, &f), Trail::Busy(tr("Installieren")));
+        assert_eq!(trail_of(&h, &f), Trail::Busy { label: tr("Hinzufügen"), reason: tr("Wird hinzugefügt …") });
         f.adding.clear();
         f.have.insert("a".into());
         f.updatable.insert("a".into());
@@ -2129,5 +2352,119 @@ mod tests {
         f.saving = false;
         f.updating.insert("a".into());
         assert_eq!(trail_of(&h, &f), Trail::Present { update: Some(Refresh { busy: true, blocked: None }), remove: Some(trf("„%@“ wird gerade geändert.", &[&"a"])) });
+    }
+
+    #[test]
+    fn a_held_instance_blocks_adding_updating_and_removing() {
+        let held = Some(tr("Wird wiederhergestellt …"));
+        let mut f = facts(Kind::Mod);
+        f.held = held.clone();
+        let h = fitting(Kind::Mod, "a");
+        assert_eq!(act_of(&h, &f), Act::Nothing);
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: held.clone() });
+        f.have.insert("a".into());
+        f.updatable.insert("a".into());
+        assert_eq!(act_of(&h, &f), Act::Nothing);
+        assert_eq!(trail_of(&h, &f), Trail::Present { update: Some(Refresh { busy: false, blocked: held.clone() }), remove: held.clone() });
+        let mut packs = facts(Kind::ResourcePack);
+        packs.held = held.clone();
+        let p = fitting(Kind::ResourcePack, "p");
+        assert_eq!(act_of(&p, &packs), Act::Nothing);
+        packs.have.insert("p".into());
+        packs.updatable.insert("p".into());
+        assert_eq!(act_of(&p, &packs), Act::Nothing);
+    }
+
+    #[test]
+    fn a_held_instance_does_not_block_modpacks_which_make_a_new_one() {
+        let mut f = facts(Kind::Modpack);
+        f.held = Some("held".into());
+        assert_eq!(act_of(&fitting(Kind::Modpack, "a"), &f), Act::Install);
+    }
+
+    #[test]
+    fn a_pack_being_put_back_says_it_is_being_changed() {
+        let mut f = facts(Kind::ResourcePack);
+        let h = fitting(Kind::ResourcePack, "a");
+        f.adding.insert("a".into());
+        f.restoring.insert("a".into());
+        assert_eq!(trail_of(&h, &f), Trail::Busy { label: tr("Hinzufügen"), reason: trf("„%@“ wird gerade geändert.", &[&"a"]) });
+    }
+
+    fn removed(id: &str) -> Undo {
+        Undo::Removed(ModRef { project_id: id.into(), version_id: "v".into(), title: id.into(), file_name: String::new(), url: String::new(), sha1: String::new() }, 0)
+    }
+
+    fn trashed(id: &str) -> Undo {
+        Undo::Trashed { pid: id.into(), title: id.into(), dir: PathBuf::new(), entry: String::new() }
+    }
+
+    #[test]
+    fn removals_undo_newest_first_and_are_bounded() {
+        let mut list = Vec::new();
+        for i in 0..UNDO_KEPT + 3 {
+            keep_undo(&mut list, removed(&i.to_string()));
+        }
+        assert_eq!(list.len(), UNDO_KEPT);
+        assert_eq!(list.last().map(Undo::pid), Some("22"));
+        assert_eq!(list.first().map(Undo::pid), Some("3"));
+    }
+
+    #[test]
+    fn adding_a_project_forgets_its_removal() {
+        let mut list = vec![removed("a"), trashed("b"), removed("c")];
+        forget_undo(&mut list, &["b".to_owned(), "x".to_owned()]);
+        assert_eq!(list.iter().map(Undo::pid).collect::<Vec<_>>(), ["a", "c"]);
+        forget_undo(&mut list, &["a".to_owned(), "c".to_owned()]);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn the_undo_label_names_what_it_undoes() {
+        assert_eq!(removed("Sodium").label(), trf("Entfernen von %@ rückgängig", &[&"Sodium"]));
+        assert_eq!(trashed("Fresh").label(), trf("Entfernen von %@ rückgängig", &[&"Fresh"]));
+    }
+
+    #[test]
+    fn stepping_clamps_to_the_rows_shown() {
+        assert_eq!(clamp_step(3, 10, 1), 4);
+        assert_eq!(clamp_step(3, 10, -9), 0);
+        assert_eq!(clamp_step(3, 10, i32::MIN), 0);
+        assert_eq!(clamp_step(3, 10, i32::MAX), 9);
+        assert_eq!(clamp_step(0, 0, 1), 0);
+    }
+
+    #[test]
+    fn more_is_asked_for_once_the_end_is_near_and_nothing_loads() {
+        assert!(wants_more(20, 17, true, More::Idle));
+        assert!(!wants_more(20, 10, true, More::Idle));
+        assert!(!wants_more(20, 19, false, More::Idle));
+        assert!(!wants_more(20, 19, true, More::Loading));
+        assert!(!wants_more(20, 19, true, More::Failed));
+    }
+
+    #[test]
+    fn the_last_page_stays_dimmed_while_the_next_one_is_awaited() {
+        assert_eq!(shown_of(true, false, false, &Status::Idle), Shown::List { dim: true });
+        assert_eq!(shown_of(true, false, false, &Status::Loading), Shown::List { dim: true });
+        assert_eq!(shown_of(true, false, true, &Status::Idle), Shown::List { dim: false });
+        assert_eq!(shown_of(false, true, false, &Status::Idle), Shown::Skeleton);
+        assert_eq!(shown_of(false, true, false, &Status::Loading), Shown::Skeleton);
+        assert_eq!(shown_of(false, true, false, &Status::Failed(Problem::plain("x"))), Shown::Failed);
+        assert_eq!(shown_of(true, true, true, &Status::Idle), Shown::Empty);
+        assert_eq!(shown_of(true, true, false, &Status::Idle), Shown::Skeleton);
+    }
+
+    #[test]
+    fn icon_fetches_stay_bounded_until_the_thread_returns() {
+        let taken: Vec<Slot> = (0..DECODERS).filter_map(|_| Slot::try_take()).collect();
+        assert_eq!(taken.len(), DECODERS);
+        assert!(Slot::try_take().is_none());
+        let mut taken = taken;
+        let last = taken.pop();
+        std::thread::spawn(move || drop(last)).join().unwrap();
+        let again = Slot::try_take();
+        assert!(again.is_some());
+        assert!(Slot::try_take().is_none());
     }
 }

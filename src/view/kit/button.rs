@@ -2,6 +2,7 @@
 
 use freya::prelude::*;
 
+use super::spinner::Spinner;
 use super::text::line;
 use super::tooltip::WithTip;
 use super::{ring, use_theme};
@@ -26,6 +27,7 @@ pub struct Button {
     id: String,
     label: String,
     glyph: Option<Icon>,
+    busy: bool,
     look: Look,
     tall: bool,
     icon_only: bool,
@@ -37,7 +39,7 @@ pub struct Button {
 impl Button {
     /// A button named `id` for the drive tool, showing `label`.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), glyph: None, look: Look::Secondary, tall: false, icon_only: false, tip: None, disabled: None, on_press: None }
+        Self { id: id.into(), label: label.into(), glyph: None, busy: false, look: Look::Secondary, tall: false, icon_only: false, tip: None, disabled: None, on_press: None }
     }
 
     /// A square button that shows only `glyph`; `label` becomes its tooltip and accessible name.
@@ -67,6 +69,12 @@ impl Button {
 
     pub fn glyph(mut self, glyph: Icon) -> Self {
         self.glyph = Some(glyph);
+        self
+    }
+
+    /// Shows the turning arc in place of the glyph while a short wait runs.
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
         self
     }
 
@@ -168,7 +176,9 @@ impl Component for Button {
         if let Some(border) = ring(&t, focus()) {
             b = b.border(border);
         }
-        if let Some(g) = self.glyph {
+        if self.busy {
+            b = b.child(Spinner);
+        } else if let Some(g) = self.glyph {
             b = b.child(icon(&t, g, if self.icon_only { iconsize::M } else { iconsize::S }, ink));
         }
         if !self.icon_only {

@@ -59,6 +59,28 @@ pub fn open_file(store: Store, path: PathBuf) {
     sheet::open(store.ui, Import { file: Some(path) });
 }
 
+/// Imports the pack at `path` as a new instance with no sheet; a toast says how it went.
+pub fn background(store: Store, path: PathBuf) {
+    let job = Job::File(path.clone());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let work = Arc::clone(&cancel);
+    spawn_in_window(async move {
+        let result = off_ui(move || remote::import_instance(&path, &work, &|_, _| {})).await;
+        let text = match result {
+            Some(result) => match outcome(&job, result, &cancel) {
+                Outcome::Made(name) => {
+                    store.reload(true);
+                    trf("„%@“ importiert.", &[&name])
+                }
+                Outcome::Failed(why) | Outcome::Left(why) => why,
+                Outcome::Stopped => return,
+            },
+            None => crate::ui::forms::unexplained(),
+        };
+        toast::show(store.ui, text, None);
+    });
+}
+
 type Profile = (PathBuf, String);
 type Token = Rc<RefCell<Arc<AtomicBool>>>;
 

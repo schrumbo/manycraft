@@ -10,7 +10,7 @@ use super::text::{line, spacer};
 use super::{after, use_theme};
 use crate::core::i18n::tr;
 use crate::view::icons::{Icon, icon};
-use crate::view::theme::{font, frame, iconsize, space};
+use crate::view::theme::{font, frame, level, iconsize, space};
 use crate::view::ui::Ui;
 
 const PLAIN: Duration = Duration::from_secs(4);
@@ -125,7 +125,7 @@ impl Component for Host {
         });
         rect()
             .position(Position::new_global().left((w - width) / 2.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::TOAST))
             .width(Size::px(width))
             .height(Size::px(h - space::L))
             .main_align(Alignment::End)
