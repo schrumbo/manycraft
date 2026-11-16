@@ -4,12 +4,7 @@ use gpui_kit::base::{Transition, transition};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-/// Hover, press, small confirmations.
-pub const FAST: Duration = Duration::from_millis(120);
-/// Reveals, sheets.
-pub const MEDIUM: Duration = Duration::from_millis(180);
-/// Elements travelling across the window.
-pub const SLOW: Duration = Duration::from_millis(240);
+pub use crate::core::scale::motion::{FAST, MEDIUM, SLOW};
 
 /// A duration for `with_animation`, which does not look at the reduced-motion setting by itself.
 pub fn timed(duration: Duration, cx: &App) -> Duration {

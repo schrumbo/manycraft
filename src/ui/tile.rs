@@ -12,6 +12,7 @@ use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, 
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Phase};
+use crate::app::model::{Primary, primary};
 use super::motion::Soft;
 use super::identity;
 use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint, with_alpha};
@@ -217,44 +218,12 @@ pub fn playable(phase: &Phase) -> bool {
     matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Primary {
-    Play,
-    Reconnect,
-    Respawn,
-    Start,
-    Retry,
-    SignIn,
+trait Look {
+    fn icon(self) -> &'static str;
+    fn action(self, key: &str, account: Uuid) -> Box<dyn Action>;
 }
 
-fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
-    if stopping {
-        return None;
-    }
-    match phase {
-        Phase::Disconnected { .. } => Some(Primary::Reconnect),
-        Phase::Dead { .. } => Some(Primary::Respawn),
-        Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
-        Phase::LoginNeeded => Some(Primary::SignIn),
-        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
-        Phase::NoNetwork => Some(Primary::Retry),
-        Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
-        Phase::Restarting { .. } => Some(Primary::Start),
-    }
-}
-
-impl Primary {
-    fn label(self) -> String {
-        match self {
-            Self::Play => tr("Spielen"),
-            Self::Reconnect => tr("Neu verbinden"),
-            Self::Respawn => tr("Wiederbeleben"),
-            Self::Start => tr("Starten"),
-            Self::Retry => tr("Erneut versuchen"),
-            Self::SignIn => tr("Anmelden"),
-        }
-    }
-
+impl Look for Primary {
     fn icon(self) -> &'static str {
         match self {
             Self::Play => "gamepad-2",

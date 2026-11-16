@@ -41,18 +41,7 @@ impl fmt::Display for Plain {
 
 impl std::error::Error for Plain {}
 
-/// The plain German for a file of Manycraft that a newer version or a hand edit left in a shape this version cannot read.
-pub fn untouched(e: &anyhow::Error) -> Option<String> {
-    let found = e.chain().find_map(|c| c.downcast_ref::<crate::core::store::Untouched>())?;
-    let name = found.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Some(match name.as_str() {
-        "accounts.json" => tr("Die Accounts stammen von einer neueren Version von Manycraft oder wurden von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig."),
-        "batch.json" => tr("Ein Batch stammt von einer neueren Version von Manycraft oder wurde von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig."),
-        "instance.json" => tr("Eine Instanz stammt von einer neueren Version von Manycraft oder wurde von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig."),
-        "settings.json" => tr("Die Einstellungen stammen von einer neueren Version oder wurden von Hand geändert. Es gelten die Standardwerte. Änderst du etwas, legt Manycraft die alte Datei daneben (settings.json.damaged)."),
-        _ => trf("%@ stammt von einer neueren Version von Manycraft oder wurde von Hand geändert. Manycraft lässt die Datei unverändert. Nutze wieder die neuere Version oder mach die Änderung rückgängig.", &[&name]),
-    })
-}
+pub use crate::runner::untouched;
 
 /// Turns any failure into a [`Problem`]: what happened in everyday German and what to do next; the raw cause only as detail.
 pub fn explain(e: &anyhow::Error) -> Problem {

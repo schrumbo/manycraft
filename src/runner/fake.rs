@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use super::model::Phase;
-use super::state::{Backend, Update, render_image};
+use super::backend::{Backend, Pixels, Update};
+use crate::app::model::Phase;
 use crate::core::account::Account;
 use crate::core::fleet::Target;
 use crate::core::ipc::{ChatKind, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
@@ -48,7 +48,7 @@ pub struct Fake {
 }
 
 impl Fake {
-    pub fn new(out: async_channel::Sender<Update>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
+    pub fn new<P: Pixels>(out: async_channel::Sender<Update<P>>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
         let (tx, rx) = mpsc::channel();
         let _ = std::thread::Builder::new().name("fake-fleet".into()).spawn(move || Sim::new(out, visible).run(&rx));
         Self { tx }
@@ -84,13 +84,13 @@ struct Running {
     next_preview: Instant,
 }
 
-struct Sim {
-    out: async_channel::Sender<Update>,
+struct Sim<P> {
+    out: async_channel::Sender<Update<P>>,
     visible: Arc<Mutex<HashSet<String>>>,
     names: HashMap<String, String>,
     seeded: bool,
     running: HashMap<String, Running>,
-    queue: Vec<(Instant, Option<Arc<AtomicBool>>, Update)>,
+    queue: Vec<(Instant, Option<Arc<AtomicBool>>, Update<P>)>,
     reconnects: u64,
     chat_at: Instant,
     chat_n: u64,
@@ -102,16 +102,16 @@ fn hash(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
-fn state(instance: &str, kind: StateKind, reason: Option<&str>) -> Update {
+fn state<P>(instance: &str, kind: StateKind, reason: Option<&str>) -> Update<P> {
     Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned), cause: None } })
 }
 
-fn connected(instance: &str) -> Update {
+fn connected<P>(instance: &str) -> Update<P> {
     Update::Ipc(Event::Connected { instance: instance.to_owned(), pid: 0, mod_version: "fake".into() })
 }
 
-impl Sim {
-    fn new(out: async_channel::Sender<Update>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
+impl<P: Pixels> Sim<P> {
+    fn new(out: async_channel::Sender<Update<P>>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
         Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default() }
     }
 
@@ -131,7 +131,7 @@ impl Sim {
         }
     }
 
-    fn at(&mut self, delay: Duration, cancel: Option<&Arc<AtomicBool>>, update: Update) {
+    fn at(&mut self, delay: Duration, cancel: Option<&Arc<AtomicBool>>, update: Update<P>) {
         self.queue.push((Instant::now() + delay, cancel.cloned(), update));
     }
 
@@ -202,7 +202,7 @@ impl Sim {
         }
     }
 
-    fn chat_line(&mut self, key: &str, whisper: bool, unique: bool) -> Update {
+    fn chat_line(&mut self, key: &str, whisper: bool, unique: bool) -> Update<P> {
         self.chat_n += 1;
         let h = hash(&format!("{key}{}", self.chat_n));
         let name = self.names.get(key).cloned().unwrap_or_default();
@@ -333,7 +333,7 @@ impl Sim {
             if !self.changes.changed(key, &preview) {
                 continue;
             }
-            let Some(image) = render_image(preview.width, preview.height, preview.rgba) else { continue };
+            let Some(image) = P::from_rgba(preview.width, preview.height, preview.rgba) else { continue };
             if self.out.send_blocking(Update::Preview { key: key.clone(), seq: run.seq, image }).is_err() {
                 return false;
             }
@@ -342,7 +342,7 @@ impl Sim {
     }
 }
 
-fn touches(update: &Update, key: &str) -> bool {
+fn touches<P>(update: &Update<P>, key: &str) -> bool {
     match update {
         Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
@@ -379,6 +379,14 @@ fn frame(seed: u64, seq: u32) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    struct Raw;
+
+    impl Pixels for Raw {
+        fn from_rgba(_: u32, _: u32, _: Vec<u8>) -> Option<Self> {
+            Some(Raw)
+        }
+    }
+
     #[test]
     fn frames_have_the_preview_size_and_move() {
         let a = frame(42, 2);
@@ -388,7 +396,7 @@ mod tests {
 
     #[test]
     fn stop_drops_pending_updates_of_that_instance() {
-        let (out, rx) = async_channel::unbounded();
+        let (out, rx) = async_channel::unbounded::<Update<Raw>>();
         let mut sim = Sim::new(out, Arc::default());
         sim.launch("a", Duration::from_secs(60), None);
         sim.launch("b", Duration::from_secs(60), None);

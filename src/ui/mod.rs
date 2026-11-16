@@ -6,7 +6,6 @@ mod catalog;
 pub mod chat;
 pub mod chrome;
 pub mod drive;
-pub mod fake;
 pub mod forms;
 pub mod grid;
 pub mod identity;

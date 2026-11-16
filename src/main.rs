@@ -2,6 +2,7 @@
 
 mod app;
 mod core;
+mod runner;
 mod ui;
 
 use std::borrow::Cow;

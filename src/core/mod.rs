@@ -12,6 +12,7 @@ pub mod companion;
 pub mod content;
 #[allow(dead_code)]
 pub mod drive;
+pub mod drive_link;
 #[allow(dead_code)]
 pub mod fit;
 pub mod fleet;
@@ -50,6 +51,7 @@ pub mod prism;
 pub mod proxy;
 pub mod ratelimit;
 pub mod reconnect;
+pub mod scale;
 pub mod scrub;
 pub mod skins;
 pub mod stagger;

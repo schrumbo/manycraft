@@ -412,6 +412,98 @@ pub fn rank(phase: &Phase) -> u8 {
     }
 }
 
+/// The main action of a tile, by the phase of its game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Primary {
+    Play,
+    Reconnect,
+    Respawn,
+    Start,
+    Retry,
+    SignIn,
+}
+
+/// The main action of a game in `phase`; nothing while it stops or while nothing helps.
+pub fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
+    if stopping {
+        return None;
+    }
+    match phase {
+        Phase::Disconnected { .. } => Some(Primary::Reconnect),
+        Phase::Dead { .. } => Some(Primary::Respawn),
+        Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
+        Phase::LoginNeeded => Some(Primary::SignIn),
+        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
+        Phase::NoNetwork => Some(Primary::Retry),
+        Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
+        Phase::Restarting { .. } => Some(Primary::Start),
+    }
+}
+
+impl Primary {
+    /// The label of its button.
+    pub fn label(self) -> String {
+        match self {
+            Self::Play => tr("Spielen"),
+            Self::Reconnect => tr("Neu verbinden"),
+            Self::Respawn => tr("Wiederbeleben"),
+            Self::Start => tr("Starten"),
+            Self::Retry => tr("Erneut versuchen"),
+            Self::SignIn => tr("Anmelden"),
+        }
+    }
+}
+
+/// The ban that is still the latest event of a stopped instance, as its status line, so a stop does not hide it.
+pub fn stopped_ban(i: &Game, m: &Model) -> Option<String> {
+    if i.phase != Phase::Stopped || i.stopping {
+        return None;
+    }
+    let last = m.history.get(&i.key)?.back()?;
+    (last.kind == history::Kind::Banned).then(|| format!("{} · {}", tr("Gestoppt"), banned_status(&last.reason)))
+}
+
+/// The phase of an instance as one line of German for its tile.
+pub fn status(i: &Game, preparing: Option<u8>) -> String {
+    if i.stopping {
+        return tr("Wird gestoppt…");
+    }
+    let hint = i.hint;
+    if let Some(fault) = hint.proxy
+        && matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })
+    {
+        return proxy_status(fault);
+    }
+    if hint.link_lost && i.phase.is_running() {
+        return link_status();
+    }
+    match &i.phase {
+        Phase::Stopped => tr("Gestoppt"),
+        Phase::Starting { .. } if preparing.is_some() && i.memory_wait.is_none() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
+        Phase::Restarting { attempt, of } => restart_status(*attempt, *of),
+        Phase::Starting { .. } if i.memory_wait.is_some() => tr("Wartet auf Arbeitsspeicher"),
+        Phase::Starting { place, total } if *total > 1 && *place > 0 => trf("Wartet auf Start (%lld von %lld)", &[place, total]),
+        Phase::Starting { .. } => tr("Startet…"),
+        Phase::Plain => tr("Läuft · ohne Vorschau"),
+        Phase::Menu => tr("Im Hauptmenü"),
+        Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &crate::core::settings::active().reconnect.max_attempts]),
+        Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
+        Phase::Connecting { server } => trf("Verbindet mit %@…", &[server]),
+        Phase::Queue { .. } => tr("In der Warteschlange"),
+        Phase::Playing { server, .. } if server.is_empty() => tr("Spielt"),
+        Phase::Playing { server, .. } => trf("Auf %@", &[server]),
+        Phase::Disconnected { reason, .. } if reason.is_empty() => tr("Getrennt"),
+        Phase::Disconnected { reason, .. } => trf("Getrennt · %@", &[reason]),
+        Phase::Dead { .. } => tr("Gestorben"),
+        Phase::Crashed { .. } => tr("Abgestürzt"),
+        Phase::Banned { reason, .. } => banned_status(reason),
+        Phase::LoginNeeded => tr("Anmeldung nötig"),
+        Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
+        Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
+        Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -31,7 +31,9 @@ use crate::core::phone;
 use crate::core::settings;
 use crate::core::store::{self, Recovery};
 use crate::core::{adopt, content, drive, install, ipc, net, online};
+use crate::runner::{self, Backend};
 
+pub use crate::app::model::{status, stopped_ban};
 pub use crate::app::reduce::solo_account;
 
 const COALESCE: Duration = Duration::from_millis(40);
@@ -40,352 +42,13 @@ const STAGGER_STEP: Duration = Duration::from_millis(100);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
 const TRASH_KEPT: Duration = Duration::from_secs(600);
 
-enum PreviewJob {
-    Read(String, PathBuf),
-    Release(String),
-}
+/// What the fleet reports back to the UI thread, with GPU images.
+pub type Update = runner::Update<Arc<RenderImage>>;
 
-/// What the fleet reports back to the UI thread.
-pub enum Update {
-    Preparing { batch: String, percent: u8 },
-    /// The game is installed; the accounts of `batch` wait in line to start.
-    Prepared { batch: String },
-    Launched { key: String, plain: bool },
-    Failed { key: String, reason: String, login: bool, offline: bool },
-    /// Whether the connection came back (`true`) or is gone.
-    Reach { online: bool },
-    Ipc(Event),
-    Exited { key: String, code: Option<i32> },
-    Preview { key: String, seq: u32, image: Arc<RenderImage> },
-    Seed { key: String, phase: Phase, attempts: u32 },
-    /// Whether the saved sign-in of an account still works, from a token refresh.
-    SignIn { account: uuid::Uuid, valid: bool },
-    /// The saved still of an instance, read from the cache.
-    Still { key: String, image: Arc<RenderImage> },
-    /// The skin face of an account.
-    Face { account: uuid::Uuid, image: Arc<RenderImage> },
-    /// What the check of an account's proxy found after a connection failure; `None` when it works.
-    ProxyChecked { key: String, fault: Option<Fault> },
-}
-
-/// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
-pub trait Backend: Send + Sync {
-    /// Starts `accounts` of `target` one after another until `cancel` is set.
-    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>);
-    /// Asks the instances to quit and ends them after a grace period.
-    fn stop(&self, keys: Vec<String>);
-    /// Sends a message to an instance's companion mod.
-    fn send(&self, key: &str, message: ToMod);
-    /// Reads the newest preview frame from `path` and reports it.
-    fn read_preview(&self, key: String, path: PathBuf);
-    /// Closes the kept preview file of `key` after its game ended.
-    fn release_preview(&self, key: String);
-    /// Stops every instance and waits for them, at quit.
-    fn quit(&self);
-    /// Refuses new starts and lets the running games be, at a quit that keeps them for the next start.
-    fn leave(&self) {}
-    /// Learns the instances the model holds, by key and account name.
-    fn known(&self, _instances: Vec<(String, String)>) {}
-    /// Refreshes the sign-in of `accounts` one after another and reports each that works or needs a new sign-in.
-    fn refresh(&self, _accounts: Vec<Account>) {}
-    /// Checks the proxy `url` of instance `key` and reports the result.
-    fn check_proxy(&self, _key: String, _url: String) {}
-    /// The games an earlier manager launched that still run; only the first call returns them.
-    fn adopted(&self) -> Vec<fleet::Adoption> {
-        Vec::new()
+impl runner::Pixels for Arc<RenderImage> {
+    fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
+        render_image(width, height, rgba)
     }
-    /// Lets the adopted games that got a tile talk to the manager again and stops tracking the rest, which keep running.
-    fn settle(&self, _placed: &[String], _dropped: &[String]) {}
-}
-
-struct Real {
-    fleet: Arc<Fleet>,
-    out: async_channel::Sender<Update>,
-    watch: Arc<Mutex<HashSet<String>>>,
-    owners: Arc<Mutex<HashMap<String, u64>>>,
-    runs: AtomicU64,
-    sends: mpsc::Sender<(String, ToMod)>,
-    previews: mpsc::Sender<PreviewJob>,
-    refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
-    checking: Arc<Mutex<HashSet<String>>>,
-    adopted: Mutex<Vec<fleet::Adoption>>,
-}
-
-impl Real {
-    fn new(out: async_channel::Sender<Update>) -> anyhow::Result<Self> {
-        crate::core::fleet::scrub_crash_files();
-        let (fleet, events, adopted) = if adopt::is_manager() {
-            Fleet::manager()?
-        } else {
-            let (fleet, events) = Fleet::new()?;
-            (fleet, events, Vec::new())
-        };
-        let fleet = Arc::new(fleet);
-        let reach = out.clone();
-        online::subscribe(move |up| {
-            let _ = reach.send_blocking(Update::Reach { online: up });
-        });
-        let forward = out.clone();
-        let loading = Arc::clone(&fleet);
-        std::thread::Builder::new().name("fleet-events".into()).spawn(move || {
-            while let Ok(event) = events.recv() {
-                if let Event::Message { instance, message: FromMod::State { .. } } = &event {
-                    loading.loaded(instance);
-                }
-                if forward.send_blocking(Update::Ipc(event)).is_err() {
-                    return;
-                }
-            }
-        })?;
-        let (previews, wanted) = mpsc::channel::<PreviewJob>();
-        let frames = out.clone();
-        std::thread::Builder::new().name("previews".into()).spawn(move || {
-            let mut reader = ipc::PreviewReader::default();
-            let mut changes = ipc::PreviewChanges::default();
-            while let Ok(first) = wanted.recv() {
-                let mut batch: HashMap<String, PathBuf> = HashMap::new();
-                for job in std::iter::once(first).chain(wanted.try_iter()) {
-                    match job {
-                        PreviewJob::Read(key, path) => {
-                            batch.insert(key, path);
-                        }
-                        PreviewJob::Release(key) => {
-                            batch.remove(&key);
-                            reader.release(&key);
-                        }
-                    }
-                }
-                for (key, path) in batch {
-                    let Some(preview) = reader.read(&key, &path) else { continue };
-                    if !changes.changed(&key, &preview) {
-                        continue;
-                    }
-                    let Some(image) = render_image(preview.width, preview.height, preview.rgba) else { continue };
-                    if frames.send_blocking(Update::Preview { key, seq: preview.seq, image }).is_err() {
-                        return;
-                    }
-                }
-            }
-        })?;
-        let watch: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(adopted.iter().map(|a| a.key.clone()).collect()));
-        let (watching, exits, exiting) = (Arc::clone(&watch), out.clone(), Arc::clone(&fleet));
-        std::thread::Builder::new().name("fleet-exits".into()).spawn(move || {
-            loop {
-                std::thread::sleep(EXIT_POLL);
-                let keys: Vec<String> = lock(&watching).iter().cloned().collect();
-                for key in keys {
-                    if let Some(code) = exiting.exit_code(&key) {
-                        lock(&watching).remove(&key);
-                        if exits.send_blocking(Update::Exited { key, code }).is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        })?;
-        let (sends, outgoing) = mpsc::channel::<(String, ToMod)>();
-        let sender = Arc::clone(&fleet);
-        std::thread::Builder::new().name("fleet-send".into()).spawn(move || {
-            while let Ok((key, message)) = outgoing.recv() {
-                let _ = sender.send(&key, &message);
-            }
-        })?;
-        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted) })
-    }
-}
-
-impl Backend for Real {
-    fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>) {
-        let (fleet, out, watch, owners) = (Arc::clone(&self.fleet), self.out.clone(), Arc::clone(&self.watch), Arc::clone(&self.owners));
-        let owner = target.owner();
-        let parallel = target.batch.as_ref().map_or(0, |b| b.launch_parallel);
-        let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
-        {
-            let mut owners = lock(&owners);
-            for account in &accounts {
-                owners.insert(target.key(account.id), run);
-            }
-        }
-        let _ = std::thread::Builder::new().name("fleet-start".into()).spawn(move || {
-            let mine = |key: &str| lock(&owners).get(key) == Some(&run);
-            let release = |key: &str| {
-                if !lock(&owners).get(key).is_some_and(|owner| *owner != run) {
-                    fleet.give_up(key);
-                }
-            };
-            let gone = std::cell::OnceCell::new();
-            let cut_off = |e: &anyhow::Error, account: &Account| account.proxy.is_none() && net::no_connection(e) && *gone.get_or_init(|| !online::reachable());
-            let fail_all = |e: anyhow::Error| {
-                let reason = format!("{e:#}");
-                for account in &accounts {
-                    let key = target.key(account.id);
-                    if mine(&key) {
-                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false, offline: cut_off(&e, account) });
-                    }
-                }
-            };
-            let last = Mutex::new(u8::MAX);
-            let progress = |p: install::Progress| {
-                let percent = (p.done * 100).checked_div(p.total).unwrap_or(0).min(100) as u8;
-                let mut last = lock(&last);
-                if *last != percent {
-                    *last = percent;
-                    let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), percent });
-                }
-            };
-            let prepared = match fleet.prepare_launch(&target, &accounts, None, &progress) {
-                Ok(prepared) => prepared,
-                Err(e) => return fail_all(e),
-            };
-            let _ = out.send_blocking(Update::Prepared { batch: owner.clone() });
-            let keys: Vec<String> = accounts.iter().map(|a| target.key(a.id)).collect();
-            let queued: Vec<String> = keys.iter().filter(|k| mine(k)).cloned().collect();
-            fleet.queue(&queued);
-            for (account, key) in accounts.iter().zip(&keys) {
-                let stand_down = || cancel.load(Ordering::SeqCst) || !mine(key);
-                if !fleet.wait_turn(key, parallel, prepared.plain(), &stand_down) {
-                    if cancel.load(Ordering::SeqCst) {
-                        keys.iter().for_each(|k| release(k));
-                        return;
-                    }
-                    release(key);
-                    continue;
-                }
-                let update = match fleet.start_one(&prepared, account) {
-                    Ok(key) => {
-                        lock(&watch).insert(key.clone());
-                        if !lock(&owners).contains_key(&key) {
-                            fleet.stop_all(std::slice::from_ref(&key));
-                        } else if let Some(home) = home.filter(|_| prepared.plain()) {
-                            fleet.bring_home(&key, home);
-                        }
-                        Some(Update::Launched { key, plain: prepared.plain() })
-                    }
-                    Err(_) if fleet.is_running(key) => {
-                        release(key);
-                        Some(Update::Launched { key: key.clone(), plain: prepared.plain() })
-                    }
-                    Err(_) if !mine(key) => {
-                        release(key);
-                        None
-                    }
-                    Err(e) => {
-                        release(key);
-                        Some(Update::Failed { key: key.clone(), login: needs_sign_in(&e), offline: cut_off(&e, account), reason: format!("{e:#}") })
-                    }
-                };
-                if let Some(update) = update {
-                    let _ = out.send_blocking(update);
-                }
-            }
-        });
-    }
-
-    fn stop(&self, keys: Vec<String>) {
-        {
-            let mut owners = lock(&self.owners);
-            for key in &keys {
-                owners.remove(key);
-            }
-        }
-        let fleet = Arc::clone(&self.fleet);
-        let _ = std::thread::Builder::new().name("fleet-stop".into()).spawn(move || fleet.stop_all(&keys));
-    }
-
-    fn send(&self, key: &str, message: ToMod) {
-        let _ = self.sends.send((key.to_owned(), message));
-    }
-
-    fn read_preview(&self, key: String, path: PathBuf) {
-        let _ = self.previews.send(PreviewJob::Read(key, path));
-    }
-
-    fn release_preview(&self, key: String) {
-        let _ = self.previews.send(PreviewJob::Release(key));
-    }
-
-    fn refresh(&self, accounts: Vec<Account>) {
-        let todo: Vec<Account> = {
-            let mut busy = lock(&self.refreshing);
-            accounts.into_iter().filter(|a| a.kind == AccountKind::Microsoft && busy.insert(a.id)).collect()
-        };
-        if todo.is_empty() {
-            return;
-        }
-        let (out, busy) = (self.out.clone(), Arc::clone(&self.refreshing));
-        let _ = std::thread::Builder::new().name("token-refresh".into()).spawn(move || {
-            for account in todo {
-                let outcome = auth::refresh_account(&account);
-                lock(&busy).remove(&account.id);
-                let valid = match &outcome {
-                    Ok(()) => true,
-                    Err(e) if needs_sign_in(e) => false,
-                    Err(_) => continue,
-                };
-                if out.send_blocking(Update::SignIn { account: account.id, valid }).is_err() {
-                    return;
-                }
-            }
-        });
-    }
-
-    fn adopted(&self) -> Vec<fleet::Adoption> {
-        let (live, ended): (Vec<_>, Vec<_>) = std::mem::take(&mut *lock(&self.adopted)).into_iter().partition(|a| self.fleet.is_running(&a.key));
-        self.settle(&[], &ended.into_iter().map(|a| a.key).collect::<Vec<_>>());
-        live
-    }
-
-    fn settle(&self, placed: &[String], dropped: &[String]) {
-        self.fleet.admit(placed);
-        self.fleet.release(dropped);
-        lock(&self.watch).retain(|k| !dropped.contains(k));
-    }
-
-    fn check_proxy(&self, key: String, url: String) {
-        if !lock(&self.checking).insert(key.clone()) {
-            return;
-        }
-        let (out, busy) = (self.out.clone(), Arc::clone(&self.checking));
-        let spawned = std::thread::Builder::new().name("proxy-check".into()).spawn(move || {
-            let fault = proxy::parse(&url).map_or(Some(Fault::Unreachable), |p| proxy::check(&p).err());
-            lock(&busy).remove(&key);
-            let _ = out.send_blocking(Update::ProxyChecked { key, fault });
-        });
-        if spawned.is_err() {
-            lock(&self.checking).clear();
-        }
-    }
-
-    fn quit(&self) {
-        self.fleet.close();
-        let until = Instant::now() + QUIT_WAIT;
-        while self.fleet.launching() && Instant::now() < until {
-            std::thread::sleep(STAGGER_STEP);
-        }
-        for _ in 0..3 {
-            let keys = self.fleet.running_keys();
-            if keys.is_empty() {
-                return;
-            }
-            self.fleet.stop_all(&keys);
-        }
-    }
-
-    fn leave(&self) {
-        self.fleet.close();
-        let until = Instant::now() + QUIT_WAIT;
-        while self.fleet.launching() && Instant::now() < until {
-            std::thread::sleep(STAGGER_STEP);
-        }
-    }
-}
-
-fn needs_sign_in(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.downcast_ref::<AuthError>() == Some(&AuthError::SignInAgain))
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Turns an RGBA frame into an image the GPU can draw.
@@ -398,17 +61,9 @@ pub fn render_image(width: u32, height: u32, mut rgba: Vec<u8>) -> Option<Arc<Re
 }
 
 struct Runtime {
-    backend: Arc<dyn Backend>,
-    cancel: HashMap<String, Vec<Arc<AtomicBool>>>,
-    shared_visible: Arc<Mutex<HashSet<String>>>,
-    history: Option<history::Writer>,
-    place: Option<Place>,
-    insets: HashMap<String, Insets>,
-    spread: Option<Rect>,
+    core: runner::Runtime,
     badge: usize,
     outbox: Option<phone::Outbox>,
-    /// Whether the games keep running when Manycraft quits now; true unless the user chose to end them, so a quit from outside keeps them.
-    keep_games: bool,
 }
 
 impl Global for Runtime {}
@@ -418,22 +73,18 @@ pub fn init(cx: &mut App) {
     let (out, updates) = async_channel::unbounded::<Update>();
     super::stills::init(out.clone(), cx);
     let shared_visible: Arc<Mutex<HashSet<String>>> = Arc::default();
-    let backend: Arc<dyn Backend> = if drive::on() && !drive::real() {
-        Arc::new(super::fake::Fake::new(out, Arc::clone(&shared_visible)))
-    } else {
-        match Real::new(out) {
-            Ok(real) => Arc::new(real),
-            Err(e) => {
-                let model = model::get(cx);
-                model.update(cx, |m, cx| {
-                    m.error = Some(format!("{e:#}"));
-                    cx.notify();
-                });
-                return;
-            }
+    let backend = match runner::backend(out, &shared_visible) {
+        Ok(backend) => backend,
+        Err(e) => {
+            let model = model::get(cx);
+            model.update(cx, |m, cx| {
+                m.error = Some(format!("{e:#}"));
+                cx.notify();
+            });
+            return;
         }
     };
-    cx.set_global(Runtime { backend, cancel: HashMap::new(), shared_visible, history: history::Writer::start().ok(), place: None, insets: HashMap::new(), spread: None, badge: 0, outbox: None, keep_games: true });
+    cx.set_global(Runtime { core: runner::Runtime::new(backend, shared_visible), badge: 0, outbox: None });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
         dispatch(AppEvent::Notice(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))), cx);
@@ -528,14 +179,10 @@ pub fn init(cx: &mut App) {
     cx.on_app_quit(|cx| {
         awake::set(false);
         if let Some(rt) = cx.try_global::<Runtime>() {
-            for cancel in rt.cancel.values().flatten() {
-                cancel.store(true, Ordering::SeqCst);
-            }
-            let (backend, keep) = (Arc::clone(&rt.backend), rt.keep_games);
-            let end = move |backend: &dyn Backend| if keep { backend.leave() } else { backend.quit() };
-            match std::thread::Builder::new().name("quit".into()).spawn(move || end(&*backend)) {
+            match rt.core.close() {
                 Ok(closing) => close_games(closing, cx),
-                Err(_) => end(&*rt.backend),
+                Err(_) if rt.core.keep_games => rt.core.backend.leave(),
+                Err(_) => rt.core.backend.quit(),
             }
         }
         async {}
@@ -609,7 +256,7 @@ fn runtime(cx: &mut App) -> Option<&mut Runtime> {
 }
 
 fn backend(cx: &App) -> Option<Arc<dyn Backend>> {
-    cx.try_global::<Runtime>().map(|rt| Arc::clone(&rt.backend))
+    cx.try_global::<Runtime>().map(|rt| Arc::clone(&rt.core.backend))
 }
 
 /// Hands `event` to the application core and carries out what it asks for.
@@ -632,8 +279,7 @@ fn dispatch_with(event: AppEvent, mut images: Vec<Option<Arc<RenderImage>>>, cx:
 }
 
 fn reduce_now(event: AppEvent, cx: &mut App) -> Vec<Effect> {
-    let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    let env = Env::new(Instant::now(), unix, uuid::Uuid::new_v4().as_u64_pair().0, settings::active(), cfg!(target_os = "windows") && !drive::on());
+    let env = runner::env();
     model::get(cx).update(cx, |m, cx| {
         let effects = reduce(&mut m.app, &env, event);
         match effects.iter().filter_map(|e| if let Effect::Redraw(r) = e { Some(*r) } else { None }).max() {
@@ -646,39 +292,17 @@ fn reduce_now(event: AppEvent, cx: &mut App) -> Vec<Effect> {
 }
 
 fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
+    let window = if matches!(effect, Effect::Start { .. }) { super::main_window::place(cx) } else { None };
+    let effect = match runtime(cx) {
+        Some(rt) => match rt.core.run(effect, window) {
+            Some(effect) => effect,
+            None => return,
+        },
+        None => effect,
+    };
     let backend = backend(cx);
     match effect {
-        Effect::Redraw(_) => {}
-        Effect::Send { key, message } => {
-            if let Some(backend) = backend {
-                backend.send(&key, message);
-            }
-        }
-        Effect::Start { owner, target, accounts } => {
-            let cancel = Arc::new(AtomicBool::new(false));
-            if let Some(rt) = runtime(cx) {
-                let runs = rt.cancel.entry(owner).or_default();
-                runs.retain(|c| Arc::strong_count(c) > 1);
-                runs.push(Arc::clone(&cancel));
-            }
-            let home = manager_place(cx).map(|p| p.frame);
-            if let Some(backend) = backend {
-                backend.start(target, accounts, cancel, home);
-            }
-        }
-        Effect::CancelStarts(owner) => {
-            if let Some(runs) = runtime(cx).and_then(|rt| rt.cancel.remove(&owner)) {
-                for cancel in runs {
-                    cancel.store(true, Ordering::SeqCst);
-                }
-            }
-        }
         Effect::CheckFit { count, memory_mb } => warn_if_too_big(count, memory_mb, cx),
-        Effect::Stop(keys) => {
-            if let Some(backend) = backend {
-                backend.stop(keys);
-            }
-        }
         Effect::Stopped(keys) => {
             let name = match keys.as_slice() {
                 [one] => model::get(cx).read(cx).games.get(one).map(|g| g.name.clone()),
@@ -687,22 +311,6 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
         }
         Effect::ReadMemory => read_memory(cx),
-        Effect::ReadPreview { key, path } => {
-            if let Some(backend) = backend {
-                backend.read_preview(key, path);
-            }
-        }
-        Effect::ReleasePreview(key) => {
-            if let Some(backend) = backend {
-                backend.release_preview(key);
-            }
-        }
-        Effect::CheckProxy { key, url } => {
-            if let Some(backend) = backend {
-                backend.check_proxy(key, url);
-            }
-        }
-        Effect::SuspectOffline => online::suspect(),
         Effect::NetworkBack => super::remote::network_back(cx),
         Effect::After { delay, event } => {
             cx.spawn(async move |cx| {
@@ -710,11 +318,6 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
                 cx.update(|cx| dispatch(*event, cx));
             })
             .detach();
-        }
-        Effect::SaveHistory { path, log } => {
-            if let Some(writer) = cx.try_global::<Runtime>().and_then(|rt| rt.history.as_ref()) {
-                writer.save(path, log);
-            }
         }
         Effect::ShowFrame { key, image, still } => {
             let Some(image) = images.get_mut(image).and_then(Option::take) else { return };
@@ -742,11 +345,6 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
                 game_window::tint(pid, account);
             }
         }
-        Effect::Settle { placed, dropped } => {
-            if let Some(backend) = backend {
-                backend.settle(&placed, &dropped);
-            }
-        }
         Effect::Place(key) => place_new(&key, cx),
         Effect::Notify { tag, title, body } => {
             if super::main_window::is_active(cx) && model::get(cx).read(cx).playing.is_none() {
@@ -763,11 +361,11 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
         }
         Effect::Show { key, before, skipped, unshown } => show(&key, before.as_deref(), skipped, *unshown, cx),
         Effect::HideManager => {
-            let place = cx.try_global::<Runtime>().and_then(|rt| rt.place);
+            let place = cx.try_global::<Runtime>().and_then(|rt| rt.core.place);
             super::main_window::hide(place, cx);
         }
         Effect::ShowManager => {
-            let place = cx.try_global::<Runtime>().and_then(|rt| rt.place);
+            let place = cx.try_global::<Runtime>().and_then(|rt| rt.core.place);
             super::main_window::show(place, cx);
             spread(cx);
         }
@@ -792,36 +390,18 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             };
             super::stills::load(bare, faceless, cx);
         }
-        Effect::Known(known) => {
-            if let Some(backend) = backend {
-                backend.known(known);
-            }
-        }
-        Effect::Refresh(accounts) => {
-            if let Some(backend) = backend {
-                backend.refresh(accounts);
-            }
-        }
         Effect::ToTray { explain: false } => super::main_window::stow(cx),
         Effect::ToTray { explain: true } => explain_tray(cx),
-        Effect::RememberTrayExplained => {
-            settings::set(settings::Settings { tray_explained: true, ..settings::active().clone() });
-            cx.background_spawn(async {
-                if let Err(e) = settings::persist() {
-                    eprintln!("settings: {e:#}");
-                }
-            })
-            .detach();
-        }
         Effect::AskQuit { running } => ask_quit(running, cx),
         Effect::Quit { keep } => {
             if let Some(rt) = runtime(cx) {
-                rt.keep_games = keep;
+                rt.core.keep_games = keep;
             }
             cx.quit();
         }
         Effect::Trace(text) => drive::note(text),
         Effect::Log(text) => eprintln!("{text}"),
+        _ => {}
     }
 }
 
@@ -866,82 +446,18 @@ pub fn reload_keeping_error(cx: &mut App) {
 }
 
 fn reload_with(cx: &mut App, keep: bool) {
-    let task = cx.background_spawn(async {
-        let moved = crate::core::migrate::run();
-        let (accounts, batches, instances) = (account::load(), batch::load_all(), instance::load_all());
-        let logs = match (&batches, &instances) {
-            (Ok(batches), Ok(instances)) => saved_history(batches, instances),
-            _ => Vec::new(),
-        };
-        let loaded = batches.and_then(|b| instances.map(|i| (b, i)));
-        (accounts, loaded, logs, moved.problems, store::take_recovered())
-    });
+    let task = cx.background_spawn(async { runner::read_data() });
     cx.spawn(async move |cx| {
-        let (accounts, batches, logs, problems, recovered) = task.await;
+        let read = task.await;
         cx.update(|cx| {
-            let data = match (accounts, batches) {
-                (Ok(accounts), Ok((batches, instances))) => Ok((accounts, batches, instances)),
-                (Err(e), _) | (_, Err(e)) => Err(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))),
-            };
             let adopted = match backend(cx) {
-                Some(backend) if data.is_ok() || model::get(cx).read(cx).loaded => backend.adopted(),
+                Some(backend) if read.data.is_ok() || model::get(cx).read(cx).loaded => backend.adopted(),
                 _ => Vec::new(),
             };
-            let recovered = recovered_notice(&recovered);
-            dispatch(AppEvent::Loaded(Box::new(Loaded { data, logs, problems, recovered, keep, adopted })), cx);
+            dispatch(AppEvent::Loaded(Box::new(read.loaded(keep, adopted))), cx);
         });
     })
     .detach();
-}
-
-fn recovered_notice(found: &[(PathBuf, Recovery)]) -> Option<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for (path, recovery) in found {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let count = found.iter().filter(|(p, r)| r == recovery && p.file_name() == path.file_name()).count();
-        let line = match (name.as_str(), recovery, count) {
-            ("accounts.json", Recovery::Restored, _) => tr("Die Accounts waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
-            ("accounts.json", Recovery::Lost, _) => tr("Die Accounts waren beschädigt und ließen sich nicht wiederherstellen. Füg sie neu hinzu; eine Kopie liegt neben der Datei (accounts.json.damaged)."),
-            ("settings.json", Recovery::Restored, _) => tr("Die Einstellungen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
-            ("settings.json", Recovery::Lost, _) => tr("Die Einstellungen waren beschädigt und ließen sich nicht wiederherstellen. Es gelten die Standardwerte; eine Kopie liegt neben der Datei (settings.json.damaged)."),
-            ("batch.json", Recovery::Restored, 1) => tr("Ein Batch war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
-            ("batch.json", Recovery::Restored, n) => trf("%lld Batches waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
-            ("batch.json", Recovery::Lost, 1) => tr("Ein Batch war beschädigt und ließ sich nicht wiederherstellen. Leg ihn neu an; eine Kopie liegt in seinem Ordner (batch.json.damaged)."),
-            ("batch.json", Recovery::Lost, n) => trf("%lld Batches waren beschädigt und ließen sich nicht wiederherstellen. Leg sie neu an; Kopien liegen in ihren Ordnern (batch.json.damaged).", &[&n]),
-            ("instance.json", Recovery::Restored, 1) => tr("Eine Instanz war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht."),
-            ("instance.json", Recovery::Restored, n) => trf("%lld Instanzen waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&n]),
-            ("instance.json", Recovery::Lost, 1) => tr("Eine Instanz war beschädigt und ließ sich nicht wiederherstellen. Ihre Mods und Welten bleiben in ihrem Ordner, dazu eine Kopie (instance.json.damaged)."),
-            ("instance.json", Recovery::Lost, n) => trf("%lld Instanzen waren beschädigt und ließen sich nicht wiederherstellen. Ihre Mods und Welten bleiben in ihren Ordnern, dazu je eine Kopie (instance.json.damaged).", &[&n]),
-            (_, Recovery::Restored, _) => trf("%@ war beschädigt und wurde aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&name]),
-            (_, Recovery::Lost, _) => trf("%@ war beschädigt und ließ sich nicht wiederherstellen. Eine Kopie liegt daneben (%@.damaged).", &[&name, &name]),
-        };
-        if !lines.contains(&line) {
-            lines.push(line);
-        }
-    }
-    if lines.len() < 2 {
-        return lines.pop();
-    }
-    let restored = found.iter().filter(|(_, r)| *r == Recovery::Restored).count();
-    Some(match (restored, found.len()) {
-        (r, all) if r == all => trf("%lld Dateien waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.", &[&all]),
-        (0, all) => trf("%lld Dateien waren beschädigt und ließen sich nicht wiederherstellen. Kopien liegen jeweils daneben (Endung .damaged).", &[&all]),
-        (r, all) => trf("%lld Dateien waren beschädigt: %lld aus der Sicherung wiederhergestellt, die übrigen nicht. Kopien liegen jeweils daneben (Endung .damaged).", &[&all, &r]),
-    })
-}
-
-fn saved_history(batches: &[Batch], instances: &[Instance]) -> Vec<(String, history::Log)> {
-    let mut logs = Vec::new();
-    for batch in batches {
-        let Some(instance) = instances.iter().find(|i| i.id == batch.instance_id) else { continue };
-        for id in &batch.accounts {
-            let log = history::load(&history::path(instance, *id));
-            if !log.is_empty() {
-                logs.push((fleet::instance_key(batch, *id), log));
-            }
-        }
-    }
-    logs
 }
 
 /// Plays `instance` as another start of Manycraft or a shortcut asked: with `account`, else the one that played it last. Waits for the first load when the data is not there yet, and shows the game as soon as it can be shown.
@@ -1073,27 +589,18 @@ pub fn clear_whispers(batch: Option<&str>, cx: &mut App) {
 
 /// Shows game `key` in the manager's place, following the game shown so far, `before`, or the manager window.
 fn show(key: &str, before: Option<&str>, skipped: Option<String>, unshown: Unshown, cx: &mut App) {
-    let place = if before.is_some() { follow_shown(before, cx) } else { manager_place(cx) };
-    let Some(place) = place else {
-        dispatch(AppEvent::NotShown(Box::new(unshown)), cx);
-        return;
+    let (pid, before_pid) = {
+        let pids = &model::get(cx).read(cx).session.pids;
+        (pids.get(key).copied(), before.and_then(|b| pids.get(b).copied()))
     };
-    let pid = model::get(cx).read(cx).session.pids.get(key).copied();
-    let Some(rt) = runtime(cx) else { return };
-    rt.place = Some(place);
     if let Some(pid) = pid {
         native::allow_foreground(pid);
-        if let Some(seen) = game_window::seen(pid).filter(|s| s.mode.is_normal() && !drive::on()) {
-            rt.insets.insert(key.to_owned(), seen.insets);
-        }
     }
-    let client = place::client_in(place.frame, rt.insets.get(key).copied().unwrap_or_default());
-    drive::note(format!("play {key}"));
-    if let Some(backend) = backend(cx) {
-        backend.send(key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
-        if let Some(skipped) = skipped {
-            backend.send(&skipped, ToMod::Hide);
-        }
+    let window = if before.is_none() { super::main_window::place(cx) } else { None };
+    let Some(rt) = runtime(cx) else { return };
+    if !rt.core.show(key, pid, before, before_pid, skipped, window) {
+        dispatch(AppEvent::NotShown(Box::new(unshown)), cx);
+        return;
     }
     spread(cx);
 }
@@ -1103,71 +610,37 @@ pub fn show_grid(cx: &mut App) {
     dispatch(AppEvent::ShowGrid, cx);
 }
 
-/// The place where the manager window is now, kept on a live monitor; the last place while it is minimized.
 fn manager_place(cx: &mut App) -> Option<Place> {
-    let before = cx.try_global::<Runtime>().and_then(|rt| rt.place);
-    let works = game_window::work_areas();
-    let place = match super::main_window::place(cx) {
-        Some((frame, mode)) => place::follow(before, frame, mode, &works),
-        None => before?,
-    };
-    Some(Place { frame: place::clamp(place.frame, &works), ..place })
+    let window = super::main_window::place(cx);
+    cx.try_global::<Runtime>()?.core.manager_place(window)
 }
 
-/// The place after the game `playing`, wherever the player moved, resized, maximized or fullscreened it.
 fn follow_shown(playing: Option<&str>, cx: &mut App) -> Option<Place> {
-    let pid = playing.and_then(|k| model::get(cx).read(cx).session.pids.get(k).copied()).filter(|_| !drive::on());
-    let works = game_window::work_areas();
-    let rt = runtime(cx)?;
-    if let Some(seen) = pid.and_then(game_window::seen).filter(|s| s.visible) {
-        if let Some(key) = playing.filter(|_| seen.mode.is_normal()) {
-            rt.insets.insert(key.to_owned(), seen.insets);
-        }
-        rt.place = Some(place::follow(rt.place, seen.frame, seen.mode, &works));
-    }
-    if let Some(p) = &mut rt.place {
-        p.frame = place::clamp(p.frame, &works);
-    }
-    rt.place
+    let pid = playing.and_then(|k| model::get(cx).read(cx).session.pids.get(k).copied());
+    runtime(cx)?.core.follow_shown(playing, pid)
 }
 
-/// Moves the hidden games to the place once per change, so that a swap only shows and hides.
 fn spread(cx: &mut App) {
-    if drive::on() {
-        return;
-    }
     let (playing, pids) = {
         let m = model::get(cx).read(cx);
         (m.playing.clone(), m.session.pids.clone())
     };
-    let Some(rt) = runtime(cx) else { return };
-    let Some(place) = rt.place.filter(|p| rt.spread != Some(p.frame)) else { return };
-    rt.spread = Some(place.frame);
-    for (key, pid) in &pids {
-        if playing.as_ref() != Some(key) {
-            game_window::place_hidden(*pid, place.frame);
-        }
+    if let Some(rt) = runtime(cx) {
+        rt.core.spread(playing.as_deref(), &pids);
     }
 }
 
-/// Puts a game that came up hidden at the place as soon as its window exists, so that showing it later does not resize it.
 fn place_new(key: &str, cx: &mut App) {
-    let Some(pid) = model::get(cx).read(cx).session.pids.get(key).copied() else { return };
-    let Some(seen) = game_window::seen(pid).filter(|_| !drive::on()) else { return };
-    let place = match cx.try_global::<Runtime>().and_then(|rt| rt.place) {
-        Some(place) => Some(place),
-        None => manager_place(cx),
+    let (pid, playing) = {
+        let m = model::get(cx).read(cx);
+        (m.session.pids.get(key).copied(), m.playing.clone())
     };
-    let playing = model::get(cx).read(cx).playing.clone();
-    if let Some(rt) = runtime(cx)
-        && seen.mode.is_normal()
-    {
-        rt.insets.insert(key.to_owned(), seen.insets);
+    let Some(pid) = pid else { return };
+    let window = if cx.try_global::<Runtime>().is_some_and(|rt| rt.core.place.is_none()) { super::main_window::place(cx) } else { None };
+    let Some(rt) = runtime(cx) else { return };
+    if rt.core.place_new(key, pid, playing.as_deref(), window) {
+        dispatch(AppEvent::Placed { key: key.to_owned() }, cx);
     }
-    if let Some(place) = place.filter(|_| playing.as_deref() != Some(key)) {
-        game_window::place_hidden(pid, place.frame);
-    }
-    dispatch(AppEvent::Placed { key: key.to_owned() }, cx);
 }
 
 /// Tells the runtime which tiles are on screen, so their previews update at full rate.
@@ -1176,50 +649,13 @@ pub fn set_visible(keys: HashSet<String>, cx: &mut App) {
     if model::get(cx).read(cx).session.visible == keys {
         return;
     }
-    *lock(&rt.shared_visible) = keys.clone();
+    rt.core.share_visible(keys.clone());
     dispatch(AppEvent::Visible(keys), cx);
 }
 
 fn apply_all(updates: Vec<Update>, cx: &mut App) {
-    let frames_only = updates.iter().all(|u| matches!(u, Update::Preview { .. }));
-    let mut images = Vec::new();
-    let mut reports = Vec::new();
-    let mut faces = Vec::new();
-    for update in updates {
-        reports.push(match update {
-            Update::Face { account, image } => {
-                faces.push((account, image));
-                continue;
-            }
-            Update::Preview { key, seq, image } => {
-                images.push(Some(image));
-                Report::Frame { key, seq, image: images.len() - 1 }
-            }
-            Update::Still { key, image } => {
-                images.push(Some(image));
-                Report::Still { key, image: images.len() - 1 }
-            }
-            Update::Exited { key, code } => {
-                if let Some(rt) = runtime(cx) {
-                    rt.insets.remove(&key);
-                }
-                Report::Exited { key, code }
-            }
-            Update::Preparing { batch, percent } => Report::Preparing { batch, percent },
-            Update::Prepared { batch } => Report::Prepared { batch },
-            Update::Launched { key, plain } => Report::Launched { key, plain },
-            Update::Failed { key, reason, login, offline } => Report::Failed { key, reason, login, offline },
-            Update::Reach { online } => Report::Reach { online },
-            Update::Seed { key, phase, attempts } => Report::Seed { key, phase, attempts },
-            Update::SignIn { account, valid } => Report::SignIn { account, valid },
-            Update::ProxyChecked { key, fault } => Report::ProxyChecked { key, fault },
-            Update::Ipc(Event::Connected { instance, pid, .. }) => Report::Connected { key: instance, pid },
-            Update::Ipc(Event::Message { instance, message }) => Report::Mod { key: instance, message },
-            Update::Ipc(Event::Disconnected { instance }) => Report::LinkLost { key: instance },
-            Update::Ipc(Event::Reopen) => Report::Reopen,
-            Update::Ipc(Event::Play { instance, account }) => Report::PlayRequest { instance, account },
-        });
-    }
+    let Some(rt) = runtime(cx) else { return };
+    let runner::Reports { reports, images, faces, frames_only } = rt.core.reports(updates);
     if frames_only {
         return show_frames(reports, images, cx);
     }
@@ -1335,63 +771,14 @@ fn refresh_badge(cx: &mut App) {
     native::set_badge(count);
 }
 
-/// The ban that is still the latest event of a stopped instance, as its status line, so a stop does not hide it.
-pub fn stopped_ban(i: &Game, m: &Model) -> Option<String> {
-    if i.phase != Phase::Stopped || i.stopping {
-        return None;
-    }
-    let last = m.history.get(&i.key)?.back()?;
-    (last.kind == Kind::Banned).then(|| format!("{} · {}", tr("Gestoppt"), model::banned_status(&last.reason)))
-}
-
-/// The phase of an instance as one line of German for its tile.
-pub fn status(i: &Game, preparing: Option<u8>) -> String {
-    if i.stopping {
-        return tr("Wird gestoppt…");
-    }
-    let hint = i.hint;
-    if let Some(fault) = hint.proxy
-        && matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })
-    {
-        return model::proxy_status(fault);
-    }
-    if hint.link_lost && i.phase.is_running() {
-        return model::link_status();
-    }
-    match &i.phase {
-        Phase::Stopped => tr("Gestoppt"),
-        Phase::Starting { .. } if preparing.is_some() && i.memory_wait.is_none() => trf("Lädt Minecraft · %lld %%", &[&preparing.unwrap_or(0)]),
-        Phase::Restarting { attempt, of } => model::restart_status(*attempt, *of),
-        Phase::Starting { .. } if i.memory_wait.is_some() => tr("Wartet auf Arbeitsspeicher"),
-        Phase::Starting { place, total } if *total > 1 && *place > 0 => trf("Wartet auf Start (%lld von %lld)", &[place, total]),
-        Phase::Starting { .. } => tr("Startet…"),
-        Phase::Plain => tr("Läuft · ohne Vorschau"),
-        Phase::Menu => tr("Im Hauptmenü"),
-        Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &settings::active().reconnect.max_attempts]),
-        Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
-        Phase::Connecting { server } => trf("Verbindet mit %@…", &[server]),
-        Phase::Queue { .. } => tr("In der Warteschlange"),
-        Phase::Playing { server, .. } if server.is_empty() => tr("Spielt"),
-        Phase::Playing { server, .. } => trf("Auf %@", &[server]),
-        Phase::Disconnected { reason, .. } if reason.is_empty() => tr("Getrennt"),
-        Phase::Disconnected { reason, .. } => trf("Getrennt · %@", &[reason]),
-        Phase::Dead { .. } => tr("Gestorben"),
-        Phase::Crashed { .. } => tr("Abgestürzt"),
-        Phase::Banned { reason, .. } => model::banned_status(reason),
-        Phase::LoginNeeded => tr("Anmeldung nötig"),
-        Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
-        Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
-        Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use std::time::Instant;
 
-    use super::{AuthError, Game, Phase, needs_sign_in, render_image, status, stopped_ban};
+    use super::{AuthError, Game, Phase, render_image, status, stopped_ban};
+    use crate::runner::backend::needs_sign_in;
     use crate::app::event::Report;
     use crate::app::reduce::testing::{report, settings, setup, state};
     use crate::core::account::AccountKind;
@@ -1436,7 +823,8 @@ mod tests {
 
     #[test]
     fn recovery_notices_name_one_file_and_summarise_several() {
-        use super::{Recovery, recovered_notice};
+        use crate::core::store::Recovery;
+        use crate::runner::recovered_notice;
         let at = |file: &str, r: Recovery| (PathBuf::from("data").join(file), r);
         assert_eq!(recovered_notice(&[]), None);
         assert_eq!(recovered_notice(&[at("accounts.json", Recovery::Restored)]), Some(crate::core::i18n::tr("Die Accounts waren beschädigt und wurden aus der Sicherung wiederhergestellt. Die letzte Änderung fehlt vielleicht.")));
