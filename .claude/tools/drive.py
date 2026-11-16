@@ -378,10 +378,10 @@ def start(opts):
     inst = Instance(name)
     d = inst.dir
     os.utime(d)
-    for sub in ("home", "tmp", "bin", "shots"):
+    for sub in ("home", "tmp", "bin"):
         shutil.rmtree(d / sub, ignore_errors=True)
     for sub in ("home", "tmp", "bin", "shots"):
-        (d / sub).mkdir(parents=True)
+        (d / sub).mkdir(parents=True, exist_ok=True)
     shutil.copy2(target / EXE, inst.exe)
     if WIN and (target / "manycraft.pdb").exists():
         shutil.copy2(target / "manycraft.pdb", d / "bin" / "manycraft.pdb")
