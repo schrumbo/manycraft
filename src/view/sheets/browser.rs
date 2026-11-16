@@ -152,15 +152,13 @@ enum Enter {
     OpenPage,
     RunRow,
     RunPage,
-    Nothing,
 }
 
 fn enter_route(page: bool, command: bool) -> Enter {
     match (page, command) {
         (false, false) => Enter::OpenPage,
         (false, true) => Enter::RunRow,
-        (true, false) => Enter::RunPage,
-        (true, true) => Enter::Nothing,
+        (true, _) => Enter::RunPage,
     }
 }
 
@@ -566,16 +564,19 @@ fn enter_key(command: bool) -> String {
     }
 }
 
+fn run_hint(act: Act, modpack: bool, command: bool) -> String {
+    let key = enter_key(command);
+    match act {
+        Act::Install if modpack => trf("%@ fügt es als Instanz hinzu.", &[&key]),
+        Act::Install => trf("%@ fügt es hinzu.", &[&key]),
+        Act::Update => trf("%@ aktualisiert es.", &[&key]),
+        Act::Nothing => String::new(),
+    }
+}
+
 fn hint_of(title: &str, act: Act, modpack: bool) -> String {
     let opens = trf("%@ öffnet „%@“.", &[&enter_key(false), &title]);
-    let command = enter_key(true);
-    let run = match act {
-        Act::Install if modpack => trf("%@ fügt es als Instanz hinzu.", &[&command]),
-        Act::Install => trf("%@ fügt es hinzu.", &[&command]),
-        Act::Update => trf("%@ aktualisiert es.", &[&command]),
-        Act::Nothing => String::new(),
-    };
-    format!("{opens} {run}").trim().to_owned()
+    format!("{opens} {}", run_hint(act, modpack, true)).trim().to_owned()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -865,6 +866,10 @@ impl Flow {
                 return;
             }
         }
+        if debounce && self.page_open() {
+            let mut open = self.open;
+            open.set(None);
+        }
         let generation = {
             let mut c = core.write();
             c.generation += 1;
@@ -1072,18 +1077,23 @@ impl Flow {
         self.focus();
     }
 
-    fn enter(&self) {
-        match enter_route(self.page_open(), false) {
+    fn enter(&self, command: bool) {
+        match enter_route(self.page_open(), command) {
             Enter::OpenPage => self.open_selected(),
+            Enter::RunRow => self.act_selected(),
             Enter::RunPage => self.page_primary(),
-            Enter::RunRow | Enter::Nothing => {}
         }
+    }
+
+    fn other_field_typing(&self) -> bool {
+        let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+        field::typing() && focused != self.search
     }
 
     fn scroll_page(&self, lines: f32, pages: f32) {
         let mut body = self.body;
         let viewport = body.bounds.peek().map_or(0., |(_, viewport)| viewport.height);
-        let step = lines * project::LINE_STEP + pages * (viewport - project::LINE_STEP).max(project::LINE_STEP);
+        let step = lines * frame::LINE_STEP + pages * (viewport - frame::LINE_STEP).max(frame::LINE_STEP);
         body.scroll_to_y((body.position().y - step) as i32);
     }
 
@@ -1579,7 +1589,7 @@ impl Component for Browser {
         let mut column = rect().width(Size::fill()).spacing(space::XS).on_global_key_down({
             let flow = flow.clone();
             move |e: Event<KeyboardEventData>| {
-                if flow.store.ui.menu.peek().is_some() || *flow.store.ui.palette.peek() {
+                if flow.store.ui.menu.peek().is_some() || *flow.store.ui.palette.peek() || flow.other_field_typing() {
                     return;
                 }
                 if drive_rows(&flow, &e.key, e.modifiers) {
@@ -1648,7 +1658,7 @@ impl Component for Browser {
             .on_escape(move |_| esc.cancel())
             .on_enter(move |_| {
                 if field::typing() {
-                    enter.enter();
+                    enter.enter(false);
                 }
             })
     }
@@ -1685,8 +1695,8 @@ fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
             flow.step(i32::MAX);
             true
         }
-        Key::Named(NamedKey::Enter) if primary && enter_route(page, true) == Enter::RunRow => {
-            flow.act_selected();
+        Key::Named(NamedKey::Enter) if primary => {
+            flow.enter(true);
             true
         }
         Key::Character(c) if primary && c.eq_ignore_ascii_case("z") && flow.undoable() => {
@@ -2156,12 +2166,12 @@ impl Component for ResultRow {
             .on_press(move |_| click())
             .child(Face { pid: pid.clone(), url: hit.icon_url.clone() })
             .child(text)
-            .child(trail_view(&t, &self.flow, &press_hit, &trail, Some(ix)));
+            .child(trail_view(&t, &self.flow, &press_hit, &trail, Some(ix), None));
         row
     }
 }
 
-fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize>) -> Element {
+fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize>, hint: Option<String>) -> Element {
     let pid = hit.project_id.clone();
     let act = {
         let (flow, hit) = (flow.clone(), hit.clone());
@@ -2176,10 +2186,22 @@ fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize
     match trail {
         Trail::Busy { label, reason } => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).busy(true).disabled(Some(reason.clone()))).into_element(),
         Trail::Note(text) => row.child(line(t, text.clone(), font::CALLOUT, t.text3)).into_element(),
-        Trail::Install { label, blocked } => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).disabled(blocked.clone()).on_press(move |_| act())).into_element(),
+        Trail::Install { label, blocked } => {
+            let mut add = Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).disabled(blocked.clone()).on_press(move |_| act());
+            if let Some(hint) = hint {
+                add = add.tip(hint);
+            }
+            row.child(add).into_element()
+        }
         Trail::Present { update, remove } => {
             let first: Element = match update {
-                Some(Refresh { busy, blocked }) => Button::new(format!("browser.act.{pid}"), tr("Aktualisieren")).primary().glyph(Icon::Refresh).busy(*busy).disabled(blocked.clone().or_else(|| busy.then(|| tr("Wird gerade geändert.")))).on_press(move |_| act()).into_element(),
+                Some(Refresh { busy, blocked }) => {
+                    let mut update = Button::new(format!("browser.act.{pid}"), tr("Aktualisieren")).primary().glyph(Icon::Refresh).busy(*busy).disabled(blocked.clone().or_else(|| busy.then(|| tr("Wird gerade geändert.")))).on_press(move |_| act());
+                    if let Some(hint) = hint {
+                        update = update.tip(hint);
+                    }
+                    update.into_element()
+                }
                 None => status_line(t, Icon::Check, t.success_text, tr("Hinzugefügt")),
             };
             let (flow, id) = (flow.clone(), pid.clone());
@@ -2202,7 +2224,7 @@ mod tests {
         assert_eq!(enter_route(false, false), Enter::OpenPage);
         assert_eq!(enter_route(false, true), Enter::RunRow);
         assert_eq!(enter_route(true, false), Enter::RunPage);
-        assert_eq!(enter_route(true, true), Enter::Nothing);
+        assert_eq!(enter_route(true, true), Enter::RunPage);
     }
 
     #[test]

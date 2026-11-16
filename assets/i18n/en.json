@@ -1070,7 +1070,7 @@
   "Gespeichert um %@": "Saved at %@",
   "Zurück zu den Ergebnissen · %@": "Back to results · %@",
   "und %lld ältere": "and %lld older",
-  "Neueste passende": "Newest that fits",
+  "Neueste passende": "Newest match",
   "„%@“ ist gerade in Benutzung. Schließe das Spiel und versuche es noch einmal.": "“%@” is in use right now. Close the game and try again.",
   "Eine andere Änderung läuft noch.": "Another change is still running.",
   "„%@“ wird gerade geändert.": "“%@” is being changed right now.",
@@ -1795,5 +1795,7 @@
   "Noch keine Accounts.": "No accounts yet.",
   "Abschnitt": "Section",
   "Wird hinzugefügt": "Will be added",
-  "Wird mit hinzugefügt": "Added along with it"
+  "Wird mit hinzugefügt": "Added along with it",
+  "Auf Modrinth ansehen": "View on Modrinth",
+  "Bild ließ sich nicht laden.": "The image didn't load."
 }

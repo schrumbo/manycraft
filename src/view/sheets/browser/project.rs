@@ -9,7 +9,7 @@ use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
-use super::{AUTHOR_MAX, Face, Facts, Flow, saved_when, status_line, trail_of, trail_view};
+use super::{Face, Facts, Flow, act_of, run_hint, saved_when, status_line, trail_of, trail_view};
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::modrinth::{self, Details, Hit, Kind, Version};
 use crate::core::packs;
@@ -24,17 +24,15 @@ use crate::view::kit::button::Button;
 use crate::view::kit::markdown::{self, Block};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, hairline, line, para, strong};
+use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{off_ui, open_external, use_theme};
 use crate::view::sheets::instance::{Load, problem_view};
 use crate::view::theme::{Theme, control, faces, font, frame, iconsize, space};
 
-pub(super) const LINE_STEP: f32 = 40.;
-const SHOT_HEIGHT: f32 = 270.;
-const SHOT_EDGE: u32 = 1280;
+const SHOT_BOX: (u32, u32) = (1024, 576);
 const SHOTS_AT_ONCE: usize = 2;
 const MAX_VERSIONS: usize = 60;
 const GAME_VERSIONS_SHOWN: usize = 4;
-const VERSION_ROW: f32 = 44.;
 const SKELETON_LINES: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -149,9 +147,12 @@ impl Drop for ShotSlot {
 
 fn decode_shot(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
     let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
-    let img = if img.width().max(img.height()) > SHOT_EDGE { img.thumbnail(SHOT_EDGE, SHOT_EDGE) } else { img };
-    let img = img.to_rgba8();
+    let img = fitted(img).to_rgba8();
     Some((img.width(), img.height(), img.into_raw()))
+}
+
+fn fitted(img: image::DynamicImage) -> image::DynamicImage {
+    if img.width() > SHOT_BOX.0 || img.height() > SHOT_BOX.1 { img.thumbnail(SHOT_BOX.0, SHOT_BOX.1) } else { img }
 }
 
 #[derive(Clone)]
@@ -179,10 +180,13 @@ impl Pg {
             epoch.set(next);
             next
         };
-        let version = self.flow.live.peek().version.clone();
-        let (id, kind) = (self.hit.project_id.clone(), self.kind);
+        self.load_details(generation);
+        self.load_versions(generation);
+    }
+
+    fn load_details(&self, generation: u64) {
+        let asked = self.hit.project_id.clone();
         let page = self.clone();
-        let asked = id.clone();
         spawn_in_window(async move {
             let result = off_ui(move || {
                 catalog::details(&asked).map(|(details, saved)| {
@@ -205,9 +209,13 @@ impl Pg {
                 page.shots();
             }
         });
+    }
+
+    fn load_versions(&self, generation: u64) {
+        let version = self.flow.live.peek().version.clone();
+        let (asked, kind) = (self.hit.project_id.clone(), self.kind);
         let page = self.clone();
         spawn_in_window(async move {
-            let asked = id.clone();
             let result = off_ui(move || catalog::versions(&asked, kind, &version)).await;
             if !page.current(generation) {
                 return;
@@ -238,12 +246,18 @@ impl Pg {
     }
 
     fn retry(&self) {
-        let (mut details, mut versions, mut titles) = (self.details, self.versions, self.titles);
-        details.set(Load::Loading);
-        versions.set(Load::Loading);
-        titles.set(Rc::new(HashMap::new()));
-        self.fetch();
-        self.flow.focus();
+        let generation = *self.epoch.peek();
+        let (mut details, mut versions, mut titles, mut shots) = (self.details, self.versions, self.titles, self.shots);
+        if matches!(*details.peek(), Load::Failed(_)) {
+            details.set(Load::Loading);
+            shots.set(HashMap::new());
+            self.load_details(generation);
+        }
+        if matches!(*versions.peek(), Load::Failed(_)) {
+            versions.set(Load::Loading);
+            titles.set(Rc::new(HashMap::new()));
+            self.load_versions(generation);
+        }
     }
 
     fn show(&self, section: Section) {
@@ -254,7 +268,6 @@ impl Pg {
         if section == Section::Gallery {
             self.shots();
         }
-        self.flow.focus();
     }
 
     fn shots(&self) {
@@ -368,6 +381,7 @@ impl Component for ProjectPage {
         }
         let heading = rect().width(Size::flex(1.)).spacing(space::XXS).child(title_row).child(caption(&t, facts.join(" · ")).width(Size::fill()));
         let trail = trail_of(hit, &self.facts);
+        let hint = Some(run_hint(act_of(hit, &self.facts), self.kind == Kind::Modpack, false)).filter(|h| !h.is_empty());
         let header = rect()
             .width(Size::fill())
             .padding((space::S, space::M))
@@ -377,7 +391,7 @@ impl Component for ProjectPage {
             .content(Content::flex())
             .child(Face { pid: hit.project_id.clone(), url: hit.icon_url.clone() })
             .child(heading)
-            .child(trail_view(&t, &self.flow, hit, &trail, None));
+            .child(trail_view(&t, &self.flow, hit, &trail, None, hint));
 
         let items = SECTIONS.iter().map(|s| Segment { id: format!("browser.project.section.{}", s.id()), label: s.label(), tip: None }).collect();
         let at = SECTIONS.iter().position(|s| *s == current).unwrap_or(0);
@@ -411,6 +425,22 @@ impl Component for ProjectPage {
 
 fn quiet(t: &Theme, text: String) -> Element {
     rect().width(Size::fill()).padding((space::L, 0.)).child(para(t, text, font::CALLOUT, t.text2)).into_element()
+}
+
+fn web_page(pg: &Pg, versions: bool) -> String {
+    let base = format!("https://modrinth.com/{}/{}", pg.kind.project_type(), pg.hit.slug);
+    if versions { format!("{base}/versions") } else { base }
+}
+
+fn nothing(t: &Theme, pg: &Pg, text: String, id: &str, versions: bool) -> Element {
+    let url = web_page(pg, versions);
+    rect()
+        .width(Size::fill())
+        .padding((space::L, 0.))
+        .spacing(space::M)
+        .child(para(t, text, font::CALLOUT, t.text2))
+        .child(rect().horizontal().child(Button::new(id, tr("Auf Modrinth ansehen")).glyph(Icon::External).on_press(move |_| open_external("modrinth", url.clone()))))
+        .into_element()
 }
 
 fn loading(t: &Theme) -> Element {
@@ -464,7 +494,7 @@ fn gallery(t: &Theme, pg: &Pg) -> Element {
         Load::Ready(body) => body,
     };
     if body.details.gallery.is_empty() {
-        return quiet(t, tr("Zu diesem Projekt gibt es keine Bilder."));
+        return nothing(t, pg, tr("Zu diesem Projekt gibt es keine Bilder."), "browser.project.gallery.web", false);
     }
     let mut shots = body.details.gallery.clone();
     shots.sort_by_key(|s| (!s.featured, s.ordering));
@@ -473,11 +503,11 @@ fn gallery(t: &Theme, pg: &Pg) -> Element {
         .width(Size::fill())
         .spacing(space::L)
         .children(shots.into_iter().map(|shot| {
-            let frame = rect().width(Size::fill()).height(Size::px(SHOT_HEIGHT)).corner_radius(t.shape.control).overflow(Overflow::Clip).center();
+            let frame = rect().width(Size::fill()).height(Size::px(frame::SHOT_HEIGHT)).corner_radius(t.shape.control).overflow(Overflow::Clip).center();
             let frame = match pics.get(&shot.url) {
-                Some(Pic::Ready(handle)) => frame.background(t.well).child(image(handle.clone()).width(Size::fill()).height(Size::px(SHOT_HEIGHT)).aspect_ratio(AspectRatio::Min).image_cover(ImageCover::Center)),
-                Some(Pic::Failed) => frame.background(t.well).child(icon(t, Icon::ImageOff, iconsize::L, t.text3)),
-                _ => frame.background(t.hover),
+                Some(Pic::Ready(handle)) => frame.background(t.well).child(image(handle.clone()).width(Size::fill()).height(Size::px(frame::SHOT_HEIGHT)).aspect_ratio(AspectRatio::Min).image_cover(ImageCover::Center)).into_element(),
+                Some(Pic::Failed) => WithTip::new(Some(tr("Bild ließ sich nicht laden.")), frame.background(t.well).child(icon(t, Icon::ImageOff, iconsize::L, t.text3))).fill().into_element(),
+                _ => frame.background(t.hover).into_element(),
             };
             let mut column = rect().key(shot.url.clone()).width(Size::fill()).spacing(space::XS).child(frame);
             if let Some(text) = shot.title.filter(|c| !c.trim().is_empty()) {
@@ -504,7 +534,7 @@ fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
         Load::Ready(list) => list,
     };
     if list.is_empty() {
-        return quiet(t, tr("Von diesem Projekt gibt es keine Versionen."));
+        return nothing(t, pg, tr("Von diesem Projekt gibt es keine Versionen."), "browser.project.versions.web", true);
     }
     let chosen = modrinth::newest_for(&list, &page.facts.filter).map(|v| v.id.clone());
     let rest = list.len().saturating_sub(MAX_VERSIONS);
@@ -527,7 +557,7 @@ fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
         let mut row = rect()
             .key(v.id.clone())
             .width(Size::fill())
-            .height(Size::px(VERSION_ROW))
+            .height(Size::px(frame::VERSION_ROW))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
@@ -539,7 +569,7 @@ fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
         column = column.child(row);
     }
     if rest > 0 {
-        let link = format!("https://modrinth.com/{}/{}/versions", page.kind.project_type(), page.hit.slug);
+        let link = web_page(pg, true);
         column = column.child(
             rect()
                 .width(Size::fill())
@@ -593,7 +623,7 @@ fn needs(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
             rect()
                 .key(id.to_owned())
                 .width(Size::fill())
-                .height(Size::px(VERSION_ROW))
+                .height(Size::px(frame::VERSION_ROW))
                 .horizontal()
                 .cross_align(Alignment::Center)
                 .spacing(space::M)
@@ -633,6 +663,16 @@ mod tests {
         assert_eq!(need_of(false, "incompatible", true), Need::Conflict);
         assert_eq!(need_of(false, "optional", true), Need::Optional);
         assert_eq!(need_of(false, "anything", false), Need::Optional);
+    }
+
+    #[test]
+    fn a_big_shot_shrinks_into_the_box_and_a_small_one_stays() {
+        let wide = fitted(image::DynamicImage::new_rgba8(4000, 1000));
+        assert_eq!((wide.width(), wide.height()), (1024, 256));
+        let tall = fitted(image::DynamicImage::new_rgba8(1000, 4000));
+        assert_eq!((tall.width(), tall.height()), (144, 576));
+        let small = fitted(image::DynamicImage::new_rgba8(300, 200));
+        assert_eq!((small.width(), small.height()), (300, 200));
     }
 
     #[test]

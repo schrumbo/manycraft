@@ -14,9 +14,8 @@ use crate::view::theme::{Theme, faces, font, frame, space};
 const MAX_QUOTE_DEPTH: usize = 4;
 const MAX_NESTING: usize = 8;
 const MAX_INDENT: usize = 4;
-const MARKER_W: f32 = 22.;
-const QUOTE_BAR: f32 = 2.;
 const TAB_WIDTH: usize = 4;
+const MAX_CLOSER: usize = 512;
 
 /// A piece of inline text with one style.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -85,7 +84,8 @@ fn run_len(c: &[char], at: usize, marker: char) -> usize {
 fn code_span(c: &[char], at: usize) -> Option<(String, usize)> {
     let open = run_len(c, at, '`');
     let mut j = at + open;
-    while j < c.len() {
+    let limit = c.len().min(j + MAX_CLOSER);
+    while j < limit {
         if c[j] == '`' {
             let close = run_len(c, j, '`');
             if close == open {
@@ -114,8 +114,9 @@ fn emphasis(c: &[char], at: usize) -> Option<(Range<usize>, usize, usize)> {
     if marker == '_' && at > 0 && c[at - 1].is_alphanumeric() {
         return None;
     }
+    let limit = c.len().min(start + MAX_CLOSER);
     let mut j = start;
-    while j < c.len() {
+    while j < limit {
         match c[j] {
             '\\' => j += 2,
             '`' => match code_span(c, j) {
@@ -143,8 +144,9 @@ fn safe_link(url: &str) -> Option<String> {
 
 fn link(c: &[char], at: usize) -> Option<(Range<usize>, String, usize)> {
     let mut depth = 1;
+    let limit = c.len().min(at + 1 + MAX_CLOSER);
     let mut j = at + 1;
-    while j < c.len() {
+    while j < limit {
         match c[j] {
             '\\' => j += 1,
             '[' => depth += 1,
@@ -163,12 +165,13 @@ fn link(c: &[char], at: usize) -> Option<(Range<usize>, String, usize)> {
         }
         j += 1;
     }
-    if j >= c.len() || c.get(j + 1) != Some(&'(') {
+    if j >= limit || c.get(j + 1) != Some(&'(') {
         return None;
     }
     let mut parens = 1;
+    let reach = c.len().min(j + 2 + MAX_CLOSER);
     let mut k = j + 2;
-    while k < c.len() {
+    while k < reach {
         match c[k] {
             '(' => parens += 1,
             ')' => {
@@ -181,7 +184,7 @@ fn link(c: &[char], at: usize) -> Option<(Range<usize>, String, usize)> {
         }
         k += 1;
     }
-    if k >= c.len() {
+    if k >= reach {
         return None;
     }
     let raw: String = c[j + 2..k].iter().collect();
@@ -440,7 +443,7 @@ pub fn link_ranges(runs: &[Run]) -> Vec<(Range<usize>, String)> {
     out
 }
 
-fn url_at(holder: &ParagraphHolder, links: &[(Range<usize>, String)], at: CursorPoint) -> Option<String> {
+fn link_at(holder: &ParagraphHolder, links: &[(Range<usize>, String)], at: CursorPoint) -> Option<(Range<usize>, String)> {
     let at = holder.visible_location(at);
     let inner = holder.0.borrow();
     let ParagraphHolderInner { paragraph, scale_factor, .. } = inner.as_ref()?;
@@ -448,7 +451,7 @@ fn url_at(holder: &ParagraphHolder, links: &[(Range<usize>, String)], at: Cursor
     links
         .iter()
         .find(|(range, _)| paragraph.get_rects_for_range(range.clone(), RectHeightStyle::Tight, RectWidthStyle::Tight).iter().any(|b| b.rect.left <= x && x <= b.rect.right && b.rect.top <= y && y <= b.rect.bottom))
-        .map(|(_, url)| url.clone())
+        .cloned()
 }
 
 #[derive(PartialEq)]
@@ -464,6 +467,7 @@ impl Component for Prose {
         let t = use_theme();
         let holder = use_hook(ParagraphHolder::default);
         let mut hovering = use_state(|| false);
+        let mut pressed = use_state(|| None::<Range<usize>>);
         let links = link_ranges(&self.runs);
         let mut p = paragraph().width(Size::fill()).line_height(frame::PARA_LINE).font_size(self.size).color(self.color).font_weight(self.weight).holder(holder.clone());
         if let Some(f) = &t.font {
@@ -493,15 +497,27 @@ impl Component for Prose {
         if links.is_empty() {
             return p;
         }
-        let (over, press, moved) = (links.clone(), links, holder.clone());
+        let (over, down, release, moved, grabbed) = (links.clone(), links.clone(), links, holder.clone(), holder.clone());
         p.cursor(if *hovering.read() { CursorIcon::Pointer } else { CursorIcon::Default })
-            .on_pointer_move(move |e: Event<PointerEventData>| hovering.set_if_modified(url_at(&moved, &over, e.element_location()).is_some()))
-            .on_pointer_leave(move |_| hovering.set_if_modified(false))
+            .on_pointer_move(move |e: Event<PointerEventData>| hovering.set_if_modified(link_at(&moved, &over, e.element_location()).is_some()))
+            .on_pointer_leave(move |_| {
+                hovering.set_if_modified(false);
+                pressed.set_if_modified(None);
+            })
+            .on_pointer_down(move |e: Event<PointerEventData>| {
+                if e.data().is_primary() {
+                    pressed.set_if_modified(link_at(&grabbed, &down, e.element_location()).map(|(range, _)| range));
+                }
+            })
             .on_pointer_press(move |e: Event<PointerEventData>| {
                 if !e.data().is_primary() {
                     return;
                 }
-                if let Some(url) = url_at(&holder, &press, e.element_location()) {
+                let began = pressed.peek().clone();
+                pressed.set_if_modified(None);
+                if let Some((range, url)) = link_at(&holder, &release, e.element_location())
+                    && began == Some(range)
+                {
                     e.stop_propagation();
                     open_external("project link", url);
                 }
@@ -548,7 +564,7 @@ fn view_block(t: &Theme, block: &Block, color: Color) -> Element {
                     .horizontal()
                     .padding((0., 0., 0., item.depth.min(MAX_INDENT) as f32 * space::L))
                     .content(Content::flex())
-                    .child(rect().width(Size::px(MARKER_W)).child(line(t, marker_text(item.marker), font::BODY, t.text2).font_tabular()))
+                    .child(rect().width(Size::px(frame::MARKER_W)).child(line(t, marker_text(item.marker), font::BODY, t.text2).font_tabular()))
                     .child(rect().width(Size::flex(1.)).child(prose(&item.runs, font::BODY, FontWeight::NORMAL, color)))
                     .into_element()
             }))
@@ -558,7 +574,7 @@ fn view_block(t: &Theme, block: &Block, color: Color) -> Element {
             .horizontal()
             .spacing(space::S)
             .content(Content::flex())
-            .child(rect().width(Size::px(QUOTE_BAR)).height(Size::fill()).corner_radius(QUOTE_BAR / 2.).background(t.separator))
+            .child(rect().width(Size::px(frame::QUOTE_BAR)).height(Size::fill()).corner_radius(frame::QUOTE_BAR / 2.).background(t.separator))
             .child(rect().width(Size::flex(1.)).child(view(t, inner, t.text2)))
             .into_element(),
         Block::Code(text) => code_block(t, text),
@@ -711,6 +727,14 @@ mod tests {
     fn unclosed_markers_stay_literal() {
         for text in ["**bold", "*one", "_one", "`code", "[a](https://x.y", "[a]", "a ** b", "2 * 3 * 4", "snake_case_name", "***"] {
             assert_eq!(inline(text), vec![plain(text)], "{text}");
+        }
+    }
+
+    #[test]
+    fn a_long_run_of_unclosed_markers_stays_literal() {
+        for unit in ["*a ", "_a ", "[a ", "[a](b "] {
+            let text = unit.repeat(20000);
+            assert_eq!(blocks(&text), vec![Block::Paragraph(vec![plain(text.trim())])], "{unit}");
         }
     }
 
