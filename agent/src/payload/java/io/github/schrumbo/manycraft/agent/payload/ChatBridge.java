@@ -71,6 +71,11 @@ final class ChatBridge {
 		return key == null || key.equals(ChatType.MSG_COMMAND_OUTGOING) || key.equals(ChatType.TEAM_MSG_COMMAND_OUTGOING);
 	}
 
+	private static boolean whisper(ChatType.Bound bound) {
+		var key = bound.chatType().unwrapKey().orElse(null);
+		return key != null && (key.equals(ChatType.MSG_COMMAND_INCOMING) || key.equals(ChatType.TEAM_MSG_COMMAND_INCOMING));
+	}
+
 	private static String plainContent(String decorated, ChatType.Bound bound) {
 		return stripDecoration(decorated, bound.decorate(Component.literal(MARKER)).getString());
 	}
@@ -81,7 +86,7 @@ final class ChatBridge {
 				return;
 			}
 			String from = bound.name().getString();
-			sink.accept(Protocol.chat("player", from.isEmpty() ? null : from, message.getString()));
+			sink.accept(Protocol.chat(whisper(bound) ? "whisper" : "player", from.isEmpty() ? null : from, message.getString()));
 		} catch (RuntimeException e) {
 			LOGGER.warn("chat bridge failed", e);
 		}
@@ -92,9 +97,8 @@ final class ChatBridge {
 			if (outgoing(bound)) {
 				return;
 			}
-			var key = bound.chatType().unwrapKey().orElse(null);
 			String from = bound.name().getString();
-			boolean whisper = key.equals(ChatType.MSG_COMMAND_INCOMING) || key.equals(ChatType.TEAM_MSG_COMMAND_INCOMING);
+			boolean whisper = whisper(bound);
 			String text = signed != null ? signed.signedContent() : plainContent(message.getString(), bound);
 			sink.accept(Protocol.chat(whisper ? "whisper" : "player", from.isEmpty() ? null : from, text));
 		} catch (RuntimeException e) {
