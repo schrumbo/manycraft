@@ -4,6 +4,7 @@ mod commands;
 pub mod drive;
 mod grid;
 mod icons;
+mod instance;
 mod kit;
 mod native;
 mod shell;

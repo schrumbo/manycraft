@@ -70,6 +70,16 @@ const fn bare(code: Code) -> Shortcut {
 }
 
 impl Shortcut {
+    /// Ctrl, or Cmd on macOS, with `code`.
+    pub const fn primary(code: Code) -> Self {
+        k(code)
+    }
+
+    /// `code` alone.
+    pub const fn bare(code: Code) -> Self {
+        bare(code)
+    }
+
     /// Whether the key event is this combination.
     pub fn matches(&self, e: &KeyboardEventData) -> bool {
         let m = e.modifiers;
@@ -95,6 +105,7 @@ impl Shortcut {
             Code::ArrowRight => "→".to_owned(),
             Code::ArrowLeft => "←".to_owned(),
             Code::ArrowDown => "↓".to_owned(),
+            Code::F2 => "F2".to_owned(),
             other => format!("{other:?}").trim_start_matches("Key").trim_start_matches("Digit").to_owned(),
         };
         if cfg!(target_os = "macos") {
@@ -273,11 +284,11 @@ impl Command {
         let picked = || selected.iter().filter_map(|k| m.games.get(k));
         let grid = matches!(*store.ui.page.peek(), Page::Grid(_));
         match self {
-            Command::StartSelected => picked().any(|g| !g.phase.is_active()),
-            Command::StopSelected => picked().any(|g| g.phase.is_active()),
-            Command::RestartSelected => picked().any(|g| g.phase.has_process()),
-            Command::ReconnectSelected => picked().any(|g| g.phase.is_running()),
-            Command::ClearSelection => !selected.is_empty(),
+            Command::StartSelected => grid && picked().any(|g| !g.phase.is_active()),
+            Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
+            Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
+            Command::ReconnectSelected => grid && picked().any(|g| g.phase.is_running()),
+            Command::ClearSelection => grid && !selected.is_empty(),
             Command::StartAll => m.games.values().any(|g| !g.phase.is_active()),
             Command::StopAll => m.games.values().any(|g| g.phase.is_active()),
             Command::NextInstance | Command::PreviousInstance => m.games.values().filter(|g| g.phase.is_running()).count() > 0,
@@ -346,7 +357,7 @@ impl Command {
 }
 
 /// Runs the command whose shortcut the key event is; true when one ran. While a sheet, menu, the palette or a text field
-/// has the keyboard only the palette toggle and Quit go through.
+/// has the keyboard only the palette toggle and Quit go through. A command that cannot run leaves its keys to the page.
 pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
     let layered = store.ui.layered() || super::kit::field::typing();
     for command in Command::ALL {
@@ -354,16 +365,38 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
             if layered && !matches!(command, Command::OpenPalette | Command::Quit) {
                 return false;
             }
-            if command == Command::ClearSelection && store.ui.selection.peek().is_empty() {
-                return false;
-            }
             if command.available(store) || matches!(command, Command::OpenPalette | Command::Quit | Command::ToggleSidebar) {
                 command.run(store);
+                return true;
             }
-            return true;
         }
     }
+    if layered {
+        return false;
+    }
+    if let Some(extra) = extras(store).into_iter().find(|x| x.shortcut.is_some_and(|s| s.matches(e))) {
+        extra.run.call(());
+        return true;
+    }
     false
+}
+
+/// A command the shown page offers beyond the window's: in the palette, and through its shortcut while the page is shown.
+#[derive(Clone, PartialEq)]
+pub struct Extra {
+    pub id: String,
+    pub label: String,
+    pub glyph: Icon,
+    pub shortcut: Option<Shortcut>,
+    pub run: EventHandler<()>,
+}
+
+/// What the shown page offers beyond the window's commands.
+pub fn extras(store: Store) -> Vec<Extra> {
+    match &*store.ui.page.peek() {
+        Page::Instance(_) => super::instance::extras(store),
+        _ => Vec::new(),
+    }
 }
 
 /// The keys of the games picked, without those no longer there.

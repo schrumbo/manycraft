@@ -1,0 +1,368 @@
+//! The page of one instance: its tabs on the left, and on the right what runs, how to play it and what to do with it.
+
+mod actions;
+mod inspector;
+mod logs;
+mod mods;
+mod shots;
+mod worlds;
+pub mod links;
+mod save;
+mod settings;
+mod snapshots;
+mod title;
+
+use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
+
+use freya::prelude::*;
+use uuid::Uuid;
+
+pub use self::title::{Tabs, Title};
+use self::inspector::{Inspector, Strip};
+use super::commands::{Extra, Shortcut};
+use super::icons::{Icon, icon};
+use super::kit::button::Button;
+use super::kit::text::{heading, secondary};
+use super::kit::use_theme;
+use super::store::{Store, use_store};
+use super::theme::{frame, iconsize, space};
+use super::ui::{Filter, Page};
+use crate::app::model::{Game, Model, Phase};
+use crate::core::i18n::{tr, trf};
+use crate::core::instance::{Instance, Loader};
+
+/// From this content width on the page shows its inspector beside the tabs.
+const SPLIT: f32 = 860.;
+/// The width of the inspector.
+const INSPECTOR: f32 = 300.;
+/// The widest the tab content grows.
+const CONTENT_MAX: f32 = 760.;
+
+/// The tabs of the instance page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Mods,
+    Worlds,
+    Shots,
+    Logs,
+    Settings,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 5] = [Tab::Mods, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings];
+
+    /// The id the drive tool and spots use.
+    pub fn key(self) -> &'static str {
+        match self {
+            Tab::Mods => "mods",
+            Tab::Worlds => "worlds",
+            Tab::Shots => "screenshots",
+            Tab::Logs => "logs",
+            Tab::Settings => "settings",
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Tab::Mods => tr("Mods"),
+            Tab::Worlds => tr("Welten"),
+            Tab::Shots => tr("Screenshots"),
+            Tab::Logs => tr("Protokolle"),
+            Tab::Settings => tr("Einstellungen"),
+        }
+    }
+
+    fn glyph(self) -> Icon {
+        match self {
+            Tab::Mods => Icon::Layers,
+            Tab::Worlds => Icon::Grid,
+            Tab::Shots => Icon::Fit,
+            Tab::Logs => Icon::Rows,
+            Tab::Settings => Icon::Settings,
+        }
+    }
+}
+
+/// Work on an instance that holds back other changes, with how far it got.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Busy {
+    pub text: String,
+    pub progress: Option<f32>,
+}
+
+/// What the instance page keeps while the person looks elsewhere.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Nav {
+    pub tab: State<Tab>,
+    /// The instance whose name is being edited.
+    pub renaming: State<Option<String>>,
+    pub rename: State<String>,
+    pub rename_error: State<Option<String>>,
+    /// Per instance: work that holds back changes, like a switch or a backup.
+    pub busy: State<HashMap<String, Busy>>,
+    /// Per instance: why its last change was not saved.
+    pub error: State<HashMap<String, String>>,
+    /// Per instance: what its last switch left out.
+    pub notes: State<HashMap<String, Vec<String>>>,
+    /// When each running game was first seen running, by key.
+    pub up: State<HashMap<String, Instant>>,
+    pub advanced: State<bool>,
+    /// Counts changes to instance files on disk, so tabs read them again.
+    pub changed: State<u64>,
+    /// What the shown tab adds to the palette, such as commands on its selection; set through [`use_extras`].
+    pub tab_extras: State<Vec<Extra>>,
+    queue: State<VecDeque<(String, save::Job)>>,
+    saving: State<Option<(String, save::Job)>>,
+}
+
+impl Nav {
+    /// Fresh page state.
+    pub fn create() -> Self {
+        Self {
+            tab: State::create(Tab::Mods),
+            renaming: State::create(None),
+            rename: State::create(String::new()),
+            rename_error: State::create(None),
+            busy: State::create(HashMap::new()),
+            error: State::create(HashMap::new()),
+            notes: State::create(HashMap::new()),
+            up: State::create(HashMap::new()),
+            advanced: State::create(false),
+            changed: State::create(0),
+            tab_extras: State::create(Vec::new()),
+            queue: State::create(VecDeque::new()),
+            saving: State::create(None),
+        }
+    }
+}
+
+/// What the page shows of an instance, read from the model in one go.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Facts {
+    pub made: Instance,
+    pub batches: Vec<(String, String)>,
+    pub accounts: Vec<(Uuid, String)>,
+    /// The account that plays it alone next.
+    pub solo: Option<Uuid>,
+    /// The running game Play swaps in.
+    pub shown: Option<String>,
+    /// Whether any game of it runs, alone or in a batch.
+    pub running: bool,
+    /// Accounts whose game runs without the companion mod, so it cannot be shown.
+    pub plain: Vec<Uuid>,
+    /// Running games played alone that can be stopped, by key and name.
+    pub stoppable: Vec<(String, String)>,
+}
+
+/// The facts of instance `id`, when it exists.
+pub fn facts(m: &Model, id: &str) -> Option<Facts> {
+    let made = m.instance(id)?.clone();
+    let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
+    let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
+    let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
+    let mut stoppable: Vec<(String, String)> = live.iter().filter(|g| !g.stopping).map(|g| (g.key.clone(), g.name.clone())).collect();
+    stoppable.sort_by_key(|(_, name)| name.to_lowercase());
+    let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
+    let solo = crate::app::reduce::solo_account(m, &made).filter(|a| !plain.contains(a));
+    let live: Vec<&Game> = live.into_iter().filter(|g| g.phase.playable()).collect();
+    let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
+    let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
+    Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable })
+}
+
+/// Why changes to the instance wait: work on it, or games that run.
+pub fn blocked(store: Store, id: &str) -> Option<String> {
+    if store.ui.instance.busy.peek().contains_key(id) {
+        return Some(tr("Warte, bis die Umstellung fertig ist."));
+    }
+    store.model.peek().games.values().any(|g| g.instance_id == id && g.phase.is_active()).then(|| tr("Stoppe zuerst die laufenden Spiele."))
+}
+
+/// "12 Min.", "1 Std.", "1 Std. 5 Min." since `since`; nothing in the first minute.
+pub fn uptime_text(since: Instant) -> Option<String> {
+    let minutes = since.elapsed().as_secs() / 60;
+    Some(match (minutes / 60, minutes % 60) {
+        (0, 0) => return None,
+        (0, m) => trf("%lld Min.", &[&m]),
+        (h, 0) => trf("%lld Std.", &[&h]),
+        (h, m) => trf("%1$lld Std. %2$lld Min.", &[&h, &m]),
+    })
+}
+
+/// "Minecraft 26.3 · Fabric · 12 Mods" for the toolbar, without what the name already says.
+pub fn subtitle(made: &Instance) -> String {
+    let mut parts = Vec::new();
+    if !made.name.contains(&made.game_version) {
+        parts.push(format!("Minecraft {}", made.game_version));
+    }
+    if made.loader != Loader::Vanilla {
+        parts.push(made.loader.name().to_owned());
+    }
+    if made.loader.takes_mods() {
+        match made.mods.len() + made.local_mods.len() {
+            0 => {}
+            1 => parts.push(tr("1 Mod")),
+            n => parts.push(trf("%lld Mods", &[&n])),
+        }
+    }
+    parts.join(" · ")
+}
+
+/// Notes when each running game started, so the page can say how long it runs. Lives in the shell, so leaving the
+/// page keeps the times.
+#[derive(PartialEq)]
+pub struct Uptime;
+
+impl Component for Uptime {
+    fn render(&self) -> impl IntoElement {
+        let store = use_store();
+        let mut up = store.ui.instance.up;
+        let running: Vec<String> = store.model.read().games.values().filter(|g| g.phase.is_running()).map(|g| g.key.clone()).collect();
+        use_side_effect_with_deps(&running, move |running| {
+            let now = Instant::now();
+            let fresh = up.peek().len() != running.len() || running.iter().any(|k| !up.peek().contains_key(k));
+            if fresh {
+                let mut map = up.write();
+                map.retain(|k, _| running.contains(k));
+                for key in running {
+                    map.entry(key.clone()).or_insert(now);
+                }
+            }
+        });
+        rect()
+    }
+}
+
+/// The instance page.
+#[derive(PartialEq)]
+pub struct InstancePage {
+    pub id: String,
+}
+
+impl Component for InstancePage {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let ui = store.ui;
+        let m = store.model.read();
+        let Some(f) = facts(&m, &self.id) else {
+            return gone(&t, store, m.loaded).into_element();
+        };
+        let tab = *ui.instance.tab.read();
+        let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
+        let wide = room >= SPLIT;
+        let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
+            rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, tab, f.clone())),
+        );
+        let mut left = rect().width(Size::flex(1.)).height(Size::fill());
+        if !wide {
+            left = left.child(Strip { id: self.id.clone() });
+        }
+        if room < frame::TOOLBAR_FULL {
+            left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
+        }
+        left = left.child(content).content(Content::flex());
+        let mut page = rect().width(Size::fill()).height(Size::fill()).horizontal().child(left);
+        if wide {
+            page = page
+                .child(rect().width(Size::px(1.)).height(Size::fill()).background(t.separator))
+                .child(rect().width(Size::px(INSPECTOR)).height(Size::fill()).background(t.sidebar).child(Inspector { id: self.id.clone() }));
+        }
+        page.content(Content::flex()).into_element()
+    }
+}
+
+fn tab_entry(tab: Tab, name: &str) -> String {
+    match tab {
+        Tab::Mods => trf("Mods von %@", &[&name]),
+        Tab::Worlds => trf("Welten von %@", &[&name]),
+        Tab::Shots => trf("Screenshots von %@", &[&name]),
+        Tab::Logs => trf("Protokolle von %@", &[&name]),
+        Tab::Settings => trf("Einstellungen von %@", &[&name]),
+    }
+}
+
+fn tab_body(t: &super::theme::Theme, tab: Tab, f: Facts) -> Element {
+    match tab {
+        Tab::Mods if !f.made.loader.takes_mods() => rect().width(Size::fill()).height(Size::fill()).center().spacing(space::M).child(icon(t, Icon::Layers, iconsize::L * 2., t.text3)).child(heading(t, tr("Keine Mods"))).child(secondary(t, tr("Vanilla lädt keine Mods."))).into_element(),
+        Tab::Mods => mods::Mods { facts: f }.into_element(),
+        Tab::Worlds => worlds::Worlds { facts: f }.into_element(),
+        Tab::Shots => shots::Shots { facts: f }.into_element(),
+        Tab::Logs => logs::Logs { facts: f }.into_element(),
+        Tab::Settings => settings::Settings { facts: f }.into_element(),
+    }
+}
+
+/// What a tab shows until its port lands.
+fn moving(t: &super::theme::Theme, tab: Tab) -> Element {
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .center()
+        .spacing(space::M)
+        .child(icon(t, tab.glyph(), iconsize::L * 2., t.text3))
+        .child(heading(t, tab.label()))
+        .child(secondary(t, tr("Dieser Bereich zieht als Nächstes in die neue Oberfläche um.")))
+        .into_element()
+}
+
+fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement {
+    let mut ui = store.ui;
+    if !loaded {
+        return rect().width(Size::fill()).height(Size::fill()).center().child(secondary(t, tr("Lädt …")));
+    }
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .center()
+        .spacing(space::M)
+        .child(icon(t, Icon::Folder, iconsize::L * 2., t.text3))
+        .child(heading(t, tr("Diese Instanz gibt es nicht mehr.")))
+        .child(Button::new("instance.gone.all", tr("Zu allen Spielen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+}
+
+/// The instance the page shows, if it shows one.
+pub fn current(store: Store) -> Option<String> {
+    match &*store.ui.page.peek() {
+        Page::Instance(id) => store.model.peek().instance(id).map(|i| i.id.clone()),
+        _ => None,
+    }
+}
+
+/// What the instance page offers beyond the window's commands: in the palette, and through shortcuts while it is shown.
+pub fn extras(store: Store) -> Vec<Extra> {
+    let Some(id) = current(store) else { return Vec::new() };
+    let Some(f) = facts(&store.model.peek(), &id) else { return Vec::new() };
+    let mut list = Vec::new();
+    let name = f.made.name.clone();
+    let mut push = |key: &str, label: String, glyph: Icon, shortcut: Option<Shortcut>, run: EventHandler<()>| {
+        list.push(Extra { id: format!("instance.{key}"), label, glyph, shortcut, run });
+    };
+    for (n, tab) in Tab::ALL.into_iter().enumerate() {
+        let mut nav = store.ui.instance.tab;
+        let code = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5][n];
+        push(&format!("tab.{}", tab.key()), tab_entry(tab, &name), tab.glyph(), Some(Shortcut::primary(code)), EventHandler::new(move |_| nav.set(tab)));
+    }
+    let rename_id = id.clone();
+    push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
+    if let Some(key) = f.shown.clone().or_else(|| f.stoppable.first().map(|(k, _)| k.clone())).filter(|k| f.stoppable.iter().any(|(s, _)| s == k)) {
+        push("stop", tr("Stoppen"), Icon::Stop, Some(Shortcut::primary(Code::Period)), EventHandler::new(move |_| store.dispatch(crate::app::event::Event::Stop(vec![key.clone()]))));
+    }
+    for item in actions::all(store, &f).into_iter().filter(|a| a.disabled.is_none()) {
+        push(item.key, item.long, item.glyph, None, item.run);
+    }
+    list.extend(store.ui.instance.tab_extras.peek().iter().cloned());
+    list
+}
+
+/// Offers `extras` in the palette, and their shortcuts, while the calling tab is shown.
+pub fn use_extras(extras: Vec<Extra>) {
+    let store = use_store();
+    let mut tab_extras = store.ui.instance.tab_extras;
+    let ids: Vec<(String, String, Option<Shortcut>)> = extras.iter().map(|x| (x.id.clone(), x.label.clone(), x.shortcut)).collect();
+    let mut latest = use_state(Vec::<Extra>::new);
+    latest.set_if_modified(extras);
+    use_side_effect_with_deps(&ids, move |_| tab_extras.set(latest.peek().clone()));
+    use_drop(move || tab_extras.set(Vec::new()));
+}

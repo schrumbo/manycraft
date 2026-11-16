@@ -101,6 +101,8 @@ pub enum Event {
     NotShown(Box<Unshown>),
     InstanceAdded(Instance),
     InstanceRemoved(String),
+    /// An instance was saved; it replaces the one with its id.
+    InstanceChanged(Instance),
     /// A message for the next reload.
     Notice(String),
     /// A message to show now.

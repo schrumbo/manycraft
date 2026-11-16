@@ -11,6 +11,7 @@ use self::sidebar::Sidebar;
 use self::toolbar::Toolbar;
 use super::commands;
 use super::grid::GridPage;
+use super::instance::{InstancePage, Uptime};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::text::{heading, line, secondary};
@@ -32,7 +33,7 @@ impl Component for Shell {
         let page = ui.page.read().clone();
         let content = match page {
             Page::Grid(filter) => GridPage { filter }.into_element(),
-            Page::Instance(_) => pending(&t, Icon::Folder, tr("Instanz")),
+            Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
             Page::Accounts => pending(&t, Icon::Users, tr("Accounts")),
             Page::Chat => pending(&t, Icon::Message, tr("Chat")),
             Page::Settings => pending(&t, Icon::Settings, tr("Einstellungen")),
@@ -61,6 +62,7 @@ impl Component for Shell {
             })
             .on_global_key_up(move |e: Event<KeyboardEventData>| note_held(e.modifiers))
             .child(row)
+            .child(Uptime)
             .child(Palette)
             .child(sheet::Host)
             .child(menu::Host)

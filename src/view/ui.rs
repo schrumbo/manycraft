@@ -6,6 +6,7 @@ use std::time::Instant;
 use freya::prelude::*;
 
 use super::grid::layout::TileSize;
+use super::instance::Nav;
 use super::kit::menu::Menu;
 use super::kit::sheet::Sheet;
 use super::kit::toast::Toast;
@@ -54,6 +55,8 @@ pub struct Ui {
     pub tip: State<Option<Tip>>,
     /// When the last tooltip went away, so the next one shows at once.
     pub tip_seen: State<Option<Instant>>,
+    /// What the instance page keeps while it is not shown.
+    pub instance: Nav,
 }
 
 impl Ui {
@@ -75,6 +78,7 @@ impl Ui {
             toasts: State::create(Vec::new()),
             tip: State::create(None),
             tip_seen: State::create(None),
+            instance: Nav::create(),
         }
     }
 
