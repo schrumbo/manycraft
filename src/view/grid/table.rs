@@ -235,6 +235,7 @@ impl Component for HeaderCell {
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |_| {
                 let mut sort = store.ui.sort;
                 let (now, was_down) = *sort.peek();

@@ -112,8 +112,8 @@ impl App for Root {
             let (store, updates) = Store::create(ui);
             if let Some(updates) = updates {
                 spawn(store.pump(updates));
+                store.reload(false);
             }
-            store.reload(false);
             if let Some(play) = play {
                 store.dispatch(Event::RequestPlay { instance: play.instance, account: play.account });
             }

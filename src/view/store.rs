@@ -67,7 +67,7 @@ struct Side {
     tray: Option<Tray>,
     picks: Option<async_channel::Receiver<Pick>>,
     watchers: HashMap<String, Vec<State<Option<ImageHandle>>>>,
-    explaining: bool,
+    explaining: Option<sheet::Sheet>,
 }
 
 impl Store {
@@ -194,11 +194,11 @@ impl Store {
 
     fn dispatch_with(mut self, event: Event, mut images: Vec<Option<Raw>>) {
         let env = runner::env();
-        let reports = matches!(event, Event::Reports(_));
+        let quiet = matches!(event, Event::Reports(_) | Event::Watch(_) | Event::Visible(_) | Event::ShotsDue { .. } | Event::UsageDue | Event::Usage(_));
         let mut effects = Vec::new();
         self.model.into_writable().write_if(|mut model| {
             effects = reduce(&mut model, &env, event);
-            !reports || effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All)))
+            !quiet || effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All)))
         });
         if effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::Chat))) {
             *self.chat.write() += 1;
@@ -427,7 +427,8 @@ impl Store {
     fn explain_tray(self) {
         let up = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
         if !up || self.ui.sheet.peek().is_some() {
-            if std::mem::take(&mut self.side().borrow_mut().explaining) {
+            let card = self.side().borrow_mut().explaining.take();
+            if card.is_some() && *self.ui.sheet.peek() == card {
                 sheet::close(self.ui);
             }
             self.stow();
@@ -435,12 +436,13 @@ impl Store {
         }
         let text = if cfg!(target_os = "windows") { tr("Solange Spiele laufen, findest du Manycraft im Infobereich der Taskleiste.") } else { tr("Solange Spiele laufen, findest du Manycraft im Infobereich.") };
         let ok = sheet::Primary { label: tr("Verstanden"), disabled: None, danger: false, run: EventHandler::new(move |_| {
-            self.side().borrow_mut().explaining = false;
+            self.side().borrow_mut().explaining = None;
             sheet::close(self.ui);
             self.dispatch(Event::TrayExplained);
         }) };
-        self.side().borrow_mut().explaining = true;
-        sheet::open(self.ui, sheet::Card::new("tray", tr("Manycraft läuft weiter")).message(text).primary(ok).inform().width(super::theme::frame::SHEET * 0.8));
+        let card = sheet::Card::new("tray", tr("Manycraft läuft weiter")).message(text).primary(ok).inform().width(super::theme::frame::SHEET * 0.8).into_element();
+        self.side().borrow_mut().explaining = Some(sheet::Sheet(card.clone()));
+        sheet::open(self.ui, card);
     }
 
     fn ask_quit(self, running: usize) {
