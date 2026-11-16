@@ -8,10 +8,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, ReconnectSelected, Respawn, RestartMany, RestartSelected, ShowHistory, ShowInstance, SignInAgain, Start, StartMany, StartSelected, Stop, StopMany, StopSelected};
+use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, ReconnectSelected, Respawn, RestartMany, RestartSelected, ShowHistory, ShowInstance, SignInAgain, Start, StartMany, StartSelected, Stop, StopMany, StopSelected, TakeOver};
 use super::drive::Mark;
 use super::main_window::MainWindow;
-use super::model::{self, Phase};
+use super::model::{self, Game, Model, Phase};
 use super::motion::Soft;
 use super::identity;
 use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint, with_alpha};
@@ -46,6 +46,8 @@ pub struct TileData {
     /// Whether the tile is part of a selection of several.
     pub picked: bool,
     pub playing: bool,
+    /// Whether the account plays this instance in another game, so a start here must end that one first.
+    pub busy: bool,
 }
 
 impl TileData {
@@ -63,6 +65,7 @@ impl TileData {
             && self.selected == other.selected
             && self.picked == other.picked
             && self.playing == other.playing
+            && self.busy == other.busy
             && self.live == other.live
             && same_image(&self.preview, &other.preview)
             && same_image(&self.face, &other.face)
@@ -239,6 +242,14 @@ enum Primary {
     Start,
     Retry,
     SignIn,
+    TakeOver,
+}
+
+fn main_action(phase: &Phase, stopping: bool, busy: bool) -> Option<Primary> {
+    match primary(phase, stopping) {
+        Some(Primary::Start) if busy && !phase.is_active() => Some(Primary::TakeOver),
+        other => other,
+    }
 }
 
 fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
@@ -266,6 +277,7 @@ impl Primary {
             Self::Start => tr("Starten"),
             Self::Retry => tr("Erneut versuchen"),
             Self::SignIn => tr("Anmelden"),
+            Self::TakeOver => tr("Dort beenden und hier starten"),
         }
     }
 
@@ -277,6 +289,7 @@ impl Primary {
             Self::Start => "play",
             Self::Retry => "refresh-cw",
             Self::SignIn => "log-in",
+            Self::TakeOver => "arrow-right-left",
         }
     }
 
@@ -287,14 +300,22 @@ impl Primary {
             Self::Respawn => Box::new(Respawn(key.to_owned())),
             Self::Start | Self::Retry => Box::new(Start(key.to_owned())),
             Self::SignIn => Box::new(SignInAgain(account.to_string())),
+            Self::TakeOver => Box::new(TakeOver(key.to_owned())),
         }
     }
 }
 
+/// Whether the account of `game` plays its instance in another game while `game` itself does not run.
+pub fn busy(game: &Game, m: &Model) -> bool {
+    !game.phase.is_active() && m.playing_elsewhere(&game.instance_id, game.account_id, &game.key).is_some()
+}
+
 /// Runs what the tile's main button would, for Enter on a tile whose game cannot be shown.
 pub fn primary_action(key: &str, window: &mut Window, cx: &mut App) {
-    let Some((phase, stopping, account)) = model::get(cx).read(cx).games.get(key).map(|i| (i.phase.clone(), i.stopping, i.account_id)) else { return };
-    if let Some(p) = primary(&phase, stopping) {
+    let m = model::get(cx).read(cx);
+    let Some((phase, stopping, account)) = m.games.get(key).map(|i| (i.phase.clone(), i.stopping, i.account_id)) else { return };
+    let busy = m.games.get(key).is_some_and(|i| busy(i, m));
+    if let Some(p) = main_action(&phase, stopping, busy) {
         window.dispatch_action(p.action(key, account), cx);
     }
 }
@@ -403,7 +424,7 @@ fn picture(d: &TileData, g: &Geometry, t: &Theme) -> Option<AnyElement> {
 
 fn actions(d: &TileData, g: &Geometry, t: &Theme) -> Option<Div> {
     let active = d.phase.stoppable() && !d.stopping;
-    let main = primary(&d.phase, d.stopping);
+    let main = main_action(&d.phase, d.stopping, d.busy);
     let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
     if main.is_none() && stop.is_none() {
         return None;
@@ -642,7 +663,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
                 window.dispatch_action(Box::new(Play(key.clone())), cx);
             }
         });
-    let (account, login, waits) = (d.account_id, d.phase == Phase::LoginNeeded, d.phase == Phase::NoNetwork);
+    let (account, login, waits, busy) = (d.account_id, d.phase == Phase::LoginNeeded, d.phase == Phase::NoNetwork, d.busy);
     tile.context_menu(move |menu, window, cx| {
         let chosen = menu_view.upgrade().map(|v| v.read(cx).grid.chosen()).unwrap_or_default();
         let several = chosen.len() > 1 && chosen.contains(&menu_key);
@@ -678,6 +699,8 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
             menu.menu_element_with_disabled(Box::new(Stop(menu_key.clone())), stopping, row(tr("Stoppen"), &StopSelected, stopping))
         } else if login {
             menu.menu(tr("Anmelden"), Box::new(SignInAgain(account.to_string())))
+        } else if busy {
+            menu.menu(tr("Dort beenden und hier starten"), Box::new(TakeOver(menu_key.clone())))
         } else {
             menu.menu_element_with_disabled(Box::new(Start(menu_key.clone())), false, row(tr("Starten"), &StartSelected, false))
         };
@@ -708,7 +731,7 @@ pub fn accounts_of(keys: &[String], cx: &App) -> (Vec<String>, Option<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Geometry, Phase, Primary, primary, tile};
+    use super::{Geometry, Phase, Primary, main_action, primary, tile};
 
     #[test]
     fn the_main_button_follows_the_phase() {
@@ -722,6 +745,8 @@ mod tests {
         assert!(primary(&Phase::LoginNeeded, false) == Some(Primary::SignIn));
         assert!(primary(&Phase::Starting { place: 1, total: 2 }, false).is_none());
         assert!(primary(&Phase::Menu, true).is_none());
+        assert!(main_action(&Phase::Failed { reason: String::new() }, false, true) == Some(Primary::TakeOver));
+        assert!(main_action(&Phase::Stopped, false, false) == Some(Primary::Start));
         assert!(primary(&Phase::Banned { server: None, reason: String::new() }, false).is_none());
     }
 

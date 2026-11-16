@@ -39,6 +39,11 @@ pub struct Start(pub String);
 #[action(namespace = manycraft)]
 pub struct Stop(pub String);
 
+/// Stops the game that plays this instance's account elsewhere, then starts this one, by key.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct TakeOver(pub String);
+
 /// Joins the last server again.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

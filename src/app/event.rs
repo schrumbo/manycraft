@@ -113,6 +113,8 @@ pub enum Event {
     StartBatch(String),
     StartAll,
     Stop(Vec<String>),
+    /// Stops the game that plays this game's account elsewhere in its instance, then starts this one.
+    TakeOver(String),
     StopBatch(String),
     StopAll,
     /// Starts again the games one stop of the user ended, those still on their way down once they are down.

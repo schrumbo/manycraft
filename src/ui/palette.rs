@@ -596,6 +596,8 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             ("gamepad-2", tr("Spielen"), Box::new(Play(i.key.clone())))
         } else if i.phase == Phase::LoginNeeded {
             ("log-in", tr("Anmelden"), Box::new(SignInAgain(i.account_id.to_string())))
+        } else if super::tile::busy(i, m) {
+            ("arrow-right-left", tr("Dort beenden und hier starten"), Box::new(super::actions::TakeOver(i.key.clone())))
         } else {
             ("play", tr("Starten"), Box::new(Start(i.key.clone())))
         };

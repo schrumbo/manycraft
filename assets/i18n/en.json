@@ -1381,5 +1381,6 @@
   "Papierkorb leeren…": "Empty Trash…",
   "Ein Eintrag (%@) wird endgültig gelöscht.": "One item (%@) will be deleted for good.",
   "%1$lld Einträge (%2$@) werden endgültig gelöscht.": "%1$lld items (%2$@) will be deleted for good.",
-  "Bleibt 7 Tage, dann wird es gelöscht · %@": "Kept for 7 days, then deleted · %@"
+  "Bleibt 7 Tage, dann wird es gelöscht · %@": "Kept for 7 days, then deleted · %@",
+  "Dort beenden und hier starten": "Quit There and Start Here"
 }
