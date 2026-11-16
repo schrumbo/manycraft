@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::drive::Mark;
 use super::forms::{self, Problem};
-use super::instance_files::{self as files, OpenLogsFolder, PickLog, PickLogAccount, UploadLog};
+use super::instance_files::{self as files, OpenLogsFolder, PickLog, PickLogAccount, ShowCrash, UploadLog};
 use super::palette::{Entry, Group, hint};
 use super::sheet::{self, Look};
 use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
@@ -34,6 +34,10 @@ const FOLLOW: Duration = Duration::from_millis(500);
 const SHOWN_CHARS: usize = 2000;
 
 struct Shown(Entity<Logs>);
+
+struct WantsCrash(String, Uuid);
+
+impl Global for WantsCrash {}
 
 impl Global for Shown {}
 
@@ -107,6 +111,17 @@ pub fn init(cx: &mut App) {
                 s.pick_account(account, cx);
             }
         });
+    });
+    cx.on_action(|a: &ShowCrash, cx| {
+        let Ok(account) = Uuid::parse_str(&a.account) else { return };
+        let instance = a.instance.clone();
+        cx.set_global(WantsCrash(instance.clone(), account));
+        with(cx, |s, cx| {
+            if s.id == instance {
+                s.rescan(cx);
+            }
+        });
+        cx.defer(move |cx| super::instance_page::show_tab(&instance, "logs", cx));
     });
     cx.on_action(|a: &PickLog, cx| {
         let path = PathBuf::from(&a.0);
@@ -290,7 +305,8 @@ impl Logs {
             cx.notify();
             return;
         };
-        let (wanted, playing) = (self.account, self.playing.clone());
+        let crash = cx.try_global::<WantsCrash>().filter(|w| w.0 == self.id).map(|w| w.1);
+        let (wanted, playing) = (crash.or(self.account), self.playing.clone());
         let task = cx.background_spawn(async move {
             let mut accounts: Vec<(Uuid, PathBuf, i64)> = game_dirs(&dir)
                 .into_iter()
@@ -311,7 +327,11 @@ impl Logs {
                 s.account = account;
                 s.files = found;
                 s.scanned = true;
-                let keep = s.file.clone().filter(|f| s.files.iter().any(|x| &x.path == f));
+                let newest = crash.filter(|c| Some(*c) == s.account).and_then(|_| s.files.iter().find(|f| f.kind == Kind::Crash).map(|f| f.path.clone()));
+                if crash.is_some() && cx.try_global::<WantsCrash>().is_some_and(|w| w.0 == s.id && Some(w.1) == crash) {
+                    cx.remove_global::<WantsCrash>();
+                }
+                let keep = newest.or_else(|| s.file.clone().filter(|f| s.files.iter().any(|x| &x.path == f)));
                 let pick = keep.clone().or_else(|| s.files.first().map(|f| f.path.clone()));
                 if keep.is_none() || pick != s.file {
                     s.pick(pick, cx);

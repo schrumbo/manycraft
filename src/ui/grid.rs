@@ -546,6 +546,7 @@ fn data(i: &Game, m: &Model, selected: &Option<String>, picked: &HashSet<String>
         picked: picked.contains(&i.key),
         playing: m.playing.as_deref() == Some(i.key.as_str()),
         busy: super::tile::busy(i, m),
+        instance_id: i.instance_id.clone(),
     }
 }
 

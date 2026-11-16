@@ -167,8 +167,9 @@ pub fn view(id: &str, fresh: bool, window: &mut Window, cx: &mut App) -> AnyElem
     view.into_any_element()
 }
 
-/// Reads the worlds of instance `id` again if they are shown, and selects `back` when it came back.
+/// Reads the worlds of instance `id` again where they are shown, and selects `back` when it came back.
 pub fn changed(id: &str, back: Option<PathBuf>, cx: &mut App) {
+    super::instance_page::worlds_changed(id, cx);
     let Some(view) = cx.try_global::<Shown>().map(|s| s.0.clone()) else { return };
     view.update(cx, |s, cx| {
         if s.id == id {

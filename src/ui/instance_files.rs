@@ -88,6 +88,14 @@ pub struct CopyShot(pub String);
 #[action(namespace = manycraft)]
 pub struct DeleteShot(pub String);
 
+/// Shows the newest crash report of account `account` (id) in the logs tab of instance `instance`.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct ShowCrash {
+    pub instance: String,
+    pub account: String,
+}
+
 /// Shows the logs of this account (id) in the logs tab.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
@@ -187,7 +195,7 @@ pub fn tab_entries(made: &Instance, cx: &App) -> Vec<Entry> {
 /// A palette entry that shows the shortcut of `keys` beside it, if that has one.
 pub fn entry(group: Group, symbol: &'static str, label: String, detail: Option<String>, action: Box<dyn Action>, keys: Option<&dyn Action>, cx: &App) -> Entry {
     let keys = keys.and_then(|k| shortcut(k, cx));
-    Entry { group, icon: symbol, label, detail, keys, action, enabled: true, mass: false }
+    Entry { group, icon: symbol, label, detail, keys, action, enabled: true, mass: false, later: false }
 }
 
 /// The name of account `id`, or that it is gone.

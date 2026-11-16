@@ -60,6 +60,8 @@ pub struct Entry {
     pub enabled: bool,
     /// Whether it starts, stops or deletes many games or a whole instance at once, so the cursor never starts on it.
     pub mass: bool,
+    /// Whether it ranks below every other hit, like a retry for a banned account.
+    pub later: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -188,6 +190,7 @@ fn pick_shortcut_instance(this: &mut MainWindow, window: &mut Window, cx: &mut C
             action: Box::new(CreateShortcut { instance: made.id.clone(), account: made.last_account.map(|a| a.to_string()) }),
             enabled: true,
             mass: false,
+            later: false,
         })
         .collect();
     let Some(p) = this.palette.as_mut() else { return };
@@ -259,7 +262,7 @@ fn rows(entries: &[Entry], query: &str) -> Vec<Row> {
         return rows;
     }
     let mut hits: Vec<(i32, usize)> = entries.iter().enumerate().filter(|(_, e)| e.group != Group::Recent).filter_map(|(ix, e)| score(query, &e.label, e.detail.as_deref().unwrap_or("")).map(|s| (s, ix))).collect();
-    hits.sort_by_key(|(s, ix)| (-s, *ix));
+    hits.sort_by_key(|(s, ix)| (entries[*ix].later, -s, *ix));
     hits.into_iter().map(|(_, ix)| Row::Entry(ix)).collect()
 }
 
@@ -378,7 +381,7 @@ pub fn menu_row(text: String, keys: Option<String>, disabled: bool) -> impl Fn(&
 
 fn entry(group: Group, icon: &'static str, label: String, detail: Option<String>, action: Box<dyn Action>, cx: &App) -> Entry {
     let keys = shortcut(action.as_ref(), cx);
-    Entry { group, icon, label, detail, keys, action, enabled: true, mass: false }
+    Entry { group, icon, label, detail, keys, action, enabled: true, mass: false, later: false }
 }
 
 fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
@@ -589,10 +592,14 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     }
     let mut instances: Vec<_> = m.games.values().collect();
     instances.sort_by_cached_key(|i| (i.name.to_lowercase(), m.batch(&i.batch_id).map(|b| b.name.to_lowercase())));
+    let mut retries = Vec::new();
     for i in instances {
         let batch = m.batch(&i.batch_id).map(|b| b.name.clone()).unwrap_or_default();
         let detail = Some(format!("{batch} · {}", super::state::status(i, None)));
-        let (icon, verb, action): (&'static str, String, Box<dyn Action>) = if super::tile::playable(&i.phase) {
+        let banned = matches!(i.phase, Phase::Banned { .. });
+        let (icon, verb, action): (&'static str, String, Box<dyn Action>) = if banned {
+            ("refresh-cw", tr("Erneut versuchen"), Box::new(Start(i.key.clone())))
+        } else if super::tile::playable(&i.phase) {
             ("gamepad-2", tr("Spielen"), Box::new(Play(i.key.clone())))
         } else if i.phase == Phase::LoginNeeded {
             ("log-in", tr("Anmelden"), Box::new(SignInAgain(i.account_id.to_string())))
@@ -601,8 +608,17 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         } else {
             ("play", tr("Starten"), Box::new(Start(i.key.clone())))
         };
-        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action, enabled: true, mass: false });
+        let row = Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail: detail.clone(), keys: None, action, enabled: true, mass: false, later: banned };
+        if banned {
+            retries.push(row);
+        } else {
+            out.push(row);
+        }
+        if matches!(i.phase, Phase::Crashed { .. }) {
+            out.push(Entry { group: Group::Accounts, icon: "triangle-alert", label: format!("{} — {}", i.name, tr("Absturzbericht…")), detail, keys: None, action: Box::new(super::instance_files::ShowCrash { instance: i.instance_id.clone(), account: i.account_id.to_string() }), enabled: true, mass: false, later: false });
+        }
     }
+    out.extend(retries);
     let several = chosen.len() > 1;
     for e in &mut out {
         e.mass = mass(e.action.as_ref(), several);
@@ -612,7 +628,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         .map(|r| {
             r.0.iter()
                 .filter_map(|a| out.iter().find(|e| e.enabled && e.action.partial_eq(a.as_ref())))
-                .map(|e| Entry { group: Group::Recent, icon: e.icon, label: e.label.clone(), detail: e.detail.clone(), keys: e.keys.clone(), action: e.action.boxed_clone(), enabled: true, mass: e.mass })
+                .map(|e| Entry { group: Group::Recent, icon: e.icon, label: e.label.clone(), detail: e.detail.clone(), keys: e.keys.clone(), action: e.action.boxed_clone(), enabled: true, mass: e.mass, later: e.later })
                 .collect()
         })
         .unwrap_or_default();
@@ -762,7 +778,7 @@ mod tests {
     fn the_cursor_never_starts_on_a_mass_action() {
         let entry = |label: &str, action: Box<dyn Action>| {
             let mass = mass(action.as_ref(), false);
-            Entry { group: Group::Commands, icon: "play", label: label.into(), detail: None, keys: None, action, enabled: true, mass }
+            Entry { group: Group::Commands, icon: "play", label: label.into(), detail: None, keys: None, action, enabled: true, mass, later: false }
         };
         let entries = vec![entry("Alle starten", Box::new(StartAll)), entry("Alle stoppen", Box::new(StopAll)), entry("Test starten", Box::new(StartBatch("b".into()))), entry("Neuer Batch", Box::new(NewBatch))];
         for query in ["", "a", "alle", "start", "st", "neu", "batch"] {
@@ -775,6 +791,13 @@ mod tests {
         assert!(mass(&StopBatch("b".into()), false) && mass(&StartSelected, true));
         assert!(!mass(&StartSelected, false), "one chosen game is no mass action");
         assert!(mass(&CancelStart(None), false), "cancelling stops every game still in line");
+    }
+
+    #[test]
+    fn a_later_hit_ranks_below_better_matches_and_worse_ones() {
+        let entry = |label: &str, later: bool| Entry { group: Group::Accounts, icon: "play", label: label.into(), detail: None, keys: None, action: Box::new(NewBatch), enabled: true, mass: false, later };
+        let entries = vec![entry("Dev — Erneut versuchen", true), entry("Dev2 — Starten", false), entry("Mein Dev — Starten", false)];
+        assert_eq!(rows(&entries, "dev"), [Row::Entry(1), Row::Entry(2), Row::Entry(0)]);
     }
     use gpui_kit::Keystroke;
 

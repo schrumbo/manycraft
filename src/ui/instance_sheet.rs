@@ -30,7 +30,6 @@ use crate::core::modrinth::{self, Update};
 use crate::core::snapshot::Reason;
 use crate::core::versions::{GameVersion, Kind};
 
-const DEFAULT_TITLES: [(&str, &str); 6] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton"), ("sodium", "Sodium")];
 const VERSION_WIDTH: f32 = 232.;
 const SNUG_PERCENT: u64 = 80;
 const SAVE_ERROR_MAX: f32 = 220.;
@@ -500,7 +499,10 @@ impl InstanceSheet {
             if touched {
                 remote::move_mods(&mods, &v, &wanted).map(|(mods, missing)| (mods, missing.into_iter().map(|m| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&m, &v])).collect::<Vec<_>>()))
             } else {
-                remote::defaults(&v, &wanted).map(|d| (d.mods, d.notes.iter().map(|n| default_note(n, &v)).collect()))
+                remote::defaults(&v, &wanted).map(|d| {
+                    let note = default_gaps(d.mods.len(), &d.notes, &v);
+                    (d.mods, note.into_iter().collect())
+                })
             }
         });
         cx.spawn(async move |this, cx| {
@@ -1169,11 +1171,9 @@ fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, max: f
     div().contain_scroll(scroll).child(list)
 }
 
-fn default_note(note: &str, version: &str) -> String {
-    let Some(rest) = note.strip_prefix("skipped ") else { return note.to_owned() };
-    let slug = rest.split(':').next().unwrap_or(rest);
-    let title = DEFAULT_TITLES.iter().find(|(s, _)| *s == slug).map_or(slug, |(_, t)| t);
-    trf("Den Mod „%@“ gibt es nicht für %@.", &[&title, &version])
+fn default_gaps(found: usize, notes: &[String], version: &str) -> Option<String> {
+    let skipped = notes.iter().filter(|n| n.starts_with("skipped ")).count();
+    (skipped > 0).then(|| trf("%1$lld von %2$lld Performance-Mods für %3$@ verfügbar", &[&found, &(found + skipped), &version]))
 }
 
 impl Render for InstanceSheet {

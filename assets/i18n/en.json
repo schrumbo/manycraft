@@ -752,7 +752,6 @@
   "Die Instanz im Papierkorb ist beschädigt. Ihre Dateien bleiben dort unverändert.": "The instance in the trash is damaged. Its files stay there unchanged.",
   "„%@“ passt nicht mehr zu dieser Version.": "“%@” no longer fits this version.",
   "Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.": "Server and accounts apply at the next start. Only a stopped batch can change its instance.",
-  "Den Mod „%@“ gibt es nicht für %@.": "The mod “%@” does not exist for %@.",
   "Das geht, sobald keine Instanz mehr startet.": "Available once no instance is starting.",
   "Wartet": "Waiting",
   "Laden abbrechen": "Cancel download",
@@ -1210,7 +1209,6 @@
   "Updates prüfen…": "Check for Updates…",
   "Einschalten": "Turn On",
   "1 doppelt": "1 duplicate",
-  "Kommt beim nächsten Start dazu.": "Arrives with the next start.",
   "Ältere Version löschen": "Delete Older Version",
   "%@ hinzugefügt.": "%@ added.",
   "%@ wurde nicht entfernt.": "%@ was not removed.",
@@ -1382,5 +1380,14 @@
   "Ein Eintrag (%@) wird endgültig gelöscht.": "One item (%@) will be deleted for good.",
   "%1$lld Einträge (%2$@) werden endgültig gelöscht.": "%1$lld items (%2$@) will be deleted for good.",
   "Bleibt 7 Tage, dann wird es gelöscht · %@": "Kept for 7 days, then deleted · %@",
-  "Dort beenden und hier starten": "Quit There and Start Here"
+  "Dort beenden und hier starten": "Quit There and Start Here",
+  "1 Mod kommt beim nächsten Start dazu": "1 mod will be added at the next start",
+  "%lld Mods kommen beim nächsten Start dazu": "%lld mods will be added at the next start",
+  "1 kommt beim nächsten Start dazu": "1 added at the next start",
+  "%lld kommen beim nächsten Start dazu": "%lld added at the next start",
+  "%1$lld von %2$lld Performance-Mods für %3$@ verfügbar": "%1$lld of %2$lld performance mods available for %3$@",
+  "zuletzt gespielt heute": "last played today",
+  "zuletzt gespielt gestern": "last played yesterday",
+  "zuletzt gespielt am %@": "last played on %@",
+  "Absturzbericht…": "Crash Report…"
 }

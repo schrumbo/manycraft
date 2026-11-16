@@ -66,6 +66,29 @@ pub fn init(cx: &mut App) {
     cx.observe(&model::get(cx), |_, cx| track_uptime(cx)).detach();
 }
 
+/// Reads the worlds of instance `id` again for the page header, when its page is the one shown.
+pub fn worlds_changed(id: &str, cx: &mut App) {
+    let Some(page) = cx.try_global::<Page>().map(|p| p.0.clone()) else { return };
+    page.update(cx, |s, cx| {
+        if s.id == id {
+            s.load_worlds(cx);
+        }
+    });
+}
+
+/// "zuletzt gespielt gestern", from unix milliseconds.
+fn played(ms: i64) -> Option<String> {
+    let at = chrono::DateTime::from_timestamp_millis(ms)?.with_timezone(&chrono::Local);
+    let today = chrono::Local::now().date_naive();
+    Some(if at.date_naive() == today {
+        tr("zuletzt gespielt heute")
+    } else if today.pred_opt() == Some(at.date_naive()) {
+        tr("zuletzt gespielt gestern")
+    } else {
+        trf("zuletzt gespielt am %@", &[&at.format("%d.%m.%Y").to_string()])
+    })
+}
+
 #[derive(Default)]
 struct Uptime(std::collections::HashMap<String, Instant>);
 
@@ -357,6 +380,7 @@ struct InstancePage {
     in_flight: Option<(String, Job)>,
     switching: Option<Busy>,
     uptime_armed: bool,
+    worlds: Option<(String, usize, Option<i64>)>,
     notes: Vec<String>,
     error: Option<Problem>,
     rename_error: Option<Problem>,
@@ -458,6 +482,7 @@ impl InstancePage {
             in_flight: None,
             switching: None,
             uptime_armed: false,
+            worlds: None,
             notes: Vec::new(),
             error: None,
             rename_error: None,
@@ -469,7 +494,52 @@ impl InstancePage {
             _subs: subs,
         };
         page.load_versions(cx);
+        page.load_worlds(cx);
         page
+    }
+
+    fn load_worlds(&mut self, cx: &mut Context<Self>) {
+        let Some(dir) = super::instance_files::instance_dir(&self.id, cx) else { return };
+        let id = self.id.clone();
+        let task = cx.background_spawn(async move {
+            let found = crate::core::worlds::list(&dir);
+            (found.len(), found.iter().filter_map(|w| w.level.last_played).max())
+        });
+        cx.spawn(async move |this, cx| {
+            let (count, last) = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.id == id {
+                    s.worlds = Some((id, count, last));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn subtitle(&self, made: &Instance) -> String {
+        let mut parts = Vec::new();
+        if !made.name.contains(&made.game_version) {
+            parts.push(format!("Minecraft {}", made.game_version));
+        }
+        if made.loader != Loader::Vanilla {
+            parts.push(made.loader.name().to_owned());
+        }
+        if made.loader.takes_mods() {
+            let n = made.mods.len() + made.local_mods.len();
+            parts.push(if n == 1 { tr("1 Mod") } else { trf("%lld Mods", &[&n]) });
+        }
+        if let Some((_, count, last)) = self.worlds.as_ref().filter(|(id, _, _)| *id == made.id) {
+            match count {
+                0 => {}
+                1 => parts.push(tr("1 Welt")),
+                n => parts.push(trf("%lld Welten", &[n])),
+            }
+            if let Some(text) = last.and_then(played) {
+                parts.push(text);
+            }
+        }
+        parts.join(" · ")
     }
 
     fn bind(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -479,6 +549,8 @@ impl InstancePage {
         self.commit_inputs(cx);
         self.commit_options(cx);
         self.id = id.to_owned();
+        self.worlds = None;
+        self.load_worlds(cx);
         self.mods.update(cx, |m, cx| m.bind(id, window, cx));
         self.hold_mods(cx);
         self.entered = true;
@@ -946,7 +1018,7 @@ impl InstancePage {
                     };
                     div().id("instance-rename-error").mark("notice", e.text.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(said)).child(e.text.clone())
                 }
-                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(made.version_line()),
+                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).tooltip(tip(made.version_line())).child(self.subtitle(made)),
             });
         div()
             .h(px(shell::TOOLBAR))

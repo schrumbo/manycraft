@@ -9,6 +9,7 @@ use gpui_kit::*;
 use uuid::Uuid;
 
 use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, ReconnectSelected, Respawn, RestartMany, RestartSelected, ShowHistory, ShowInstance, SignInAgain, Start, StartMany, StartSelected, Stop, StopMany, StopSelected, TakeOver};
+use super::instance_files::ShowCrash;
 use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::model::{self, Game, Model, Phase};
@@ -48,6 +49,7 @@ pub struct TileData {
     pub playing: bool,
     /// Whether the account plays this instance in another game, so a start here must end that one first.
     pub busy: bool,
+    pub instance_id: String,
 }
 
 impl TileData {
@@ -664,6 +666,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
             }
         });
     let (account, login, waits, busy) = (d.account_id, d.phase == Phase::LoginNeeded, d.phase == Phase::NoNetwork, d.busy);
+    let (crashed, menu_instance) = (matches!(d.phase, Phase::Crashed { .. }), d.instance_id.clone());
     tile.context_menu(move |menu, window, cx| {
         let chosen = menu_view.upgrade().map(|v| v.read(cx).grid.chosen()).unwrap_or_default();
         let several = chosen.len() > 1 && chosen.contains(&menu_key);
@@ -695,6 +698,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         let menu = if dead { menu.menu(tr("Wiederbeleben"), Box::new(Respawn(menu_key.clone()))) } else { menu };
         let space = Keystroke::parse("space").ok().map(|k| super::palette::label(&k));
         let menu = menu.menu_element_with_disabled(Box::new(ShowHistory(menu_key.clone())), false, super::palette::menu_row(tr("Verlauf"), space, false));
+        let menu = if crashed { menu.menu(tr("Absturzbericht…"), Box::new(ShowCrash { instance: menu_instance.clone(), account: account.to_string() })) } else { menu };
         let menu = if running || stopping || waits {
             menu.menu_element_with_disabled(Box::new(Stop(menu_key.clone())), stopping, row(tr("Stoppen"), &StopSelected, stopping))
         } else if login {
