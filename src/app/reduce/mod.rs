@@ -124,7 +124,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::StopAll => {
             let stopped = fleet::stoppable(model, None);
-            for id in batch_ids(model) {
+            for id in owners(model) {
                 fleet::stop_batch(model, &id, &mut out);
             }
             if !stopped.is_empty() {
@@ -212,6 +212,16 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
 
 fn batch_ids(m: &Model) -> Vec<String> {
     m.batches.iter().map(|b| b.id.clone()).collect()
+}
+
+fn owners(m: &Model) -> Vec<String> {
+    let mut ids = batch_ids(m);
+    for g in m.games.values() {
+        if !ids.contains(&g.batch_id) {
+            ids.push(g.batch_id.clone());
+        }
+    }
+    ids
 }
 
 /// Moves game `key` to `to` when the transition table allows it for `why`; otherwise logs and leaves it.

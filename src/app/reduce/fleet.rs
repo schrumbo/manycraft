@@ -678,6 +678,20 @@ mod tests {
     }
 
     #[test]
+    fn stopping_all_stops_games_played_outside_a_batch_too() {
+        let s = settings();
+        let (mut m, keys) = farm(1, 2048);
+        let made = m.instances[0].clone();
+        let account = m.games[&keys[0]].account_id;
+        let solo = crate::core::fleet::solo_key(&made, account);
+        m.games.insert(solo.clone(), Game { phase: Phase::Menu, ..Game::new(solo.clone(), crate::core::fleet::solo_owner(&made.id), made.id.clone(), account, "Alt0".into()) });
+        m.session.pids.insert(solo.clone(), 7);
+        let fx = run(&mut m, &s, Instant::now(), Event::StopAll);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if k.contains(&solo))));
+        assert!(m.games[&solo].stopping);
+    }
+
+    #[test]
     fn undoing_a_stop_of_all_starts_the_same_games_in_their_order() {
         let s = settings();
         let (mut m, keys) = farm(4, 2048);
