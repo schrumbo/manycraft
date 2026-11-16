@@ -348,7 +348,7 @@ pub fn primary_action(key: &str, window: &mut Window, cx: &mut App) {
     let m = model::get(cx).read(cx);
     let Some((phase, stopping, account)) = m.games.get(key).map(|i| (i.phase.clone(), Stopping::of(i.stopping, i.overdue), i.account_id)) else { return };
     let busy = m.games.get(key).is_some_and(|i| busy(i, m));
-    if let Some(p) = main_action(&phase, stopping, busy) {
+    if let Some(p) = main_action(&phase, stopping, busy).filter(|p| *p != Primary::ForceQuit) {
         window.dispatch_action(p.action(key, account), cx);
     }
 }
@@ -673,7 +673,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         .children(mark)
         .children(face)
         .child(strip(d, g, t))
-        .children(actions(d, g, t).filter(|_| hovered || d.selected || d.phase == Phase::LoginNeeded))
+        .children(actions(d, g, t).filter(|_| hovered || d.selected || d.phase == Phase::LoginNeeded || (d.stopping && d.overdue)))
         .children(ring.map(|c| div().absolute().inset_0().border(px(tile::RING)).border_color(c)))
         .children(history(d, t))
         .when(g.wordless(), |tile| tile.tooltip(tip(format!("{} · {}", d.name, d.detail))))

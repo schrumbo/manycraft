@@ -399,7 +399,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         let n = super::grid::offers(&chosen, m).map(|o| o.able);
         let several = chosen.len() > 1;
         let force = chosen.iter().all(|k| m.games.get(k).is_some_and(|g| g.stopping && g.overdue));
-        let stop = if force { ("power", tr("Sofort beenden")) } else { ("square", tr("Ausgewählte stoppen")) };
+        let stop = if force { ("power", tr("Ausgewählte sofort beenden")) } else { ("square", tr("Ausgewählte stoppen")) };
         for (icon, label, action, able) in [
             ("play", tr("Ausgewählte starten"), Box::new(StartSelected) as Box<dyn Action>, n[0] > 0),
             (stop.0, stop.1, Box::new(StopSelected), n[1] > 0),

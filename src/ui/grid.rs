@@ -1063,7 +1063,7 @@ pub fn offers(keys: &[String], m: &Model) -> [Offer; 5] {
     };
     [
         offer(tr("Starten"), "play", Box::new(StartSelected), n.start, tr("schon gestartet oder Anmeldung nötig")),
-        offer(tr("Stoppen"), "square", Box::new(StopSelected), n.stop, tr("nicht gestartet")),
+        if n.stop > 0 && n.stop == n.force { offer(tr("Sofort beenden"), "power", Box::new(StopSelected), n.stop, tr("nicht gestartet")) } else { offer(tr("Stoppen"), "square", Box::new(StopSelected), n.stop, tr("nicht gestartet")) },
         offer(tr("Neu starten"), "rotate-cw", Box::new(RestartSelected), n.restart, tr("Anmeldung nötig oder wird gestoppt")),
         offer(tr("Neu verbinden"), "refresh-cw", Box::new(ReconnectSelected), n.reconnect, tr("nicht im Spiel oder gesperrt")),
         offer(tr("Nachricht senden…"), "message-square", Box::new(MessageSelected), n.message, tr("auf keinem Server")),

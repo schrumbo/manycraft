@@ -136,6 +136,8 @@ impl Need {
 pub struct Able {
     pub start: usize,
     pub stop: usize,
+    /// Chosen games whose stop is overdue, which a stop now ends at once.
+    pub force: usize,
     pub restart: usize,
     pub reconnect: usize,
     pub message: usize,
@@ -346,6 +348,7 @@ impl Model {
             let fresh = !i.stopping;
             n.start += usize::from(fresh && !i.phase.is_running() && i.phase != Phase::LoginNeeded);
             n.stop += usize::from((fresh || i.overdue) && i.phase.stoppable());
+            n.force += usize::from(i.stopping && i.overdue && i.phase.stoppable());
             n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
             n.reconnect += usize::from(fresh && i.phase.reconnectable());
             n.message += usize::from(i.phase.on_server());
