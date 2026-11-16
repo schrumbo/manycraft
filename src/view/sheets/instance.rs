@@ -96,8 +96,8 @@ fn companion_hint(game: &str) -> Option<String> {
     (!game.is_empty() && !companion::available(game)).then(|| trf("Hintergrundmodus ab %@", &[&companion::first()]))
 }
 
-fn followed_name(typed: &str, auto: &str, version: &str) -> Option<String> {
-    (!version.is_empty() && typed.trim() == auto).then(|| trf("Minecraft %@", &[&version]))
+fn followed_name(typed: &str, auto: &str, version: &str, taken: &[&str]) -> Option<String> {
+    (!version.is_empty() && typed.trim() == auto).then(|| forms::unique_name(&trf("Minecraft %@", &[&version]), taken))
 }
 
 fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> InstanceEdit {
@@ -382,7 +382,9 @@ impl Make {
         let version = self.version.peek().clone();
         let typed = self.name.peek().clone();
         let auto = self.name_auto.peek().clone();
-        if let Some(name) = followed_name(&typed, &auto, &version) {
+        let model = self.store.model.peek();
+        let taken: Vec<&str> = model.instances.iter().map(|i| i.name.as_str()).collect();
+        if let Some(name) = followed_name(&typed, &auto, &version, &taken) {
             self.name.set(name.clone());
             self.name_auto.set(name);
         }
@@ -1544,13 +1546,20 @@ mod tests {
 
     #[test]
     fn the_name_follows_the_version_until_the_person_types() {
-        let first = followed_name("", "", "26.3");
+        let first = followed_name("", "", "26.3", &[]);
         assert!(first.as_deref().is_some_and(|n| n.contains("26.3")));
         let auto = first.unwrap_or_default();
-        assert!(followed_name(&auto, &auto, "26.2").is_some_and(|n| n.contains("26.2")));
-        assert!(followed_name("Farm", &auto, "26.2").is_none());
-        assert!(followed_name("", &auto, "26.2").is_none());
-        assert!(followed_name("", "", "").is_none());
+        assert!(followed_name(&auto, &auto, "26.2", &[]).is_some_and(|n| n.contains("26.2")));
+        assert!(followed_name("Farm", &auto, "26.2", &[]).is_none());
+        assert!(followed_name("", &auto, "26.2", &[]).is_none());
+        assert!(followed_name("", "", "", &[]).is_none());
+    }
+
+    #[test]
+    fn the_followed_name_skips_names_already_taken() {
+        crate::core::i18n::init("de");
+        assert_eq!(followed_name("", "", "26.3", &["minecraft 26.3"]).as_deref(), Some("Minecraft 26.3 (2)"));
+        assert_eq!(followed_name("", "", "26.3", &["Minecraft 26.3", "Minecraft 26.3 (2)"]).as_deref(), Some("Minecraft 26.3 (3)"));
     }
 
     #[test]
