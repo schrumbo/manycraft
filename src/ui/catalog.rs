@@ -127,10 +127,11 @@ fn swap_in(instance_dir: &Path, dir: &Path, kind: Kind, found: ModRef, replacing
             return Err(e);
         }
     };
+    let saved = packs::saved_selection(instance_dir, kind);
     if let Some(old) = replacing
         && let Err(e) = packs::rename_selected(instance_dir, kind, old, &file)
     {
-        let _ = packs::rename_selected(instance_dir, kind, &file, old);
+        let _ = packs::restore_selection(kind, &saved);
         if !existed {
             let _ = std::fs::remove_file(dir.join(&file));
         }
@@ -145,15 +146,16 @@ fn swap_in(instance_dir: &Path, dir: &Path, kind: Kind, found: ModRef, replacing
 /// were, with `entry` still in the trash to try again.
 pub fn switch_back(instance_dir: &Path, dir: &Path, kind: Kind, current: &str, entry: &str, previous: &str) -> Result<()> {
     let present = std::fs::symlink_metadata(dir.join(current)).is_ok();
+    let saved = packs::saved_selection(instance_dir, kind);
     if let Err(e) = packs::rename_selected(instance_dir, kind, current, previous) {
-        let _ = packs::rename_selected(instance_dir, kind, previous, current);
+        let _ = packs::restore_selection(kind, &saved);
         return Err(e);
     }
     let gone = if present {
         match packs::remove(instance_dir, dir, current) {
             Ok(gone) => Some(gone),
             Err(e) => {
-                let _ = packs::rename_selected(instance_dir, kind, previous, current);
+                let _ = packs::restore_selection(kind, &saved);
                 return Err(e);
             }
         }
@@ -164,7 +166,7 @@ pub fn switch_back(instance_dir: &Path, dir: &Path, kind: Kind, current: &str, e
         if let Some(gone) = &gone {
             let _ = packs::put_back(instance_dir, gone);
         }
-        let _ = packs::rename_selected(instance_dir, kind, previous, current);
+        let _ = packs::restore_selection(kind, &saved);
         return Err(e);
     }
     Ok(())
@@ -239,6 +241,17 @@ mod tests {
         assert!(shelf.swap("New.zip", b"theirs").is_err());
         assert!(shelf.dir().join("New.zip").is_file());
         assert!(shelf.dir().join("Old.zip").is_file());
+    }
+
+    #[test]
+    fn a_failed_selection_keeps_a_selection_the_user_already_had() {
+        let shelf = Shelf::new("New.zip");
+        shelf.file("Old.zip", b"mine");
+        shelf.file("New.zip", b"theirs");
+        shelf.lock_selection();
+        assert!(shelf.swap("New.zip", b"theirs").is_err());
+        assert_eq!(shelf.selected(), "shaderPack=New.zip
+");
     }
 
     #[test]

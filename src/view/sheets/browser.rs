@@ -190,6 +190,10 @@ impl Undo {
         }
     }
 
+    fn touches(&self, id: &str) -> bool {
+        self.pid() == id || matches!(self, Undo::Switched { back: Back::Mod { added, .. }, .. } if added.iter().any(|a| a == id))
+    }
+
     fn title(&self) -> &str {
         match self {
             Undo::Removed(m, _) => &m.title,
@@ -260,7 +264,7 @@ fn keep_undo(list: &mut Vec<Undo>, next: Undo) {
 }
 
 fn forget_undo(list: &mut Vec<Undo>, ids: &[String]) {
-    list.retain(|u| !ids.iter().any(|id| id == u.pid()));
+    list.retain(|u| !ids.iter().any(|id| u.touches(id)));
 }
 
 fn clamp_step(sel: usize, count: usize, delta: i32) -> usize {
@@ -834,7 +838,7 @@ impl Flow {
 
     fn forget_undo(&self, ids: &[String]) {
         let mut undos = self.undos;
-        if undos.peek().iter().any(|u| ids.iter().any(|id| id == u.pid())) {
+        if undos.peek().iter().any(|u| ids.iter().any(|id| u.touches(id))) {
             forget_undo(&mut undos.write(), ids);
         }
     }
@@ -1275,12 +1279,13 @@ impl Flow {
             }
             match result {
                 Some(Ok(found)) => {
+                    let resolved: Vec<String> = found.iter().map(|m| m.project_id.clone()).collect();
                     let merged = merge_version(&mut mods.write(), found, &id);
                     if let Some(mut touched) = flow.scope.touched.filter(|t| t.try_peek().is_some()) {
                         touched.set(true);
                     }
                     if flow.alive() {
-                        flow.forget_undo(&merged.put);
+                        flow.forget_undo(&resolved);
                         let added: Vec<String> = merged.put.iter().filter(|p| **p != id).cloned().collect();
                         if let Some((previous, at)) = merged.previous {
                             flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, extra: merged.extra, back: Back::Mod { previous, at, added } });
@@ -1393,8 +1398,8 @@ impl Flow {
             }
             match result {
                 Some(Ok(found)) => {
+                    let resolved: Vec<String> = found.iter().map(|m| m.project_id.clone()).collect();
                     let mut extra = Vec::new();
-                    let mut put = Vec::new();
                     {
                         let mut list = mods.write();
                         for m in found {
@@ -1402,7 +1407,6 @@ impl Flow {
                                 if m.project_id != id {
                                     extra.push(m.title.clone());
                                 }
-                                put.push(m.project_id.clone());
                                 list.push(m);
                             }
                         }
@@ -1411,7 +1415,7 @@ impl Flow {
                         touched.set(true);
                     }
                     if flow.alive() {
-                        flow.forget_undo(&put);
+                        flow.forget_undo(&resolved);
                         if !extra.is_empty() && !flow.undoable() {
                             notice.set(Some(Notice::Added(extra)));
                         }
@@ -2876,6 +2880,16 @@ mod tests {
         let mut list = vec![switched];
         forget_undo(&mut list, &["a".to_owned()]);
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn needing_a_dependency_a_switch_added_forgets_that_switch() {
+        let switched = Undo::Switched { pid: "a".into(), title: "A".into(), number: "2.0".into(), extra: vec!["Lib".into()], back: Back::Mod { previous: mod_ref("a", "a1"), at: 0, added: vec!["lib".into()] } };
+        let mut list = vec![switched, removed("c")];
+        forget_undo(&mut list, &["b".to_owned()]);
+        assert_eq!(list.len(), 2);
+        forget_undo(&mut list, &["b".to_owned(), "lib".to_owned()]);
+        assert_eq!(list.iter().map(Undo::pid).collect::<Vec<_>>(), ["c"]);
     }
 
     #[test]
