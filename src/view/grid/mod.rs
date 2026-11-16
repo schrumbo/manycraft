@@ -120,7 +120,7 @@ impl Component for GridPage {
                 }
             });
 
-        if !m.loaded {
+        if !m.loaded && m.error.is_none() {
             return page.child(rect().center().width(Size::fill()).height(Size::fill()).child(secondary(&t, tr("Lädt …")))).into_element();
         }
         if keys.is_empty() && shelf.is_empty() {

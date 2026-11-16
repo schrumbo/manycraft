@@ -106,7 +106,7 @@ fn context(store: Store, key: &str) -> Vec<Item> {
         items.push(Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p)));
     }
     for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected] {
-        if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| action_of(g, &m) != Some(Primary::Start)) {
+        if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| !matches!(action_of(g, &m), Some(Primary::Start | Primary::TakeOver))) {
             let label = if many { c.label() } else { single(c) };
             let mut item = Item::new(format!("menu.{}", c.name()), label, move |_| c.run(store)).disabled(!c.available(store));
             if let Some(s) = c.shortcut() {
