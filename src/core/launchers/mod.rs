@@ -59,6 +59,7 @@ impl Launcher {
     }
 
     /// The launcher whose key is `key`.
+    #[cfg(test)]
     pub fn from_key(key: &str) -> Option<Self> {
         [Self::Prism, Self::MultiMc, Self::Modrinth, Self::CurseForge, Self::AtLauncher, Self::GdLauncher, Self::Vanilla].into_iter().find(|l| l.key() == key)
     }

@@ -306,6 +306,7 @@ impl Model {
     }
 
     /// Whether game `key` waits for free memory before it starts.
+    #[cfg(test)]
     pub fn waits_for_memory(&self, key: &str) -> bool {
         self.games.get(key).is_some_and(|g| g.memory_wait.is_some() && g.phase.waiting())
     }

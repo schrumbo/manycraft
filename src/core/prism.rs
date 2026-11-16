@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::account::{self, Account, AccountKind};
 use super::batch::ModRef;
 use super::instance::{self as made, Loader};
-use super::{modrinth, mrpack, net, launchers};
+use super::{modrinth, mrpack, launchers};
 
 const CONFIG_FILE: &str = "prismlauncher.cfg";
 const INSTANCE_FILE: &str = "instance.cfg";
@@ -285,16 +285,6 @@ pub(super) fn jar_names(mods: &Path) -> Result<Vec<(String, PathBuf)>> {
     }
     found.sort();
     Ok(found)
-}
-
-pub(super) fn jars_in(mods: &Path) -> Result<Vec<Jar>> {
-    jar_names(mods)?
-        .into_iter()
-        .map(|(name, path)| {
-            let sha1 = net::file_sha1(&path).with_context(|| format!("cannot read {}", path.display()))?;
-            Ok(Jar { path, name, sha1 })
-        })
-        .collect()
 }
 
 fn instance_root(data: &Path) -> PathBuf {

@@ -236,14 +236,6 @@ fn sweep_parts(root: &Path) {
     }
 }
 
-/// Deletes the snapshot `id` of the instance in `instance_dir`; not being there is fine.
-pub fn delete(instance_dir: &Path, id: &str) -> Result<()> {
-    if !valid_id(id) {
-        bail!("invalid snapshot {id:?}");
-    }
-    instance::remove_dir(&dir(instance_dir).join(id))
-}
-
 /// What a restore did: the saved instance, the instance as it was before, and the trash entries holding what was there.
 #[derive(Debug)]
 pub struct Restored {

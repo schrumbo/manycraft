@@ -23,8 +23,6 @@ pub enum Route {
     Attention(String),
     /// The chat, showing only whispers.
     Whispers,
-    /// The page of instance `id`.
-    Instance(String),
     /// A part of the settings window.
     Settings(Section),
 }
@@ -56,10 +54,6 @@ pub fn go(route: Route, cx: &mut App) {
         Route::Whispers => {
             super::state::show_grid(cx);
             super::chat::show_whispers(cx);
-        }
-        Route::Instance(id) => {
-            super::state::show_grid(cx);
-            super::main_window::show_instance(&id, cx);
         }
     }
 }

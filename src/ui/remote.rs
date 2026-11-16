@@ -355,21 +355,6 @@ fn canned_name(n: usize) -> String {
     named.split_whitespace().nth(n - 1).map_or_else(|| format!("Spieler{n}"), str::to_owned)
 }
 
-/// Adds an offline account, refusing a name that is invalid or already saved.
-pub fn add_offline(name: &str, proxy: Option<String>) -> Result<Account> {
-    saved(|| {
-        let mut accounts = account::load()?;
-        if let Some(problem) = forms::offline_name_problem(name, &accounts) {
-            return Err(gone(problem));
-        }
-        let mut account = Account::offline(name)?;
-        account.proxy.clone_from(&proxy);
-        let account = account::upsert(&mut accounts, account);
-        account::save(&accounts)?;
-        Ok(account)
-    })
-}
-
 /// Adds an offline account for each of `names` with `proxy`, skipping names that are taken or invalid by now; the accounts added.
 pub fn add_offline_many(names: &[String], proxy: Option<String>) -> Result<Vec<Account>> {
     saved(|| {

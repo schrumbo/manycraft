@@ -339,7 +339,7 @@ pub mod win {
     }
 
     /// Moves a normal `hwnd` into the middle of `home`, keeping its size, unless it is on that monitor already.
-    pub fn move_into(hwnd: HWND, home: Rect) -> super::Homed {
+    pub(super) fn move_into(hwnd: HWND, home: Rect) -> super::Homed {
         use super::Homed;
         let Some(seen) = seen(hwnd) else { return Homed::NotYet };
         if !seen.mode.is_normal() {

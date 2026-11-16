@@ -88,7 +88,7 @@ fn open(mode: Mode, search: Option<modrinth::Kind>, cx: &mut App) {
                 s.open_search(true, window, cx);
                 s.browse_tab(tab, window, cx);
             });
-            window.on_next_frame(move |window, cx| window.on_next_frame(move |window, cx| drop(view.update(cx, |s, cx| s.focus_search(window, cx)))));
+            window.on_next_frame(move |window, _| window.on_next_frame(move |window, cx| view.update(cx, |s, cx| s.focus_search(window, cx))));
         }
     });
 }
@@ -613,7 +613,6 @@ impl InstanceSheet {
     }
 
     fn create(&mut self, cx: &mut Context<Self>) {
-        let name = self.name.read(cx).value().trim().to_string();
         let edit = self.edit(cx);
         self.saving = true;
         self.save_error = None;

@@ -13,7 +13,7 @@ use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
 use crate::app::event::{Event as AppEvent, Loaded, Report};
-use crate::app::reduce::{Env, WHISPER_TAG, reduce};
+use crate::app::reduce::{Env, reduce};
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError};
 use crate::core::awake;
