@@ -297,6 +297,27 @@ pub fn pick_files(title: &str, filter: &str, extensions: &[&str], many: bool) ->
     if many { dialog.pick_files().unwrap_or_default() } else { dialog.pick_file().into_iter().collect() }
 }
 
+/// Asks where to save `suggested` as a `filter` file of `extension` with the system's dialog, starting in the folder chosen
+/// last; blocks, so it runs off the UI thread, and gives None at once while another save dialog is open. A driven window
+/// gets the path the drive tool answers.
+pub fn save_file(title: &str, suggested: &str, filter: &str, extension: &str) -> Option<std::path::PathBuf> {
+    static LAST: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+    static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if drive::on() {
+        return drive::answer("save").and_then(|p| p.into_iter().next());
+    }
+    if OPEN.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    let last = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = last.or_else(dirs::download_dir).or_else(dirs::home_dir).unwrap_or_default();
+    let path = rfd::FileDialog::new().set_title(title).set_directory(dir).set_file_name(suggested).add_filter(filter, &[extension]).save_file();
+    OPEN.store(false, Ordering::Release);
+    let path = path?;
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = path.parent().map(std::path::Path::to_path_buf);
+    Some(path)
+}
+
 /// Takes the manager window off the screen and the taskbar while it waits in the notification area; on Linux it only
 /// minimizes, since a desktop without a tray host would leave no way back.
 pub fn stow() {

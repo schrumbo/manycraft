@@ -181,4 +181,6 @@ pub enum Event {
     QuitChosen { keep: bool },
     /// The user asked to restart for the downloaded update.
     RestartForUpdate,
+    /// The updater moved on: what it found, loads and kept.
+    Updates(Box<crate::app::model::Updates>),
 }

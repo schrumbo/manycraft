@@ -64,6 +64,16 @@ impl Default for Notifications {
     }
 }
 
+/// Whether the window is light, dark, or follows the system.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// How often the tiles on screen refresh their previews, against what it costs the games.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,7 +112,12 @@ pub struct Settings {
     pub tray_explained: bool,
     /// Whether the first game shown in the manager's place showed how to close it and get back.
     pub swap_explained: bool,
+    pub appearance: Appearance,
+    /// The id of the chosen theme; none or a theme that is gone means the default.
+    pub theme: Option<String>,
     pub preview_rate: PreviewRate,
+    /// Whether version pickers also offer snapshots, pre-releases and old versions.
+    pub all_versions: bool,
     /// The account that plays an instance alone when the instance names none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_account: Option<uuid::Uuid>,
@@ -110,7 +125,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, preview_rate: PreviewRate::Normal, active_account: None }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None }
     }
 }
 
@@ -154,18 +169,33 @@ fn save_to(dir: &Path, settings: &Settings) -> Result<()> {
 }
 
 static ACTIVE: RwLock<Option<&'static Settings>> = RwLock::new(None);
+static WRITING: Mutex<()> = Mutex::new(());
+static LOAD_ERROR: Mutex<Option<anyhow::Error>> = Mutex::new(None);
 
-/// Loads the settings once for the whole run. An unreadable file leaves the defaults in force and is returned as the error.
+/// Loads the settings once for the whole run. An unreadable file leaves the defaults in force and is returned as the
+/// error, to the first caller.
 pub fn activate() -> Result<&'static Settings> {
+    let _one_at_a_time = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let active = load_once();
+    LOAD_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take().map_or(Ok(active), Err)
+}
+
+/// The settings in force, loaded first when nothing loaded them yet; an unreadable file waits for `activate` to report it.
+pub fn loaded() -> &'static Settings {
+    let _one_at_a_time = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    load_once()
+}
+
+fn load_once() -> &'static Settings {
     if let Some(settings) = *ACTIVE.read().unwrap_or_else(|e| e.into_inner()) {
-        return Ok(settings);
+        return settings;
     }
-    let (settings, error) = match load() {
-        Ok(settings) => (settings, None),
-        Err(e) => (Settings::default(), Some(e)),
-    };
-    let active = install(settings);
-    error.map_or(Ok(active), Err)
+    let read = if cfg!(test) { Ok(Settings::default()) } else { load() };
+    let settings = read.unwrap_or_else(|e| {
+        *LOAD_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
+        Settings::default()
+    });
+    install(settings)
 }
 
 /// The settings in force: the loaded ones, or the defaults before `activate`.
@@ -181,12 +211,21 @@ fn install(settings: Settings) -> &'static Settings {
     leaked
 }
 
-/// Puts `settings` in force at once, for every reader. Settings change a handful of times in a run, so each old value is simply kept.
-pub fn set(settings: Settings) -> &'static Settings {
-    install(settings)
+/// Changes the settings in force with `edit`, one writer at a time on every thread, and returns them before and after.
+/// Settings not loaded yet are loaded first, so a change never lands on the defaults over the saved file.
+/// Settings change a handful of times in a run, so each old value is simply kept.
+pub fn update(edit: impl FnOnce(&mut Settings)) -> (&'static Settings, &'static Settings) {
+    let _one_at_a_time = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let before = load_once();
+    let mut next = before.clone();
+    edit(&mut next);
+    if next == *before {
+        return (before, before);
+    }
+    (before, install(next))
 }
 
-/// Saves the settings in force, atomically. Called after every `set`, it always writes the newest value, however saves are ordered.
+/// Saves the settings in force, atomically. Called after every `update`, it always writes the newest value, however saves are ordered.
 pub fn persist() -> Result<()> {
     static SAVING: Mutex<()> = Mutex::new(());
     let _one_at_a_time = SAVING.lock().unwrap_or_else(|e| e.into_inner());
@@ -244,6 +283,43 @@ mod tests {
         assert!(!s.merged_chat && !s.notifications.whispers && s.notifications.attention);
         std::fs::write(dir.path().join(FILE), r#"{"update_check":false}"#).unwrap();
         assert!(!load_from(dir.path()).unwrap().auto_update);
+        std::fs::write(dir.path().join(FILE), r#"{"appearance":"dark","theme":"tinte","preview_rate":"smooth"}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert_eq!((s.appearance, s.theme.as_deref(), s.preview_rate), (Appearance::Dark, Some("tinte"), PreviewRate::Smooth));
+        assert_eq!(load_from(tempfile::tempdir().unwrap().path()).unwrap().appearance, Appearance::System);
+    }
+
+    #[test]
+    fn concurrent_updates_lose_no_change() {
+        let kept = active().theme.clone();
+        let (threads, each) = (8, 200);
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                scope.spawn(move || {
+                    let mark = char::from(b'a' + t);
+                    for _ in 0..each {
+                        update(|s| s.theme.get_or_insert_with(String::new).push(mark));
+                    }
+                });
+            }
+        });
+        let theme = active().theme.clone().unwrap_or_default();
+        for t in 0..threads {
+            assert_eq!(theme.chars().filter(|c| *c == char::from(b'a' + t)).count(), each);
+        }
+        update(|s| s.theme = kept);
+    }
+
+    #[test]
+    fn all_versions_is_off_by_default_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Settings::default().all_versions);
+        std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false}"#).unwrap();
+        assert!(!load_from(dir.path()).unwrap().all_versions);
+        let mut s = Settings::default();
+        s.all_versions = true;
+        save_to(dir.path(), &s).unwrap();
+        assert!(load_from(dir.path()).unwrap().all_versions);
     }
 
     #[test]

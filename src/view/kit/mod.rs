@@ -5,11 +5,14 @@ pub mod badge;
 pub mod button;
 pub mod chip;
 pub mod field;
+pub mod group;
+pub mod markdown;
 pub mod menu;
 pub mod row;
 pub mod segmented;
 pub mod select;
 pub mod sheet;
+pub mod spinner;
 pub mod stepper;
 pub mod switch;
 pub mod text;
@@ -23,6 +26,11 @@ use freya::prelude::*;
 
 use super::theme::{Theme, frame};
 
+/// Keeps `child` at least `height` tall, centred; torin adds `min_height` to the content instead of clamping, so it cannot do this.
+pub fn at_least(height: f32, child: impl IntoElement) -> Rect {
+    rect().horizontal().cross_align(Alignment::Center).child(rect().width(Size::px(0.)).height(Size::px(height))).child(child)
+}
+
 /// The theme of the window, shared by every component below the root.
 pub fn use_theme() -> Rc<Theme> {
     use_consume::<State<Rc<Theme>>>().read().clone()
@@ -31,6 +39,25 @@ pub fn use_theme() -> Rc<Theme> {
 /// Waits `duration` without blocking the UI thread.
 pub async fn after(duration: Duration) {
     timer(duration).await;
+}
+
+/// Runs `work` on a named thread; the receiver gets its result, or nothing when the thread could not start.
+pub fn off_thread<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send + 'static) -> Option<async_channel::Receiver<T>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = tx.send_blocking(work());
+        })
+        .ok()
+        .map(|_| rx)
+}
+
+/// Opens `target`, a web address or a folder, with the system; a driven run only notes it as `what`.
+pub fn open_external(what: &str, target: String) {
+    if !crate::core::drive::fenced(what, &target) {
+        Platform::get().open_url(target);
+    }
 }
 
 /// Runs `work` on a thread of its own and hands its result back to the UI thread; `None` when the thread died.
@@ -52,12 +79,21 @@ pub fn ring(t: &Theme, focus: Focus) -> Option<Border> {
 
 thread_local! {
     static HELD: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers::empty()) };
-    static ARROWS: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
+    static ARROWS: std::cell::RefCell<std::collections::HashMap<AccessibilityId, bool>> = std::cell::RefCell::default();
 }
 
 /// Notes that the control `a11y` moves with the arrow keys itself while it has the focus.
 pub fn use_arrows(a11y: AccessibilityId) {
-    use_hook(|| ARROWS.with(|a| a.borrow_mut().insert(a11y)));
+    arrows_hook(a11y, true);
+}
+
+/// Like `use_arrows`, for a control that moves with Left and Right only.
+pub fn use_side_arrows(a11y: AccessibilityId) {
+    arrows_hook(a11y, false);
+}
+
+fn arrows_hook(a11y: AccessibilityId, vertical: bool) {
+    use_hook(|| ARROWS.with(|a| a.borrow_mut().insert(a11y, vertical)));
     use_drop(move || {
         ARROWS.with(|a| a.borrow_mut().remove(&a11y));
     });
@@ -66,7 +102,18 @@ pub fn use_arrows(a11y: AccessibilityId) {
 /// True while a control that moves with the arrow keys has the focus.
 pub fn arrows() -> bool {
     let focused = *Platform::get().current_window().focused_accessibility_id.peek();
-    ARROWS.with(|a| a.borrow().contains(&focused))
+    ARROWS.with(|a| a.borrow().contains_key(&focused))
+}
+
+/// True while a button has the keyboard focus, so Enter belongs to it.
+pub fn button_focused() -> bool {
+    Platform::get().current_window().focused_accessibility_node.peek().role() == AccessibilityRole::Button
+}
+
+/// True while a control that moves with Up and Down itself has the focus.
+pub fn vertical_arrows() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    ARROWS.with(|a| a.borrow().get(&focused).copied().unwrap_or(false))
 }
 
 /// Gives the keyboard focus back to where it was when a layer opened, once the layer closes.

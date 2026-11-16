@@ -10,7 +10,7 @@ use super::text::{line, spacer};
 use super::{after, use_theme};
 use crate::core::i18n::tr;
 use crate::view::icons::{Icon, icon};
-use crate::view::theme::{font, frame, iconsize, space};
+use crate::view::theme::{font, frame, level, iconsize, space};
 use crate::view::ui::Ui;
 
 const PLAIN: Duration = Duration::from_secs(4);
@@ -92,7 +92,6 @@ impl Component for Host {
                 .a11y_role(AccessibilityRole::Alert)
                 .a11y_alt(toast.text.clone())
                 .width(Size::fill())
-                .min_height(Size::px(40.))
                 .padding((space::XS, space::XS, space::XS, space::M))
                 .horizontal()
                 .cross_align(Alignment::Center)
@@ -100,7 +99,7 @@ impl Component for Host {
                 .background(t.raised)
                 .corner_radius(t.shape.control + 2.)
                 .shadow(t.elevation.float.clone())
-                .child(line(&t, toast.text.clone(), font::BODY, t.text1))
+                .child(super::at_least(40. - space::XS * 2., line(&t, toast.text.clone(), font::BODY, t.text1)))
                 .child(spacer())
                 .content(Content::flex());
             if let Some(rim) = t.elevation.rim {
@@ -126,7 +125,7 @@ impl Component for Host {
         });
         rect()
             .position(Position::new_global().left((w - width) / 2.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::TOAST))
             .width(Size::px(width))
             .height(Size::px(h - space::L))
             .main_align(Alignment::End)

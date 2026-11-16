@@ -6,10 +6,11 @@ use crate::app::event::Event;
 use crate::core::i18n::{tr, trf};
 use crate::core::install;
 use crate::core::instance::Instance;
+use crate::core::mrpack;
 use crate::core::origin;
 use crate::core::snapshot::Reason;
 use crate::ui::forms;
-use crate::ui::remote;
+use crate::ui::{remote, transfer};
 use crate::view::icons::Icon;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::{off_ui, toast};
@@ -128,7 +129,7 @@ fn open_folder(store: Store, id: &str) {
     });
 }
 
-fn shortcut(store: Store, id: &str) {
+pub(crate) fn shortcut(store: Store, id: &str) {
     let m = store.model.peek();
     let Some(made) = m.instance(id) else { return };
     let solo = super::facts(&m, id).and_then(|f| f.solo);
@@ -150,7 +151,33 @@ fn shortcut(store: Store, id: &str) {
     });
 }
 
-fn clone(store: Store, id: &str) {
+pub(crate) fn export(store: Store, id: &str) {
+    let m = store.model.peek();
+    let Some(made) = m.instance(id).filter(|i| !m.exporting.contains(&i.id)) else { return };
+    let (id, title, suggested) = (made.id.clone(), tr("Exportieren"), transfer::file_name(&made.name));
+    drop(m);
+    spawn_in_window(async move {
+        let Some(Some(path)) = off_ui(move || native::save_file(&title, &suggested, "Modrinth", mrpack::EXTENSION)).await else { return };
+        let path = transfer::with_extension(path);
+        let Some(made) = store.model.peek().instance(&id).cloned() else { return };
+        let (id, name, out) = (made.id.clone(), made.name.clone(), path.clone());
+        let mut model = store.model;
+        if !model.write().exporting.insert(id.clone()) {
+            return;
+        }
+        let result = off_ui(move || remote::export_instance(&made, &out)).await;
+        model.write().exporting.remove(&id);
+        let what = trf("„%@“ nicht exportiert.", &[&name]);
+        match result {
+            Some(Ok(())) => native::reveal(&path),
+            Some(Err(e)) if transfer::local_io(&e) => store.dispatch(Event::Error(format!("{what} {}", tr("Die Datei lässt sich nicht schreiben. Ist sie in einem anderen Programm offen?")))),
+            Some(Err(e)) => store.dispatch(Event::Error(forms::explain_as(what, &e).text)),
+            None => store.dispatch(Event::Error(what)),
+        }
+    });
+}
+
+pub(crate) fn clone(store: Store, id: &str) {
     let source = id.to_owned();
     spawn_in_window(async move {
         let from = source.clone();
@@ -212,7 +239,7 @@ fn leave(store: Store, id: &str, to: Option<&str>) {
     page.set(next.map_or(Page::Grid(Filter::All), Page::Instance));
 }
 
-fn ask_delete(store: Store, id: &str) {
+pub(crate) fn ask_delete(store: Store, id: &str) {
     let m = store.model.peek();
     let Some(made) = m.instance(id) else { return };
     let name = made.name.clone();
@@ -220,7 +247,7 @@ fn ask_delete(store: Store, id: &str) {
     drop(m);
     let ui = store.ui;
     if !users.is_empty() {
-        let done = Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(ui)) };
+        let done = Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) };
         sheet::open(ui, Card::new("instance.delete.used", trf("„%@“ lässt sich nicht löschen.", &[&name])).message(crate::core::fleet::used_by(&users)).primary(done).width(frame::SHEET * 0.8));
         return;
     }
@@ -279,7 +306,7 @@ fn restore(store: Store, name: String, entry: String) {
     });
 }
 
-fn ask_reset(store: Store, id: &str) {
+pub(crate) fn ask_reset(store: Store, id: &str) {
     let Some(made) = store.model.peek().instance(id).cloned() else { return };
     if let Some(why) = super::blocked(store, id) {
         toast::show(store.ui, why, None);

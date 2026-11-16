@@ -447,9 +447,13 @@ fn versions_url_for(project_id: &str, filter: &Filter) -> String {
 pub fn newest_for<'a>(versions: &'a [Version], filter: &Filter) -> Option<&'a Version> {
     versions
         .iter()
-        .filter(|v| filter.loaders.is_empty() || v.loaders.iter().any(|l| filter.loaders.contains(l)))
-        .filter(|v| filter.game_version.as_ref().is_none_or(|g| v.game_versions.contains(g)))
+        .filter(|v| version_fits(v, filter))
         .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
+}
+
+/// Whether `filter` takes `version`: one of its loaders and its game version.
+pub fn version_fits(version: &Version, filter: &Filter) -> bool {
+    (filter.loaders.is_empty() || version.loaders.iter().any(|l| filter.loaders.contains(l))) && filter.game_version.as_ref().is_none_or(|g| version.game_versions.contains(g))
 }
 
 fn rank(version_type: &str) -> u8 {
@@ -469,6 +473,11 @@ fn newest<'a>(versions: &'a [Version], game_version: &str, loader: &Loader) -> O
         .iter()
         .filter(|v| fits(v, game_version, loader))
         .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
+}
+
+/// The primary file of `version` as a [`ModRef`] named `title`.
+pub fn version_ref(title: &str, version: &Version) -> Result<ModRef> {
+    mod_ref(title, version)
 }
 
 fn mod_ref(title: &str, version: &Version) -> Result<ModRef> {
@@ -561,6 +570,21 @@ fn resolve_all<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str,
     expand(src, &mut entries, &mut seen, game_version, loader)?;
     check_compatible(&entries)?;
     Ok((entries, requested))
+}
+
+fn resolve_version_from(src: &dyn Source, version_id: &str, game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+    let version = src.version(version_id)?;
+    let project = src.project(&version.project_id)?.ok_or_else(|| Unavailable(format!("{} is not on Modrinth", version.project_id)))?;
+    let root = Entry {
+        found: mod_ref(&project.title, &version)?,
+        required: dependencies_of(&version, "required").cloned().collect(),
+        incompatible: dependencies_of(&version, "incompatible").filter_map(|d| d.project_id.clone()).collect(),
+    };
+    let mut seen = HashSet::from([root.found.project_id.clone()]);
+    let mut entries = vec![root];
+    expand(src, &mut entries, &mut seen, game_version, loader)?;
+    check_compatible(&entries)?;
+    Ok(entries.into_iter().map(|e| e.found).collect())
 }
 
 fn defaults_from(src: &dyn Source, game_version: &str, loader: &Loader) -> Result<Defaults> {
@@ -946,6 +970,12 @@ fn prune(dir: &Path, kept: usize) {
 /// The newest version of a mod (slug or project id) for `game_version` and `loader`, releases before betas before alphas.
 pub fn resolve(slug_or_id: &str, game_version: &str, loader: &Loader) -> Result<ModRef> {
     Ok(lookup(&Api::new()?, slug_or_id, game_version, loader)?.found)
+}
+
+/// The version `version_id` of a mod, whatever newer ones exist, with its required dependencies resolved like
+/// [`resolve_with_dependencies`]; the mod itself comes first. Two incompatible mods are an error naming both.
+pub fn resolve_version(version_id: &str, game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+    resolve_version_from(&Api::new()?, version_id, game_version, loader)
 }
 
 /// Resolves every mod in `list` and, recursively, its required dependencies, each project once.
@@ -1441,6 +1471,54 @@ Connection: close
         let err = resolved(&fx, &["c", "a"]).unwrap_err().to_string();
         assert!(err.contains("T-a") && err.contains("T-b"), "{err}");
         assert_eq!(titles(&resolved(&fx, &["a"]).unwrap()), ["T-a"]);
+    }
+
+    fn with_old_a(deps: &[(&str, &str)]) -> Fixtures {
+        let mut fx = Fixtures::synthetic(&[("a", &[("id-c", "required")]), ("b", &[]), ("c", &[])]);
+        let mut old = fx.versions[0].clone();
+        old.id = "v-a-old".into();
+        old.date_published = "2025-01-01T00:00:00Z".into();
+        old.dependencies = deps.iter().map(|(id, kind)| Dependency { project_id: Some((*id).into()), version_id: None, dependency_type: (*kind).into() }).collect();
+        fx.versions.push(old);
+        fx
+    }
+
+    #[test]
+    fn a_pinned_version_is_kept_even_when_a_newer_one_exists() {
+        let fx = with_old_a(&[]);
+        let found = resolve_version_from(&fx, "v-a-old", "26.3", &fabric()).unwrap();
+        assert_eq!(found.iter().map(|m| m.version_id.as_str()).collect::<Vec<_>>(), ["v-a-old"]);
+        assert_eq!(found[0].title, "T-a");
+        assert_eq!(resolved(&fx, &["a"]).unwrap()[0].version_id, "v-a");
+    }
+
+    #[test]
+    fn a_pinned_version_brings_its_own_required_dependencies_after_it() {
+        let fx = with_old_a(&[("id-b", "required"), ("id-c", "optional")]);
+        let found = resolve_version_from(&fx, "v-a-old", "26.3", &fabric()).unwrap();
+        assert_eq!(titles(&found), ["T-a", "T-b"]);
+        let newest = resolve_version_from(&fx, "v-a", "26.3", &fabric()).unwrap();
+        assert_eq!(titles(&newest), ["T-a", "T-c"]);
+    }
+
+    #[test]
+    fn a_pinned_version_with_an_incompatible_dependency_is_an_error() {
+        let mut fx = with_old_a(&[("id-b", "incompatible"), ("id-c", "required")]);
+        fx.versions.iter_mut().find(|v| v.id == "v-c").unwrap().dependencies.push(Dependency { project_id: Some("id-b".into()), version_id: None, dependency_type: "required".into() });
+        let err = resolve_version_from(&fx, "v-a-old", "26.3", &fabric()).unwrap_err().to_string();
+        assert!(err.contains("T-a") && err.contains("T-b") && err.contains("incompatible"), "{err}");
+        assert!(resolve_version_from(&fx, "nope", "26.3", &fabric()).is_err());
+    }
+
+    #[test]
+    fn a_version_fits_when_the_filter_takes_its_loader_and_game_version() {
+        let fx = Fixtures::synthetic(&[("a", &[])]);
+        let version = &fx.versions[0];
+        assert!(version_fits(version, &Filter::of(Kind::Mod, "26.3", &fabric(), None)));
+        assert!(!version_fits(version, &Filter::of(Kind::Mod, "1.21", &fabric(), None)));
+        assert!(!version_fits(version, &Filter::of(Kind::Mod, "26.3", &Loader::Forge(None), None)));
+        assert!(newest_for(&fx.versions, &Filter::of(Kind::Mod, "26.3", &fabric(), None)).is_some());
+        assert!(newest_for(&fx.versions, &Filter::of(Kind::Mod, "1.21", &fabric(), None)).is_none());
     }
 
     #[test]

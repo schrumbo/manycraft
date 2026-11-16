@@ -147,7 +147,7 @@ impl Runtime {
             Effect::Known(known) => self.backend.known(known),
             Effect::Refresh(accounts) => self.backend.refresh(accounts),
             Effect::RememberTrayExplained => {
-                settings::set(settings::Settings { tray_explained: true, ..settings::active().clone() });
+                settings::update(|s| s.tray_explained = true);
                 std::thread::spawn(|| {
                     if let Err(e) = settings::persist() {
                         eprintln!("settings: {e:#}");
@@ -155,7 +155,7 @@ impl Runtime {
                 });
             }
             Effect::SaveActiveAccount(id) => {
-                settings::set(settings::Settings { active_account: Some(id), ..settings::active().clone() });
+                settings::update(|s| s.active_account = Some(id));
                 std::thread::spawn(|| {
                     if let Err(e) = settings::persist() {
                         eprintln!("settings: {e:#}");
@@ -237,7 +237,7 @@ impl Runtime {
         self.backend.send(key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
         if !settings::active().swap_explained {
             self.backend.send(key, ToMod::Hint { text: swap_hint() });
-            settings::set(settings::Settings { swap_explained: true, ..settings::active().clone() });
+            settings::update(|s| s.swap_explained = true);
             std::thread::spawn(|| {
                 if let Err(e) = settings::persist() {
                     eprintln!("settings: {e:#}");

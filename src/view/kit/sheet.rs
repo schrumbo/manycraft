@@ -7,7 +7,7 @@ use super::button::Button;
 use super::text::{para, spacer, title};
 use super::use_theme;
 use crate::core::i18n::tr;
-use crate::view::theme::{font, frame, motion, space};
+use crate::view::theme::{font, frame, level, motion, space};
 use crate::view::ui::Ui;
 
 /// The open sheet: a component that draws its content inside a [`Card`].
@@ -27,12 +27,13 @@ pub fn close(mut ui: Ui) {
     ui.sheet.set_if_modified(None);
 }
 
-/// The default action of a sheet: its label, why it is unavailable, and what it does.
+/// The default action of a sheet: its label, why it is unavailable, whether it shows the waiting arc, and what it does.
 #[derive(Clone, PartialEq)]
 pub struct Primary {
     pub label: String,
     pub disabled: Option<String>,
     pub danger: bool,
+    pub busy: bool,
     pub run: EventHandler<()>,
 }
 
@@ -46,14 +47,25 @@ pub struct Card {
     pub body: Option<Element>,
     pub primary: Option<Primary>,
     pub secondary: Option<Primary>,
+    pub leading: Option<Element>,
+    pub primary_id: Option<String>,
+    pub secondary_id: Option<String>,
     pub width: f32,
+    /// Keeps Abbrechen before the second action instead of being replaced by it.
+    pub keep_cancel: bool,
     /// Only tells something: no Abbrechen, and Esc also runs the default action.
     pub inform: bool,
+    /// Why the sheet cannot be left or finished now, while work runs.
+    pub locked: Option<String>,
+    /// What Esc does in place of closing the sheet.
+    pub on_escape: Option<EventHandler<()>>,
+    /// What Enter does in place of the default action.
+    pub on_enter: Option<EventHandler<()>>,
 }
 
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, width: frame::SHEET, inform: false }
+        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, leading: None, primary_id: None, secondary_id: None, width: frame::SHEET, keep_cancel: false, inform: false, locked: None, on_escape: None, on_enter: None }
     }
 
     pub fn message(mut self, message: impl Into<String>) -> Self {
@@ -77,13 +89,55 @@ impl Card {
         self
     }
 
+    /// Content at the left end of the footer, such as a Zurück button.
+    pub fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_element());
+        self
+    }
+
+    /// Names the default action for the drive tool instead of `<id>.ok`.
+    pub fn primary_id(mut self, id: impl Into<String>) -> Self {
+        self.primary_id = Some(id.into());
+        self
+    }
+
+    /// Names the second action for the drive tool instead of `<id>.other`.
+    pub fn secondary_id(mut self, id: impl Into<String>) -> Self {
+        self.secondary_id = Some(id.into());
+        self
+    }
+
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
     }
 
+    /// Shows Abbrechen before the second action rather than in its place.
+    pub fn keep_cancel(mut self) -> Self {
+        self.keep_cancel = true;
+        self
+    }
+
     pub fn inform(mut self) -> Self {
         self.inform = true;
+        self
+    }
+
+    /// Disables every footer action with `reason` and ignores Esc and Enter, while work runs that must not be left.
+    pub fn locked(mut self, reason: Option<String>) -> Self {
+        self.locked = reason;
+        self
+    }
+
+    /// Runs `handler` on Esc instead of closing the sheet, such as going back a step.
+    pub fn on_escape(mut self, handler: impl FnMut(()) + 'static) -> Self {
+        self.on_escape = Some(EventHandler::new(handler));
+        self
+    }
+
+    /// Runs `handler` on Enter instead of the default action, such as picking the highlighted row.
+    pub fn on_enter(mut self, handler: impl FnMut(()) + 'static) -> Self {
+        self.on_enter = Some(EventHandler::new(handler));
         self
     }
 }
@@ -94,20 +148,32 @@ impl Component for Card {
         let ui = use_consume::<Ui>();
         let primary = self.primary.clone();
         let keys = primary.clone();
-        let mut footer = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(spacer()).content(Content::flex());
+        let locked = self.locked.clone();
+        let held = locked.clone();
+        let escape = self.on_escape.clone();
+        let enter = self.on_enter.clone();
+        let mut footer = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S);
+        if let Some(l) = &self.leading {
+            footer = footer.child(l.clone());
+        }
+        footer = footer.child(spacer()).content(Content::flex());
+        let cancel = Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).disabled(locked.clone()).on_press(move |_| close(ui));
         match &self.secondary {
             Some(s) => {
+                if self.keep_cancel {
+                    footer = footer.child(cancel);
+                }
                 let run = s.run.clone();
-                let b = Button::new(format!("{}.other", self.id), s.label.clone()).disabled(s.disabled.clone()).on_press(move |_| run.call(()));
+                let b = Button::new(self.secondary_id.clone().unwrap_or_else(|| format!("{}.other", self.id)), s.label.clone()).disabled(locked.clone().or_else(|| s.disabled.clone())).busy(s.busy).on_press(move |_| run.call(()));
                 footer = footer.child(if s.danger { b.danger() } else { b });
             }
             None if self.inform => {}
-            None => footer = footer.child(Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).on_press(move |_| close(ui))),
+            None => footer = footer.child(cancel),
         }
         let inform = self.inform;
         if let Some(p) = primary {
             let run = p.run.clone();
-            let mut b = Button::new(format!("{}.ok", self.id), p.label.clone()).disabled(p.disabled.clone()).on_press(move |_| run.call(()));
+            let mut b = Button::new(self.primary_id.clone().unwrap_or_else(|| format!("{}.ok", self.id)), p.label.clone()).disabled(locked.clone().or_else(|| p.disabled.clone())).busy(p.busy).on_press(move |_| run.call(()));
             b = if p.danger { b.danger() } else { b.primary() };
             footer = footer.child(b);
         }
@@ -123,16 +189,32 @@ impl Component for Card {
             .shadow(t.elevation.float.clone())
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_global_key_down(move |e: Event<KeyboardEventData>| match e.key {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) if ui.menu.peek().is_some() || *ui.palette.peek() => {}
                 Key::Named(NamedKey::Escape) => {
                     e.stop_propagation();
-                    match &keys {
-                        Some(p) if inform => p.run.call(()),
+                    if held.is_some() {
+                        return;
+                    }
+                    match (&keys, &escape) {
+                        (_, Some(h)) => h.call(()),
+                        (Some(p), None) if inform => p.run.call(()),
                         _ => close(ui),
+                    }
+                }
+                Key::Named(NamedKey::Enter) if e.modifiers.is_empty() && enter.is_some() => {
+                    if held.is_none()
+                        && !*ui.palette.peek()
+                        && let Some(h) = &enter
+                    {
+                        e.stop_propagation();
+                        h.call(());
                     }
                 }
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() => {
                     if let Some(p) = &keys
                         && p.disabled.is_none()
+                        && held.is_none()
+                        && !*ui.palette.peek()
                     {
                         e.stop_propagation();
                         p.run.call(());
@@ -178,7 +260,7 @@ impl Component for Host {
         let (w, h) = *ui.window.read();
         rect()
             .position(Position::new_global().left(0.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::SHEET))
             .width(Size::px(w))
             .height(Size::px(h))
             .background(t.scrim)
@@ -194,9 +276,9 @@ impl Component for Host {
 /// A sheet that only asks whether to go ahead.
 pub fn confirm(ui: Ui, id: &str, heading: String, message: String, action: String, danger: bool, run: impl FnMut(()) + 'static) {
     let mut run = run;
-    let primary = Primary { label: action, disabled: None, danger, run: EventHandler::new(move |_| {
+    let primary = Primary { label: action, disabled: None, danger, busy: false, run: EventHandler::new(move |_| {
         close(ui);
         run(());
     }) };
-    open(ui, Card::new(id, heading).message(message).primary(primary).width(frame::SHEET * 0.8));
+    open(ui, Card::new(id, heading).message(message).primary(primary).width(frame::SHEET_NARROW));
 }

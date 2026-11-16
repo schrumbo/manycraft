@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::core::batch::ModRef;
 use crate::core::packs::{self, Catalog, Installed, Modrinth};
-use crate::core::modrinth::{Dependency, Details, File, Filter, Hashes, Hit, Kind, Page, Search, Shot, Sort, Support, Update, Version};
+use crate::core::modrinth::{self, Dependency, Details, File, Filter, Hashes, Hit, Kind, Page, Search, Shot, Sort, Support, Update, Version};
 use crate::core::{drive, paths};
 
 use super::remote::{CANNED_DELAY, canned_hits};
@@ -95,6 +95,226 @@ pub fn install(instance_dir: &Path, dir: &Path, project_id: &str, title: &str, f
         packs::rename_selected(instance_dir, filter.kind, old, &file)?;
     }
     Ok(Installed { file, found })
+}
+
+/// Installs `version` of a project into `dir`. With `replacing`, the file of the version it replaces goes to the
+/// instance's trash first, the selection follows to the new file, and the trash entry comes back with what is
+/// installed now. A failure puts the old file back and leaves the selection as it was.
+pub fn install_version(instance_dir: &Path, dir: &Path, title: &str, version: &Version, replacing: Option<&str>, filter: &Filter) -> Result<(Installed, Option<String>)> {
+    let found = modrinth::version_ref(title, version)?;
+    swap_in(instance_dir, dir, filter.kind, found, replacing, |found| {
+        if drive::fenced("pack install", &found.file_name) {
+            std::thread::sleep(CANNED_DELAY);
+            packs::place(found, dir, None, |_, path| Ok(std::fs::write(path, b"canned")?))
+        } else {
+            packs::place(found, dir, None, packs::download)
+        }
+    })
+}
+
+fn swap_in(instance_dir: &Path, dir: &Path, kind: Kind, found: ModRef, replacing: Option<&str>, place: impl FnOnce(&ModRef) -> Result<String>) -> Result<(Installed, Option<String>)> {
+    let entry = replacing.map(|old| packs::remove(instance_dir, dir, old)).transpose()?;
+    let existed = std::fs::symlink_metadata(dir.join(&found.file_name)).is_ok();
+    let put_back = |entry: &Option<String>| {
+        if let Some(entry) = entry {
+            let _ = packs::put_back(instance_dir, entry);
+        }
+    };
+    let file = match place(&found) {
+        Ok(file) => file,
+        Err(e) => {
+            put_back(&entry);
+            return Err(e);
+        }
+    };
+    let saved = packs::saved_selection(instance_dir, kind);
+    if let Some(old) = replacing
+        && let Err(e) = packs::rename_selected(instance_dir, kind, old, &file)
+    {
+        let _ = packs::restore_selection(kind, &saved);
+        if !existed {
+            let _ = std::fs::remove_file(dir.join(&file));
+        }
+        put_back(&entry);
+        return Err(e);
+    }
+    Ok((Installed { file, found }, entry))
+}
+
+/// Undoes [`install_version`]: the installed `current` file goes to the trash unless it is gone already, the `entry`
+/// of the old file comes back as `previous` and the selection follows. A failure leaves files and selection as they
+/// were, with `entry` still in the trash to try again.
+pub fn switch_back(instance_dir: &Path, dir: &Path, kind: Kind, current: &str, entry: &str, previous: &str) -> Result<()> {
+    let present = std::fs::symlink_metadata(dir.join(current)).is_ok();
+    let saved = packs::saved_selection(instance_dir, kind);
+    if let Err(e) = packs::rename_selected(instance_dir, kind, current, previous) {
+        let _ = packs::restore_selection(kind, &saved);
+        return Err(e);
+    }
+    let gone = if present {
+        match packs::remove(instance_dir, dir, current) {
+            Ok(gone) => Some(gone),
+            Err(e) => {
+                let _ = packs::restore_selection(kind, &saved);
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
+    if let Err(e) = packs::put_back(instance_dir, entry) {
+        if let Some(gone) = &gone {
+            let _ = packs::put_back(instance_dir, gone);
+        }
+        let _ = packs::restore_selection(kind, &saved);
+        return Err(e);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn found(file: &str) -> ModRef {
+        ModRef { project_id: "p".into(), version_id: "v".into(), title: "P".into(), file_name: file.into(), url: String::new(), sha1: "00".into() }
+    }
+
+    struct Shelf {
+        inst: tempfile::TempDir,
+    }
+
+    impl Shelf {
+        fn new(selected: &str) -> Shelf {
+            let inst = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(inst.path().join("shaderpacks")).unwrap();
+            std::fs::create_dir_all(inst.path().join("config")).unwrap();
+            std::fs::write(inst.path().join("config").join("iris.properties"), format!("shaderPack={selected}\n")).unwrap();
+            Shelf { inst }
+        }
+
+        fn dir(&self) -> PathBuf {
+            self.inst.path().join("shaderpacks")
+        }
+
+        fn file(&self, name: &str, body: &[u8]) {
+            std::fs::write(self.dir().join(name), body).unwrap();
+        }
+
+        fn selected(&self) -> String {
+            std::fs::read_to_string(self.inst.path().join("config").join("iris.properties")).unwrap()
+        }
+
+        fn lock_selection(&self) {
+            let path = self.inst.path().join("config").join("oculus.properties");
+            std::fs::create_dir_all(path).unwrap();
+        }
+
+        fn swap(&self, new: &str, body: &'static [u8]) -> Result<(Installed, Option<String>)> {
+            let dir = self.dir();
+            swap_in(self.inst.path(), &dir, Kind::Shader, found(new), Some("Old.zip"), |f| {
+                std::fs::write(dir.join(&f.file_name), body)?;
+                Ok(f.file_name.clone())
+            })
+        }
+    }
+
+    #[test]
+    fn a_failed_selection_keeps_the_old_file_and_removes_the_new_one() {
+        let shelf = Shelf::new("Old.zip");
+        shelf.file("Old.zip", b"mine");
+        shelf.lock_selection();
+        assert!(shelf.swap("New.zip", b"new").is_err());
+        assert_eq!(std::fs::read(shelf.dir().join("Old.zip")).unwrap(), b"mine");
+        assert!(!shelf.dir().join("New.zip").exists());
+        assert_eq!(shelf.selected(), "shaderPack=Old.zip\n");
+        let trash = shelf.inst.path().join(".trash");
+        assert!(std::fs::read_dir(trash).ok().is_none_or(|mut d| d.next().is_none()));
+    }
+
+    #[test]
+    fn a_failed_selection_leaves_a_file_that_was_there_before() {
+        let shelf = Shelf::new("Old.zip");
+        shelf.file("Old.zip", b"mine");
+        shelf.file("New.zip", b"theirs");
+        shelf.lock_selection();
+        assert!(shelf.swap("New.zip", b"theirs").is_err());
+        assert!(shelf.dir().join("New.zip").is_file());
+        assert!(shelf.dir().join("Old.zip").is_file());
+    }
+
+    #[test]
+    fn a_failed_selection_keeps_a_selection_the_user_already_had() {
+        let shelf = Shelf::new("New.zip");
+        shelf.file("Old.zip", b"mine");
+        shelf.file("New.zip", b"theirs");
+        shelf.lock_selection();
+        assert!(shelf.swap("New.zip", b"theirs").is_err());
+        assert_eq!(shelf.selected(), "shaderPack=New.zip
+");
+    }
+
+    #[test]
+    fn a_swap_selects_the_new_file_and_hands_back_the_trash_entry() {
+        let shelf = Shelf::new("Old.zip");
+        shelf.file("Old.zip", b"mine");
+        let (placed, entry) = shelf.swap("New.zip", b"new").unwrap();
+        assert!(placed.file.ends_with("New.zip"));
+        assert_eq!(shelf.selected(), format!("shaderPack={}\n", placed.file));
+        assert!(!shelf.dir().join("Old.zip").exists());
+        assert!(crate::core::trash::holds(shelf.inst.path(), &entry.unwrap()));
+    }
+
+    fn trashed(shelf: &Shelf) -> String {
+        shelf.file("Prev.zip", b"mine");
+        packs::remove(shelf.inst.path(), &shelf.dir(), "Prev.zip").unwrap()
+    }
+
+    #[test]
+    fn switching_back_restores_the_old_file_and_selection() {
+        let shelf = Shelf::new("Cur.zip");
+        shelf.file("Cur.zip", b"new");
+        let entry = trashed(&shelf);
+        switch_back(shelf.inst.path(), &shelf.dir(), Kind::Shader, "Cur.zip", &entry, "Prev.zip").unwrap();
+        assert_eq!(std::fs::read(shelf.dir().join("Prev.zip")).unwrap(), b"mine");
+        assert!(!shelf.dir().join("Cur.zip").exists());
+        assert_eq!(shelf.selected(), "shaderPack=Prev.zip\n");
+    }
+
+    #[test]
+    fn switching_back_without_the_current_file_still_restores_the_old_one() {
+        let shelf = Shelf::new("Cur.zip");
+        let entry = trashed(&shelf);
+        switch_back(shelf.inst.path(), &shelf.dir(), Kind::Shader, "Cur.zip", &entry, "Prev.zip").unwrap();
+        assert_eq!(std::fs::read(shelf.dir().join("Prev.zip")).unwrap(), b"mine");
+        assert_eq!(shelf.selected(), "shaderPack=Prev.zip\n");
+    }
+
+    #[test]
+    fn a_failed_switch_back_changes_nothing_and_keeps_the_entry() {
+        let shelf = Shelf::new("Cur.zip");
+        shelf.file("Cur.zip", b"new");
+        let entry = trashed(&shelf);
+        shelf.lock_selection();
+        assert!(switch_back(shelf.inst.path(), &shelf.dir(), Kind::Shader, "Cur.zip", &entry, "Prev.zip").is_err());
+        assert_eq!(std::fs::read(shelf.dir().join("Cur.zip")).unwrap(), b"new");
+        assert!(!shelf.dir().join("Prev.zip").exists());
+        assert!(crate::core::trash::holds(shelf.inst.path(), &entry));
+        assert_eq!(shelf.selected(), "shaderPack=Cur.zip\n");
+    }
+
+    #[test]
+    fn a_blocked_switch_back_restores_the_current_file_and_selection() {
+        let shelf = Shelf::new("Cur.zip");
+        shelf.file("Cur.zip", b"new");
+        let entry = trashed(&shelf);
+        shelf.file("Prev.zip", b"someone else");
+        assert!(switch_back(shelf.inst.path(), &shelf.dir(), Kind::Shader, "Cur.zip", &entry, "Prev.zip").is_err());
+        assert_eq!(std::fs::read(shelf.dir().join("Cur.zip")).unwrap(), b"new");
+        assert_eq!(std::fs::read(shelf.dir().join("Prev.zip")).unwrap(), b"someone else");
+        assert!(crate::core::trash::holds(shelf.inst.path(), &entry));
+        assert_eq!(shelf.selected(), "shaderPack=Cur.zip\n");
+    }
 }
 
 /// Moves a pack to the instance's trash and returns the entry to take it back.

@@ -484,9 +484,7 @@ mod tests {
                 b.join_commands = vec![format!("/gen {generation}"); 30];
                 batch::save(b).unwrap();
             }
-            let mut s = settings::active().clone();
-            s.reconnect.max_attempts = (generation % 50) as u32 + 1;
-            settings::set(s);
+            settings::update(|s| s.reconnect.max_attempts = (generation % 50) as u32 + 1);
             settings::persist().unwrap();
             if generation == 1 {
                 std::fs::write(home.join("ready"), b"").unwrap();

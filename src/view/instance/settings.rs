@@ -8,7 +8,7 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 use super::save::{self, Change, Job, OptionChange, Switch};
-use super::{Facts, snapshots};
+use super::{Facts, snapshots, version_text};
 use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
@@ -16,7 +16,8 @@ use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
 use crate::core::javas::{Java, mismatch};
 use crate::core::options::{self, Gpu, LaunchOptions, Renderer};
 use crate::core::snapshot::Reason;
-use crate::core::versions::{GameVersion, Kind, shown};
+use crate::core::settings;
+use crate::core::versions::{GameVersion, shown};
 use crate::ui::forms;
 use crate::ui::remote;
 use crate::view::icons::{Icon, icon};
@@ -25,10 +26,11 @@ use crate::view::kit::field::Field;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet;
-use crate::view::kit::switch::Switch as Toggle;
+use crate::view::kit::switch::SwitchLabel;
 use crate::view::kit::text::{caption, line, strong};
 use crate::view::kit::{after, off_ui, use_theme};
 use crate::view::native;
+use crate::view::settings::remember_all_versions;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, iconsize, space};
 
@@ -43,16 +45,6 @@ enum Load<T> {
 
 fn split_args(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_owned).collect()
-}
-
-fn kind_label(kind: Kind) -> Option<String> {
-    match kind {
-        Kind::Release => None,
-        Kind::Snapshot => Some(tr("Snapshot")),
-        Kind::PreRelease => Some(tr("Vorabversion")),
-        Kind::OldBeta => Some(tr("Alte Beta")),
-        Kind::OldAlpha => Some(tr("Alte Alpha")),
-    }
 }
 
 fn java_title(java: &Java) -> String {
@@ -244,12 +236,11 @@ impl Component for Settings {
                 }
             });
         });
-        let mut everything = use_state(|| false);
 
         let mut col = rect().width(Size::fill()).padding(space::XL).spacing(space::XL);
 
         let version_control: Element = {
-            let all = *everything.read();
+            let all = *store.ui.all_versions.read();
             let catalog = catalog.read().clone();
             let list: Option<Vec<GameVersion>> = match &catalog {
                 Load::Ready(list) => {
@@ -260,7 +251,7 @@ impl Component for Settings {
             };
             match (list, &catalog) {
                 (Some(list), _) => {
-                    let labels = list.iter().map(|v| kind_label(v.kind).map_or_else(|| v.id.clone(), |k| format!("{} · {k}", v.id))).collect();
+                    let labels = list.iter().map(version_text).collect();
                     let at = list.iter().position(|v| v.id == made.game_version).unwrap_or(0);
                     let pick = id.clone();
                     rect()
@@ -270,14 +261,13 @@ impl Component for Settings {
                                 pick_version(store, &pick, v.id.clone());
                             }
                         }))
-                        .child(
-                            rect()
-                                .horizontal()
-                                .cross_align(Alignment::Center)
-                                .spacing(space::S)
-                                .child(Toggle::new("instance.settings.everything", tr("Snapshots und alte Versionen zeigen"), all).disabled(why.is_some()).on_toggle(move |on| everything.set(on)))
-                                .child(line(&t, tr("Snapshots und alte Versionen zeigen"), font::CALLOUT, if why.is_some() { t.text3 } else { t.text2 })),
-                        )
+                        .child(SwitchLabel {
+                            id: "instance.settings.everything",
+                            text: tr("Snapshots und alte Versionen zeigen"),
+                            on: all,
+                            disabled: why.clone(),
+                            on_toggle: EventHandler::new(move |on: bool| remember_all_versions(store, on)),
+                        })
                         .into_element()
                 }
                 (None, Load::Failed(e)) => rect()
@@ -303,7 +293,7 @@ impl Component for Settings {
             .width(Size::fill())
             .horizontal()
             .spacing(space::XL)
-            .child(rect().spacing(space::XS).child(label_row(&t, tr("Minecraft-Version"), None)).child(version_control))
+            .child(rect().width(Size::px(control::VERSION_MENU)).spacing(space::XS).child(label_row(&t, tr("Minecraft-Version"), None)).child(version_control))
             .child(rect().spacing(space::XS).child(label_row(&t, tr("Loader"), None)).child(loader_control));
         let mut top = rect().width(Size::fill()).spacing(space::S).child(game);
         match (nav.busy.read().get(&id), &why) {

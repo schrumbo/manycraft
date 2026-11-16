@@ -149,6 +149,7 @@ impl Component for Ask {
             .shadow(t.elevation.float.clone())
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_global_key_down(move |e: Event<KeyboardEventData>| match e.key {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) if ui.menu.peek().is_some() || *ui.palette.peek() => {}
                 Key::Named(NamedKey::Escape) => {
                     e.stop_propagation();
                     sheet::close(ui);
@@ -719,7 +720,7 @@ impl Ctx {
     }
 
     /// The palette entries and shortcuts of the tab; why one is blocked is worked out when it runs.
-    pub(super) fn extras(&self, add: &super::super::actions::Action) -> Vec<Extra> {
+    pub(super) fn extras(&self) -> Vec<Extra> {
         let dups = self.data.read().analysis.dups;
         let current = *self.sort.read();
         let mut out = Vec::new();
@@ -752,10 +753,6 @@ impl Ctx {
             if sort != current {
                 push(&format!("sort.{sort:?}").to_lowercase(), label, Icon::Rows, None, |_| None, Box::new(move |c: &Ctx| c.sort_by(sort)));
             }
-        }
-        if add.disabled.is_none() {
-            let run = add.run.clone();
-            push("add", add.long.clone(), Icon::Plus, None, |_| None, Box::new(move |_| run.call(())));
         }
         out
     }

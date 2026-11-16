@@ -6,7 +6,7 @@ use freya::prelude::*;
 
 use super::text::para;
 use super::{Bounds, after, use_theme};
-use crate::view::theme::{font, frame, space};
+use crate::view::theme::{font, frame, level, space};
 use crate::view::ui::Ui;
 
 const REST: Duration = Duration::from_millis(500);
@@ -24,11 +24,18 @@ pub struct Tip {
 pub struct WithTip {
     pub tip: Option<String>,
     pub child: Element,
+    pub fill: bool,
 }
 
 impl WithTip {
     pub fn new(tip: Option<String>, child: impl IntoElement) -> Self {
-        Self { tip, child: child.into_element() }
+        Self { tip, child: child.into_element(), fill: false }
+    }
+
+    /// Takes the full width, for children that wrap text.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
     }
 }
 
@@ -40,6 +47,7 @@ impl Component for WithTip {
         let tip = self.tip.clone();
         let enter_tip = tip.clone();
         rect()
+            .width(if self.fill { Size::fill() } else { Size::auto() })
             .on_sized(move |e: Event<SizedEventData>| bounds.set_if_modified(Bounds::of(&e)))
             .on_pointer_enter(move |_| {
                 hovered.set(true);
@@ -84,7 +92,7 @@ pub fn host(ui: Ui) -> Element {
     let y = if below + 40. > h { (tip.anchor.y - 40.).max(space::S) } else { below };
     rect()
         .position(Position::new_global().left(x).top(y))
-        .layer(Layer::Overlay)
+        .layer(Layer::OverlayLevel(level::TIP))
         .width(Size::px(width))
         .cross_align(Alignment::Center)
         .child(

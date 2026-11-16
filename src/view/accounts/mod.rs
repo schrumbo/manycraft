@@ -19,7 +19,7 @@ use super::kit::field::Field;
 use super::kit::menu::{self, Item, Menu};
 use super::kit::segmented::{Segment, Segmented};
 use super::kit::text::{caption, heading, line, para, secondary, spacer, strong};
-use super::kit::{Bounds, held, use_theme};
+use super::kit::{Bounds, at_least, held, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{Theme, font, frame, iconsize, space};
 use super::ui::Page;
@@ -649,14 +649,13 @@ fn sign_in_strip(t: &Theme, store: Store, ids: Vec<Uuid>) -> Element {
 fn strip(t: &Theme, glyph: Icon, ink: Color, wash: Color) -> Rect {
     rect()
         .width(Size::fill())
-        .min_height(Size::px(frame::NOTICE + space::S))
         .padding((space::XS, space::XS, space::XS, space::M))
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(space::S)
         .corner_radius(t.shape.control)
         .background(wash)
-        .child(icon(t, glyph, iconsize::S, ink))
+        .child(at_least(frame::NOTICE, icon(t, glyph, iconsize::S, ink)))
 }
 
 /// A failure of the page with the cause behind Details.

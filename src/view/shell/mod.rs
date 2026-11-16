@@ -40,7 +40,7 @@ impl Component for Shell {
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
             Page::Accounts => AccountsPage.into_element(),
             Page::Chat => ChatPage.into_element(),
-            Page::Settings => pending(&t, Icon::Settings, tr("Einstellungen")),
+            Page::Settings => super::settings::SettingsPage.into_element(),
         };
         let mut row = rect().width(Size::fill()).height(Size::fill()).horizontal();
         if *ui.sidebar.read() {
