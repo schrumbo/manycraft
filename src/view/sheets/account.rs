@@ -420,9 +420,14 @@ impl Flow {
         sheet::close(self.store.ui);
     }
 
-    fn onward(self) {
+    fn onward(self, name: Option<&str>) {
         self.stop();
-        crate::view::sheets::after_first_account(self.store);
+        let account = name.and_then(|n| {
+            let model = self.store.model.peek();
+            let mut named = model.accounts.iter().filter(|a| a.name == n);
+            named.next().filter(|_| named.next().is_none()).map(|a| a.id.to_string())
+        });
+        crate::view::sheets::after_first_account(self.store, account);
     }
 }
 
@@ -820,7 +825,11 @@ fn saved(flow: Flow, t: &Theme, names: &[String]) -> Parts {
         _ => trf("%lld Offline-Accounts hinzugefügt.", &[&names.len()]),
     };
     let onward = first_run(flow.store);
-    let primary = if onward { act(tr("Weiter"), None, move || flow.onward()) } else { act(tr("Fertig"), None, move || flow.finish()) };
+    let only = match names {
+        [one] => Some(one.clone()),
+        _ => None,
+    };
+    let primary = if onward { act(tr("Weiter"), None, move || flow.onward(only.as_deref())) } else { act(tr("Fertig"), None, move || flow.finish()) };
     Parts {
         title: tr("Offline-Account"),
         message: None,
@@ -920,7 +929,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             let more = act(again, None, move || flow.start(Via::Window));
             if onward {
                 parts.secondary = Some(("account.add.again", more));
-                parts.primary = Some(("account.add.ok", act(tr("Weiter"), None, move || flow.onward())));
+                parts.primary = Some(("account.add.ok", act(tr("Weiter"), None, move || flow.onward(None))));
             } else {
                 parts.secondary = Some(("account.add.done", act(tr("Fertig"), None, move || flow.finish())));
                 parts.primary = Some(("account.add.again", more));

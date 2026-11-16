@@ -13,7 +13,7 @@ mod worlds;
 pub mod links;
 mod save;
 mod settings;
-mod snapshots;
+pub(crate) mod snapshots;
 mod title;
 
 use std::collections::{HashMap, HashSet, VecDeque};

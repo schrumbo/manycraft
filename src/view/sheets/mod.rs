@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod import;
+pub mod instance;
 pub mod skin;
 pub mod trash;
 pub mod updates;
@@ -17,7 +18,7 @@ pub fn answer() {
 }
 
 fn takes(want: &Want) -> bool {
-    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
+    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
 }
 
 fn run(store: Store, want: Want) {
@@ -30,6 +31,8 @@ fn run(store: Store, want: Want) {
         Want::OpenTrash => trash::open(store),
         Want::Import => import::open(store),
         Want::ImportFile(path) => import::open_file(store, path),
+        Want::NewInstance => instance::create(store, None),
+        Want::EditMods(id) => instance::mods(store, id),
         Want::RenameInstance(id) => actions::begin_rename(store, &id),
         Want::CloneInstance(id) => actions::clone(store, &id),
         Want::CreateShortcut(id) => actions::shortcut(store, &id),
@@ -45,6 +48,10 @@ fn run(store: Store, want: Want) {
 }
 
 /// What follows the very first account: the instance to play with is set up next.
-pub fn after_first_account(store: Store) {
-    sheet::close(store.ui);
+pub fn after_first_account(store: Store, account: Option<String>) {
+    if store.model.peek().instances.is_empty() {
+        instance::create(store, Some(account));
+    } else {
+        sheet::close(store.ui);
+    }
 }
