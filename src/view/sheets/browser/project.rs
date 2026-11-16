@@ -36,6 +36,7 @@ const MAX_VERSIONS: usize = 60;
 const GAME_VERSIONS_SHOWN: usize = 4;
 const SKELETON_LINES: usize = 4;
 const VERSION_STEP: f32 = frame::VERSION_ROW + frame::HAIRLINE;
+const ACTION_LABEL_CHARS: usize = 28;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Section {
@@ -123,6 +124,28 @@ fn tail_of(side: &Side, fit: &str) -> Tail {
         }
     } else {
         mark()
+    }
+}
+
+fn start_row(ids: &[String], have: Option<&str>, chosen: Option<&str>) -> usize {
+    [have, chosen].into_iter().flatten().find_map(|id| ids.iter().position(|i| i == id)).unwrap_or(0)
+}
+
+fn detail_of(tail: &Tail, detail: String, replaces: Option<&str>) -> String {
+    match (tail, replaces) {
+        (Tail::Add { replacing: true }, Some(old)) => trf("Ersetzt Version %@.", &[&old]),
+        _ => detail,
+    }
+}
+
+fn tip_of(label: &str, hint: Option<String>) -> Option<String> {
+    if label.chars().count() > ACTION_LABEL_CHARS {
+        Some(match hint {
+            Some(hint) => format!("{label} · {hint}"),
+            None => label.to_owned(),
+        })
+    } else {
+        hint
     }
 }
 
@@ -450,13 +473,16 @@ impl Component for ProjectPage {
             }
         });
 
+        let mut content_top = use_state(|| 0f32);
         let content = match current {
             Section::About => about(&t, &pg),
             Section::Gallery => gallery(&t, &pg),
-            Section::Versions => versions(&t, self, &pg),
+            Section::Versions => versions(&t, self, &pg, content_top),
             Section::Needs => needs(&t, self, &pg),
         };
-        let body = ScrollView::new_controlled(self.flow.body).width(Size::fill()).height(Size::flex(1.)).scroll_with_arrows(false).child(rect().width(Size::fill()).padding(space::M).child(content));
+        let body = ScrollView::new_controlled(self.flow.body).width(Size::fill()).height(Size::flex(1.)).scroll_with_arrows(false).child(
+            rect().width(Size::fill()).padding(space::M).on_sized(move |e: Event<SizedEventData>| content_top.set_if_modified(e.area.min_y())).child(content),
+        );
 
         rect()
             .width(Size::fill())
@@ -574,7 +600,7 @@ fn mark_view(t: &Theme, mark: Mark) -> Element {
     }
 }
 
-fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
+fn versions(t: &Theme, page: &ProjectPage, pg: &Pg, content_top: State<f32>) -> Element {
     let loaded = pg.versions.read().clone();
     let list = match loaded {
         Load::Loading => return loading(t),
@@ -585,7 +611,7 @@ fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
         return nothing(t, pg, tr("Von diesem Projekt gibt es keine Versionen."), "browser.project.versions.web", true);
     }
     let rest = list.len().saturating_sub(MAX_VERSIONS);
-    let mut column = rect().width(Size::fill()).child(VersionList { flow: page.flow.clone(), hit: page.hit.clone(), kind: page.kind, facts: page.facts.clone(), have: page.have.clone(), list });
+    let mut column = rect().width(Size::fill()).child(VersionList { flow: page.flow.clone(), hit: page.hit.clone(), kind: page.kind, facts: page.facts.clone(), have: page.have.clone(), list, content_top });
     if rest > 0 {
         let link = web_page(pg, true);
         column = column.child(
@@ -611,6 +637,7 @@ struct VersionList {
     facts: Rc<Facts>,
     have: Option<String>,
     list: Rc<Vec<Version>>,
+    content_top: State<f32>,
 }
 
 impl Component for VersionList {
@@ -629,10 +656,12 @@ impl Component for VersionList {
         let n = ids.len();
         let at = cursor.read().as_ref().and_then(|c| ids.iter().position(|i| i == c));
         let body = self.flow.body;
+        let content_top = self.content_top;
+        let mut list_top = use_state(|| 0f32);
         use_side_effect_with_deps(&at, move |at| {
             let Some(at) = *at else { return };
             let mut body = body;
-            let top = space::M + at as f32 * VERSION_STEP;
+            let top = (*list_top.peek() - *content_top.peek()) + frame::RING_GAP + at as f32 * VERSION_STEP;
             let bottom = top + frame::VERSION_ROW;
             let shown = -body.position().y;
             let h = body.bounds.peek().map_or(0., |(_, viewport)| viewport.height);
@@ -697,14 +726,20 @@ impl Component for VersionList {
         }
 
         let (flow, hit, list) = (self.flow.clone(), self.hit.clone(), self.list.clone());
+        let (have_key, chosen_key) = (self.have.clone(), chosen.clone());
+        let mut spot = spot;
         let mut list_box = rect()
             .a11y_id(a11y)
             .a11y_focusable(interactive)
             .a11y_role(AccessibilityRole::ListBox)
             .a11y_alt(label)
             .width(Size::fill())
+            .padding(frame::RING_GAP)
             .corner_radius(t.shape.control)
-            .on_sized(spot)
+            .on_sized(move |e: Event<SizedEventData>| {
+                list_top.set_if_modified(e.area.min_y());
+                spot(e);
+            })
             .on_key_down(move |e: Event<KeyboardEventData>| {
                 if !interactive || !a11y.is_focused() || n == 0 || !e.modifiers.is_empty() {
                     return;
@@ -725,10 +760,13 @@ impl Component for VersionList {
                     Key::Named(NamedKey::End) => go(stepped(at, n, i32::MAX)),
                     Key::Named(NamedKey::Enter) => {
                         e.prevent_default();
-                        let to = at.unwrap_or(0);
-                        go(to);
-                        if let Some(version) = list.get(to) {
-                            flow.add_version(&hit, version);
+                        match at {
+                            None => go(start_row(&ids, have_key.as_deref(), chosen_key.as_deref())),
+                            Some(to) => {
+                                if let Some(version) = list.get(to) {
+                                    flow.add_version(&hit, version);
+                                }
+                            }
                         }
                     }
                     _ => return,
@@ -788,15 +826,8 @@ impl Component for VersionRow {
         };
         let tail = tail_of(&side, &self.fit);
         let replaces = self.have.as_deref().and_then(|have| self.list.iter().find(|o| o.id == have)).map(|o| shown_number(o).to_owned());
-        let fill = if !self.interactive {
-            Color::TRANSPARENT
-        } else if *pressed.read() {
-            t.press
-        } else if *hovered.read() {
-            t.hover
-        } else {
-            Color::TRANSPARENT
-        };
+        let detail = detail_of(&tail, detail, replaces.as_deref());
+        let fill = if self.interactive && *pressed.read() { t.press } else { Color::TRANSPARENT };
         let mut row = rect()
             .width(Size::fill())
             .height(Size::px(frame::VERSION_ROW))
@@ -832,19 +863,23 @@ impl Component for VersionRow {
 }
 
 fn tail_view(t: &Theme, tail: Tail, id: &str, number: &str, replaces: Option<String>, add: &EventHandler<()>) -> Option<Element> {
-    let button = || Button::new(format!("browser.project.version.{id}.add"), trf("Version %@ hinzufügen", &[&number])).glyph(Icon::Plus);
+    let label = trf("Version %@ hinzufügen", &[&number]);
+    let button = || Button::new(format!("browser.project.version.{id}.add"), label.clone()).glyph(Icon::Plus).not_focusable().label_max(frame::VERSION_ACTION_LABEL);
     match tail {
         Tail::Busy => Some(spinner::waiting(t, tr("Wird hinzugefügt …"))),
         Tail::Added => Some(status_line(t, Icon::Check, t.success_text, tr("Hinzugefügt"))),
         Tail::Add { .. } => {
             let add = add.clone();
             let mut b = button().on_press(move |_| add.call(()));
-            if let Some(old) = replaces {
-                b = b.tip(trf("Ersetzt Version %@.", &[&old]));
+            if let Some(tip) = tip_of(&label, replaces.map(|old| trf("Ersetzt Version %@.", &[&old]))) {
+                b = b.tip(tip);
             }
             Some(b.into_element())
         }
-        Tail::Blocked(why) => Some(button().disabled(Some(why)).into_element()),
+        Tail::Blocked(why) => {
+            let tip = tip_of(&label, Some(why.clone())).unwrap_or(why);
+            Some(button().disabled(Some(tip)).into_element())
+        }
         Tail::Mark(mark) => Some(mark_view(t, mark)),
         Tail::Nothing => None,
     }
@@ -947,6 +982,35 @@ mod tests {
         let blocked = Side { pointed: true, blocked: Some("busy".into()), ..side("old") };
         assert_eq!(tail_of(&blocked, "x"), Tail::Blocked("busy".into()));
         assert_eq!(tail_of(&Side { fits: false, ..side("old") }, "x"), Tail::Nothing);
+    }
+
+    #[test]
+    fn the_first_enter_moves_the_cursor_to_the_installed_row_then_the_default_then_the_top() {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(start_row(&ids, Some("c"), Some("b")), 2);
+        assert_eq!(start_row(&ids, None, Some("b")), 1);
+        assert_eq!(start_row(&ids, Some("gone"), Some("b")), 1);
+        assert_eq!(start_row(&ids, Some("gone"), None), 0);
+        assert_eq!(start_row(&[], None, None), 0);
+    }
+
+    #[test]
+    fn a_row_with_a_replacing_button_says_what_it_replaces() {
+        let replacing = Tail::Add { replacing: true };
+        assert_eq!(detail_of(&replacing, "d".into(), Some("1.0")), trf("Ersetzt Version %@.", &[&"1.0"]));
+        assert_eq!(detail_of(&replacing, "d".into(), None), "d");
+        assert_eq!(detail_of(&Tail::Add { replacing: false }, "d".into(), Some("1.0")), "d");
+        assert_eq!(detail_of(&Tail::Blocked("x".into()), "d".into(), Some("1.0")), "d");
+        assert_eq!(detail_of(&Tail::Mark(Mark::Newest), "d".into(), Some("1.0")), "d");
+    }
+
+    #[test]
+    fn a_long_button_label_goes_whole_into_the_tooltip() {
+        assert_eq!(tip_of("Version 1 hinzufügen", None), None);
+        assert_eq!(tip_of("Version 1 hinzufügen", Some("hint".into())), Some("hint".into()));
+        let long = "Version 1.21.1-fabric-0.5.11+mc1.21.1 hinzufügen";
+        assert_eq!(tip_of(long, None), Some(long.into()));
+        assert_eq!(tip_of(long, Some("hint".into())), Some(format!("{long} · hint")));
     }
 
     #[test]

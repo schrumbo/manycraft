@@ -78,6 +78,8 @@ pub mod frame {
     pub const SHOT_HEIGHT: f32 = 270.;
     /// The height of a version or dependency row on a project page.
     pub const VERSION_ROW: f32 = 44.;
+    /// The widest the add button of a version row lets its label grow.
+    pub const VERSION_ACTION_LABEL: f32 = 220.;
     /// How far an arrow key scrolls a project page.
     pub const LINE_STEP: f32 = 40.;
     /// The width of the bullet or number column of a list in markdown.

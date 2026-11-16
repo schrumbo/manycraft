@@ -171,7 +171,7 @@ enum Notice {
 
 #[derive(Clone, Debug)]
 enum Back {
-    Mod(ModRef, usize),
+    Mod { previous: ModRef, at: usize, added: Vec<String> },
     Pack { kind: Kind, dir: PathBuf, entry: String, current: String, previous: String },
 }
 
@@ -179,7 +179,7 @@ enum Back {
 enum Undo {
     Removed(ModRef, usize),
     Trashed { pid: String, title: String, dir: PathBuf, entry: String },
-    Switched { pid: String, title: String, number: String, back: Back },
+    Switched { pid: String, title: String, number: String, extra: Vec<String>, back: Back },
 }
 
 impl Undo {
@@ -1281,10 +1281,10 @@ impl Flow {
                     }
                     if flow.alive() {
                         flow.forget_undo(&merged.put);
+                        let added: Vec<String> = merged.put.iter().filter(|p| **p != id).cloned().collect();
                         if let Some((previous, at)) = merged.previous {
-                            flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, back: Back::Mod(previous, at) });
-                        }
-                        if !merged.extra.is_empty() && !flow.undoable() {
+                            flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, extra: merged.extra, back: Back::Mod { previous, at, added } });
+                        } else if !merged.extra.is_empty() && !flow.undoable() {
                             notice.set(Some(Notice::Added(merged.extra)));
                         }
                     }
@@ -1321,7 +1321,7 @@ impl Flow {
             flow.forget_undo(std::slice::from_ref(&id));
             let replaced = have.is_some();
             if let (Some(have), Some(entry)) = (have, entry) {
-                flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, back: Back::Pack { kind, dir: dir.clone(), entry, current: placed.file.clone(), previous: have.file } });
+                flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, extra: Vec::new(), back: Back::Pack { kind, dir: dir.clone(), entry, current: placed.file.clone(), previous: have.file } });
             }
             let mut shelves = flow.shelves;
             if let Some(shelf) = shelves.write().get_mut(&dir) {
@@ -1587,6 +1587,7 @@ impl Flow {
             toast::show(self.store.ui, tr("Wird hinzugefügt …"), None);
             return;
         }
+        let again = next.clone();
         match next {
             Undo::Removed(m, at) => {
                 undos.write().pop();
@@ -1597,7 +1598,7 @@ impl Flow {
                     list.insert(at, m);
                 }
             }
-            Undo::Switched { pid, back: Back::Mod(previous, at), .. } => {
+            Undo::Switched { pid, back: Back::Mod { previous, at, added }, .. } => {
                 undos.write().pop();
                 let mut mods = self.scope.mods;
                 if mods.try_peek().is_some() {
@@ -1609,6 +1610,7 @@ impl Flow {
                             list.insert(at, previous);
                         }
                     }
+                    list.retain(|m| m.project_id == pid || !added.contains(&m.project_id));
                 }
             }
             Undo::Switched { pid, title, back: Back::Pack { kind, dir, entry, current, previous }, .. } => {
@@ -1630,7 +1632,9 @@ impl Flow {
                     let mut shelves = flow.shelves;
                     shelves.write().remove(&dir);
                     flow.shelf();
-                    flow.fail(trf("„%@“ ließ sich nicht zurückholen.", &[&title]), result);
+                    if flow.fail(trf("„%@“ ließ sich nicht zurückholen.", &[&title]), result).is_none() {
+                        flow.keep_undo(again);
+                    }
                 });
             }
             Undo::Trashed { pid, title, dir, entry } => {
@@ -2107,6 +2111,14 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
     column.into_element()
 }
 
+fn switched_text(title: &str, number: &str, extra: &[String]) -> String {
+    if extra.is_empty() {
+        trf("„%@“ ist jetzt Version %@.", &[&title, &number])
+    } else {
+        trf("„%@“ ist jetzt Version %@. Auch hinzugefügt: %@.", &[&title, &number, &extra.join(", ")])
+    }
+}
+
 fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
     let row = || rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex());
     let fill = |e: Element| rect().width(Size::flex(1.)).child(e);
@@ -2130,7 +2142,7 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
         return match top {
             Undo::Removed(m, _) => row().child(note(Icon::Check, t.text2, trf("„%@“ entfernt.", &[&m.title]))).child(undo(flow)).into_element(),
             Undo::Trashed { title, .. } => row().child(note(Icon::Trash, t.text2, trf("„%@“ liegt im Papierkorb der Instanz.", &[title]))).child(undo(flow)).into_element(),
-            Undo::Switched { title, number, .. } => row().child(note(Icon::Check, t.text2, trf("„%@“ ist jetzt Version %@.", &[title, number]))).child(undo(flow)).into_element(),
+            Undo::Switched { title, number, extra, .. } => row().child(note(Icon::Check, t.text2, switched_text(title, number, extra))).child(undo(flow)).into_element(),
         };
     }
     if notice.is_none()
@@ -2858,12 +2870,18 @@ mod tests {
 
     #[test]
     fn the_switch_undo_names_the_version_switched_to() {
-        let switched = Undo::Switched { pid: "a".into(), title: "Sodium".into(), number: "2.0".into(), back: Back::Mod(mod_ref("a", "a1"), 0) };
+        let switched = Undo::Switched { pid: "a".into(), title: "Sodium".into(), number: "2.0".into(), extra: Vec::new(), back: Back::Mod { previous: mod_ref("a", "a1"), at: 0, added: Vec::new() } };
         assert_eq!(switched.label(), trf("Wechsel zu Version %@ rückgängig", &[&"2.0"]));
         assert_eq!((switched.pid(), switched.title()), ("a", "Sodium"));
         let mut list = vec![switched];
         forget_undo(&mut list, &["a".to_owned()]);
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn the_switch_notice_names_the_dependencies_it_added() {
+        assert_eq!(switched_text("Sodium", "2.0", &[]), trf("„%@“ ist jetzt Version %@.", &[&"Sodium", &"2.0"]));
+        assert_eq!(switched_text("Sodium", "2.0", &["Lib".to_owned(), "Api".to_owned()]), trf("„%@“ ist jetzt Version %@. Auch hinzugefügt: %@.", &[&"Sodium", &"2.0", &"Lib, Api"]));
     }
 
     #[test]

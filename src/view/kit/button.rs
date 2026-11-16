@@ -31,6 +31,8 @@ pub struct Button {
     look: Look,
     tall: bool,
     icon_only: bool,
+    focusable: bool,
+    label_max: Option<f32>,
     tip: Option<String>,
     disabled: Option<String>,
     on_press: Option<EventHandler<()>>,
@@ -39,7 +41,7 @@ pub struct Button {
 impl Button {
     /// A button named `id` for the drive tool, showing `label`.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), glyph: None, busy: false, look: Look::Secondary, tall: false, icon_only: false, tip: None, disabled: None, on_press: None }
+        Self { id: id.into(), label: label.into(), glyph: None, busy: false, look: Look::Secondary, tall: false, icon_only: false, focusable: true, label_max: None, tip: None, disabled: None, on_press: None }
     }
 
     /// A square button that shows only `glyph`; `label` becomes its tooltip and accessible name.
@@ -81,6 +83,18 @@ impl Button {
     /// The prominent height, for the main action of an empty state or a sheet.
     pub fn tall(mut self) -> Self {
         self.tall = true;
+        self
+    }
+
+    /// Keeps the button out of the Tab order; it still works with the pointer and its owner's keys.
+    pub fn not_focusable(mut self) -> Self {
+        self.focusable = false;
+        self
+    }
+
+    /// Caps the label at `width` logical pixels; a longer label ends in an ellipsis, the accessible name keeps all of it.
+    pub fn label_max(mut self, width: f32) -> Self {
+        self.label_max = Some(width);
         self
     }
 
@@ -136,9 +150,10 @@ impl Component for Button {
             None
         };
         let on_press = self.on_press.clone();
+        let focusable = self.focusable;
         let mut b = rect()
             .a11y_id(a11y)
-            .a11y_focusable(enabled)
+            .a11y_focusable(enabled && self.focusable)
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(match &self.disabled {
                 Some(reason) => format!("{}: {reason}", self.label),
@@ -165,7 +180,9 @@ impl Component for Button {
         if enabled {
             b = b.on_mouse_down(move |_| pressed.set(true)).on_mouse_up(move |_| pressed.set_if_modified(false)).on_all_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
-                a11y.request_focus();
+                if focusable {
+                    a11y.request_focus();
+                }
                 if let Some(h) = &on_press {
                     h.call(());
                 }
@@ -183,7 +200,11 @@ impl Component for Button {
         }
         if !self.icon_only {
             let weight = if self.look == Look::Primary || self.look == Look::Danger { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM };
-            b = b.child(line(&t, self.label.clone(), font::BODY, ink).font_weight(weight));
+            let mut label = line(&t, self.label.clone(), font::BODY, ink).font_weight(weight);
+            if let Some(width) = self.label_max {
+                label = label.max_width(Size::px(width));
+            }
+            b = b.child(label);
         }
         let b = match wash {
             Some(wash) => rect().corner_radius(t.shape.control).background(fill).child(b.background(wash)).into_element(),
