@@ -359,7 +359,8 @@ def start(opts):
     target = target_dir() / ("debug" if profile == "dev" else profile)
     if opts["build"]:
         print(f"building {profile} …", file=sys.stderr)
-        if subprocess.run(["cargo", "build", "--profile", profile], cwd=ROOT, stdout=sys.stderr).returncode:
+        features = ["--features", "freya"] if opts["freya"] else []
+        if subprocess.run(["cargo", "build", "--profile", profile, *features], cwd=ROOT, stdout=sys.stderr).returncode:
             die("build failed")
     if not (target / EXE).exists():
         die(f"no build at {target / EXE}; run without --no-build")
@@ -507,7 +508,9 @@ def shot(inst, name, window, full):
     out = inst.dir / "shots" / f"{name}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     width = 0 if full else round(win["w"])
-    if WIN:
+    if win.get("freya") and inst_capture(inst, win, out, full):
+        pass
+    elif WIN:
         gui = gui_exe()
         r = subprocess.run([str(gui), "shot", str(inst.pid), str(out), str(win["native"]), str(width)], capture_output=True, text=True)
         if r.returncode:
@@ -600,7 +603,7 @@ def perf_measure(inst, scenario):
 
 
 HELP = """\
-app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH] [--debug] [--no-build] [--visible] [--live-modrinth] [--still]
+app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH] [--debug] [--no-build] [--visible] [--live-modrinth] [--still] [--freya]
                                  build, then start a new private instance: own MANYCRAFT_HOME with N fake offline accounts (default 3),
                                  one batch, a temp folder; never starts Minecraft;
                                  --name N restarts your instance N (e.g. after a rebuild);
@@ -673,7 +676,7 @@ def main(argv):
         print(HELP)
         return
     if cmd == "start":
-        opts = {"name": None, "theme": None, "lang": None, "instances": 3, "size": (1280, 800), "debug": False, "build": True, "timeout": 90, "ttl": 1800, "visible": False, "live": False, "still": False}
+        opts = {"name": None, "theme": None, "lang": None, "instances": 3, "size": (1280, 800), "debug": False, "build": True, "timeout": 90, "ttl": 1800, "visible": False, "live": False, "still": False, "freya": False}
         a = iter(args)
         for x in a:
             if x == "--name":
@@ -699,6 +702,8 @@ def main(argv):
                 opts["live"] = True
             elif x == "--still":
                 opts["still"] = True
+            elif x == "--freya":
+                opts["freya"] = True
             elif x == "--timeout":
                 opts["timeout"] = float(next(a))
             elif x == "--ttl":

@@ -92,8 +92,24 @@ def heavy():
             del os.environ["MANYCRAFT_HEAVY"]
 
 
+def feature_sets():
+    text = Path("Cargo.toml").read_text(encoding="utf-8")
+    sets = [["--features", "freya-proto"] if "freya-proto =" in text else []]
+    if re.search(r"^freya = ", text, re.M):
+        sets.append(["--features", "freya"])
+    return sets
+
+
 def clippy(scope):
-    features = ["--features", "freya-proto"] if "freya-proto =" in Path("Cargo.toml").read_text(encoding="utf-8") else []
+    errors, warnings = [], []
+    for features in feature_sets():
+        e, w = clippy_with(scope, features)
+        errors += e
+        warnings += w
+    return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings))
+
+
+def clippy_with(scope, features):
     args = ["cargo", "clippy", "--all-targets", *features, "--message-format=json", "--"]
     for lint in LINTS:
         args += ["-W", f"clippy::{lint}"]
@@ -120,22 +136,25 @@ def clippy(scope):
                 warnings.append(text)
     if run.returncode and not errors:
         errors = run.stderr.strip().splitlines()[-15:]
-    return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings))
+    return errors, warnings
 
 
 def tests():
-    run = subprocess.run(
-        ["cargo", "nextest", "run", "--no-tests", "pass", "--status-level", "fail", "--failure-output", "final", "--no-input-handler"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    if run.returncode == 0:
-        return []
-    return (run.stdout + run.stderr).strip().splitlines()[-30:]
+    nextest = ["cargo", "nextest", "run", "--no-tests", "pass", "--status-level", "fail", "--failure-output", "final", "--no-input-handler"]
+    runs = [nextest]
+    if len(feature_sets()) > 1:
+        runs.append([*nextest, "--features", "freya", "--bin", "manycraft", "-E", "test(/^view::/)"])
+    out = []
+    for args in runs:
+        run = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if run.returncode:
+            out += (run.stdout + run.stderr).strip().splitlines()[-30:]
+    return out
 
 
 def mod_build():
     gradlew = str(Path("mod", "gradlew.bat").resolve()) if os.name == "nt" else "./gradlew"
-    run = subprocess.run([gradlew, "build", "-q", "--console=plain"], cwd="mod", capture_output=True, text=True, encoding="utf-8", errors="replace", shell=os.name == "nt")
+    run = subprocess.run([gradlew, "build", "-q", "--console=plain", "--no-daemon"], cwd="mod", capture_output=True, text=True, encoding="utf-8", errors="replace", shell=os.name == "nt")
     if run.returncode == 0:
         return []
     return ["mod: " + r for r in (run.stdout + run.stderr).strip().splitlines()[-20:]]

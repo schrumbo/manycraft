@@ -118,6 +118,8 @@ pub struct WindowConfig {
     pub(crate) window_handle_hook: Option<WindowHandleHook>,
     /// Hook function called when the window is requested to close.
     pub(crate) on_close: Option<OnCloseHook>,
+    /// Whether the window is shown once created; when false, the window handle hook shows it.
+    pub(crate) shown: bool,
 }
 
 impl Debug for WindowConfig {
@@ -169,6 +171,7 @@ impl WindowConfig {
             window_attributes_hook: None,
             window_handle_hook: None,
             on_close: None,
+            shown: true,
         }
     }
 
@@ -269,6 +272,12 @@ impl WindowConfig {
         + 'static,
     ) -> Self {
         self.window_attributes_hook = Some(Box::new(window_attributes_hook));
+        self
+    }
+
+    /// Leave the window hidden after creation, for a window handle hook that shows it its own way.
+    pub fn with_shown(mut self, shown: bool) -> Self {
+        self.shown = shown;
         self
     }
 

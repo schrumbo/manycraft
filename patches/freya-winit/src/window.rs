@@ -266,6 +266,7 @@ impl AppWindow {
         }
 
         let on_close = window_config.on_close.take();
+        let shown = window_config.shown;
 
         let (events_sender, events_receiver) = futures_channel::mpsc::unbounded();
 
@@ -369,7 +370,9 @@ impl AppWindow {
         let accessibility_adapter =
             Adapter::with_event_loop_proxy(active_event_loop, &window, event_loop_proxy.clone());
 
-        window.set_visible(true);
+        if shown {
+            window.set_visible(true);
+        }
 
         struct TreeHandle(EventLoopProxy<NativeEvent>, WindowId);
 
