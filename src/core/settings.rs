@@ -116,6 +116,8 @@ pub struct Settings {
     /// The id of the chosen theme; none or a theme that is gone means the default.
     pub theme: Option<String>,
     pub preview_rate: PreviewRate,
+    /// Whether version pickers also offer snapshots, pre-releases and old versions.
+    pub all_versions: bool,
     /// The account that plays an instance alone when the instance names none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_account: Option<uuid::Uuid>,
@@ -123,7 +125,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, active_account: None }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None }
     }
 }
 
@@ -261,6 +263,18 @@ mod tests {
         let s = load_from(dir.path()).unwrap();
         assert_eq!((s.appearance, s.theme.as_deref(), s.preview_rate), (Appearance::Dark, Some("tinte"), PreviewRate::Smooth));
         assert_eq!(load_from(tempfile::tempdir().unwrap().path()).unwrap().appearance, Appearance::System);
+    }
+
+    #[test]
+    fn all_versions_is_off_by_default_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Settings::default().all_versions);
+        std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false}"#).unwrap();
+        assert!(!load_from(dir.path()).unwrap().all_versions);
+        let mut s = Settings::default();
+        s.all_versions = true;
+        save_to(dir.path(), &s).unwrap();
+        assert!(load_from(dir.path()).unwrap().all_versions);
     }
 
     #[test]

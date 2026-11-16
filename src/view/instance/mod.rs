@@ -254,6 +254,11 @@ pub fn subtitle(made: &Instance) -> String {
     parts.join(" · ")
 }
 
+/// "26.3-rc1 · Vorabversion" for the version pickers; a release is just its id.
+pub fn version_text(v: &crate::core::versions::GameVersion) -> String {
+    crate::ui::versions::kind_label(v.kind).map_or_else(|| v.id.clone(), |k| format!("{} · {k}", v.id))
+}
+
 /// Notes when each running game started, so the page can say how long it runs. Lives in the shell, so leaving the
 /// page keeps the times.
 #[derive(PartialEq)]
@@ -445,4 +450,20 @@ pub fn use_extras(extras: Vec<Extra>) {
     latest.set_if_modified(extras);
     use_side_effect_with_deps(&ids, move |_| tab_extras.set(latest.peek().clone()));
     use_drop(move || tab_extras.set(Vec::new()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_text;
+    use crate::core::versions::{GameVersion, Kind};
+
+    #[test]
+    fn every_kind_has_one_name_in_every_picker() {
+        let text = |id: &str, kind| version_text(&GameVersion { id: id.into(), kind });
+        assert_eq!(text("26.3", Kind::Release), "26.3");
+        assert_eq!(text("26.4-snapshot-1", Kind::Snapshot), "26.4-snapshot-1 · Snapshot");
+        assert_eq!(text("26.3-rc1", Kind::PreRelease), "26.3-rc1 · Vorabversion");
+        assert_eq!(text("b1.7.3", Kind::OldBeta), "b1.7.3 · Alte Beta");
+        assert_eq!(text("a1.2.6", Kind::OldAlpha), "a1.2.6 · Alte Alpha");
+    }
 }

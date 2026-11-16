@@ -14,24 +14,26 @@ use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
 use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
 use crate::core::modrinth::{Kind as ModKind, Update};
+use crate::core::settings;
 use crate::core::snapshot::Reason;
 use crate::core::versions::{GameVersion, Kind, shown};
 use crate::ui::forms::{self, Problem};
 use crate::ui::remote::{self, InstanceEdit};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
-use crate::view::instance::{Busy, snapshots};
+use crate::view::instance::{Busy, snapshots, version_text};
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::spinner;
-use crate::view::kit::switch::Switch;
+use crate::view::kit::switch::SwitchLabel;
 use crate::view::kit::text::{caption, line, mono, para, strong};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{at_least, off_ui, ring, toast, use_theme};
 use crate::view::native;
+use crate::view::settings::remember_all_versions;
 use crate::view::sheets::browser::{Browser, Scope};
 use crate::view::sheets::import;
 use crate::view::store::{Store, use_store};
@@ -113,10 +115,6 @@ fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: 
 fn default_gaps(found: usize, notes: &[String], version: &str) -> Option<String> {
     let skipped = notes.iter().filter(|n| n.starts_with("skipped ")).count();
     (skipped > 0).then(|| trf("%1$lld von %2$lld Performance-Mods für %3$@ verfügbar", &[&found, &(found + skipped), &version]))
-}
-
-fn version_text(v: &GameVersion) -> String {
-    crate::ui::versions::kind_label(v.kind).map_or_else(|| v.id.clone(), |k| format!("{} · {k}", v.id))
 }
 
 fn waiting_reason(saving: bool, held: Option<String>, updating: bool) -> Option<String> {
@@ -595,7 +593,7 @@ impl Component for Create {
             loader: use_state(Loader::default),
             list: use_state(Vec::new),
             versions: use_state(|| Load::Loading),
-            everything: use_state(|| false),
+            everything: use_state(|| settings::active().all_versions),
             supported: use_state(|| None),
             memory: use_state(move || forms::memory_step(DEFAULT_MEMORY_MB, 0, memory_max)),
             advanced: use_state(|| false),
@@ -687,7 +685,16 @@ impl Component for Create {
                     }
                 });
                 let mut toggle = flow.everything;
-                let row = SwitchLabel { id: "instance.everything", text: tr("Snapshots und alte Versionen zeigen"), on: everything, disabled: blocked.clone(), on_toggle: EventHandler::new(move |on: bool| toggle.set(on)) };
+                let row = SwitchLabel {
+                    id: "instance.everything",
+                    text: tr("Snapshots und alte Versionen zeigen"),
+                    on: everything,
+                    disabled: blocked.clone(),
+                    on_toggle: EventHandler::new(move |on: bool| {
+                        toggle.set(on);
+                        remember_all_versions(store, on);
+                    }),
+                };
                 rect().width(Size::fill()).spacing(space::XS).child(select).child(row).into_element()
             }
         };
@@ -884,40 +891,6 @@ fn imports(flow: Make, blocked: Option<String>) -> Element {
             on_press: EventHandler::new(move |_| flow.pick_file()),
         })
         .into_element()
-}
-
-#[derive(PartialEq)]
-struct SwitchLabel {
-    id: &'static str,
-    text: String,
-    on: bool,
-    disabled: Option<String>,
-    on_toggle: EventHandler<bool>,
-}
-
-impl Component for SwitchLabel {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let mut hovered = use_state(|| false);
-        let enabled = self.disabled.is_none();
-        let (on, toggle) = (self.on, self.on_toggle.clone());
-        let flip = toggle.clone();
-        let ink = if !enabled { t.text3 } else if *hovered.read() { t.text1 } else { t.text2 };
-        let mut text = para(&t, self.text.clone(), font::CALLOUT, ink).width(Size::fill()).cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed });
-        if enabled {
-            text = text.on_press(move |_| flip.call(!on));
-        }
-        let row = rect()
-            .width(Size::fill())
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::S)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
-            .child(Switch::new(self.id, self.text.clone(), on).disabled(!enabled).on_toggle(move |on: bool| toggle.call(on)))
-            .child(text);
-        WithTip::new(self.disabled.clone(), row).fill()
-    }
 }
 
 #[derive(PartialEq)]

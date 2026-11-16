@@ -86,6 +86,14 @@ pub fn save(store: Store) {
     });
 }
 
+/// Remembers whether version pickers also offer snapshots, pre-releases and old versions, and saves it.
+pub(crate) fn remember_all_versions(store: Store, on: bool) {
+    let mut next = settings::active().clone();
+    next.all_versions = on;
+    settings::set(next);
+    save(store);
+}
+
 fn use_prefs() -> Prefs {
     use_consume::<Prefs>()
 }
