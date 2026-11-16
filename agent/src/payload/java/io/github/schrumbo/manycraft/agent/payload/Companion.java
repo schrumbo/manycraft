@@ -291,7 +291,7 @@ final class Companion implements Bridge {
 	}
 
 	private static boolean needsBackground(Protocol.Incoming message) {
-		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
+		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Hint || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
 	}
 
 	private void handle(Minecraft mc, Protocol.Incoming message) {
@@ -309,6 +309,10 @@ final class Companion implements Bridge {
 		}
 		if (message instanceof Protocol.Incoming.Badge b) {
 			identity.showBadge(b.visible());
+			return;
+		}
+		if (message instanceof Protocol.Incoming.Hint h) {
+			identity.showHint(h.text());
 			return;
 		}
 		if (message instanceof Protocol.Incoming.Options shared) {

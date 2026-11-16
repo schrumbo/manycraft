@@ -235,7 +235,7 @@ impl Sim {
                     (run.every, run.width) = (every, width);
                 }
             }
-            ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
+            ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
         }
     }
 

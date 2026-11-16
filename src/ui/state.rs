@@ -1137,11 +1137,27 @@ fn show(key: &str, before: Option<&str>, skipped: Option<String>, unshown: Unsho
     drive::note(format!("play {key}"));
     if let Some(backend) = backend(cx) {
         backend.send(key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
+        if !settings::active().swap_explained {
+            backend.send(key, ToMod::Hint { text: swap_hint() });
+            settings::set(settings::Settings { swap_explained: true, ..settings::active().clone() });
+            cx.background_spawn(async {
+                if let Err(e) = settings::persist() {
+                    eprintln!("settings: {e:#}");
+                }
+            })
+            .detach();
+        }
         if let Some(skipped) = skipped {
             backend.send(&skipped, ToMod::Hide);
         }
     }
     spread(cx);
+}
+
+fn swap_hint() -> String {
+    let grid = crate::core::settings::HOTKEYS.iter().find(|(label, _)| *label == "Zurück zum Raster").map_or("ctrl+alt+g", |(_, chord)| chord);
+    let keys = super::settings_window::chord_keys(grid).join(if cfg!(target_os = "macos") { "" } else { "+" });
+    trf("× beendet das Spiel · %@ zurück zum Raster", &[&keys])
 }
 
 /// Opens what the notification `tag` was about: its one tile, the attention tiles of its batch, or the chat.

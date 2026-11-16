@@ -107,6 +107,8 @@ pub enum ToMod {
     Identity { name: String, batch: String, rgb: u32, icon: Option<String> },
     /// Whether the name badge shows in the game's corner.
     Badge { visible: bool },
+    /// A line the game shows under its badge for a few seconds.
+    Hint { text: String },
     /// What the game may cost while hidden.
     Level(Level),
     /// `options.txt` keys another game of the batch changed; the game applies and saves them without reporting back.
@@ -506,6 +508,7 @@ mod tests {
         let bare = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0, icon: None };
         assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"t":"identity","name":"Alt","batch":"Farm","rgb":0,"icon":null}"#);
         assert_eq!(serde_json::to_string(&ToMod::Badge { visible: false }).unwrap(), r#"{"t":"badge","visible":false}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Hint { text: "x".into() }).unwrap(), r#"{"t":"hint","text":"x"}"#);
         let level = |b: Background| serde_json::to_string(&ToMod::Level(b.into())).unwrap();
         assert_eq!(level(Background::Saving), r#"{"t":"level","level":"saving"}"#);
         assert_eq!(level(Background::Balanced), r#"{"t":"level","level":"balanced"}"#);
