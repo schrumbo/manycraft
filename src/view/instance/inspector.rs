@@ -430,7 +430,7 @@ impl Component for Inspector {
 
         let mut col = rect().width(Size::fill()).padding(space::L).spacing(space::M);
         col = col.child(Preview { facts: f.clone(), busy }).child(status_line(&t, color, text));
-        col = col.child(rect().horizontal().spacing(space::S).child(PlayControl { facts: f.clone() }).child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() }));
+        col = col.child(PlayControl { facts: f.clone() }).child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() });
         if let Some(links) = batch_links(&t, &f.batches) {
             col = col.child(links);
         }
