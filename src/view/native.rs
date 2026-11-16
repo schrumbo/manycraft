@@ -103,6 +103,55 @@ pub fn send_away() {
     }
 }
 
+/// Opens `path` with the system's default app; a driven window only notes it.
+pub fn open(path: &std::path::Path) {
+    if drive::fenced("open", path.display()) {
+        return;
+    }
+    if let Err(e) = ::open::that_detached(path) {
+        eprintln!("open {}: {e}", path.display());
+    }
+}
+
+/// Shows `path` selected in the system's file manager; a driven window only notes it.
+pub fn reveal(path: &std::path::Path) {
+    if drive::fenced("reveal", path.display()) {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    let shown = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn().map(drop)
+    };
+    #[cfg(target_os = "macos")]
+    let shown = std::process::Command::new("open").arg("-R").arg(path).spawn().map(drop);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let shown = ::open::that_detached(path.parent().unwrap_or(path));
+    if let Err(e) = shown {
+        eprintln!("reveal {}: {e}", path.display());
+    }
+}
+
+/// Puts `text` on the clipboard; a driven window only notes it, so the owner's clipboard stays theirs.
+pub fn copy_text(text: String) -> bool {
+    if drive::fenced("copy", format!("{} chars", text.chars().count())) {
+        return true;
+    }
+    freya::clipboard::Clipboard::set(text).is_ok()
+}
+
+/// Asks for files with the system's dialog, `extensions` as the filter; blocks, so it runs off the UI thread. A driven
+/// window gets the paths in `MANYCRAFT_DRIVE_PICK`, separated by the platform's path separator.
+pub fn pick_files(title: &str, filter: &str, extensions: &[&str], many: bool) -> Vec<std::path::PathBuf> {
+    if drive::on() {
+        drive::note(format!("pick {title}"));
+        return std::env::var_os("MANYCRAFT_DRIVE_PICK").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
+    }
+    let dialog = rfd::FileDialog::new().set_title(title);
+    let dialog = if extensions.is_empty() { dialog } else { dialog.add_filter(filter, extensions) };
+    if many { dialog.pick_files().unwrap_or_default() } else { dialog.pick_file().into_iter().collect() }
+}
+
 /// Takes the manager window off the screen and the taskbar while it waits in the notification area; on Linux it only
 /// minimizes, since a desktop without a tray host would leave no way back.
 pub fn stow() {

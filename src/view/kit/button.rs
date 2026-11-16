@@ -147,12 +147,15 @@ impl Component for Button {
             b = b.padding((0., if self.look == Look::Plain { space::S } else { space::M }));
         }
         if enabled {
-            b = b.on_mouse_down(move |_| pressed.set(true)).on_mouse_up(move |_| pressed.set_if_modified(false)).on_all_press(move |_| {
+            b = b.on_mouse_down(move |_| pressed.set(true)).on_mouse_up(move |_| pressed.set_if_modified(false)).on_all_press(move |e: Event<PressEventData>| {
+                e.stop_propagation();
                 a11y.request_focus();
                 if let Some(h) = &on_press {
                     h.call(());
                 }
             });
+        } else {
+            b = b.on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation());
         }
         if let Some(border) = ring(&t, focus()) {
             b = b.border(border);

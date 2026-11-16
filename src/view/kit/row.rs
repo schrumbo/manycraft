@@ -99,9 +99,15 @@ impl Component for Row {
             .corner_radius(t.shape.small + 2.)
             .background(fill)
             .on_sized(spot)
+            .cursor(if press.is_some() { CursorIcon::Pointer } else { CursorIcon::Default })
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
-            .on_all_press(move |_| {
+            .on_all_press(move |e: Event<PressEventData>| {
+                if let PressEventData::Mouse(m) = &*e
+                    && m.button != Some(MouseButton::Left)
+                {
+                    return;
+                }
                 a11y.request_focus();
                 if let Some(h) = &press {
                     h.call(());
