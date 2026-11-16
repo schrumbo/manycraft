@@ -391,6 +391,10 @@ impl Store {
                 };
                 toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(keys.clone())))));
             }
+            Effect::Closed(key) => {
+                let Some(text) = self.model.peek().games.get(&key).map(|g| trf("„%@“ beendet.", &[&g.name])) else { return };
+                toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(vec![key.clone()])))));
+            }
             Effect::ReadMemory => self.read_memory(),
             Effect::ReadUsage(pids) => self.read_usage(pids),
             Effect::Retain => {
