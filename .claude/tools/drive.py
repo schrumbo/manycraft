@@ -390,7 +390,7 @@ def start(opts):
     if subprocess.run([sys.executable, "-I", str(TOOLS / "fixture.py"), str(home), str(opts["instances"])]).returncode:
         die("fixture failed")
     w, h = opts["size"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_DRIVE_SCALE", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FREYA_THEME")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_DRIVE_SCALE", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FREYA_THEME", "MANYCRAFT_CHAT_LOOK")}
     env.update(MANYCRAFT_HOME=str(home), MANYCRAFT_DRIVE=str(d), MANYCRAFT_DRIVE_OWNER=str(owner), MANYCRAFT_DRIVE_TTL=str(opts["ttl"]),
                MANYCRAFT_DRIVE_SIZE=f"{w}x{h}", RUST_BACKTRACE="1", TMP=str(d / "tmp"), TEMP=str(d / "tmp"), TMPDIR=str(d / "tmp"))
     if opts["theme"]:
@@ -605,7 +605,7 @@ def perf_measure(inst, scenario):
 HELP = """\
 app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH] [--debug] [--no-build] [--visible] [--live-modrinth] [--still] [--freya]
                                  build, then start a new private instance: own MANYCRAFT_HOME with N fake offline accounts (default 3),
-                                 one batch, a temp folder; never starts Minecraft;
+                                 one batch (APP_BATCHES=N splits them over N), a temp folder; never starts Minecraft;
                                  --name N restarts your instance N (e.g. after a rebuild);
                                  on Windows its windows open outside every screen unless --visible;
                                  --live-modrinth lets mod search, defaults and icons read the real Modrinth (read only);

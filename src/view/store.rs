@@ -519,7 +519,6 @@ impl Store {
             Route::Whispers => {
                 let mut chat = self.ui.chat;
                 chat.batch.set_if_modified(None);
-                chat.whispers.set(true);
                 ui.page.set(Page::Chat);
             }
             Route::Instance(id) => ui.page.set(Page::Instance(id)),

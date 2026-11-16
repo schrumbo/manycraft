@@ -27,15 +27,18 @@ def write(path, value):
 
 accounts = [{"id": str(offline_uuid(f"Dev{n:03}")), "name": f"Dev{n:03}", "kind": "offline"} for n in range(1, count + 1)]
 write(os.path.join(home, "accounts.json"), accounts)
-batch_id = "fixture" + "0" * 25
-write(os.path.join(home, "batches", batch_id, "batch.json"), {
-    "id": batch_id,
-    "name": "Test",
-    "game_version": "26.3",
-    "loader_version": None,
-    "mods": [],
-    "server": None,
-    "memory_mb": 2048,
-    "accounts": [a["id"] for a in accounts],
-    "jvm_args": [],
-})
+names = ["Test", "Farm", "Mine", "Lobby", "Event"]
+groups = max(1, min(int(os.environ.get("APP_BATCHES", "1")), len(names), count))
+for g in range(groups):
+    batch_id = "fixture" + str(g) * 25
+    write(os.path.join(home, "batches", batch_id, "batch.json"), {
+        "id": batch_id,
+        "name": names[g],
+        "game_version": "26.3",
+        "loader_version": None,
+        "mods": [],
+        "server": None,
+        "memory_mb": 2048,
+        "accounts": [a["id"] for i, a in enumerate(accounts) if i % groups == g],
+        "jvm_args": [],
+    })

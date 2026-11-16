@@ -224,8 +224,8 @@ impl Component for Sidebar {
         top = top.child(need);
         top = top.child(Row::new("nav.accounts", tr("Accounts")).glyph(Icon::Users).height(frame::ROW).selected(now == Page::Accounts).trailing(count(&t, m.accounts.len().to_string(), now == Page::Accounts)).on_press(go(Page::Accounts)));
         let mut chat = Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat));
-        if whispers > 0 {
-            chat = chat.trailing(badge(&t, whispers.to_string(), Tone::Accent));
+        if whispers > 0 && now != Page::Chat {
+            chat = chat.trailing(rect().width(Size::px(frame::DOT)).height(Size::px(frame::DOT)).corner_radius(frame::DOT).background(t.accent).a11y_alt(tr("Neue Nachricht an einen deiner Accounts")).into_element());
         }
         top = top.child(chat);
 
