@@ -79,12 +79,21 @@ pub fn ring(t: &Theme, focus: Focus) -> Option<Border> {
 
 thread_local! {
     static HELD: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers::empty()) };
-    static ARROWS: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
+    static ARROWS: std::cell::RefCell<std::collections::HashMap<AccessibilityId, bool>> = std::cell::RefCell::default();
 }
 
 /// Notes that the control `a11y` moves with the arrow keys itself while it has the focus.
 pub fn use_arrows(a11y: AccessibilityId) {
-    use_hook(|| ARROWS.with(|a| a.borrow_mut().insert(a11y)));
+    arrows_hook(a11y, true);
+}
+
+/// Like `use_arrows`, for a control that moves with Left and Right only.
+pub fn use_side_arrows(a11y: AccessibilityId) {
+    arrows_hook(a11y, false);
+}
+
+fn arrows_hook(a11y: AccessibilityId, vertical: bool) {
+    use_hook(|| ARROWS.with(|a| a.borrow_mut().insert(a11y, vertical)));
     use_drop(move || {
         ARROWS.with(|a| a.borrow_mut().remove(&a11y));
     });
@@ -93,7 +102,18 @@ pub fn use_arrows(a11y: AccessibilityId) {
 /// True while a control that moves with the arrow keys has the focus.
 pub fn arrows() -> bool {
     let focused = *Platform::get().current_window().focused_accessibility_id.peek();
-    ARROWS.with(|a| a.borrow().contains(&focused))
+    ARROWS.with(|a| a.borrow().contains_key(&focused))
+}
+
+/// True while a button has the keyboard focus, so Enter belongs to it.
+pub fn button_focused() -> bool {
+    Platform::get().current_window().focused_accessibility_node.peek().role() == AccessibilityRole::Button
+}
+
+/// True while a control that moves with Up and Down itself has the focus.
+pub fn vertical_arrows() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    ARROWS.with(|a| a.borrow().get(&focused).copied().unwrap_or(false))
 }
 
 /// Gives the keyboard focus back to where it was when a layer opened, once the layer closes.

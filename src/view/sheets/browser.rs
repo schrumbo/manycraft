@@ -36,7 +36,7 @@ use crate::view::kit::sheet::{Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
-use crate::view::kit::{after, at_least, off_ui, toast, use_theme};
+use crate::view::kit::{after, at_least, button_focused, off_ui, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::BrowserUndo;
@@ -1657,7 +1657,7 @@ impl Component for Browser {
             .inform()
             .on_escape(move |_| esc.cancel())
             .on_enter(move |_| {
-                if field::typing() {
+                if field::typing() || enter.page_open() && !enter.other_field_typing() && !button_focused() {
                     enter.enter(false);
                 }
             })
@@ -1668,7 +1668,7 @@ fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
     let primary = modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !modifiers.intersects(Modifiers::SHIFT | Modifiers::ALT);
     let page = flow.page_open();
     match key {
-        Key::Named(named @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::PageUp | NamedKey::PageDown)) if modifiers.is_empty() && !crate::view::kit::arrows() => {
+        Key::Named(named @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::PageUp | NamedKey::PageDown)) if modifiers.is_empty() && !crate::view::kit::vertical_arrows() => {
             if page {
                 match named {
                     NamedKey::ArrowUp => flow.scroll_page(-1., 0.),
@@ -1695,7 +1695,7 @@ fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
             flow.step(i32::MAX);
             true
         }
-        Key::Named(NamedKey::Enter) if primary => {
+        Key::Named(NamedKey::Enter) if primary && !button_focused() => {
             flow.enter(true);
             true
         }

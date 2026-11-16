@@ -15,7 +15,7 @@ const MAX_QUOTE_DEPTH: usize = 4;
 const MAX_NESTING: usize = 8;
 const MAX_INDENT: usize = 4;
 const TAB_WIDTH: usize = 4;
-const MAX_CLOSER: usize = 512;
+const MAX_CLOSER: usize = 2048;
 
 /// A piece of inline text with one style.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -157,9 +157,10 @@ fn link(c: &[char], at: usize) -> Option<(Range<usize>, String, usize)> {
                 }
             }
             '`' => {
-                if let Some((_, end)) = code_span(c, j) {
-                    j = end - 1;
-                }
+                j = match code_span(c, j) {
+                    Some((_, end)) => end,
+                    None => j + run_len(c, j, '`'),
+                } - 1;
             }
             _ => {}
         }
