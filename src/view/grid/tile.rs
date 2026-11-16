@@ -63,6 +63,7 @@ fn action_of(g: &Game, m: &Model) -> Option<Primary> {
 
 pub(super) fn pick(store: Store, key: &str, index: usize) {
     let mut ui = store.ui;
+    ui.history.set_if_modified(None);
     let mods = held();
     let toggle = if cfg!(target_os = "macos") { mods.contains(Modifiers::META) } else { mods.contains(Modifiers::CONTROL) };
     let mut selection = ui.selection.peek().clone();
@@ -229,6 +230,7 @@ impl Component for Tile {
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .cursor(CursorIcon::Pointer)
             .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();

@@ -26,7 +26,7 @@ use super::kit::button::Button;
 use super::kit::text::{body, heading, line, secondary};
 use super::kit::{Bounds, use_theme};
 use super::store::{Store, use_store};
-use super::theme::{font, iconsize, space};
+use super::theme::{control, font, iconsize, space};
 use super::ui::{Filter, Page, Show, View};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{Game, Model};
@@ -126,7 +126,11 @@ pub fn shown_keys(store: Store) -> Vec<String> {
 /// selected and Escape closes an open history. True when the key was the grid's.
 pub fn key(store: Store, e: &KeyboardEventData) -> bool {
     let mut ui = store.ui;
-    if !matches!(*ui.page.peek(), Page::Grid(_)) || ui.layered() || super::kit::field::typing() {
+    if *ui.message.peek() && e.key == Key::Named(NamedKey::Escape) && super::kit::field::typing() {
+        ui.message.set(false);
+        return true;
+    }
+    if !matches!(*ui.page.peek(), Page::Grid(_)) || ui.layered() || super::kit::field::typing() || super::kit::arrows() {
         return false;
     }
     let mods = e.modifiers;
@@ -247,9 +251,10 @@ impl Component for GridPage {
         if view == View::Tiles && *ui.tile_w.peek() != grid.tile_w {
             ui.tile_w.set(grid.tile_w);
         }
+        let bar_room = if ui.selection.read().len() >= 2 { control::L + space::L * 2. } else { 0. };
         let (content, per_row, row_h) = match view {
-            View::Tiles => (grid.content_h + shelf_h, grid.columns.max(1), grid.tile_h + t.grid_gap),
-            View::Table => (ROW * (keys.len() as f32 + 1.), 1, ROW),
+            View::Tiles => (grid.content_h + shelf_h + bar_room, grid.columns.max(1), grid.tile_h + t.grid_gap),
+            View::Table => (ROW * (keys.len() as f32 + 1.) + bar_room, 1, ROW),
         };
         let page_rows = ((h - if view == View::Table { ROW } else { 0. }) / row_h.max(1.)).floor().max(1.) as usize;
         if *ui.grid.peek() != (per_row, page_rows) {
@@ -274,10 +279,12 @@ impl Component for GridPage {
             }
             View::Table => (((at / ROW).floor() as usize).min(keys.len()), (((at + h) / ROW).ceil() as usize).min(keys.len())),
         };
-        let on_screen: HashSet<String> = keys[first.min(last)..last].iter().cloned().collect();
+        let on_screen: Option<HashSet<String>> = (view == View::Tiles).then(|| keys[first.min(last)..last].iter().cloned().collect());
         let set: HashSet<String> = keys.iter().cloned().collect();
         use_side_effect_with_deps(&(on_screen, set), move |(on_screen, set)| {
-            store_c.set_visible(on_screen.clone());
+            if let Some(on_screen) = on_screen {
+                store_c.set_visible(on_screen.clone());
+            }
             commands::prune(store_c, set);
         });
 
@@ -298,7 +305,11 @@ impl Component for GridPage {
             });
         let column = rect().width(Size::fill()).height(Size::fill()).content(Content::flex()).child(Strips { filter: self.filter.clone() });
 
-        if !m.loaded && m.error.is_none() {
+        if !m.loaded && store.failed() {
+            let col = rect().center().width(Size::fill()).height(Size::fill()).spacing(space::M).child(icon(&t, Icon::Alert, iconsize::L * 2., t.text3)).child(heading(&t, tr("Manycraft konnte nicht starten"))).child(secondary(&t, tr("Beim Lesen deiner Daten ging etwas schief. Starte Manycraft neu.")));
+            return column.child(page.child(col)).into_element();
+        }
+        if !m.loaded {
             return column.child(page.child(rect().center().width(Size::fill()).height(Size::fill()).child(secondary(&t, tr("Lädt …"))))).into_element();
         }
         if keys.is_empty() && shelf.is_empty() {
@@ -333,8 +344,9 @@ impl Component for GridPage {
                 let (x, y) = grid.origin(i, t.grid_pad);
                 let tile_top = y + shelf_h - at;
                 let below = tile_top + grid.tile_h + space::XS;
-                let y = if h - below >= HISTORY_ROOM || tile_top < HISTORY_ROOM { below } else { tile_top - space::XS - HISTORY_ROOM };
-                page = page.child(rect().position(Position::new_absolute().left(x.min((w - HISTORY_ROOM * 1.25).max(0.))).top(y)).child(History { key }));
+                let left = x.min((w - HISTORY_ROOM * 1.25).max(0.));
+                let at_y = if h - below >= HISTORY_ROOM || tile_top < HISTORY_ROOM { Position::new_absolute().left(left).top(below) } else { Position::new_absolute().left(left).bottom(h - tile_top + space::XS) };
+                page = page.child(rect().position(at_y).child(History { key }));
             }
         }
 

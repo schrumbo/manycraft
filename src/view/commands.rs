@@ -259,7 +259,7 @@ impl Command {
             Command::StopSelected | Command::StopAll | Command::CancelStart | Command::ShowStopped => Icon::Stop,
             Command::RestartSelected | Command::ReconnectSelected | Command::ReconnectDropped => Icon::Refresh,
             Command::MessageSelected => Icon::Message,
-            Command::ShowHistory => Icon::Undo,
+            Command::ShowHistory => Icon::Clock,
             Command::ShowTiles => Icon::Grid,
             Command::ShowTable => Icon::Rows,
             Command::NextAttention | Command::ShowAttention => Icon::Alert,

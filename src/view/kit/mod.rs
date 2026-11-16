@@ -40,6 +40,21 @@ pub fn ring(t: &Theme, focus: Focus) -> Option<Border> {
 
 thread_local! {
     static HELD: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers::empty()) };
+    static ARROWS: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
+}
+
+/// Notes that the control `a11y` moves with the arrow keys itself while it has the focus.
+pub fn use_arrows(a11y: AccessibilityId) {
+    use_hook(|| ARROWS.with(|a| a.borrow_mut().insert(a11y)));
+    use_drop(move || {
+        ARROWS.with(|a| a.borrow_mut().remove(&a11y));
+    });
+}
+
+/// True while a control that moves with the arrow keys has the focus.
+pub fn arrows() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    ARROWS.with(|a| a.borrow().contains(&focused))
 }
 
 /// Gives the keyboard focus back to where it was when a layer opened, once the layer closes.

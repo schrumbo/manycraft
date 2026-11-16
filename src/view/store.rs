@@ -67,6 +67,7 @@ struct Side {
     tray: Option<Tray>,
     picks: Option<async_channel::Receiver<Pick>>,
     watchers: HashMap<String, Vec<State<Option<ImageHandle>>>>,
+    explaining: bool,
 }
 
 impl Store {
@@ -90,6 +91,11 @@ impl Store {
             store.dispatch(Event::Notice(runner::untouched(&e).unwrap_or_else(|| format!("{e:#}"))));
         }
         (store, Some(updates))
+    }
+
+    /// Whether the fleet could not start, so nothing will ever load.
+    pub fn failed(self) -> bool {
+        self.runtime.peek().is_none()
     }
 
     fn runtime(&self) -> Option<Rc<RefCell<Runtime>>> {
@@ -392,14 +398,19 @@ impl Store {
     fn explain_tray(self) {
         let up = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
         if !up || self.ui.sheet.peek().is_some() {
+            if std::mem::take(&mut self.side().borrow_mut().explaining) {
+                sheet::close(self.ui);
+            }
             self.stow();
             return;
         }
         let text = if cfg!(target_os = "windows") { tr("Solange Spiele laufen, findest du Manycraft im Infobereich der Taskleiste.") } else { tr("Solange Spiele laufen, findest du Manycraft im Infobereich.") };
         let ok = sheet::Primary { label: tr("Verstanden"), disabled: None, danger: false, run: EventHandler::new(move |_| {
+            self.side().borrow_mut().explaining = false;
             sheet::close(self.ui);
             self.dispatch(Event::TrayExplained);
         }) };
+        self.side().borrow_mut().explaining = true;
         sheet::open(self.ui, sheet::Card::new("tray", tr("Manycraft läuft weiter")).message(text).primary(ok).inform().width(super::theme::frame::SHEET * 0.8));
     }
 

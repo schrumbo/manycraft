@@ -1558,5 +1558,7 @@
   "Starten abbrechen": "Cancel starting",
   "Getrennte jetzt verbinden": "Reconnect dropped now",
   "Tabelle": "Table",
-  "Kacheln": "Tiles"
+  "Kacheln": "Tiles",
+  "Manycraft konnte nicht starten": "Manycraft could not start",
+  "Beim Lesen deiner Daten ging etwas schief. Starte Manycraft neu.": "Something went wrong reading your data. Restart Manycraft."
 }

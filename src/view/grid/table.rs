@@ -31,7 +31,7 @@ pub enum Column {
     Attempts,
 }
 
-const SINCE_W: f32 = 76.;
+const SINCE_W: f32 = 112.;
 const ATTEMPTS_W: f32 = 64.;
 const PREVIEW_W: f32 = 192.;
 
@@ -150,6 +150,10 @@ impl Component for Table {
         let t = use_theme();
         let store = use_store();
         let mut hovered = use_state(|| None::<(String, f32)>);
+        use_side_effect(move || {
+            let peek: std::collections::HashSet<String> = hovered.read().iter().map(|(k, _)| k.clone()).collect();
+            store.set_visible(peek);
+        });
         let sort = *store.ui.sort.read();
         let columns: Vec<Column> = Column::SHOWN.into_iter().filter(|c| self.batches || *c != Column::Batch).collect();
         let first = ((self.top / ROW).floor() as usize).min(self.keys.len());
@@ -168,50 +172,19 @@ impl Component for Table {
                     .child(Row { key, index: i, columns: columns.clone() }),
             );
         }
-        body = body.child(header(&t, store, &columns, sort));
+        body = body.child(header(&t, &columns, sort));
         let history = store.ui.history.read().clone();
         if let Some((key, y)) = history.as_ref().and_then(|k| self.keys.iter().position(|x| x == k).map(|i| (k.clone(), ROW + (i + 1) as f32 * ROW - self.top))) {
             body = body.child(rect().position(Position::new_absolute().right(space::L).top(y.clamp(ROW, (self.h - ROW).max(ROW)))).child(tile::History { key }));
         } else if let Some((key, y)) = hovered.read().clone() {
-            body = body.child(rect().position(Position::new_absolute().right(space::L).top((y + ROW).min((self.h - PREVIEW_W * 9. / 16. - space::S).max(ROW)))).child(Peek { key }));
+            body = body.child(rect().position(Position::new_absolute().right(space::L).top((y + ROW).min((self.h - PREVIEW_W * 9. / 16. - space::S).max(ROW)))).key(&key).child(Peek { key }));
         }
         body
     }
 }
 
-fn header(t: &Theme, store: crate::view::store::Store, columns: &[Column], (by, down): (Column, bool)) -> Rect {
-    let cells = columns.iter().map(|&c| {
-        let on = c == by;
-        let label = c.label();
-        let spot_label = label.clone();
-        let mut cell = rect()
-            .width(c.width())
-            .height(Size::fill())
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .main_align(if c.numeric() { Alignment::End } else { Alignment::Start })
-            .spacing(space::XXS)
-            .padding((0., space::S))
-            .cursor(CursorIcon::Pointer)
-            .a11y_role(AccessibilityRole::ColumnHeader)
-            .a11y_alt(spot_label)
-            .on_press(move |_| {
-                let mut sort = store.ui.sort;
-                let (now, was_down) = *sort.peek();
-                sort.set(if now != c {
-                    (c, c.numeric())
-                } else if was_down != c.numeric() {
-                    (Column::Order, false)
-                } else {
-                    (c, !was_down)
-                });
-            })
-            .child(line(t, label, font::CAPTION, if on { t.text1 } else { t.text2 }).font_weight(if on { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM }).max_lines(1));
-        if on {
-            cell = cell.child(icon(t, if down { Icon::ChevronDown } else { Icon::ChevronUp }, iconsize::XS, t.text2));
-        }
-        HeaderCell { id: format!("table.head.{}", c.id()), label: c.label(), cell: cell.into_element() }.into_element()
-    });
+fn header(t: &Theme, columns: &[Column], (by, down): (Column, bool)) -> Rect {
+    let cells = columns.iter().map(|&c| HeaderCell { column: c, on: c == by, down }.into_element());
     rect()
         .position(Position::new_absolute().left(0.).top(0.))
         .width(Size::fill())
@@ -226,15 +199,58 @@ fn header(t: &Theme, store: crate::view::store::Store, columns: &[Column], (by, 
 
 #[derive(PartialEq)]
 struct HeaderCell {
-    id: String,
-    label: String,
-    cell: Element,
+    column: Column,
+    on: bool,
+    down: bool,
 }
 
 impl Component for HeaderCell {
     fn render(&self) -> impl IntoElement {
-        let spot = use_spot(&self.id, "button", &self.label, true);
-        rect().width(Size::flex(1.)).height(Size::fill()).on_sized(spot).child(self.cell.clone())
+        let t = use_theme();
+        let store = use_store();
+        let a11y = use_a11y();
+        let focus = use_focus(a11y);
+        let mut hovered = use_state(|| false);
+        let (c, on) = (self.column, self.on);
+        let label = c.label();
+        let spot = use_spot(&format!("table.head.{}", c.id()), "button", &label, true);
+        let mut cell = rect()
+            .a11y_id(a11y)
+            .a11y_focusable(true)
+            .a11y_role(AccessibilityRole::ColumnHeader)
+            .a11y_alt(label.clone())
+            .width(c.width())
+            .height(Size::fill())
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .main_align(if c.numeric() { Alignment::End } else { Alignment::Start })
+            .spacing(space::XXS)
+            .padding((0., space::S))
+            .corner_radius(t.shape.control)
+            .background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })
+            .cursor(CursorIcon::Pointer)
+            .on_sized(spot)
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_press(move |_| {
+                let mut sort = store.ui.sort;
+                let (now, was_down) = *sort.peek();
+                sort.set(if now != c {
+                    (c, c.numeric())
+                } else if was_down != c.numeric() {
+                    (Column::Order, false)
+                } else {
+                    (c, !was_down)
+                });
+            })
+            .child(line(&t, label, font::CAPTION, if on { t.text1 } else { t.text2 }).font_weight(if on { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM }).max_lines(1));
+        if on {
+            cell = cell.child(icon(&t, if self.down { Icon::ChevronDown } else { Icon::ChevronUp }, iconsize::XS, t.text2));
+        }
+        if let Some(border) = crate::view::kit::ring(&t, focus()) {
+            cell = cell.border(border);
+        }
+        cell
     }
 }
 
@@ -303,6 +319,7 @@ impl Component for Row {
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .cursor(CursorIcon::Pointer)
             .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
