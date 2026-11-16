@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 !include "MUI2.nsh"
 
 Name "Manycraft"
@@ -15,8 +15,19 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
+!define MUI_FINISHPAGE_TEXT "$(KeptText)"
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_NOTCHECKED
+!define MUI_FINISHPAGE_RUN_TEXT "$(RemoveText)"
+!define MUI_FINISHPAGE_RUN_FUNCTION un.RemoveData
+!insertmacro MUI_UNPAGE_FINISH
 !insertmacro MUI_LANGUAGE "German"
 !insertmacro MUI_LANGUAGE "English"
+
+LangString KeptText ${LANG_GERMAN} "Manycraft wurde entfernt.$\r$\n$\r$\nInstanzen, Welten und Accounts bleiben in $LOCALAPPDATA\Manycraft."
+LangString KeptText ${LANG_ENGLISH} "Manycraft has been removed.$\r$\n$\r$\nInstances, worlds and accounts stay in $LOCALAPPDATA\Manycraft."
+LangString RemoveText ${LANG_GERMAN} "Auch diese Daten löschen"
+LangString RemoveText ${LANG_ENGLISH} "Also delete this data"
 
 Section "Install"
   SetOutPath "$INSTDIR"
@@ -39,3 +50,8 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft"
 SectionEnd
+
+Function un.RemoveData
+  IfFileExists "$LOCALAPPDATA\Manycraft\*.*" 0 +2
+  nsExec::Exec '"$SYSDIR\cmd.exe" /c rmdir /s /q "$LOCALAPPDATA\Manycraft"'
+FunctionEnd
