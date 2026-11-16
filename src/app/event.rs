@@ -1,11 +1,12 @@
 //! Everything that happens to the application: reports of the games and the fleet, timers that fire, data read from disk and what the user asks for.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
 use super::effect::Unshown;
+use super::session::Watch;
 use super::model::Phase;
 use crate::core::account::Account;
 use crate::core::batch::Batch;
@@ -73,6 +74,8 @@ pub struct Loaded {
     pub keep: bool,
     /// Games an earlier manager launched that still run.
     pub adopted: Vec<Adoption>,
+    /// The memory one game of each batch was measured to hold in earlier runs, in MB, by batch id.
+    pub measured: HashMap<String, u32>,
 }
 
 /// Something that happened.
@@ -101,6 +104,8 @@ pub enum Event {
     NotShown(Box<Unshown>),
     InstanceAdded(Instance),
     InstanceRemoved(String),
+    /// An instance was saved; it replaces the one with its id.
+    InstanceChanged(Instance),
     /// A message for the next reload.
     Notice(String),
     /// A message to show now.
@@ -146,6 +151,14 @@ pub enum Event {
     Recolor { ids: Vec<Uuid>, color: u8 },
     /// The tiles on screen changed.
     Visible(HashSet<String>),
+    /// Where the user looks changed.
+    Watch(Watch),
+    /// The preview rates worked out at `generation` are due to go out, unless a newer change came.
+    ShotsDue { generation: u64 },
+    /// The memory of the running games is due to be read.
+    UsageDue,
+    /// The memory each running game holds for itself, in MB, by key.
+    Usage(Vec<(String, u64)>),
     /// Batches, accounts or settings changed; every connected game hears its identity again.
     TellGames,
     /// The user closed the manager window, where closing it can put it in the notification area.

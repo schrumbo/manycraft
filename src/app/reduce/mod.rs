@@ -4,6 +4,8 @@ mod data;
 mod fleet;
 mod games;
 mod notify;
+mod previews;
+pub mod usage;
 mod quit;
 mod show;
 
@@ -83,6 +85,12 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::InstanceAdded(made) => {
             model.instances.push(made);
             out.push(Effect::Redraw(Redraw::All));
+        }
+        Event::InstanceChanged(made) => {
+            if let Some(slot) = model.instances.iter_mut().find(|i| i.id == made.id) {
+                *slot = made;
+                out.push(Effect::Redraw(Redraw::All));
+            }
         }
         Event::InstanceRemoved(id) => {
             model.instances.retain(|made| made.id != id);
@@ -184,6 +192,10 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             out.push(Effect::SaveColor { ids, color });
         }
         Event::Visible(keys) => games::visible(model, env, keys, &mut out),
+        Event::Watch(watch) => model.session.watch = watch,
+        Event::ShotsDue { generation } => previews::due(model, generation, &mut out),
+        Event::UsageDue => usage::due(model, &mut out),
+        Event::Usage(readings) => usage::read(model, env, readings, &mut out),
         Event::TellGames => games::tell_games(model, env, &mut out),
         Event::CloseWindow => quit::close_window(model, env.settings.tray_explained, &mut out),
         Event::TrayExplained => {
@@ -199,6 +211,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         let games = &model.games;
         model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));
     }
+    previews::replan(model, env.settings.preview_rate, &mut out);
+    usage::arm(model, &mut out);
     out
 }
 
@@ -237,6 +251,7 @@ pub(super) fn startable(m: &Model, owner: &str) -> bool {
 
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
     use uuid::Uuid;
@@ -301,7 +316,7 @@ pub(crate) mod testing {
     /// Loads the model's own data again with `adopted` games still running.
     pub fn adopt(m: &mut Model, s: &Settings, adopted: Vec<Adoption>) -> Vec<Effect> {
         let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
-        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted })))
+        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted, measured: HashMap::new() })))
     }
 }
 
@@ -318,6 +333,24 @@ mod tests {
         assert_eq!(draws, (0..4).map(|_| b.unit()).collect::<Vec<_>>());
         assert!(draws.iter().all(|u| (0.0..1.0).contains(u)));
         assert_ne!(draws[0], draws[1]);
+    }
+
+    #[test]
+    fn a_saved_instance_replaces_only_its_own_entry() {
+        use super::testing::{run, settings, setup};
+        use crate::core::account::AccountKind;
+        use crate::core::instance::Instance;
+
+        let s = settings();
+        let (mut m, _) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let mut saved = m.instances[0].clone();
+        saved.name = "Renamed".into();
+        let fx = run(&mut m, &s, Instant::now(), Event::InstanceChanged(saved.clone()));
+        assert_eq!(m.instances, vec![saved]);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All))));
+        let stranger = Instance::new("x", "26.3", crate::core::instance::Loader::default());
+        assert!(run(&mut m, &s, Instant::now(), Event::InstanceChanged(stranger)).is_empty());
+        assert_eq!(m.instances.len(), 1);
     }
 
     #[test]

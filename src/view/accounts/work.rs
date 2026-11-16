@@ -211,7 +211,7 @@ fn offer_undo(store: Store, removed: Vec<Removed>) {
         many => trf("%lld Accounts entfernt", &[&many.len()]),
     };
     let kept = Rc::new(RefCell::new(Some(removed)));
-    toast::show(store.ui, text, Some(EventHandler::new(move |_| {
+    toast::show_kept(store.ui, text, EventHandler::new(move |_| {
         let Some(removed) = kept.borrow_mut().take() else { return };
         off("restore-accounts", move || {
             let mut left = Vec::new();
@@ -233,7 +233,7 @@ fn offer_undo(store: Store, removed: Vec<Removed>) {
             }
             store.reload(true);
         });
-    })));
+    }));
 }
 
 /// Adds the accounts of `ids` to batch `batch`, then offers to take them out again.

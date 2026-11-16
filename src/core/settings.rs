@@ -64,6 +64,18 @@ impl Default for Notifications {
     }
 }
 
+/// How often the tiles on screen refresh their previews, against what it costs the games.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewRate {
+    /// Half as often.
+    Saving,
+    #[default]
+    Normal,
+    /// Twice as often.
+    Smooth,
+}
+
 /// Everything configurable app-wide.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -88,11 +100,12 @@ pub struct Settings {
     pub prevent_sleep: bool,
     /// Whether the hint that closing the window keeps Manycraft in the notification area was seen.
     pub tray_explained: bool,
+    pub preview_rate: PreviewRate,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, preview_rate: PreviewRate::Normal }
     }
 }
 

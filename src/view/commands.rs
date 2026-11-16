@@ -9,7 +9,7 @@ use super::grid::layout::TileSize;
 use super::icons::Icon;
 use super::kit::toast;
 use super::store::Store;
-use super::ui::{Filter, Page};
+use super::ui::{Filter, Page, Show, View};
 use crate::app::event::Event;
 use crate::core::i18n::tr;
 use crate::core::ipc::HotkeyAction;
@@ -37,6 +37,15 @@ pub enum Command {
     ReconnectSelected,
     StartAll,
     StopAll,
+    MessageSelected,
+    ShowHistory,
+    ShowTiles,
+    ShowTable,
+    ShowRunning,
+    ShowStopped,
+    CancelStart,
+    StartAnyway,
+    ReconnectDropped,
     Larger,
     Smaller,
     Fit,
@@ -79,6 +88,16 @@ const fn bare(code: Code) -> Shortcut {
 }
 
 impl Shortcut {
+    /// Ctrl, or Cmd on macOS, with `code`.
+    pub const fn primary(code: Code) -> Self {
+        k(code)
+    }
+
+    /// `code` alone.
+    pub const fn bare(code: Code) -> Self {
+        bare(code)
+    }
+
     /// Whether the key event is this combination.
     pub fn matches(&self, e: &KeyboardEventData) -> bool {
         let m = e.modifiers;
@@ -106,6 +125,7 @@ impl Shortcut {
             Code::ArrowRight => "→".to_owned(),
             Code::ArrowLeft => "←".to_owned(),
             Code::ArrowDown => "↓".to_owned(),
+            Code::F2 => "F2".to_owned(),
             other => format!("{other:?}").trim_start_matches("Key").trim_start_matches("Digit").to_owned(),
         };
         if cfg!(target_os = "macos") {
@@ -135,14 +155,23 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 33] = [
+    pub const ALL: [Command; 42] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
         Command::ReconnectSelected,
+        Command::MessageSelected,
+        Command::ShowHistory,
         Command::ClearSelection,
         Command::StartAll,
         Command::StopAll,
+        Command::CancelStart,
+        Command::StartAnyway,
+        Command::ReconnectDropped,
+        Command::ShowTiles,
+        Command::ShowTable,
+        Command::ShowRunning,
+        Command::ShowStopped,
         Command::NextInstance,
         Command::PreviousInstance,
         Command::NextAttention,
@@ -194,6 +223,15 @@ impl Command {
             Command::ReconnectSelected => "ReconnectSelected",
             Command::StartAll => "StartAll",
             Command::StopAll => "StopAll",
+            Command::MessageSelected => "MessageSelected",
+            Command::ShowHistory => "ShowHistory",
+            Command::ShowTiles => "ShowTiles",
+            Command::ShowTable => "ShowTable",
+            Command::ShowRunning => "FilterRunning",
+            Command::ShowStopped => "FilterStopped",
+            Command::CancelStart => "CancelStart",
+            Command::StartAnyway => "StartAnyway",
+            Command::ReconnectDropped => "ReconnectDropped",
             Command::Larger => "Larger",
             Command::Smaller => "Smaller",
             Command::Fit => "FitTiles",
@@ -231,6 +269,15 @@ impl Command {
             Command::ReconnectSelected => tr("Ausgewählte neu verbinden"),
             Command::StartAll => tr("Alle starten"),
             Command::StopAll => tr("Alle stoppen"),
+            Command::MessageSelected => tr("Nachricht an Ausgewählte…"),
+            Command::ShowHistory => tr("Verlauf zeigen"),
+            Command::ShowTiles => tr("Als Kacheln zeigen"),
+            Command::ShowTable => tr("Als Tabelle zeigen"),
+            Command::ShowRunning => tr("Nur laufende zeigen"),
+            Command::ShowStopped => tr("Nur gestoppte zeigen"),
+            Command::CancelStart => tr("Starten abbrechen"),
+            Command::StartAnyway => tr("Trotzdem alle starten"),
+            Command::ReconnectDropped => tr("Getrennte jetzt verbinden"),
             Command::Larger => tr("Größere Kacheln"),
             Command::Smaller => tr("Kleinere Kacheln"),
             Command::Fit => tr("Kacheln einpassen"),
@@ -241,9 +288,13 @@ impl Command {
 
     pub fn glyph(self) -> Icon {
         match self {
-            Command::StartSelected | Command::StartAll | Command::NextInstance | Command::PreviousInstance => Icon::Play,
-            Command::StopSelected | Command::StopAll => Icon::Stop,
-            Command::RestartSelected | Command::ReconnectSelected => Icon::Refresh,
+            Command::StartSelected | Command::StartAll | Command::StartAnyway | Command::NextInstance | Command::PreviousInstance | Command::ShowRunning => Icon::Play,
+            Command::StopSelected | Command::StopAll | Command::CancelStart | Command::ShowStopped => Icon::Stop,
+            Command::RestartSelected | Command::ReconnectSelected | Command::ReconnectDropped => Icon::Refresh,
+            Command::MessageSelected => Icon::Message,
+            Command::ShowHistory => Icon::Clock,
+            Command::ShowTiles => Icon::Grid,
+            Command::ShowTable => Icon::Rows,
             Command::NextAttention | Command::ShowAttention => Icon::Alert,
             Command::ClearSelection | Command::Quit => Icon::Close,
             Command::SelectAll => Icon::Check,
@@ -284,8 +335,19 @@ impl Command {
             Command::Larger => k(Code::Equal),
             Command::Smaller => k(Code::Minus),
             Command::Fit => k(Code::Digit0),
+            Command::ShowTiles => k(Code::Digit1),
+            Command::ShowTable => k(Code::Digit2),
             Command::Quit => k(Code::KeyQ),
-            Command::ShowAttention | Command::StartAll | Command::StopAll => return None,
+            Command::ShowAttention
+            | Command::StartAll
+            | Command::StopAll
+            | Command::MessageSelected
+            | Command::ShowHistory
+            | Command::ShowRunning
+            | Command::ShowStopped
+            | Command::CancelStart
+            | Command::StartAnyway
+            | Command::ReconnectDropped => return None,
             c => return c.page_shortcut(),
         })
     }
@@ -301,11 +363,19 @@ impl Command {
             Command::SelectAll if accounts => !m.accounts.is_empty(),
             Command::ClearSelection if accounts => !store.ui.accounts.picked.peek().is_empty(),
             Command::FocusSearch if accounts => m.accounts.len() >= super::accounts::FILTER_FROM,
-            Command::StartSelected => picked().any(|g| !g.phase.is_active()),
-            Command::StopSelected => picked().any(|g| g.phase.is_active()),
-            Command::RestartSelected => picked().any(|g| g.phase.has_process()),
-            Command::ReconnectSelected => picked().any(|g| g.phase.is_running()),
-            Command::ClearSelection => !selected.is_empty(),
+            Command::StartSelected => grid && picked().any(|g| !g.phase.is_active()),
+            Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
+            Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
+            Command::ReconnectSelected => grid && picked().any(|g| g.phase.is_running()),
+            Command::ClearSelection => grid && !selected.is_empty(),
+            Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
+            Command::ShowHistory => grid && store.ui.cursor.peek().as_ref().or(selected.iter().next()).is_some_and(|k| m.games.contains_key(k)),
+            Command::ShowTiles => grid && *store.ui.view.peek() != View::Tiles,
+            Command::ShowTable => grid && *store.ui.view.peek() != View::Table,
+            Command::ShowRunning => grid && !matches!(*store.ui.page.peek(), Page::Grid(Filter::Attention)) && *store.ui.show.peek() != Show::Running,
+            Command::ShowStopped => grid && !matches!(*store.ui.page.peek(), Page::Grid(Filter::Attention)) && *store.ui.show.peek() != Show::Stopped,
+            Command::CancelStart | Command::StartAnyway => m.run(None).is_some_and(|r| self == Command::CancelStart || r.memory > 0),
+            Command::ReconnectDropped => m.batches.iter().any(|b| m.outage(&b.id).is_some()),
             Command::StartAll => m.games.values().any(|g| !g.phase.is_active()),
             Command::StopAll => m.games.values().any(|g| g.phase.is_active()),
             Command::NextInstance | Command::PreviousInstance => m.games.values().filter(|g| g.phase.is_running()).count() > 0,
@@ -366,6 +436,24 @@ impl Command {
             Command::ReconnectSelected => store.dispatch(Event::ReconnectMany(keys())),
             Command::StartAll => store.dispatch(Event::StartAll),
             Command::StopAll => store.dispatch(Event::StopAll),
+            Command::MessageSelected => ui.message.set(true),
+            Command::ShowHistory => {
+                let key = ui.cursor.peek().clone().or_else(|| ui.selection.peek().iter().next().cloned());
+                ui.history.set(key);
+            }
+            Command::ShowTiles => ui.view.set(View::Tiles),
+            Command::ShowTable => ui.view.set(View::Table),
+            Command::ShowRunning => ui.show.set(Show::Running),
+            Command::ShowStopped => ui.show.set(Show::Stopped),
+            Command::CancelStart => store.dispatch(Event::CancelStart(None)),
+            Command::StartAnyway => store.dispatch(Event::StartAnyway(None)),
+            Command::ReconnectDropped => {
+                let keys: Vec<String> = {
+                    let m = store.model.peek();
+                    m.batches.iter().filter_map(|b| m.outage(&b.id)).flat_map(|o| o.keys).collect()
+                };
+                store.dispatch(Event::ReconnectMany(keys));
+            }
             Command::Larger => {
                 let now = *ui.size.peek();
                 ui.size.set(now.larger(*ui.tile_w.peek()));
@@ -382,7 +470,7 @@ impl Command {
 }
 
 /// Runs the command whose shortcut the key event is; true when one ran. While a sheet, menu, the palette or a text field
-/// has the keyboard only the palette toggle and Quit go through.
+/// has the keyboard only the palette toggle and Quit go through. A command that cannot run leaves its keys to the page.
 pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
     let layered = store.ui.layered() || super::kit::field::typing();
     for command in Command::ALL {
@@ -396,7 +484,32 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
             }
         }
     }
+    if layered {
+        return false;
+    }
+    if let Some(extra) = extras(store).into_iter().find(|x| x.shortcut.is_some_and(|s| s.matches(e))) {
+        extra.run.call(());
+        return true;
+    }
     false
+}
+
+/// A command the shown page offers beyond the window's: in the palette, and through its shortcut while the page is shown.
+#[derive(Clone, PartialEq)]
+pub struct Extra {
+    pub id: String,
+    pub label: String,
+    pub glyph: Icon,
+    pub shortcut: Option<Shortcut>,
+    pub run: EventHandler<()>,
+}
+
+/// What the shown page offers beyond the window's commands.
+pub fn extras(store: Store) -> Vec<Extra> {
+    match &*store.ui.page.peek() {
+        Page::Instance(_) => super::instance::extras(store),
+        _ => Vec::new(),
+    }
 }
 
 /// The keys of the games picked, without those no longer there.

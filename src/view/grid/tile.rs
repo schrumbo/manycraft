@@ -5,6 +5,7 @@ use freya::elements::image::ImageHandle;
 use freya::prelude::*;
 
 use super::layout::{TWO_LINES, strip};
+use super::words;
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{Game, Model, Phase, Primary, main_action, status, stopped_ban};
 use crate::core::account::Account;
@@ -14,8 +15,9 @@ use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::line;
+use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{held, use_theme};
-use crate::view::store::{Store, use_store};
+use crate::view::store::{Store, use_preview, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::Page;
 
@@ -59,8 +61,9 @@ fn action_of(g: &Game, m: &Model) -> Option<Primary> {
     main_action(&g.phase, g.stopping, busy)
 }
 
-fn pick(store: Store, key: &str, index: usize) {
+pub(super) fn pick(store: Store, key: &str, index: usize) {
     let mut ui = store.ui;
+    ui.history.set_if_modified(None);
     let mods = held();
     let toggle = if cfg!(target_os = "macos") { mods.contains(Modifiers::META) } else { mods.contains(Modifiers::CONTROL) };
     let mut selection = ui.selection.peek().clone();
@@ -78,6 +81,7 @@ fn pick(store: Store, key: &str, index: usize) {
             return;
         }
     }
+    super::reset_anchor();
     if toggle {
         if !selection.remove(key) {
             selection.insert(key.to_owned());
@@ -89,7 +93,7 @@ fn pick(store: Store, key: &str, index: usize) {
     ui.cursor.set(Some(key.to_owned()));
 }
 
-fn context(store: Store, key: &str) -> Vec<Item> {
+pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     let mut ui = store.ui;
     if !ui.selection.peek().contains(key) {
         ui.selection.set(BTreeSet::from([key.to_owned()]));
@@ -118,6 +122,10 @@ fn context(store: Store, key: &str) -> Vec<Item> {
     if let Some(g) = m.games.get(key) {
         let instance = g.instance_id.clone();
         items.push(Item::Separator);
+        if !many {
+            let k = key.to_owned();
+            items.push(Item::new(format!("menu.{key}.history"), tr("Verlauf"), move |_| toggle_history(store, &k)).shortcut(tr("Leertaste")));
+        }
         items.push(Item::new(format!("menu.{key}.instance"), tr("Instanz öffnen"), move |_| {
             let mut page = store.ui.page;
             page.set(Page::Instance(instance.clone()));
@@ -143,17 +151,23 @@ impl Component for Tile {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
-        let mut last_press = use_state(|| None::<Instant>);
+        let mut track = use_state(Track::default);
+        super::use_node(&self.key, a11y);
+        let preview = use_preview(&self.key);
         let m = store.model.read();
         let Some(game) = m.games.get(&self.key) else {
             return rect().into_element();
         };
         let selected = store.ui.selection.read().contains(&self.key);
-        let preview = store.previews.read().get(&self.key).cloned();
         let face = store.faces.read().get(&game.account_id).cloned();
         let attention = game.phase.needs_attention();
         let severe = matches!(game.phase, Phase::LoginNeeded | Phase::Banned { .. });
-        let line2 = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
+        let detail = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
+        let reason = words::reason(game, &m);
+        let line2 = match &reason {
+            Some(r) => format!("{} · {r}", words::word(game, &m)),
+            None => detail.clone(),
+        };
         let action = action_of(game, &m);
         let spot = use_spot(&format!("tile.{}", self.key), "tile", &format!("{} · {line2}", self.name), true);
         let preview_h = self.height - strip(self.width);
@@ -192,6 +206,17 @@ impl Component for Tile {
                 text = text.child(crate::view::kit::badge::dot(tone));
             }
         }
+        let text = if two {
+            text.into_element()
+        } else {
+            let tip = match &reason {
+                Some(r) => format!("{detail}
+{r}"),
+                None => detail.clone(),
+            };
+            WithTip::new(Some(tip), text.width(Size::fill())).into_element()
+        };
+        let text = rect().width(Size::flex(1.)).child(text);
         let strip_row = rect().width(Size::fill()).height(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).padding((0., space::XXS)).child(face_view(&t, m.account(game.account_id), face, matches!(game.phase, Phase::Playing { .. }) && !game.stopping)).child(text).content(Content::flex());
 
         let mut tile = rect()
@@ -205,23 +230,15 @@ impl Component for Tile {
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .cursor(CursorIcon::Pointer)
             .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
                 a11y.request_focus();
-                if matches!(*e, PressEventData::Keyboard(_)) {
-                    if let Some(p) = primary_of(store, &enter_key) {
-                        run(store, &enter_key, p);
-                    }
-                    return;
-                }
-                let now = Instant::now();
-                let double = last_press.peek().is_some_and(|at| now - at < DOUBLE);
-                last_press.set(if double { None } else { Some(now) });
-                if double {
-                    if let Some(p) = primary_of(store, &enter_key) {
-                        run(store, &enter_key, p);
-                    }
+                if let PressEventData::Keyboard(k) = &*e {
+                    keyed(store, &enter_key, k);
+                } else if track.write().double(Instant::now()) {
+                    primary(store, &enter_key);
                 } else {
                     pick(store, &enter_key, index);
                 }
@@ -243,6 +260,93 @@ impl Component for Tile {
         tile.into_element()
     }
 }
+
+/// Runs the main action of game `key`, if it has one.
+pub(super) fn primary(store: Store, key: &str) {
+    if let Some(p) = primary_of(store, key) {
+        run(store, key, p);
+    }
+}
+
+/// What a key press on a focused tile or row does: Enter runs its main action, Space opens its history, Shift+Space stops
+/// what is selected.
+pub(super) fn keyed(store: Store, key: &str, e: &KeyboardEventData) {
+    if e.key == Key::Named(NamedKey::Enter) {
+        primary(store, key);
+    } else if e.modifiers.contains(Modifiers::SHIFT) {
+        if Command::StopSelected.available(store) {
+            Command::StopSelected.run(store);
+        }
+    } else {
+        toggle_history(store, key);
+    }
+}
+
+/// Opens the history of game `key`, or closes it when it is open.
+pub(super) fn toggle_history(store: Store, key: &str) {
+    let mut history = store.ui.history;
+    let open = history.peek().as_deref() == Some(key);
+    history.set(if open { None } else { Some(key.to_owned()) });
+}
+
+/// Tells a double press from two single ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct Track {
+    last: Option<Instant>,
+}
+
+impl Track {
+    /// Notes a press at `now`; true when it completes a double press.
+    pub(super) fn double(&mut self, now: Instant) -> bool {
+        let double = self.last.is_some_and(|at| now - at < DOUBLE);
+        self.last = if double { None } else { Some(now) };
+        double
+    }
+}
+
+/// The newest events of a game: when, what, and why.
+#[derive(PartialEq)]
+pub(super) struct History {
+    pub key: String,
+}
+
+impl Component for History {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let spot = use_spot(&format!("history.{}", self.key), "popover", &tr("Verlauf"), true);
+        let moments = words::moments(&self.key, &store.model.read());
+        let mut list = rect().width(Size::fill()).spacing(space::XS);
+        if moments.is_empty() {
+            list = list.child(line(&t, tr("Noch nichts passiert."), font::CALLOUT, t.text2));
+        }
+        for m in moments {
+            let mut row = rect().width(Size::fill()).horizontal().spacing(space::S).child(line(&t, m.when, font::CALLOUT, t.text3).width(Size::px(HISTORY_WHEN)).max_lines(1)).child(line(&t, m.what, font::CALLOUT, t.text1).font_weight(FontWeight::MEDIUM).max_lines(1));
+            if !m.reason.is_empty() {
+                row = row.child(line(&t, m.reason, font::CALLOUT, t.text2).width(Size::flex(1.)).max_lines(1).text_overflow(TextOverflow::Ellipsis)).content(Content::flex());
+            }
+            list = list.child(row);
+        }
+        let mut card = rect()
+            .a11y_role(AccessibilityRole::Dialog)
+            .a11y_alt(tr("Verlauf"))
+            .width(Size::px(HISTORY_W))
+            .padding(space::M)
+            .spacing(space::S)
+            .corner_radius(t.shape.tile)
+            .background(t.raised)
+            .layer(Layer::Overlay)
+            .on_sized(spot)
+            .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
+            .child(line(&t, tr("Verlauf"), font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD))
+            .child(list);
+        card = card.shadow(t.elevation.float.clone());
+        card
+    }
+}
+
+const HISTORY_W: f32 = 320.;
+const HISTORY_WHEN: f32 = 72.;
 
 fn primary_of(store: Store, key: &str) -> Option<Primary> {
     let m = store.model.peek();
@@ -269,7 +373,7 @@ fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Element {
     }
 }
 
-fn face_view(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, playing: bool) -> Element {
+pub(super) fn face_view(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, playing: bool) -> Element {
     let fill = account.map_or(t.control, |a| t.identity(usize::from(a.color())));
     let mut chip = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).corner_radius(t.shape.small).background(fill).center().overflow(Overflow::Clip);
     chip = match (face, account) {

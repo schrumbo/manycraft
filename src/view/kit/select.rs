@@ -3,7 +3,8 @@
 use freya::prelude::*;
 
 use super::menu::{self, Item, Menu};
-use super::text::{line, spacer};
+use super::text::line;
+use super::tooltip::WithTip;
 use super::{Bounds, ring, use_theme};
 use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
@@ -19,16 +20,23 @@ pub struct Select {
     options: Vec<String>,
     chosen: usize,
     width: f32,
+    disabled: Option<String>,
     on_choose: Option<EventHandler<usize>>,
 }
 
 impl Select {
     pub fn new(id: impl Into<String>, label: impl Into<String>, options: Vec<String>, chosen: usize) -> Self {
-        Self { id: id.into(), label: label.into(), options, chosen, width: 200., on_choose: None }
+        Self { id: id.into(), label: label.into(), options, chosen, width: 200., disabled: None, on_choose: None }
     }
 
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
+        self
+    }
+
+    /// Greys the control out and shows `reason` as its tooltip.
+    pub fn disabled(mut self, reason: Option<String>) -> Self {
+        self.disabled = reason;
         self
     }
 
@@ -43,10 +51,12 @@ impl Component for Select {
         let t = use_theme();
         let ui = use_consume::<Ui>();
         let a11y = use_a11y();
+        super::use_arrows(a11y);
         let focus = use_focus(a11y);
         let mut bounds = use_state(Bounds::default);
         let mut hovered = use_state(|| false);
-        let mut spot = use_spot(&self.id, "select", &self.label, true);
+        let enabled = self.disabled.is_none();
+        let mut spot = use_spot(&self.id, "select", &self.label, enabled);
         let options = self.options.clone();
         let chosen = self.chosen;
         let id = self.id.clone();
@@ -74,7 +84,7 @@ impl Component for Select {
         let value = self.options.get(chosen).cloned().unwrap_or_default();
         let mut s = rect()
             .a11y_id(a11y)
-            .a11y_focusable(true)
+            .a11y_focusable(enabled)
             .a11y_role(AccessibilityRole::ComboBox)
             .a11y_alt(format!("{}: {value}", self.label))
             .width(Size::px(self.width))
@@ -82,9 +92,9 @@ impl Component for Select {
             .padding((0., space::S, 0., space::S + 2.))
             .horizontal()
             .cross_align(Alignment::Center)
-            .background(if *hovered.read() { t.hover } else { t.control })
+            .background(if *hovered.read() && enabled { t.hover } else { t.control })
             .corner_radius(t.shape.control)
-            .cursor(CursorIcon::Pointer)
+            .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed })
             .on_sized(move |e: Event<SizedEventData>| {
                 bounds.set_if_modified(Bounds::of(&e));
                 spot(e);
@@ -92,11 +102,13 @@ impl Component for Select {
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
             .on_press(move |_| {
-                a11y.request_focus();
-                click();
+                if enabled {
+                    a11y.request_focus();
+                    click();
+                }
             })
             .on_key_down(move |e: Event<KeyboardEventData>| {
-                if !a11y.is_focused() {
+                if !a11y.is_focused() || !enabled {
                     return;
                 }
                 let opens = match &e.key {
@@ -109,13 +121,12 @@ impl Component for Select {
                     keys();
                 }
             })
-            .child(line(&t, value, font::BODY, t.text1))
-            .child(spacer())
-            .child(icon(&t, Icon::ChevronDown, iconsize::S, t.text2))
+            .child(line(&t, value, font::BODY, if enabled { t.text1 } else { t.text3 }).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.)))
+            .child(icon(&t, Icon::ChevronDown, iconsize::S, if enabled { t.text2 } else { t.text3 }))
             .content(Content::flex());
         if let Some(border) = ring(&t, focus()) {
             s = s.border(border);
         }
-        s
+        WithTip::new(self.disabled.clone(), s)
     }
 }

@@ -221,6 +221,21 @@ impl Target {
     }
 }
 
+/// A fresh ntfy topic nobody can guess: `manycraft-` and 20 random letters and digits from `random`.
+pub fn new_topic(random: u128) -> Secret {
+    const ALPHABET: &[u8; 32] = b"abcdefghijkmnpqrstuvwxyz23456789";
+    let tail: String = (0..20).map(|i| ALPHABET[((random >> (i * 5)) & 31) as usize] as char).collect();
+    Secret::new(format!("manycraft-{tail}"))
+}
+
+/// The address that opens `topic` on `server` in the ntfy app or a browser, for the QR code.
+pub fn ntfy_link(server: &str, topic: &str) -> Secret {
+    let server = server.trim().trim_end_matches('/');
+    let server = if server.is_empty() { NTFY_DEFAULT } else { server };
+    let server = if server.contains("://") { server.to_owned() } else { format!("https://{server}") };
+    Secret::new(format!("{server}/{}", topic.trim()))
+}
+
 /// One HTTP request to a service. The address can hold the secret, so it never prints.
 pub struct Request {
     url: Secret,
@@ -828,6 +843,18 @@ mod tests {
 
     fn dropped(key: &str) -> Incident {
         Incident::new(key, key, What::Dropped, "Server closed", Some("mc.example.net:25565"))
+    }
+
+    #[test]
+    fn a_new_topic_is_long_unguessable_and_opens_on_the_right_server() {
+        let a = new_topic(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let b = new_topic(0xfedc_ba98_7654_3210_fedc_ba98_7654_3210);
+        assert_ne!(a.expose(), b.expose());
+        assert!(a.expose().starts_with("manycraft-") && a.expose().len() == 30);
+        assert!(a.expose()[10..].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert_eq!(ntfy_link("", "t").expose(), "https://ntfy.sh/t");
+        assert_eq!(ntfy_link("https://push.example.org/", " t ").expose(), "https://push.example.org/t");
+        assert_eq!(ntfy_link("push.example.org", "t").expose(), "https://push.example.org/t");
     }
 
     #[test]
