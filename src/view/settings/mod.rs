@@ -48,17 +48,14 @@ impl Prefs {
 
     /// Applies `edit`, tells the games and the updater what concerns them, and saves in the background.
     pub fn change(mut self, edit: impl FnOnce(&mut Settings)) {
-        let before = settings::active().clone();
-        let mut next = before.clone();
-        edit(&mut next);
-        if next == before {
+        let (before, next) = settings::update(edit);
+        if std::ptr::eq(before, next) {
             return;
         }
         let badge = next.game_badge != before.game_badge;
         let sleep = next.prevent_sleep != before.prevent_sleep;
         let rate = next.preview_rate != before.preview_rate;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
-        settings::set(next);
         if badge {
             self.store.dispatch(Event::TellGames);
         }
@@ -90,9 +87,7 @@ pub fn save(store: Store) {
 pub(crate) fn remember_all_versions(store: Store, on: bool) {
     let mut shown = store.ui.all_versions;
     shown.set(on);
-    let mut next = settings::active().clone();
-    next.all_versions = on;
-    settings::set(next);
+    settings::update(|s| s.all_versions = on);
     save(store);
 }
 

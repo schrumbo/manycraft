@@ -149,7 +149,7 @@ impl Ui {
             toasts: State::create(Vec::new()),
             tip: State::create(None),
             browser_undo: State::create(None),
-            all_versions: State::create(crate::core::settings::active().all_versions),
+            all_versions: State::create(crate::core::settings::loaded().all_versions),
             session_undo: State::create(Vec::new()),
             tip_seen: State::create(None),
             accounts: accounts::Shared::create(),

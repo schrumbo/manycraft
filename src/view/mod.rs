@@ -128,7 +128,7 @@ impl App for Root {
         let platform = Platform::get().current_window();
         let os_dark = *platform.preferred_theme.read() == PreferredTheme::Dark;
         let look = use_provide_context(|| {
-            let s = prefs::active();
+            let s = prefs::loaded();
             Look { library: State::create(Rc::new(Library::load(&themes::dir()))), choice: State::create((s.appearance, s.theme.clone())) }
         });
         let library = look.library.read().clone();

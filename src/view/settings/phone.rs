@@ -134,13 +134,13 @@ fn typed(form: &Form, store: Store, kind: Kind) {
             return;
         }
         if kind.slot().is_none() {
-            let mut next = settings::active().clone();
-            if kind == Kind::Chat {
-                next.phone.telegram_chat = value.clone();
-            } else {
-                next.phone.ntfy_server = value.clone();
-            }
-            settings::set(next);
+            settings::update(|next| {
+                if kind == Kind::Chat {
+                    next.phone.telegram_chat = value.clone();
+                } else {
+                    next.phone.ntfy_server = value.clone();
+                }
+            });
         }
         let kept = value.clone();
         let latest = Arc::clone(&saver);
