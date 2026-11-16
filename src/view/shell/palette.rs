@@ -15,6 +15,7 @@ use crate::view::ui::{Filter, Page};
 enum Target {
     Command(Command),
     Page(Page),
+    Play(String),
 }
 
 #[derive(Clone, PartialEq)]
@@ -37,8 +38,12 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
     list.extend(m.batches.iter().map(|b| Entry { id: format!("palette.batch.{}", b.id), label: b.name.clone(), glyph: Icon::Layers, shortcut: None, target: Target::Page(Page::Grid(Filter::Batch(b.id.clone()))) }));
     list.extend(m.instances.iter().map(|i| Entry { id: format!("palette.instance.{}", i.id), label: i.name.clone(), glyph: Icon::Folder, shortcut: None, target: Target::Page(Page::Instance(i.id.clone())) }));
     if q.is_empty() {
-        return list;
+        let (bulk, rest): (Vec<Entry>, Vec<Entry>) = list.into_iter().partition(|e| matches!(e.target, Target::Command(Command::StartAll | Command::StopAll)));
+        return rest.into_iter().chain(bulk).collect();
     }
+    let mut games: Vec<Entry> = m.games.iter().map(|(key, g)| Entry { id: format!("palette.play.{key}"), label: g.name.clone(), glyph: Icon::Play, shortcut: None, target: Target::Play(key.clone()) }).collect();
+    games.sort_by(|a, b| a.label.cmp(&b.label));
+    list.extend(games);
     let mut scored: Vec<(usize, Entry)> = list.into_iter().filter_map(|e| { let l = e.label.to_lowercase(); l.find(&q).map(|at| (usize::from(at != 0) * 100 + at, e)) }).collect();
     scored.sort_by_key(|(s, _)| *s);
     scored.into_iter().map(|(_, e)| e).collect()
@@ -50,10 +55,11 @@ fn run(store: Store, target: &Target) {
     match target {
         Target::Command(c) => c.run(store),
         Target::Page(p) => ui.page.set(p.clone()),
+        Target::Play(key) => store.dispatch(crate::app::event::Event::Play(key.clone())),
     }
 }
 
-/// The command palette: type to find a command, a batch or an instance; arrows pick, Enter runs, Esc closes.
+/// The command palette: type to find a command, a batch, an instance or an account to play; arrows pick, Enter runs, Esc closes.
 #[derive(PartialEq)]
 pub struct Palette;
 
@@ -122,7 +128,7 @@ impl Component for Palette {
                     .shadow(t.elevation.float.clone())
                     .overflow(Overflow::Clip)
                     .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
-                    .child(rect().width(Size::fill()).padding(space::S).child(Field::new("palette.query", query).placeholder(tr("Befehl, Batch oder Instanz suchen")).glyph(Icon::Search).width(Size::fill()).auto_focus()))
+                    .child(rect().width(Size::fill()).padding(space::S).child(Field::new("palette.query", query).placeholder(tr("Befehl, Account oder Batch suchen")).glyph(Icon::Search).width(Size::fill()).auto_focus()))
                     .child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator))
                     .child(body),
             )

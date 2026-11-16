@@ -1412,5 +1412,11 @@
   "Mittel": "Medium",
   "Nichts gefunden": "Nothing found",
   "Noch keine Accounts": "No accounts yet",
-  "Zuletzt gespielt": "Recently Played"
+  "Zuletzt gespielt": "Recently Played",
+  "1 läuft": "1 running",
+  "1 braucht dich": "1 needs you",
+  "Lädt …": "Loading…",
+  "Alle anzeigen": "Show All",
+  "Brauchen dich anzeigen": "Show Who Needs You",
+  "Befehl, Account oder Batch suchen": "Search commands, accounts or batches"
 }

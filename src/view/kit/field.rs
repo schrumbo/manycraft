@@ -8,6 +8,16 @@ use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::theme::{Theme, control, font, iconsize, space};
 
+thread_local! {
+    static FIELDS: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
+}
+
+/// True while a text field has the keyboard, so app shortcuts leave its editing keys alone.
+pub fn typing() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    FIELDS.with(|f| f.borrow().contains(&focused))
+}
+
 /// A one-line text field bound to `value`.
 #[derive(Clone, PartialEq)]
 pub struct Field {
@@ -115,6 +125,10 @@ impl Component for Field {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let a11y = use_hook(|| self.a11y.unwrap_or_else(AccessibilityId::new_unique));
+        use_hook(|| FIELDS.with(|f| f.borrow_mut().insert(a11y)));
+        use_drop(move || {
+            FIELDS.with(|f| f.borrow_mut().remove(&a11y));
+        });
         let focus = use_focus(a11y);
         let spot = use_spot(&self.id, "field", self.label.as_deref().unwrap_or(&self.placeholder), true);
         let mut input = Input::new(self.value)

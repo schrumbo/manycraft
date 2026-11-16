@@ -99,6 +99,7 @@ impl Component for GridPage {
         let on_screen: HashSet<String> = keys[first.min(last)..last].iter().cloned().collect();
         let set: HashSet<String> = keys.iter().cloned().collect();
         let store_c = store;
+        use_drop(move || store_c.set_visible(HashSet::new()));
         use_side_effect_with_deps(&(on_screen.clone(), set.clone()), move |(on_screen, set)| {
             store_c.set_visible(on_screen.clone());
             commands::prune(store_c, set);
@@ -119,7 +120,10 @@ impl Component for GridPage {
                 }
             });
 
-        if m.loaded && keys.is_empty() && shelf.is_empty() {
+        if !m.loaded {
+            return page.child(rect().center().width(Size::fill()).height(Size::fill()).child(secondary(&t, tr("Lädt …")))).into_element();
+        }
+        if keys.is_empty() && shelf.is_empty() {
             return page.child(empty(&t, &self.filter, !search.is_empty(), store)).into_element();
         }
 
@@ -187,19 +191,27 @@ fn empty(t: &super::theme::Theme, filter: &Filter, searching: bool, store: Store
         (Icon::Users, tr("Noch keine Accounts"), tr("Füge einen Account hinzu, dann kannst du spielen."))
     };
     let mut col = rect().center().width(Size::fill()).height(Size::fill()).spacing(space::M).child(icon(t, glyph, iconsize::L * 2., t.text3)).child(heading(t, title)).child(secondary(t, text));
-    if !searching && *filter != Filter::Attention {
-        let mut ui = store.ui;
-        col = col.child(Button::icon("grid.empty.add", Icon::Plus, tr("Account hinzufügen")).primary().tall().on_press(move |_| ui.page.set(Page::Accounts)));
-    }
+    let mut ui = store.ui;
+    col = if searching {
+        col.child(Button::new("grid.empty.clear", tr("Suche löschen")).tall().on_press(move |_| ui.search.set(String::new())))
+    } else if *filter == Filter::Attention {
+        col.child(Button::new("grid.empty.all", tr("Alle anzeigen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+    } else {
+        col.child(Button::new("grid.empty.add", tr("Account hinzufügen")).glyph(Icon::Plus).primary().tall().on_press(move |_| ui.page.set(Page::Accounts)))
+    };
     col
 }
 
 /// The word for how many games the page shows, for the toolbar.
-pub fn count_line(m: &Model, keys: usize) -> String {
-    let running = m.games.values().filter(|g: &&Game| g.phase.has_process()).count();
-    let attention = m.attention_count(None);
-    let mut parts = vec![if keys == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&keys]) }, trf("%lld laufen", &[&running])];
-    if attention > 0 {
+pub fn count_line(m: &Model, shown: &[String]) -> String {
+    let games = || shown.iter().filter_map(|k| m.games.get(k));
+    let keys = shown.len();
+    let running = games().filter(|g: &&Game| g.phase.has_process()).count();
+    let attention = games().filter(|g| g.phase.needs_attention()).count();
+    let mut parts = vec![if keys == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&keys]) }, if running == 1 { tr("1 läuft") } else { trf("%lld laufen", &[&running]) }];
+    if attention == 1 {
+        parts.push(tr("1 braucht dich"));
+    } else if attention > 1 {
         parts.push(trf("%lld brauchen dich", &[&attention]));
     }
     parts.join(" · ")

@@ -194,8 +194,8 @@ impl Command {
             Command::ToggleSidebar => tr("Seitenleiste ein- oder ausblenden"),
             Command::Undo => tr("Rückgängig"),
             Command::FocusSearch => tr("Suchen"),
-            Command::ShowAll => tr("Alle"),
-            Command::ShowAttention => tr("Brauchen dich"),
+            Command::ShowAll => tr("Alle anzeigen"),
+            Command::ShowAttention => tr("Brauchen dich anzeigen"),
             Command::ShowAccounts => tr("Accounts"),
             Command::OpenChat => tr("Chat"),
             Command::OpenSettings => tr("Einstellungen"),
@@ -284,6 +284,7 @@ impl Command {
             Command::NextAttention | Command::ShowAttention => m.attention_count(None) > 0,
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
             Command::FocusSearch => grid,
+            Command::Undo => store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
             _ => true,
         }
     }
@@ -344,10 +345,10 @@ impl Command {
     }
 }
 
-/// Runs the command whose shortcut the key event is; true when one ran. While a sheet, menu or the palette is open only
-/// the palette toggle and Quit go through.
+/// Runs the command whose shortcut the key event is; true when one ran. While a sheet, menu, the palette or a text field
+/// has the keyboard only the palette toggle and Quit go through.
 pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
-    let layered = store.ui.layered();
+    let layered = store.ui.layered() || super::kit::field::typing();
     for command in Command::ALL {
         if command.shortcut().is_some_and(|s| s.matches(e)) {
             if layered && !matches!(command, Command::OpenPalette | Command::Quit) {
@@ -356,7 +357,7 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
             if command == Command::ClearSelection && store.ui.selection.peek().is_empty() {
                 return false;
             }
-            if command.available(store) || matches!(command, Command::OpenPalette | Command::Quit | Command::ToggleSidebar | Command::Undo) {
+            if command.available(store) || matches!(command, Command::OpenPalette | Command::Quit | Command::ToggleSidebar) {
                 command.run(store);
             }
             return true;

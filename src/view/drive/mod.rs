@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use freya::engine::prelude::{AlphaType as SkAlpha, ColorType, IPoint, ISize, ImageInfo};
 use freya::prelude::*;
 use freya_core::integration::{KeyboardEventName, MouseEventName, PlatformEvent, WheelEventName};
+use freya_core::prelude::NavigationMode;
 use freya_winit::plugins::{FreyaPlugin, PluginEvent, PluginHandle};
 use serde_json::{Value, json};
 
@@ -84,7 +85,7 @@ pub fn start(store: Store) {
             if Instant::now() > call.deadline {
                 continue;
             }
-            spawn(answer(store, call));
+            spawn_in_window(answer(store, call));
         }
     });
 }
@@ -143,7 +144,7 @@ async fn run(store: Store, b: &Value) -> Result<Value, String> {
             let mut keys = Vec::new();
             for name in &names {
                 let parsed = parse_key(name).ok_or_else(|| format!("{name}: unknown key"))?;
-                if !b["clipboard"].as_bool().unwrap_or(false) && parsed.1.contains(Modifiers::CONTROL | Modifiers::META) && matches!(parsed.2, Code::KeyC | Code::KeyV | Code::KeyX) {
+                if !b["clipboard"].as_bool().unwrap_or(false) && parsed.1.intersects(Modifiers::CONTROL | Modifiers::META) && matches!(parsed.2, Code::KeyC | Code::KeyV | Code::KeyX) {
                     return Err(format!("{name} would use the owner's clipboard; pass --clipboard if that is intended"));
                 }
                 keys.push(parsed);
@@ -334,7 +335,7 @@ fn hold(modifiers: Modifiers, down: bool) {
 
 fn mods_of(b: &Value) -> Modifiers {
     let mut m = Modifiers::empty();
-    for word in b["mods"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+    for word in b["mods"].as_str().unwrap_or_default().split(['+', '-']) {
         m |= match word {
             "shift" => Modifiers::SHIFT,
             "alt" | "option" => Modifiers::ALT,
@@ -368,7 +369,14 @@ async fn pointer(cmd: &str, b: &Value) -> Result<Value, String> {
         _ => MouseButton::Left,
     };
     let modifiers = mods_of(b);
+    if matches!(cmd, "click" | "down" | "up") {
+        let mut mode = Platform::get().current_window().navigation_mode;
+        mode.set_if_modified(NavigationMode::NotKeyboard);
+    }
     hold(modifiers, true);
+    if !modifiers.is_empty() {
+        settle().await;
+    }
     send(PlatformEvent::Mouse { name: MouseEventName::MouseMove, cursor, button: None })?;
     POINTER.with(|p| p.set(at));
     match cmd {
@@ -390,6 +398,9 @@ async fn pointer(cmd: &str, b: &Value) -> Result<Value, String> {
             }
         }
         _ => {}
+    }
+    if !modifiers.is_empty() {
+        settle().await;
     }
     hold(modifiers, false);
     settle().await;

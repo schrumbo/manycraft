@@ -156,7 +156,7 @@ impl Component for Tile {
         let (key, index) = (self.key.clone(), self.index);
         let (enter_key, menu_key) = (key.clone(), key.clone());
         let tone = if severe { t.danger_text } else if attention { t.attention_text } else { t.text2 };
-        let ring_color = if selected { Some(t.accent) } else if severe { Some(t.danger) } else if attention { Some(t.attention) } else { None };
+        let state_ring = if severe { Some(t.danger) } else if attention { Some(t.attention) } else { None };
 
         let mut pic = rect().width(Size::fill()).height(Size::px(preview_h)).background(t.well).corner_radius(t.shape.tile).overflow(Overflow::Clip);
         pic = match &preview {
@@ -229,10 +229,10 @@ impl Component for Tile {
             })
             .child(pic)
             .child(strip_row);
-        if let Some(c) = ring_color {
-            tile = tile.border(Border::new().fill(c).width(frame::RING).alignment(BorderAlignment::Outer));
-        } else if let Some(b) = crate::view::kit::ring(&t, focus()) {
-            tile = tile.border(b);
+        let keyboard = crate::view::kit::ring(&t, focus()).map(|b| b.fill);
+        let rings = keyboard.into_iter().chain(selected.then_some(t.accent)).chain(state_ring);
+        for (i, c) in rings.take(2).enumerate() {
+            tile = tile.border(Border::new().fill(c).width(frame::RING).alignment(if i == 0 { BorderAlignment::Outer } else { BorderAlignment::Inner }));
         }
         tile.into_element()
     }

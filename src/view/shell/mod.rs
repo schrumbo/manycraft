@@ -12,10 +12,11 @@ use self::toolbar::Toolbar;
 use super::commands;
 use super::grid::GridPage;
 use super::icons::{Icon, icon};
-use super::kit::text::{heading, secondary};
+use super::kit::button::Button;
+use super::kit::text::{heading, line, secondary};
 use super::kit::{menu, note_held, sheet, toast, tooltip, use_theme};
 use super::store::use_store;
-use super::theme::{iconsize, space};
+use super::theme::{font, frame, iconsize, space};
 use super::ui::Page;
 use crate::core::i18n::tr;
 
@@ -40,7 +41,12 @@ impl Component for Shell {
         if *ui.sidebar.read() {
             row = row.child(Sidebar).child(rect().width(Size::px(1.)).height(Size::fill()).background(t.separator));
         }
-        row = row.child(rect().width(Size::flex(1.)).height(Size::fill()).background(t.surface).child(Toolbar).child(rect().width(Size::fill()).height(Size::flex(1.)).child(content)).content(Content::flex())).content(Content::flex());
+        let error = store.model.read().error.clone();
+        let mut column = rect().width(Size::flex(1.)).height(Size::fill()).background(t.surface).child(Toolbar);
+        if let Some(text) = error {
+            column = column.child(notice(&t, store, text));
+        }
+        row = row.child(column.child(rect().width(Size::fill()).height(Size::flex(1.)).child(content)).content(Content::flex())).content(Content::flex());
         rect()
             .width(Size::fill())
             .height(Size::fill())
@@ -61,6 +67,24 @@ impl Component for Shell {
             .child(toast::Host)
             .child(tooltip::host(ui))
     }
+}
+
+fn notice(t: &super::theme::Theme, store: super::store::Store, text: String) -> Element {
+    let mut model = store.model;
+    rect()
+        .width(Size::fill())
+        .height(Size::px(frame::NOTICE))
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(space::S)
+        .padding((0., space::S, 0., space::L))
+        .background(t.attention.with_af32(frame::NOTICE_WASH))
+        .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }).alignment(BorderAlignment::Inner))
+        .child(icon(t, Icon::Alert, iconsize::S, t.attention_text))
+        .child(line(t, text, font::CALLOUT, t.text1).width(Size::flex(1.)).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+        .content(Content::flex())
+        .child(Button::icon("notice.close", Icon::Close, tr("Hinweis ausblenden")).on_press(move |_| model.write().error = None))
+        .into_element()
 }
 
 fn pending(t: &super::theme::Theme, glyph: Icon, name: String) -> Element {

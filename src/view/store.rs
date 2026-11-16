@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::kit::{after, sheet, toast};
 use super::native;
 use super::ui::{Page, Ui};
-use crate::app::effect::Effect;
+use crate::app::effect::{Effect, Redraw};
 use crate::app::event::Event;
 use crate::app::model::{Model, Phase};
 use crate::app::reduce::reduce;
@@ -86,7 +86,7 @@ impl Store {
         let _ = std::thread::Builder::new().name("reload".into()).spawn(move || {
             let _ = tx.send_blocking(runner::read_data());
         });
-        spawn(async move {
+        spawn_in_window(async move {
             let Ok(read) = rx.recv().await else { return };
             let adopted = match self.runtime() {
                 Some(rt) if read.data.is_ok() || self.model.peek().loaded => rt.borrow().backend.adopted(),
@@ -132,22 +132,30 @@ impl Store {
 
     fn dispatch_with(mut self, event: Event, mut images: Vec<Option<Raw>>) {
         let env = runner::env();
-        let effects = {
-            let mut model = self.model.write();
-            reduce(&mut model, &env, event)
-        };
+        let reports = matches!(event, Event::Reports(_));
+        let mut effects = Vec::new();
+        self.model.into_writable().write_if(|mut model| {
+            effects = reduce(&mut model, &env, event);
+            !reports || effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All)))
+        });
         for effect in effects {
             self.run(effect, &mut images);
         }
     }
 
     fn run(mut self, effect: Effect, images: &mut [Option<Raw>]) {
-        let Some(rt) = self.runtime() else { return };
-        let window = if matches!(effect, Effect::Start { .. }) { native::place() } else { None };
-        let Some(effect) = rt.borrow_mut().run(effect, window) else { return };
+        let runtime = self.runtime();
+        let effect = match &runtime {
+            Some(rt) => {
+                let window = if matches!(effect, Effect::Start { .. }) { native::place() } else { None };
+                let Some(effect) = rt.borrow_mut().run(effect, window) else { return };
+                effect
+            }
+            None => effect,
+        };
         match effect {
             Effect::After { delay, event } => {
-                spawn(async move {
+                spawn_in_window(async move {
                     after(delay).await;
                     self.dispatch(*event);
                 });
@@ -163,6 +171,7 @@ impl Store {
                     let model = self.model.peek();
                     (model.session.pids.get(&key).copied(), before.as_ref().and_then(|b| model.session.pids.get(b).copied()))
                 };
+                let Some(rt) = runtime else { return };
                 let window = if before.is_none() { native::place() } else { None };
                 let shown = rt.borrow_mut().show(&key, pid, before.as_deref(), before_pid, skipped, window);
                 if shown {
@@ -171,17 +180,19 @@ impl Store {
                     self.dispatch(Event::NotShown(Box::new(*unshown)));
                 }
             }
-            Effect::HideManager => native::hide(rt.borrow().place),
+            Effect::HideManager => native::hide(runtime.and_then(|rt| rt.borrow().place)),
             Effect::ShowManager => {
-                native::show(rt.borrow().place);
-                self.spread(&rt);
+                native::show(runtime.as_ref().and_then(|rt| rt.borrow().place));
+                if let Some(rt) = runtime {
+                    self.spread(&rt);
+                }
             }
             Effect::Place(key) => {
                 let (pid, playing) = {
                     let model = self.model.peek();
                     (model.session.pids.get(&key).copied(), model.playing.clone())
                 };
-                let Some(pid) = pid else { return };
+                let (Some(pid), Some(rt)) = (pid, runtime) else { return };
                 let window = if rt.borrow().place.is_none() { native::place() } else { None };
                 if rt.borrow_mut().place_new(&key, pid, playing.as_deref(), window) {
                     self.dispatch(Event::Placed { key });
@@ -189,6 +200,7 @@ impl Store {
             }
             Effect::Follow(key) => {
                 let pid = key.as_ref().and_then(|k| self.model.peek().session.pids.get(k).copied());
+                let Some(rt) = runtime else { return };
                 rt.borrow_mut().follow_shown(key.as_deref(), pid);
             }
             Effect::Tint { key, pid } => {
@@ -215,7 +227,9 @@ impl Store {
             Effect::AddAccount => self.ui.page.set(Page::Accounts),
             Effect::AskQuit { running } => self.ask_quit(running),
             Effect::Quit { keep } => {
-                rt.borrow_mut().keep_games = keep;
+                if let Some(rt) = runtime {
+                    rt.borrow_mut().keep_games = keep;
+                }
                 Platform::get().exit();
             }
             Effect::ToTray { .. } => native::hide(None),
@@ -246,14 +260,14 @@ impl Store {
                 m.games.values().filter(|g| g.phase.has_process() && !matches!(g.phase, Phase::Starting { .. })).filter_map(|g| m.target(&g.batch_id)).map(|t| u64::from(t.memory_mb())).sum()
             };
             let memory = fit::Memory { total_mb: pretend.total_mb, free_mb: pretend.free_mb.saturating_sub(used) };
-            spawn(async move { self.dispatch(Event::Memory(Some(memory))) });
+            spawn_in_window(async move { self.dispatch(Event::Memory(Some(memory))) });
             return;
         }
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send_blocking(fit::system_memory());
         });
-        spawn(async move {
+        spawn_in_window(async move {
             if let Ok(memory) = rx.recv().await {
                 self.dispatch(Event::Memory(memory));
             }

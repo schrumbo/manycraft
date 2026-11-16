@@ -43,7 +43,7 @@ impl Component for Sidebar {
         }
         top = top.child(chat);
 
-        let mut list = rect().width(Size::fill()).height(Size::flex(1.)).spacing(1.).overflow(Overflow::Clip);
+        let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
         if !m.batches.is_empty() {
             list = list.child(section(&t, tr("Batches")));
             for b in &m.batches {

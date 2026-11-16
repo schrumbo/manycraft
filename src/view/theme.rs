@@ -12,6 +12,11 @@ pub mod frame {
     pub const TOOLBAR: f32 = 56.;
     pub const ROW: f32 = 30.;
     pub const SEARCH: f32 = 220.;
+    pub const SEARCH_NARROW: f32 = 160.;
+    /// The content width below which the toolbar drops the tile size control, left to the palette and shortcuts.
+    pub const TOOLBAR_FULL: f32 = 780.;
+    /// The content width below which the search field narrows.
+    pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
     pub const SHEET: f32 = 560.;
     pub const SHEET_TOP: f32 = 72.;
@@ -30,6 +35,9 @@ pub mod frame {
     pub const PROGRESS: f32 = 3.;
     pub const FACE: f32 = 18.;
     pub const DOT: f32 = 7.;
+    pub const NOTICE: f32 = 32.;
+    /// How strongly the attention colour washes a notice strip.
+    pub const NOTICE_WASH: f32 = 0.12;
 }
 
 /// The fonts the UI asks for, tried in order before the system's own.

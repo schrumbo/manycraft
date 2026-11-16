@@ -45,8 +45,8 @@ impl Component for Toolbar {
                     Filter::Attention => tr("Brauchen dich"),
                     Filter::Batch(id) => m.batch(id).map_or_else(|| tr("Batch"), |b| b.name.clone()),
                 };
-                let keys = grid::shown(&m, filter, &ui.search.read()).len();
-                (name, Some(grid::count_line(&m, keys)))
+                let keys = grid::shown(&m, filter, &ui.search.read());
+                (name, Some(grid::count_line(&m, &keys)))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
             Page::Accounts => (tr("Accounts"), Some(if m.accounts.len() == 1 { tr("1 Account") } else { crate::core::i18n::trf("%lld Accounts", &[&m.accounts.len()]) })),
@@ -69,11 +69,15 @@ impl Component for Toolbar {
             .child(Button::icon("toolbar.sidebar", Icon::Sidebar, tr("Seitenleiste")).plain().tip(shortcut_tip(Command::ToggleSidebar)).on_press(move |_| Command::ToggleSidebar.run(store)))
             .child(rect().width(Size::flex(1.)).child(heading_col))
             .content(Content::flex());
+        let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
         if let Page::Grid(_) = page {
             let chosen = TileSize::ALL.iter().position(|s| *s == *ui.size.read()).unwrap_or(3);
             let items = grid::sizes().into_iter().map(|(size, label, tip)| Segment { id: format!("toolbar.size.{}", size_id(size)), label, tip: Some(tip) }).collect();
-            bar = bar.child(Segmented::new(tr("Kachelgröße"), items, chosen).on_choose(move |i| ui.size.set(TileSize::ALL[i])));
-            bar = bar.child(Field::new("toolbar.search", ui.search).placeholder(tr("Suchen")).glyph(Icon::Search).width(Size::px(frame::SEARCH)).a11y(search_a11y));
+            if room >= frame::TOOLBAR_FULL {
+                bar = bar.child(Segmented::new(tr("Kachelgröße"), items, chosen).on_choose(move |i| ui.size.set(TileSize::ALL[i])));
+            }
+            let search_w = if room >= frame::TOOLBAR_SEARCH { frame::SEARCH } else { frame::SEARCH_NARROW };
+            bar = bar.child(Field::new("toolbar.search", ui.search).placeholder(tr("Suchen")).glyph(Icon::Search).width(Size::px(search_w)).a11y(search_a11y));
         }
         bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)))
     }

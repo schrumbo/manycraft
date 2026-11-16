@@ -33,7 +33,7 @@ pub fn show(mut ui: Ui, text: impl Into<String>, undo: Option<EventHandler<()>>)
         let extra = toasts.len().saturating_sub(frame::TOASTS);
         toasts.drain(..extra);
     }
-    spawn(async move {
+    spawn_in_window(async move {
         after(wait).await;
         dismiss(ui, id);
     });
