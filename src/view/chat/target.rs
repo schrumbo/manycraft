@@ -167,22 +167,40 @@ pub fn at_query(draft: &str) -> Option<&str> {
     (!rest.contains(char::is_whitespace)).then_some(rest)
 }
 
+/// The `@name` a message starts with, once a space ended it: the name and the message after it.
+pub fn at_word(draft: &str) -> Option<(&str, &str)> {
+    let (word, text) = draft.strip_prefix('@')?.split_once(char::is_whitespace)?;
+    Some((word, text.trim_start()))
+}
+
+/// The one recipient `word` names: the entry called exactly that, else the only one whose name contains it.
+pub fn named(all: &[Choice], word: &str) -> Option<Target> {
+    let word = word.to_lowercase();
+    let distinct = |hit: &dyn Fn(&str) -> bool| {
+        let mut out: Vec<&Target> = Vec::new();
+        for c in all {
+            if hit(&c.label.to_lowercase()) && !out.contains(&&c.target) {
+                out.push(&c.target);
+            }
+        }
+        out
+    };
+    match distinct(&|l| l == word).as_slice() {
+        [one] => return Some((*one).clone()),
+        [] => {}
+        _ => return None,
+    }
+    match distinct(&|l| l.contains(&word)).as_slice() {
+        [one] => Some((*one).clone()),
+        _ => None,
+    }
+}
+
 /// An `@name ` the message starts with, once a space ended it and the name picks exactly one recipient: that recipient
 /// and the message without it.
 pub fn resolve_at(draft: &str, all: &[Choice]) -> Option<(Target, String)> {
-    let rest = draft.strip_prefix('@')?;
-    let (word, text) = rest.split_once(char::is_whitespace)?;
-    let (word, text) = (word.to_lowercase(), text.trim_start());
-    let exact: Vec<&Choice> = all.iter().filter(|c| c.label.to_lowercase() == word).collect();
-    let picked = match exact.as_slice() {
-        [one] => one.target.clone(),
-        [] => match filter(all, &word).as_slice() {
-            [one] => one.target.clone(),
-            _ => return None,
-        },
-        _ => return None,
-    };
-    Some((picked, text.to_owned()))
+    let (word, text) = at_word(draft)?;
+    Some((named(all, word)?, text.to_owned()))
 }
 
 /// `recent` with `target` moved to the front, at most [`RECENT`] long.
@@ -242,6 +260,10 @@ mod tests {
         assert_eq!(resolve_at("@be x", &all), None);
         assert_eq!(resolve_at("@alex", &all), None);
         assert_eq!(resolve_at("@nobody x", &all), None);
+        assert_eq!(resolve_at("@spiel x", &all), None);
+        let mut recent = all.clone();
+        recent.insert(0, Choice { section: Section::Recent, ..choice(Target::Instance("a".into()), "Alex", "Farm", 1) });
+        assert_eq!(resolve_at("@alex yo", &recent), Some((Target::Instance("a".into()), "yo".into())));
     }
 
     #[test]

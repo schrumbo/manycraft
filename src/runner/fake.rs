@@ -97,6 +97,7 @@ struct Sim<P> {
     names: HashMap<String, String>,
     seeded: bool,
     running: HashMap<String, Running>,
+    on_server: HashSet<String>,
     queue: Vec<(Instant, Option<Arc<AtomicBool>>, Update<P>)>,
     reconnects: u64,
     chat_at: Instant,
@@ -130,7 +131,7 @@ fn connected<P>(instance: &str) -> Update<P> {
 
 impl<P: Pixels> Sim<P> {
     fn new(out: async_channel::Sender<Update<P>>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
-        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default(), outage: None, dropped: false }
+        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), on_server: HashSet::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default(), outage: None, dropped: false }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Cmd>) {
@@ -343,6 +344,14 @@ impl<P: Pixels> Sim<P> {
                 }
                 Update::Exited { key, .. } => {
                     self.running.remove(key);
+                    self.on_server.remove(key);
+                }
+                Update::Ipc(Event::Message { instance, message: FromMod::State { kind, .. } }) => {
+                    if matches!(kind, StateKind::Playing | StateKind::Queue) {
+                        self.on_server.insert(instance.clone());
+                    } else {
+                        self.on_server.remove(instance);
+                    }
                 }
                 _ => {}
             }
@@ -352,7 +361,7 @@ impl<P: Pixels> Sim<P> {
         }
         if now >= self.chat_at {
             self.chat_at = now + CHAT_EVERY;
-            let mut keys: Vec<String> = self.running.keys().cloned().collect();
+            let mut keys: Vec<String> = self.running.keys().filter(|k| self.on_server.contains(*k)).cloned().collect();
             keys.sort();
             if !keys.is_empty() {
                 let key = keys[(hash(&self.chat_n.to_string()) as usize) % keys.len()].clone();

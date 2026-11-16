@@ -14,7 +14,8 @@ use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, font, frame, iconsize, space};
 
 /// The height of one entry.
-pub const ROW: f32 = 30.;
+pub const ROW: f32 = frame::ROW;
+const PAGE: usize = 10;
 const HEAD: f32 = 24.;
 
 /// What a key does in a list of `n` entries with `hot` lit.
@@ -36,9 +37,11 @@ pub fn step(key: &Key, n: usize, hot: Option<usize>) -> Option<Step> {
     Some(match key {
         Key::Named(NamedKey::ArrowDown) => Step::Move(if hot.is_none() { 0 } else { (at + 1) % n }),
         Key::Named(NamedKey::ArrowUp) => Step::Move(if hot.is_none() { n - 1 } else { (at + n - 1) % n }),
+        Key::Named(NamedKey::PageDown) => Step::Move((at + PAGE).min(n - 1)),
+        Key::Named(NamedKey::PageUp) => Step::Move(at.saturating_sub(PAGE)),
         Key::Named(NamedKey::Home) => Step::Move(0),
         Key::Named(NamedKey::End) => Step::Move(n - 1),
-        Key::Named(NamedKey::Enter | NamedKey::Tab) => Step::Pick(at),
+        Key::Named(NamedKey::Enter | NamedKey::Tab) if hot.is_some() => Step::Pick(at),
         _ => return None,
     })
 }

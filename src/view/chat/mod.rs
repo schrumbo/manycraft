@@ -11,7 +11,7 @@ use freya::prelude::*;
 
 use self::picker::{List, Step, face, mark, step};
 pub use self::target::Target;
-use self::target::{Choice, at_query, batches_of, choices, exists, filter, name, reached, remember, resolve_at};
+use self::target::{Choice, at_query, at_word, batches_of, choices, exists, filter, name, reached, remember, resolve_at};
 use super::commands::{Command, Extra, Shortcut};
 use super::drive::use_spot;
 use super::icons::{Icon, icon};
@@ -38,26 +38,10 @@ const PICKER_NARROW: f32 = 150.;
 const CHIP_MAX: f32 = 220.;
 const POPUP_W: f32 = 320.;
 const POPUP_ROWS: f32 = 10.;
-const ROSTER_W: f32 = 248.;
-/// The page width from which the list of recipients stands beside the chat.
-const ROSTER_FROM: f32 = 820.;
 const TAG_MAX: f32 = 180.;
 const MENTION_MIN: usize = 3;
+const HEARD_MAX: usize = 3;
 const READING: f32 = control::READING;
-
-/// How the page is laid out, while both are compared: the stream alone, or with the recipients beside it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Look {
-    Stream,
-    Roster,
-}
-
-fn look() -> Look {
-    match std::env::var("MANYCRAFT_CHAT_LOOK").as_deref() {
-        Ok("roster") => Look::Roster,
-        _ => Look::Stream,
-    }
-}
 
 /// The page's state, kept while other pages show so the draft, the history and the recipient survive.
 #[derive(Clone, Copy, PartialEq)]
@@ -83,8 +67,6 @@ pub struct Shared {
     /// The entry lit under an `@name`, and the draft whose suggestions Esc closed.
     pub at_hot: State<Option<usize>>,
     pub at_closed: State<Option<String>>,
-    pub roster_query: State<String>,
-    pub roster_hot: State<Option<usize>>,
     /// Where the recipient control and the message field are, for the pop-ups above them.
     pub chip_at: State<Bounds>,
     pub field_at: State<Bounds>,
@@ -112,8 +94,6 @@ impl Shared {
             hot: State::create(None),
             at_hot: State::create(None),
             at_closed: State::create(None),
-            roster_query: State::create(String::new()),
-            roster_hot: State::create(None),
             chip_at: State::create(Bounds::default()),
             field_at: State::create(Bounds::default()),
             left_at: State::create(None),
@@ -163,6 +143,26 @@ fn send(store: Store) {
     if text.is_empty() || !settings::active().broadcast {
         return;
     }
+    let named = {
+        let m = store.model.peek();
+        resolve_at(&text, &choices(&m, &shared.recent.peek()))
+    };
+    let text = match named {
+        Some((target, rest)) => {
+            shared.target.set(Some(target));
+            rest
+        }
+        None => text,
+    };
+    if let Some((word, _)) = at_word(&text) {
+        let problem = trf("„@%@“ passt nicht zu genau einem Account. Wähle den Absender links.", &[&word]);
+        shared.rejected.set(Some((text.clone(), problem)));
+        shared.sent.set(None);
+        return;
+    }
+    if text.is_empty() {
+        return;
+    }
     let (target, reach, batches) = {
         let m = store.model.peek();
         let target = target_of(&m, shared);
@@ -170,7 +170,7 @@ fn send(store: Store) {
         let batches = target.as_ref().map(|t| batches_of(&m, t)).unwrap_or_default();
         (target, reach, batches)
     };
-    let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer die Nachricht bekommt."))).or_else(|| (reach == 0).then(|| tr("Dort ist gerade niemand im Spiel.")));
+    let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer sendet."))).or_else(|| (reach == 0).then(|| tr("Dort ist gerade niemand im Spiel.")));
     if let Some(problem) = problem {
         shared.rejected.set(Some((text, problem)));
         shared.sent.set(None);
@@ -216,6 +216,22 @@ fn step_history(store: Store, delta: isize) {
     shared.draft.set(text);
 }
 
+/// Puts the newest sent line back into the message field, as the up arrow in the field does.
+fn recall_last(store: Store) {
+    let mut shared = store.ui.chat;
+    let newest = shared.history.peek().last().cloned();
+    let recalling = shared.recall.peek().is_some();
+    match newest.filter(|_| recalling) {
+        Some(text) => {
+            let last = shared.history.peek().len() - 1;
+            shared.recall.set(Some(last));
+            shared.draft.set(text);
+        }
+        None => step_history(store, -1),
+    }
+    shared.focus.set(Some(Instant::now()));
+}
+
 /// Picks the batch the page shows; a recipient the person picked stays.
 fn set_batch(store: Store, batch: Option<String>) {
     let mut shared = store.ui.chat;
@@ -247,6 +263,9 @@ pub fn extras(store: Store) -> Vec<Extra> {
         return Vec::new();
     }
     let mut out = vec![Extra { id: "chat.sendas".into(), label: tr("Senden als …"), glyph: Icon::Users, shortcut: Some(Shortcut::primary(Code::KeyE)), run: EventHandler::new(move |_| open_picker(store)) }];
+    if !store.ui.chat.history.peek().is_empty() {
+        out.push(Extra { id: "chat.recall".into(), label: tr("Letzte Nachricht zurückholen"), glyph: Icon::Message, shortcut: None, run: EventHandler::new(move |_| recall_last(store)) });
+    }
     if store.ui.chat.target.peek().as_ref().is_some_and(|t| *t != Target::All) {
         out.push(Extra { id: "chat.toall".into(), label: tr("An alle senden"), glyph: Icon::Send, shortcut: None, run: EventHandler::new(move |_| pick(store, Target::All)) });
     }
@@ -290,7 +309,6 @@ impl Component for ChatPage {
             let mut left = store.ui.chat.left_at;
             left.set(Some(m.chat_base() + m.chat.len() as u64));
         });
-        let mut width = use_state(|| 0f32);
         let m = store.model.read();
         let batch = shared.batch.read().clone().filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
         let seen = *Platform::get().current_window().is_app_focused.read() || crate::core::drive::on();
@@ -329,15 +347,17 @@ impl Component for ChatPage {
                 .zip(ids[older..].iter().copied())
                 .map(|(l, id)| {
                     let tag = names.iter().find(|(b, _)| *b == l.batch).map(|(_, n)| n.clone());
-                    let heard = heard_by(&m, &l, &running);
-                    let mentions = mentions(&l.text, &own).into_iter().filter(|(s, _)| l.from.is_some() || *s > 0).collect();
-                    Line { line: l, id, batch: tag, heard, mentions }
+                    let mentions = mentions(&l.text, &own);
+                    let about_own = l.from.is_none() && !l.whisper && !mentions.is_empty();
+                    let heard = if about_own { None } else { heard_by(&m, &l, &running) };
+                    let seen = 1 + l.also.len();
+                    Line { line: l, id, batch: tag, heard, seen, mentions }
                 })
                 .collect();
             let mark = mark_at.and_then(|at| ids[older..].iter().skip(1).find(|id| **id >= at).copied());
             Lines { rows, older, mark }.into_element()
         };
-        let mut main = rect().width(Size::flex(1.)).height(Size::fill()).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
+        let mut main = rect().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
         if broadcast {
             main = main.child(Composer);
         } else {
@@ -354,11 +374,7 @@ impl Component for ChatPage {
                     .child(Button::new("chat.send.off", tr("Einstellungen öffnen")).glyph(Icon::Settings).on_press(move |_| Command::OpenSettings.run(store))),
             );
         }
-        let mut row = rect().width(Size::fill()).height(Size::fill()).horizontal().on_sized(move |e: Event<SizedEventData>| width.set_if_modified(e.area.width())).child(main).content(Content::flex());
-        if broadcast && look() == Look::Roster && *width.read() >= ROSTER_FROM {
-            row = row.child(Roster);
-        }
-        row.into_element()
+        main.into_element()
     }
 }
 
@@ -370,23 +386,17 @@ fn running_by_batch(m: &Model) -> HashMap<String, usize> {
     out
 }
 
-/// Who of the person's accounts got `l`, when not all of those on its server did: the tag text, its full list and
-/// the game to answer from.
+/// Which of the person's accounts got `l`, for a whisper or a line only a few of those on its server got: their names
+/// and the game to answer from.
 fn heard_by(m: &Model, l: &ChatLine, running: &HashMap<String, usize>) -> Option<Heard> {
     let got = 1 + l.also.iter().filter(|(_, _, b)| *b == l.batch).count();
     let on = running.get(&l.batch).copied().unwrap_or(0);
-    if !l.whisper && (on <= 1 || got >= on) {
+    if !l.whisper && (got >= on || 1 + l.also.len() > HEARD_MAX) {
         return None;
     }
-    let all: Vec<&str> = std::iter::once(l.account.as_str()).chain(l.also.iter().map(|(_, n, _)| n.as_str())).collect();
-    let short = match all.as_slice() {
-        [one] => (*one).to_owned(),
-        [a, b] => format!("{a}, {b}"),
-        [a, rest @ ..] => format!("{a} +{}", rest.len()),
-        [] => return None,
-    };
+    let names: Vec<&str> = std::iter::once(l.account.as_str()).chain(l.also.iter().map(|(_, n, _)| n.as_str())).collect();
     let account = m.games.get(&l.instance).map(|g| g.account_id);
-    Some(Heard { short, all: all.join(", "), key: l.instance.clone(), account })
+    Some(Heard { names: names.join(", "), first: l.account.clone(), key: l.instance.clone(), account })
 }
 
 fn own_names(m: &Model) -> HashSet<String> {
@@ -434,8 +444,8 @@ fn empty(t: &Theme, glyph: Icon, title: String, text: String, action: Option<Ele
 
 #[derive(Clone, Debug, PartialEq)]
 struct Heard {
-    short: String,
-    all: String,
+    names: String,
+    first: String,
     key: String,
     account: Option<uuid::Uuid>,
 }
@@ -446,6 +456,8 @@ struct Line {
     id: u64,
     batch: Option<String>,
     heard: Option<Heard>,
+    /// How many of the person's accounts got the line.
+    seen: usize,
     mentions: Vec<(usize, usize)>,
 }
 
@@ -500,14 +512,17 @@ impl Component for Lines {
         }
         let mut before: Option<i64> = None;
         for r in &self.rows {
+            let mut stamp = before.is_none_or(|b| b.div_euclid(60) != r.line.at.div_euclid(60));
             if before.is_none_or(|b| !same_day(b, r.line.at)) {
                 list = list.child(separator(&t, day_title(r.line.at, now), t.text3, t.separator));
+                stamp = true;
             }
             if self.mark == Some(r.id) {
-                list = list.child(separator(&t, tr("Neu"), t.accent_text, t.accent.with_af32(0.5)));
+                list = list.child(separator(&t, tr("Neue Zeilen"), t.accent_text, t.accent.with_af32(0.5)));
+                stamp = true;
             }
             before = Some(r.line.at);
-            list = list.child(Row { row: r.clone() }.into_element());
+            list = list.child(Row { row: r.clone(), stamp }.into_element());
         }
         let mut wrap = rect().width(Size::fill()).height(Size::fill()).child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(list));
         if !at_end {
@@ -536,6 +551,8 @@ impl Component for Lines {
 #[derive(PartialEq)]
 struct Row {
     row: Line,
+    /// Whether the line opens its minute and shows the time.
+    stamp: bool,
 }
 
 impl Component for Row {
@@ -580,7 +597,7 @@ impl Component for Row {
             .padding((space::XXS + 1., space::M))
             .horizontal()
             .spacing(space::M)
-            .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).child(caption(&t, clock(l.at)).font_tabular()))
+            .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).maybe_child(self.stamp.then(|| caption(&t, clock(l.at)).font_tabular())))
             .child(body);
         if r.heard.is_some() || r.batch.is_some() {
             let mut tags = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).max_width(Size::px(TAG_MAX * 2.));
@@ -592,7 +609,8 @@ impl Component for Row {
             }
             row = row.child(tags);
         }
-        row.content(Content::flex())
+        let tip = (r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
+        WithTip::new(tip, row.content(Content::flex()))
     }
 }
 
@@ -608,12 +626,16 @@ impl Component for HeardTag {
         let t = use_theme();
         let store = use_store();
         let mut hovered = use_state(|| false);
+        let a11y = use_a11y();
+        let focus = use_focus(a11y);
         let h = &self.heard;
-        let spot = use_spot(&format!("chat.heard.{}", self.id), "button", &h.short, true);
+        let spot = use_spot(&format!("chat.heard.{}", self.id), "button", &h.names, true);
         let key = h.key.clone();
-        let first = h.all.split(", ").next().unwrap_or_default().to_owned();
-        let tip = trf("Nur bei %@ angekommen. Klicken, um als %@ zu antworten.", &[&h.all, &first]);
+        let tip = trf("Nur bei %@ angekommen. Klicken, um als %@ zu antworten.", &[&h.names, &h.first]);
+        let pressed = key.clone();
         let mut chip = rect()
+            .a11y_id(a11y)
+            .a11y_focusable(true)
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(tip.clone())
             .on_sized(spot)
@@ -626,11 +648,21 @@ impl Component for HeardTag {
             .cursor(CursorIcon::Pointer)
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
-            .on_press(move |_| pick(store, Target::Instance(key.clone())));
-        if let Some(id) = h.account {
-            chip = chip.child(face(&t, store, id, &h.short, iconsize::S));
+            .on_press(move |_| pick(store, Target::Instance(key.clone())))
+            .on_key_down(move |e: Event<KeyboardEventData>| {
+                let activates = matches!(&e.key, Key::Named(NamedKey::Enter)) || matches!(&e.key, Key::Character(c) if c == " ");
+                if a11y.is_focused() && activates {
+                    e.stop_propagation();
+                    pick(store, Target::Instance(pressed.clone()));
+                }
+            });
+        if let Some(border) = ring(&t, focus()) {
+            chip = chip.border(border);
         }
-        chip = chip.child(line(&t, h.short.clone(), font::CAPTION, if *hovered.read() { t.text1 } else { t.text2 }));
+        if let Some(id) = h.account {
+            chip = chip.child(face(&t, store, id, &h.first, iconsize::S));
+        }
+        chip = chip.child(line(&t, h.names.clone(), font::CAPTION, if *hovered.read() { t.text1 } else { t.text2 }).max_lines(1).text_overflow(TextOverflow::Ellipsis));
         if *hovered.read() {
             chip = chip.background(t.hover);
         }
@@ -658,7 +690,7 @@ impl Component for SendAs {
         let m = store.model.read();
         let target = target_of(&m, shared);
         let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
-        let label = target.as_ref().map_or_else(|| tr("Empfänger wählen"), |tg| name(&m, tg));
+        let label = target.as_ref().map_or_else(|| tr("Absender wählen"), |tg| name(&m, tg));
         let account = match &target {
             Some(Target::Instance(key)) => m.games.get(key).map(|g| g.account_id),
             _ => None,
@@ -716,7 +748,7 @@ impl Component for SendAs {
             chip = chip.border(border);
         }
         let tip = Shortcut::primary(Code::KeyE).label();
-        WithTip::new(Some(trf("Wer die Nachricht bekommt · %@ oder @Name", &[&tip])), chip)
+        WithTip::new(Some(trf("Wer sendet · %@ oder @Name", &[&tip])), chip)
     }
 }
 
@@ -766,10 +798,10 @@ impl Component for Composer {
         let all = choices(&m, &shared.recent.read());
         let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
         let hint = match (&target, shared.sent.read().clone()) {
-            (_, Some(sent)) => sent,
-            (None, None) => tr("Der gewählte Empfänger ist weg. Wähle, wer die Nachricht bekommt."),
-            (Some(tg), None) if reach == 0 => trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)]),
-            (Some(_), None) => tr("Enter sendet · ↑ Verlauf · @Name wechselt den Absender"),
+            (_, Some(sent)) => Some(sent),
+            (None, None) => Some(tr("Der gewählte Absender ist weg. Wähle, wer sendet.")),
+            (Some(tg), None) if reach == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
+            (Some(_), None) => None,
         };
         let joins: Vec<String> = match &target {
             Some(Target::Batch(id)) => m.batch(id).map(|b| b.join_lines()).unwrap_or_default(),
@@ -787,10 +819,11 @@ impl Component for Composer {
             .cross_align(Alignment::Center)
             .spacing(space::S)
             .child(SendAs)
-            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl")).a11y(field).on_submit(move |_| {
-                if let Some(list) = submit_list.as_ref().filter(|l| !l.is_empty()) {
-                    let at = store.ui.chat.at_hot.peek().unwrap_or(0).min(list.len() - 1);
-                    pick_at(store, list[at].target.clone());
+            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl · @Name wechselt den Absender")).a11y(field).on_submit(move |_| {
+                if let Some(list) = submit_list.as_ref() {
+                    if let Some(at) = list.len().checked_sub(1).map(|end| store.ui.chat.at_hot.peek().unwrap_or(0).min(end)) {
+                        pick_at(store, list[at].target.clone());
+                    }
                     return;
                 }
                 send(store);
@@ -798,8 +831,8 @@ impl Component for Composer {
             .content(Content::flex())
             .child(send_button.on_press(move |_| send(store)));
         let note = match shared.rejected.read().clone() {
-            Some((_, why)) => line(&t, why, font::CAPTION, t.danger_text),
-            None => caption(&t, hint),
+            Some((_, why)) => Some(line(&t, why, font::CAPTION, t.danger_text)),
+            None => hint.map(|h| caption(&t, h)),
         };
         let keys_list = suggest.as_ref().map(|(_, l)| l.clone());
         let mut col = rect()
@@ -824,7 +857,7 @@ impl Component for Composer {
                     if matches!(e.key, Key::Named(NamedKey::Enter)) {
                         return;
                     }
-                    let hot = *shared.at_hot.peek();
+                    let hot = shared.at_hot.peek().or(Some(0));
                     match step(&e.key, list.len(), hot) {
                         Some(Step::Move(i)) => shared.at_hot.set(Some(i)),
                         Some(Step::Pick(i)) => pick_at(store, list[i].target.clone()),
@@ -846,7 +879,7 @@ impl Component for Composer {
                 step_history(store, delta);
             })
             .child(row)
-            .child(note);
+            .maybe_child(note);
         if !joins.is_empty() {
             let names: Vec<&str> = joins.iter().map(|j| j.split_whitespace().next().unwrap_or_default()).collect();
             col = col.child(caption(&t, trf("Beim Betreten sendet jeder Account: %@", &[&names.join(", ")])).max_lines(1).text_overflow(TextOverflow::Ellipsis));
@@ -938,7 +971,10 @@ impl Component for Popup {
             .layer(Layer::Overlay)
             .width(Size::px(w))
             .height(Size::px(h))
-            .on_mouse_down(move |_| shared.picker.set(false))
+            .on_mouse_down(move |_| {
+                shared.picker.set(false);
+                shared.focus.set(Some(Instant::now()));
+            })
             .child(panel)
     }
 }
@@ -993,69 +1029,6 @@ impl Component for Suggestions {
             })
         };
         panel
-    }
-}
-
-/// The recipients beside the chat, with a filter; a click makes one the recipient.
-#[derive(PartialEq)]
-struct Roster;
-
-impl Component for Roster {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = use_store();
-        let mut shared = store.ui.chat;
-        let search = use_a11y();
-        let m = store.model.read();
-        let q = shared.roster_query.read().clone();
-        use_side_effect_with_deps(&q, move |_| shared.roster_hot.set_if_modified(None));
-        let list = filter(&choices(&m, &[]), &q);
-        let sections = q.trim().is_empty();
-        let current = target_of(&m, shared);
-        let hot = *shared.roster_hot.read();
-        let keys = list.clone();
-        let body: Element = if list.is_empty() {
-            rect().width(Size::fill()).height(Size::fill()).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)).into_element()
-        } else {
-            List {
-                id: "chat.roster.option",
-                choices: list,
-                sections,
-                hot,
-                current: current.clone(),
-                max_h: None,
-                on_pick: EventHandler::new(move |tg| pick(store, tg)),
-                on_hover: EventHandler::new(move |i| shared.roster_hot.set(Some(i))),
-            }
-            .into_element()
-        };
-        rect()
-            .width(Size::px(ROSTER_W))
-            .height(Size::fill())
-            .padding((space::M, space::S, space::S, space::S))
-            .spacing(space::S)
-            .background(t.sidebar)
-            .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 0., left: 1. }).alignment(BorderAlignment::Inner))
-            .on_global_key_down(move |e: Event<KeyboardEventData>| {
-                if *Platform::get().current_window().focused_accessibility_id.peek() != search {
-                    return;
-                }
-                let mut shared = store.ui.chat;
-                match step(&e.key, keys.len(), hot) {
-                    Some(Step::Move(i)) => shared.roster_hot.set(Some(i)),
-                    Some(Step::Pick(i)) => pick(store, keys[i].target.clone()),
-                    Some(Step::Close) => {
-                        shared.roster_query.set(String::new());
-                        shared.roster_hot.set(None);
-                    }
-                    None => return,
-                }
-                e.stop_propagation();
-            })
-            .child(rect().padding((0., space::XS)).child(line(&t, tr("Senden als"), font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD)))
-            .child(Field::new("chat.roster.search", shared.roster_query).placeholder(tr("Suchen")).glyph(Icon::Search).a11y(search))
-            .child(rect().width(Size::fill()).height(Size::flex(1.)).child(body))
-            .content(Content::flex())
     }
 }
 
@@ -1171,17 +1144,18 @@ mod tests {
         let m = Model::default();
         let running: HashMap<String, usize> = [("farm".to_owned(), 3)].into();
         let mut l = line("farm", false);
-        assert_eq!(heard_by(&m, &l, &running).map(|h| h.short), Some("Alex".into()));
+        assert_eq!(heard_by(&m, &l, &running).map(|h| h.names), Some("Alex".into()));
         l.also.push(("k2".into(), "Bert".into(), "farm".into()));
-        assert_eq!(heard_by(&m, &l, &running).map(|h| h.short), Some("Alex, Bert".into()));
+        assert_eq!(heard_by(&m, &l, &running).map(|h| (h.names, h.first)), Some(("Alex, Bert".into(), "Alex".into())));
         l.also.push(("k3".into(), "Cara".into(), "farm".into()));
         assert_eq!(heard_by(&m, &l, &running), None);
+        let crowd: HashMap<String, usize> = [("farm".to_owned(), 30)].into();
+        assert_eq!(heard_by(&m, &l, &crowd).map(|h| h.names), Some("Alex, Bert, Cara".into()));
+        l.also.push(("k4".into(), "Dora".into(), "farm".into()));
+        assert_eq!(heard_by(&m, &l, &crowd), None);
         let alone: HashMap<String, usize> = [("farm".to_owned(), 1)].into();
         assert_eq!(heard_by(&m, &line("farm", false), &alone), None);
-        assert_eq!(heard_by(&m, &line("farm", true), &alone).map(|h| h.short), Some("Alex".into()));
-        let mut many = line("farm", true);
-        many.also = vec![("b".into(), "Bert".into(), "farm".into()), ("c".into(), "Cara".into(), "farm".into())];
-        assert_eq!(heard_by(&m, &many, &running).map(|h| (h.short, h.all)), Some(("Alex +2".into(), "Alex, Bert, Cara".into())));
+        assert_eq!(heard_by(&m, &line("farm", true), &alone).map(|h| h.names), Some("Alex".into()));
     }
 
     #[test]
