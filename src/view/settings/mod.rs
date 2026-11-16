@@ -63,8 +63,7 @@ impl Prefs {
             self.store.dispatch(Event::TellGames);
         }
         if rate {
-            let watch = self.store.model.peek().session.watch.clone();
-            self.store.dispatch(Event::Watch(watch));
+            self.store.replan();
         }
         if sleep {
             self.store.keep_awake();
