@@ -30,7 +30,8 @@ use super::{adopt, auth, gpu, ipc, javas, lock, net, paths, scrub, stagger};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
-/// File name of the companion mod in a batch's shared mods folder.
+/// File name of the companion mod older builds put in a batch's shared mods folder; skipped in content lists and removed
+/// before each start, since the agent replaced it.
 pub const COMPANION_FILE: &str = "manycraft-companion.jar";
 
 const DEFAULT_PORT: u16 = 25565;
@@ -141,14 +142,14 @@ impl Shared {
 }
 
 /// Readies the game folder of `account` in `instance` and returns it: shared `mods`, `config`, `resourcepacks`,
-/// `shaderpacks` and `datapacks` linked in, `options.txt` and `servers.dat` from the instance templates, the companion mod in the shared mods folder.
-pub fn prepare(instance: &Instance, account: &Account, companion_jar: Option<&Path>) -> Result<PathBuf> {
+/// `shaderpacks` and `datapacks` linked in, `options.txt` and `servers.dat` from the instance templates, an old companion gone from the shared mods folder.
+pub fn prepare(instance: &Instance, account: &Account) -> Result<PathBuf> {
     let dir = instance.game_dir(account.id);
-    prepare_in(&dir, &Shared::of(instance), companion_jar, &instance.other_games(account.id))?;
+    prepare_in(&dir, &Shared::of(instance), &instance.other_games(account.id))?;
     Ok(dir)
 }
 
-fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, siblings: &[PathBuf]) -> Result<()> {
+fn prepare_in(dir: &Path, shared: &Shared, siblings: &[PathBuf]) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     for (name, target, merge) in [("mods", &shared.mods, false), ("config", &shared.config, false), ("resourcepacks", &shared.resourcepacks, true), ("shaderpacks", &shared.shaderpacks, true), ("datapacks", &shared.datapacks, true)] {
         fs::create_dir_all(target).with_context(|| format!("cannot create {}", target.display()))?;
@@ -157,10 +158,7 @@ fn prepare_in(dir: &Path, shared: &Shared, companion_jar: Option<&Path>, sibling
         }
         link(&dir.join(name), target)?;
     }
-    match companion_jar {
-        Some(jar) => install_companion(jar, &shared.mods)?,
-        None => drop_companion(&shared.mods),
-    }
+    drop_companion(&shared.mods);
     sync::adopt_options(&shared.options, dir, siblings)?;
     copy_options(&shared.options, &dir.join(OPTIONS_FILE))?;
     sync::copy_servers(&shared.servers, dir, siblings)?;
@@ -268,19 +266,6 @@ fn merge_options(template: &str, existing: Option<&str>, keys: &[&str]) -> Strin
     let mut text = out.join("\n");
     text.push('\n');
     text
-}
-
-fn install_companion(jar: &Path, mods: &Path) -> Result<()> {
-    let dest = mods.join(COMPANION_FILE);
-    let want = net::file_sha1(jar).with_context(|| format!("cannot read {}", jar.display()))?;
-    if net::file_sha1(&dest).is_ok_and(|have| have == want) {
-        return Ok(());
-    }
-    let bytes = fs::read(jar).with_context(|| format!("cannot read {}", jar.display()))?;
-    match net::write_atomic(&dest, &bytes) {
-        Err(_) if dest.is_file() => Ok(()),
-        result => result,
-    }
 }
 
 fn drop_companion(mods: &Path) {
@@ -532,7 +517,7 @@ pub fn icon_path(instance: &Instance, account: Uuid) -> PathBuf {
     instance.game_dir(account).join(ICON_FILE)
 }
 
-/// What the companion mod of `account` playing `target` needs to know: name, colour, icon, badge and background level.
+/// What the companion of `account` playing `target` needs to know: name, colour, icon, badge and background level.
 pub fn identity_messages(target: &Target, account: &Account, badge: bool) -> Vec<ipc::ToMod> {
     vec![
         ipc::ToMod::Identity { name: account.name.clone(), batch: target.label().to_owned(), rgb: account.rgb(), icon: Some(icon_path(&target.instance, account.id).display().to_string()) },
@@ -541,7 +526,7 @@ pub fn identity_messages(target: &Target, account: &Account, badge: bool) -> Vec
     ]
 }
 
-/// Where the companion mod of `account` in `instance` writes its preview frames.
+/// Where the companion of `account` in `instance` writes its preview frames.
 pub fn preview_path(instance: &Instance, account: Uuid) -> PathBuf {
     instance.game_dir(account).join(PREVIEW_FILE)
 }
@@ -725,7 +710,7 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Whether the games run without the companion mod: no preview, no background mode, no swapping.
+    /// Whether the games run without the companion: no preview, no background mode, no swapping.
     pub fn plain(&self) -> bool {
         self.companion_jar.is_none()
     }
@@ -745,7 +730,7 @@ pub struct Adoption {
 /// Outcome of starting one account: its instance key, or why it did not start.
 pub type Started = (Uuid, Result<String>);
 
-/// The running instances and the IPC server their companion mods connect to.
+/// The running instances and the IPC server their companions connect to.
 pub struct Fleet {
     ipc: ipc::Server,
     running: Arc<Mutex<HashMap<String, RunningInstance>>>,
@@ -821,7 +806,7 @@ impl Fleet {
         adopted
     }
 
-    /// Lets the companion mods of adopted games connect again, once their tiles exist.
+    /// Lets the companions of adopted games connect again, once their tiles exist.
     pub fn admit(&self, keys: &[String]) {
         let mut adopted = lock(&self.adopted);
         for key in keys {
@@ -855,7 +840,7 @@ impl Fleet {
     }
 
     /// Installs the target's game, then prepares and starts every account `stagger` apart. `companion_jar` replaces the
-    /// built-in companion mod; without either the games run plain. Blocks until the last one is started.
+    /// built-in companion agent and must be named `manycraft-agent.jar`; without either the games run plain. Blocks until the last one is started.
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
     pub fn start_batch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
         let prepared = self.prepare_launch(target, accounts, companion_jar, progress)?;
@@ -869,7 +854,7 @@ impl Fleet {
 
     /// Syncs the instance's mods, finds the server and installs the game, once before `start_one` launches the accounts.
     /// Leaves the mods alone while games of the instance run, since they hold the jars open. `companion_jar` replaces the
-    /// built-in companion mod for the instance's loader and game.
+    /// built-in companion agent for the instance's game.
     pub fn prepare_launch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         let instance = &target.instance;
         if !self.instance_runs(&instance.id) {
@@ -900,7 +885,7 @@ impl Fleet {
         lock(&self.running).values_mut().any(|r| r.instance == instance_id && r.poll())
     }
 
-    /// Sends `message` to the companion mod of the instance `key`. Fails when it is not connected.
+    /// Sends `message` to the companion of the instance `key`. Fails when it is not connected.
     pub fn send(&self, key: &str, message: &ipc::ToMod) -> Result<()> {
         self.ipc.send(key, message)
     }
@@ -949,7 +934,7 @@ impl Fleet {
     }
 
     /// Waits until `key` is first in line, `stagger` passed since the last start and fewer than `parallel` games load
-    /// (0 lets the machine's cores and free memory decide). A game without the companion mod counts as loaded when its
+    /// (0 lets the machine's cores and free memory decide). A game without the companion counts as loaded when its
     /// window shows. Returns false when `abandon` or quitting ends the wait first; quitting empties the line, whereas
     /// after `abandon` the caller takes `key` out with `give_up` if the abandoning run still owns it, since a newer
     /// run may have queued the same key.
@@ -1095,7 +1080,7 @@ impl Fleet {
     }
 
     /// Whether the instance `key` runs.
-    /// Keeps the window of the game `key`, which runs without the companion mod, on the monitor of `home` while it
+    /// Keeps the window of the game `key`, which runs without the companion, on the monitor of `home` while it
     /// opens, in the background.
     pub fn bring_home(&self, key: &str, home: super::place::Rect) {
         let Some(pid) = lock(&self.running).get(key).map(|r| r.pid) else { return };
@@ -1200,13 +1185,16 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
 #[allow(clippy::too_many_arguments)]
 fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, ipc_file: Option<&Path>, key: &str, token: &str) -> Result<Child> {
     let instance = &target.instance;
-    let game_dir = prepare(instance, account, companion_jar)?;
-    require_companion_for_proxy(account, &instance.mods_dir())?;
+    let game_dir = prepare(instance, account)?;
+    require_companion_for_proxy(account, companion_jar)?;
     if matches!(instance.loader, Loader::Forge(_) | Loader::NeoForge(_)) {
         quiet_early_window(&instance.config_dir())?;
     }
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    if let Some(jar) = companion_jar {
+        extra.jvm.push(format!("-javaagent:{}", jar.display()));
+    }
     if let Some(file) = ipc_file {
         extra.jvm.push(format!("-Dmanycraft.ipcfile={}", file.display()));
     }
@@ -1258,9 +1246,9 @@ fn name_stand_in(server: &str) -> Result<SocketAddr> {
     Ok(SocketAddr::from(([240, a, b, c], port.unwrap_or(25565))))
 }
 
-fn require_companion_for_proxy(account: &Account, mods: &Path) -> Result<()> {
-    if account.proxy.is_some() && !mods.join(COMPANION_FILE).is_file() {
-        bail!("{} has a proxy, but the companion mod is missing, so the game would connect without the proxy", account.name);
+fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) -> Result<()> {
+    if account.proxy.is_some() && companion_jar.is_none_or(|jar| !jar.is_file()) {
+        bail!("{} has a proxy, but this game runs without the companion, so it would connect without the proxy", account.name);
     }
     Ok(())
 }
@@ -1736,8 +1724,8 @@ mod tests {
         Dirs { inst: base.join("inst"), mods: shared.mods.clone(), config: shared.config.clone(), template: shared.options.clone(), shared, _root: root }
     }
 
-    fn prep(d: &Dirs, jar: Option<&Path>) -> Result<()> {
-        prepare_in(&d.inst, &d.shared, jar, &[])
+    fn prep(d: &Dirs) -> Result<()> {
+        prepare_in(&d.inst, &d.shared, &[])
     }
 
     #[test]
@@ -1745,11 +1733,11 @@ mod tests {
         let d = dirs();
         fs::create_dir_all(d.shared.saves.join("World One")).unwrap();
         fs::write(d.shared.saves.join("World One").join("level.dat"), b"w").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert_eq!(fs::read(d.inst.join("saves").join("World One").join("level.dat")).unwrap(), b"w");
         assert!(!d.shared.saves.exists());
         let second = d.inst.with_file_name("inst2");
-        prepare_in(&second, &d.shared, None, &[]).unwrap();
+        prepare_in(&second, &d.shared, &[]).unwrap();
         assert!(!second.join("saves").exists());
     }
 
@@ -1758,7 +1746,7 @@ mod tests {
         let d = dirs();
         fs::create_dir_all(d.shared.saves.join("Seed")).unwrap();
         fs::create_dir_all(d.inst.join("saves").join("Mine")).unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(d.inst.join("saves").join("Mine").is_dir() && !d.inst.join("saves").join("Seed").exists());
         assert!(d.shared.saves.join("Seed").is_dir());
     }
@@ -1774,7 +1762,7 @@ mod tests {
         fs::write(d.shared.resourcepacks.join("both.zip"), b"batch copy").unwrap();
         fs::create_dir_all(d.inst.join("shaderpacks")).unwrap();
         fs::write(d.inst.join("shaderpacks").join("s.zip"), b"s").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(same(&own, &d.shared.resourcepacks));
         assert!(same(&d.inst.join("shaderpacks"), &d.shared.shaderpacks));
         assert_eq!(fs::read(d.shared.resourcepacks.join("mine.zip")).unwrap(), b"mine");
@@ -1782,7 +1770,7 @@ mod tests {
         assert_eq!(fs::read(d.inst.join("resourcepacks.old-1").join("both.zip")).unwrap(), b"own copy");
         assert_eq!(fs::read(d.shared.shaderpacks.join("s.zip")).unwrap(), b"s");
         assert!(!d.inst.join("shaderpacks.old-1").exists());
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(!d.inst.join("resourcepacks.old-2").exists());
         assert_eq!(fs::read(d.shared.resourcepacks.join("mine.zip")).unwrap(), b"mine");
     }
@@ -1792,10 +1780,10 @@ mod tests {
         let d = dirs();
         fs::create_dir_all(&d.inst).unwrap();
         fs::write(d.inst.join(sync::SERVERS_FILE), b"own").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert_eq!(fs::read(&d.shared.servers).unwrap(), b"own");
         fs::write(&d.shared.servers, b"batch").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert_eq!(fs::read(d.inst.join(sync::SERVERS_FILE)).unwrap(), b"batch");
         assert!(!d.inst.join("servers.dat.old-1").exists());
     }
@@ -1807,12 +1795,12 @@ mod tests {
     #[test]
     fn links_point_into_the_batch_and_are_reused() {
         let d = dirs();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         fs::write(d.inst.join("mods").join("a.jar"), b"x").unwrap();
         fs::write(d.inst.join("config").join("c.txt"), b"y").unwrap();
         assert_eq!(fs::read(d.mods.join("a.jar")).unwrap(), b"x");
         assert_eq!(fs::read(d.config.join("c.txt")).unwrap(), b"y");
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(!d.inst.join("mods.old-1").exists());
         assert_eq!(fs::read(d.inst.join("mods").join("a.jar")).unwrap(), b"x");
     }
@@ -1824,12 +1812,12 @@ mod tests {
         fs::write(d.inst.join("mods").join("mine.jar"), b"keep").unwrap();
         fs::create_dir_all(d.inst.join("mods.old-1")).unwrap();
         fs::write(d.inst.join("config"), b"a file").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert_eq!(fs::read(d.inst.join("mods.old-2").join("mine.jar")).unwrap(), b"keep");
         assert_eq!(fs::read(d.inst.join("config.old-1")).unwrap(), b"a file");
         assert!(same(&d.inst.join("mods"), &d.mods));
         assert!(same(&d.inst.join("config"), &d.config));
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(!d.inst.join("mods.old-3").exists());
         assert!(!d.inst.join("config.old-2").exists());
     }
@@ -1843,7 +1831,7 @@ mod tests {
         fs::create_dir_all(&d.inst).unwrap();
         create_link(&other, &d.inst.join("mods")).unwrap();
         assert!(!points_to(&d.inst.join("mods"), &d.mods));
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(same(&d.inst.join("mods"), &d.mods));
         assert!(points_to(&d.inst.join("mods"), &d.mods));
         assert_eq!(fs::read(other.join("old.jar")).unwrap(), b"old");
@@ -1858,24 +1846,24 @@ mod tests {
         fs::create_dir_all(&d.inst).unwrap();
         create_link(&gone, &d.inst.join("mods")).unwrap();
         fs::remove_dir(&gone).unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(same(&d.inst.join("mods"), &d.mods));
     }
 
     #[test]
     fn options_come_from_the_template_on_every_start() {
         let d = dirs();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(!d.inst.join(OPTIONS_FILE).exists());
         fs::write(d.inst.join(OPTIONS_FILE), "fov:1.0\n").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert_eq!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap(), "fov:1.0\n");
         fs::write(&d.template, "soundCategory_master:0.0\nonboardAccessibility:false\nfullscreen:false\n").unwrap();
         fs::write(d.inst.join(OPTIONS_FILE), "fov:1.0\nfullscreen:true\nonboardAccessibility:true\n").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert_eq!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap(), "soundCategory_master:0.0\nonboardAccessibility:false\nfullscreen:true\nfov:1.0\n");
         fs::write(d.inst.join(OPTIONS_FILE), "soundCategory_master:1.0\n").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(fs::read_to_string(d.inst.join(OPTIONS_FILE)).unwrap().contains("soundCategory_master:0.0"));
     }
 
@@ -1883,7 +1871,7 @@ mod tests {
     fn an_unreadable_template_is_an_error() {
         let d = dirs();
         fs::create_dir_all(&d.template).unwrap();
-        assert!(prep(&d, None).is_err());
+        assert!(prep(&d).is_err());
     }
 
     #[test]
@@ -1898,13 +1886,12 @@ mod tests {
     }
 
     #[test]
-    fn a_game_without_companion_drops_a_stale_one() {
+    fn a_companion_mod_from_an_older_build_is_dropped() {
         let d = dirs();
-        let jar = d.inst.parent().unwrap().join("companion.jar");
-        fs::write(&jar, b"v1").unwrap();
-        prep(&d, Some(&jar)).unwrap();
+        fs::create_dir_all(&d.mods).unwrap();
+        fs::write(d.mods.join(COMPANION_FILE), b"v1").unwrap();
         fs::write(d.mods.join("other.jar"), b"mod").unwrap();
-        prep(&d, None).unwrap();
+        prep(&d).unwrap();
         assert!(!d.mods.join(COMPANION_FILE).exists() && d.mods.join("other.jar").is_file());
     }
 
@@ -1916,27 +1903,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         quiet_early_window(dir.path()).unwrap();
         assert_eq!(fs::read_to_string(dir.path().join(FML_CONFIG)).unwrap(), "earlyWindowControl = false\n");
-    }
-
-    #[test]
-    fn companion_goes_into_the_shared_mods_only_when_missing_or_different() {
-        let d = dirs();
-        let jar = d.inst.parent().unwrap().join("companion.jar");
-        fs::write(&jar, b"v1").unwrap();
-        prep(&d, Some(&jar)).unwrap();
-        let dest = d.mods.join(COMPANION_FILE);
-        assert_eq!(fs::read(&dest).unwrap(), b"v1");
-        let stamp = fs::metadata(&dest).unwrap().modified().unwrap();
-        std::thread::sleep(Duration::from_millis(20));
-        prep(&d, Some(&jar)).unwrap();
-        assert_eq!(fs::metadata(&dest).unwrap().modified().unwrap(), stamp);
-        fs::write(&jar, b"v2").unwrap();
-        prep(&d, Some(&jar)).unwrap();
-        assert_eq!(fs::read(&dest).unwrap(), b"v2");
-        assert!(prep(&d, Some(&jar.with_file_name("missing.jar"))).is_err());
-        let not_a_folder = jar.with_file_name("not-a-folder");
-        fs::write(&not_a_folder, b"").unwrap();
-        assert!(install_companion(&jar, &not_a_folder).is_err());
     }
 
     #[derive(Default)]
@@ -2417,15 +2383,17 @@ mod tests {
     }
 
     #[test]
-    fn a_proxy_needs_the_companion_mod() {
+    fn a_proxy_needs_the_companion() {
         let d = dirs();
         fs::create_dir_all(&d.mods).unwrap();
+        let jar = d.mods.join("manycraft-agent.jar");
         let mut alt = Account::offline("AltOne").unwrap();
-        assert!(require_companion_for_proxy(&alt, &d.mods).is_ok());
+        assert!(require_companion_for_proxy(&alt, None).is_ok());
         alt.proxy = Some("socks5://h:1".into());
-        assert!(format!("{:#}", require_companion_for_proxy(&alt, &d.mods).unwrap_err()).contains("companion mod is missing"));
-        fs::write(d.mods.join(COMPANION_FILE), b"jar").unwrap();
-        assert!(require_companion_for_proxy(&alt, &d.mods).is_ok());
+        assert!(format!("{:#}", require_companion_for_proxy(&alt, None).unwrap_err()).contains("without the companion"));
+        assert!(require_companion_for_proxy(&alt, Some(&jar)).is_err());
+        fs::write(&jar, b"jar").unwrap();
+        assert!(require_companion_for_proxy(&alt, Some(&jar)).is_ok());
     }
 
     #[test]

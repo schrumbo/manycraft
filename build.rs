@@ -1,33 +1,19 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const COMPANION_SOURCES: [&str; 8] = ["common/src", "common/build.gradle", "fabric/src", "fabric/build.gradle", "build.gradle", "gradle/loader.gradle", "gradle.properties", "settings.gradle"];
-const LOADERS: [(&str, &str); 2] = [("neoforge", "MANYCRAFT_COMPANION_NEOFORGE_JAR"), ("forge", "MANYCRAFT_COMPANION_FORGE_JAR")];
+const AGENT_SOURCES: [&str; 4] = ["src", "build.gradle", "gradle.properties", "settings.gradle"];
 
 fn main() {
-    for path in COMPANION_SOURCES {
-        println!("cargo:rerun-if-changed=mod/{path}");
+    for path in AGENT_SOURCES {
+        println!("cargo:rerun-if-changed=agent/{path}");
     }
-    println!("cargo:rerun-if-env-changed=MANYCRAFT_COMPANION_JAR");
-    let jar = match std::env::var_os("MANYCRAFT_COMPANION_JAR") {
+    println!("cargo:rerun-if-env-changed=MANYCRAFT_AGENT_JAR");
+    let jar = match std::env::var_os("MANYCRAFT_AGENT_JAR") {
+        Some(path) if path.is_empty() => no_agent(),
         Some(path) => PathBuf::from(path),
-        None => build_companion(),
+        None => build_agent(),
     };
-    println!("cargo:rustc-env=MANYCRAFT_COMPANION_JAR={}", jar.display());
-    for (loader, var) in LOADERS {
-        println!("cargo:rerun-if-changed=mod/{loader}/src");
-        println!("cargo:rerun-if-changed=mod/{loader}/build.gradle");
-        println!("cargo:rerun-if-env-changed={var}");
-        let jar = match std::env::var_os(var) {
-            Some(path) if path.is_empty() => no_companion(),
-            Some(path) => PathBuf::from(path),
-            None => build_loader(loader).unwrap_or_else(|why| {
-                println!("cargo:warning=building without the {loader} companion mod: {why}");
-                no_companion()
-            }),
-        };
-        println!("cargo:rustc-env={var}={}", jar.display());
-    }
+    println!("cargo:rustc-env=MANYCRAFT_AGENT_JAR={}", jar.display());
     embed_icon();
 }
 
@@ -45,60 +31,27 @@ fn embed_icon() {
 }
 
 fn module() -> PathBuf {
-    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR")).join("mod")
+    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR")).join("agent")
 }
 
-fn version(module: &Path) -> String {
-    std::fs::read_to_string(module.join("gradle.properties"))
-        .expect("mod/gradle.properties is readable")
-        .lines()
-        .find_map(|l| l.strip_prefix("version=").map(str::trim).map(str::to_owned))
-        .expect("mod/gradle.properties has a version")
-}
-
-fn gradlew(module: &Path) -> PathBuf {
-    module.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" })
-}
-
-fn build_companion() -> PathBuf {
+fn build_agent() -> PathBuf {
     let module = module();
-    let jar = module.join("fabric").join("build").join("libs").join(format!("manycraft-companion-{}.jar", version(&module)));
-    if !jar.is_file() || newer_sources(&module, &jar, &COMPANION_SOURCES) {
-        let gradlew = gradlew(&module);
+    let jar = module.join("build").join("libs").join("manycraft-agent.jar");
+    if !jar.is_file() || newer_sources(&module, &jar, &AGENT_SOURCES) {
+        let gradlew = module.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
         let status = Command::new(&gradlew)
-            .args([":fabric:build", "-PfabricOnly", "-q", "--console=plain", "-x", "test"])
+            .args(["agentJar", "-q", "--console=plain"])
             .current_dir(&module)
             .status()
-            .unwrap_or_else(|e| panic!("cannot run {}: {e}; install JDK 25 or set MANYCRAFT_COMPANION_JAR", gradlew.display()));
-        assert!(status.success(), "building the companion mod failed; install JDK 25 or set MANYCRAFT_COMPANION_JAR");
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}; install JDK 25 or set MANYCRAFT_AGENT_JAR", gradlew.display()));
+        assert!(status.success(), "building the companion agent failed; install JDK 25 or set MANYCRAFT_AGENT_JAR");
     }
-    assert!(jar.is_file(), "companion mod jar missing at {}", jar.display());
+    assert!(jar.is_file(), "companion agent jar missing at {}", jar.display());
     jar
 }
 
-fn build_loader(loader: &str) -> Result<PathBuf, String> {
-    let module = module();
-    let jar = module.join(loader).join("build").join("libs").join(format!("manycraft-companion-{loader}-{}.jar", version(&module)));
-    let src = format!("{loader}/src");
-    let gradle = format!("{loader}/build.gradle");
-    let mut sources = COMPANION_SOURCES.to_vec();
-    sources.retain(|s| !s.starts_with("fabric/"));
-    sources.extend([src.as_str(), gradle.as_str()]);
-    if !jar.is_file() || newer_sources(&module, &jar, &sources) {
-        let status = Command::new(gradlew(&module))
-            .args([&format!(":{loader}:build"), "-q", "--console=plain", "-x", "test"])
-            .current_dir(&module)
-            .status()
-            .map_err(|e| format!("cannot run Gradle: {e}"))?;
-        if !status.success() {
-            return Err(format!("Gradle failed with {status}; set {loader} jar paths through the environment to use prebuilt ones"));
-        }
-    }
-    if jar.is_file() { Ok(jar) } else { Err(format!("{} is missing", jar.display())) }
-}
-
-fn no_companion() -> PathBuf {
-    let path = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join("no-companion.jar");
+fn no_agent() -> PathBuf {
+    let path = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join("no-agent.jar");
     std::fs::write(&path, b"").expect("OUT_DIR is writable");
     path
 }
