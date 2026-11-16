@@ -1566,5 +1566,16 @@
   "„%@“ ist zurück": "“%@” is back",
   "Wird zurückgelegt …": "Putting back …",
   "Wird geleert …": "Emptying …",
-  "Behalten": "Keep"
+  "Behalten": "Keep",
+  "Die Anmeldung ließ sich nicht starten.": "The sign-in could not be started.",
+  "Kopieren hat nicht geklappt.": "Copying did not work.",
+  "Das Hinzufügen ließ sich nicht starten.": "Adding could not be started.",
+  "Das Hinzufügen ließ sich nicht abschließen.": "Adding could not be completed.",
+  "Die Prüfung ließ sich nicht starten.": "The check could not be started.",
+  "Die Prüfung ließ sich nicht abschließen.": "The check could not be completed.",
+  "Wird geprüft …": "Checking …",
+  "Erst eine Proxy-Adresse eintragen": "Enter a proxy address first",
+  "Prüfen": "Check",
+  "Wird hinzugefügt …": "Adding …",
+  "Ohne Anmeldung, nur mit Namen.": "No sign-in, just a name."
 }

@@ -46,12 +46,15 @@ pub struct Card {
     pub body: Option<Element>,
     pub primary: Option<Primary>,
     pub secondary: Option<Primary>,
+    pub leading: Option<Element>,
+    pub primary_id: Option<String>,
+    pub secondary_id: Option<String>,
     pub width: f32,
 }
 
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, width: frame::SHEET }
+        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, leading: None, primary_id: None, secondary_id: None, width: frame::SHEET }
     }
 
     pub fn message(mut self, message: impl Into<String>) -> Self {
@@ -75,6 +78,24 @@ impl Card {
         self
     }
 
+    /// Content at the left end of the footer, such as a Zurück button.
+    pub fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_element());
+        self
+    }
+
+    /// Names the default action for the drive tool instead of `<id>.ok`.
+    pub fn primary_id(mut self, id: impl Into<String>) -> Self {
+        self.primary_id = Some(id.into());
+        self
+    }
+
+    /// Names the second action for the drive tool instead of `<id>.other`.
+    pub fn secondary_id(mut self, id: impl Into<String>) -> Self {
+        self.secondary_id = Some(id.into());
+        self
+    }
+
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
@@ -87,18 +108,22 @@ impl Component for Card {
         let ui = use_consume::<Ui>();
         let primary = self.primary.clone();
         let keys = primary.clone();
-        let mut footer = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(spacer()).content(Content::flex());
+        let mut footer = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S);
+        if let Some(l) = &self.leading {
+            footer = footer.child(l.clone());
+        }
+        footer = footer.child(spacer()).content(Content::flex());
         match &self.secondary {
             Some(s) => {
                 let run = s.run.clone();
-                let b = Button::new(format!("{}.other", self.id), s.label.clone()).disabled(s.disabled.clone()).on_press(move |_| run.call(()));
+                let b = Button::new(self.secondary_id.clone().unwrap_or_else(|| format!("{}.other", self.id)), s.label.clone()).disabled(s.disabled.clone()).on_press(move |_| run.call(()));
                 footer = footer.child(if s.danger { b.danger() } else { b });
             }
             None => footer = footer.child(Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).on_press(move |_| close(ui))),
         }
         if let Some(p) = primary {
             let run = p.run.clone();
-            let mut b = Button::new(format!("{}.ok", self.id), p.label.clone()).disabled(p.disabled.clone()).on_press(move |_| run.call(()));
+            let mut b = Button::new(self.primary_id.clone().unwrap_or_else(|| format!("{}.ok", self.id)), p.label.clone()).disabled(p.disabled.clone()).on_press(move |_| run.call(()));
             b = if p.danger { b.danger() } else { b.primary() };
             footer = footer.child(b);
         }

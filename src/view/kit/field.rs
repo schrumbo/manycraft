@@ -31,6 +31,7 @@ pub struct Field {
     width: Size,
     auto_focus: bool,
     secret: bool,
+    lines: usize,
     on_submit: Option<EventHandler<String>>,
     a11y: Option<AccessibilityId>,
 }
@@ -49,6 +50,7 @@ impl Field {
             width: Size::fill(),
             auto_focus: false,
             secret: false,
+            lines: 1,
             on_submit: None,
             a11y: None,
         }
@@ -94,6 +96,12 @@ impl Field {
     /// Hides what is typed.
     pub fn secret(mut self) -> Self {
         self.secret = true;
+        self
+    }
+
+    /// Shows `lines` rows and lets Enter break the line; `on_submit` then runs on Ctrl or Cmd with Enter.
+    pub fn lines(mut self, lines: usize) -> Self {
+        self.lines = lines.max(1);
         self
     }
 
@@ -147,7 +155,26 @@ impl Component for Field {
         if let Some(g) = self.glyph {
             input = input.leading(rect().padding((0., 0., 0., space::S)).child(icon(&t, g, iconsize::S, t.text3)));
         }
-        if let Some(h) = self.on_submit.clone() {
+        if self.lines > 1 {
+            let (submit, value) = (self.on_submit.clone(), self.value);
+            input = input.multiline(true).height(Size::px(control::M + (self.lines - 1) as f32 * font::BODY * 1.3)).on_pre_key_down(Callback::new(move |e: Event<KeyboardEventData>| match &e.key {
+                Key::Named(NamedKey::Enter) if e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META) => {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    if let Some(h) = &submit {
+                        h.call(value.peek().clone());
+                    }
+                    false
+                }
+                Key::Named(NamedKey::Escape | NamedKey::Shift) => true,
+                Key::Named(NamedKey::Tab) => false,
+                _ => {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    true
+                }
+            }));
+        } else if let Some(h) = self.on_submit.clone() {
             input = input.on_submit(move |s| h.call(s));
         }
         let mut boxed = rect().width(Size::fill()).corner_radius(t.shape.field).on_sized(spot).child(input);
