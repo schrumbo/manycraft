@@ -40,7 +40,7 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
     list.extend(m.batches.iter().map(|b| Entry { id: format!("palette.batch.{}", b.id), label: b.name.clone(), glyph: Icon::Layers, shortcut: None, target: Target::Page(Page::Grid(Filter::Batch(b.id.clone()))) }));
     list.extend(m.instances.iter().map(|i| Entry { id: format!("palette.instance.{}", i.id), label: i.name.clone(), glyph: Icon::Folder, shortcut: None, target: Target::Page(Page::Instance(i.id.clone())) }));
     if q.is_empty() {
-        let (bulk, rest): (Vec<Entry>, Vec<Entry>) = list.into_iter().partition(|e| matches!(e.target, Target::Command(Command::StartAll | Command::StopAll | Command::CancelStart | Command::StartAnyway | Command::ReconnectDropped)));
+        let (bulk, rest): (Vec<Entry>, Vec<Entry>) = list.into_iter().partition(|e| matches!(e.target, Target::Command(Command::StartAll | Command::StopAll | Command::CancelStart | Command::StartAnyway | Command::ReconnectDropped | Command::StartSelected | Command::StopSelected | Command::RestartSelected | Command::ReconnectSelected | Command::MessageSelected)));
         return rest.into_iter().chain(bulk).collect();
     }
     let mut games: Vec<Entry> = m.games.iter().map(|(key, g)| Entry { id: format!("palette.play.{key}"), label: g.name.clone(), glyph: Icon::Play, shortcut: None, target: Target::Play(key.clone()) }).collect();

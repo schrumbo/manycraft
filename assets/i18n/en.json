@@ -1629,7 +1629,7 @@
   "Tabelle": "Table",
   "Kacheln": "Tiles",
   "Manycraft konnte nicht starten": "Manycraft could not start",
-  "Beim Lesen deiner Daten ging etwas schief. Starte Manycraft neu.": "Something went wrong reading your data. Restart Manycraft.",
+  "Starte Manycraft neu.": "Restart Manycraft.",
   "Normal": "Normal",
   "Flüssig": "Smooth",
   "Vorschau-Rate": "Preview rate",
@@ -1755,5 +1755,16 @@
   "Gesucht wird nach %@.": "Looking for %@.",
   "Abgebrochen. Der Rest wurde nicht importiert.": "Cancelled. The rest was not imported.",
   "Nicht importiert": "Not imported",
-  "Der Loader %@ wird nicht unterstützt.": "The %@ loader is not supported."
+  "Der Loader %@ wird nicht unterstützt.": "The %@ loader is not supported.",
+  "Über Manycraft": "About Manycraft",
+  "Dienste": "Services",
+  "Manycraft ausblenden": "Hide Manycraft",
+  "Andere ausblenden": "Hide Others",
+  "Alle einblenden": "Show All",
+  "Ablage": "File",
+  "Fenster schließen": "Close Window",
+  "Spiele": "Games",
+  "Im Dock ablegen": "Minimize",
+  "Zoomen": "Zoom",
+  "Alle nach vorne bringen": "Bring All to Front"
 }

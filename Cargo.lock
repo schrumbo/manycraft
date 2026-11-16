@@ -5040,7 +5040,9 @@ dependencies = [
  "libc",
  "md-5",
  "minisign-verify",
+ "muda",
  "notify",
+ "notify-rust",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -5066,9 +5068,12 @@ dependencies = [
  "url",
  "uuid",
  "windows 0.61.3",
+ "windows 0.62.2",
+ "windows-registry 0.6.1",
  "windows-sys 0.59.0",
  "winresource",
  "wry",
+ "zbus 5.19.0",
  "zip",
 ]
 

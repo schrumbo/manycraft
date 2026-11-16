@@ -61,6 +61,15 @@ fn action_of(g: &Game, m: &Model) -> Option<Primary> {
     main_action(&g.phase, g.stopping, busy)
 }
 
+/// Forgets the pointer over `key` once it leaves the tile or row.
+pub(super) fn unhover(store: Store, key: &str) {
+    store.watch(|w| {
+        if w.hovered.as_deref() == Some(key) {
+            w.hovered = None;
+        }
+    });
+}
+
 pub(super) fn pick(store: Store, key: &str, index: usize) {
     let mut ui = store.ui;
     ui.history.set_if_modified(None);
@@ -102,17 +111,32 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     let many = ui.selection.peek().len() > 1;
     let mut items = Vec::new();
     let m = store.model.peek();
-    if !many
-        && let Some(g) = m.games.get(key)
-        && let Some(p) = action_of(g, &m)
-    {
+    let primary = if many { None } else { m.games.get(key).and_then(|g| action_of(g, &m)) };
+    if let Some(p) = primary {
         let k = key.to_owned();
-        items.push(Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p)));
+        let mut item = Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p));
+        let same = match p {
+            Primary::Start => Some(Command::StartSelected),
+            Primary::Reconnect => Some(Command::ReconnectSelected),
+            _ => None,
+        };
+        if let Some(s) = same.filter(|c| c.available(store)).and_then(Command::shortcut) {
+            item = item.shortcut(s.label());
+        }
+        items.push(item);
     }
     for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected] {
-        if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| !matches!(action_of(g, &m), Some(Primary::Start | Primary::TakeOver))) {
+        let doubled = match c {
+            Command::StartSelected => matches!(primary, Some(Primary::Start | Primary::TakeOver)),
+            Command::ReconnectSelected => matches!(primary, Some(Primary::Reconnect)),
+            _ => false,
+        };
+        if !doubled {
             let label = if many { c.label() } else { single(c) };
-            let mut item = Item::new(format!("menu.{}", c.name()), label, move |_| c.run(store)).disabled(!c.available(store));
+            if !c.available(store) {
+                continue;
+            }
+            let mut item = Item::new(format!("menu.{}", c.name()), label, move |_| c.run(store));
             if let Some(s) = c.shortcut() {
                 item = item.shortcut(s.label());
             }
@@ -121,7 +145,9 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     }
     if let Some(g) = m.games.get(key) {
         let instance = g.instance_id.clone();
-        items.push(Item::Separator);
+        if !items.is_empty() {
+            items.push(Item::Separator);
+        }
         if !many {
             let k = key.to_owned();
             items.push(Item::new(format!("menu.{key}.history"), tr("Verlauf"), move |_| toggle_history(store, &k)).shortcut(tr("Leertaste")));
@@ -148,6 +174,8 @@ impl Component for Tile {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
+        let gone = self.key.clone();
+        use_drop(move || unhover(store, &gone));
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
@@ -164,10 +192,7 @@ impl Component for Tile {
         let severe = matches!(game.phase, Phase::LoginNeeded | Phase::Banned { .. });
         let detail = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
         let reason = words::reason(game, &m);
-        let line2 = match &reason {
-            Some(r) => format!("{} · {r}", words::word(game, &m)),
-            None => detail.clone(),
-        };
+        let line2 = words::line(game, &m);
         let action = action_of(game, &m);
         let spot = use_spot(&format!("tile.{}", self.key), "tile", &format!("{} · {line2}", self.name), true);
         let preview_h = self.height - strip(self.width);
@@ -210,15 +235,17 @@ impl Component for Tile {
             text.into_element()
         } else {
             let tip = match &reason {
-                Some(r) => format!("{detail}
+                Some(r) if detail.contains(r.as_str()) => detail.clone(),
+                Some(r) if *r != line2 => format!("{detail}
 {r}"),
-                None => detail.clone(),
+                _ => line2.clone(),
             };
             WithTip::new(Some(tip), text.width(Size::fill())).into_element()
         };
         let text = rect().width(Size::flex(1.)).child(text);
         let strip_row = rect().width(Size::fill()).height(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).padding((0., space::XXS)).child(face_view(&t, m.account(game.account_id), face, matches!(game.phase, Phase::Playing { .. }) && !game.stopping)).child(text).content(Content::flex());
 
+        let (over_key, leave_key) = (self.key.clone(), self.key.clone());
         let mut tile = rect()
             .a11y_id(a11y)
             .a11y_focusable(true)
@@ -228,8 +255,14 @@ impl Component for Tile {
             .height(Size::px(self.height))
             .corner_radius(t.shape.tile + frame::RING_GAP)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_enter(move |_| {
+                hovered.set(true);
+                store.watch(|w| w.hovered = Some(over_key.clone()));
+            })
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                unhover(store, &leave_key);
+            })
             .cursor(CursorIcon::Pointer)
             .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |e: Event<PressEventData>| {

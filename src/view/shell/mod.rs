@@ -33,6 +33,7 @@ impl Component for Shell {
         let store = use_store();
         let ui = store.ui;
         let page = ui.page.read().clone();
+        let shown_inline = store.failed() && matches!(page, Page::Grid(_) | Page::Accounts);
         let content = match page {
             Page::Grid(filter) => GridPage { filter }.into_element(),
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
@@ -44,7 +45,7 @@ impl Component for Shell {
         if *ui.sidebar.read() {
             row = row.child(Sidebar).child(rect().width(Size::px(1.)).height(Size::fill()).background(t.separator));
         }
-        let error = store.model.read().error.clone();
+        let error = store.model.read().error.clone().filter(|_| !shown_inline);
         let mut column = rect().width(Size::flex(1.)).height(Size::fill()).background(t.surface).child(Toolbar);
         if let Some(text) = error {
             column = column.child(notice(&t, store, text));

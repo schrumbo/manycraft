@@ -17,6 +17,16 @@ use crate::view::kit::use_theme;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{font, frame, space};
 
+thread_local! {
+    static MESSAGE: std::cell::Cell<Option<AccessibilityId>> = const { std::cell::Cell::new(None) };
+}
+
+/// True while the message field has the keyboard.
+pub fn messaging() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    MESSAGE.with(|m| m.get() == Some(focused))
+}
+
 /// The selection bar; empty while fewer than two games are picked.
 #[derive(PartialEq)]
 pub struct SelectionBar {}
@@ -32,6 +42,11 @@ impl Component for SelectionBar {
         let store = use_store();
         let mut ui = store.ui;
         let text = use_state(String::new);
+        let field = use_hook(|| {
+            let id = AccessibilityId::new_unique();
+            MESSAGE.with(|m| m.set(Some(id)));
+            id
+        });
         let mut sent = use_state(|| None::<usize>);
         let keys: Vec<String> = ui.selection.read().iter().cloned().collect();
         let open = *ui.message.read();
@@ -60,6 +75,7 @@ impl Component for SelectionBar {
             row = row
                 .child(
                     Field::new("selection.message", text)
+                        .a11y(field)
                         .placeholder(hint)
                         .glyph(Icon::Message)
                         .width(Size::px(frame::SEARCH * 1.5))

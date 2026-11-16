@@ -16,6 +16,8 @@ pub enum Look {
     Secondary,
     Plain,
     Danger,
+    /// Plain, in the danger color: a destructive action in a list of plain ones.
+    PlainDanger,
 }
 
 /// A button with a label, an optional icon in front and an optional tooltip; disabled with the reason as its tooltip.
@@ -57,8 +59,10 @@ impl Button {
         self.look(Look::Plain)
     }
 
+    /// The danger look; a plain button stays plain and only takes the danger color.
     pub fn danger(self) -> Self {
-        self.look(Look::Danger)
+        let look = if self.look == Look::Plain { Look::PlainDanger } else { Look::Danger };
+        self.look(look)
     }
 
     pub fn glyph(mut self, glyph: Icon) -> Self {
@@ -91,13 +95,14 @@ impl Button {
 
 fn colors(t: &Theme, look: Look, enabled: bool) -> (Color, Color) {
     if !enabled {
-        return (if look == Look::Plain { Color::TRANSPARENT } else { t.control }, t.text3);
+        return (if matches!(look, Look::Plain | Look::PlainDanger) { Color::TRANSPARENT } else { t.control }, t.text3);
     }
     match look {
         Look::Primary => (t.accent, t.on_accent),
         Look::Secondary => (t.control, t.text1),
         Look::Plain => (Color::TRANSPARENT, t.accent_text),
         Look::Danger => (t.danger, t.on_danger),
+        Look::PlainDanger => (Color::TRANSPARENT, t.danger_text),
     }
 }
 
@@ -111,7 +116,7 @@ impl Component for Button {
         let enabled = self.disabled.is_none();
         let spot = use_spot(&self.id, "button", &self.label, enabled);
         let (fill, ink) = colors(&t, self.look, enabled);
-        let ink = if self.icon_only && enabled { t.text2 } else { ink };
+        let ink = if self.icon_only && enabled && self.look == Look::Plain { t.text2 } else { ink };
         let h = if self.tall { control::L } else { control::M };
         let wash = if !enabled {
             None
@@ -147,7 +152,7 @@ impl Component for Button {
         if self.icon_only {
             b = b.width(Size::px(h));
         } else {
-            b = b.padding((0., if self.look == Look::Plain { space::S } else { space::M }));
+            b = b.padding((0., if matches!(self.look, Look::Plain | Look::PlainDanger) { space::S } else { space::M }));
         }
         if enabled {
             b = b.on_mouse_down(move |_| pressed.set(true)).on_mouse_up(move |_| pressed.set_if_modified(false)).on_all_press(move |e: Event<PressEventData>| {

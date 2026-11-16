@@ -2,7 +2,7 @@
 //! through the [`Runtime`](crate::runner::Runtime), and only what needs Freya is done here.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,17 +13,19 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 use super::kit::{after, sheet, toast};
-use super::native;
+use super::signals::Signal;
 use super::stills::Stills;
 use super::tray::{Pick, Tray};
-use super::ui::{Filter, Page, Ui};
+use super::ui::{Filter, Page, Show, Ui};
+use super::{alert, native};
 use crate::app::effect::{Effect, Redraw};
 use crate::app::event::Event;
 use crate::app::model::{Model, Phase};
 use crate::app::reduce::reduce;
 use crate::core::i18n::{tr, trf};
-use crate::core::{drive, fit, game_window, settings};
+use crate::core::{awake, drive, fit, game_window, phone, settings};
 use crate::runner::{self, Pixels, Runtime, Update};
+use crate::ui::route::{self, Route};
 
 const COALESCE: Duration = Duration::from_millis(40);
 
@@ -56,6 +58,8 @@ pub struct Store {
     pub faces: State<HashMap<Uuid, ImageHandle>>,
     /// Counts chat changes, for the pages that show chat.
     pub chat: State<u64>,
+    /// Counts how often the connection came back, for pages that retry what failed offline.
+    pub back: State<u64>,
     pub ui: Ui,
     runtime: State<Option<Rc<RefCell<Runtime>>>>,
     side: State<Rc<RefCell<Side>>>,
@@ -67,30 +71,84 @@ struct Side {
     tray: Option<Tray>,
     picks: Option<async_channel::Receiver<Pick>>,
     watchers: HashMap<String, Vec<State<Option<ImageHandle>>>>,
-    explaining: bool,
+    explaining: Option<sheet::Sheet>,
+    outbox: Option<phone::Outbox>,
+    /// The games each shown notification was about, by tag.
+    notified: HashMap<String, Vec<String>>,
+    clicks: Option<(async_channel::Sender<String>, async_channel::Receiver<String>)>,
+    /// Whether the window is minimized or covered.
+    hidden: bool,
+    focused: bool,
+    badge: usize,
 }
 
 impl Store {
-    /// Starts the fleet and reads the saved data; fleet updates arrive in the window's task loop.
-    pub fn create(ui: Ui) -> (Self, Option<async_channel::Receiver<Update<Raw>>>) {
+    /// The store, before the fleet starts.
+    pub fn create(ui: Ui) -> Self {
         let (tray, picks) = Tray::new();
-        let side = Side { tray: Some(tray), picks: Some(picks), ..Side::default() };
-        let mut store = Self { model: State::create(Model::default()), previews: State::create(HashMap::new()), faces: State::create(HashMap::new()), chat: State::create(0), ui, runtime: State::create(None), side: State::create(Rc::new(RefCell::new(side))) };
+        let side = Side { tray: Some(tray), picks: Some(picks), clicks: Some(async_channel::unbounded()), ..Side::default() };
+        Self { model: State::create(Model::default()), previews: State::create(HashMap::new()), faces: State::create(HashMap::new()), chat: State::create(0), back: State::create(0), ui, runtime: State::create(None), side: State::create(Rc::new(RefCell::new(side))) }
+    }
+
+    /// Starts the fleet and reads the saved data; fleet updates arrive in the window's task loop.
+    pub fn start(self) {
+        std::thread::spawn(purge_trash);
+        if self.boot() {
+            self.reload(false);
+        }
+    }
+
+    fn boot(mut self) -> bool {
         let (out, updates) = async_channel::unbounded::<Update<Raw>>();
-        store.side().borrow_mut().stills = Stills::start(out.clone());
+        self.side().borrow_mut().stills = Stills::start(out.clone());
         let visible: Arc<Mutex<HashSet<String>>> = Arc::default();
         match runner::backend(out, &visible) {
-            Ok(backend) => store.runtime.set(Some(Rc::new(RefCell::new(Runtime::new(backend, visible))))),
+            Ok(backend) => {
+                self.runtime.set(Some(Rc::new(RefCell::new(Runtime::new(backend, visible)))));
+                spawn_in_window(self.pump(updates));
+                if let Err(e) = settings::activate() {
+                    eprintln!("settings: {e:#}");
+                    self.dispatch(Event::Notice(runner::untouched(&e).unwrap_or_else(|| format!("{e:#}"))));
+                }
+                true
+            }
             Err(e) => {
-                store.model.write().error = Some(format!("{e:#}"));
-                return (store, None);
+                self.model.write().error = Some(format!("{e:#}"));
+                false
             }
         }
-        if let Err(e) = settings::activate() {
-            eprintln!("settings: {e:#}");
-            store.dispatch(Event::Notice(runner::untouched(&e).unwrap_or_else(|| format!("{e:#}"))));
+    }
+
+    /// Tries again what failed at the start: the fleet when it could not start, otherwise reading the saved data.
+    pub fn retry(mut self) {
+        if !self.failed() {
+            self.reload(true);
+            return;
         }
-        (store, Some(updates))
+        self.model.write().error = None;
+        if self.boot() {
+            self.reload(false);
+        }
+    }
+
+    /// Works out the preview rates again, after their setting changed.
+    pub fn replan(self) {
+        if !self.failed() {
+            let watch = self.model.peek().session.watch.clone();
+            self.dispatch(Event::Watch(watch));
+        }
+    }
+
+    /// Tells the core where the user looks, so previews refresh fast where it matters and pause where nobody sees them.
+    pub fn watch(self, change: impl FnOnce(&mut crate::app::session::Watch)) {
+        if self.failed() {
+            return;
+        }
+        let mut next = self.model.peek().session.watch.clone();
+        change(&mut next);
+        if self.model.peek().session.watch != next {
+            self.dispatch(Event::Watch(next));
+        }
     }
 
     /// Whether the fleet could not start, so nothing will ever load.
@@ -106,8 +164,22 @@ impl Store {
         self.side.peek().clone()
     }
 
-    /// Carries out clicks on the tray icon and requests to close the window, for as long as the window lives.
-    pub fn listen(self, closes: async_channel::Receiver<()>) {
+    /// Carries out clicks on the tray icon and on notifications, what the system tells the window and what happens to
+    /// it, for as long as the window lives. On macOS closing the window only hides it; Manycraft stays in the Dock.
+    pub fn listen(self, told: async_channel::Receiver<native::Told>, signals: async_channel::Receiver<Signal>) {
+        let clicks = self.side().borrow().clicks.as_ref().map(|(_, rx)| rx.clone());
+        if let Some(clicks) = clicks {
+            spawn(async move {
+                while let Ok(tag) = clicks.recv().await {
+                    self.clicked(&tag);
+                }
+            });
+        }
+        spawn(async move {
+            while let Ok(signal) = signals.recv().await {
+                self.signal(signal);
+            }
+        });
         if let Some(picks) = self.side().borrow_mut().picks.take() {
             spawn(async move {
                 while let Ok(pick) = picks.recv().await {
@@ -124,8 +196,15 @@ impl Store {
             });
         }
         spawn(async move {
-            while closes.recv().await.is_ok() {
-                self.dispatch(Event::CloseWindow);
+            while let Ok(told) = told.recv().await {
+                match told {
+                    native::Told::Close if cfg!(target_os = "macos") => native::hide(None),
+                    native::Told::Close => self.dispatch(Event::CloseWindow),
+                    native::Told::Activated if self.model.peek().playing.is_some() => self.dispatch(Event::ShowGrid),
+                    native::Told::Activated => {}
+                    native::Told::Reopen => self.dispatch(Event::ShowGrid),
+                    native::Told::Menu(id) => super::menubar::chosen(self, &id),
+                }
             }
         });
     }
@@ -182,12 +261,17 @@ impl Store {
 
     fn dispatch_with(mut self, event: Event, mut images: Vec<Option<Raw>>) {
         let env = runner::env();
-        let reports = matches!(event, Event::Reports(_));
+        let quiet = matches!(event, Event::Reports(_) | Event::Watch(_) | Event::Visible(_) | Event::ShotsDue { .. } | Event::UsageDue | Event::Usage(_));
         let mut effects = Vec::new();
+        let mut changed = false;
         self.model.into_writable().write_if(|mut model| {
             effects = reduce(&mut model, &env, event);
-            !reports || effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All)))
+            changed = !quiet || effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All)));
+            changed
         });
+        if changed {
+            self.follow_model();
+        }
         if effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::Chat))) {
             *self.chat.write() += 1;
         }
@@ -259,6 +343,9 @@ impl Store {
                     (model.session.pids.get(&key).copied(), before.as_ref().and_then(|b| model.session.pids.get(b).copied()))
                 };
                 let Some(rt) = runtime else { return };
+                if let Some(pid) = pid {
+                    crate::ui::native::allow_foreground(pid);
+                }
                 let window = if before.is_none() { native::place() } else { None };
                 let shown = rt.borrow_mut().show(&key, pid, before.as_deref(), before_pid, skipped, window);
                 if shown {
@@ -357,7 +444,10 @@ impl Store {
             }
             Effect::ToTray { explain: false } => self.stow(),
             Effect::ToTray { explain: true } => self.explain_tray(),
-            Effect::Notify { title, body, .. } => drive::note(format!("notify {title} | {body}")),
+            Effect::Notify { tag, title, body, keys } => self.notify(tag, &title, &body, keys),
+            Effect::Phone(text) => self.send_phone(text),
+            Effect::CheckFit { count, memory_mb } => self.check_fit(count, memory_mb),
+            Effect::NetworkBack => *self.back.write() += 1,
             Effect::RememberAccount { instance, account } => {
                 std::thread::spawn(move || {
                     if let Err(e) = crate::ui::remote::remember_account(&instance, account) {
@@ -367,6 +457,160 @@ impl Store {
             }
             other => drive::note(format!("freya: not carried out yet: {}", effect_name(&other))),
         }
+    }
+
+    /// Keeps the computer awake while games run and shows on the app icon how many accounts need attention.
+    fn follow_model(self) {
+        let (busy, attention) = {
+            let m = self.model.peek();
+            (m.games.values().any(|g| g.phase.is_active()), m.attention_count(None))
+        };
+        awake::set(awake::wanted(settings::active().prevent_sleep, busy));
+        let side = self.side();
+        let mut side = side.borrow_mut();
+        if side.badge != attention {
+            side.badge = attention;
+            if !drive::fenced("badge", attention) {
+                crate::ui::native::set_badge(attention);
+            }
+        }
+    }
+
+    fn notify(self, tag: String, title: &str, body: &str, keys: Vec<String>) {
+        let side = self.side();
+        let mut side = side.borrow_mut();
+        if side.focused && !side.hidden && !side.tray.as_ref().is_some_and(Tray::shown) && self.model.peek().playing.is_none() {
+            return;
+        }
+        let Some((clicks, _)) = side.clicks.clone() else { return };
+        alert::show(&tag, title, body, &clicks);
+        side.notified.insert(tag, keys);
+    }
+
+    /// Opens what the notification `tag` was about: its one tile, the attention tiles of its batch, or the whispers.
+    fn clicked(self, tag: &str) {
+        let keys = self.side().borrow().notified.get(tag).cloned().unwrap_or_default();
+        let Some(route) = route::of_notification(tag, &keys) else { return };
+        self.dispatch(Event::ShowGrid);
+        self.front();
+        let mut ui = self.ui;
+        ui.sheet.set_if_modified(None);
+        ui.palette.set_if_modified(false);
+        ui.menu.set_if_modified(None);
+        ui.search.set_if_modified(String::new());
+        let batch_of = |key: &str| self.model.peek().games.get(key).map(|g| g.batch_id.clone());
+        match route {
+            Route::Tile { key, .. } if batch_of(&key).is_some() => {
+                ui.page.set(Page::Grid(Filter::Batch(batch_of(&key).unwrap_or_default())));
+                ui.show.set_if_modified(Show::All);
+                ui.selection.set(BTreeSet::from([key.clone()]));
+                ui.cursor.set(Some(key));
+            }
+            Route::Tile { batch, .. } | Route::Attention(batch) => {
+                let needs: BTreeSet<_> = self.model.peek().games.values().filter(|g| g.batch_id == batch && g.phase.needs_attention()).filter_map(|g| g.phase.need()).collect();
+                match (needs.len(), needs.first()) {
+                    (1, Some(need)) => {
+                        ui.page.set(Page::Grid(Filter::Batch(batch)));
+                        ui.show.set(Show::Need(*need));
+                    }
+                    (0, _) => {
+                        ui.page.set(Page::Grid(Filter::Batch(batch)));
+                        ui.show.set_if_modified(Show::All);
+                    }
+                    _ => {
+                        ui.page.set(Page::Grid(Filter::Attention));
+                        ui.show.set_if_modified(Show::All);
+                    }
+                }
+            }
+            Route::Whispers => {
+                let mut chat = self.ui.chat;
+                chat.batch.set_if_modified(None);
+                chat.whispers.set(true);
+                ui.page.set(Page::Chat);
+            }
+            Route::Instance(id) => ui.page.set(Page::Instance(id)),
+            Route::Settings(_) => ui.page.set(Page::Settings),
+        }
+    }
+
+    /// Brings the manager window to the front, out of the notification area when it waits there.
+    fn front(self) {
+        self.unstow_quietly();
+        native::unstow();
+    }
+
+    fn signal(self, signal: Signal) {
+        match signal {
+            Signal::Hidden(hidden) => self.side().borrow_mut().hidden = hidden,
+            Signal::Focused(focused) => {
+                {
+                    let side = self.side();
+                    let mut side = side.borrow_mut();
+                    side.focused = focused;
+                    if focused {
+                        side.hidden = false;
+                    }
+                }
+                if focused {
+                    self.unstow_quietly();
+                    if cfg!(target_os = "windows") && self.model.peek().playing.is_some() {
+                        self.dispatch(Event::ShowGrid);
+                    }
+                }
+            }
+        }
+        self.set_away();
+    }
+
+    fn set_away(self) {
+        let away = {
+            let side = self.side();
+            let side = side.borrow();
+            side.hidden || side.tray.as_ref().is_some_and(Tray::shown)
+        };
+        self.watch(|w| w.away = away);
+    }
+
+    fn send_phone(self, text: String) {
+        if self.failed() {
+            return;
+        }
+        drive::note(format!("phone {}", text.replace('\n', " | ")));
+        let side = self.side();
+        if side.borrow().outbox.is_none() {
+            let (tx, rx) = async_channel::unbounded::<phone::Outcome>();
+            side.borrow_mut().outbox = Some(phone::Outbox::start(move |outcome| {
+                let _ = tx.send_blocking(outcome);
+            }));
+            spawn_in_window(async move {
+                while let Ok(outcome) = rx.recv().await {
+                    self.dispatch(Event::PhoneOutcome(match outcome {
+                        phone::Outcome::Arrived => None,
+                        phone::Outcome::Lost(why) => Some(why),
+                    }));
+                }
+            });
+        }
+        let refused = side.borrow().outbox.as_ref().map(|o| o.send(text));
+        if let Some(Err(text)) = refused {
+            side.borrow_mut().outbox = None;
+            self.send_phone(text);
+        }
+    }
+
+    fn check_fit(self, count: u32, memory_mb: u32) {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(fit::fit(count, memory_mb));
+        });
+        spawn_in_window(async move {
+            if let Ok(Some(fit)) = rx.recv().await
+                && !fit.fits()
+            {
+                self.dispatch(Event::Error(crate::ui::model::fit_line(count, memory_mb, &fit)));
+            }
+        });
     }
 
     fn spread(&self, rt: &Rc<RefCell<Runtime>>) {
@@ -415,6 +659,7 @@ impl Store {
     fn stow(self) {
         let tray = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
         if tray {
+            self.set_away();
             native::stow();
         } else {
             native::hide(None);
@@ -422,18 +667,28 @@ impl Store {
     }
 
     fn unstow(self) {
+        if self.unstow_quietly() {
+            native::unstow();
+        }
+    }
+
+    /// Takes the icon out of the notification area, for a window that comes back; returns whether it was there.
+    fn unstow_quietly(self) -> bool {
         let side = self.side();
         let mut side = side.borrow_mut();
-        let Some(tray) = side.tray.as_mut().filter(|t| t.shown()) else { return };
+        let Some(tray) = side.tray.as_mut().filter(|t| t.shown()) else { return false };
         tray.hide();
+        side.hidden = false;
         drop(side);
-        native::unstow();
+        self.set_away();
+        true
     }
 
     fn explain_tray(self) {
         let up = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
         if !up || self.ui.sheet.peek().is_some() {
-            if std::mem::take(&mut self.side().borrow_mut().explaining) {
+            let card = self.side().borrow_mut().explaining.take();
+            if card.is_some() && *self.ui.sheet.peek() == card {
                 sheet::close(self.ui);
             }
             self.stow();
@@ -441,12 +696,13 @@ impl Store {
         }
         let text = if cfg!(target_os = "windows") { tr("Solange Spiele laufen, findest du Manycraft im Infobereich der Taskleiste.") } else { tr("Solange Spiele laufen, findest du Manycraft im Infobereich.") };
         let ok = sheet::Primary { label: tr("Verstanden"), disabled: None, danger: false, run: EventHandler::new(move |_| {
-            self.side().borrow_mut().explaining = false;
+            self.side().borrow_mut().explaining = None;
             sheet::close(self.ui);
             self.dispatch(Event::TrayExplained);
         }) };
-        self.side().borrow_mut().explaining = true;
-        sheet::open(self.ui, sheet::Card::new("tray", tr("Manycraft läuft weiter")).message(text).primary(ok).inform().width(super::theme::frame::SHEET * 0.8));
+        let card = sheet::Card::new("tray", tr("Manycraft läuft weiter")).message(text).primary(ok).inform().width(super::theme::frame::SHEET * 0.8).into_element();
+        self.side().borrow_mut().explaining = Some(sheet::Sheet(card.clone()));
+        sheet::open(self.ui, card);
     }
 
     fn ask_quit(self, running: usize) {
@@ -477,6 +733,7 @@ impl Store {
 
     /// Ends or leaves the games as the user chose, at the end of the run.
     pub fn close(self) {
+        awake::set(false);
         if let Some(rt) = self.runtime() {
             let rt = rt.borrow();
             match rt.close() {
@@ -513,6 +770,23 @@ pub fn use_preview(key: &str) -> Option<ImageHandle> {
         }
     });
     frame.read().clone()
+}
+
+/// Empties the bins of instances and mods of what lies there longer than they keep it, unless another Manycraft runs.
+fn purge_trash() {
+    use crate::core::{bin, content, instance, trash};
+    if !crate::core::updater::install::running_alone() {
+        return;
+    }
+    if let Err(e) = instance::purge_stale(bin::KEPT) {
+        eprintln!("trash: {e:#}");
+    }
+    if let Err(e) = content::purge_stale(bin::KEPT) {
+        eprintln!("mod trash: {e:#}");
+    }
+    if let Err(e) = trash::purge_stale(&instance::instances_dir(), bin::KEPT) {
+        eprintln!("trash: {e:#}");
+    }
 }
 
 fn effect_name(effect: &Effect) -> String {

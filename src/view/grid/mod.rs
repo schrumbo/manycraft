@@ -23,7 +23,7 @@ use self::tile::{History, Tile};
 use super::commands::{self, Command};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
-use super::kit::text::{body, heading, line, secondary};
+use super::kit::text::{body, heading, line, para, secondary};
 use super::kit::{Bounds, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{control, font, iconsize, space};
@@ -126,11 +126,14 @@ pub fn shown_keys(store: Store) -> Vec<String> {
 /// selected and Escape closes an open history. True when the key was the grid's.
 pub fn key(store: Store, e: &KeyboardEventData) -> bool {
     let mut ui = store.ui;
-    if *ui.message.peek() && e.key == Key::Named(NamedKey::Escape) && super::kit::field::typing() {
+    if *ui.message.peek() && e.key == Key::Named(NamedKey::Escape) && !ui.layered() && bar::messaging() {
         ui.message.set(false);
         return true;
     }
-    if !matches!(*ui.page.peek(), Page::Grid(_)) || ui.layered() || super::kit::field::typing() || super::kit::arrows() {
+    if !matches!(*ui.page.peek(), Page::Grid(_)) || ui.layered() || super::kit::field::typing() {
+        return false;
+    }
+    if super::kit::arrows() && matches!(e.key, Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Home | NamedKey::End)) {
         return false;
     }
     let mods = e.modifiers;
@@ -287,6 +290,17 @@ impl Component for GridPage {
             }
             commands::prune(store_c, set);
         });
+        let focused: Vec<String> = {
+            let picked = ui.selection.read();
+            cursor.iter().chain(keys[first.min(last)..last].iter().filter(|k| picked.contains(*k) && cursor.as_ref() != Some(*k))).take(4).cloned().collect()
+        };
+        let width = ((if view == View::Tiles { grid.tile_w } else { table::PREVIEW_W }) * super::kit::scale()).round() as u32;
+        use_side_effect_with_deps(&(focused, width), move |(focused, width)| {
+            store_c.watch(|w| {
+                w.focused = focused.clone();
+                w.width = *width;
+            });
+        });
 
         let mut page = rect()
             .width(Size::fill())
@@ -305,8 +319,17 @@ impl Component for GridPage {
             });
         let column = rect().width(Size::fill()).height(Size::fill()).content(Content::flex()).child(Strips { filter: self.filter.clone() });
 
-        if !m.loaded && store.failed() {
-            let col = rect().center().width(Size::fill()).height(Size::fill()).spacing(space::M).child(icon(&t, Icon::Alert, iconsize::L * 2., t.text3)).child(heading(&t, tr("Manycraft konnte nicht starten"))).child(secondary(&t, tr("Beim Lesen deiner Daten ging etwas schief. Starte Manycraft neu.")));
+        if store.failed() {
+            let reason = m.error.clone().unwrap_or_else(|| tr("Starte Manycraft neu."));
+            let col = rect()
+                .center()
+                .width(Size::fill())
+                .height(Size::fill())
+                .spacing(space::M)
+                .child(icon(&t, Icon::Alert, iconsize::L * 2., t.text3))
+                .child(heading(&t, tr("Manycraft konnte nicht starten")))
+                .child(rect().max_width(Size::px(456.)).child(para(&t, reason, font::BODY, t.text2).text_align(TextAlign::Center)))
+                .child(Button::new("grid.failed.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).primary().tall().on_press(move |_| store.retry()));
             return column.child(page.child(col)).into_element();
         }
         if !m.loaded {

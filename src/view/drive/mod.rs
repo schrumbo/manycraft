@@ -20,6 +20,7 @@ use super::commands::Command;
 use super::kit::{after, scale};
 use super::native;
 use super::store::Store;
+use crate::app::event::Event;
 use crate::core::drive::{self, on};
 use crate::core::drive_link::{self, Call};
 
@@ -108,6 +109,10 @@ async fn run(store: Store, b: &Value) -> Result<Value, String> {
         "ui" => Ok(json!({})),
         "quit" => {
             Platform::get().exit();
+            Ok(json!({}))
+        }
+        "close" => {
+            store.dispatch(Event::CloseWindow);
             Ok(json!({}))
         }
         "windows" => Ok(json!({ "windows": [window()] })),
