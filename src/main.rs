@@ -3,13 +3,17 @@
 mod app;
 mod core;
 mod runner;
+#[cfg_attr(feature = "freya", allow(dead_code))]
 mod ui;
+#[cfg(feature = "freya")]
+mod view;
 
 use std::borrow::Cow;
 
 use gpui_kit::{App, AssetSource, SharedString};
 use rust_embed::RustEmbed;
 
+#[cfg_attr(feature = "freya", allow(dead_code))]
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[exclude = "i18n/*"]
@@ -55,8 +59,16 @@ fn main() {
         Err(e) => eprintln!("manager lock: {e:#}"),
     }
     core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
+    #[cfg(feature = "freya")]
+    view::run(core::shortcut::Play::parse(&args));
+    #[cfg(not(feature = "freya"))]
+    gpui(&args);
+}
+
+#[cfg(not(feature = "freya"))]
+fn gpui(args: &[String]) {
     ui::theme::start_with(ui::theme::Choice::parse(&std::env::var("MANYCRAFT_THEME").unwrap_or_default()));
-    let play = core::shortcut::Play::parse(&args);
+    let play = core::shortcut::Play::parse(args);
     let app = gpui_kit::application().with_assets(Assets);
     app.on_reopen(ui::state::show_grid);
     app.run(|cx: &mut App| {
