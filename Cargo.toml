@@ -12,7 +12,7 @@ ignored = ["md-5"]
 
 [features]
 freya-proto = ["dep:freya", "dep:freya-winit", "dep:notify"]
-freya = ["dep:freya", "dep:freya-winit", "dep:freya-core"]
+freya = ["dep:freya", "dep:freya-winit", "dep:freya-core", "dep:rfd"]
 
 [[bin]]
 name = "manycraft"
@@ -40,6 +40,7 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 md-5 = "0.10"
 raw-window-handle = "0.6"
+rfd = { version = "0.17", optional = true }
 rayon = "1"
 rust-embed = "8"
 schemars = "1"

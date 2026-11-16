@@ -1577,5 +1577,16 @@
   "Erst eine Proxy-Adresse eintragen": "Enter a proxy address first",
   "Prüfen": "Check",
   "Wird hinzugefügt …": "Adding …",
-  "Ohne Anmeldung, nur mit Namen.": "No sign-in, just a name."
+  "Ohne Anmeldung, nur mit Namen.": "No sign-in, just a name.",
+  "PNG-Bild": "PNG image",
+  "Das Skin-Profil lässt sich gerade nicht laden. Versuch es gleich noch einmal.": "The skin profile cannot be loaded right now. Try again in a moment.",
+  "Die Datei lässt sich gerade nicht lesen. Versuch es noch einmal.": "The file cannot be read right now. Try again.",
+  "Die Änderung lässt sich gerade nicht senden. Versuch es noch einmal.": "The change cannot be sent right now. Try again.",
+  "Skin und Umhang geändert.": "Skin and cape changed.",
+  "Skin geändert.": "Skin changed.",
+  "Umhang geändert.": "Cape changed.",
+  "Wird übernommen …": "Applying …",
+  "Der Dateidialog ist offen.": "The file dialog is open.",
+  "Das Profil wird noch geladen.": "The profile is still loading.",
+  "Ändere zuerst Skin, Modell oder Umhang.": "Change the skin, model or cape first."
 }
