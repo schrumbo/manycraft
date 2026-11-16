@@ -1560,5 +1560,22 @@
   "Tabelle": "Table",
   "Kacheln": "Tiles",
   "Manycraft konnte nicht starten": "Manycraft could not start",
-  "Beim Lesen deiner Daten ging etwas schief. Starte Manycraft neu.": "Something went wrong reading your data. Restart Manycraft."
+  "Beim Lesen deiner Daten ging etwas schief. Starte Manycraft neu.": "Something went wrong reading your data. Restart Manycraft.",
+  "Normal": "Normal",
+  "Flüssig": "Smooth",
+  "Vorschau-Rate": "Preview rate",
+  "Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger.": "How often tiles refresh. Smooth costs the games more processing time, Economical less.",
+  "%lld von %lld laufen · %@": "%lld of %lld running · %@",
+  "Tastenkürzel": "Keyboard shortcuts",
+  "Fenster": "Window",
+  "Auswahl im Raster": "Selection in the grid",
+  "Spiele wechseln": "Switching games",
+  "Manycraft hat ein langes, zufälliges Thema gewählt. Wer es kennt, liest mit.": "Manycraft picked a long, random topic. Anyone who knows it can read along.",
+  "Handy verbinden": "Connect your phone",
+  "Mit der Handy-Kamera scannen und das Thema in ntfy abonnieren.": "Scan with your phone's camera and subscribe to the topic in ntfy.",
+  "Automatisch neu verbinden…": "Reconnect automatically…",
+  "Aufs Handy…": "To your phone…",
+  "Meldungen aufs Handy schicken, wenn ein Account dich braucht": "Send alerts to your phone when an account needs you",
+  "Einstellungen: Aufs Handy": "Settings: To your phone",
+  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically"
 }

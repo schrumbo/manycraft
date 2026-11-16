@@ -53,6 +53,24 @@ pub struct Frame {
     pub live: bool,
 }
 
+/// Where the user looks, as the views report it: the tile under the pointer, the selected or focused ones, how wide tiles are and whether the manager is on screen at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Watch {
+    pub hovered: Option<String>,
+    pub focused: Vec<String>,
+    /// Width of a tile in device pixels.
+    pub width: u32,
+    /// The manager window is minimized, in the notification area or behind a played game.
+    pub away: bool,
+}
+
+/// How often a game captures its preview and how wide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shot {
+    pub interval_ms: u32,
+    pub width: u32,
+}
+
 /// The state of the running session that no view shows directly.
 #[derive(Default)]
 pub struct Session {
@@ -111,4 +129,15 @@ pub struct Session {
     pub waiting_plays: Vec<(String, Option<String>)>,
     /// Batch starts asked for before a load knew the batch, by batch and when they were asked.
     pub waiting_starts: Vec<(String, Instant)>,
+    pub watch: Watch,
+    /// The memory each running game held at the last reading, in MB, by key.
+    pub usage: HashMap<String, u64>,
+    /// Whether a timer to read the memory of the running games waits.
+    pub usage_timer: bool,
+    /// The preview rate each connected game should get, as last worked out.
+    pub planned: HashMap<String, Shot>,
+    /// The preview rate each game was last told.
+    pub shots: HashMap<String, Shot>,
+    /// Bumped by every change of `planned`, so only the last one within the wait is sent.
+    pub shots_seq: u64,
 }

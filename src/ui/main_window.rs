@@ -7,7 +7,7 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PickColor, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, NewInstanceToPlay, StartMany, StartSelected, StopMany, StopSelected,
-    ToggleFullscreen, ToggleSidebar, Quit, EditShownBatch, EditBatch, StartBatch, StopBatch,
+    ToggleFullscreen, ToggleSidebar, Quit, EditShownBatch, EditBatch, StartBatch, StopBatch, ShowShortcuts,
 };
 use super::drive::Mark;
 use super::grid::Grid;
@@ -67,6 +67,7 @@ pub struct MainWindow {
     pub(super) query: String,
     pub(super) grid: Grid,
     pub(super) palette: Option<super::palette::Palette>,
+    pub(super) shortcuts: bool,
     fit: Option<(FitScope, Option<String>)>,
     saved: Saved,
     restoring: Option<Page>,
@@ -141,6 +142,10 @@ impl MainWindow {
                     cx.notify();
                 }
             }),
+            cx.observe_window_visibility(window, |_, visibility, _, cx| {
+                let away = !visibility.is_visible();
+                cx.defer(move |cx| super::state::watch(|w| w.away = away, cx));
+            }),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() && model::get(cx).read(cx).playing.is_some() {
                     cx.defer(super::state::show_grid);
@@ -169,6 +174,7 @@ impl MainWindow {
             writing: None,
             filter: Filter::All,
             overlay: false,
+            shortcuts: false,
             narrow_now: false,
             seen_offer: None,
             search,
@@ -326,7 +332,8 @@ impl MainWindow {
         }
         let mut per: Vec<(u32, u32)> = m.batches.iter().filter_map(|b| {
             let n = scope.iter().filter(|i| i.batch_id == b.id).count();
-            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory_mb))))
+            let each = m.measured.get(&b.id).copied().unwrap_or_else(|| b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory_mb)));
+            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), each))
         }).collect();
         per.sort_unstable();
         let key: FitScope = (batch.map(str::to_owned), per.clone());
@@ -511,6 +518,7 @@ impl Render for MainWindow {
         };
         let show_sidebar = self.sidebar && !narrow;
         let palette = super::palette::render(self, window, cx);
+        let shortcuts = super::shortcuts::render(self, window, cx);
         let dropping = cx.has_active_drag().then(|| drop_hint(&t));
         let root = div()
             .id("main")
@@ -518,7 +526,11 @@ impl Render for MainWindow {
             .track_focus(&self.focus)
             .capture_any_mouse_down(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_any_mouse_up(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
-            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if this.shortcuts && e.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    return super::shortcuts::close(this, window, cx);
+                }
                 if !this.overlay || this.palette.is_some() {
                     return;
                 }
@@ -560,6 +572,7 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| super::shortcuts::toggle(this, window, cx)))
             .on_action(cx.listener(|this, a: &PickColor, window, cx| super::palette::colors(this, &a.0, window, cx)))
             .on_drag_move::<ExternalPaths>(|_, window, cx| {
                 if window.last_input_was_keyboard() {
@@ -662,7 +675,8 @@ impl Render for MainWindow {
             })
             .when(narrow && self.overlay, |d| d.child(super::toolbar::toggle(self, &t, cx)))
             .children(dropping)
-            .children(palette);
+            .children(palette)
+            .children(shortcuts);
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, window.is_fullscreen(), &t)
     }
@@ -693,6 +707,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
+        KeyBinding::new(k("/"), ShowShortcuts, Some("MainWindow")),
         KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
         KeyBinding::new(k("shift-n"), NewInstance, Some("MainWindow")),
         KeyBinding::new(k("e"), EditShownBatch, Some("MainWindow")),
@@ -893,6 +908,23 @@ pub fn select_batch(batch: &str, cx: &mut App) {
                 this.filter = Filter::Attention;
                 this.grid.reset_scroll();
                 this.go(Page::Grid(Some(batch)), window, cx);
+            });
+        }
+    });
+}
+
+/// Shows the grid of `batch` with every tile and selects the tile `key`, scrolled into view.
+pub fn reveal_tile(batch: &str, key: String, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let batch = batch.to_owned();
+    let _ = h.update(cx, |view, window, cx| {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
+            view.update(cx, |this, cx| {
+                this.filter = Filter::All;
+                this.go(Page::Grid(Some(batch)), window, cx);
+                this.grid.reveal(key);
             });
         }
     });

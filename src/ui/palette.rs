@@ -8,13 +8,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectMany, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway, DeleteBatch,
-    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut, Stop, StopCurrent,
+    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectMany, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway, DeleteBatch, OpenSettingsAt,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut, Stop, StopCurrent, ShowShortcuts,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
 use super::model::{self, Phase};
 use super::motion::Soft;
+use super::route::Section;
 use super::theme::{Theme, font, iconsize, palette, radius, space, tint};
 use super::widgets::{TakeFocus, icon};
 
@@ -148,6 +149,7 @@ pub fn colors(this: &mut MainWindow, id: &str, window: &mut Window, cx: &mut Con
 
 fn open(this: &mut MainWindow, entries: Vec<Entry>, placeholder: String, nested: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
     this.overlay = false;
+    this.shortcuts = false;
     let entries = Rc::new(entries);
     let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
     let me = cx.entity().downgrade();
@@ -443,6 +445,9 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
         ("maximize", tr("Vollbild ein- oder ausschalten"), Box::new(ToggleFullscreen), true),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
+        ("smartphone", tr("Einstellungen: Aufs Handy"), Box::new(OpenSettingsAt(Section::Phone)), true),
+        ("refresh-cw", tr("Einstellungen: Automatisch neu verbinden"), Box::new(OpenSettingsAt(Section::Reconnect)), true),
+        ("keyboard", tr("Tastenkürzel"), Box::new(ShowShortcuts), true),
         ("trash", tr("Papierkorb öffnen"), Box::new(super::actions::OpenTrash), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
         ("x", tr("Laden abbrechen"), Box::new(CancelUpdate), super::updates::cancellable(&m.updates)),

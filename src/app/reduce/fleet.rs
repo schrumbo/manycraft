@@ -141,7 +141,7 @@ pub(super) fn memory_waiting(m: &Model) -> bool {
 }
 
 fn cap_of(m: &Model, caps: &mut HashMap<String, u64>, owner: &str) -> u64 {
-    *caps.entry(owner.to_owned()).or_insert_with(|| m.target(owner).map_or(0, |t| u64::from(t.memory_mb())))
+    *caps.entry(owner.to_owned()).or_insert_with(|| m.measured.get(owner).map(|mb| u64::from(*mb)).or_else(|| m.target(owner).map(|t| u64::from(t.memory_mb()))).unwrap_or(0))
 }
 
 /// Starts as many waiting games, first in line first, as fit into `memory` beside a reserve and the games still on their way; all when the machine does not tell.

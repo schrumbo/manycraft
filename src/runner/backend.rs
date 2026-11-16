@@ -13,8 +13,9 @@ use crate::core::fleet::{self, Fleet, Target};
 use crate::core::ipc::{self, Event, FromMod, ToMod};
 use crate::core::place::Rect;
 use crate::core::proxy::{self, Fault};
-use crate::core::{adopt, install, net, online};
+use crate::core::{adopt, drive, install, net, online};
 
+const PRESENT_EVERY: Duration = Duration::from_millis(100);
 const EXIT_POLL: Duration = Duration::from_millis(500);
 const STAGGER_STEP: Duration = Duration::from_millis(100);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
@@ -120,6 +121,12 @@ impl<P: Pixels> Real<P> {
                 if let Event::Message { instance, message: FromMod::State { .. } } = &event {
                     loading.loaded(instance);
                 }
+                if let Event::Message { instance, message: FromMod::Chat { text, .. } } = &event
+                    && drive::on()
+                {
+                    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                    drive::note(format!("chat {at} {instance} {text}"));
+                }
                 if forward.send_blocking(Update::Ipc(event)).is_err() {
                     return;
                 }
@@ -130,7 +137,10 @@ impl<P: Pixels> Real<P> {
         std::thread::Builder::new().name("previews".into()).spawn(move || {
             let mut reader = ipc::PreviewReader::default();
             let mut changes = ipc::PreviewChanges::default();
+            let mut presented = Instant::now();
             while let Ok(first) = wanted.recv() {
+                std::thread::sleep(PRESENT_EVERY.saturating_sub(presented.elapsed()));
+                presented = Instant::now();
                 let mut batch: HashMap<String, PathBuf> = HashMap::new();
                 for job in std::iter::once(first).chain(wanted.try_iter()) {
                     match job {

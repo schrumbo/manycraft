@@ -5,6 +5,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 pub use crate::core::scale::motion::{FAST, MEDIUM, SLOW};
+/// How long a part a link opened stays outlined.
+pub const POINT_OUT: Duration = Duration::from_millis(1600);
 
 /// A duration for `with_animation`, which does not look at the reduced-motion setting by itself.
 pub fn timed(duration: Duration, cx: &App) -> Duration {

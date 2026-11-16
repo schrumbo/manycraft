@@ -298,6 +298,7 @@ impl Store {
                 toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(keys.clone())))));
             }
             Effect::ReadMemory => self.read_memory(),
+            Effect::ReadUsage(pids) => self.read_usage(pids),
             Effect::Retain => {
                 let frames: HashSet<String> = self.model.peek().frames.keys().cloned().collect();
                 let games: HashSet<String> = self.model.peek().games.keys().cloned().collect();
@@ -354,6 +355,20 @@ impl Store {
             (model.playing.clone(), model.session.pids.clone())
         };
         rt.borrow_mut().spread(playing.as_deref(), &pids);
+    }
+
+    fn read_usage(self, pids: Vec<(String, u32)>) {
+        let pretend = drive::on();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let readings: Vec<(String, u64)> = pids.into_iter().filter_map(|(key, pid)| fit::private_mb(pid).or_else(|| (pretend && pid == 0).then_some(1434)).map(|mb| (key, mb))).collect();
+            let _ = tx.send_blocking(readings);
+        });
+        spawn_in_window(async move {
+            if let Ok(readings) = rx.recv().await {
+                self.dispatch(Event::Usage(readings));
+            }
+        });
     }
 
     fn read_memory(self) {

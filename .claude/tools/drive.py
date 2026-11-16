@@ -379,7 +379,7 @@ def start(opts):
     inst = Instance(name)
     d = inst.dir
     os.utime(d)
-    for sub in ("home", "tmp", "bin", "shots"):
+    for sub in ("home", "tmp", "bin"):
         shutil.rmtree(d / sub, ignore_errors=True)
     for sub in ("home", "tmp", "bin", "shots"):
         (d / sub).mkdir(parents=True, exist_ok=True)

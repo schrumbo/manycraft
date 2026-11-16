@@ -1,5 +1,6 @@
 //! What the core asks the front end to do: talk to games and the fleet, write files, show windows and notifications, wait.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,10 @@ pub enum Effect {
     Stopped(Vec<String>),
     /// Reads the memory of the machine and answers with [`Event::Memory`].
     ReadMemory,
+    /// Reads the memory each of these games, by key and process, holds for itself.
+    ReadUsage(Vec<(String, u32)>),
+    /// Keeps the measured memory per game of each batch for the next run.
+    SaveMeasured(HashMap<String, u32>),
     ReadPreview { key: String, path: PathBuf },
     /// The game ended: its preview file is closed so the instance folder can be moved or deleted.
     ReleasePreview(String),
@@ -69,8 +74,8 @@ pub enum Effect {
     Settle { placed: Vec<String>, dropped: Vec<String> },
     /// Puts the window of a game that came up hidden in the manager's place.
     Place(String),
-    /// Shows an OS notification, unless the manager is in front with no game played.
-    Notify { tag: String, title: String, body: String },
+    /// Shows an OS notification about the games `keys`, unless the manager is in front with no game played.
+    Notify { tag: String, title: String, body: String, keys: Vec<String> },
     Phone(String),
     /// Follows the window of the game `key` to where the player put it, as the manager's place.
     Follow(Option<String>),
