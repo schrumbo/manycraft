@@ -21,17 +21,30 @@ pub struct Toast {
     pub id: u64,
     pub text: String,
     pub undo: Option<EventHandler<()>>,
+    /// Stays when newer toasts push out older ones, for undoing what is hard to get back.
+    pub keep: bool,
 }
 
 /// Shows `text`; with `undo`, Rückgängig and Strg+Z take the change back while the toast is up.
-pub fn show(mut ui: Ui, text: impl Into<String>, undo: Option<EventHandler<()>>) -> u64 {
+pub fn show(ui: Ui, text: impl Into<String>, undo: Option<EventHandler<()>>) -> u64 {
+    add(ui, text.into(), undo, false)
+}
+
+/// Shows `text` with an `undo` that newer toasts never push out, for deletions and resets.
+pub fn show_kept(ui: Ui, text: impl Into<String>, undo: EventHandler<()>) -> u64 {
+    add(ui, text.into(), Some(undo), true)
+}
+
+fn add(mut ui: Ui, text: String, undo: Option<EventHandler<()>>, keep: bool) -> u64 {
     let id = ui.toasts.peek().iter().map(|t| t.id).max().unwrap_or(0) + 1;
     let wait = if undo.is_some() { UNDOABLE } else { PLAIN };
     {
         let mut toasts = ui.toasts.write();
-        toasts.push(Toast { id, text: text.into(), undo });
-        let extra = toasts.len().saturating_sub(frame::TOASTS);
-        toasts.drain(..extra);
+        toasts.push(Toast { id, text, undo, keep });
+        while toasts.len() > frame::TOASTS {
+            let Some(oldest) = toasts.iter().position(|t| !t.keep) else { break };
+            toasts.remove(oldest);
+        }
     }
     spawn_in_window(async move {
         after(wait).await;

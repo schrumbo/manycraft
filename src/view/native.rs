@@ -118,13 +118,15 @@ pub fn reveal(path: &std::path::Path) {
     if drive::fenced("reveal", path.display()) {
         return;
     }
-    let shown = if cfg!(target_os = "windows") {
-        std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn().map(drop)
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(path).spawn().map(drop)
-    } else {
-        ::open::that_detached(path.parent().unwrap_or(path))
+    #[cfg(target_os = "windows")]
+    let shown = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn().map(drop)
     };
+    #[cfg(target_os = "macos")]
+    let shown = std::process::Command::new("open").arg("-R").arg(path).spawn().map(drop);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let shown = ::open::that_detached(path.parent().unwrap_or(path));
     if let Err(e) = shown {
         eprintln!("reveal {}: {e}", path.display());
     }

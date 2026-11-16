@@ -21,14 +21,13 @@ use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::{caption, hairline, line, spacer};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::{Bounds, after, off_ui, use_theme};
+use crate::view::kit::{Bounds, after, off_ui, ring, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
 const PREVIEW_W: f32 = super::INSPECTOR - space::L * 2.;
 
-/// The worlds of an instance as the inspector lists them: how many, and when one was last played.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Worlds {
     count: usize,
@@ -36,15 +35,7 @@ struct Worlds {
 }
 
 fn played(ms: i64) -> Option<String> {
-    let at = chrono::DateTime::from_timestamp_millis(ms)?.with_timezone(&chrono::Local);
-    let today = chrono::Local::now().date_naive();
-    Some(if at.date_naive() == today {
-        tr("Heute")
-    } else if today.pred_opt() == Some(at.date_naive()) {
-        tr("Gestern")
-    } else {
-        at.format("%d.%m.%Y").to_string()
-    })
+    Some(crate::ui::instance_files::when(ms / 1000)).filter(|s| !s.is_empty())
 }
 
 fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
@@ -71,7 +62,6 @@ fn status_line(t: &Theme, color: Color, text: String) -> impl IntoElement {
     rect().horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(dot(color)).child(line(t, text, font::CALLOUT, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis))
 }
 
-/// Re-renders once a minute while a game of the page runs, so the time it runs stays right.
 fn use_minute(store: Store) {
     let mut tick = use_state(|| 0u32);
     let _ = tick.read();
@@ -124,8 +114,6 @@ fn play_menu(store: Store, f: &Facts) -> Vec<Item> {
     items
 }
 
-/// Play, with a chevron for another account and Stop: "Zeigen" while a game runs, "Spielen als …" when the next
-/// account is known.
 #[derive(PartialEq)]
 struct PlayControl {
     facts: Facts,
@@ -180,7 +168,6 @@ impl Component for PlayControl {
     }
 }
 
-/// Start a batch of this instance, or make a new one.
 #[derive(PartialEq)]
 struct BatchControl {
     id: String,
@@ -215,7 +202,6 @@ impl Component for BatchControl {
     }
 }
 
-/// "In 2 Batches: Farm, Mine" with each batch a link to its grid.
 fn batch_links(t: &Theme, batches: &[(String, String)]) -> Option<Element> {
     if batches.is_empty() {
         return None;
@@ -239,11 +225,15 @@ impl Component for Link {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
+        let a11y = use_a11y();
+        let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
         let spot = use_spot(&format!("instance.batch.link.{}", self.id), "link", &self.name, true);
         let mut page = store.ui.page;
         let to = self.to.clone();
-        rect()
+        let keys = self.to.clone();
+        let mut link = rect()
+            .a11y_id(a11y)
             .a11y_role(AccessibilityRole::Link)
             .a11y_focusable(true)
             .a11y_alt(self.name.clone())
@@ -255,7 +245,18 @@ impl Component for Link {
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
             .on_all_press(move |_| page.set(to.clone()))
-            .child(line(&t, self.name.clone(), font::CALLOUT, t.accent_text).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+            .on_key_down(move |e: Event<KeyboardEventData>| {
+                let go = matches!(&e.key, Key::Named(NamedKey::Enter)) || matches!(&e.key, Key::Character(c) if c == " ");
+                if a11y.is_focused() && go {
+                    e.stop_propagation();
+                    page.set(keys.clone());
+                }
+            })
+            .child(line(&t, self.name.clone(), font::CALLOUT, t.accent_text).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+        if let Some(border) = ring(&t, focus()) {
+            link = link.border(border);
+        }
+        link
     }
 }
 
@@ -280,7 +281,6 @@ fn loader_value(made: &Instance) -> String {
     }
 }
 
-/// Whether a newer version of a pinned Fabric or Quilt loader exists, asked once per instance and loader.
 fn use_loader_news(made: &Instance) -> Option<String> {
     let mut news = use_state(|| None::<(String, String)>);
     let key = format!("{}|{}|{}|{}", made.id, made.game_version, made.loader.name(), made.loader.version().unwrap_or_default());
@@ -300,7 +300,6 @@ fn use_loader_news(made: &Instance) -> Option<String> {
     news.read().as_ref().filter(|(k, _)| *k == key).map(|(_, v)| v.clone())
 }
 
-/// How many worlds the instance has and when one was last played, read again when its files change.
 fn use_worlds(store: Store, made: &Instance) -> Option<Worlds> {
     let mut found = use_state(|| None::<(String, Worlds)>);
     let changed = *store.ui.instance.changed.read();
@@ -322,10 +321,41 @@ fn use_worlds(store: Store, made: &Instance) -> Option<Worlds> {
     found.read().as_ref().filter(|(id, _)| *id == made.id).map(|(_, w)| *w)
 }
 
-/// Keeps the preview of the game the page would show coming, and only that one.
 fn use_preview(store: Store, key: Option<String>) {
     use_side_effect_with_deps(&key, move |key| store.set_visible(key.iter().cloned().collect::<HashSet<String>>()));
     use_drop(move || store.set_visible(HashSet::new()));
+}
+
+#[derive(PartialEq)]
+struct Preview {
+    facts: Facts,
+    busy: Option<f32>,
+}
+
+impl Component for Preview {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let mut hovered = use_state(|| false);
+        let spot = use_spot("instance.preview", "button", &tr("Zeigen"), self.facts.shown.is_some());
+        let pic = preview(&t, store, &self.facts, self.busy);
+        match self.facts.shown.clone() {
+            Some(key) => WithTip::new(
+                Some(tr("Zeigen")),
+                rect()
+                    .corner_radius(t.shape.tile)
+                    .cursor(CursorIcon::Pointer)
+                    .on_sized(spot)
+                    .on_pointer_enter(move |_| hovered.set(true))
+                    .on_pointer_leave(move |_| hovered.set_if_modified(false))
+                    .on_all_press(move |_| store.dispatch(AppEvent::Play(key.clone())))
+                    .child(pic)
+                    .child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(PREVIEW_W)).height(Size::px(PREVIEW_W * 9. / 16.)).corner_radius(t.shape.tile).background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })),
+            )
+            .into_element(),
+            None => rect().on_sized(spot).child(pic).into_element(),
+        }
+    }
 }
 
 fn preview(t: &Theme, store: Store, f: &Facts, busy: Option<f32>) -> Element {
@@ -342,17 +372,15 @@ fn preview(t: &Theme, store: Store, f: &Facts, busy: Option<f32>) -> Element {
     if let Some(done) = busy {
         pic = pic.child(rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(PREVIEW_W * done)).height(Size::px(frame::PROGRESS)).background(t.accent));
     }
-    match f.shown.clone() {
-        Some(key) => WithTip::new(Some(tr("Zeigen")), rect().cursor(CursorIcon::Pointer).on_all_press(move |_| store.dispatch(AppEvent::Play(key.clone()))).child(pic)).into_element(),
-        None => pic.into_element(),
-    }
+    pic.into_element()
 }
 
 fn image_el(handle: ImageHandle, w: f32, h: f32) -> impl IntoElement {
     image(handle).width(Size::px(w)).height(Size::px(h)).aspect_ratio(AspectRatio::Max).image_cover(ImageCover::Center)
 }
 
-fn notices(t: &Theme, store: Store, id: &str) -> Vec<Element> {
+/// The page's notices for instance `id`: why its last change was not saved, with a button that hides it.
+pub fn notices(t: &Theme, store: Store, id: &str) -> Vec<Element> {
     let nav = store.ui.instance;
     let mut out = Vec::new();
     if let Some(e) = nav.error.read().get(id).cloned() {
@@ -401,7 +429,7 @@ impl Component for Inspector {
         let busy = store.ui.instance.busy.read().get(&self.id).and_then(|b| b.progress);
 
         let mut col = rect().width(Size::fill()).padding(space::L).spacing(space::M);
-        col = col.child(preview(&t, store, &f, busy)).child(status_line(&t, color, text));
+        col = col.child(Preview { facts: f.clone(), busy }).child(status_line(&t, color, text));
         col = col.child(rect().horizontal().spacing(space::S).child(PlayControl { facts: f.clone() }).child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() }));
         if let Some(links) = batch_links(&t, &f.batches) {
             col = col.child(links);
@@ -449,7 +477,11 @@ impl Component for Inspector {
                 acts = acts.child(rect().height(Size::px(space::S)));
             }
             let run = a.run.clone();
-            acts = acts.child(Button::new(format!("instance.{}", a.key), a.label).glyph(a.glyph).plain().disabled(a.disabled).on_press(move |_| run.call(())));
+            let mut b = Button::new(format!("instance.{}", a.key), a.label).glyph(a.glyph).plain().disabled(a.disabled);
+            if a.danger {
+                b = b.danger();
+            }
+            acts = acts.child(b.on_press(move |_| run.call(())));
         }
         col = col.child(acts);
         ScrollView::new().width(Size::fill()).height(Size::fill()).drag_scrolling(false).child(col).into_element()
@@ -484,7 +516,8 @@ impl Component for Strip {
             .child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() })
             .child(PlayControl { facts: f.clone() });
         bar = bar.child(rect().on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e))).child(Button::icon("instance.more", Icon::More, tr("Weitere Aktionen")).plain().tip(tr("Weitere Aktionen")).on_press(move |_| {
-            let mut items = Vec::new();
+            let rename_id = menu_facts.made.id.clone();
+            let mut items = vec![Item::new("instance.more.rename", tr("Umbenennen"), move |_| actions::begin_rename(store, &rename_id)).shortcut(Shortcut::bare(Code::F2).label()), Item::Separator];
             let all = actions::all(store, &menu_facts);
             let split = all.iter().position(|a| a.key == "reset").unwrap_or(all.len());
             for (n, a) in all.into_iter().enumerate() {

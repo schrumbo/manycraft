@@ -252,7 +252,7 @@ fn delete(store: Store, id: String, name: String) {
 }
 
 fn offer_restore(store: Store, name: String, entry: String) {
-    toast::show(store.ui, trf("„%@“ gelöscht.", &[&name]), Some(EventHandler::new(move |_| restore(store, name.clone(), entry.clone()))));
+    toast::show_kept(store.ui, trf("„%@“ gelöscht.", &[&name]), EventHandler::new(move |_| restore(store, name.clone(), entry.clone())));
 }
 
 fn restore(store: Store, name: String, entry: String) {
@@ -332,7 +332,7 @@ fn reset(store: Store, id: String) {
 }
 
 fn offer_unreset(store: Store, id: String, name: String, entry: String, before: Instance, after: Instance) {
-    toast::show(store.ui, trf("„%@“ zurückgesetzt.", &[&name]), Some(EventHandler::new(move |_| unreset(store, id.clone(), name.clone(), entry.clone(), before.clone(), after.clone()))));
+    toast::show_kept(store.ui, trf("„%@“ zurückgesetzt.", &[&name]), EventHandler::new(move |_| unreset(store, id.clone(), name.clone(), entry.clone(), before.clone(), after.clone())));
 }
 
 fn unreset(store: Store, id: String, name: String, entry: String, before: Instance, after: Instance) {

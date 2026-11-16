@@ -1548,5 +1548,9 @@
   "Wird gesichert …": "Backing up …",
   "Wird wiederhergestellt …": "Restoring …",
   "Bereich": "Section",
-  "Umbenennen": "Rename"
+  "Umbenennen": "Rename",
+  "Alle Spiele von %@ stoppen": "Stop all games of %@",
+  "Batch „%@“ starten": "Start batch “%@”",
+  "Loader wählen": "Choose a loader",
+  "Datei wird gewählt …": "Choosing a file …"
 }

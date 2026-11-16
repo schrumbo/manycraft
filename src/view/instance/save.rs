@@ -110,6 +110,17 @@ pub fn pending_memory(store: Store, id: &str) -> Option<u32> {
     })
 }
 
+/// The JVM arguments of instance `id` once its queued and running changes are saved, when one of them sets them.
+pub fn pending_jvm(store: Store, id: &str) -> Option<Vec<String>> {
+    let nav = store.ui.instance;
+    let queue = nav.queue.read();
+    let saving = nav.saving.read();
+    queue.iter().rev().chain(saving.iter()).filter(|(i, _)| i == id).find_map(|(_, job)| match job {
+        Job::Save(Change::JvmArgs(args)) => Some(args.clone()),
+        _ => None,
+    })
+}
+
 /// The start options of instance `id` once its queued and running option changes are saved.
 pub fn pending_options(store: Store, id: &str, saved: &LaunchOptions) -> LaunchOptions {
     let nav = store.ui.instance;
@@ -208,7 +219,9 @@ fn finished(store: Store, id: &str, job: &Job, before: InstanceEdit, what: Optio
             if let Some(what) = what.filter(|_| before != after) {
                 offer(store, id.to_owned(), name, what, before, after);
             }
-            store.reload(true);
+            if nav.queue.peek().is_empty() {
+                store.reload(true);
+            }
         }
         Err(e) => {
             let problem = forms::explain_as(tr("Nicht gespeichert."), &e);

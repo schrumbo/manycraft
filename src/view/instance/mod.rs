@@ -12,7 +12,7 @@ mod settings;
 mod snapshots;
 mod title;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use freya::prelude::*;
@@ -28,16 +28,14 @@ use super::kit::use_theme;
 use super::store::{Store, use_store};
 use super::theme::{frame, iconsize, space};
 use super::ui::{Filter, Page};
+use crate::app::event::Event;
 use crate::app::model::{Game, Model, Phase};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 
-/// From this content width on the page shows its inspector beside the tabs.
-const SPLIT: f32 = 860.;
-/// The width of the inspector.
-const INSPECTOR: f32 = 300.;
-/// The widest the tab content grows.
-const CONTENT_MAX: f32 = 760.;
+const SPLIT: f32 = frame::INSPECTOR_SPLIT;
+const INSPECTOR: f32 = frame::INSPECTOR;
+const CONTENT_MAX: f32 = frame::CONTENT_MAX;
 
 /// The tabs of the instance page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +112,8 @@ pub struct Nav {
     pub tab_extras: State<Vec<Extra>>,
     queue: State<VecDeque<(String, save::Job)>>,
     saving: State<Option<(String, save::Job)>>,
+    java_picking: State<HashSet<String>>,
+    java_problem: State<HashMap<String, String>>,
 }
 
 impl Nav {
@@ -133,6 +133,8 @@ impl Nav {
             tab_extras: State::create(Vec::new()),
             queue: State::create(VecDeque::new()),
             saving: State::create(None),
+            java_picking: State::create(HashSet::new()),
+            java_problem: State::create(HashMap::new()),
         }
     }
 }
@@ -194,7 +196,7 @@ pub fn uptime_text(since: Instant) -> Option<String> {
 pub fn subtitle(made: &Instance) -> String {
     let mut parts = Vec::new();
     if !made.name.contains(&made.game_version) {
-        parts.push(format!("Minecraft {}", made.game_version));
+        parts.push(trf("Minecraft %@", &[&made.game_version]));
     }
     if made.loader != Loader::Vanilla {
         parts.push(made.loader.name().to_owned());
@@ -253,11 +255,14 @@ impl Component for InstancePage {
         let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
         let wide = room >= SPLIT;
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
-            rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, tab, f.clone())),
+            rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, store, tab, f.clone())),
         );
         let mut left = rect().width(Size::flex(1.)).height(Size::fill());
         if !wide {
             left = left.child(Strip { id: self.id.clone() });
+            for n in inspector::notices(&t, store, &self.id) {
+                left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
+            }
         }
         if room < frame::TOOLBAR_FULL {
             left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
@@ -283,9 +288,21 @@ fn tab_entry(tab: Tab, name: &str) -> String {
     }
 }
 
-fn tab_body(t: &super::theme::Theme, tab: Tab, f: Facts) -> Element {
+fn tab_body(t: &super::theme::Theme, store: Store, tab: Tab, f: Facts) -> Element {
     match tab {
-        Tab::Mods if !f.made.loader.takes_mods() => rect().width(Size::fill()).height(Size::fill()).center().spacing(space::M).child(icon(t, Icon::Layers, iconsize::L * 2., t.text3)).child(heading(t, tr("Keine Mods"))).child(secondary(t, tr("Vanilla lädt keine Mods."))).into_element(),
+        Tab::Mods if !f.made.loader.takes_mods() => {
+            let mut tab = store.ui.instance.tab;
+            rect()
+                .width(Size::fill())
+                .height(Size::fill())
+                .center()
+                .spacing(space::M)
+                .child(icon(t, Icon::Layers, iconsize::HERO, t.text3))
+                .child(heading(t, tr("Keine Mods")))
+                .child(secondary(t, tr("Vanilla lädt keine Mods.")))
+                .child(Button::new("instance.mods.loader", tr("Loader wählen")).on_press(move |_| tab.set(Tab::Settings)))
+                .into_element()
+        }
         Tab::Mods => mods::Mods { facts: f }.into_element(),
         Tab::Worlds => worlds::Worlds { facts: f }.into_element(),
         Tab::Shots => shots::Shots { facts: f }.into_element(),
@@ -294,14 +311,13 @@ fn tab_body(t: &super::theme::Theme, tab: Tab, f: Facts) -> Element {
     }
 }
 
-/// What a tab shows until its port lands.
 fn moving(t: &super::theme::Theme, tab: Tab) -> Element {
     rect()
         .width(Size::fill())
         .height(Size::fill())
         .center()
         .spacing(space::M)
-        .child(icon(t, tab.glyph(), iconsize::L * 2., t.text3))
+        .child(icon(t, tab.glyph(), iconsize::HERO, t.text3))
         .child(heading(t, tab.label()))
         .child(secondary(t, tr("Dieser Bereich zieht als Nächstes in die neue Oberfläche um.")))
         .into_element()
@@ -317,7 +333,7 @@ fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement
         .height(Size::fill())
         .center()
         .spacing(space::M)
-        .child(icon(t, Icon::Folder, iconsize::L * 2., t.text3))
+        .child(icon(t, Icon::Folder, iconsize::HERO, t.text3))
         .child(heading(t, tr("Diese Instanz gibt es nicht mehr.")))
         .child(Button::new("instance.gone.all", tr("Zu allen Spielen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
 }
@@ -346,8 +362,25 @@ pub fn extras(store: Store) -> Vec<Extra> {
     }
     let rename_id = id.clone();
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
+    let play_key = Some(Shortcut::primary(Code::KeyR));
+    if let Some(key) = f.shown.clone() {
+        push("play", tr("Zeigen"), Icon::Play, play_key, EventHandler::new(move |_| store.dispatch(Event::Play(key.clone()))));
+    }
+    for (n, (account, who)) in f.accounts.iter().filter(|(a, _)| !f.plain.contains(a)).enumerate() {
+        let (instance, account) = (id.clone(), *account);
+        let first = f.shown.is_none() && (f.solo == Some(account) || (f.solo.is_none() && n == 0));
+        push(&format!("play.{account}"), trf("Spielen als %@", &[who]), Icon::Play, play_key.filter(|_| first), EventHandler::new(move |_| store.dispatch(Event::PlayInstance { instance: instance.clone(), account: Some(account) })));
+    }
+    for (batch, label) in &f.batches {
+        let batch = batch.clone();
+        push(&format!("batch.start.{batch}"), trf("Batch „%@“ starten", &[label]), Icon::Layers, None, EventHandler::new(move |_| store.dispatch(Event::StartBatch(batch.clone()))));
+    }
     if let Some(key) = f.shown.clone().or_else(|| f.stoppable.first().map(|(k, _)| k.clone())).filter(|k| f.stoppable.iter().any(|(s, _)| s == k)) {
-        push("stop", tr("Stoppen"), Icon::Stop, Some(Shortcut::primary(Code::Period)), EventHandler::new(move |_| store.dispatch(crate::app::event::Event::Stop(vec![key.clone()]))));
+        push("stop", tr("Stoppen"), Icon::Stop, Some(Shortcut::primary(Code::Period)), EventHandler::new(move |_| store.dispatch(Event::Stop(vec![key.clone()]))));
+    }
+    if f.stoppable.len() > 1 {
+        let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();
+        push("stop.all", trf("Alle Spiele von %@ stoppen", &[&name]), Icon::Stop, None, EventHandler::new(move |_| store.dispatch(Event::Stop(keys.clone()))));
     }
     for item in actions::all(store, &f).into_iter().filter(|a| a.disabled.is_none()) {
         push(item.key, item.long, item.glyph, None, item.run);

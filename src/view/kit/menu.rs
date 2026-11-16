@@ -177,6 +177,12 @@ impl Component for Panel {
         let start = menu.items.iter().position(|i| matches!(i, Item::Action { checked: true, .. })).map_or(0., |i| (top(&menu.items, i) - list_max / 2. + frame::MENU_ROW / 2.).max(0.));
         let scroll = use_hook(|| ScrollController::new(0, -(start as i32)));
         let q = query.read().clone();
+        use_side_effect_with_deps(&q, move |q| {
+            if !q.is_empty() {
+                let mut scroll = scroll;
+                scroll.scroll_to_y(0);
+            }
+        });
         let items = filtered(&menu.items, &q);
         let chosen = match &*hot.read() {
             (at, i) if *at == q => *i,
@@ -240,6 +246,12 @@ impl Component for Panel {
                     Key::Named(NamedKey::Escape) => ui.menu.set(None),
                     Key::Named(key @ (NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
                         if let Some(next) = step(&keys_items, chosen, *key == NamedKey::ArrowDown) {
+                            hot.set((keys_q.clone(), Some(next)));
+                            reveal(next, scroll, &keys_items);
+                        }
+                    }
+                    Key::Named(key @ (NamedKey::Home | NamedKey::End)) => {
+                        if let Some(next) = step(&keys_items, None, *key == NamedKey::Home) {
                             hot.set((keys_q.clone(), Some(next)));
                             reveal(next, scroll, &keys_items);
                         }

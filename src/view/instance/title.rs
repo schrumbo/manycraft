@@ -26,6 +26,20 @@ impl Component for Title {
         let nav = store.ui.instance;
         let made = store.model.read().instance(&self.id).cloned();
         let spot = use_spot("instance.title", "heading", made.as_ref().map_or("", |m| m.name.as_str()), true);
+        let field = use_hook(AccessibilityId::new_unique);
+        let mut held = use_state(|| false);
+        let editing = self.id.clone();
+        use_side_effect(move || {
+            let focused = *Platform::get().current_window().focused_accessibility_id.read();
+            if nav.renaming.read().as_deref() != Some(editing.as_str()) {
+                held.set_if_modified(false);
+            } else if focused == field {
+                held.set_if_modified(true);
+            } else if *held.peek() {
+                held.set(false);
+                actions::commit_rename(store);
+            }
+        });
         let Some(made) = made else {
             return rect().child(title(&t, tr("Instanz"))).into_element();
         };
@@ -46,7 +60,7 @@ impl Component for Title {
                         e.stop_propagation();
                     }
                 })
-                .child(Field::new("instance.title.edit", nav.rename).width(Size::px(w)).auto_focus().on_submit(move |_| actions::commit_rename(store)))
+                .child(Field::new("instance.title.edit", nav.rename).a11y(field).width(Size::px(w)).auto_focus().on_submit(move |_| actions::commit_rename(store)))
                 .child(below)
                 .into_element();
         }

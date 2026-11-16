@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use freya::prelude::*;
@@ -100,35 +102,102 @@ impl Component for WithLabel {
     }
 }
 
-/// Saves a text field's value a moment after typing stops, on Enter, and takes over values saved elsewhere.
-fn use_typed(value: State<String>, saved: String, id: String, mut commit: impl FnMut(String) + 'static) -> EventHandler<String> {
+type Draft = Rc<RefCell<String>>;
+
+fn use_typed(value: State<String>, saved: String, id: String, problem: State<Option<String>>, draft: Draft, commit: impl Fn(&str, &str) -> Option<String> + 'static) -> EventHandler<String> {
+    let commit = use_hook(|| Rc::new(commit) as Rc<dyn Fn(&str, &str) -> Option<String>>);
+    let pending = use_hook(|| Rc::new(RefCell::new(None::<(String, String)>)));
     let mut seen = use_state(|| None::<(String, String)>);
     let mut typed = use_state(|| 0u64);
     let key = (id, saved);
-    use_side_effect_with_deps(&key, move |key| {
-        let mut value = value;
-        if seen.peek().as_ref() != Some(key) {
-            seen.set(Some(key.clone()));
-            if *value.peek() != key.1 {
-                value.set(key.1.clone());
+    {
+        let (commit, pending) = (commit.clone(), pending.clone());
+        use_side_effect_with_deps(&key, move |key| {
+            let mut value = value;
+            if seen.peek().as_ref() != Some(key) {
+                let left = pending.borrow_mut().take_if(|(was, _)| *was != key.0);
+                if let Some((was, text)) = left {
+                    commit(&was, &text);
+                }
+                seen.set(Some(key.clone()));
+                if *value.peek() != key.1 {
+                    value.set(key.1.clone());
+                }
             }
-        }
-    });
-    let now = EventHandler::new(move |text: String| commit(text));
-    let later = now.clone();
+        });
+    }
+    {
+        let (commit, pending) = (commit.clone(), pending.clone());
+        use_drop(move || {
+            let left = pending.borrow_mut().take();
+            if let Some((was, text)) = left {
+                commit(&was, &text);
+            }
+        });
+    }
+    let taken = pending.clone();
+    let live = move |id: &str, text: &str| {
+        taken.borrow_mut().take();
+        let mut problem = problem;
+        problem.set_if_modified(commit(id, text));
+    };
+    let later = live.clone();
     use_side_effect(move || {
         let text = value.read().clone();
+        draft.borrow_mut().clone_from(&text);
+        let Some((id, _)) = seen.peek().clone() else { return };
+        *pending.borrow_mut() = Some((id.clone(), text.clone()));
         let n = typed.peek().wrapping_add(1);
         typed.set(n);
         let later = later.clone();
         spawn(async move {
             after(TYPING).await;
             if *typed.peek() == n {
-                later.call(text);
+                later(&id, &text);
             }
         });
     });
-    now
+    EventHandler::new(move |text: String| {
+        if let Some((id, _)) = seen.peek().clone() {
+            live(&id, &text);
+        }
+    })
+}
+
+fn save_jvm(store: Store, id: &str, text: &str) -> Option<String> {
+    let args = split_args(text);
+    if let Err(problem) = options::check_jvm_args(&args) {
+        return Some(problem);
+    }
+    let saved = store.model.peek().instance(id).map(|m| save::pending_jvm(store, id).unwrap_or_else(|| m.jvm_args.clone()));
+    if saved.is_some_and(|s| s != args) {
+        save::enqueue(store, id, Job::Save(Change::JvmArgs(args)));
+    }
+    None
+}
+
+fn save_args(store: Store, id: &str, text: &str) -> Option<String> {
+    let list = split_args(text);
+    if let Err(problem) = options::check_game_args(&list) {
+        return Some(problem);
+    }
+    let saved = store.model.peek().instance(id).map(|m| save::pending_options(store, id, &m.options).game_args);
+    if saved.is_some_and(|s| s != list) {
+        save::enqueue(store, id, Job::Save(Change::Option(OptionChange::GameArgs(list))));
+    }
+    None
+}
+
+fn save_window(store: Store, id: &str, width: &str, height: &str) -> Option<String> {
+    let size = match options::parse_window(width, height) {
+        Ok(size) => size,
+        Err(why) => return Some(why),
+    };
+    let saved = store.model.peek().instance(id).map(|m| save::pending_options(store, id, &m.options).window);
+    if saved.is_some_and(|s| s != size) {
+        save::enqueue(store, id, Job::Save(Change::Option(OptionChange::Window(size))));
+    }
+    None
 }
 
 /// The Einstellungen tab: Minecraft version and loader up top, start options under "Erweitert".
@@ -228,11 +297,10 @@ impl Component for Settings {
             .child(rect().spacing(space::XS).child(label_row(&t, tr("Minecraft-Version"), None)).child(version_control))
             .child(rect().spacing(space::XS).child(label_row(&t, tr("Loader"), None)).child(loader_control));
         let mut top = rect().width(Size::fill()).spacing(space::S).child(game);
-        if let Some(b) = nav.busy.read().get(&id) {
-            top = top.child(caption(&t, b.text.clone()));
-        }
-        if let Some(e) = nav.error.read().get(&id) {
-            top = top.child(note(&t, None, Some(e.clone())).unwrap_or_else(|| rect().into_element()));
+        match (nav.busy.read().get(&id), &why) {
+            (Some(b), _) => top = top.child(caption(&t, b.text.clone())),
+            (None, Some(why)) => top = top.child(caption(&t, why.clone())),
+            (None, None) => {}
         }
         for n in nav.notes.read().get(&id).into_iter().flatten() {
             top = top.child(caption(&t, n.clone()));
@@ -339,55 +407,27 @@ impl Component for Advanced {
                 }
             });
         });
-        let mut java_problem = use_state(|| None::<String>);
-        let mut picking = use_state(|| false);
+        let nav = store.ui.instance;
+        let java_problem = nav.java_problem.read().get(&id).cloned();
+        let picking = nav.java_picking.read().contains(&id);
 
         let jvm = use_state(String::new);
         let mut jvm_problem = use_state(|| None::<String>);
-        let jvm_id = id.clone();
-        let jvm_submit = use_typed(jvm, made.jvm_args.join(" "), id.clone(), move |text| {
-            let args = split_args(&text);
-            let problem = options::check_jvm_args(&args).err();
-            jvm_problem.set_if_modified(problem.clone());
-            let saved = store.model.peek().instance(&jvm_id).map(|m| m.jvm_args.clone());
-            if problem.is_none() && saved.is_some_and(|s| s != args) {
-                save::enqueue(store, &jvm_id, Job::Save(Change::JvmArgs(args)));
-            }
-        });
+        let jvm_draft = use_hook(Draft::default);
+        let jvm_submit = use_typed(jvm, made.jvm_args.join(" "), id.clone(), jvm_problem, jvm_draft, move |id, text| save_jvm(store, id, text));
         let args = use_state(String::new);
         let mut args_problem = use_state(|| None::<String>);
-        let args_id = id.clone();
-        let args_submit = use_typed(args, now.game_args.join(" "), id.clone(), move |text| {
-            let list = split_args(&text);
-            let problem = options::check_game_args(&list).err();
-            args_problem.set_if_modified(problem.clone());
-            let saved = store.model.peek().instance(&args_id).map(|m| save::pending_options(store, &args_id, &m.options).game_args);
-            if problem.is_none() && saved.is_some_and(|s| s != list) {
-                save::enqueue(store, &args_id, Job::Save(Change::Option(OptionChange::GameArgs(list))));
-            }
-        });
+        let args_draft = use_hook(Draft::default);
+        let args_submit = use_typed(args, now.game_args.join(" "), id.clone(), args_problem, args_draft, move |id, text| save_args(store, id, text));
         let width = use_state(String::new);
         let height = use_state(String::new);
         let mut window_problem = use_state(|| None::<String>);
-        let commit_window = {
-            let id = id.clone();
-            move || {
-                match options::parse_window(&width.peek(), &height.peek()) {
-                    Ok(size) => {
-                        window_problem.set_if_modified(None);
-                        let saved = store.model.peek().instance(&id).map(|m| save::pending_options(store, &id, &m.options).window);
-                        if saved.is_some_and(|s| s != size) {
-                            save::enqueue(store, &id, Job::Save(Change::Option(OptionChange::Window(size))));
-                        }
-                    }
-                    Err(why) => window_problem.set_if_modified(Some(why)),
-                }
-            }
-        };
-        let mut cw = commit_window.clone();
-        let w_submit = use_typed(width, now.window.map(|w| w.width.to_string()).unwrap_or_default(), id.clone(), move |_| cw());
-        let mut cw = commit_window.clone();
-        let h_submit = use_typed(height, now.window.map(|w| w.height.to_string()).unwrap_or_default(), id.clone(), move |_| cw());
+        let w_draft = use_hook(Draft::default);
+        let h_draft = use_hook(Draft::default);
+        let other = h_draft.clone();
+        let w_submit = use_typed(width, now.window.map(|w| w.width.to_string()).unwrap_or_default(), id.clone(), window_problem, w_draft.clone(), move |id, w| save_window(store, id, w, &other.borrow()));
+        let other = w_draft;
+        let h_submit = use_typed(height, now.window.map(|w| w.height.to_string()).unwrap_or_default(), id.clone(), window_problem, h_draft, move |id, h| save_window(store, id, &other.borrow(), h));
 
         let mut col = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::L).child(caption(&t, tr("Änderungen wirken beim nächsten Start.")));
 
@@ -451,16 +491,16 @@ impl Component for Advanced {
         let java_id = id.clone();
         let java_select = Select::new("instance.settings.java", tr("Java"), labels, at.unwrap_or(0))
             .width(control::JAVA_MENU)
-            .disabled(picking.read().then(|| tr("Java wird geprüft …")))
+            .disabled(picking.then(|| tr("Datei wird gewählt …")))
             .on_choose(move |i| {
-                java_problem.set_if_modified(None);
+                forget_java_problem(store, &java_id);
                 match paths.get(i).cloned() {
                     Some(Some(java)) => save::enqueue(store, &java_id, Job::Save(Change::Option(OptionChange::Java(java)))),
-                    Some(None) => {}
-                    None => choose_java(store, java_id.clone(), picking, java_problem),
+                    Some(None) => choose_java(store, java_id.clone()),
+                    None => {}
                 }
             });
-        let (java_hint, java_problem_now) = match (java_problem.read().clone(), &now.java) {
+        let (java_hint, java_problem_now) = match (java_problem, &now.java) {
             (Some(p), _) => (None, Some(p)),
             (None, None) if javas.read().is_none() => (Some(tr("Suche installierte Java-Versionen …")), None),
             (None, None) => (Some(tr("Manycraft lädt das passende Java für diese Version.")), None),
@@ -474,7 +514,7 @@ impl Component for Advanced {
         let java_reset_id = id.clone();
         let java_reset = now.java.is_some().then(|| {
             reset("java", tr("Java"), move |_| {
-                java_problem.set_if_modified(None);
+                forget_java_problem(store, &java_reset_id);
                 save::enqueue(store, &java_reset_id, Job::Save(Change::Option(OptionChange::Java(None))));
             })
         });
@@ -544,28 +584,36 @@ fn choice_row<T: Copy + PartialEq + 'static>(store: Store, id: &str, key: &str, 
         .into_element()
 }
 
-fn choose_java(store: Store, id: String, mut picking: State<bool>, mut problem: State<Option<String>>) {
-    if *picking.peek() {
+fn forget_java_problem(store: Store, id: &str) {
+    let mut problems = store.ui.instance.java_problem;
+    if problems.peek().contains_key(id) {
+        problems.write().remove(id);
+    }
+}
+
+fn choose_java(store: Store, id: String) {
+    let nav = store.ui.instance;
+    let (mut picking, mut problems) = (nav.java_picking, nav.java_problem);
+    if !picking.write().insert(id.clone()) {
         return;
     }
-    picking.set(true);
     spawn_in_window(async move {
         let picked = off_ui(|| native::pick_files(&tr("Java wählen"), "Java", &[], false)).await.unwrap_or_default();
-        let Some(path) = picked.into_iter().next() else {
-            picking.set(false);
-            return;
+        let found = match picked.into_iter().next() {
+            Some(path) => off_ui(move || remote::probe_java(&path)).await,
+            None => None,
         };
-        let found = off_ui(move || remote::probe_java(&path)).await;
-        picking.set(false);
+        picking.write().remove(&id);
         match found {
             Some(Ok(java)) => save::enqueue(store, &id, Job::Save(Change::Option(OptionChange::Java(Some(java.path))))),
-            Some(Err(e)) => problem.set(Some(format!("{e:#}"))),
+            Some(Err(e)) => {
+                problems.write().insert(id, format!("{e:#}"));
+            }
             None => {}
         }
     });
 }
 
-/// The loader version picker: "Immer die neueste" or one pinned version, loaded per loader and game version.
 #[derive(PartialEq)]
 struct LoaderVersion {
     made: Instance,
@@ -608,9 +656,10 @@ impl Component for LoaderVersion {
         let select = Select::new("instance.settings.loader_version", crate::ui::loader_version::label(&made.loader), labels, at).width(control::VERSION_MENU).disabled(self.why.clone()).on_choose(move |i| {
             let Some(want) = items.get(i).cloned() else { return };
             let now = store.model.peek().instance(&id).and_then(|m| m.loader.version().map(str::to_owned));
-            if want != now && super::blocked(store, &id).is_none() {
-                save::enqueue(store, &id, Job::Save(Change::LoaderVersion(want)));
-            }
+            let Some(loader) = store.model.peek().instance(&id).map(|m| m.loader.clone()).filter(|_| want != now && super::blocked(store, &id).is_none()) else { return };
+            let target = want.as_ref().map_or_else(|| loader.name().to_owned(), |v| format!("{} {v}", loader.name()));
+            let id = id.clone();
+            snapshots::before(store, &id.clone(), Reason::LoaderUpdate(target), move || save::enqueue(store, &id, Job::Save(Change::LoaderVersion(want))));
         });
         let mut col = rect().width(Size::fill()).spacing(space::XS).child(label_row(&t, crate::ui::loader_version::label(&made.loader), None)).child(select);
         match &*versions.read() {
