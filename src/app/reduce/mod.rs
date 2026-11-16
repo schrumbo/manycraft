@@ -4,6 +4,8 @@ mod data;
 mod fleet;
 mod games;
 mod notify;
+mod previews;
+pub mod usage;
 mod quit;
 mod show;
 
@@ -184,6 +186,10 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             out.push(Effect::SaveColor { ids, color });
         }
         Event::Visible(keys) => games::visible(model, env, keys, &mut out),
+        Event::Watch(watch) => model.session.watch = watch,
+        Event::ShotsDue { generation } => previews::due(model, generation, &mut out),
+        Event::UsageDue => usage::due(model, &mut out),
+        Event::Usage(readings) => usage::read(model, env, readings, &mut out),
         Event::TellGames => games::tell_games(model, env, &mut out),
         Event::CloseWindow => quit::close_window(model, env.settings.tray_explained, &mut out),
         Event::TrayExplained => {
@@ -205,6 +211,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         let games = &model.games;
         model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));
     }
+    previews::replan(model, env.settings.preview_rate, &mut out);
+    usage::arm(model, &mut out);
     out
 }
 
@@ -243,6 +251,7 @@ pub(super) fn startable(m: &Model, owner: &str) -> bool {
 
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
     use uuid::Uuid;
@@ -307,7 +316,7 @@ pub(crate) mod testing {
     /// Loads the model's own data again with `adopted` games still running.
     pub fn adopt(m: &mut Model, s: &Settings, adopted: Vec<Adoption>) -> Vec<Effect> {
         let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
-        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted })))
+        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted, measured: HashMap::new() })))
     }
 }
 

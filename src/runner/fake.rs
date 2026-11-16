@@ -82,6 +82,8 @@ impl Backend for Fake {
 struct Running {
     seq: u32,
     next_preview: Instant,
+    every: Duration,
+    width: u32,
 }
 
 struct Sim<P> {
@@ -211,7 +213,17 @@ impl<P: Pixels> Sim<P> {
                 self.at(Duration::from_millis(100), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind: ChatKind::Player, from, text } }));
             }
             ToMod::Quit => self.at(Duration::from_millis(300), None, Update::Exited { key: key.to_owned(), code: Some(0) }),
-            ToMod::Profile { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
+            ToMod::Profile { preview_interval_ms, preview_width } => {
+                if let Some(run) = self.running.get_mut(key) {
+                    let every = Duration::from_millis(u64::from(preview_interval_ms.max(250)));
+                    let width = preview_width.clamp(16, 1280);
+                    if every < run.every || width != run.width {
+                        run.next_preview = Instant::now();
+                    }
+                    (run.every, run.width) = (every, width);
+                }
+            }
+            ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
         }
     }
 
@@ -315,7 +327,7 @@ impl<P: Pixels> Sim<P> {
             }
             match &update {
                 Update::Ipc(Event::Connected { instance, .. }) => {
-                    self.running.insert(instance.clone(), Running { seq: 0, next_preview: now });
+                    self.running.insert(instance.clone(), Running { seq: 0, next_preview: now, every: PREVIEW_EVERY, width: PREVIEW_W });
                 }
                 Update::Exited { key, .. } => {
                     self.running.remove(key);
@@ -353,8 +365,9 @@ impl<P: Pixels> Sim<P> {
                 continue;
             }
             run.seq += 2;
-            run.next_preview = now + PREVIEW_EVERY + Duration::from_millis(hash(key) % 1500);
-            let preview = Preview { seq: run.seq, width: PREVIEW_W, height: PREVIEW_H, rgba: frame(hash(key), if self.still { 2 } else { run.seq }) };
+            run.next_preview = now + run.every + run.every / 10 * (hash(key) % 10) as u32 / 10;
+            let (w, h) = (run.width, (run.width * PREVIEW_H / PREVIEW_W).max(1));
+            let preview = Preview { seq: run.seq, width: w, height: h, rgba: frame(hash(key), if self.still { 2 } else { run.seq }, w, h) };
             if !self.changes.changed(key, &preview) {
                 continue;
             }
@@ -375,8 +388,8 @@ fn touches<P>(update: &Update<P>, key: &str) -> bool {
     }
 }
 
-fn frame(seed: u64, seq: u32) -> Vec<u8> {
-    let (w, h) = (PREVIEW_W as usize, PREVIEW_H as usize);
+fn frame(seed: u64, seq: u32, w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
     let sky = [(80 + seed % 60) as u8, (140 + (seed >> 8) % 60) as u8, (200 + (seed >> 16) % 50) as u8];
     let ground = [(70 + (seed >> 24) % 40) as u8, (110 + (seed >> 32) % 50) as u8, (40 + (seed >> 40) % 30) as u8];
     let horizon = h * 3 / 5 + (seed % 8) as usize;
@@ -414,9 +427,9 @@ mod tests {
 
     #[test]
     fn frames_have_the_preview_size_and_move() {
-        let a = frame(42, 2);
+        let a = frame(42, 2, PREVIEW_W, PREVIEW_H);
         assert_eq!(a.len(), (PREVIEW_W * PREVIEW_H * 4) as usize);
-        assert_ne!(a, frame(42, 4));
+        assert_ne!(a, frame(42, 4, PREVIEW_W, PREVIEW_H));
     }
 
     #[test]

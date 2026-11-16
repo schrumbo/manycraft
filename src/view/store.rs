@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use super::kit::{after, sheet, toast};
 use super::native;
-use super::ui::{Page, Ui};
+use super::stills::Stills;
+use super::tray::{Pick, Tray};
+use super::ui::{Filter, Page, Ui};
 use crate::app::effect::{Effect, Redraw};
 use crate::app::event::Event;
 use crate::app::model::{Model, Phase};
@@ -48,19 +50,34 @@ impl Raw {
 #[derive(Clone, Copy, PartialEq)]
 pub struct Store {
     pub model: State<Model>,
-    /// The newest preview frame of each game.
+    /// The newest preview frame of each game; written without telling anyone, [`use_preview`] redraws one tile.
     pub previews: State<HashMap<String, ImageHandle>>,
     /// The skin face of each account.
     pub faces: State<HashMap<Uuid, ImageHandle>>,
+    /// Counts chat changes, for the pages that show chat.
+    pub chat: State<u64>,
     pub ui: Ui,
     runtime: State<Option<Rc<RefCell<Runtime>>>>,
+    side: State<Rc<RefCell<Side>>>,
+}
+
+#[derive(Default)]
+struct Side {
+    stills: Option<Stills>,
+    tray: Option<Tray>,
+    picks: Option<async_channel::Receiver<Pick>>,
+    watchers: HashMap<String, Vec<State<Option<ImageHandle>>>>,
+    explaining: bool,
 }
 
 impl Store {
     /// Starts the fleet and reads the saved data; fleet updates arrive in the window's task loop.
     pub fn create(ui: Ui) -> (Self, Option<async_channel::Receiver<Update<Raw>>>) {
-        let mut store = Self { model: State::create(Model::default()), previews: State::create(HashMap::new()), faces: State::create(HashMap::new()), ui, runtime: State::create(None) };
+        let (tray, picks) = Tray::new();
+        let side = Side { tray: Some(tray), picks: Some(picks), ..Side::default() };
+        let mut store = Self { model: State::create(Model::default()), previews: State::create(HashMap::new()), faces: State::create(HashMap::new()), chat: State::create(0), ui, runtime: State::create(None), side: State::create(Rc::new(RefCell::new(side))) };
         let (out, updates) = async_channel::unbounded::<Update<Raw>>();
+        store.side().borrow_mut().stills = Stills::start(out.clone());
         let visible: Arc<Mutex<HashSet<String>>> = Arc::default();
         match runner::backend(out, &visible) {
             Ok(backend) => store.runtime.set(Some(Rc::new(RefCell::new(Runtime::new(backend, visible))))),
@@ -76,8 +93,41 @@ impl Store {
         (store, Some(updates))
     }
 
+    /// Whether the fleet could not start, so nothing will ever load.
+    pub fn failed(self) -> bool {
+        self.runtime.peek().is_none()
+    }
+
     fn runtime(&self) -> Option<Rc<RefCell<Runtime>>> {
         self.runtime.peek().clone()
+    }
+
+    fn side(&self) -> Rc<RefCell<Side>> {
+        self.side.peek().clone()
+    }
+
+    /// Carries out clicks on the tray icon and requests to close the window, for as long as the window lives.
+    pub fn listen(self, closes: async_channel::Receiver<()>) {
+        if let Some(picks) = self.side().borrow_mut().picks.take() {
+            spawn(async move {
+                while let Ok(pick) = picks.recv().await {
+                    match pick {
+                        Pick::Open => {
+                            self.unstow();
+                            let mut page = self.ui.page;
+                            page.set(Page::Grid(Filter::All));
+                        }
+                        Pick::QuitAll => self.dispatch(Event::QuitChosen { keep: false }),
+                        Pick::Quit => self.dispatch(Event::Quit),
+                    }
+                }
+            });
+        }
+        spawn(async move {
+            while closes.recv().await.is_ok() {
+                self.dispatch(Event::CloseWindow);
+            }
+        });
     }
 
     /// Reads accounts, batches and instances again and hands them to the core.
@@ -138,6 +188,9 @@ impl Store {
             effects = reduce(&mut model, &env, event);
             !reports || effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::All)))
         });
+        if effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::Chat))) {
+            *self.chat.write() += 1;
+        }
         for effect in effects {
             self.run(effect, &mut images);
         }
@@ -167,9 +220,36 @@ impl Store {
                     self.dispatch(*event);
                 });
             }
-            Effect::ShowFrame { key, image, .. } => {
+            Effect::ShowFrame { key, image, still } => {
                 if let Some(image) = images.get_mut(image).and_then(Option::take).and_then(Raw::image) {
-                    self.previews.write().insert(key, image);
+                    let side = self.side();
+                    let mut side = side.borrow_mut();
+                    if let (Some(last), Some(stills)) = (still, side.stills.as_mut()) {
+                        stills.save(&key, &image, last);
+                    }
+                    for w in side.watchers.get_mut(&key).into_iter().flatten() {
+                        w.set(Some(image.clone()));
+                    }
+                    self.previews.into_writable().write_if(|mut map| {
+                        map.insert(key, image);
+                        false
+                    });
+                }
+            }
+            Effect::SaveStill(key) => {
+                if let Some(image) = self.previews.peek().get(&key)
+                    && let Some(stills) = self.side().borrow_mut().stills.as_mut()
+                {
+                    stills.save(&key, image, true);
+                }
+            }
+            Effect::LoadStills(bare) => {
+                let faceless: Vec<crate::core::account::Account> = {
+                    let faces = self.faces.peek();
+                    self.model.peek().accounts.iter().filter(|a| !faces.contains_key(&a.id)).cloned().collect()
+                };
+                if let Some(stills) = self.side().borrow_mut().stills.as_mut() {
+                    stills.load(bare, faceless);
                 }
             }
             Effect::DropImage(image) => drop(images.get_mut(image).and_then(Option::take)),
@@ -189,6 +269,7 @@ impl Store {
             }
             Effect::HideManager => native::hide(runtime.and_then(|rt| rt.borrow().place)),
             Effect::ShowManager => {
+                self.unstow();
                 native::show(runtime.as_ref().and_then(|rt| rt.borrow().place));
                 if let Some(rt) = runtime {
                     self.spread(&rt);
@@ -224,9 +305,28 @@ impl Store {
                 toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(keys.clone())))));
             }
             Effect::ReadMemory => self.read_memory(),
+            Effect::ReadUsage(pids) => self.read_usage(pids),
             Effect::Retain => {
                 let frames: HashSet<String> = self.model.peek().frames.keys().cloned().collect();
-                self.previews.write().retain(|k, _| frames.contains(k));
+                let games: HashSet<String> = self.model.peek().games.keys().cloned().collect();
+                {
+                    let side = self.side();
+                    let mut side = side.borrow_mut();
+                    if let Some(stills) = side.stills.as_mut() {
+                        stills.forget_except(&|k| games.contains(k));
+                    }
+                    for (key, list) in &mut side.watchers {
+                        if !frames.contains(key) {
+                            for w in list {
+                                w.set_if_modified(None);
+                            }
+                        }
+                    }
+                }
+                self.previews.into_writable().write_if(|mut map| {
+                    map.retain(|k, _| frames.contains(k));
+                    false
+                });
                 let accounts: HashSet<Uuid> = self.model.peek().accounts.iter().map(|a| a.id).collect();
                 self.faces.write().retain(|id, _| accounts.contains(id));
             }
@@ -237,9 +337,13 @@ impl Store {
                 if let Some(rt) = runtime {
                     rt.borrow_mut().keep_games = keep;
                 }
+                if let Some(tray) = self.side().borrow_mut().tray.as_mut() {
+                    tray.hide();
+                }
                 Platform::get().exit();
             }
-            Effect::ToTray { .. } => native::hide(None),
+            Effect::ToTray { explain: false } => self.stow(),
+            Effect::ToTray { explain: true } => self.explain_tray(),
             Effect::Notify { title, body, .. } => drive::note(format!("notify {title} | {body}")),
             Effect::RememberAccount { instance, account } => {
                 std::thread::spawn(move || {
@@ -258,6 +362,20 @@ impl Store {
             (model.playing.clone(), model.session.pids.clone())
         };
         rt.borrow_mut().spread(playing.as_deref(), &pids);
+    }
+
+    fn read_usage(self, pids: Vec<(String, u32)>) {
+        let pretend = drive::on();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let readings: Vec<(String, u64)> = pids.into_iter().filter_map(|(key, pid)| fit::private_mb(pid).or_else(|| (pretend && pid == 0).then_some(1434)).map(|mb| (key, mb))).collect();
+            let _ = tx.send_blocking(readings);
+        });
+        spawn_in_window(async move {
+            if let Ok(readings) = rx.recv().await {
+                self.dispatch(Event::Usage(readings));
+            }
+        });
     }
 
     fn read_memory(self) {
@@ -281,7 +399,45 @@ impl Store {
         });
     }
 
+    fn stow(self) {
+        let tray = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
+        if tray {
+            native::stow();
+        } else {
+            native::hide(None);
+        }
+    }
+
+    fn unstow(self) {
+        let side = self.side();
+        let mut side = side.borrow_mut();
+        let Some(tray) = side.tray.as_mut().filter(|t| t.shown()) else { return };
+        tray.hide();
+        drop(side);
+        native::unstow();
+    }
+
+    fn explain_tray(self) {
+        let up = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
+        if !up || self.ui.sheet.peek().is_some() {
+            if std::mem::take(&mut self.side().borrow_mut().explaining) {
+                sheet::close(self.ui);
+            }
+            self.stow();
+            return;
+        }
+        let text = if cfg!(target_os = "windows") { tr("Solange Spiele laufen, findest du Manycraft im Infobereich der Taskleiste.") } else { tr("Solange Spiele laufen, findest du Manycraft im Infobereich.") };
+        let ok = sheet::Primary { label: tr("Verstanden"), disabled: None, danger: false, run: EventHandler::new(move |_| {
+            self.side().borrow_mut().explaining = false;
+            sheet::close(self.ui);
+            self.dispatch(Event::TrayExplained);
+        }) };
+        self.side().borrow_mut().explaining = true;
+        sheet::open(self.ui, sheet::Card::new("tray", tr("Manycraft läuft weiter")).message(text).primary(ok).inform().width(super::theme::frame::SHEET * 0.8));
+    }
+
     fn ask_quit(self, running: usize) {
+        self.unstow();
         let title = if running == 1 { tr("1 Spiel läuft noch") } else { trf("%lld Spiele laufen noch", &[&running]) };
         let message = if running == 1 { tr("Beim nächsten Start findet Manycraft es wieder.") } else { tr("Beim nächsten Start findet Manycraft sie wieder.") };
         let end = sheet::Primary { label: tr("Alle beenden"), disabled: None, danger: true, run: EventHandler::new(move |_| {
@@ -322,6 +478,28 @@ impl Store {
 /// The context hook for the store.
 pub fn use_store() -> Store {
     use_consume::<Store>()
+}
+
+/// The newest preview frame of game `key`; a new frame redraws only the components that asked for it.
+pub fn use_preview(key: &str) -> Option<ImageHandle> {
+    let store = use_store();
+    let frame = use_hook(|| {
+        let frame = State::create(store.previews.peek().get(key).cloned());
+        store.side().borrow_mut().watchers.entry(key.to_owned()).or_default().push(frame);
+        frame
+    });
+    let k = key.to_owned();
+    use_drop(move || {
+        let side = store.side();
+        let mut side = side.borrow_mut();
+        if let Some(list) = side.watchers.get_mut(&k) {
+            list.retain(|w| *w != frame);
+            if list.is_empty() {
+                side.watchers.remove(&k);
+            }
+        }
+    });
+    frame.read().clone()
 }
 
 fn effect_name(effect: &Effect) -> String {

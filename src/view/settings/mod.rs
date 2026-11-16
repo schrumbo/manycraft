@@ -25,6 +25,7 @@ use crate::view::updates;
 
 const PAGE: f32 = 600.;
 const ATTEMPTS: (i64, i64) = (1, 100);
+const RATES: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
 
 /// Changes settings and saves them; `rev` makes the page draw the new values, since the settings are not a state.
 #[derive(Clone, Copy, PartialEq)]
@@ -50,10 +51,15 @@ impl Prefs {
         }
         let badge = next.game_badge != before.game_badge;
         let sleep = next.prevent_sleep != before.prevent_sleep;
+        let rate = next.preview_rate != before.preview_rate;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         settings::set(next);
         if badge {
             self.store.dispatch(Event::TellGames);
+        }
+        if rate {
+            let watch = self.store.model.peek().session.watch.clone();
+            self.store.dispatch(Event::Watch(watch));
         }
         if sleep {
             self.store.keep_awake();
@@ -185,7 +191,7 @@ impl Component for SettingsPage {
                 .collect(),
             Some(tr("Diese Kürzel gelten in jedem Spiel.")),
         );
-        let rate = PreviewRate::ALL.iter().position(|r| *r == s.preview_rate).unwrap_or(1);
+        let rate = RATES.iter().position(|r| *r == s.preview_rate).unwrap_or(1);
         let rates = vec![
             Segment { id: "settings.rate.saving".into(), label: tr("Sparsam"), tip: None },
             Segment { id: "settings.rate.normal".into(), label: tr("Normal"), tip: None },
@@ -196,8 +202,8 @@ impl Component for SettingsPage {
             Some(tr("Erweitert")),
             vec![
                 Line::new("settings.rate.row", tr("Vorschau-Rate"))
-                    .hint(tr("Wie oft sichtbare Vorschaubilder neu kommen. Flüssig kostet mehr Leistung, Sparsam schont schwache PCs."))
-                    .control(Segmented::new(tr("Vorschau-Rate"), rates, rate).on_choose(move |i| p.change(|s| s.preview_rate = PreviewRate::ALL[i.min(2)])))
+                    .hint(tr("Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger."))
+                    .control(Segmented::new(tr("Vorschau-Rate"), rates, rate).on_choose(move |i| p.change(|s| s.preview_rate = RATES[i.min(2)])))
                     .into_element(),
             ],
             None,

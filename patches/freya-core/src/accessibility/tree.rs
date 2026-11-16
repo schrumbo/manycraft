@@ -292,8 +292,30 @@ impl AccessibilityTree {
             (group_nodes, self.focused_id)
         } else {
             let mut nodes = Vec::new();
+            let mut modal = None;
+            tree.traverse_depth(|node_id| {
+                if tree.accessibility_state.get(&node_id).is_some_and(|s| s.a11y_modal) {
+                    modal = Some(node_id);
+                }
+            });
+            let inside = |node_id: NodeId| match modal {
+                None => true,
+                Some(top) => {
+                    let mut at = Some(node_id);
+                    while let Some(n) = at {
+                        if n == top {
+                            return true;
+                        }
+                        at = tree.parents.get(&n).copied();
+                    }
+                    false
+                }
+            };
 
             tree.traverse_depth(|node_id| {
+                if !inside(node_id) {
+                    return;
+                }
                 let accessibility_state = tree.accessibility_state.get(&node_id).unwrap();
                 let member_accessibility_id = accessibility_state.a11y_member_of;
 

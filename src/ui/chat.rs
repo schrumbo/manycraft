@@ -49,6 +49,15 @@ pub fn open(cx: &mut App) {
     }
 }
 
+/// Shows the Chat page with only the whispers, as a click on a whisper notification asks.
+pub fn show_whispers(cx: &mut App) {
+    cx.set_global(WhispersOnly);
+    show(cx);
+    if let Some(page) = cx.try_global::<Shared>().map(|s| s.0.clone()) {
+        page.update(cx, |_, cx| cx.notify());
+    }
+}
+
 /// The Chat page the main window shows.
 pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
     if let Some(page) = cx.try_global::<Shared>() {
@@ -80,6 +89,10 @@ struct Shared(Entity<ChatPage>);
 struct FocusInput;
 
 impl Global for FocusInput {}
+
+struct WhispersOnly;
+
+impl Global for WhispersOnly {}
 
 impl Global for Shared {}
 
@@ -526,6 +539,10 @@ impl ChatPage {
 
 impl Render for ChatPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if cx.has_global::<WhispersOnly>() {
+            cx.remove_global::<WhispersOnly>();
+            self.scope.whispers = true;
+        }
         let t = Theme::get(cx);
         let model = model::get(cx);
         let broadcast = settings::active().broadcast;

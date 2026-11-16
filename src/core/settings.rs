@@ -74,27 +74,16 @@ pub enum Appearance {
     Dark,
 }
 
-/// How often visible previews refresh, against the normal rate.
+/// How often the tiles on screen refresh their previews, against what it costs the games.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewRate {
+    /// Half as often.
     Saving,
     #[default]
     Normal,
+    /// Twice as often.
     Smooth,
-}
-
-impl PreviewRate {
-    pub const ALL: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
-
-    /// The factor on the normal preview rate.
-    pub fn factor(self) -> f32 {
-        match self {
-            PreviewRate::Saving => 0.5,
-            PreviewRate::Normal => 1.,
-            PreviewRate::Smooth => 2.,
-        }
-    }
 }
 
 /// Everything configurable app-wide.

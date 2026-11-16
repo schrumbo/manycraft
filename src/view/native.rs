@@ -102,3 +102,41 @@ pub fn send_away() {
         }
     }
 }
+
+/// Takes the manager window off the screen and the taskbar while it waits in the notification area; on Linux it only
+/// minimizes, since a desktop without a tray host would leave no way back.
+pub fn stow() {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+        unsafe { ShowWindow(hwnd, SW_HIDE) };
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        use freya_winit::WinitPlatformExt;
+        let platform = freya::prelude::Platform::get();
+        platform.with_window(freya::prelude::Platform::window_id(), |w| w.set_minimized(true));
+    }
+}
+
+/// Brings a stowed manager window back; a driven one comes back without taking the focus.
+pub fn unstow() {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
+        if drive::on() {
+            unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+            return;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        use freya_winit::WinitPlatformExt;
+        let platform = freya::prelude::Platform::get();
+        platform.with_window(freya::prelude::Platform::window_id(), |w| {
+            w.set_visible(true);
+            w.set_minimized(false);
+        });
+    }
+    show(None);
+}
