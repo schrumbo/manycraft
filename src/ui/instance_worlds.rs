@@ -743,8 +743,9 @@ impl Worlds {
             let label = snap.reason.label();
             let line = [files::when(snap.at), snap.version_line.clone(), files::bytes(snap.size)].join(" · ");
             let action = RestoreSnapshot { instance: self.id.clone(), id: snap.id.clone() };
-            let restore = sheet::button_unless(SharedString::from(format!("snapshot-restore-{at}")), tr("Wiederherstellen…"), None, Look::Plain, blocked.clone(), super::snapshots::restoring(&self.id, cx), t)
-                .when(blocked.is_none(), |b| b.on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx)));
+            let restoring = super::snapshots::restoring(&self.id, cx);
+            let restore = sheet::button_unless(SharedString::from(format!("snapshot-restore-{at}")), tr("Wiederherstellen…"), None, Look::Plain, blocked.clone(), restoring, t)
+                .when(blocked.is_none() && !restoring, |b| b.on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx)));
             rows.push(
                 div()
                     .id(SharedString::from(format!("snapshot-{at}")))

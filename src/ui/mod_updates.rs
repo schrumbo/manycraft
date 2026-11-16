@@ -294,7 +294,7 @@ impl Render for ModUpdates {
             Load::Ready(list) if list.is_empty() => sheet::button("updates-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))),
             _ => {
                 let saving = snapshots::progress(&self.id, cx).is_some();
-                sheet::button("updates-apply", if n == 0 { tr("Aktualisieren") } else if n == 1 { tr("1 Mod aktualisieren") } else { trf("%lld Mods aktualisieren", &[&n]) }, None, Look::Primary, n == 0 || saving, self.applying || saving, &t).on_click(cx.listener(|s, _, _, cx| s.apply(cx)))
+                sheet::button("updates-apply", if n == 0 { tr("Aktualisieren") } else if n == 1 { tr("1 Mod aktualisieren") } else { trf("%lld Mods aktualisieren", &[&n]) }, None, Look::Primary, n == 0 || saving, self.applying || saving, &t).when(!saving, |b| b.on_click(cx.listener(|s, _, _, cx| s.apply(cx))))
             }
         };
         div()

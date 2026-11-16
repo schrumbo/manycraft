@@ -103,13 +103,14 @@ fn track_uptime(cx: &mut App) {
     }
 }
 
-fn uptime_text(since: Instant) -> String {
+fn uptime_text(since: Instant) -> Option<String> {
     let minutes = since.elapsed().as_secs() / 60;
-    match (minutes / 60, minutes % 60) {
+    Some(match (minutes / 60, minutes % 60) {
+        (0, 0) => return None,
         (0, m) => trf("%lld Min.", &[&m]),
         (h, 0) => trf("%lld Std.", &[&h]),
         (h, m) => trf("%1$lld Std. %2$lld Min.", &[&h, &m]),
-    }
+    })
 }
 
 /// Shows the page of instance `id` and starts renaming it there.
@@ -523,8 +524,11 @@ impl InstancePage {
             parts.push(made.loader.name().to_owned());
         }
         if made.loader.takes_mods() {
-            let n = made.mods.len() + made.local_mods.len();
-            parts.push(if n == 1 { tr("1 Mod") } else { trf("%lld Mods", &[&n]) });
+            match made.mods.len() + made.local_mods.len() {
+                0 => {}
+                1 => parts.push(tr("1 Mod")),
+                n => parts.push(trf("%lld Mods", &[&n])),
+            }
         }
         if let Some((_, count, last)) = self.worlds.as_ref().filter(|(id, _, _)| *id == made.id) {
             match count {
@@ -1015,8 +1019,7 @@ impl InstancePage {
                     };
                     div().id("instance-rename-error").mark("notice", e.text.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(said)).child(e.text.clone())
                 }
-                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).tooltip(tip(format!("{}
-{}", made.version_line(), self.subtitle(made)))).child(self.subtitle(made)),
+                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).tooltip(tip(self.subtitle(made))).child(self.subtitle(made)),
             });
         div()
             .h(px(shell::TOOLBAR))
@@ -1049,9 +1052,11 @@ impl InstancePage {
         } else {
             let up = cx.try_global::<Uptime>()?;
             let since = f.stoppable.iter().filter_map(|(key, _)| up.0.get(key)).min().copied()?;
-            let text = match f.stoppable.len() {
-                1 => trf("Läuft · %@", &[&uptime_text(since)]),
-                n => trf("%1$lld laufen · %2$@", &[&n, &uptime_text(since)]),
+            let text = match (f.stoppable.len(), uptime_text(since)) {
+                (1, None) => tr("Läuft"),
+                (1, Some(up)) => trf("Läuft · %@", &[&up]),
+                (n, None) => trf("%lld laufen", &[&n]),
+                (n, Some(up)) => trf("%1$lld laufen · %2$@", &[&n, &up]),
             };
             let dot = div().size(px(shell::DOT)).flex_none().rounded(px(radius::FULL)).bg(t.success).into_any_element();
             (dot, text, Some(std::time::Duration::from_secs(60 - since.elapsed().as_secs() % 60)))

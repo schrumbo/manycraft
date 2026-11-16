@@ -68,6 +68,10 @@ impl TrashSheet {
 
     fn put_back(&mut self, item: &Item, cx: &mut Context<Self>) {
         let Some(kind) = undo_kind(item, cx) else { return };
+        if matches!(item.what, What::File { taken: true, .. }) && model::get(cx).read(cx).games.values().any(|g| g.instance_id == item.instance && g.phase.is_active()) {
+            undo::note(tr("Stoppe zuerst die laufenden Spiele."), cx);
+            return;
+        }
         self.taken.insert(key(item));
         cx.notify();
         undo::take_back(kind, cx);
@@ -193,7 +197,7 @@ impl Render for TrashSheet {
         let t = Theme::get(cx);
         let (body, subtitle, any) = match &self.load {
             Load::Loading => (div().py(px(space::L)).child(sheet::waiting(tr("Wird geladen …"), &t)), None, false),
-            Load::Failed(problem) => (div().child(sheet::status("circle-alert", t.danger_text, problem.text.clone())), None, false),
+            Load::Failed(problem) => (div().py(px(space::L)).child(sheet::status("circle-alert", t.danger_text, problem.text.clone())), None, false),
             Load::Ready(items) if items.is_empty() => (div().py(px(space::L)).child(sheet::status("trash", t.secondary, tr("Der Papierkorb ist leer."))), Some(tr("Was du löschst oder ersetzt, bleibt hier 7 Tage.")), false),
             Load::Ready(items) => {
                 let items = items.clone();
@@ -209,7 +213,7 @@ impl Render for TrashSheet {
             }
         };
         let empty = if matches!(self.load, Load::Failed(_)) {
-            Some(sheet::button("trash-retry", tr("Erneut versuchen"), None, Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| {
+            Some(sheet::button("trash-retry", tr("Erneut versuchen"), Some("refresh-cw"), Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| {
                 s.load = Load::Loading;
                 s.reload(cx);
                 cx.notify();
