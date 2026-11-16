@@ -286,11 +286,10 @@ pub fn copy_text(text: String) -> bool {
 }
 
 /// Asks for files with the system's dialog, `extensions` as the filter; blocks, so it runs off the UI thread. A driven
-/// window gets the paths in `MANYCRAFT_DRIVE_PICK`, separated by the platform's path separator.
+/// window gets the paths the drive tool answers.
 pub fn pick_files(title: &str, filter: &str, extensions: &[&str], many: bool) -> Vec<std::path::PathBuf> {
     if drive::on() {
-        drive::note(format!("pick {title}"));
-        return std::env::var_os("MANYCRAFT_DRIVE_PICK").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
+        return drive::answer(&format!("pick {title}")).unwrap_or_default();
     }
     let dialog = rfd::FileDialog::new().set_title(title);
     let dialog = if extensions.is_empty() { dialog } else { dialog.add_filter(filter, extensions) };
