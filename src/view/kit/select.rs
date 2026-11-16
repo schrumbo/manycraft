@@ -5,12 +5,13 @@ use freya::prelude::*;
 use super::menu::{self, Item, Menu};
 use super::text::{line, spacer};
 use super::{Bounds, ring, use_theme};
+use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
-use crate::view::theme::{control, font, iconsize, space};
+use crate::view::theme::{control, font, frame, iconsize, space};
 use crate::view::ui::Ui;
 
-/// Shows the chosen option; a click, Space, Enter or Down opens the list with the choice checked.
+/// Shows the chosen option; a click, Space, Enter or Down opens the list with the choice checked, filterable when long.
 #[derive(Clone, PartialEq)]
 pub struct Select {
     id: String,
@@ -66,7 +67,8 @@ impl Component for Select {
                     .checked(i == chosen)
                 })
                 .collect();
-            menu::open(ui, Menu::under(items, *bounds.peek()));
+            let menu = Menu::under(items, *bounds.peek());
+            menu::open(ui, if options.len() > frame::MENU_ROWS { menu.searchable(tr("Suchen")) } else { menu });
         };
         let mut click = open.clone();
         let mut keys = open;
