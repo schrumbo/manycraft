@@ -29,14 +29,6 @@ impl Alert {
     }
 }
 
-/// A whisper that reached a game nobody is playing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Whisper {
-    pub account: String,
-    pub from: Option<String>,
-    pub text: String,
-}
-
 /// What a game that was asked to show covers once it appears.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reveal {
@@ -104,7 +96,6 @@ pub struct Session {
     pub unplaced: HashSet<String>,
     /// A message for the next reload.
     pub notice: Option<String>,
-    pub whispers: Vec<Whisper>,
     pub reveal: Option<Reveal>,
     pub phone: phone::Coalescer,
     /// When the next phone message is due, while a timer waits for it.

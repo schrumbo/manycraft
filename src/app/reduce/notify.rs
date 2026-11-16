@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use super::super::effect::Effect;
 use super::super::event::Event;
 use super::super::model::{Model, Phase};
-use super::super::session::{Alert, Whisper};
+use super::super::session::Alert;
 use super::Env;
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::DisconnectCause;
@@ -12,10 +12,6 @@ use crate::core::phone::{self, Incident, What};
 
 const ALERT_AFTER: Duration = Duration::from_secs(3);
 const ALERT_NAMES: usize = 4;
-const WHISPER_PREVIEW: usize = 90;
-
-/// The tag of whisper notifications.
-pub const WHISPER_TAG: &str = "whisper";
 
 const ATTENTION_PREFIX: &str = "attention-";
 
@@ -94,51 +90,6 @@ pub(super) fn flush_alert(m: &mut Model, env: &Env, batch_id: &str, out: &mut Ve
     let mut keys: Vec<String> = m.games.iter().filter(|(_, i)| i.batch_id == batch_id && i.phase.needs_attention() && names.contains(&i.name)).map(|(k, _)| k.clone()).collect();
     keys.sort();
     out.push(Effect::Notify { tag: attention_tag(batch_id), title, body, keys });
-}
-
-pub(super) fn queue_whisper(m: &mut Model, env: &Env, whisper: Whisper, out: &mut Vec<Effect>) {
-    let s = env.settings;
-    if !(s.notifications.whispers || (s.phone.enabled && s.phone.whispers)) {
-        return;
-    }
-    let first = m.session.whispers.is_empty();
-    m.session.whispers.push(whisper);
-    if first {
-        out.push(Effect::After { delay: ALERT_AFTER, event: Box::new(Event::WhispersDue) });
-    }
-}
-
-pub(super) fn flush_whispers(m: &mut Model, env: &Env, out: &mut Vec<Effect>) {
-    let list = std::mem::take(&mut m.session.whispers);
-    let phone = &env.settings.phone;
-    if phone.enabled && phone.whispers {
-        let lines: Vec<(String, Option<String>, String)> = list.iter().map(|w| (w.account.clone(), w.from.clone(), w.text.clone())).collect();
-        if let Some(text) = phone::whispers(&lines) {
-            out.push(Effect::Phone(text));
-        }
-    }
-    if list.is_empty() || !env.settings.notifications.whispers {
-        return;
-    }
-    let n = list.len();
-    let (title, body) = if n == 1 {
-        let w = &list[0];
-        let mut text: String = w.text.chars().take(WHISPER_PREVIEW).collect();
-        if w.text.chars().count() > WHISPER_PREVIEW {
-            text.push('…');
-        }
-        let who = w.from.clone().unwrap_or_else(|| tr("Jemand"));
-        (trf("%@ flüstert · %@", &[&who, &w.account]), text)
-    } else {
-        let mut seen = HashSet::new();
-        let names: Vec<&str> = list.iter().filter(|w| seen.insert(w.account.as_str())).map(|w| w.account.as_str()).collect();
-        let mut body = names.iter().take(ALERT_NAMES).copied().collect::<Vec<_>>().join(", ");
-        if names.len() > ALERT_NAMES {
-            body = trf("%@ und %lld weitere", &[&body, &(names.len() - ALERT_NAMES)]);
-        }
-        (trf("%lld Flüsternachrichten", &[&n]), body)
-    };
-    out.push(Effect::Notify { tag: WHISPER_TAG.to_owned(), title, body, keys: Vec::new() });
 }
 
 pub(super) fn queue_phone(m: &mut Model, env: &Env, incidents: Vec<(String, Incident)>, out: &mut Vec<Effect>) {

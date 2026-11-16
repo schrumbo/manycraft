@@ -82,12 +82,11 @@ pub struct Phone {
     pub ntfy_server: String,
     /// Whether accounts that come back after a reported drop are reported too.
     pub reconnected: bool,
-    pub whispers: bool,
 }
 
 impl Default for Phone {
     fn default() -> Self {
-        Self { enabled: false, service: Service::Discord, telegram_chat: String::new(), ntfy_server: NTFY_DEFAULT.to_owned(), reconnected: false, whispers: false }
+        Self { enabled: false, service: Service::Discord, telegram_chat: String::new(), ntfy_server: NTFY_DEFAULT.to_owned(), reconnected: false }
     }
 }
 
@@ -804,26 +803,6 @@ pub fn format(batch: &str, incidents: &[Incident], reconnected: bool) -> Option<
     Some(lines.join("\n"))
 }
 
-/// The message for whispers: one in full, several counted with the accounts they reached.
-pub fn whispers(list: &[(String, Option<String>, String)]) -> Option<String> {
-    match list {
-        [] => None,
-        [(account, from, text)] => {
-            let who = from.clone().unwrap_or_else(|| tr("Jemand"));
-            Some(format!("{}\n{}", trf("%@ flüstert · %@", &[&who, account]), cut(text, 300)))
-        }
-        _ => {
-            let mut seen = HashSet::new();
-            let names: Vec<&str> = list.iter().filter(|(a, _, _)| seen.insert(a.as_str())).map(|(a, _, _)| a.as_str()).collect();
-            let mut body = names.iter().take(MAX_NAMES).copied().collect::<Vec<_>>().join(", ");
-            if names.len() > MAX_NAMES {
-                body = trf("%@ und %lld weitere", &[&body, &(names.len() - MAX_NAMES)]);
-            }
-            Some(format!("{}\n{body}", trf("%lld Flüsternachrichten", &[&list.len()])))
-        }
-    }
-}
-
 /// The test message.
 pub fn test_text() -> String {
     tr("Manycraft: Testnachricht. Hier kommen Meldungen an, wenn ein Account getrennt wird.")
@@ -996,14 +975,6 @@ mod tests {
         assert_eq!(host("mc.example.net:25570").as_deref(), Some("mc.example.net:25570"));
         assert_eq!(host("192.168.1.20:25565"), None);
         assert_eq!(host("192.168.1.20"), None);
-    }
-
-    #[test]
-    fn whispers_show_one_in_full_and_count_many() {
-        assert_eq!(whispers(&[("Alex".into(), Some("Notch".into()), "hi".into())]).unwrap(), "Notch flüstert · Alex\nhi");
-        let many = [("Alex".into(), None, "a".into()), ("Alex".into(), None, "b".into()), ("Bert".into(), None, "c".into())];
-        assert_eq!(whispers(&many).unwrap(), "3 Flüsternachrichten\nAlex, Bert");
-        assert_eq!(whispers(&[]), None);
     }
 
     #[test]

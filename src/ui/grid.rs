@@ -539,7 +539,6 @@ fn data(i: &Game, m: &Model, selected: &Option<String>, picked: &HashSet<String>
         history: open.then(|| moments(&i.key, m)),
         stopping: i.stopping,
         overdue: i.overdue,
-        whispers: i.unread_whispers,
         preview: m.preview(&i.key).cloned(),
         live: m.live(&i.key),
         face: m.faces.get(&i.account_id).cloned(),

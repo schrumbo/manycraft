@@ -311,13 +311,6 @@ impl Component for ChatPage {
         });
         let m = store.model.read();
         let batch = shared.batch.read().clone().filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
-        let seen = *Platform::get().current_window().is_app_focused.read() || crate::core::drive::on();
-        let unread = seen && m.games.values().any(|i| i.unread_whispers > 0 && batch.as_deref().is_none_or(|b| i.batch_id == b));
-        use_side_effect_with_deps(&(unread, batch.clone()), move |(unread, batch)| {
-            if *unread {
-                store.dispatch(AppEvent::ClearWhispers(batch.clone()));
-            }
-        });
         let merged = settings::active().merged_chat;
         let broadcast = settings::active().broadcast;
         let page = rect().width(Size::fill()).height(Size::fill());
@@ -348,7 +341,7 @@ impl Component for ChatPage {
                 .map(|(l, id)| {
                     let tag = names.iter().find(|(b, _)| *b == l.batch).map(|(_, n)| n.clone());
                     let mentions = mentions(&l.text, &own);
-                    let about_own = l.from.is_none() && !l.whisper && !mentions.is_empty();
+                    let about_own = l.from.is_none() && !mentions.is_empty();
                     let heard = if about_own { None } else { heard_by(&m, &l, &running) };
                     let seen = 1 + l.also.len();
                     Line { line: l, id, batch: tag, heard, seen, mentions }
@@ -386,12 +379,12 @@ fn running_by_batch(m: &Model) -> HashMap<String, usize> {
     out
 }
 
-/// Which of the person's accounts got `l`, for a whisper or a line only a few of those on its server got: their names
+/// Which of the person's accounts got `l`, for a line only a few of those on its server got: their names
 /// and the game to answer from.
 fn heard_by(m: &Model, l: &ChatLine, running: &HashMap<String, usize>) -> Option<Heard> {
     let got = 1 + l.also.iter().filter(|(_, _, b)| *b == l.batch).count();
     let on = running.get(&l.batch).copied().unwrap_or(0);
-    if !l.whisper && (got >= on || 1 + l.also.len() > HEARD_MAX) {
+    if got >= on || 1 + l.also.len() > HEARD_MAX {
         return None;
     }
     let names: Vec<&str> = std::iter::once(l.account.as_str()).chain(l.also.iter().map(|(_, n, _)| n.as_str())).collect();
@@ -561,13 +554,8 @@ impl Component for Row {
         let r = &self.row;
         let l = &r.line;
         let text = clip(&l.text);
-        let prefix = match (&l.from, l.whisper) {
-            (Some(from), true) => Some(trf("%@ flüstert:", &[from])),
-            (None, true) => Some(tr("Flüstert:")),
-            (Some(from), false) => Some(format!("{from}:")),
-            (None, false) => None,
-        };
-        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(if l.from.is_none() && !l.whisper { t.text2 } else { t.text1 }).line_height(1.3);
+        let prefix = l.from.as_ref().map(|from| format!("{from}:"));
+        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(if l.from.is_none() { t.text2 } else { t.text1 }).line_height(1.3);
         if let Some(p) = prefix {
             body = body.span(Span::new(format!("{p} ")).color(t.text2).font_weight(FontWeight::SEMI_BOLD));
         }
@@ -1134,15 +1122,15 @@ mod tests {
 
     use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clock, day_title, heard_by, in_scope, line_problem, mentions, now, recall_step, same_day, unique};
 
-    fn line(batch: &str, whisper: bool) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, whisper, from: None, text: "x".into() }
+    fn line(batch: &str) -> ChatLine {
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into() }
     }
 
     #[test]
     fn scope_filters_by_batch() {
-        assert!(in_scope(&line("a", false), None));
-        assert!(in_scope(&line("farm", false), Some("farm")) && !in_scope(&line("a", false), Some("farm")));
-        let mut shared = line("a", false);
+        assert!(in_scope(&line("a"), None));
+        assert!(in_scope(&line("farm"), Some("farm")) && !in_scope(&line("a"), Some("farm")));
+        let mut shared = line("a");
         shared.also.push(("k".into(), "n".into(), "farm".into()));
         assert!(in_scope(&shared, Some("farm")));
     }
@@ -1151,7 +1139,7 @@ mod tests {
     fn lines_only_some_accounts_saw_name_them() {
         let m = Model::default();
         let running: HashMap<String, usize> = [("farm".to_owned(), 3)].into();
-        let mut l = line("farm", false);
+        let mut l = line("farm");
         assert_eq!(heard_by(&m, &l, &running).map(|h| h.names), Some("Alex".into()));
         l.also.push(("k2".into(), "Bert".into(), "farm".into()));
         assert_eq!(heard_by(&m, &l, &running).map(|h| (h.names, h.first)), Some(("Alex, Bert".into(), "Alex".into())));
@@ -1162,8 +1150,7 @@ mod tests {
         l.also.push(("k4".into(), "Dora".into(), "farm".into()));
         assert_eq!(heard_by(&m, &l, &crowd), None);
         let alone: HashMap<String, usize> = [("farm".to_owned(), 1)].into();
-        assert_eq!(heard_by(&m, &line("farm", false), &alone), None);
-        assert_eq!(heard_by(&m, &line("farm", true), &alone).map(|h| h.names), Some("Alex".into()));
+        assert_eq!(heard_by(&m, &line("farm"), &alone), None);
     }
 
     #[test]

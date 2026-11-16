@@ -13,7 +13,7 @@ use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
 use crate::app::event::{Event as AppEvent, Loaded, Report};
-use crate::app::reduce::{Env, WHISPER_TAG, reduce};
+use crate::app::reduce::{Env, reduce};
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError};
 use crate::core::awake;
@@ -264,7 +264,7 @@ fn dispatch(event: AppEvent, cx: &mut App) {
 }
 
 fn dispatch_with(event: AppEvent, mut images: Vec<Option<Arc<RenderImage>>>, cx: &mut App) {
-    if !cx.has_global::<Runtime>() && !matches!(event, AppEvent::PhoneOutcome(_) | AppEvent::Error(_) | AppEvent::Loaded(_) | AppEvent::Recolor { .. } | AppEvent::ClearWhispers(_) | AppEvent::InstanceAdded(_) | AppEvent::InstanceRemoved(_) | AppEvent::ShowGrid | AppEvent::CloseWindow | AppEvent::TrayExplained | AppEvent::Quit | AppEvent::QuitChosen { .. } | AppEvent::RestartForUpdate) {
+    if !cx.has_global::<Runtime>() && !matches!(event, AppEvent::PhoneOutcome(_) | AppEvent::Error(_) | AppEvent::Loaded(_) | AppEvent::Recolor { .. } | AppEvent::InstanceAdded(_) | AppEvent::InstanceRemoved(_) | AppEvent::ShowGrid | AppEvent::CloseWindow | AppEvent::TrayExplained | AppEvent::Quit | AppEvent::QuitChosen { .. } | AppEvent::RestartForUpdate) {
         return;
     }
     let effects = reduce_now(event, cx);
@@ -596,11 +596,6 @@ fn save_color(ids: Vec<uuid::Uuid>, color: u8, cx: &mut App) {
         });
     })
     .detach();
-}
-
-/// Marks the whispers of `batch` (all instances when `None`) as seen.
-pub fn clear_whispers(batch: Option<&str>, cx: &mut App) {
-    dispatch(AppEvent::ClearWhispers(batch.map(str::to_owned)), cx);
 }
 
 /// Shows game `key` in the manager's place, following the game shown so far, `before`, or the manager window.

@@ -20,7 +20,7 @@ const TICK: Duration = Duration::from_millis(250);
 const STAGGER: Duration = Duration::from_millis(400);
 const SERVER: &str = "play.example.net";
 const CHAT_EVERY: Duration = Duration::from_millis(1500);
-const WHISPER_EVERY: u64 = 9;
+const DIRECT_EVERY: u64 = 9;
 const BACKLOG: usize = 60;
 const BACKLOG_MAX: usize = 20_000;
 const SPEAKERS: [&str; 6] = ["Notch", "Herobrine", "Steve_99", "Creeper_Fan", "xX_Miner_Xx", "Alina"];
@@ -33,7 +33,7 @@ const SAYINGS: [&str; 7] = [
     "gg",
     "Wer hat die Netherportale an der Küste gebaut?",
 ];
-const WHISPERS: [&str; 4] = ["kommst du kurz zum Spawn?", "hast du meine Nachricht gesehen?", "wo bist du gerade?", "Kannst du mir 3 Stack Weizen leihen? Ich zahle morgen zurück, versprochen."];
+const DIRECTS: [&str; 4] = ["kommst du kurz zum Spawn?", "hast du meine Nachricht gesehen?", "wo bist du gerade?", "Kannst du mir 3 Stack Weizen leihen? Ich zahle morgen zurück, versprochen."];
 
 enum Cmd {
     Known(Vec<(String, String)>),
@@ -240,12 +240,12 @@ impl<P: Pixels> Sim<P> {
         }
     }
 
-    fn chat_line(&mut self, key: &str, whisper: bool, unique: bool) -> Update<P> {
+    fn chat_line(&mut self, key: &str, direct: bool, unique: bool) -> Update<P> {
         self.chat_n += 1;
         let h = hash(&format!("{key}{}", self.chat_n));
         let name = self.names.get(key).cloned().unwrap_or_default();
-        let (kind, from, text) = match if whisper { h % 10 } else { 1 + h % 9 } {
-            0 => (ChatKind::Whisper, Some(SPEAKERS[(h >> 8) as usize % 2].to_owned()), WHISPERS[(h >> 16) as usize % WHISPERS.len()].to_owned()),
+        let (kind, from, text) = match if direct { h % 10 } else { 1 + h % 9 } {
+            0 => (ChatKind::System, None, format!("{} -> du: {}", SPEAKERS[(h >> 8) as usize % 2], DIRECTS[(h >> 16) as usize % DIRECTS.len()])),
             1 => (ChatKind::System, None, format!("{name} joined the game")),
             2 => (ChatKind::System, None, format!("{name} was slain by Zombie")),
             _ => {
@@ -307,10 +307,6 @@ impl<P: Pixels> Sim<P> {
                 38 => self.at(Duration::ZERO, None, seed(Phase::Restarting { attempt: 1, of: 3 }, 0)),
                 _ => {}
             }
-            if kind <= 27 && hash(&key).is_multiple_of(7) {
-                let from = Some("Notch".to_owned());
-                self.at(Duration::ZERO, None, Update::Ipc(Event::Message { instance: key.clone(), message: FromMod::Chat { kind: ChatKind::Whisper, from, text: "hi".into() } }));
-            }
         }
     }
 
@@ -365,7 +361,7 @@ impl<P: Pixels> Sim<P> {
             keys.sort();
             if !keys.is_empty() {
                 let key = keys[(hash(&self.chat_n.to_string()) as usize) % keys.len()].clone();
-                let line = self.chat_line(&key, !self.still && (self.chat_n + 1).is_multiple_of(WHISPER_EVERY), false);
+                let line = self.chat_line(&key, !self.still && (self.chat_n + 1).is_multiple_of(DIRECT_EVERY), false);
                 let lines = match &line {
                     Update::Ipc(Event::Message { message: FromMod::Chat { kind: ChatKind::Player, from, text }, .. }) => keys
                         .iter()

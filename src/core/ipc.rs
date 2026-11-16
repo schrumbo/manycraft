@@ -58,6 +58,7 @@ pub enum DisconnectCause {
 pub enum ChatKind {
     System,
     Player,
+    /// Read like `Player`; old agents still send it.
     Whisper,
 }
 

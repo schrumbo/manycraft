@@ -5,7 +5,7 @@ use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
 use super::super::model::{ChatLine, Game, Model, Phase, rank};
 use super::super::phase::{self, Why};
-use super::super::session::{Alert, Frame, Reveal, Whisper};
+use super::super::session::{Alert, Frame, Reveal};
 use super::{Env, fleet, go, notify, redraw, show};
 use crate::core::account::AccountKind;
 use crate::core::fleet as fleets;
@@ -35,7 +35,6 @@ pub(super) struct Fx {
     pub network_back: bool,
     pub later: Vec<Later>,
     pub alerts: Vec<(String, String, Alert)>,
-    pub whispers: Vec<Whisper>,
     pub phone: Vec<(String, Incident)>,
     pub placed: Vec<String>,
     pub revealed: Option<Reveal>,
@@ -129,9 +128,6 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
     }
     for (batch, name, kind) in fx.alerts {
         notify::queue_alert(m, batch, name, kind, out);
-    }
-    for whisper in fx.whispers {
-        notify::queue_whisper(m, env, whisper, out);
     }
     notify::queue_phone(m, env, fx.phone, out);
     for key in fx.placed {
@@ -559,30 +555,17 @@ fn seed_state(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: StateKind,
 
 fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut Fx) {
     let playing = m.playing.as_deref() == Some(key.as_str());
-    let seen = playing || m.games.get(&key).is_some_and(Game::alone);
     if m.session.unplaced.contains(&key) {
         fx.placed.push(key.clone());
     }
     match message {
         FromMod::State { kind, server, reason, cause } => on_state(m, env, fx, key, kind, server, reason, cause),
-        FromMod::Chat { kind, from, text } => {
-            let whisper = kind == ChatKind::Whisper;
-            let merged = env.settings.merged_chat;
-            if whisper
-                && !seen
-                && merged
-                && let Some(i) = m.games.get_mut(&key)
-            {
-                i.unread_whispers += 1;
-            }
+        FromMod::Chat { from, text, .. } => {
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
-            if whisper && !seen {
-                fx.whispers.push(Whisper { account: account.clone(), from: from.clone(), text: text.clone() });
-            }
-            if merged {
+            if env.settings.merged_chat {
                 let server = m.games.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
-                let shared = !whisper && !(from.is_none() && text.contains(&account));
-                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, whisper, from, text }, server.as_deref(), shared, env.now, KEPT_CHAT);
+                let shared = !(from.is_none() && text.contains(&account));
+                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text }, server.as_deref(), shared, env.now, KEPT_CHAT);
             }
         }
         FromMod::Preview { .. } => {
@@ -708,7 +691,7 @@ mod tests {
     use crate::core::settings::Settings;
 
     fn timers(fx: &[Effect]) -> Vec<(Duration, &Event)> {
-        later(fx).into_iter().filter(|(_, e)| !matches!(e, Event::AlertDue { .. } | Event::WhispersDue | Event::PhoneDue { .. } | Event::ShotsDue { .. } | Event::UsageDue)).collect()
+        later(fx).into_iter().filter(|(_, e)| !matches!(e, Event::AlertDue { .. } | Event::PhoneDue { .. } | Event::ShotsDue { .. } | Event::UsageDue)).collect()
     }
 
     fn joins(fx: &[Effect]) -> usize {

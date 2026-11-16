@@ -480,7 +480,7 @@ impl Store {
         side.notified.insert(tag, keys);
     }
 
-    /// Opens what the notification `tag` was about: its one tile, the attention tiles of its batch, or the whispers.
+    /// Opens what the notification `tag` was about: its one tile, or the attention tiles of its batch.
     fn clicked(self, tag: &str) {
         let keys = self.side().borrow().notified.get(tag).cloned().unwrap_or_default();
         let Some(route) = route::of_notification(tag, &keys) else { return };
@@ -515,11 +515,6 @@ impl Store {
                         ui.show.set_if_modified(Show::All);
                     }
                 }
-            }
-            Route::Whispers => {
-                let mut chat = self.ui.chat;
-                chat.batch.set_if_modified(None);
-                ui.page.set(Page::Chat);
             }
             Route::Instance(id) => ui.page.set(Page::Instance(id)),
             Route::Settings(_) => ui.page.set(Page::Settings),

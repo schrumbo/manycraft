@@ -19,7 +19,7 @@ use super::phase::{self, Why};
 use crate::core::ipc::{ChatKind, FromMod};
 use crate::core::settings::Settings;
 
-pub use notify::{WHISPER_TAG, attention_batch, attention_tag};
+pub use notify::{attention_batch, attention_tag};
 pub use show::{active_account, solo_account};
 
 /// What an event needs from outside the model: the time, chance and the settings.
@@ -71,7 +71,6 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::AlertDue { batch } => notify::flush_alert(model, env, &batch, &mut out),
-        Event::WhispersDue => notify::flush_whispers(model, env, &mut out),
         Event::PhoneDue { due } => {
             if model.session.phone_at == Some(due) {
                 model.session.phone_at = None;
@@ -179,15 +178,6 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
                 out.push(Effect::Send { key: i.key.clone(), message: crate::core::ipc::ToMod::ChatSend { text: text.clone() } });
             }
         }
-        Event::ClearWhispers(batch) => {
-            let batch = batch.as_deref();
-            if model.games.values().any(|i| i.unread_whispers > 0 && batch.is_none_or(|b| i.batch_id == b)) {
-                for i in model.games.values_mut().filter(|i| batch.is_none_or(|b| i.batch_id == b)) {
-                    i.unread_whispers = 0;
-                }
-                out.push(Effect::Redraw(Redraw::All));
-            }
-        }
         Event::Recolor { ids, color } => {
             for account in model.accounts.iter_mut().filter(|account| ids.contains(&account.id)) {
                 account.color = Some(color);
@@ -251,7 +241,7 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
     for report in reports {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
-            Report::Mod { key, message: FromMod::Chat { kind, .. } } if *kind != ChatKind::Whisper && !m.hint(key).link_lost => chat = true,
+            Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => chat = true,
             _ => return Redraw::All,
         }
     }
@@ -382,7 +372,6 @@ mod tests {
         let drawn = |reports: &[Report]| redraw(&m, &env, reports);
         assert_eq!(drawn(&[notice("redraw-a"), notice("redraw-b")]), Redraw::Nothing);
         assert_eq!(drawn(&[notice("redraw-a"), chat("redraw-b", ChatKind::Player), chat("redraw-a", ChatKind::System)]), Redraw::Chat);
-        assert_eq!(drawn(&[chat("redraw-a", ChatKind::Player), chat("redraw-a", ChatKind::Whisper)]), Redraw::All);
         let playing = message("redraw-a", FromMod::State { kind: crate::core::ipc::StateKind::Playing, server: None, reason: None, cause: None });
         assert_eq!(drawn(&[notice("redraw-a"), playing]), Redraw::All);
         assert_eq!(drawn(&[notice(&lost)]), Redraw::All);
