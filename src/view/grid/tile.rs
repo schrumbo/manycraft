@@ -116,11 +116,11 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
         let k = key.to_owned();
         let mut item = Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p));
         let same = match p {
-            Primary::Start | Primary::TakeOver => Some(Command::StartSelected),
+            Primary::Start => Some(Command::StartSelected),
             Primary::Reconnect => Some(Command::ReconnectSelected),
             _ => None,
         };
-        if let Some(s) = same.and_then(Command::shortcut) {
+        if let Some(s) = same.filter(|c| c.available(store)).and_then(Command::shortcut) {
             item = item.shortcut(s.label());
         }
         items.push(item);
