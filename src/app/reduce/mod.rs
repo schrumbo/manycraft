@@ -382,6 +382,9 @@ mod tests {
         report(&mut m, &s, line(&dead));
         assert_eq!(m.chat.len(), 1);
         assert_eq!(m.chat[0].also.len(), 1);
+        report(&mut m, &s, Report::Mod { key: "other".into(), message: FromMod::Chat { kind: ChatKind::Player, from: Some("Notch".into()), text: "§chi".into(), runs: Vec::new() } });
+        let styled = &m.chat.last().unwrap();
+        assert_eq!((styled.text.as_str(), styled.runs[0].text.as_str(), styled.runs[1].color), ("hi", "Notch: ", Some(0xFF5555)));
         let fx = run(&mut m, &s, Instant::now(), Event::SendChat { key: dead.clone(), text: "hi".into() });
         assert!(fx.iter().any(|e| matches!(e, Effect::Send { key, .. } if *key == dead)));
         m.games.get_mut(&dead).unwrap().phase = Phase::Dead { server: None, reason: String::new() };

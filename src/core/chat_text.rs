@@ -44,8 +44,14 @@ pub fn styled(runs: &[Run], text: &str) -> Vec<Run> {
     if runs.is_empty() {
         legacy(&Run { text: text.to_owned(), ..Run::default() }, &mut out);
     } else {
-        for run in runs.iter().take(MAX_RUNS) {
+        let (head, tail) = runs.split_at(runs.len().min(MAX_RUNS));
+        for run in head {
             legacy(run, &mut out);
+        }
+        if !tail.is_empty() {
+            let mut rest = Vec::new();
+            legacy(&Run { text: plain(tail), ..Run::default() }, &mut rest);
+            push(&mut out, &mut Run { text: plain(&rest), ..Run::default() });
         }
     }
     out
@@ -89,11 +95,13 @@ fn legacy(base: &Run, out: &mut Vec<Run>) {
             'm' => now.strike = true,
             'r' => now = base.styled_like(),
             'x' => {
-                let hex: String = (0..6).filter_map(|_| chars.next().filter(|c| *c == '§').and_then(|_| chars.next())).collect();
+                let mut ahead = chars.clone();
+                let hex: String = (0..6).map_while(|_| ahead.next().filter(|c| *c == '§').and_then(|_| ahead.next())).collect();
                 if let Ok(rgb) = u32::from_str_radix(&hex, 16)
                     && hex.len() == 6
                 {
                     now = Run { color: Some(rgb), ..Run::default() };
+                    chars = ahead;
                 }
             }
             c => {
@@ -143,6 +151,8 @@ mod tests {
         assert_eq!(plain(&styled(&[], "end §")), "end ");
         assert_eq!(plain(&styled(&[], "§zx§")), "x");
         assert_eq!(plain(&styled(&[], "ä§aö")), "äö");
+        assert_eq!(plain(&styled(&[], "§xhello world")), "hello world");
+        assert_eq!(plain(&styled(&[], "§x§1§2zz")), "zz");
     }
 
     #[test]
@@ -152,6 +162,14 @@ mod tests {
         assert_eq!(out[0], run("<Notch", None));
         assert_eq!(out[1], Run { text: "> ".into(), italic: true, ..Run::default() });
         assert_eq!(out[2], run("hi", Some(0xFF5555)));
+    }
+
+    #[test]
+    fn runs_past_the_cap_keep_their_text() {
+        let runs: Vec<Run> = (0..MAX_RUNS + 50).map(|i| run("x", Some(i as u32))).collect();
+        let out = styled(&runs, "");
+        assert_eq!(out.len(), MAX_RUNS + 1);
+        assert_eq!(plain(&out).len(), MAX_RUNS + 50);
     }
 
     #[test]

@@ -62,10 +62,16 @@ final class ChatBridge {
 	static List<Protocol.Run> runs(Component message) {
 		List<Protocol.Run> out = new ArrayList<>();
 		message.<Void>visit((Style style, String text) -> {
-			if (!text.isEmpty() && out.size() < MAX_RUNS) {
-				TextColor color = style.getColor();
-				out.add(new Protocol.Run(text, color == null ? null : color.getValue(), style.isBold(), style.isItalic(), style.isUnderlined(), style.isStrikethrough()));
+			if (text.isEmpty()) {
+				return Optional.empty();
 			}
+			if (out.size() >= MAX_RUNS) {
+				Protocol.Run last = out.removeLast();
+				out.add(new Protocol.Run(last.text() + text, last.color(), last.bold(), last.italic(), last.underline(), last.strike()));
+				return Optional.empty();
+			}
+			TextColor color = style.getColor();
+			out.add(new Protocol.Run(text, color == null ? null : color.getValue(), style.isBold(), style.isItalic(), style.isUnderlined(), style.isStrikethrough()));
 			return Optional.empty();
 		}, Style.EMPTY);
 		return out;
@@ -84,12 +90,20 @@ final class ChatBridge {
 		return decorated;
 	}
 
+	private static boolean outgoing(ChatType.Bound bound) {
+		var key = bound.chatType().unwrapKey().orElse(null);
+		return key == null || key.equals(ChatType.MSG_COMMAND_OUTGOING) || key.equals(ChatType.TEAM_MSG_COMMAND_OUTGOING);
+	}
+
 	private static String plainContent(String decorated, ChatType.Bound bound) {
 		return stripDecoration(decorated, bound.decorate(Component.literal(MARKER)).getString());
 	}
 
 	void onDisguised(Component message, ChatType.Bound bound) {
 		try {
+			if (outgoing(bound)) {
+				return;
+			}
 			String from = bound.name().getString();
 			sink.accept(Protocol.chat("player", from.isEmpty() ? null : from, message.getString(), runs(bound.decorate(message))));
 		} catch (RuntimeException e) {
@@ -99,8 +113,7 @@ final class ChatBridge {
 
 	void onChat(Component message, PlayerChatMessage signed, GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
 		try {
-			var key = bound.chatType().unwrapKey().orElse(null);
-			if (key == null || key.equals(ChatType.MSG_COMMAND_OUTGOING) || key.equals(ChatType.TEAM_MSG_COMMAND_OUTGOING)) {
+			if (outgoing(bound)) {
 				return;
 			}
 			String from = bound.name().getString();

@@ -563,7 +563,11 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
     match message {
         FromMod::State { kind, server, reason, cause } => on_state(m, env, fx, key, kind, server, reason, cause),
         FromMod::Chat { from, text, runs, .. } => {
-            let runs = if chat_text::needs_runs(&runs, &text) { chat_text::styled(&runs, &text) } else { Vec::new() };
+            let runs = match (chat_text::needs_runs(&runs, &text), runs.is_empty(), &from) {
+                (false, ..) => Vec::new(),
+                (true, true, Some(from)) => [vec![chat_text::Run { text: format!("{from}: "), ..chat_text::Run::default() }], chat_text::styled(&[], &text)].concat(),
+                (true, ..) => chat_text::styled(&runs, &text),
+            };
             let text = if text.contains('§') { chat_text::plain(&chat_text::styled(&[], &text)) } else { text };
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
             if env.settings.merged_chat {

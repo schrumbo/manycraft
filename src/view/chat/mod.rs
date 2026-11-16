@@ -23,7 +23,7 @@ use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
 use super::kit::{Bounds, ring, use_theme};
 use super::store::{Store, use_store};
-use super::theme::{Theme, color, control, font, iconsize, space};
+use super::theme::{Theme, color, control, font, frame, iconsize, space};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{ChatLine, Model};
 use crate::core::batch::MAX_CHAT_CHARS;
@@ -292,7 +292,7 @@ impl Component for Tools {
         let choices = batch_choices(&m);
         let chosen = choices.iter().position(|(_, id)| *id == *shared.batch.read()).unwrap_or(0);
         let ids: Vec<Option<String>> = choices.iter().map(|(_, id)| id.clone()).collect();
-        let width = if self.room >= super::theme::frame::TOOLBAR_SEARCH { PICKER_W } else { PICKER_NARROW };
+        let width = if self.room >= frame::TOOLBAR_SEARCH { PICKER_W } else { PICKER_NARROW };
         Select::new("chat.batch", tr("Batch"), choices.into_iter().map(|(l, _)| l).collect(), chosen).width(width).on_choose(move |i| set_batch(store, ids.get(i).cloned().flatten())).into_element()
     }
 }
@@ -572,7 +572,7 @@ impl Component for Row {
         let r = &self.row;
         let l = &r.line;
         let base = if l.from.is_none() { t.text2 } else { t.text1 };
-        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(base).line_height(1.35);
+        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(base).line_height(frame::PARA_LINE);
         let plain;
         let runs = if l.runs.is_empty() {
             if let Some(from) = &l.from {
@@ -736,7 +736,7 @@ impl Component for SendAs {
         }
         chip = chip.child(line(&t, label, font::BODY, ink).font_weight(FontWeight::MEDIUM));
         if let Some(c) = count {
-            chip = chip.child(line(&t, c, font::CALLOUT, t.text3).font_tabular());
+            chip = chip.child(line(&t, c, font::CALLOUT, t.text2).font_tabular());
         }
         chip = chip.child(icon(&t, Icon::ChevronUp, iconsize::XS, t.text3));
         if let Some(border) = ring(&t, focus()) {

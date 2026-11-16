@@ -176,7 +176,7 @@ impl Component for Entry {
         let summary = if c.detail.is_empty() { c.label.clone() } else { format!("{} · {}", c.label, c.detail) };
         let spot = use_spot(&self.id, "option", &summary, true);
         let off = c.reached == 0;
-        let (ink, soft) = if self.hot { (t.on_accent, t.on_accent.with_af32(0.75)) } else if off { (t.text3, t.text3) } else { (t.text1, t.text3) };
+        let (ink, soft) = if self.hot { (t.on_accent, t.on_accent) } else if off { (t.text3, t.text3) } else { (t.text1, t.text3) };
         let hover = self.on_hover.clone();
         let press = self.on_press.clone();
         let mut mark = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).center().child(mark(&t, store, &c.target, c.account, &c.label, soft));

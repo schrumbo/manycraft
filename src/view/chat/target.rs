@@ -82,7 +82,7 @@ pub fn name(m: &Model, target: &Target) -> String {
 pub fn state(phase: &Phase) -> Option<String> {
     Some(match phase {
         Phase::Queue { .. } | Phase::Playing { .. } => return None,
-        Phase::Dead { server: Some(_), .. } => tr("gestorben"),
+        Phase::Dead { .. } => tr("gestorben"),
         Phase::Stopped => tr("aus"),
         Phase::Starting { .. } | Phase::Restarting { .. } => tr("startet"),
         Phase::Menu | Phase::Plain => tr("im Menü"),
