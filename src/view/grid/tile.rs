@@ -41,6 +41,7 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::Respawn => store.dispatch(AppEvent::Respawn(key)),
         Primary::Start | Primary::Retry => store.dispatch(AppEvent::Start(vec![key])),
         Primary::TakeOver => store.dispatch(AppEvent::TakeOver(key)),
+        Primary::ForceQuit => store.dispatch(AppEvent::Stop(vec![key])),
         Primary::SignIn => {
             let mut page = store.ui.page;
             page.set(Page::Accounts);
@@ -53,12 +54,13 @@ fn glyph(p: Primary) -> Icon {
         Primary::Play | Primary::Start => Icon::Play,
         Primary::Reconnect | Primary::Retry | Primary::Respawn | Primary::TakeOver => Icon::Refresh,
         Primary::SignIn => Icon::LogIn,
+        Primary::ForceQuit => Icon::Stop,
     }
 }
 
 fn action_of(g: &Game, m: &Model) -> Option<Primary> {
     let busy = !g.phase.is_active() && m.playing_elsewhere(&g.instance_id, g.account_id, &g.key).is_some();
-    main_action(&g.phase, g.stopping, busy)
+    main_action(&g.phase, crate::app::model::Stopping::of(g.stopping, g.overdue), busy)
 }
 
 /// Forgets the pointer over `key` once it leaves the tile or row.

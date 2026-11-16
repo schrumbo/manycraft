@@ -35,11 +35,6 @@ record GlfwWindow(long handle) implements NativeWindow {
 	}
 
 	@Override
-	public void keepOpen() {
-		GLFW.glfwSetWindowShouldClose(handle, false);
-	}
-
-	@Override
 	public void setSize(int w, int h) {
 		GLFW.glfwSetWindowSize(handle, w, h);
 	}

@@ -98,17 +98,30 @@ class PreviewFileTest {
 			set(src, w, x, 1, 0, 0, 100);
 		}
 		byte[] dst = new byte[w * h * 4];
-		Downscaler.boxFlipped(ByteBuffer.wrap(src), w, h, w, h, dst);
+		Downscaler.boxFlipped(src, w, h, w, h, dst);
 		assertEquals((byte) 0, dst[0]);
 		assertEquals((byte) 100, dst[2]);
 		assertEquals((byte) 200, dst[w * 4]);
 		assertEquals((byte) 0xFF, dst[3]);
 
 		byte[] one = new byte[4];
-		Downscaler.boxFlipped(ByteBuffer.wrap(src), w, h, 1, 1, one);
+		Downscaler.boxFlipped(src, w, h, 1, 1, one);
 		assertEquals((byte) 100, one[0]);
 		assertEquals((byte) 50, one[2]);
 		assertEquals((byte) 0xFF, one[3]);
+	}
+
+	@Test
+	void boxDownscaleRoundsUnevenBoxes() {
+		byte[] src = new byte[3 * 3 * 4];
+		for (int i = 0; i < 9; i++) {
+			set(src, 3, i % 3, i / 3, 255, 10 + i, i < 8 ? 0 : 5);
+		}
+		byte[] dst = new byte[4];
+		Downscaler.boxFlipped(src, 3, 3, 1, 1, dst);
+		assertEquals((byte) 255, dst[0]);
+		assertEquals((byte) 14, dst[1]);
+		assertEquals((byte) 1, dst[2]);
 	}
 
 	private static void set(byte[] buf, int w, int x, int y, int r, int g, int b) {

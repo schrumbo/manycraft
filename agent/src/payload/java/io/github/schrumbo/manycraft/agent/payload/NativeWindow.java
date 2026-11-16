@@ -15,8 +15,6 @@ interface NativeWindow {
 
 	void raise();
 
-	void keepOpen();
-
 	void setSize(int w, int h);
 
 	void setPosition(int x, int y);

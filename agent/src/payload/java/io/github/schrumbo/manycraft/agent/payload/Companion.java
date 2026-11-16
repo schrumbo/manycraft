@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -53,6 +54,7 @@ final class Companion implements Bridge {
 	private final PreviewService preview;
 	private final GameIdentity identity = new GameIdentity();
 	private final OptionSync options = new OptionSync();
+	private final AtomicBoolean closing = new AtomicBoolean();
 	private final AudioPause audio = new AudioPause();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
@@ -223,17 +225,10 @@ final class Companion implements Bridge {
 	}
 
 	@Override
-	public boolean closeToGrid() {
-		BackgroundController bg = background;
-		if (bg == null || bg.hidden() || !GameWindow.shown(Minecraft.getInstance())) {
-			return false;
+	public void closeRequested() {
+		if (closing.compareAndSet(false, true)) {
+			send(Protocol.closing());
 		}
-		GameWindow.grantForeground();
-		if (!link.send(Protocol.hotkey("grid"))) {
-			return false;
-		}
-		GameWindow.of(Minecraft.getInstance()).keepOpen();
-		return true;
 	}
 
 	private void started(Minecraft mc) {
@@ -296,7 +291,7 @@ final class Companion implements Bridge {
 	}
 
 	private static boolean needsBackground(Protocol.Incoming message) {
-		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
+		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Hint || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
 	}
 
 	private void handle(Minecraft mc, Protocol.Incoming message) {
@@ -314,6 +309,10 @@ final class Companion implements Bridge {
 		}
 		if (message instanceof Protocol.Incoming.Badge b) {
 			identity.showBadge(b.visible());
+			return;
+		}
+		if (message instanceof Protocol.Incoming.Hint h) {
+			identity.showHint(h.text());
 			return;
 		}
 		if (message instanceof Protocol.Incoming.Options shared) {

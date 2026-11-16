@@ -25,8 +25,11 @@ class QueueDetectorTest {
 		PreviewSchedule s = new PreviewSchedule();
 		assertTrue(s.due(0, 3000));
 		s.mark(0);
-		assertFalse(s.due(2_999_000_000L, 3000));
-		assertTrue(s.due(3_000_000_000L, 3000));
+		assertFalse(s.due(2_600_000_000L, 3000));
+		assertTrue(s.due(2_625_000_000L, 3000));
+		s.mark(0);
+		assertFalse(s.due(124_000_000L, 250));
+		assertTrue(s.due(249_000_000L, 250));
 	}
 
 	@Test

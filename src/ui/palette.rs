@@ -398,9 +398,11 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         };
         let n = super::grid::offers(&chosen, m).map(|o| o.able);
         let several = chosen.len() > 1;
+        let force = chosen.iter().all(|k| m.games.get(k).is_some_and(|g| g.stopping && g.overdue));
+        let stop = if force { ("power", tr("Ausgewählte sofort beenden")) } else { ("square", tr("Ausgewählte stoppen")) };
         for (icon, label, action, able) in [
             ("play", tr("Ausgewählte starten"), Box::new(StartSelected) as Box<dyn Action>, n[0] > 0),
-            ("square", tr("Ausgewählte stoppen"), Box::new(StopSelected), n[1] > 0),
+            (stop.0, stop.1, Box::new(StopSelected), n[1] > 0),
             ("rotate-cw", tr("Ausgewählte neu starten"), Box::new(RestartSelected), n[2] > 0),
             ("refresh-cw", tr("Ausgewählte neu verbinden"), Box::new(ReconnectSelected), n[3] > 0),
             ("message-square", tr("Nachricht senden…"), Box::new(MessageSelected), several && n[4] > 0),
@@ -531,12 +533,17 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     if let Page::Instance(shown) = &this.page
         && let Some(made) = m.instances.iter().find(|i| &i.id == shown)
     {
-        let mut live: Vec<_> = m.solo_games(&made.id).filter(|g| g.phase.is_active() && !g.stopping).collect();
+        let mut live: Vec<_> = m.solo_games(&made.id).filter(|g| g.phase.is_active() && (!g.stopping || g.overdue)).collect();
         live.sort_by_cached_key(|g| g.name.to_lowercase());
         let several = live.len() > 1;
         for g in live {
-            let label = if several { trf("„%@“ stoppen", &[&g.name]) } else { tr("Stoppen") };
-            let mut stop = entry(Group::Instances, "square", label, Some(made.name.clone()), Box::new(Stop(g.key.clone())), cx);
+            let (icon, label) = match (g.stopping, several) {
+                (false, true) => ("square", trf("„%@“ stoppen", &[&g.name])),
+                (false, false) => ("square", tr("Stoppen")),
+                (true, true) => ("power", trf("„%@“ sofort beenden", &[&g.name])),
+                (true, false) => ("power", tr("Sofort beenden")),
+            };
+            let mut stop = entry(Group::Instances, icon, label, Some(made.name.clone()), Box::new(Stop(g.key.clone())), cx);
             stop.keys = shortcut(&StopCurrent, cx).filter(|_| !several);
             out.push(stop);
         }

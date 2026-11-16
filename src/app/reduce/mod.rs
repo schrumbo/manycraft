@@ -19,7 +19,7 @@ use super::phase::{self, Why};
 use crate::core::ipc::{ChatKind, FromMod};
 use crate::core::settings::Settings;
 
-pub use notify::{WHISPER_TAG, attention_tag};
+pub use notify::{WHISPER_TAG, attention_batch, attention_tag};
 pub use show::solo_account;
 
 /// What an event needs from outside the model: the time, chance and the settings.
@@ -63,6 +63,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::ReconnectDue { key, generation } => games::reconnect_due(model, &key, generation, &mut out),
         Event::RestartDue { key, generation } => games::restart_due(model, &key, generation, &mut out),
+        Event::LinkLostDue { key } => games::link_lost_due(model, &key, &mut out),
         Event::JoinDue { key, generation, lines, delay } => games::join_due(model, key, generation, lines, delay, &mut out),
         Event::WaitingStartDue { key } => {
             if model.games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
@@ -119,7 +120,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
                 fleet::launch(model, &id, None, fleet::Kick::Bulk, &mut out);
             }
         }
-        Event::Stop(keys) => fleet::stop_keys(model, keys, &mut out),
+        Event::Stop(keys) => fleet::stop_or_kill(model, keys, &mut out),
+        Event::StopOverdue { key, generation } => fleet::stop_overdue(model, &key, generation, &mut out),
         Event::TakeOver(key) => fleet::take_over(model, &key, env.now, &mut out),
         Event::StopBatch(batch) => {
             let stopped = fleet::stoppable(model, Some(&batch));
@@ -130,7 +132,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::StopAll => {
             let stopped = fleet::stoppable(model, None);
-            for id in batch_ids(model) {
+            for id in owners(model) {
                 fleet::stop_batch(model, &id, &mut out);
             }
             if !stopped.is_empty() {
@@ -218,6 +220,16 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
 
 fn batch_ids(m: &Model) -> Vec<String> {
     m.batches.iter().map(|b| b.id.clone()).collect()
+}
+
+fn owners(m: &Model) -> Vec<String> {
+    let mut ids = batch_ids(m);
+    for g in m.games.values() {
+        if !ids.contains(&g.batch_id) {
+            ids.push(g.batch_id.clone());
+        }
+    }
+    ids
 }
 
 /// Moves game `key` to `to` when the transition table allows it for `why`; otherwise logs and leaves it.

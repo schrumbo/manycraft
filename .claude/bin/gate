@@ -418,13 +418,20 @@ def yield_to_owner():
         import ctypes
         k = ctypes.windll.kernel32
         k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)
-        cores = int(os.environ.get("MANYCRAFT_GATE_CORES", "0")) or os.cpu_count() or 8
-        k.SetProcessAffinityMask(k.GetCurrentProcess(), ctypes.c_size_t((1 << min(cores, 64)) - 1))
+        k.SetProcessAffinityMask(k.GetCurrentProcess(), ctypes.c_size_t((1 << min(gate_cores(), 64)) - 1))
     else:
         with contextlib.suppress(OSError):
             os.nice(19)
         with contextlib.suppress(AttributeError, OSError):
-            os.sched_setaffinity(0, set(range(int(os.environ.get("MANYCRAFT_GATE_CORES", "0")) or os.cpu_count() or 8)))
+            os.sched_setaffinity(0, set(range(gate_cores())))
+
+
+def gate_cores():
+    try:
+        cores = int(os.environ.get("MANYCRAFT_GATE_CORES", "0"))
+    except ValueError:
+        cores = 0
+    return cores if cores > 0 else os.cpu_count() or 8
 
 
 def main():

@@ -390,7 +390,7 @@ def start(opts):
     if subprocess.run([sys.executable, "-I", str(TOOLS / "fixture.py"), str(home), str(opts["instances"])]).returncode:
         die("fixture failed")
     w, h = opts["size"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_DRIVE_SCALE", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FREYA_THEME", "MANYCRAFT_CHAT_LOOK")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_DRIVE_SCALE", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FREYA_THEME", "MANYCRAFT_FAKE_SLOW_STOP", "MANYCRAFT_CHAT_LOOK")}
     env.update(MANYCRAFT_HOME=str(home), MANYCRAFT_DRIVE=str(d), MANYCRAFT_DRIVE_OWNER=str(owner), MANYCRAFT_DRIVE_TTL=str(opts["ttl"]),
                MANYCRAFT_DRIVE_SIZE=f"{w}x{h}", RUST_BACKTRACE="1", TMP=str(d / "tmp"), TEMP=str(d / "tmp"), TMPDIR=str(d / "tmp"))
     if opts["theme"]:
@@ -611,7 +611,8 @@ app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH
                                  --live-modrinth lets mod search, defaults and icons read the real Modrinth (read only);
                                  --still: the fake games repeat one picture and nobody whispers, for measuring idle frames
                                  MANYCRAFT_FAKE_OUTAGE=S drops every fake game S seconds after start and refuses reconnects
-                                 for MANYCRAFT_FAKE_OUTAGE_FOR seconds (default 90), like a server restart
+                                 for MANYCRAFT_FAKE_OUTAGE_FOR seconds (default 90), like a server restart;
+                                 MANYCRAFT_FAKE_SLOW_STOP=S makes every fake game take S seconds to stop
 app ps | app gc                  instances of this worktree | remove dead ones
 app stop [--all]                 quit the selected instance (or all of yours)
 app windows                      window id, size, position, scale, theme, title (alias: list)
@@ -633,6 +634,7 @@ app drop <target|x y> <path>...  drops files from outside, as the file manager w
 app dialog <path>... | --cancel  answers the next file dialog instead of showing it (temp folder only)
 app events                       what the app tried to do outside: dialogs, menus and whatever is fenced through core::drive
 app state                        data folder, focus context
+app toast <tag> <title> [body]    posts one real, silent system notification (the only one that leaves the fence)
 app wait [idle|<target>] [--gone] [--for-window T] [--timeout S]
 app resize <w> <h> | app theme light|dark|system
 app screenshot <name> [--full]         screenshot of the window, prints the path
@@ -844,6 +846,10 @@ def main(argv):
     elif cmd == "events":
         for e in inst.call("events")["events"]:
             print(e)
+    elif cmd == "toast":
+        if len(args) < 2:
+            die("app toast <tag> <title> [body]")
+        inst.call("toast", tag=args[0], title=args[1], body=args[2] if len(args) > 2 else "")
     elif cmd == "state":
         out = inst.call("state")
         print(json.dumps({k: v for k, v in out.items() if k != "ok"}, ensure_ascii=False, indent=1))

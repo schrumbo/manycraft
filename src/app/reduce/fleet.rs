@@ -313,11 +313,38 @@ pub(super) fn drop_restart(m: &mut Model, key: &str) -> Vec<String> {
     m.session.restarts.remove(key).and_then(|group| restart_done(m, group)).unwrap_or_default()
 }
 
+/// How long a stop runs before the game can be ended at once.
+pub const STOP_PATIENCE: Duration = Duration::from_secs(5);
+
+/// Stops `keys`, and ends at once those whose stop is overdue.
+pub(super) fn stop_or_kill(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>) {
+    let (kill, stop): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| m.games.get(k).is_some_and(|i| i.stopping && i.overdue));
+    if !kill.is_empty() {
+        out.push(Effect::Kill(kill));
+    }
+    stop_keys(m, stop, out);
+}
+
+/// Marks the stop of `key` as overdue, unless the game is down or started again since `generation`.
+pub(super) fn stop_overdue(m: &mut Model, key: &str, generation: u64, out: &mut Vec<Effect>) {
+    if m.session.reconnects.get(key) != Some(&generation) {
+        return;
+    }
+    if let Some(i) = m.games.get_mut(key).filter(|i| i.stopping && !i.overdue) {
+        i.overdue = true;
+        out.push(Effect::Redraw(Redraw::All));
+    }
+}
+
 pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>) {
     let mut running = Vec::new();
     let mut ready = Vec::new();
+    let mut slow = Vec::new();
     for key in &keys {
         ready.extend(drop_restart(m, key));
+        if m.games.get(key).is_some_and(|i| i.stopping) {
+            continue;
+        }
         let s = &mut m.session;
         s.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
         s.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
@@ -331,13 +358,14 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
         let Some(i) = m.games.get_mut(key) else { continue };
         i.memory_wait = None;
         match i.phase {
-            Phase::Starting { .. } if !has_pid => {
+            Phase::Starting { .. } if !has_pid && i.phase.waiting() => {
                 go(m, key, Phase::Stopped, Why::Stop, out);
                 running.push(key.clone());
             }
             ref p if p.is_running() || has_pid => {
                 i.stopping = true;
                 running.push(key.clone());
+                slow.push(key.clone());
             }
             Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } | Phase::NoNetwork => {
                 go(m, key, Phase::Stopped, Why::Stop, out);
@@ -350,6 +378,13 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
     ready.retain(|k| !keys.contains(k));
     if !running.is_empty() {
         out.push(Effect::Stop(running));
+    }
+    for key in slow {
+        let generation = m.session.reconnects.get(&key).copied().unwrap_or_default();
+        out.push(Effect::After { delay: STOP_PATIENCE, event: Box::new(Event::StopOverdue { key, generation }) });
+    }
+    if m.playing.as_ref().is_some_and(|p| keys.contains(p) && m.games.get(p).is_some_and(|i| i.stopping)) {
+        super::show::show_grid(m, out);
     }
     if !ready.is_empty() {
         start_keys(m, &ready, out);
@@ -521,6 +556,88 @@ mod tests {
         assert!(run(&mut m, &s, Instant::now(), Event::WaitingStartDue { key: key.clone() }).is_empty(), "a stopped waiting start does not start later");
     }
 
+    fn kills(fx: &[Effect]) -> Vec<&Vec<String>> {
+        fx.iter().filter_map(|e| if let Effect::Kill(k) = e { Some(k) } else { None }).collect()
+    }
+
+    fn overdue_timer(fx: &[Effect]) -> u64 {
+        let due = later(fx);
+        let Some((delay, generation)) = due.iter().find_map(|(d, e)| if let Event::StopOverdue { generation, .. } = e { Some((*d, *generation)) } else { None }) else { panic!("no overdue timer in {due:?}") };
+        assert_eq!(delay, super::STOP_PATIENCE);
+        generation
+    }
+
+    #[test]
+    fn a_slow_stop_offers_to_end_the_game_at_once_and_a_second_stop_does() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.session.pids.insert(key.clone(), 1);
+        let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if *k == [key.clone()])));
+        let generation = overdue_timer(&fx);
+        assert!(m.games[&key].stopping && !m.games[&key].overdue);
+        let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert!(kills(&fx).is_empty() && !fx.iter().any(|e| matches!(e, Effect::Stop(_))), "a stop that just began is not doubled");
+        assert!(!later(&fx).iter().any(|(_, e)| matches!(e, Event::StopOverdue { .. })));
+        run(&mut m, &s, Instant::now(), Event::StopOverdue { key: key.clone(), generation });
+        assert!(m.games[&key].overdue);
+        let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert_eq!(kills(&fx), [&vec![key.clone()]]);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Stop(_))));
+        let fx = report(&mut m, &s, Report::Exited { key: key.clone(), code: Some(1) });
+        assert_eq!(m.games[&key].phase, Phase::Stopped, "a forced end is no crash");
+        assert!(!m.games[&key].stopping && !m.games[&key].overdue);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })));
+        assert!(!later(&fx).iter().any(|(_, e)| matches!(e, Event::RestartDue { .. })), "no crash restart");
+    }
+
+    #[test]
+    fn an_overdue_timer_from_an_earlier_stop_leaves_a_new_run_alone() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.session.pids.insert(key.clone(), 1);
+        let generation = overdue_timer(&run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()])));
+        report(&mut m, &s, Report::Exited { key: key.clone(), code: Some(0) });
+        run(&mut m, &s, Instant::now(), Event::Start(vec![key.clone()]));
+        report(&mut m, &s, Report::Launched { key: key.clone(), plain: false });
+        run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        run(&mut m, &s, Instant::now(), Event::StopOverdue { key: key.clone(), generation });
+        assert!(m.games[&key].stopping && !m.games[&key].overdue);
+    }
+
+    #[test]
+    fn stopping_the_shown_game_brings_the_grid_back_at_once() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Playing { server: "s".into(), since: Instant::now() }, AccountKind::Offline, &[]);
+        m.session.pids.insert(key.clone(), 1);
+        m.playing = Some(key.clone());
+        let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert!(m.playing.is_none());
+        assert!(fx.iter().any(|e| matches!(e, Effect::ShowManager)));
+    }
+
+    #[test]
+    fn a_launched_game_that_has_not_reported_yet_shows_its_stop_until_it_is_down() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 0, total: 0 }, AccountKind::Offline, &[]);
+        let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert!(m.games[&key].stopping, "its process is still on its way down");
+        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if *k == [key.clone()])));
+        overdue_timer(&fx);
+        report(&mut m, &s, Report::Exited { key: key.clone(), code: None });
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+    }
+
+    #[test]
+    fn a_game_waiting_for_memory_stops_at_once() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Offline, &[]);
+        m.games.get_mut(&key).unwrap().memory_wait = Some(1);
+        let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(!m.games[&key].stopping && !later(&fx).iter().any(|(_, e)| matches!(e, Event::StopOverdue { .. })));
+    }
+
     #[test]
     fn a_stop_drops_a_pending_show() {
         let s = settings();
@@ -675,6 +792,26 @@ mod tests {
         assert_eq!(m.games[&keys[0]].phase, Phase::Starting { place: 0, total: 0 }, "what launched keeps running");
         assert!(keys[1..].iter().all(|k| m.games[k].phase == Phase::Stopped), "in the fleet's line or waiting for memory: stopped");
         assert_eq!(m.run(None), None);
+    }
+
+    #[test]
+    fn stopping_all_stops_games_played_outside_a_batch_too() {
+        let s = settings();
+        let (mut m, keys) = farm(1, 2048);
+        let made = m.instances[0].clone();
+        let account = m.games[&keys[0]].account_id;
+        let solo = crate::core::fleet::solo_key(&made, account);
+        m.games.insert(solo.clone(), Game { phase: Phase::Menu, ..Game::new(solo.clone(), crate::core::fleet::solo_owner(&made.id), made.id.clone(), account, "Alt0".into()) });
+        m.session.pids.insert(solo.clone(), 7);
+        let fx = run(&mut m, &s, Instant::now(), Event::StopAll);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if k.contains(&solo))));
+        assert!(m.games[&solo].stopping);
+        let Some(Effect::Stopped(stopped)) = fx.iter().find(|e| matches!(e, Effect::Stopped(_))) else { panic!("no undo offer") };
+        assert_eq!(*stopped, vec![solo.clone()]);
+        let stopped = stopped.clone();
+        run(&mut m, &s, Instant::now(), Event::StartAgain(stopped));
+        let fx = report(&mut m, &s, Report::Exited { key: solo.clone(), code: Some(0) });
+        assert_eq!(started(&fx), vec![solo.clone()], "undo starts the solo game again once it is down");
     }
 
     #[test]

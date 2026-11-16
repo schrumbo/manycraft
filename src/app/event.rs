@@ -91,6 +91,8 @@ pub enum Event {
     JoinDue { key: String, generation: u64, lines: Vec<String>, delay: Duration },
     /// A start that waited for the connection tries again.
     WaitingStartDue { key: String },
+    /// The link to `key` has been gone for a while; its tile says so unless it came back or the game went down.
+    LinkLostDue { key: String },
     /// The attention of `batch` collected for a moment goes out as one notification.
     AlertDue { batch: String },
     /// The whispers collected for a moment go out as one notification.
@@ -117,7 +119,10 @@ pub enum Event {
     StartMany(Vec<String>),
     StartBatch(String),
     StartAll,
+    /// Stops these games; those whose stop is overdue end at once.
     Stop(Vec<String>),
+    /// The stop of `key` has run for a while, if no newer stop or start came since `generation`.
+    StopOverdue { key: String, generation: u64 },
     /// Stops the game that plays this game's account elsewhere in its instance, then starts this one.
     TakeOver(String),
     StopBatch(String),

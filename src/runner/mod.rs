@@ -133,6 +133,7 @@ impl Runtime {
                 }
             }
             Effect::Stop(keys) => self.backend.stop(keys),
+            Effect::Kill(keys) => self.backend.kill(keys),
             Effect::ReadPreview { key, path } => self.backend.read_preview(key, path),
             Effect::ReleasePreview(key) => self.backend.release_preview(key),
             Effect::CheckProxy { key, url } => self.backend.check_proxy(key, url),
@@ -219,6 +220,15 @@ impl Runtime {
         let client = place::client_in(place.frame, self.insets.get(key).copied().unwrap_or_default());
         drive::note(format!("play {key}"));
         self.backend.send(key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
+        if !settings::active().swap_explained {
+            self.backend.send(key, ToMod::Hint { text: swap_hint() });
+            settings::set(settings::Settings { swap_explained: true, ..settings::active().clone() });
+            std::thread::spawn(|| {
+                if let Err(e) = settings::persist() {
+                    eprintln!("settings: {e:#}");
+                }
+            });
+        }
         if let Some(skipped) = skipped {
             self.backend.send(&skipped, ToMod::Hide);
         }
@@ -354,4 +364,10 @@ fn saved_history(batches: &[Batch], instances: &[Instance]) -> Vec<(String, hist
         }
     }
     logs
+}
+
+fn swap_hint() -> String {
+    let grid = settings::HOTKEYS.iter().find(|(label, _)| *label == "Zurück zum Raster").map_or("ctrl+alt+g", |(_, chord)| chord);
+    let keys = crate::ui::settings_window::chord_keys(grid).join(if cfg!(target_os = "macos") { "" } else { "+" });
+    trf("× beendet das Spiel · %@ zurück zum Raster", &[&keys])
 }

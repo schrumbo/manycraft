@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use super::super::effect::Effect;
+use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
 use super::super::model::{ChatLine, Model, Phase, rank};
 use super::super::phase::{self, Why};
@@ -29,6 +29,7 @@ pub(super) struct Fx {
     pub frames: Vec<Effect>,
     pub histories: Vec<String>,
     pub stop: Vec<String>,
+    pub closing: Vec<String>,
     pub check_proxy: Vec<Effect>,
     pub suspect_offline: bool,
     pub network_back: bool,
@@ -42,6 +43,21 @@ pub(super) struct Fx {
     pub show_grid: bool,
     pub plays: Vec<(String, Option<String>)>,
     pub hotkeys: Vec<HotkeyAction>,
+}
+
+/// How long a link to a game may be gone before its tile says so; a game that quits drops it a moment before it ends.
+const LINK_PATIENCE: Duration = Duration::from_secs(2);
+
+/// Whether `key` has a game whose loss of its link would be news.
+fn linked(m: &Model, key: &str) -> bool {
+    m.session.pids.contains_key(key) && m.games.get(key).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped)
+}
+
+pub(super) fn link_lost_due(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
+    if m.session.lost.remove(key) && linked(m, key) {
+        m.set_hint(key, |h| h.link_lost = true);
+        out.push(Effect::Redraw(Redraw::All));
+    }
 }
 
 /// Work a report leaves for later.
@@ -92,6 +108,11 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
     }
     if !fx.stop.is_empty() {
         out.push(Effect::Stop(fx.stop));
+    }
+    if !fx.closing.is_empty() {
+        let closed: Vec<String> = fx.closing.iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.stopping)).cloned().collect();
+        fleet::stop_keys(m, fx.closing, out);
+        out.extend(closed.into_iter().filter(|k| m.games.get(k).is_some_and(|g| g.stopping)).map(Effect::Closed));
     }
     out.extend(fx.check_proxy);
     if fx.suspect_offline {
@@ -226,6 +247,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             }
         }
         Report::Connected { key, pid } => {
+            m.session.lost.remove(&key);
             m.set_hint(&key, |h| h.link_lost = false);
             m.session.pids.insert(key.clone(), pid);
             m.session.shots.remove(&key);
@@ -237,6 +259,10 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
                 fx.now.push(Effect::Send { key: key.clone(), message });
             }
             fx.now.push(Effect::Tint { key: key.clone(), pid });
+            if let Some(path) = preview_path(m, &key).filter(|_| m.session.adopted.contains(&key)) {
+                m.session.read_at.insert(key.clone(), env.now);
+                fx.now.push(Effect::ReadPreview { key: key.clone(), path });
+            }
             if m.session.adopted.contains(&key) && m.playing.as_deref() != Some(key.as_str()) {
                 fx.now.push(Effect::Send { key: key.clone(), message: ToMod::Hide });
             }
@@ -247,12 +273,13 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         Report::Reopen => fx.show_grid = true,
         Report::PlayRequest { instance, account } => fx.plays.push((instance, account)),
         Report::LinkLost { key } => {
-            let alive = m.session.pids.contains_key(&key) && m.games.get(&key).is_some_and(|i| !i.stopping && i.phase != Phase::Stopped);
-            if alive {
-                m.set_hint(&key, |h| h.link_lost = true);
+            if linked(m, &key) {
+                m.session.lost.insert(key.clone());
+                fx.later.push(Later::After(LINK_PATIENCE, Event::LinkLostDue { key }));
             }
         }
         Report::Mod { key, message } => {
+            m.session.lost.remove(&key);
             m.set_hint(&key, |h| h.link_lost = false);
             on_message(m, env, key, message, fx);
         }
@@ -291,6 +318,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     let relaunch = !i.stopping && matches!(i.phase, Phase::Restarting { .. });
     let restart = if i.stopping { s.restarts.remove(&key) } else { None };
     i.stopping = false;
+    i.overdue = false;
     if m.playing.as_deref() == Some(key.as_str()) {
         fx.show_grid = true;
     }
@@ -594,6 +622,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 fx.revealed = m.session.reveal.take();
             }
         }
+        FromMod::Closing => fx.closing.push(key),
         FromMod::Window { .. } | FromMod::Hello { .. } | FromMod::Options { .. } | FromMod::Servers => {}
     }
 }
@@ -1041,6 +1070,17 @@ mod tests {
     }
 
     #[test]
+    fn an_adopted_game_shows_its_last_frame_without_waiting_for_a_new_one() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let fresh = report(&mut m, &s, Report::Connected { key: key.clone(), pid: 1 });
+        assert!(!fresh.iter().any(|e| matches!(e, Effect::ReadPreview { .. })), "a fresh game's file may still hold its last run");
+        m.session.adopted.insert(key.clone());
+        let adopted = report(&mut m, &s, Report::Connected { key: key.clone(), pid: 1 });
+        assert!(adopted.iter().any(|e| matches!(e, Effect::ReadPreview { key: k, .. } if *k == key)));
+    }
+
+    #[test]
     fn stability_counts_from_the_first_join_not_from_the_start() {
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
@@ -1213,18 +1253,29 @@ mod tests {
         assert_eq!(m.games[&key].phase, Phase::Menu);
     }
 
+    /// Drops the link to `key` and lets the wait before the tile says so run out.
+    fn lose(m: &mut Model, s: &Settings, key: &str) -> Vec<Effect> {
+        let mut fx = report(m, s, Report::LinkLost { key: key.into() });
+        assert!(!m.hint(key).link_lost, "not at once");
+        let due = later(&fx).iter().any(|(d, e)| *d == super::LINK_PATIENCE && matches!(e, Event::LinkLostDue { key: k } if k == key));
+        if due {
+            fx.extend(run(m, s, Instant::now(), Event::LinkLostDue { key: key.into() }));
+        }
+        fx
+    }
+
     #[test]
     fn a_dropped_link_on_a_living_game_shows_until_it_talks_again() {
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
-        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        lose(&mut m, &s, &key);
         assert!(!m.hint(&key).link_lost, "no process known yet");
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
-        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        lose(&mut m, &s, &key);
         assert!(m.hint(&key).link_lost);
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         assert!(!m.hint(&key).link_lost);
-        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        lose(&mut m, &s, &key);
         send_state(&mut m, &s, &key, StateKind::Playing, None);
         assert!(!m.hint(&key).link_lost);
     }
@@ -1235,13 +1286,50 @@ mod tests {
         let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         m.games.get_mut(&key).unwrap().stopping = true;
-        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        lose(&mut m, &s, &key);
         assert!(!m.hint(&key).link_lost);
         m.games.get_mut(&key).unwrap().stopping = false;
-        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        lose(&mut m, &s, &key);
         assert!(m.hint(&key).link_lost);
         exited(&mut m, &s, &key, Some(0));
         assert_eq!(m.hint(&key), Hint::default());
+    }
+
+    #[test]
+    fn a_game_that_quits_on_its_own_drops_its_link_without_a_flash_of_no_contact() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        let fx = report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        assert!(matches!(later(&fx).as_slice(), [(_, Event::LinkLostDue { .. })]));
+        exited(&mut m, &s, &key, Some(0));
+        run(&mut m, &s, Instant::now(), Event::LinkLostDue { key: key.clone() });
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(!m.hint(&key).link_lost, "the game is down, not out of contact");
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        send_state(&mut m, &s, &key, StateKind::Menu, None);
+        run(&mut m, &s, Instant::now(), Event::LinkLostDue { key: key.clone() });
+        assert!(!m.hint(&key).link_lost, "the link came back in time");
+    }
+
+    #[test]
+    fn closing_the_game_window_stops_the_game_and_brings_the_grid_back() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
+        m.playing = Some(key.clone());
+        let fx = report(&mut m, &s, Report::Mod { key: key.clone(), message: FromMod::Closing });
+        assert!(m.games[&key].stopping);
+        assert_eq!(stops(&fx), 1, "the fleet still ends it if it hangs");
+        assert!(m.playing.is_none() && fx.iter().any(|e| matches!(e, Effect::ShowManager)));
+        assert!(later(&fx).iter().any(|(_, e)| matches!(e, Event::StopOverdue { .. })));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Closed(k) if *k == key)), "offers to start it again");
+        let fx = report(&mut m, &s, Report::Mod { key: key.clone(), message: FromMod::Closing });
+        assert_eq!(stops(&fx), 0, "once is enough");
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Closed(_))));
+        exited(&mut m, &s, &key, Some(0));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
     }
 
     #[test]
