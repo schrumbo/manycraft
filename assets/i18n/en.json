@@ -1552,5 +1552,7 @@
   "Alle Spiele von %@ stoppen": "Stop all games of %@",
   "Batch „%@“ starten": "Start batch “%@”",
   "Loader wählen": "Choose a loader",
-  "Datei wird gewählt …": "Choosing a file …"
+  "Datei wird gewählt …": "Choosing a file …",
+  "Wiederherstellen: %@": "Restore: %@",
+  "Kopieren zu: %@": "Copy To: %@"
 }
