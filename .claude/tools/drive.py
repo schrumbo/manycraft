@@ -615,6 +615,7 @@ app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH
 app ps | app gc                  instances of this worktree | remove dead ones
 app stop [--all]                 quit the selected instance (or all of yours)
 app windows                      window id, size, position, scale, theme, title (alias: list)
+app close                        ask the window to close, as its close button does (tray or quit question)
 app tree [filter]                elements: id role "label" x,y wxh
 app find <target>                one element; error lists similar ones
 app click <target|x y> [n] [right|middle] [mods]   e.g. app click id:row-3 shift, app click text:Datei 2
@@ -747,6 +748,8 @@ def main(argv):
         if not out["ui"]:
             die(f"pid {out['pid']} answers, but its UI thread hangs; `app sample` shows where", 3)
         print(f"pid {out['pid']} answers, UI thread responsive")
+    elif cmd == "close":
+        inst.call("close")
     elif cmd in ("windows", "list"):
         for w in inst.call("windows")["windows"]:
             print_window(w)
