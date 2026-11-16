@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import net.minecraft.client.multiplayer.chat.ChatListener;
 import net.minecraft.network.chat.ChatType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.PlayerChatMessage;
@@ -18,6 +19,7 @@ final class ChatBridge {
 	private static final String MARKER = "\u0000";
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final int MAX_RUNS = 200;
+	private static final boolean OVERLAY_APART = overlayApart();
 
 	private final Consumer<String> sink;
 	private final QueueDetector queue;
@@ -27,7 +29,8 @@ final class ChatBridge {
 		this.queue = queue;
 	}
 
-	void onGame(Component message, boolean overlay) {
+	void onGame(Component message, boolean flag) {
+		boolean overlay = flag && !OVERLAY_APART;
 		try {
 			String text = message.getString();
 			queue.onSystemMessage(text, System.currentTimeMillis());
@@ -36,6 +39,23 @@ final class ChatBridge {
 			}
 		} catch (RuntimeException e) {
 			LOGGER.warn("chat bridge failed", e);
+		}
+	}
+
+	void onOverlay(Component message) {
+		try {
+			queue.onSystemMessage(message.getString(), System.currentTimeMillis());
+		} catch (RuntimeException e) {
+			LOGGER.warn("chat bridge failed", e);
+		}
+	}
+
+	private static boolean overlayApart() {
+		try {
+			ChatListener.class.getMethod("handleOverlay", Component.class);
+			return true;
+		} catch (NoSuchMethodException e) {
+			return false;
 		}
 	}
 
@@ -66,6 +86,15 @@ final class ChatBridge {
 
 	private static String plainContent(String decorated, ChatType.Bound bound) {
 		return stripDecoration(decorated, bound.decorate(Component.literal(MARKER)).getString());
+	}
+
+	void onDisguised(Component message, ChatType.Bound bound) {
+		try {
+			String from = bound.name().getString();
+			sink.accept(Protocol.chat("player", from.isEmpty() ? null : from, message.getString(), runs(bound.decorate(message))));
+		} catch (RuntimeException e) {
+			LOGGER.warn("chat bridge failed", e);
+		}
 	}
 
 	void onChat(Component message, PlayerChatMessage signed, GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
