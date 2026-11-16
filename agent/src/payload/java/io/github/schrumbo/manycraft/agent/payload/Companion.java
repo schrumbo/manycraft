@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
 final class Companion implements Bridge {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final long SMOKE_WINDOW = 5_000_000_000L;
+	private static final long SMOKE_SHOWN_MS = 6000;
 
 	record Hotkeys(KeyChord next, KeyChord prev, KeyChord nextAttention, KeyChord grid) {
 		static final Hotkeys DEFAULT = new Hotkeys(
@@ -61,6 +62,10 @@ final class Companion implements Bridge {
 	private final Queue<Protocol.Incoming> early = new ConcurrentLinkedQueue<>();
 	private boolean previewDue;
 	private final FrameRate smoke = Boolean.getBoolean("manycraft.smoke") ? new FrameRate(SMOKE_WINDOW) : null;
+	private final Headless headless = Hooks.headless() ? new Headless() : null;
+	private long shownAt;
+	private boolean shownDrawn;
+	private int shownSections;
 
 	private Companion(Config config, String version) {
 		this.config = config;
@@ -96,6 +101,20 @@ final class Companion implements Bridge {
 			BackgroundController bg = background;
 			smoke.count(System.nanoTime()).ifPresent(fps -> LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), bg != null && bg.hidden()));
 		}
+	}
+
+	@Override
+	public boolean skipFrame(Object minecraft) {
+		BackgroundController bg = background;
+		if (headless == null || bg == null || !bg.skipsRender() || preview != null && preview.due(bg.profile().previewIntervalMs())) {
+			return false;
+		}
+		Minecraft mc = (Minecraft) minecraft;
+		if (!Headless.applies(mc)) {
+			return false;
+		}
+		headless.idle(mc, bg.hiddenFramerate());
+		return true;
 	}
 
 	@Override
@@ -192,9 +211,28 @@ final class Companion implements Bridge {
 	@Override
 	public void afterRender(Object renderer) {
 		BackgroundController bg = background;
+		if (shownAt != 0 && bg != null && !bg.hidden()) {
+			smokeShown();
+		}
 		if (previewDue && bg != null) {
 			previewDue = false;
 			preview.capture(Compat.mainTarget(Minecraft.getInstance()), bg.profile().previewWidth());
+		}
+	}
+
+	private void smokeShown() {
+		long ms = (System.nanoTime() - shownAt) / 1_000_000;
+		if (!shownDrawn) {
+			shownDrawn = true;
+			LOGGER.info("manycraft smoke first frame {} ms after show", ms);
+		}
+		int sections = Compat.renderedSections(Minecraft.getInstance());
+		if (sections != shownSections) {
+			shownSections = sections;
+			LOGGER.info("manycraft smoke {} sections {} ms after show", sections, ms);
+		}
+		if (ms > SMOKE_SHOWN_MS) {
+			shownAt = 0;
 		}
 	}
 
@@ -329,6 +367,9 @@ final class Companion implements Bridge {
 		}
 		switch (message) {
 			case Protocol.Incoming.Show show -> {
+				shownAt = smoke == null ? 0 : System.nanoTime();
+				shownDrawn = false;
+				shownSections = -1;
 				bg.show(show.x(), show.y(), show.w(), show.h(), show.mode());
 				options.shown();
 			}
