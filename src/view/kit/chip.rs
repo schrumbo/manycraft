@@ -67,7 +67,12 @@ impl Component for Chip {
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
-            .on_all_press(move |_| {
+            .on_all_press(move |e: Event<PressEventData>| {
+                if let PressEventData::Mouse(m) = &*e
+                    && m.button != Some(MouseButton::Left)
+                {
+                    return;
+                }
                 a11y.request_focus();
                 if let Some(h) = &press {
                     h.call(());

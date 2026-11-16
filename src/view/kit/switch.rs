@@ -76,7 +76,12 @@ impl Component for Switch {
                     .shadow(Shadow::from((0., 1., 2., 0., Color::BLACK.with_af32(0.25)))),
             );
         if !self.disabled {
-            s = s.cursor(CursorIcon::Pointer).on_all_press(move |_| {
+            s = s.cursor(CursorIcon::Pointer).on_all_press(move |e: Event<PressEventData>| {
+                if let PressEventData::Mouse(m) = &*e
+                    && m.button != Some(MouseButton::Left)
+                {
+                    return;
+                }
                 a11y.request_focus();
                 if let Some(h) = &toggle {
                     h.call(!on);

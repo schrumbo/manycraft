@@ -178,8 +178,17 @@ impl Component for Button {
             b = b.padding((0., if matches!(self.look, Look::Plain | Look::PlainDanger) { space::S } else { space::M }));
         }
         if enabled {
-            b = b.on_mouse_down(move |_| pressed.set(true)).on_mouse_up(move |_| pressed.set_if_modified(false)).on_all_press(move |e: Event<PressEventData>| {
+            b = b.on_mouse_down(move |e: Event<MouseEventData>| {
+                if e.button == Some(MouseButton::Left) {
+                    pressed.set(true);
+                }
+            }).on_mouse_up(move |_| pressed.set_if_modified(false)).on_all_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
+                if let PressEventData::Mouse(m) = &*e
+                    && m.button != Some(MouseButton::Left)
+                {
+                    return;
+                }
                 if focusable {
                     a11y.request_focus();
                 }
