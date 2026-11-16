@@ -68,7 +68,7 @@ impl TrashSheet {
 
     fn put_back(&mut self, item: &Item, cx: &mut Context<Self>) {
         let Some(kind) = undo_kind(item, cx) else { return };
-        if matches!(item.what, What::File { taken: true, .. }) && model::get(cx).read(cx).games.values().any(|g| g.instance_id == item.instance && g.phase.is_active()) {
+        if matches!(item.what, What::File { taken: true, .. }) && super::snapshots::running(&item.instance, cx) {
             undo::note(tr("Stoppe zuerst die laufenden Spiele."), cx);
             return;
         }

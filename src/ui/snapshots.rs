@@ -30,7 +30,8 @@ pub fn progress(id: &str, cx: &App) -> Option<f32> {
     cx.try_global::<Taking>()?.0.get(id).map(|p| p.fraction())
 }
 
-fn running(id: &str, cx: &App) -> bool {
+/// Whether a game of instance `id` is running or starting.
+pub fn running(id: &str, cx: &App) -> bool {
     model::get(cx).read(cx).games.values().any(|g| g.instance_id == id && g.phase.is_active())
 }
 

@@ -302,6 +302,11 @@ pub fn undo(name: String, what: FileUndo, at: Instant, cx: &mut App) {
         undo::note(tr("Diese Instanz gibt es nicht mehr."), cx);
         return;
     };
+    if matches!(what, FileUndo::Restored { .. }) && super::snapshots::running(&instance, cx) {
+        undo::note(tr("Stoppe zuerst die laufenden Spiele."), cx);
+        undo::retry(undo::Kind::Files { name, undo: what }, at, cx);
+        return;
+    }
     let task = cx.background_spawn(async move {
         if let (Some(_), Some(entry)) = (&world, &entry)
             && !crate::core::trash::holds(&dir, entry)
