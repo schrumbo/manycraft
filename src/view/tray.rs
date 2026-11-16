@@ -85,6 +85,10 @@ fn build(picks: async_channel::Sender<Pick>) -> anyhow::Result<tray_icon::TrayIc
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+    #[cfg(target_os = "linux")]
+    if !host() {
+        anyhow::bail!("no notification area");
+    }
     let open = MenuItem::with_id("open", tr("Öffnen"), true, None);
     let quit_all = MenuItem::with_id("quit-all", tr("Alle beenden"), true, None);
     let quit = MenuItem::with_id("quit", tr("Beenden"), true, None);
@@ -107,6 +111,23 @@ fn build(picks: async_channel::Sender<Pick>) -> anyhow::Result<tray_icon::TrayIc
         let _ = picks.try_send(pick);
     }));
     Ok(TrayIconBuilder::new().with_menu(Box::new(menu)).with_menu_on_left_click(false).with_tooltip("Manycraft").with_icon(icon()?).build()?)
+}
+
+/// Whether a desktop shell shows status icons, asked once; GNOME without its extension has none, and an icon nobody
+/// shows would leave no way back to the window.
+#[cfg(target_os = "linux")]
+fn host() -> bool {
+    static HOST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HOST.get_or_init(ask_host)
+}
+
+#[cfg(target_os = "linux")]
+fn ask_host() -> bool {
+    let session = zbus::blocking::connection::Builder::session().map(|b| b.method_timeout(std::time::Duration::from_millis(500))).and_then(|b| b.build());
+    let Ok(session) = session else { return false };
+    zbus::blocking::Proxy::new(&session, "org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher", "org.kde.StatusNotifierWatcher")
+        .and_then(|watcher| watcher.get_property::<bool>("IsStatusNotifierHostRegistered"))
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]

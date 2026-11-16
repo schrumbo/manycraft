@@ -2,10 +2,139 @@
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use crate::core::drive;
+#[cfg(not(target_os = "windows"))]
+use freya::winit::event::WindowEvent;
+#[cfg(not(target_os = "windows"))]
+use freya::winit::window::Window;
+use freya_winit::plugins::{FreyaPlugin, PluginEvent, PluginHandle};
+
 use crate::core::place::{Mode, Place, Rect};
+use crate::core::drive;
+#[cfg(not(target_os = "windows"))]
+use crate::core::manager_window;
 
 static HWND: AtomicIsize = AtomicIsize::new(0);
+
+#[cfg(not(target_os = "windows"))]
+static PLACE: std::sync::Mutex<Option<(Rect, Mode)>> = std::sync::Mutex::new(None);
+
+#[cfg(not(target_os = "windows"))]
+thread_local! {
+    static ATTENTION: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// What the operating system told the manager window.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Told {
+    /// Its close button or Cmd+W.
+    Close,
+    /// It became the active window.
+    Activated,
+    /// The Dock icon was clicked.
+    Reopen,
+    /// An item of the menu bar was chosen, by its id.
+    Menu(String),
+}
+
+/// Follows the manager window through the system's window events: off Windows, which asks the window directly, keeps
+/// its place current as it moves, resizes or changes scale, and passes activation on.
+pub struct Follow {
+    told: async_channel::Sender<Told>,
+}
+
+impl Follow {
+    /// Follows the window, telling `told` what the system said.
+    pub fn new(told: async_channel::Sender<Told>) -> Self {
+        Self { told }
+    }
+}
+
+impl FreyaPlugin for Follow {
+    fn plugin_id(&self) -> &'static str {
+        "manycraft-native"
+    }
+
+    fn on_event(&mut self, event: &mut PluginEvent, _handle: PluginHandle) {
+        match event {
+            PluginEvent::WindowCreated { window, .. } => {
+                super::menubar::install(self.told.clone());
+                #[cfg(not(target_os = "windows"))]
+                note(window);
+                #[cfg(target_os = "windows")]
+                let _ = window;
+                #[cfg(target_os = "macos")]
+                hear_reopen(self.told.clone());
+            }
+            #[cfg(not(target_os = "windows"))]
+            PluginEvent::WindowEvent { window, event } => match event {
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => note(window),
+                WindowEvent::Focused(true) => {
+                    let _ = self.told.try_send(Told::Activated);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn note(window: &Window) {
+    if let Some(seen) = seen(window) {
+        *PLACE.lock().unwrap_or_else(|e| e.into_inner()) = Some(seen);
+    }
+}
+
+/// The content area of `window` in game units and how it is shown; nothing while it is minimized or has no size.
+#[cfg(not(target_os = "windows"))]
+fn seen(window: &Window) -> Option<(Rect, Mode)> {
+    let size = window.inner_size();
+    if window.is_minimized() == Some(true) || size.width == 0 || size.height == 0 {
+        return None;
+    }
+    let scale = window.scale_factor();
+    let at = window.inner_position().unwrap_or_default();
+    let logical = (f64::from(at.x) / scale, f64::from(at.y) / scale, f64::from(size.width) / scale, f64::from(size.height) / scale);
+    let mode = if window.fullscreen().is_some() { Mode::Fullscreen } else { Mode::Normal };
+    Some((manager_window::game_units(logical, scale), mode))
+}
+
+/// Tells a Dock click on a running Manycraft with no window on screen to `told`: winit's application delegate does not
+/// answer it, so the answer is added to its class.
+#[cfg(target_os = "macos")]
+fn hear_reopen(told: async_channel::Sender<Told>) {
+    use objc2::Encode;
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+    static TOLD: std::sync::OnceLock<async_channel::Sender<Told>> = std::sync::OnceLock::new();
+    extern "C-unwind" fn reopen(_: &AnyObject, _: Sel, _: &AnyObject, visible: Bool) -> Bool {
+        if let Some(told) = TOLD.get().filter(|_| !visible.as_bool()) {
+            let _ = told.try_send(Told::Reopen);
+        }
+        Bool::NO
+    }
+    if TOLD.set(told).is_err() {
+        return;
+    }
+    let Some(class) = AnyClass::get(c"WinitApplicationDelegate") else { return };
+    let Ok(types) = std::ffi::CString::new(format!("{}{}{}{}{}", Bool::ENCODING, <&AnyObject>::ENCODING, Sel::ENCODING, <&AnyObject>::ENCODING, Bool::ENCODING)) else { return };
+    let imp: Imp = unsafe { std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel, &AnyObject, Bool) -> Bool, Imp>(reopen) };
+    unsafe { objc2::ffi::class_addMethod(std::ptr::from_ref(class).cast_mut(), objc2::sel!(applicationShouldHandleReopen:hasVisibleWindows:), imp, types.as_ptr()) };
+}
+
+/// Shows how many accounts need attention: on the Dock icon on macOS, in the window title on Linux.
+#[cfg(not(target_os = "windows"))]
+pub fn attention(count: usize) {
+    if ATTENTION.with(|a| a.replace(Some(count))) == Some(count) {
+        return;
+    }
+    use freya_winit::WinitPlatformExt;
+    let platform = freya::prelude::Platform::get();
+    platform.set_window_title(freya::prelude::Platform::window_id(), manager_window::title(count));
+    if !drive::fenced("badge", count) {
+        manager_window::set_badge(count);
+    }
+}
 
 /// How far outside every screen a driven window goes.
 const AWAY: i32 = 12_000;
@@ -47,7 +176,7 @@ pub fn place() -> Option<(Rect, Mode)> {
         Some((crate::core::game_window::win::frame(hwnd)?, mode))
     }
     #[cfg(not(target_os = "windows"))]
-    None
+    *PLACE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Gets the manager out of the way of the game that takes its place. A driven window stays, so agents keep seeing it.
@@ -60,6 +189,15 @@ pub fn hide(_place: Option<Place>) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, ShowWindow};
         unsafe { ShowWindow(hwnd, SW_SHOWMINNOACTIVE) };
     }
+    #[cfg(not(target_os = "windows"))]
+    with_window(|w| if cfg!(target_os = "macos") { w.set_visible(false) } else { w.set_minimized(true) });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn with_window(f: impl FnOnce(&mut Window) + 'static) {
+    use freya_winit::WinitPlatformExt;
+    let platform = freya::prelude::Platform::get();
+    platform.with_window(freya::prelude::Platform::window_id(), f);
 }
 
 /// Brings the manager back in front, in the place the game had.
@@ -77,7 +215,14 @@ pub fn show(place: Option<Place>) {
         unsafe { SetForegroundWindow(hwnd) };
     }
     #[cfg(not(target_os = "windows"))]
-    let _ = place;
+    {
+        let _ = place;
+        with_window(|w| {
+            w.set_visible(true);
+            w.set_minimized(false);
+            w.focus_window();
+        });
+    }
 }
 
 /// Moves a driven window outside every screen and off the taskbar before anyone sees it, still drawing.
@@ -161,11 +306,7 @@ pub fn stow() {
         unsafe { ShowWindow(hwnd, SW_HIDE) };
     }
     #[cfg(not(target_os = "windows"))]
-    {
-        use freya_winit::WinitPlatformExt;
-        let platform = freya::prelude::Platform::get();
-        platform.with_window(freya::prelude::Platform::window_id(), |w| w.set_minimized(true));
-    }
+    with_window(|w| w.set_minimized(true));
 }
 
 /// Brings a stowed manager window back; a driven one comes back without taking the focus.
@@ -179,13 +320,9 @@ pub fn unstow() {
         }
     }
     #[cfg(not(target_os = "windows"))]
-    {
-        use freya_winit::WinitPlatformExt;
-        let platform = freya::prelude::Platform::get();
-        platform.with_window(freya::prelude::Platform::window_id(), |w| {
-            w.set_visible(true);
-            w.set_minimized(false);
-        });
-    }
+    with_window(|w| {
+        w.set_visible(true);
+        w.set_minimized(false);
+    });
     show(None);
 }

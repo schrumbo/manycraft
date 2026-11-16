@@ -30,6 +30,7 @@ pub mod ipc;
 pub mod javas;
 pub mod launch;
 pub mod logs;
+pub mod manager_window;
 #[allow(dead_code)]
 pub mod lock;
 pub mod measured;

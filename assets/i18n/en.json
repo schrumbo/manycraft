@@ -1664,5 +1664,16 @@
   "Accounts als Tabelle": "Accounts as table",
   "Alle Proxys entfernen": "Remove all proxies",
   "Alle %lld auswählen": "Select all %lld",
-  "Die Accounts werden auch aus %@ entfernt.": "The accounts are also removed from %@."
+  "Die Accounts werden auch aus %@ entfernt.": "The accounts are also removed from %@.",
+  "Über Manycraft": "About Manycraft",
+  "Dienste": "Services",
+  "Manycraft ausblenden": "Hide Manycraft",
+  "Andere ausblenden": "Hide Others",
+  "Alle einblenden": "Show All",
+  "Ablage": "File",
+  "Fenster schließen": "Close Window",
+  "Spiele": "Games",
+  "Im Dock ablegen": "Minimize",
+  "Zoomen": "Zoom",
+  "Alle nach vorne bringen": "Bring All to Front"
 }

@@ -387,7 +387,7 @@ impl MainWindow {
             return;
         }
         self.title_count = Some(count);
-        let title = if count == 0 || cfg!(target_os = "macos") { "Manycraft".to_string() } else { format!("Manycraft ({count})") };
+        let title = crate::core::manager_window::title(count);
         window.set_window_title(&title);
     }
 
