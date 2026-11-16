@@ -346,6 +346,9 @@ struct Facts {
     running: bool,
     plain: Vec<Uuid>,
     stoppable: Vec<(String, String)>,
+    /// Games whose stop is overdue, which a stop now ends at once.
+    forceable: Vec<(String, String)>,
+    stopping: bool,
 }
 
 struct InstancePage {
@@ -638,14 +641,20 @@ impl InstancePage {
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
-        let mut stoppable: Vec<(String, String)> = live.iter().filter(|g| !g.stopping).map(|g| (g.key.clone(), g.name.clone())).collect();
-        stoppable.sort_by_key(|(_, name)| name.to_lowercase());
+        let named = |keep: &dyn Fn(&Game) -> bool| {
+            let mut games: Vec<(String, String)> = live.iter().filter(|g| keep(g)).map(|g| (g.key.clone(), g.name.clone())).collect();
+            games.sort_by_key(|(_, name)| name.to_lowercase());
+            games
+        };
+        let stoppable = named(&|g| !g.stopping);
+        let forceable = named(&|g| g.stopping && g.overdue);
+        let stopping = live.iter().any(|g| g.stopping);
         let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
         let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
         let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
         let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-        Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable })
+        Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable, forceable, stopping })
     }
 
     fn instance(&self, cx: &App) -> Option<Instance> {
@@ -1043,7 +1052,7 @@ impl InstancePage {
 
     fn stop_shown(&mut self, cx: &mut Context<Self>) {
         let Some(f) = self.facts(cx) else { return };
-        let key = f.shown.filter(|k| f.stoppable.iter().any(|(s, _)| s == k)).or_else(|| f.stoppable.first().map(|(k, _)| k.clone()));
+        let key = f.shown.filter(|k| f.stoppable.iter().any(|(s, _)| s == k)).or_else(|| f.stoppable.first().or(f.forceable.first()).map(|(k, _)| k.clone()));
         if let Some(key) = key {
             cx.dispatch_action(&Stop(key));
         }
@@ -1053,6 +1062,10 @@ impl InstancePage {
         let (mark, text, tick) = if let Some(done) = snapshots::progress(&self.id, cx) {
             (icon("archive-restore", iconsize::XS, t.secondary).into_any_element(), trf("Wird gesichert … %lld %", &[&((done * 100.).round() as u32)]), None)
         } else {
+            if f.stoppable.is_empty() && f.stopping {
+                let ring = div().size(px(shell::DOT)).flex_none().rounded(px(radius::FULL)).border_1().border_color(t.secondary).into_any_element();
+                return Some(chip(ring, tr("Wird gestoppt…"), t));
+            }
             let up = cx.try_global::<Uptime>()?;
             let since = f.stoppable.iter().filter_map(|(key, _)| up.0.get(key)).min().copied()?;
             let text = match (f.stoppable.len(), uptime_text(since)) {
@@ -1077,17 +1090,7 @@ impl InstancePage {
             })
             .detach();
         }
-        Some(
-            div()
-                .id("instance-status")
-                .mark("status", text.clone())
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(space::XS))
-                .child(mark)
-                .child(div().text_size(px(font::CALLOUT)).font_features(toolbar::tabular()).text_color(t.secondary).child(text)),
-        )
+        Some(chip(mark, text, t))
     }
 
     fn play_control(&self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> AnyElement {
@@ -1103,7 +1106,7 @@ impl InstancePage {
         };
         let rings = super::theme::rings(cx);
         let several = f.accounts.len() > 1;
-        let (instance, accounts, current, plain, stoppable) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone(), f.stoppable.clone());
+        let (instance, accounts, current, plain, stoppable, forceable) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone(), f.stoppable.clone(), f.forceable.clone());
         let stop_keys = super::palette::shortcut(&StopCurrent, cx);
         let menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
@@ -1119,17 +1122,15 @@ impl InstancePage {
                     menu.menu_element_with_check(current == Some(*account), action, account_row(name.clone(), kind, color, head, false))
                 };
             }
-            if several && !stoppable.is_empty() {
+            if several && !(stoppable.is_empty() && forceable.is_empty()) {
                 menu = menu.separator();
             }
-            match stoppable.as_slice() {
-                [] => {}
-                [(key, _)] => menu = menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Stoppen"), stop_keys.clone(), false)),
-                many => {
-                    for (key, name) in many {
-                        menu = menu.menu(trf("„%@“ stoppen", &[name]), Box::new(Stop(key.clone())));
-                    }
-                }
+            let one = stoppable.len() + forceable.len() == 1;
+            for (key, name) in &stoppable {
+                menu = if one { menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Stoppen"), stop_keys.clone(), false)) } else { menu.menu(trf("„%@“ stoppen", &[name]), Box::new(Stop(key.clone()))) };
+            }
+            for (key, name) in &forceable {
+                menu = if one { menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Sofort beenden"), stop_keys.clone(), false)) } else { menu.menu(trf("„%@“ sofort beenden", &[name]), Box::new(Stop(key.clone()))) };
             }
             menu
         };
@@ -1138,7 +1139,7 @@ impl InstancePage {
             let button = Button::new("play-menu").primary().small().h(px(control::M)).px(px(space::M)).focus_ring(rings).dropdown_caret(true).child(words(label.clone())).dropdown_menu(menu);
             return div().id("play").mark("button", label).flex_none().child(button).into_any_element();
         };
-        if !several && f.stoppable.is_empty() {
+        if !several && f.stoppable.is_empty() && f.forceable.is_empty() {
             return sheet::button("play", label, None, Look::Primary, false, false, t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)).into_any_element();
         }
         let main = Button::new("play-main")
@@ -1533,6 +1534,18 @@ impl Render for InstancePage {
 }
 
 /// A play menu row: the account's face, its name and what kind of account it is.
+fn chip(mark: AnyElement, text: String, t: &Theme) -> Stateful<Div> {
+    div()
+        .id("instance-status")
+        .mark("status", text.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(space::XS))
+        .child(mark)
+        .child(div().text_size(px(font::CALLOUT)).font_features(toolbar::tabular()).text_color(t.secondary).child(text))
+}
+
 fn account_row(name: String, detail: String, color: u8, head: Option<std::path::PathBuf>, disabled: bool) -> impl Fn(&mut Window, &mut App) -> AnyElement + 'static {
     move |_, cx| {
         let t = Theme::get(cx);

@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -53,6 +54,7 @@ final class Companion implements Bridge {
 	private final PreviewService preview;
 	private final GameIdentity identity = new GameIdentity();
 	private final OptionSync options = new OptionSync();
+	private final AtomicBoolean closing = new AtomicBoolean();
 	private final AudioPause audio = new AudioPause();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
@@ -223,17 +225,10 @@ final class Companion implements Bridge {
 	}
 
 	@Override
-	public boolean closeToGrid() {
-		BackgroundController bg = background;
-		if (bg == null || bg.hidden() || !GameWindow.shown(Minecraft.getInstance())) {
-			return false;
+	public void closeRequested() {
+		if (closing.compareAndSet(false, true)) {
+			send(Protocol.closing());
 		}
-		GameWindow.grantForeground();
-		if (!link.send(Protocol.hotkey("grid"))) {
-			return false;
-		}
-		GameWindow.of(Minecraft.getInstance()).keepOpen();
-		return true;
 	}
 
 	private void started(Minecraft mc) {

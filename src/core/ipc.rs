@@ -85,6 +85,8 @@ pub enum FromMod {
     Options { values: BTreeMap<String, String> },
     /// The game saved its `servers.dat`.
     Servers,
+    /// The player closed the game window; the game is quitting.
+    Closing,
 }
 
 /// Messages from the manager to the mod.

@@ -14,6 +14,8 @@
   "Alle": "All",
   "Starten": "Start",
   "Stoppen": "Stop",
+  "Sofort beenden": "Force Quit",
+  "„%@“ sofort beenden": "Force Quit “%@”",
   "Neuer Batch": "New batch",
   "Batches": "Batches",
   "%lld von %lld laufen": "%lld of %lld running",

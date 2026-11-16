@@ -91,6 +91,10 @@ final class Protocol {
 		return GSON.toJson(o);
 	}
 
+	static String closing() {
+		return GSON.toJson(message("closing"));
+	}
+
 	static String window(boolean visible, boolean focused) {
 		JsonObject o = message("window");
 		o.addProperty("visible", visible);

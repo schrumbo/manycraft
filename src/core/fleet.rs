@@ -39,8 +39,8 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const SRV_TIMEOUT: Duration = Duration::from_secs(1);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
-const QUIT_GRACE: Duration = Duration::from_secs(5);
-const CLOSE_GRACE: Duration = Duration::from_secs(30);
+/// How long a stopped game may take to save and quit before it is ended.
+const STOP_GRACE: Duration = Duration::from_secs(30);
 const QUIT_POLL: Duration = Duration::from_millis(100);
 const TURN_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
@@ -1119,28 +1119,26 @@ impl Fleet {
         self.stop_all(&keys);
     }
 
-    /// Asks the instances `keys` to quit together, and ends those that have not after a few seconds. A game without
-    /// Manycraft's mod is asked through its window and gets longer, so it can save its world.
+    /// Asks the instances `keys` to quit together, through Manycraft's mod or else their window, and ends those that
+    /// have not after [`STOP_GRACE`], so each can save its world.
     pub fn stop_all(&self, keys: &[String]) {
         for key in keys {
             self.line.leave(key);
         }
-        let mut closed = false;
         let asked: Vec<&String> = keys
             .iter()
             .filter(|k| self.is_running(k))
-            .filter(|k| {
-                self.ipc.send(k, &ipc::ToMod::Quit).is_ok() || {
-                    let asked = lock(&self.running).get(k.as_str()).is_some_and(|r| r.child.close());
-                    closed |= asked;
-                    asked
-                }
-            })
+            .filter(|k| self.ipc.send(k, &ipc::ToMod::Quit).is_ok() || lock(&self.running).get(k.as_str()).is_some_and(|r| r.child.close()))
             .collect();
-        let deadline = Instant::now() + if closed { CLOSE_GRACE } else { QUIT_GRACE };
+        let deadline = Instant::now() + STOP_GRACE;
         while asked.iter().any(|k| self.is_running(k)) && Instant::now() < deadline {
             std::thread::sleep(QUIT_POLL);
         }
+        self.kill(keys);
+    }
+
+    /// Ends the instances `keys` at once, without waiting for them to save.
+    pub fn kill(&self, keys: &[String]) {
         let mut running = lock(&self.running);
         for key in keys {
             if let Some(instance) = running.get_mut(key)
@@ -2457,6 +2455,22 @@ mod tests {
         client.join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(fleet.exit_code(&key), Some(Some(0)));
+    }
+
+    #[test]
+    fn kill_ends_a_game_at_once_without_asking_it_to_quit() {
+        let (fleet, _events) = Fleet::new().unwrap();
+        let exits = RefCell::default();
+        let tokens = RefCell::default();
+        let batch = target("A");
+        let alts = accounts(&["AltOne"]);
+        let key = fleet.launch_checked(&batch, &alts[0], &[], Instant::now(), launcher(&exits, &tokens)).unwrap();
+        assert!(fleet.is_running(&key));
+        let started = Instant::now();
+        fleet.kill(std::slice::from_ref(&key));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!fleet.is_running(&key));
+        assert_eq!(fleet.exit_code(&key), Some(Some(1)));
     }
 
     #[test]

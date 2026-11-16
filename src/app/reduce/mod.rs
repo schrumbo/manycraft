@@ -63,6 +63,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::ReconnectDue { key, generation } => games::reconnect_due(model, &key, generation, &mut out),
         Event::RestartDue { key, generation } => games::restart_due(model, &key, generation, &mut out),
+        Event::LinkLostDue { key } => games::link_lost_due(model, &key, &mut out),
         Event::JoinDue { key, generation, lines, delay } => games::join_due(model, key, generation, lines, delay, &mut out),
         Event::WaitingStartDue { key } => {
             if model.games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
@@ -113,7 +114,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
                 fleet::launch(model, &id, None, fleet::Kick::Bulk, &mut out);
             }
         }
-        Event::Stop(keys) => fleet::stop_keys(model, keys, &mut out),
+        Event::Stop(keys) => fleet::stop_or_kill(model, keys, &mut out),
+        Event::StopOverdue { key, generation } => fleet::stop_overdue(model, &key, generation, &mut out),
         Event::TakeOver(key) => fleet::take_over(model, &key, env.now, &mut out),
         Event::StopBatch(batch) => {
             let stopped = fleet::stoppable(model, Some(&batch));

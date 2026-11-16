@@ -538,6 +538,7 @@ fn data(i: &Game, m: &Model, selected: &Option<String>, picked: &HashSet<String>
         reason: reason(i, m),
         history: open.then(|| moments(&i.key, m)),
         stopping: i.stopping,
+        overdue: i.overdue,
         whispers: i.unread_whispers,
         preview: m.preview(&i.key).cloned(),
         live: m.live(&i.key),
