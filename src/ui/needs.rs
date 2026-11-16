@@ -109,7 +109,7 @@ pub fn chips(this: &MainWindow, batch: Option<&str>, cx: &mut Context<MainWindow
 }
 
 fn phone_link(t: &Theme) -> Stateful<Div> {
-    let label = tr("Aufs Handy …");
+    let label = tr("Aufs Handy…");
     div()
         .id("needs-phone")
         .mark("button", label.clone())

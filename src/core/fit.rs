@@ -54,7 +54,7 @@ pub fn private_mb(pid: u32) -> Option<u64> {
 #[cfg(any(target_os = "linux", test))]
 fn parse_smaps_rollup(text: &str) -> Option<u64> {
     let kb = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
-    let private = kb("Private_Clean:")? + kb("Private_Dirty:")? + kb("Private_Hugetlb:").unwrap_or(0);
+    let private = kb("Private_Clean:")? + kb("Private_Dirty:")? + kb("Private_Hugetlb:").unwrap_or(0) + kb("Swap:").unwrap_or(0);
     Some(private / 1024)
 }
 

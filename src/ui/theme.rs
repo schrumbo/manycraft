@@ -160,7 +160,6 @@ pub mod shell {
     pub const TOAST: f32 = 440.;
 }
 
-/// The command palette.
 pub mod phone_qr {
     use gpui_kit::Hsla;
 
@@ -182,6 +181,7 @@ pub mod shortcuts {
     pub const TWO_COLUMNS: f32 = 620.;
 }
 
+/// The command palette.
 pub mod palette {
     pub const WIDTH: f32 = 560.;
     /// Distance from the top of the window.

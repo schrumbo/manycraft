@@ -17,8 +17,8 @@ pub enum Section {
 /// A place inside Manycraft.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Route {
-    /// The tile of game `key`, selected and scrolled into view on its batch's grid.
-    Tile(String),
+    /// The tile of game `key` in `batch`, selected and scrolled into view; the batch's attention tiles when the game is gone.
+    Tile { batch: String, key: String },
     /// The grid of a batch, filtered to what needs attention.
     Attention(String),
     /// The chat, showing only whispers.
@@ -41,10 +41,13 @@ pub fn init(cx: &mut App) {
 pub fn go(route: Route, cx: &mut App) {
     match route {
         Route::Settings(section) => super::settings_window::open_at(section, cx),
-        Route::Tile(key) => {
-            let Some(batch) = model::get(cx).read(cx).games.get(&key).map(|i| i.batch_id.clone()) else { return };
+        Route::Tile { batch, key } => {
             super::state::show_grid(cx);
-            super::main_window::reveal_tile(&batch, key, cx);
+            if model::get(cx).read(cx).games.contains_key(&key) {
+                super::main_window::reveal_tile(&batch, key, cx);
+            } else {
+                super::main_window::select_batch(&batch, cx);
+            }
         }
         Route::Attention(batch) => {
             super::state::show_grid(cx);
@@ -68,7 +71,7 @@ pub fn of_notification(tag: &str, keys: &[String]) -> Option<Route> {
     }
     let batch = tag.strip_prefix("attention-")?;
     Some(match keys {
-        [key] => Route::Tile(key.clone()),
+        [key] => Route::Tile { batch: batch.to_owned(), key: key.clone() },
         _ => Route::Attention(batch.to_owned()),
     })
 }
@@ -81,7 +84,7 @@ mod tests {
     fn a_notification_about_one_game_opens_its_tile_and_one_about_many_the_batch() {
         let one = vec!["a".to_owned()];
         let two = vec!["a".to_owned(), "b".to_owned()];
-        assert_eq!(of_notification("attention-b1", &one), Some(Route::Tile("a".into())));
+        assert_eq!(of_notification("attention-b1", &one), Some(Route::Tile { batch: "b1".into(), key: "a".into() }));
         assert_eq!(of_notification("attention-b1", &two), Some(Route::Attention("b1".into())));
         assert_eq!(of_notification("attention-b1", &[]), Some(Route::Attention("b1".into())));
         assert_eq!(of_notification(crate::app::reduce::WHISPER_TAG, &one), Some(Route::Whispers));

@@ -114,9 +114,7 @@ struct SettingsView {
     scroll: ScrollHandle,
     error: Option<String>,
     phone: PhoneForm,
-    /// The part a link asked for, scrolled to on the next frame.
     jump: Option<Section>,
-    /// The part a link opened, outlined for a moment, and the generation of its timer.
     pointed: Option<(Section, u64)>,
     _subs: Vec<Subscription>,
 }
@@ -193,9 +191,8 @@ struct PhoneForm {
     tested: Option<Result<String, String>>,
     finding: bool,
     found: Option<Result<String, String>>,
-    /// Whether the secrets were read from the keychain, so an empty topic is really empty.
     loaded: bool,
-    /// Whether this window already made up an ntfy topic, so clearing it on purpose stays empty.
+    offered: bool,
     generated: bool,
 }
 
@@ -254,6 +251,7 @@ impl SettingsView {
             finding: false,
             found: None,
             loaded: false,
+            offered: false,
             generated: false,
         };
         cx.spawn_in(window, async move |this, cx| {
@@ -283,7 +281,11 @@ impl SettingsView {
     fn fill_topic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = &settings::active().phone;
         let topic = Field::Topic as usize;
-        if !current.enabled || current.service != Service::Ntfy || !self.phone.loaded || self.phone.generated || self.phone.errors[topic].is_some() || !self.phone.value(Field::Topic, cx).is_empty() {
+        if !current.enabled || current.service != Service::Ntfy || !self.phone.loaded || self.phone.offered || self.phone.errors[topic].is_some() {
+            return;
+        }
+        self.phone.offered = true;
+        if !self.phone.value(Field::Topic, cx).is_empty() {
             return;
         }
         self.phone.generated = true;
@@ -604,7 +606,6 @@ fn outlined_group(title: String, rows: Vec<Row>, footer: Option<String>, outline
         .children(footer.map(|f| div().px(px(space::XS)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(f)))
 }
 
-/// `text` as a QR code: dark modules on a light tile with a quiet zone, in both appearances, so every camera reads it.
 fn qr(text: &str, t: &Theme) -> Option<Div> {
     let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
     let n = code.width();

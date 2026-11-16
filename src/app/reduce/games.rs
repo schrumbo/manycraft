@@ -229,6 +229,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             m.set_hint(&key, |h| h.link_lost = false);
             m.session.pids.insert(key.clone(), pid);
             m.session.shots.remove(&key);
+            m.session.planned.remove(&key);
             if env.place_windows {
                 m.session.unplaced.insert(key.clone());
             }
@@ -272,6 +273,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     }
     let s = &mut m.session;
     s.pids.remove(&key);
+    s.usage.remove(&key);
     s.unplaced.remove(&key);
     s.joined.remove(&key);
     s.adopted.remove(&key);

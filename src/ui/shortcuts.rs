@@ -34,7 +34,6 @@ pub fn close(this: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWi
     cx.notify();
 }
 
-/// The keys of a shortcut as `palette::label` writes it, one cap each.
 fn caps(label: &str) -> Vec<String> {
     if cfg!(target_os = "macos") {
         let glyphs = label.chars().take_while(|c| "⌃⌥⇧⌘".contains(*c)).count();
@@ -46,7 +45,6 @@ fn caps(label: &str) -> Vec<String> {
     }
 }
 
-/// The sections of the overview: a title and its shortcuts as name and keys, bound ones only.
 fn sections(cx: &App) -> Vec<(String, Vec<(String, Vec<String>)>)> {
     let bound = |items: Vec<(String, Box<dyn Action>)>| -> Vec<(String, Vec<String>)> { items.into_iter().filter_map(|(label, action)| palette::shortcut(action.as_ref(), cx).map(|keys| (label, caps(&keys)))).collect() };
     let window = bound(vec![

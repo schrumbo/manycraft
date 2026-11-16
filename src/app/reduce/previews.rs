@@ -239,5 +239,9 @@ mod tests {
         let Some((_, Event::ShotsDue { generation })) = later(&fx).into_iter().find(|(_, e)| matches!(e, Event::ShotsDue { .. })) else { panic!("no plan after the reconnect") };
         let generation = *generation;
         assert_eq!(sent(&run(&mut m, &s, now, Event::ShotsDue { generation })), vec![(keys[0].as_str(), 1000, 320)]);
+        let fx = run(&mut m, &s, now, Event::Reports(vec![super::super::super::event::Report::Connected { key: keys[0].clone(), pid: 3 }]));
+        let Some((_, Event::ShotsDue { generation })) = later(&fx).into_iter().find(|(_, e)| matches!(e, Event::ShotsDue { .. })) else { panic!("no plan after a link drop that kept the process") };
+        let generation = *generation;
+        assert_eq!(sent(&run(&mut m, &s, now, Event::ShotsDue { generation })), vec![(keys[0].as_str(), 1000, 320)]);
     }
 }

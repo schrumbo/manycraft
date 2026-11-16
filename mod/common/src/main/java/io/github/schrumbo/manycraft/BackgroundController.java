@@ -198,8 +198,10 @@ final class BackgroundController {
 	}
 
 	void applyProfile(Protocol.Incoming.Profile update) {
+		Profile before = profile;
 		profile = profile.merge(update);
-		if (!visible) {
+		boolean changed = before.fps() != profile.fps() || before.renderDistance() != profile.renderDistance() || before.previewIntervalMs() != profile.previewIntervalMs();
+		if (!visible && changed) {
 			mode.enter();
 			capWorkers();
 		}

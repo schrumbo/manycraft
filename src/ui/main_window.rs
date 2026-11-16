@@ -67,7 +67,6 @@ pub struct MainWindow {
     pub(super) query: String,
     pub(super) grid: Grid,
     pub(super) palette: Option<super::palette::Palette>,
-    /// Whether the overview of every shortcut is open.
     pub(super) shortcuts: bool,
     fit: Option<(FitScope, Option<String>)>,
     saved: Saved,
