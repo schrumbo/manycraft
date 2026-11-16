@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
-use gpui_kit::component::{FocusableExt, WindowExt};
+use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;

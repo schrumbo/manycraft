@@ -27,6 +27,12 @@ import java.lang.constant.ClassDesc;
 import java.lang.constant.MethodTypeDesc;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.URL;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -36,6 +42,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * Rewrites the game classes the companion hooks into. Every hook checks that its method and call site exist; a missing
@@ -54,16 +62,17 @@ final class Patcher implements ClassFileTransformer {
 	private final Map<String, List<Hook>> hooks;
 
 	Patcher(Instrumentation inst) {
-		this(inst, Proxies.requested());
+		this(inst, Proxies.requested(), Hooks.headless());
 	}
 
-	Patcher(Instrumentation inst, boolean proxy) {
+	Patcher(Instrumentation inst, boolean proxy, boolean headless) {
 		this.inst = inst;
-		this.hooks = table(proxy);
+		this.hooks = table(proxy, headless);
 	}
 
 	/**
-	 * One change to one method: {@code method} with {@code descriptor} (null matches any) gets {@code edit}, which must
+	 * One change to one method: {@code method} with {@code descriptor} (null matches any, a trailing {@code *} matches the
+	 * rest, so a hook survives parameters added or dropped after the ones it reads) gets {@code edit}, which must
 	 * call {@code hit} at least once or the hook counts as missing. An {@code alternative} hook stands in for another
 	 * version's target and only counts when it hits; alternatives for one feature in one class count as missing only
 	 * when none of them hits.
@@ -72,6 +81,16 @@ final class Patcher implements ClassFileTransformer {
 		Hook(String feature, String method, String descriptor, Edit edit) {
 			this(feature, method, descriptor, edit, false);
 		}
+
+		boolean matches(MethodModel m) {
+			if (method != null && !m.methodName().equalsString(method)) {
+				return false;
+			}
+			if (descriptor == null) {
+				return true;
+			}
+			return descriptor.endsWith("*") ? m.methodType().stringValue().startsWith(descriptor.substring(0, descriptor.length() - 1)) : m.methodType().equalsString(descriptor);
+		}
 	}
 
 	interface Edit {
@@ -79,10 +98,19 @@ final class Patcher implements ClassFileTransformer {
 	}
 
 	static Map<String, List<Hook>> table(boolean proxy) {
+		return table(proxy, false);
+	}
+
+	/**
+	 * With {@code headless}, the frame hook may also skip the whole frame of a hidden game.
+	 */
+	static Map<String, List<Hook>> table(boolean proxy, boolean headless) {
 		Map<String, List<Hook>> t = new HashMap<>();
 		add(t, "net/minecraft/client/Minecraft",
 			new Hook("tick", "tick", "()V", tail(b -> b.aload(0).invokestatic(HOOKS, "tick", type(CD_void, CD_Object)))),
-			new Hook("frame", "renderFrame", "(Z)V", head(b -> b.aload(0).invokestatic(HOOKS, "frame", type(CD_void, CD_Object)))),
+			headless
+				? new Hook("frame", "renderFrame", "(Z)V", cancel(b -> b.aload(0).invokestatic(HOOKS, "frameOrSkip", type(CD_boolean, CD_Object))))
+				: new Hook("frame", "renderFrame", "(Z)V", head(b -> b.aload(0).invokestatic(HOOKS, "frame", type(CD_void, CD_Object)))),
 			new Hook("title", "createTitle", "()Ljava/lang/String;", head(b -> {
 				Label original = b.newLabel();
 				b.invokestatic(HOOKS, "title", type(CD_String)).dup().ifnull(original).areturn().labelBinding(original);
@@ -112,16 +140,16 @@ final class Patcher implements ClassFileTransformer {
 		add(t, "net/minecraft/client/multiplayer/ServerList",
 			new Hook("servers", "save", "()V", tail(b -> b.invokestatic(HOOKS, "serversSaved", type(CD_void)))));
 		add(t, "net/minecraft/client/gui/screens/ConnectScreen",
-			new Hook("connecting", "startConnecting", "(Lnet/minecraft/client/gui/screens/Screen;Lnet/minecraft/client/Minecraft;Lnet/minecraft/client/multiplayer/resolver/ServerAddress;Lnet/minecraft/client/multiplayer/ServerData;ZLnet/minecraft/client/multiplayer/TransferState;)V",
+			new Hook("connecting", "startConnecting", "(Lnet/minecraft/client/gui/screens/Screen;Lnet/minecraft/client/Minecraft;Lnet/minecraft/client/multiplayer/resolver/ServerAddress;Lnet/minecraft/client/multiplayer/ServerData;*",
 				head(b -> b.aload(3).invokestatic(HOOKS, "connecting", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/multiplayer/chat/ChatListener",
-			new Hook("chat", "handleSystemMessage", "(Lnet/minecraft/network/chat/Component;Z)V", head(b -> b.aload(1).iload(2).invokestatic(HOOKS, "systemChat", type(CD_void, CD_Object, CD_boolean)))),
+			new Hook("chat", "handleSystemMessage", "(Lnet/minecraft/network/chat/Component;Z*", head(b -> b.aload(1).iload(2).invokestatic(HOOKS, "systemChat", type(CD_void, CD_Object, CD_boolean)))),
 			new Hook("chat", "showMessageToPlayer", "(Lnet/minecraft/network/chat/ChatType$Bound;Lnet/minecraft/network/chat/PlayerChatMessage;Lnet/minecraft/network/chat/Component;Lcom/mojang/authlib/GameProfile;ZLjava/time/Instant;)Z",
 				head(b -> b.aload(1).aload(2).aload(3).aload(4).aload(6).invokestatic(HOOKS, "playerChat", type(CD_void, CD_Object, CD_Object, CD_Object, CD_Object, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Hud",
-			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/DeltaTracker;)V", tail(b -> b.aload(1).aload(2).invokestatic(HOOKS, "hud", type(CD_void, CD_Object, CD_Object)))));
+			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Gui",
-			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/DeltaTracker;)V", tail(b -> b.aload(1).aload(2).invokestatic(HOOKS, "hud", type(CD_void, CD_Object, CD_Object))), true));
+			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object))), true));
 		if (proxy) {
 			add(t, "io/netty/bootstrap/Bootstrap",
 				new Hook("proxy", "init", "(Lio/netty/channel/Channel;)V", head(b -> b.aload(1).invokestatic(HOOKS, "channel", type(CD_void, CD_Object)))));
@@ -181,7 +209,7 @@ final class Patcher implements ClassFileTransformer {
 			CodeTransform t = null;
 			for (int i = 0; i < list.size(); i++) {
 				Hook h = list.get(i);
-				if ((h.method() == null || m.methodName().equalsString(h.method())) && (h.descriptor() == null || m.methodType().equalsString(h.descriptor()))) {
+				if (h.matches(m)) {
 					AtomicInteger hit = hits[i];
 					CodeTransform next = h.edit().transform(hit::incrementAndGet);
 					t = t == null ? next : t.andThen(next);
@@ -259,11 +287,41 @@ final class Patcher implements ClassFileTransformer {
 	}
 
 	static ClassFile files(ClassLoader loader) {
-		ClassHierarchyResolver resolver = ClassHierarchyResolver.ofResourceParsing(loader == null ? ClassLoader.getSystemClassLoader() : loader)
+		ClassLoader own = loader == null ? ClassLoader.getSystemClassLoader() : loader;
+		ClassHierarchyResolver resolver = ClassHierarchyResolver.ofResourceParsing(desc -> resource(own, desc))
 			.orElse(ClassHierarchyResolver.ofResourceParsing(ClassLoader.getSystemClassLoader()))
 			.orElse(ClassHierarchyResolver.defaultResolver())
 			.cached();
 		return ClassFile.of(ClassFile.ClassHierarchyResolverOption.of(resolver));
+	}
+
+	/**
+	 * The class file behind {@code desc}, read past jar signatures a loader patched the classes under.
+	 */
+	static InputStream resource(ClassLoader loader, ClassDesc desc) {
+		String name = desc.descriptorString();
+		String path = name.substring(1, name.length() - 1) + ".class";
+		try (InputStream in = loader.getResourceAsStream(path)) {
+			return in == null ? null : new ByteArrayInputStream(in.readAllBytes());
+		} catch (SecurityException e) {
+			return unsigned(loader.getResource(path));
+		} catch (IOException e) {
+			return null;
+		}
+	}
+
+	private static InputStream unsigned(URL url) {
+		String s = url == null ? "" : url.toString();
+		int bang = s.indexOf("!/");
+		if (!s.startsWith("jar:") || bang < 0) {
+			return null;
+		}
+		try (JarFile jar = new JarFile(new File(URI.create(s.substring(4, bang))), false)) {
+			JarEntry entry = jar.getJarEntry(s.substring(bang + 2));
+			return entry == null ? null : new ByteArrayInputStream(jar.getInputStream(entry).readAllBytes());
+		} catch (IOException | IllegalArgumentException e) {
+			return null;
+		}
 	}
 
 	private static MethodTypeDesc type(ClassDesc ret, ClassDesc... params) {

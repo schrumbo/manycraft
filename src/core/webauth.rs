@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn a_window_that_ignores_the_close_is_killed_after_the_grace() {
-        let mut stuck = window(if cfg!(windows) { "Write-Output ready; Start-Sleep 60" } else { "echo ready; sleep 60" });
+        let stuck = window(if cfg!(windows) { "Write-Output ready; Start-Sleep 60" } else { "echo ready; sleep 60" });
         assert!(matches!(stuck.lines.recv_timeout(Duration::from_secs(30)), Ok(Reply::Ready)));
         let pid = stuck.child.id();
         let started = Instant::now();

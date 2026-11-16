@@ -7,6 +7,8 @@ package io.github.schrumbo.manycraft.agent;
 public interface Bridge {
 	void frame(Object minecraft);
 
+	boolean skipFrame(Object minecraft);
+
 	void tick(Object minecraft);
 
 	boolean beforeRender(Object renderer);
@@ -41,5 +43,5 @@ public interface Bridge {
 
 	void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt);
 
-	void hud(Object graphics, Object delta);
+	void hud(Object graphics);
 }

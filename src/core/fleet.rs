@@ -308,12 +308,6 @@ fn early_window_off(text: &str) -> String {
 "
 }
 
-/// The address of `server` ("host", "host:port", an IP or "[v6]:port"): a SRV record `_minecraft._tcp.<host>`
-/// when no port is given, then A/AAAA. Answers are kept for 60 s; a lookup gives up after 3 s.
-pub fn resolve(server: &str) -> Result<SocketAddr> {
-    resolve_all(server)?.into_iter().next().with_context(|| format!("{server} has no address"))
-}
-
 fn resolve_all(server: &str) -> Result<Vec<SocketAddr>> {
     static RESOLVER: OnceLock<Resolver<SystemDns>> = OnceLock::new();
     RESOLVER.get_or_init(|| Resolver::new(SystemDns::default())).resolve(server, Instant::now())
@@ -668,8 +662,6 @@ impl Clock for SystemClock {
 
 /// A started game process.
 pub struct RunningInstance {
-    /// The batch the game runs in; `None` when played alone.
-    pub batch: Option<String>,
     pub instance: String,
     pub account: Uuid,
     child: Box<dyn Process>,
@@ -788,7 +780,6 @@ impl Fleet {
             sync::register(&self.games, key, &run.instance, run.account);
             lock(&self.adopted).insert(key.clone(), run.token.clone());
             let instance = RunningInstance {
-                batch: run.batch.clone(),
                 instance: run.instance.clone(),
                 account: run.account,
                 child: Box::new(Adopted { process, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(&run.instance) }),
@@ -998,7 +989,6 @@ impl Fleet {
         }
         let logs = game_dir.join("logs");
         let instance = RunningInstance {
-            batch: target.batch.as_ref().map(|b| b.id.clone()),
             instance: target.instance.id.clone(),
             account: account.id,
             child,
@@ -1101,21 +1091,6 @@ impl Fleet {
     /// Keys of all instances that are running.
     pub fn running_keys(&self) -> Vec<String> {
         lock(&self.running).iter_mut().filter_map(|(k, r)| r.poll().then(|| k.clone())).collect()
-    }
-
-    /// Asks the instance `key` to quit, and ends it when it has not after a few seconds.
-    pub fn stop(&self, key: &str) -> Result<()> {
-        if !lock(&self.running).contains_key(key) {
-            bail!("instance {key} was not started");
-        }
-        self.stop_all(&[key.to_owned()]);
-        Ok(())
-    }
-
-    /// Stops every instance of the batch `batch_id`.
-    pub fn stop_batch(&self, batch_id: &str) {
-        let keys: Vec<String> = lock(&self.running).iter().filter(|(_, r)| r.batch.as_deref() == Some(batch_id)).map(|(k, _)| k.clone()).collect();
-        self.stop_all(&keys);
     }
 
     /// Asks the instances `keys` to quit together, through Manycraft's mod or else their window, and ends those that
@@ -2296,10 +2271,9 @@ mod tests {
         assert_eq!(fleet.exit_code(&keys[0]), Some(Some(3)));
         assert_eq!(lock(&fleet.running)[&keys[0]].pid, 1);
         assert_eq!(fleet.running_keys(), vec![keys[1].clone()]);
-        fleet.stop_batch(&batch.owner());
+        fleet.stop_all(&keys);
         assert!(!fleet.is_running(&keys[1]));
         assert_eq!(fleet.exit_code(&keys[1]), Some(Some(1)));
-        assert!(fleet.stop("nope").is_err());
     }
 
     #[test]
@@ -2467,7 +2441,7 @@ mod tests {
             }
         });
         let started = Instant::now();
-        fleet.stop(&key).unwrap();
+        fleet.stop_all(std::slice::from_ref(&key));
         client.join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(fleet.exit_code(&key), Some(Some(0)));

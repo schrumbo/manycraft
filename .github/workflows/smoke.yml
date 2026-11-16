@@ -20,35 +20,63 @@ jobs:
   releases:
     runs-on: ubuntu-latest
     outputs:
-      versions: ${{ steps.list.outputs.versions }}
-      latest: ${{ steps.list.outputs.latest }}
+      matrix: ${{ steps.decide.outputs.matrix }}
+      released: ${{ steps.list.outputs.released }}
+      upcoming: ${{ steps.list.outputs.upcoming }}
       run: ${{ steps.decide.outputs.run }}
     steps:
-      - name: List the releases the companion supports
+      - name: List the versions the companion supports
         id: list
         run: |
           curl -fsSL https://piston-meta.mojang.com/mc/game/version_manifest_v2.json -o manifest.json
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, re
-          releases = [v["id"] for v in json.load(open("manifest.json"))["versions"] if v["type"] == "release"]
+          manifest = json.load(open("manifest.json"))
+          ids = [v["id"] for v in manifest["versions"]]
+          kinds = {v["id"]: v["type"] for v in manifest["versions"]}
           def key(v):
               m = re.match(r"(\d+)\.(\d+)", v)
               return (int(m[1]), int(m[2])) if m else (0, 0)
-          wanted = [v for v in releases if key(v) >= (26, 1)]
-          print("versions=" + json.dumps(wanted))
-          print("latest=" + releases[0])
+          latest = manifest["latest"]["release"]
+          newest = manifest["latest"]["snapshot"]
+          matrix = [{"version": v, "optional": False} for v in ids if kinds[v] == "release" and key(v) >= (26, 1)]
+          upcoming = [v for v in ids[:ids.index(latest)] if re.search(r"-(pre|rc)-\d+$", v) and key(v) >= (26, 1)]
+          for v in upcoming[:1] + [newest]:
+              if key(v) >= (26, 1) and all(m["version"] != v for m in matrix):
+                  matrix.append({"version": v, "optional": True})
+          print("matrix=" + json.dumps(matrix))
+          print("released=" + latest)
+          print("upcoming=" + "+".join(m["version"] for m in matrix if m["optional"]))
           EOF
       - name: Seen this release already
         if: github.event_name == 'schedule'
-        id: seen
+        id: released
         uses: actions/cache/restore@v4
         with:
           path: seen
-          key: smoke-seen-${{ steps.list.outputs.latest }}
+          key: smoke-seen-release-${{ steps.list.outputs.released }}
+          lookup-only: true
+      - name: Seen these pre-releases and snapshots already
+        if: github.event_name == 'schedule'
+        id: upcoming
+        uses: actions/cache/restore@v4
+        with:
+          path: seen
+          key: smoke-seen-upcoming-${{ steps.list.outputs.upcoming }}
           lookup-only: true
       - name: Decide
         id: decide
-        run: echo "run=${{ github.event_name != 'schedule' || steps.seen.outputs.cache-hit != 'true' }}" >> "$GITHUB_OUTPUT"
+        env:
+          MATRIX: ${{ steps.list.outputs.matrix }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
+          RELEASED: ${{ steps.released.outputs.cache-hit == 'true' }}
+          UPCOMING: ${{ steps.upcoming.outputs.cache-hit == 'true' || steps.list.outputs.upcoming == '' }}
+        run: |
+          if [ "$SCHEDULED" = true ] && [ "$RELEASED" = true ]; then
+            if [ "$UPCOMING" = true ]; then MATRIX='[]'; else MATRIX=$(echo "$MATRIX" | jq -c 'map(select(.optional))'); fi
+          fi
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "run=$([ "$MATRIX" != '[]' ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: releases
@@ -82,7 +110,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJSON(needs.releases.outputs.versions) }}
+        include: ${{ fromJSON(needs.releases.outputs.matrix) }}
+    continue-on-error: ${{ matrix.optional }}
     runs-on: ubuntu-latest
     env:
       MANYCRAFT_HOME: ${{ github.workspace }}/home
@@ -118,11 +147,18 @@ jobs:
 
   seen:
     needs: [releases, smoke]
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' && needs.releases.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
-      - run: mkdir seen && echo '${{ needs.releases.outputs.latest }}' > seen/release
+      - run: mkdir seen && echo '${{ needs.releases.outputs.released }} ${{ needs.releases.outputs.upcoming }}' > seen/versions
       - uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: seen
-          key: smoke-seen-${{ needs.releases.outputs.latest }}
+          key: smoke-seen-release-${{ needs.releases.outputs.released }}
+      - uses: actions/cache/save@v4
+        if: needs.releases.outputs.upcoming != ''
+        continue-on-error: true
+        with:
+          path: seen
+          key: smoke-seen-upcoming-${{ needs.releases.outputs.upcoming }}

@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -57,7 +56,7 @@ final class GameIdentity {
 		hint = new Shown(text, 0);
 	}
 
-	void extractBadge(GuiGraphicsExtractor g, DeltaTracker delta) {
+	void extractBadge(GuiGraphicsExtractor g) {
 		Protocol.Incoming.Identity id = identity;
 		Minecraft mc = Minecraft.getInstance();
 		if (Compat.hudHidden(mc) || mc.getDebugOverlay().showDebugScreen()) {
