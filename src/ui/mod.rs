@@ -37,6 +37,7 @@ pub mod settings_window;
 pub mod sheet;
 pub mod sidebar;
 pub mod skin_sheet;
+pub mod snapshots;
 pub mod state;
 pub mod stills;
 pub mod tile;

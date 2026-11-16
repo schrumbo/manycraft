@@ -17,7 +17,7 @@ use super::forms::{self, Problem};
 use super::loader_version::{self, LoaderVersion, Picked};
 use super::mod_browser::Browser;
 use super::motion::Soft;
-use super::remote;
+use super::{remote, snapshots};
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
 use super::versions::{self as picker, VersionItem};
@@ -27,6 +27,7 @@ use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
 use crate::core::modrinth::{self, Update};
+use crate::core::snapshot::Reason;
 use crate::core::versions::{GameVersion, Kind};
 
 const DEFAULT_TITLES: [(&str, &str); 6] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton"), ("sodium", "Sodium")];
@@ -356,6 +357,19 @@ impl InstanceSheet {
     }
 
     pub(super) fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
+        let Some(Load::Ready(list)) = &self.updates else { return };
+        let Some(id) = self.setup.as_ref().map(|i| i.id.clone()) else { return };
+        let n = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).count();
+        if n == 0 || !self.updating.is_empty() || self.saving {
+            return;
+        }
+        let sheet = cx.entity().downgrade();
+        snapshots::before(&id, Reason::ModUpdates(n), cx, move |cx| {
+            let _ = sheet.update(cx, |s, cx| s.apply_updates_now(only, cx));
+        });
+    }
+
+    fn apply_updates_now(&mut self, only: Option<String>, cx: &mut Context<Self>) {
         let Some(Load::Ready(list)) = &self.updates else { return };
         let Some(id) = self.setup.as_ref().map(|i| i.id.clone()) else { return };
         let selection: Vec<Update> = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
@@ -958,7 +972,7 @@ impl InstanceSheet {
         if self.version != original.game_version {
             return Some(col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Updates gibt es nach dem Sichern der neuen Version."))));
         }
-        let busy = !self.updating.is_empty();
+        let busy = !self.updating.is_empty() || snapshots::progress(&original.id, cx).is_some();
         let count = match &self.updates {
             Some(Load::Ready(list)) => list.iter().filter(|u| !self.applied.contains(&u.current.project_id)).count(),
             _ => 0,

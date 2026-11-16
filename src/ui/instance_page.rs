@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMods, CloneInstance, CreateShortcut, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch};
+use super::actions::{AddAccount, AddMods, CloneInstance, CreateShortcut, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch, Stop, StopCurrent};
 use super::batch_sheet::Load;
 use super::mod_list::ModList;
 use super::drive::Mark;
@@ -28,9 +28,10 @@ use super::sheet::{self, Look};
 use super::undo::Edit;
 use super::versions::{self as picker, VersionItem};
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
-use super::toolbar;
+use super::{snapshots, toolbar};
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented, tip};
 use crate::core::batch::ModRef;
+use crate::core::snapshot::Reason;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, LOADERS, Loader};
 use crate::core::options::check_jvm_args;
@@ -59,7 +60,35 @@ pub fn init(cx: &mut App) {
         let (id, setting) = (a.instance.clone(), a.setting.clone());
         cx.defer(move |cx| open_setting(&id, &setting, cx));
     });
-    cx.bind_keys([KeyBinding::new("f2", RenameCurrent, Some(PAGE_CONTEXT))]);
+    let stop = if cfg!(target_os = "macos") { "cmd-." } else { "ctrl-." };
+    cx.bind_keys([KeyBinding::new("f2", RenameCurrent, Some(PAGE_CONTEXT)), KeyBinding::new(stop, StopCurrent, Some(PAGE_CONTEXT))]);
+    cx.set_global(Uptime::default());
+    cx.observe(&model::get(cx), |_, cx| track_uptime(cx)).detach();
+}
+
+#[derive(Default)]
+struct Uptime(std::collections::HashMap<String, Instant>);
+
+impl Global for Uptime {}
+
+fn track_uptime(cx: &mut App) {
+    let running: Vec<String> = model::get(cx).read(cx).games.values().filter(|g| g.phase.is_running()).map(|g| g.key.clone()).collect();
+    let now = Instant::now();
+    let up = cx.default_global::<Uptime>();
+    up.0.retain(|key, _| running.contains(key));
+    for key in running {
+        up.0.entry(key).or_insert(now);
+    }
+}
+
+/// "12 Min." or "1 Std. 24 Min." since `since`.
+fn uptime_text(since: Instant) -> String {
+    let minutes = since.elapsed().as_secs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, m) => trf("%lld Min.", &[&m]),
+        (h, 0) => trf("%lld Std.", &[&h]),
+        (h, m) => trf("%1$lld Std. %2$lld Min.", &[&h, &m]),
+    }
 }
 
 /// Shows the page of instance `id` and starts renaming it there.
@@ -292,6 +321,8 @@ struct Facts {
     shown: Option<String>,
     running: bool,
     plain: Vec<Uuid>,
+    /// Games of this instance played alone that can be stopped, by key and account name.
+    stoppable: Vec<(String, String)>,
 }
 
 struct InstancePage {
@@ -325,6 +356,7 @@ struct InstancePage {
     queue: VecDeque<(String, Job)>,
     in_flight: Option<(String, Job)>,
     switching: Option<Busy>,
+    uptime_armed: bool,
     notes: Vec<String>,
     error: Option<Problem>,
     rename_error: Option<Problem>,
@@ -357,10 +389,16 @@ impl InstancePage {
             cx.observe(&model::get(cx), |_, _, cx| cx.notify()),
             cx.subscribe(&jvm, committed),
             cx.subscribe(&loader_version, |s: &mut Self, picker, _: &Picked, cx| {
-                if s.instance(cx).is_some_and(|made| made.loader.takes_mods()) {
-                    let pinned = picker.read(cx).pinned();
-                    s.enqueue(Job::Save(Change::LoaderVersion(pinned)), cx);
+                let Some(made) = s.instance(cx).filter(|made| made.loader.takes_mods()) else { return };
+                let pinned = picker.read(cx).pinned();
+                if made.loader.version() == pinned.as_deref() {
+                    return;
                 }
+                let target = pinned.as_ref().map_or_else(|| made.loader.name().to_owned(), |v| format!("{} {v}", made.loader.name()));
+                let page = cx.entity().downgrade();
+                snapshots::before(&s.id, Reason::LoaderUpdate(target), cx, move |cx| {
+                    let _ = page.update(cx, |s, cx| s.enqueue(Job::Save(Change::LoaderVersion(pinned)), cx));
+                });
             }),
             cx.subscribe_in(&name, window, |s: &mut Self, _, e: &InputEvent, window, cx| match e {
                 InputEvent::PressEnter { .. } => {
@@ -419,6 +457,7 @@ impl InstancePage {
             queue: VecDeque::new(),
             in_flight: None,
             switching: None,
+            uptime_armed: false,
             notes: Vec::new(),
             error: None,
             rename_error: None,
@@ -524,12 +563,14 @@ impl InstancePage {
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
+        let mut stoppable: Vec<(String, String)> = live.iter().filter(|g| !g.stopping).map(|g| (g.key.clone(), g.name.clone())).collect();
+        stoppable.sort_by_key(|(_, name)| name.to_lowercase());
         let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
         let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
         let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
         let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-        Some(Facts { made, batches, accounts, solo, shown, running, plain })
+        Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable })
     }
 
     fn instance(&self, cx: &App) -> Option<Instance> {
@@ -808,8 +849,7 @@ impl InstancePage {
 
     fn ask_switch(&mut self, switch: Switch, window: &mut Window, cx: &mut Context<Self>) {
         if self.instance(cx).is_some_and(|made| made.mods.is_empty()) {
-            self.notes.clear();
-            self.enqueue(Job::Switch(switch), cx);
+            self.switch_safely(switch, cx);
             return;
         }
         let title = match &switch {
@@ -821,7 +861,22 @@ impl InstancePage {
             let switch = switch.clone();
             let _ = page.update(cx, |s, cx| {
                 if !s.blocked(cx) {
-                    s.notes.clear();
+                    s.switch_safely(switch, cx);
+                }
+            });
+        });
+    }
+
+    fn switch_safely(&mut self, switch: Switch, cx: &mut Context<Self>) {
+        self.notes.clear();
+        let reason = match &switch {
+            Switch::Version(v) => Reason::Version(v.clone()),
+            Switch::Loader(l) => Reason::Loader(l.name().to_owned()),
+        };
+        let page = cx.entity().downgrade();
+        snapshots::before(&self.id, reason, cx, move |cx| {
+            let _ = page.update(cx, |s, cx| {
+                if !s.blocked(cx) {
                     s.enqueue(Job::Switch(switch), cx);
                 }
             });
@@ -906,7 +961,55 @@ impl InstancePage {
             .child(toolbar::slot())
             .child(icon_tile)
             .child(title)
+            .children(self.status_chip(f, cx, t))
             .child(div().flex_none().flex().items_center().gap(px(space::S)).child(self.batch_control(f, cx, t)).child(self.play_control(f, cx, t)))
+    }
+
+    fn stop_shown(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = self.facts(cx) else { return };
+        let key = f.shown.filter(|k| f.stoppable.iter().any(|(s, _)| s == k)).or_else(|| f.stoppable.first().map(|(k, _)| k.clone()));
+        if let Some(key) = key {
+            cx.dispatch_action(&Stop(key));
+        }
+    }
+
+    fn status_chip(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Option<Stateful<Div>> {
+        let (mark, text, tick) = if let Some(done) = snapshots::progress(&self.id, cx) {
+            (icon("archive-restore", iconsize::XS, t.secondary).into_any_element(), trf("Wird gesichert … %lld %", &[&((done * 100.).round() as u32)]), None)
+        } else {
+            let up = cx.try_global::<Uptime>()?;
+            let since = f.stoppable.iter().filter_map(|(key, _)| up.0.get(key)).min().copied()?;
+            let text = match f.stoppable.len() {
+                1 => trf("Läuft · %@", &[&uptime_text(since)]),
+                n => trf("%1$lld laufen · %2$@", &[&n, &uptime_text(since)]),
+            };
+            let dot = div().size(px(shell::DOT)).flex_none().rounded(px(radius::FULL)).bg(t.success).into_any_element();
+            (dot, text, Some(std::time::Duration::from_secs(60 - since.elapsed().as_secs() % 60)))
+        };
+        if let Some(wait) = tick
+            && !self.uptime_armed
+        {
+            self.uptime_armed = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |s, cx| {
+                    s.uptime_armed = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        Some(
+            div()
+                .id("instance-status")
+                .mark("status", text.clone())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(space::XS))
+                .child(mark)
+                .child(div().text_size(px(font::CALLOUT)).font_features(toolbar::tabular()).text_color(t.secondary).child(text)),
+        )
     }
 
     fn play_control(&self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> AnyElement {
@@ -921,16 +1024,29 @@ impl InstancePage {
             (None, None) => (tr("Spielen"), None),
         };
         let rings = super::theme::rings(cx);
-        let (instance, accounts, current, plain) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone());
+        let several = f.accounts.len() > 1;
+        let (instance, accounts, current, plain, stoppable) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone(), f.stoppable.clone());
         let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
-            for (account, name) in &accounts {
+            for (account, name) in accounts.iter().filter(|_| several) {
                 let action = Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) });
                 menu = if plain.contains(account) {
                     menu.menu_element_with_disabled(action, true, super::palette::menu_row(name.clone(), Some(tr("Läuft · ohne Vorschau")), true))
                 } else {
                     menu.menu_with_check(name.clone(), current == Some(*account), action)
                 };
+            }
+            if several && !stoppable.is_empty() {
+                menu = menu.separator();
+            }
+            match stoppable.as_slice() {
+                [] => {}
+                [(key, _)] => menu = menu.menu(tr("Stoppen"), Box::new(Stop(key.clone()))),
+                many => {
+                    for (key, name) in many {
+                        menu = menu.menu(trf("„%@“ stoppen", &[name]), Box::new(Stop(key.clone())));
+                    }
+                }
             }
             menu
         };
@@ -939,7 +1055,7 @@ impl InstancePage {
             let button = Button::new("play-menu").primary().small().h(px(control::M)).px(px(space::M)).focus_ring(rings).dropdown_caret(true).child(words(label.clone())).dropdown_menu(menu);
             return div().id("play").mark("button", label).flex_none().child(button).into_any_element();
         };
-        if f.accounts.len() < 2 {
+        if !several && f.stoppable.is_empty() {
             return sheet::button("play", label, None, Look::Primary, false, false, t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)).into_any_element();
         }
         let main = Button::new("play-main")
@@ -952,7 +1068,7 @@ impl InstancePage {
             .focus_ring(rings)
             .child(words(label.clone()))
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx));
-        let chevron_label = tr("Anderer Account");
+        let chevron_label = if several { tr("Anderer Account") } else { tr("Weitere Aktionen") };
         let chevron = Button::new("play-menu")
             .primary()
             .small()
@@ -1271,7 +1387,7 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
 impl Render for InstancePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
+        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &StopCurrent, _, cx| s.stop_shown(cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
         if let Some(WantsTab(id, tab)) = cx.try_global::<WantsTab>()
             && *id == self.id

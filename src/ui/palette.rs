@@ -9,7 +9,7 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectMany, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway,
-    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut, Stop, StopCurrent,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -521,6 +521,15 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     if let Page::Instance(shown) = &this.page
         && let Some(made) = m.instances.iter().find(|i| &i.id == shown)
     {
+        let mut live: Vec<_> = m.solo_games(&made.id).filter(|g| g.phase.is_active() && !g.stopping).collect();
+        live.sort_by_cached_key(|g| g.name.to_lowercase());
+        let several = live.len() > 1;
+        for g in live {
+            let label = if several { trf("„%@“ stoppen", &[&g.name]) } else { tr("Stoppen") };
+            let mut stop = entry(Group::Instances, "square", label, Some(made.name.clone()), Box::new(Stop(g.key.clone())), cx);
+            stop.keys = shortcut(&StopCurrent, cx).filter(|_| !several);
+            out.push(stop);
+        }
         let settings = [
             ("memory-stick", tr("Arbeitsspeicher einstellen"), "memory", true),
             ("coffee", tr("Java wählen"), "java", true),

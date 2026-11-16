@@ -37,6 +37,14 @@ pub struct OpenWorldFolder(pub String);
 #[action(namespace = manycraft)]
 pub struct BackUpWorld(pub String);
 
+/// Puts snapshot `id` of instance `instance` back, after asking.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct RestoreSnapshot {
+    pub instance: String,
+    pub id: String,
+}
+
 /// Restores the backup zip at this path, after asking.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

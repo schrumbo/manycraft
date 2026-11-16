@@ -51,6 +51,7 @@ pub mod ratelimit;
 pub mod reconnect;
 pub mod scrub;
 pub mod skins;
+pub mod snapshot;
 pub mod stagger;
 #[allow(dead_code)]
 pub mod settings;

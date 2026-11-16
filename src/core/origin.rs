@@ -13,7 +13,7 @@ const DIR: &str = "origin";
 const FILE: &str = "origin.json";
 const PACKS: [&str; 3] = ["config", "resourcepacks", "shaderpacks"];
 const SWAPPED: [&str; 4] = ["mods", "config", "resourcepacks", "shaderpacks"];
-const MODS_LOCK: &str = "mods.lock";
+pub(super) const MODS_LOCK: &str = "mods.lock";
 const SUFFIX: &str = ".reset";
 pub(super) const KEEP: &str = ".keep";
 
