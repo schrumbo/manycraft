@@ -37,11 +37,18 @@ const ATTENTION_EDGE: f32 = 1.5;
 const EDGE: (f32, f32) = (1., 2.);
 const LABEL_GAP: f32 = 1.;
 
-fn wants_dark(appearance: Appearance) -> bool {
+fn label(th: &themes::Theme) -> String {
+    match th.origin {
+        Origin::BuiltIn => tr(&th.name),
+        Origin::User(_) => th.name.clone(),
+    }
+}
+
+fn wants_dark(appearance: Appearance, shown: bool) -> bool {
     match appearance {
         Appearance::Light => false,
         Appearance::Dark => true,
-        Appearance::System => *Platform::get().current_window().preferred_theme.peek() == PreferredTheme::Dark,
+        Appearance::System => shown,
     }
 }
 
@@ -79,12 +86,12 @@ impl Component for LookGroup {
         let mode = Line::new("settings.look.row", tr("Hell oder dunkel"))
             .control(Segmented::new(tr("Hell oder dunkel"), segments, at).on_choose(move |i| choose(p, look, modes[i.min(2)], theme_id.clone())))
             .into_element();
-        let dark = wants_dark(appearance);
+        let dark = wants_dark(appearance, t.dark);
         let mut pick = Line::new("settings.theme.row", tr("Theme")).below(Picker { library: library.clone(), chosen: chosen.clone(), dark, appearance });
         if let Some(c) = library.get(&chosen)
             && !c.has(dark)
         {
-            pick = pick.hint(if dark { trf("%@ gibt es nur hell.", &[&c.name]) } else { trf("%@ gibt es nur dunkel.", &[&c.name]) });
+            pick = pick.hint(if dark { trf("%@ gibt es nur hell.", &[&label(c)]) } else { trf("%@ gibt es nur dunkel.", &[&label(c)]) });
         }
         let template = library.get(&chosen).cloned();
         let own = Line::new("settings.theme.own", tr("Eigene Themes"))
@@ -240,7 +247,7 @@ impl Component for Card {
         let mut hovered = use_state(|| false);
         let mut pressed = use_state(|| false);
         let th = &self.theme;
-        let spot = use_spot(&format!("settings.theme.{}", th.id.replace('/', ".")), "radio", &th.name, true);
+        let spot = use_spot(&format!("settings.theme.{}", th.id.replace('/', ".")), "radio", &label(th), true);
         let pal = th.palette(self.dark);
         let c = |k: Token| color(pal.get(k));
         let r = (th.radius * ROUND.0).clamp(0., ROUND.1);
@@ -304,14 +311,14 @@ impl Component for Card {
             _ => tr("Nur hell"),
         };
         let kind = if matches!(th.origin, Origin::User(_)) { format!("{kind} · {}", tr("Eigenes")) } else { kind };
-        let mut name = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS).child(line(&t, th.name.clone(), font::CALLOUT, t.text1).font_weight(if self.on { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM }).width(Size::flex(1.))).content(Content::flex());
+        let mut name = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS).child(line(&t, label(th), font::CALLOUT, t.text1).font_weight(if self.on { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM }).width(Size::flex(1.))).content(Content::flex());
         if self.on {
             name = name.child(icon(&t, Icon::Check, iconsize::S, t.accent_text));
         }
         let press = self.on_press.clone();
         rect()
             .a11y_role(AccessibilityRole::RadioButton)
-            .a11y_alt(th.name.clone())
+            .a11y_alt(label(th))
             .width(Size::flex(1.))
             .spacing(space::XS)
             .cursor(CursorIcon::Pointer)

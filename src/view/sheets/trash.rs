@@ -281,7 +281,7 @@ impl Component for Trash {
         }
         let done = Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(store.ui)) };
         let busy = *emptying.read();
-        let mut card = Card::new("trash", tr("Papierkorb")).body(content).primary(done).primary_id("trash.done").locked(busy.then(|| tr("Wird geleert …"))).width(frame::SHEET);
+        let mut card = Card::new("trash", tr("Papierkorb")).body(content).primary(done).primary_id("trash.done").inform().locked(busy.then(|| tr("Wird geleert …"))).width(frame::SHEET);
         if let Some(s) = subtitle {
             card = card.message(s);
         }
