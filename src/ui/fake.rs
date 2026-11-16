@@ -167,7 +167,7 @@ impl Sim {
                 }
             }
             Cmd::Start(target, accounts, cancel) => {
-                let plain = !crate::core::companion::available(&target.instance.loader, &target.instance.game_version);
+                let plain = !crate::core::companion::available(&target.instance.game_version);
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
                     let after = STAGGER * n as u32;

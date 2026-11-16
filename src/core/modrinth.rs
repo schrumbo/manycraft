@@ -975,7 +975,7 @@ fn needs_fabric_api(instance: &Instance) -> bool {
 
 /// Makes the instance's mod folder hold exactly its mods: downloads missing or changed files (SHA-1 checked),
 /// then deletes `.jar` files directly in the folder that are neither in the list nor in `local_mods`. Returns how many were downloaded.
-/// On Fabric and Quilt, Fabric API is added for the sync when the instance does not list it, since the companion mod depends on it.
+/// On Fabric and Quilt, Fabric API is added for the sync when the instance does not list it, since most of their mods need it.
 pub fn sync_mods(instance: &Instance) -> Result<usize> {
     with_mods_lock(&instance.dir(), || sync_locked(&saved(instance)))
 }
@@ -1010,7 +1010,7 @@ fn sync_locked(instance: &Instance) -> Result<usize> {
             _ => match resolve(FABRIC_API, &instance.game_version, &instance.loader) {
                 Ok(found) => mods.push(found),
                 Err(e) if net::no_connection(&e) && present.is_some() => local.extend(present),
-                Err(e) => return Err(e.context("the companion mod needs Fabric API, which could not be found")),
+                Err(e) => return Err(e.context("Fabric API could not be found")),
             },
         }
     }

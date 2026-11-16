@@ -4,9 +4,9 @@ Rust/GPUI desktop app that runs many Minecraft instances behind one window, plus
 
 ## Commands
 
-- Check everything: `.claude/bin/gate` (clippy and UI lint on changed lines, tests, and the mod build when `mod/` changed)
+- Check everything: `.claude/bin/gate` (clippy and UI lint on changed lines, tests, and the mod or agent build when `mod/` or `agent/` changed)
 - Tests: `cargo nextest run`, or `cargo test`
-- Mod: `./gradlew build` in `mod/`
+- Companion agent: `./gradlew build` in `agent/` (frozen mod: same in `mod/`)
 - Developer CLI: `cargo run -- login`, `cargo run -- launch --version 26.3`
 - Local offline-mode server for tests with offline accounts: `.claude/bin/testserver start|status|cmd <command>|stop` (RCON, e.g. `cmd kick Dev Test`, `cmd tell Dev hi`). Test with offline accounts; there is no Microsoft account to test with.
 - Every test client starts muted: `soundCategory_master:0.0` in the batch options template (`batches/<id>/options.txt` under `MANYCRAFT_HOME`) before launch. The key is shared across a batch, so a game dir `options.txt` alone does not survive the next start.

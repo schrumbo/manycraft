@@ -489,6 +489,11 @@ impl BatchSheet {
     fn render_instance(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
         let active = self.active(cx);
         let caption = self.original.as_ref().filter(|b| self.instance.as_ref() != Some(&b.instance_id)).and_then(|b| super::model::get(cx).read(cx).instance(&b.instance_id).map(|i| trf("Welten und Screenshots bleiben bei %@.", &[&i.name])));
+        let hint = self.instance.as_deref().and_then(|id| super::model::get(cx).read(cx).instance(id).and_then(|i| super::instance_sheet::companion_hint(&i.game_version)));
+        let caption = match (caption, hint) {
+            (Some(caption), Some(hint)) => Some(format!("{caption}\n{hint}")),
+            (caption, hint) => caption.or(hint),
+        };
         let select = Select::new(&self.instance_select).menu_max_h(px(self.list_max)).search_placeholder(tr("Instanz suchen")).disabled(active || self.saving);
         let picker = match (active, self.saving) {
             (true, _) => sheet::unavailable_over("batch-instance-locked", select, tr("Stoppe zuerst die laufenden Spiele.")),
@@ -511,7 +516,7 @@ impl BatchSheet {
                     if self.saving { sheet::unavailable_over("batch-version-locked", select, tr("Wird gerade gesichert …")) } else { div().child(select) }
                 }
             };
-            col = col.child(sheet::field(tr("Minecraft-Version"), control, None, version_problem.filter(|_| self.tried), t));
+            col = col.child(sheet::field(tr("Minecraft-Version"), control, super::instance_sheet::companion_hint(&self.version), version_problem.filter(|_| self.tried), t));
         }
         col
     }

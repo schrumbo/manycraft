@@ -758,7 +758,7 @@ impl InstanceSheet {
                     .flex()
                     .gap(px(space::M))
                     .child(div().flex_1().min_w_0().child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Name"), t)).child(Input::new(&self.name)).child(sheet::note(None, name_problem, t).min_h(px(font::CAPTION * font::LINE * 2.)))))
-                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, None, version_problem, t))),
+                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, companion_hint(&self.version), version_problem, t))),
             )
             .child(self.render_loader(cx, t));
         if self.has_mods() {
@@ -778,11 +778,7 @@ impl InstanceSheet {
             Some(why) => sheet::unavailable_over("instance-loaders-locked", control, why).into_any_element(),
             None => control.into_any_element(),
         };
-        let mut col = div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Loader"), t)).child(div().flex().child(control));
-        if let Some(hint) = companion_hint(&self.loader, &self.version) {
-            col = col.child(sheet::status("info", t.secondary, hint));
-        }
-        col
+        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Loader"), t)).child(div().flex().child(control))
     }
 
     fn render_advanced(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -1144,15 +1140,9 @@ fn name_problem(name: &str, taken: &[&str]) -> Option<String> {
     taken.iter().any(|t| t.trim().to_lowercase() == lower).then(|| trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name]))
 }
 
-/// Why games of `loader` on `game` run without Manycraft's mod, or nothing when they have it.
-pub(super) fn companion_hint(loader: &Loader, game: &str) -> Option<String> {
-    if game.is_empty() || companion::available(loader, game) {
-        return None;
-    }
-    Some(match loader {
-        Loader::Vanilla => trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&loader.name()]),
-        _ => trf("Für %@ mit Minecraft %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&loader.name(), &game]),
-    })
+/// The quiet line under a version the companion does not reach, or nothing when games of `game` have it.
+pub(super) fn companion_hint(game: &str) -> Option<String> {
+    (!game.is_empty() && !companion::available(game)).then(|| trf("Hintergrundmodus ab %@", &[&companion::first()]))
 }
 
 fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> remote::InstanceEdit {
