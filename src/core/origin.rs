@@ -13,8 +13,10 @@ const DIR: &str = "origin";
 const FILE: &str = "origin.json";
 const PACKS: [&str; 3] = ["config", "resourcepacks", "shaderpacks"];
 const SWAPPED: [&str; 4] = ["mods", "config", "resourcepacks", "shaderpacks"];
-const MODS_LOCK: &str = "mods.lock";
+pub(super) const MODS_LOCK: &str = "mods.lock";
 const SUFFIX: &str = ".reset";
+/// The instance before and right after the reset that made a trash entry, kept inside it.
+pub(super) const RESET_META: &str = "reset.json";
 pub(super) const KEEP: &str = ".keep";
 
 /// The mods, version and loader an instance was created with; its config and packs sit in the same folder.
@@ -177,8 +179,23 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
             Err(rollback) => rollback.context(format!("{e:#}")),
         });
     }
+    remember(&trash, made, &next);
     let _ = super::content::drop_state(&dir);
     Ok((next, entry))
+}
+
+/// The instance before and right after a reset, as its trash entry keeps them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResetMeta {
+    pub before: Instance,
+    pub after: Instance,
+}
+
+fn remember(entry: &Path, before: &Instance, after: &Instance) {
+    let meta = ResetMeta { before: before.clone(), after: after.clone() };
+    if let Err(e) = serde_json::to_vec(&meta).map_err(anyhow::Error::from).and_then(|bytes| std::fs::write(entry.join(RESET_META), bytes).map_err(Into::into)) {
+        eprintln!("reset trash {}: {e:#}", entry.display());
+    }
 }
 
 /// Puts back what [`reset`] moved into trash entry `entry`, keeps what is in the instance now in a trash entry of its
@@ -208,6 +225,8 @@ pub(super) fn unreset_in(root: &Path, now: &Instance, before: &Instance, entry: 
             Err(rollback) => rollback.context(format!("{e:#}")),
         });
     }
+    remember(&kept, now, &next);
+    let _ = std::fs::remove_file(from.join(RESET_META));
     let _ = std::fs::remove_dir(&from);
     Ok(next)
 }
@@ -353,7 +372,12 @@ mod tests {
         let folder = root.join(&made.id);
         let now = mess_up(root, &made);
         let (after, entry) = reset_in(root, &now, vec![mod_ref("a")], 1000).unwrap();
+        let kept: ResetMeta = serde_json::from_slice(&std::fs::read(instance::trash_dir(root).join(&entry).join(RESET_META)).unwrap()).unwrap();
+        assert_eq!((kept.before, kept.after.clone()), (now.clone(), after.clone()));
         let back = unreset_in(root, &after, &now, &entry, 2000).unwrap();
+        assert!(!instance::trash_dir(root).join(&entry).exists());
+        let present: ResetMeta = serde_json::from_slice(&std::fs::read(instance::trash_dir(root).join(format!("{}-2000{SUFFIX}", made.id)).join(RESET_META)).unwrap()).unwrap();
+        assert_eq!((present.before, present.after), (after.clone(), back.clone()));
         assert_eq!((back.mods.clone(), back.local_mods.clone()), (now.mods.clone(), now.local_mods.clone()));
         assert_eq!(read(&folder.join("config/sodium.json")), "{\"first\":false}");
         assert_eq!((read(&folder.join("config/new.json")), read(&folder.join("mods/extra.jar")), read(&folder.join("resourcepacks/other.zip"))), ("new".to_owned(), "extra".to_owned(), "other".to_owned()));

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{Broadcast, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RespawnMany, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{TakeOver, Broadcast, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RespawnMany, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
@@ -38,7 +38,7 @@ const COALESCE: Duration = Duration::from_millis(40);
 const EXIT_POLL: Duration = Duration::from_millis(500);
 const STAGGER_STEP: Duration = Duration::from_millis(100);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
-const TRASH_KEPT: Duration = Duration::from_secs(600);
+const TRASH_KEPT: Duration = crate::core::bin::KEPT;
 
 enum PreviewJob {
     Read(String, PathBuf),
@@ -468,6 +468,7 @@ pub fn init(cx: &mut App) {
     .detach();
     cx.on_action(|a: &Start, cx| dispatch(AppEvent::Start(vec![a.0.clone()]), cx));
     cx.on_action(|a: &Stop, cx| dispatch(AppEvent::Stop(vec![a.0.clone()]), cx));
+    cx.on_action(|a: &TakeOver, cx| dispatch(AppEvent::TakeOver(a.0.clone()), cx));
     cx.on_action(|a: &StartBatch, cx| dispatch(AppEvent::StartBatch(a.0.clone()), cx));
     cx.on_action(|a: &StopBatch, cx| dispatch(AppEvent::StopBatch(a.0.clone()), cx));
     cx.on_action(|_: &StartAll, cx| dispatch(AppEvent::StartAll, cx));

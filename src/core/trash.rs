@@ -1,4 +1,4 @@
-//! The trash of one instance folder: worlds and screenshots deleted or replaced there, kept until Manycraft starts again.
+//! The trash of one instance folder: worlds, screenshots and folders deleted or replaced there, kept for [`super::bin::KEPT`].
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -79,6 +79,25 @@ pub fn take_back(instance_dir: &Path, entry: &str) -> Result<PathBuf> {
     std::fs::rename(dir.join(ITEM), &to).with_context(|| format!("cannot move {} back", to.display()))?;
     let _ = std::fs::remove_dir_all(&dir);
     Ok(to)
+}
+
+/// Puts trash entry `entry` back like [`take_back`], first moving whatever sits in its place now to the trash; returns that
+/// new entry, if there was something.
+pub fn swap_back(instance_dir: &Path, entry: &str) -> Result<Option<String>> {
+    if !valid_entry(entry) {
+        bail!("invalid trash entry {entry:?}");
+    }
+    let origin = std::fs::read_to_string(instance_dir.join(TRASH).join(entry).join(ORIGIN)).map_err(|e| anyhow::Error::new(Final(tr("Das liegt nicht mehr im Papierkorb."))).context(e))?;
+    let to = instance_dir.join(PathBuf::from_iter(origin.split('/')));
+    inside(instance_dir, &to)?;
+    let parked = if std::fs::symlink_metadata(&to).is_ok() { Some(put(instance_dir, &to)?) } else { None };
+    if let Err(e) = take_back(instance_dir, entry) {
+        if let Some(parked) = &parked {
+            let _ = take_back(instance_dir, parked);
+        }
+        return Err(e);
+    }
+    Ok(parked)
 }
 
 /// Deletes trash entries older than `older_than` or stamped more than a day ahead, in every instance folder under `root`.

@@ -43,6 +43,8 @@ pub enum Kind {
     Files { name: String, undo: super::instance_files::FileUndo },
     Edited { instance_id: String, name: String, what: Edit, before: InstanceEdit, after: InstanceEdit },
     Reset { instance_id: String, name: String, entry: String, before: Instance, after: Instance },
+    /// A snapshot from `when` put back over instance `name`; `before` is the instance as it was and `trashed` what was there.
+    Restored { instance_id: String, name: String, when: String, before: Instance, trashed: Vec<String> },
     /// Accounts by id with the colour they had before they all got `color`; `name` is the account's when it was one.
     Colored { before: Vec<(String, u8)>, color: u8, name: Option<String> },
     /// Games one stop of many ended, by key; `name` is the account's when it was one.
@@ -173,7 +175,7 @@ fn slot(ats: impl Iterator<Item = Instant>, at: Instant) -> usize {
 }
 
 fn evict(items: &[(u64, Offer)]) -> Option<usize> {
-    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. } | Kind::Reset { .. } | Kind::BatchDeleted { .. });
+    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. } | Kind::Reset { .. } | Kind::Restored { .. } | Kind::BatchDeleted { .. });
     if items.iter().filter(|(_, o)| capped(o)).count() <= MAX_OFFERS {
         return None;
     }
@@ -288,6 +290,7 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Kind::Files { name, undo: super::instance_files::FileUndo::Restored { .. } } => (name.clone(), trf("„%@“ wiederhergestellt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Files { name, undo: super::instance_files::FileUndo::Copied { .. } } => (name.clone(), trf("„%@“ kopiert.", &[name]), trf("Die Kopie von „%@“ wurde nicht entfernt.", &[name])),
             Kind::Reset { name, .. } => (name.clone(), trf("„%@“ zurückgesetzt.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::Restored { name, when, .. } => (name.clone(), trf("Stand von %@ wiederhergestellt.", &[when]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
             Kind::Colored { color, name: Some(name), .. } => (name.clone(), trf("Farbe von „%@“ auf %@ gesetzt.", &[name, &super::identity::name(*color)]), trf("„%@“ wurde nicht zurückgestellt.", &[name])),
             Kind::Colored { before, color, name: None } => {
                 let many = trf("%lld Accounts", &[&before.len()]);
@@ -347,8 +350,29 @@ fn undo_offer(id: u64, cx: &mut App) {
         t.items.take(id)
     });
     let Some(offer) = taken else { return };
-    let at = offer.at;
-    match offer.kind {
+    run(offer.kind, offer.at, cx);
+}
+
+pub(super) fn take_back(kind: Kind, cx: &mut App) {
+    let pending = toasts(cx).update(cx, |t, cx| {
+        let at = t.items.items.iter().find(|(_, o)| same(&o.kind, &kind)).map(|(id, _)| *id);
+        cx.notify();
+        at.and_then(|id| t.items.take(id))
+    });
+    run(kind, pending.map_or_else(Instant::now, |o| o.at), cx);
+}
+
+fn same(a: &Kind, b: &Kind) -> bool {
+    match (a, b) {
+        (Kind::Deleted { entry: x, .. }, Kind::Deleted { entry: y, .. }) | (Kind::Reset { entry: x, .. }, Kind::Reset { entry: y, .. }) => x == y,
+        (Kind::ModsTrashed { instance_id: i, trashed: x, .. }, Kind::ModsTrashed { instance_id: j, trashed: y, .. }) => i == j && x.entry == y.entry,
+        (Kind::Files { undo: super::instance_files::FileUndo::Deleted { instance: i, entry: x }, .. }, Kind::Files { undo: super::instance_files::FileUndo::Deleted { instance: j, entry: y }, .. }) => i == j && x == y,
+        _ => false,
+    }
+}
+
+fn run(kind: Kind, at: Instant, cx: &mut App) {
+    match kind {
         Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
         Kind::BatchDeleted { batch } => restore_batch(batch, at, cx),
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
@@ -360,6 +384,7 @@ fn undo_offer(id: u64, cx: &mut App) {
         Kind::Edited { instance_id, name, what, before, after } => super::maintenance::restore_edit(&instance_id, name, what, before, after, at, cx),
         Kind::Reset { instance_id, name, entry, before, after } => super::maintenance::restore_reset(&instance_id, name, entry, before, after, at, cx),
         Kind::Stopped { keys, .. } => state::start_again(keys, cx),
+        Kind::Restored { instance_id, name, when, before, trashed } => super::snapshots::unrestore(instance_id, name, when, before, trashed, at, cx),
         Kind::Colored { before, .. } => {
             let mut colors: Vec<u8> = before.iter().map(|(_, c)| *c).collect();
             colors.sort_unstable();

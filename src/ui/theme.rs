@@ -236,6 +236,10 @@ pub mod wardrobe {
 pub mod files {
     /// Height of a world row.
     pub const WORLD_ROW: f32 = 52.;
+    /// Height of a snapshot row under the worlds.
+    pub const SNAPSHOT_ROW: f32 = 44.;
+    /// The tallest the Papierkorb list gets before it scrolls.
+    pub const TRASH_LIST: f32 = 360.;
     /// Side of a world icon.
     pub const WORLD_ICON: f32 = 36.;
     /// Pixels a world icon is decoded at.

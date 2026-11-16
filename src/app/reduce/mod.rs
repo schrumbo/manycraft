@@ -112,6 +112,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::Stop(keys) => fleet::stop_keys(model, keys, &mut out),
+        Event::TakeOver(key) => fleet::take_over(model, &key, env.now, &mut out),
         Event::StopBatch(batch) => {
             let stopped = fleet::stoppable(model, Some(&batch));
             fleet::stop_batch(model, &batch, &mut out);
@@ -193,6 +194,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::QuitChosen { keep } => out.push(Effect::Quit { keep }),
         Event::RestartForUpdate => quit::restart_for_update(model, &mut out),
     }
+    fleet::finish_take_overs(model, env.now, &mut out);
     if !model.session.runs.is_empty() {
         let games = &model.games;
         model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));

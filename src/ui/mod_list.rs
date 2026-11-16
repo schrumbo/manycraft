@@ -1080,10 +1080,16 @@ impl ModList {
                 .children(bulk("mods-disable", tr("Ausschalten"), Look::Plain, any_on, Box::new(DisableMods)))
                 .children(bulk("mods-delete", tr("Löschen"), Look::Danger, true, Box::new(DeleteMods)));
         }
+        let coming = if self.scanned { self.scan.entries.iter().filter(|e| !e.on_disk && e.enabled).count() } else { 0 };
         let text = if !self.query.is_empty() {
             trf("%lld von %@", &[&shown, &count_mods(total)])
+        } else if coming > 0 && coming == total {
+            if total == 1 { tr("1 Mod kommt beim nächsten Start dazu") } else { trf("%lld Mods kommen beim nächsten Start dazu", &[&total]) }
         } else {
             let mut parts = vec![count_mods(total)];
+            if coming > 0 {
+                parts.push(if coming == 1 { tr("1 kommt beim nächsten Start dazu") } else { trf("%lld kommen beim nächsten Start dazu", &[&coming]) });
+            }
             let off = self.scan.entries.iter().filter(|e| !e.enabled).count();
             if off > 0 {
                 parts.push(trf("%lld aus", &[&off]));
@@ -1121,8 +1127,6 @@ impl ModList {
             (trf("Braucht %@, ist aus.", &[&listing(&self.names(missing))]), true)
         } else if !e.enabled {
             (trf("Aus · %@", &[&e.file]), false)
-        } else if !e.on_disk && self.scanned {
-            (tr("Kommt beim nächsten Start dazu."), false)
         } else {
             (e.file.clone(), false)
         };

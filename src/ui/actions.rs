@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks, Quit, QuitAll, OpenFromTray, EditShownBatch]);
+actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks, Quit, QuitAll, OpenFromTray, StopCurrent, OpenTrash, EditShownBatch]);
 
 /// Gives these accounts (ids) colour `color`, an index into `core::account::COLORS`.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -38,6 +38,11 @@ pub struct Start(pub String);
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]
 pub struct Stop(pub String);
+
+/// Stops the game that plays this instance's account elsewhere, then starts this one, by key.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct TakeOver(pub String);
 
 /// Joins the last server again.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
