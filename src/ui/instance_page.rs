@@ -731,9 +731,12 @@ impl InstancePage {
         }
         let shown = (made.id.clone(), made.jvm_args.join(" "), made.loader.version().unwrap_or_default().to_owned());
         if self.synced.as_ref() != Some(&shown) {
+            let untouched = self.synced.as_ref().is_none_or(|old| old.0 != shown.0 || split_args(&self.jvm.read(cx).value()) == split_args(&old.1));
             let jvm = shown.1.clone();
             self.synced = Some(shown);
-            self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
+            if untouched {
+                self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
+            }
         }
         self.loader_version.update(cx, |p, cx| p.show(&made.loader, &made.game_version, cx));
         self.sync_options(made, window, cx);
@@ -833,7 +836,9 @@ impl InstancePage {
     }
 
     fn finished(&mut self, id: &str, switched: bool, result: anyhow::Result<(Instance, Vec<String>)>, cx: &mut Context<Self>) {
-        let renamed = matches!(self.in_flight.take(), Some((_, Job::Save(Change::Name(_)))));
+        let job = self.in_flight.take();
+        let renamed = matches!(job, Some((_, Job::Save(Change::Name(_)))));
+        let typed = matches!(job, Some((_, Job::Save(Change::JvmArgs(_) | Change::Option(_)))));
         let changed = self.changing.take();
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
@@ -860,7 +865,9 @@ impl InstancePage {
                 if let Some(kind) = edited {
                     super::undo::offer(kind, cx);
                 }
-                cx.dispatch_action(&Reload);
+                if !typed {
+                    cx.dispatch_action(&Reload);
+                }
             }
             Err(e) => {
                 let problem = forms::explain_as(tr("Nicht gespeichert."), &e);

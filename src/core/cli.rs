@@ -21,7 +21,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         _ => return None,
     };
     attach_console();
-    if cmd != "apply-update" {
+    if !matches!(cmd.as_str(), "apply-update" | "help" | "--help" | "-h") {
         for problem in super::migrate::run().problems {
             eprintln!("{problem}");
         }
