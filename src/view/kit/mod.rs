@@ -6,6 +6,7 @@ pub mod button;
 pub mod chip;
 pub mod field;
 pub mod group;
+pub mod markdown;
 pub mod menu;
 pub mod row;
 pub mod segmented;

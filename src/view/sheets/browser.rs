@@ -12,6 +12,8 @@ use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
+mod project;
+
 use super::import;
 use super::instance::{self, Load, body_max, problem_view};
 use crate::core::batch::ModRef;
@@ -38,6 +40,8 @@ use crate::view::kit::{after, at_least, off_ui, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::BrowserUndo;
+
+use project::ProjectPage;
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const RESULTS_HEIGHT: f32 = 372.;
@@ -134,6 +138,30 @@ enum Act {
     Install,
     Update,
     Nothing,
+}
+
+/// The project whose page is open, and the tab it was opened on.
+#[derive(Clone, PartialEq)]
+struct Open {
+    hit: Hit,
+    kind: Kind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Enter {
+    OpenPage,
+    RunRow,
+    RunPage,
+    Nothing,
+}
+
+fn enter_route(page: bool, command: bool) -> Enter {
+    match (page, command) {
+        (false, false) => Enter::OpenPage,
+        (false, true) => Enter::RunRow,
+        (true, false) => Enter::RunPage,
+        (true, true) => Enter::Nothing,
+    }
 }
 
 enum Notice {
@@ -529,8 +557,25 @@ fn saved_when(at: SystemTime) -> String {
     }
 }
 
-fn enter_key() -> String {
-    if cfg!(target_os = "macos") { "Return".to_owned() } else { tr("Eingabe") }
+fn enter_key(command: bool) -> String {
+    match (cfg!(target_os = "macos"), command) {
+        (true, false) => "Return".to_owned(),
+        (true, true) => "⌘↩".to_owned(),
+        (false, false) => tr("Eingabe"),
+        (false, true) => format!("{}+{}", tr("Strg"), tr("Eingabe")),
+    }
+}
+
+fn hint_of(title: &str, act: Act, modpack: bool) -> String {
+    let opens = trf("%@ öffnet „%@“.", &[&enter_key(false), &title]);
+    let command = enter_key(true);
+    let run = match act {
+        Act::Install if modpack => trf("%@ fügt es als Instanz hinzu.", &[&command]),
+        Act::Install => trf("%@ fügt es hinzu.", &[&command]),
+        Act::Update => trf("%@ aktualisiert es.", &[&command]),
+        Act::Nothing => String::new(),
+    };
+    format!("{opens} {run}").trim().to_owned()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -688,6 +733,10 @@ struct Flow {
     worlds: State<Option<Vec<World>>>,
     target: State<Option<PathBuf>>,
     details: State<HashSet<String>>,
+    open: State<Option<Open>>,
+    list: ScrollController,
+    list_epoch: State<u64>,
+    body: ScrollController,
     search: AccessibilityId,
 }
 
@@ -935,6 +984,10 @@ impl Flow {
             return;
         }
         if self.core.peek().kind != kind {
+            let mut open = self.open;
+            if open.peek().is_some() {
+                open.set(None);
+            }
             let mut core = self.core;
             {
                 let mut c = core.write();
@@ -976,11 +1029,62 @@ impl Flow {
 
     fn cancel(&self) {
         let mut query = self.query;
-        if query.peek().is_empty() {
+        if self.page_open() {
+            self.close_page();
+        } else if query.peek().is_empty() {
             self.scope.back.call(());
         } else {
             query.set(String::new());
         }
+    }
+
+    fn page_open(&self) -> bool {
+        self.open.peek().is_some()
+    }
+
+    fn open_page(&self, hit: Hit) {
+        let kind = self.core.peek().kind;
+        let mut body = self.body;
+        body.scroll_to_y(0);
+        let mut open = self.open;
+        open.set(Some(Open { hit, kind }));
+        self.focus();
+    }
+
+    fn close_page(&self) {
+        let mut open = self.open;
+        if open.peek().is_some() {
+            open.set(None);
+        }
+        self.focus();
+    }
+
+    fn open_selected(&self) {
+        if let Some((hit, _)) = self.selected() {
+            self.open_page(hit);
+        }
+    }
+
+    fn page_primary(&self) {
+        let Some(open) = self.open.peek().clone() else { return };
+        let act = self.act(&open.hit);
+        self.run(open.hit, act);
+        self.focus();
+    }
+
+    fn enter(&self) {
+        match enter_route(self.page_open(), false) {
+            Enter::OpenPage => self.open_selected(),
+            Enter::RunPage => self.page_primary(),
+            Enter::RunRow | Enter::Nothing => {}
+        }
+    }
+
+    fn scroll_page(&self, lines: f32, pages: f32) {
+        let mut body = self.body;
+        let viewport = body.bounds.peek().map_or(0., |(_, viewport)| viewport.height);
+        let step = lines * project::LINE_STEP + pages * (viewport - project::LINE_STEP).max(project::LINE_STEP);
+        body.scroll_to_y((body.position().y - step) as i32);
     }
 
     fn step(&self, delta: i32) {
@@ -999,6 +1103,27 @@ impl Flow {
     fn pick(&self, ix: usize) {
         let mut core = self.core;
         core.write().sel = ix;
+    }
+
+    fn pick_row(&self, ix: Option<usize>) {
+        if let Some(ix) = ix {
+            self.pick(ix);
+        }
+    }
+
+    fn installed_version(&self, pid: &str, subscribe: bool) -> Option<String> {
+        let kind = if subscribe { self.core.read().kind } else { self.core.peek().kind };
+        match kind {
+            Kind::Mod => val(self.scope.mods, subscribe).iter().find(|m| m.project_id == pid).map(|m| m.version_id.clone()),
+            Kind::Modpack => None,
+            _ => {
+                let dir = self.pack_dir(subscribe)?;
+                match self.shelf_of(&dir, subscribe)?.files {
+                    Load::Ready(files) => files.into_iter().find(|i| i.found.project_id == pid).map(|i| i.found.version_id),
+                    _ => None,
+                }
+            }
+        }
     }
 
     fn act_selected(&self) {
@@ -1419,6 +1544,10 @@ impl Component for Browser {
             worlds: use_state(|| None),
             target: use_state(|| None),
             details: use_state(HashSet::new),
+            open: use_state(|| None),
+            list: use_scroll_controller(ScrollConfig::default),
+            list_epoch: use_state(|| 0),
+            body: use_scroll_controller(ScrollConfig::default),
             search,
         };
         let typed = query.read().trim().to_lowercase();
@@ -1444,7 +1573,8 @@ impl Component for Browser {
             (c.kind, c.sort_for(&typed), c.category.clone(), c.all && widens(c.kind), c.page().map(|p| p.total), c.status.clone(), c.more, c.sel, c.epoch, c.has_more(), c.page().and_then(|p| p.saved), c.page().cloned(), c.visible.clone(), c.fresh())
         };
         let facts = Rc::new(flow.facts(true));
-        let selected = flow.selected_view(&facts, fresh, sel, &page, &visible);
+        let open = flow.open.read().clone();
+        let selected = flow.selected_view(&facts, fresh, sel, &page, &visible, open.is_some());
 
         let mut column = rect().width(Size::fill()).spacing(space::XS).on_global_key_down({
             let flow = flow.clone();
@@ -1454,6 +1584,7 @@ impl Component for Browser {
                 }
                 if drive_rows(&flow, &e.key, e.modifiers) {
                     e.stop_propagation();
+                    e.prevent_default();
                 }
             }
         });
@@ -1483,7 +1614,15 @@ impl Component for Browser {
             .corner_radius(t.shape.tile)
             .overflow(Overflow::Clip)
             .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
-            .child(results(&t, &flow, &facts, kind, &typed, category.is_some(), all, status, more, sel, epoch, has_more, page, visible, fresh));
+            .child(match open {
+                Some(open) => {
+                    let pid = open.hit.project_id.clone();
+                    let have = flow.installed_version(&pid, true);
+                    let mods: HashSet<String> = val(flow.scope.mods, true).iter().map(|m| m.project_id.clone()).collect();
+                    rect().key(pid).width(Size::fill()).height(Size::fill()).child(ProjectPage { flow: flow.clone(), hit: open.hit, kind: open.kind, facts: facts.clone(), have, mods: Rc::new(mods) }).into_element()
+                }
+                None => results(&t, &flow, &facts, kind, &typed, category.is_some(), all, status, more, sel, epoch, has_more, page, visible, fresh),
+            });
         column = column.child(region);
         column = column.child(at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill()));
 
@@ -1509,7 +1648,7 @@ impl Component for Browser {
             .on_escape(move |_| esc.cancel())
             .on_enter(move |_| {
                 if field::typing() {
-                    enter.act_selected();
+                    enter.enter();
                 }
             })
     }
@@ -1517,8 +1656,18 @@ impl Component for Browser {
 
 fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
     let primary = modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !modifiers.intersects(Modifiers::SHIFT | Modifiers::ALT);
+    let page = flow.page_open();
     match key {
         Key::Named(named @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::PageUp | NamedKey::PageDown)) if modifiers.is_empty() && !crate::view::kit::arrows() => {
+            if page {
+                match named {
+                    NamedKey::ArrowUp => flow.scroll_page(-1., 0.),
+                    NamedKey::ArrowDown => flow.scroll_page(1., 0.),
+                    NamedKey::PageUp => flow.scroll_page(0., -1.),
+                    _ => flow.scroll_page(0., 1.),
+                }
+                return true;
+            }
             let rows = flow.rows();
             flow.step(match named {
                 NamedKey::ArrowUp => -1,
@@ -1528,12 +1677,16 @@ fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
             });
             true
         }
-        Key::Named(NamedKey::Home) if primary => {
+        Key::Named(NamedKey::Home) if primary && !page => {
             flow.step(i32::MIN);
             true
         }
-        Key::Named(NamedKey::End) if primary => {
+        Key::Named(NamedKey::End) if primary && !page => {
             flow.step(i32::MAX);
+            true
+        }
+        Key::Named(NamedKey::Enter) if primary && enter_route(page, true) == Enter::RunRow => {
+            flow.act_selected();
             true
         }
         Key::Character(c) if primary && c.eq_ignore_ascii_case("z") && flow.undoable() => {
@@ -1545,18 +1698,12 @@ fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
 }
 
 impl Flow {
-    fn selected_view(&self, facts: &Facts, fresh: bool, sel: usize, page: &Option<Rc<Page>>, visible: &[usize]) -> Option<String> {
-        if !fresh {
+    fn selected_view(&self, facts: &Facts, fresh: bool, sel: usize, page: &Option<Rc<Page>>, visible: &[usize], open: bool) -> Option<String> {
+        if !fresh || open {
             return None;
         }
         let hit = page.as_ref()?.hits.get(*visible.get(sel)?)?;
-        let key = enter_key();
-        match act_of(hit, facts) {
-            Act::Install if facts.kind == Kind::Modpack => Some(trf("%@ fügt es als Instanz hinzu.", &[&key])),
-            Act::Install => Some(trf("%@ fügt es hinzu.", &[&key])),
-            Act::Update => Some(trf("%@ aktualisiert es.", &[&key])),
-            Act::Nothing => None,
-        }
+        Some(hint_of(&hit.title, act_of(hit, facts), facts.kind == Kind::Modpack))
     }
 }
 
@@ -1850,12 +1997,16 @@ struct ResultList {
 
 impl Component for ResultList {
     fn render(&self) -> impl IntoElement {
-        let scroll = use_scroll_controller(ScrollConfig::default);
+        let scroll = self.view.flow.list;
+        let mut seen = self.view.flow.list_epoch;
         let mut viewport = use_state(|| 0f32);
         let (sel, epoch) = (self.view.sel, self.view.epoch);
-        use_side_effect_with_deps(&epoch, move |_| {
-            let mut scroll = scroll;
-            scroll.scroll_to_y(0);
+        use_side_effect_with_deps(&epoch, move |epoch| {
+            if *seen.peek() != *epoch {
+                seen.set(*epoch);
+                let mut scroll = scroll;
+                scroll.scroll_to_y(0);
+            }
         });
         use_side_effect_with_deps(&sel, move |at| {
             let mut scroll = scroll;
@@ -1966,9 +2117,12 @@ impl Component for ResultRow {
 
         let flow = self.flow.clone();
         let (ix, press_hit) = (self.ix, hit.clone());
-        let on_row = move || {
-            flow.pick(ix);
-            flow.focus();
+        let on_row = {
+            let hit = hit.clone();
+            move || {
+                flow.pick(ix);
+                flow.open_page(hit.clone());
+            }
         };
         let fill = if self.selected {
             t.selection
@@ -2002,17 +2156,17 @@ impl Component for ResultRow {
             .on_press(move |_| click())
             .child(Face { pid: pid.clone(), url: hit.icon_url.clone() })
             .child(text)
-            .child(trail_view(&t, &self.flow, &press_hit, &trail, ix));
+            .child(trail_view(&t, &self.flow, &press_hit, &trail, Some(ix)));
         row
     }
 }
 
-fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: usize) -> Element {
+fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize>) -> Element {
     let pid = hit.project_id.clone();
     let act = {
         let (flow, hit) = (flow.clone(), hit.clone());
         move || {
-            flow.pick(ix);
+            flow.pick_row(ix);
             let act = flow.act(&hit);
             flow.run(hit.clone(), act);
             flow.focus();
@@ -2030,7 +2184,7 @@ fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: usize) -> El
             };
             let (flow, id) = (flow.clone(), pid.clone());
             let gone = Button::new(format!("browser.remove.{pid}"), tr("Entfernen")).tip(trf("„%@“ entfernen", &[&hit.title])).disabled(remove.clone()).on_press(move |_| {
-                flow.pick(ix);
+                flow.pick_row(ix);
                 flow.remove(&id);
                 flow.focus();
             });
@@ -2042,6 +2196,23 @@ fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: usize) -> El
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enter_opens_the_page_and_the_command_key_runs_the_row() {
+        assert_eq!(enter_route(false, false), Enter::OpenPage);
+        assert_eq!(enter_route(false, true), Enter::RunRow);
+        assert_eq!(enter_route(true, false), Enter::RunPage);
+        assert_eq!(enter_route(true, true), Enter::Nothing);
+    }
+
+    #[test]
+    fn the_hint_names_both_keys_and_the_action() {
+        let opens = trf("%@ öffnet „%@“.", &[&enter_key(false), &"Sodium"]);
+        assert_eq!(hint_of("Sodium", Act::Install, false), format!("{opens} {}", trf("%@ fügt es hinzu.", &[&enter_key(true)])));
+        assert_eq!(hint_of("Sodium", Act::Install, true), format!("{opens} {}", trf("%@ fügt es als Instanz hinzu.", &[&enter_key(true)])));
+        assert_eq!(hint_of("Sodium", Act::Update, false), format!("{opens} {}", trf("%@ aktualisiert es.", &[&enter_key(true)])));
+        assert_eq!(hint_of("Sodium", Act::Nothing, false), opens);
+    }
 
     fn hit(id: &str, versions: &[&str], categories: &[&str]) -> Hit {
         Hit { title: id.to_owned(), slug: id.to_owned(), project_id: id.to_owned(), description: String::new(), downloads: 0, icon_url: None, author: String::new(), versions: versions.iter().map(|v| (*v).to_owned()).collect(), categories: categories.iter().map(|c| (*c).to_owned()).collect() }
