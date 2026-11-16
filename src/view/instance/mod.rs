@@ -3,8 +3,12 @@
 mod actions;
 mod inspector;
 mod logs;
+mod logs_lines;
+mod logs_viewer;
 mod mods;
 mod shots;
+mod shots_parts;
+mod shots_thumbs;
 mod worlds;
 pub mod links;
 mod save;

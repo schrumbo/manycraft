@@ -1595,5 +1595,15 @@
   "Aufs Handy…": "To your phone…",
   "Meldungen aufs Handy schicken, wenn ein Account dich braucht": "Send alerts to your phone when an account needs you",
   "Einstellungen: Aufs Handy": "Settings: To your phone",
-  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically"
+  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically",
+  "Füge Mods hinzu oder ziehe .jar-Dateien hierher.": "Add mods or drop .jar files here.",
+  "%@ löschen?": "Delete %@?",
+  "Das lässt sich gleich wieder rückgängig machen.": "You can undo this right away.",
+  "Die Liste ließ sich nicht kopieren.": "The list could not be copied.",
+  "Wird aktualisiert …": "Updating …",
+  "Pfad kopieren": "Copy Path",
+  "Pfad kopiert.": "Path copied.",
+  "Der Pfad wurde nicht kopiert.": "The path was not copied.",
+  "Das Protokoll wurde nicht kopiert.": "The log was not copied.",
+  "Wird hochgeladen …": "Uploading…"
 }
