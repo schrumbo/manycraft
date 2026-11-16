@@ -7,6 +7,8 @@ package io.github.schrumbo.manycraft.agent;
 public interface Bridge {
 	void frame(Object minecraft);
 
+	boolean skipFrame(Object minecraft);
+
 	void tick(Object minecraft);
 
 	boolean beforeRender(Object renderer);

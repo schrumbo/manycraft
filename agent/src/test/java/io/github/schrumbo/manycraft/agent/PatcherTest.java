@@ -26,6 +26,15 @@ class PatcherTest {
 	}
 
 	@Test
+	void headlessFrameHookVerifiesIn26_3() throws IOException {
+		ClassLoader loader = PatcherTest.class.getClassLoader();
+		String name = "net/minecraft/client/Minecraft";
+		byte[] out = Patcher.patch(loader, name, bytes(name), Patcher.table(true, true).get(name));
+		assertNotNull(out);
+		assertEquals(List.of(), Patcher.verify(Patcher.files(loader), out).stream().map(Throwable::getMessage).toList());
+	}
+
+	@Test
 	void everyHookFindsItsTargetIn26_3() throws IOException {
 		ClassLoader loader = PatcherTest.class.getClassLoader();
 		List<String> problems = new ArrayList<>();

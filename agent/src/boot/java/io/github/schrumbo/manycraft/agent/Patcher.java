@@ -54,12 +54,12 @@ final class Patcher implements ClassFileTransformer {
 	private final Map<String, List<Hook>> hooks;
 
 	Patcher(Instrumentation inst) {
-		this(inst, Proxies.requested());
+		this(inst, Proxies.requested(), Hooks.headless());
 	}
 
-	Patcher(Instrumentation inst, boolean proxy) {
+	Patcher(Instrumentation inst, boolean proxy, boolean headless) {
 		this.inst = inst;
-		this.hooks = table(proxy);
+		this.hooks = table(proxy, headless);
 	}
 
 	/**
@@ -79,10 +79,19 @@ final class Patcher implements ClassFileTransformer {
 	}
 
 	static Map<String, List<Hook>> table(boolean proxy) {
+		return table(proxy, false);
+	}
+
+	/**
+	 * With {@code headless}, the frame hook may also skip the whole frame of a hidden game.
+	 */
+	static Map<String, List<Hook>> table(boolean proxy, boolean headless) {
 		Map<String, List<Hook>> t = new HashMap<>();
 		add(t, "net/minecraft/client/Minecraft",
 			new Hook("tick", "tick", "()V", tail(b -> b.aload(0).invokestatic(HOOKS, "tick", type(CD_void, CD_Object)))),
-			new Hook("frame", "renderFrame", "(Z)V", head(b -> b.aload(0).invokestatic(HOOKS, "frame", type(CD_void, CD_Object)))),
+			headless
+				? new Hook("frame", "renderFrame", "(Z)V", cancel(b -> b.aload(0).invokestatic(HOOKS, "frameOrSkip", type(CD_boolean, CD_Object))))
+				: new Hook("frame", "renderFrame", "(Z)V", head(b -> b.aload(0).invokestatic(HOOKS, "frame", type(CD_void, CD_Object)))),
 			new Hook("title", "createTitle", "()Ljava/lang/String;", head(b -> {
 				Label original = b.newLabel();
 				b.invokestatic(HOOKS, "title", type(CD_String)).dup().ifnull(original).areturn().labelBinding(original);
