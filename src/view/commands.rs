@@ -382,7 +382,7 @@ impl Command {
             Command::StartSelected => grid && picked().any(|g| !g.phase.is_active()),
             Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
-            Command::ReconnectSelected => grid && picked().any(|g| g.phase.is_running()),
+            Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
             Command::ClearSelection => grid && !selected.is_empty(),
             Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
             Command::ShowHistory => grid && store.ui.cursor.peek().as_ref().or(selected.iter().next()).is_some_and(|k| m.games.contains_key(k)),
