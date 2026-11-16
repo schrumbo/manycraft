@@ -16,6 +16,8 @@ use crate::ui::instance_files::{bytes, when};
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::{after, off_ui, toast};
 use crate::view::store::Store;
+use crate::view::theme::frame;
+use crate::view::ui::Ui;
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -31,9 +33,32 @@ fn run(then: &Then) {
     }
 }
 
+type Back = Option<Rc<dyn Fn()>>;
+
+fn settle(ui: Ui, back: &Back) {
+    match back {
+        Some(back) => back(),
+        None => sheet::close(ui),
+    }
+}
+
+fn release(store: Store, id: &str) {
+    let mut busy = store.ui.instance.busy;
+    busy.write().remove(id);
+}
+
 /// Takes a snapshot of instance `id` for `reason`, then runs `then`. Asks once whether to keep taking them when its worlds
 /// are large, and whether to go on without one when it fails; Abbrechen in either runs nothing.
 pub fn before(store: Store, id: &str, reason: Reason, then: impl FnOnce() + 'static) {
+    start(store, id, reason, None, then);
+}
+
+/// Same as [`before`], but whatever its questions answer, `back` runs so the sheet that asked comes back.
+pub fn before_returning(store: Store, id: &str, reason: Reason, back: impl Fn() + 'static, then: impl FnOnce() + 'static) {
+    start(store, id, reason, Some(Rc::new(back)), then);
+}
+
+fn start(store: Store, id: &str, reason: Reason, back: Back, then: impl FnOnce() + 'static) {
     let Some(dir) = store.model.peek().instance(id).map(Instance::dir) else {
         then();
         return;
@@ -44,15 +69,19 @@ pub fn before(store: Store, id: &str, reason: Reason, then: impl FnOnce() + 'sta
     }
     let id = id.to_owned();
     let then = once(then);
+    let mut busy = store.ui.instance.busy;
+    busy.write().insert(id.clone(), Busy { text: tr("Wird gesichert …"), progress: None });
     spawn_in_window(async move {
         let check = dir.clone();
         let large = off_ui(move || snapshot::needs_choice(&check)).await.flatten();
         let Some(size) = large else {
-            take(store, id, reason, then);
+            take(store, id, reason, back, then);
             return;
         };
         let (skip, keep) = (then.clone(), then);
         let (dir_skip, dir_keep) = (dir.clone(), dir);
+        let (back_skip, back_keep, back_esc) = (back.clone(), back.clone(), back.clone());
+        let (id_skip, id_esc) = (id.clone(), id.clone());
         let ui = store.ui;
         let card = Card::new("instance.snapshot.large", trf("Die Welten sind %@ groß", &[&bytes(size)]))
             .message(trf("Vor Updates und vor dem Zurücksetzen sichert Manycraft diese Instanz. Das braucht jedes Mal etwa %@ Platz.", &[&bytes(size)]))
@@ -61,7 +90,8 @@ pub fn before(store: Store, id: &str, reason: Reason, then: impl FnOnce() + 'sta
                 disabled: None,
                 danger: false,
                 run: EventHandler::new(move |_| {
-                    sheet::close(ui);
+                    release(store, &id_skip);
+                    settle(ui, &back_skip);
                     let dir = dir_skip.clone();
                     std::thread::spawn(move || {
                         if let Err(e) = snapshot::set_large_choice(&dir, false) {
@@ -76,22 +106,27 @@ pub fn before(store: Store, id: &str, reason: Reason, then: impl FnOnce() + 'sta
                 disabled: None,
                 danger: false,
                 run: EventHandler::new(move |_| {
-                    sheet::close(ui);
+                    settle(ui, &back_keep);
                     let dir = dir_keep.clone();
                     std::thread::spawn(move || {
                         if let Err(e) = snapshot::set_large_choice(&dir, true) {
                             eprintln!("snapshot choice: {e:#}");
                         }
                     });
-                    take(store, id.clone(), reason.clone(), keep.clone());
+                    take(store, id.clone(), reason.clone(), back_keep.clone(), keep.clone());
                 }),
+            })
+            .on_escape(move |_| {
+                release(store, &id_esc);
+                settle(ui, &back_esc);
             });
         sheet::open(ui, card);
     });
 }
 
-fn take(store: Store, id: String, reason: Reason, then: Then) {
+fn take(store: Store, id: String, reason: Reason, back: Back, then: Then) {
     let Some(made) = store.model.peek().instance(&id).cloned() else {
+        release(store, &id);
         run(&then);
         return;
     };
@@ -121,7 +156,23 @@ fn take(store: Store, id: String, reason: Reason, then: Then) {
                     _ => tr("Nicht gesichert."),
                 };
                 let ui = store.ui;
-                sheet::confirm(ui, "instance.snapshot.failed", tr("Sicherung fehlgeschlagen"), trf("%@ Ohne Sicherung lässt sich die Änderung an den Welten nicht zurücknehmen.", &[&text]), tr("Ohne Sicherung fortfahren"), true, move |_| run(&then));
+                let (go, stop, esc) = (back.clone(), back.clone(), back);
+                let card = Card::new("instance.snapshot.failed", tr("Sicherung fehlgeschlagen"))
+                    .message(trf("%@ Ohne Sicherung lässt sich die Änderung an den Welten nicht zurücknehmen.", &[&text]))
+                    .width(frame::SHEET_NARROW)
+                    .secondary(Primary { label: tr("Abbrechen"), disabled: None, danger: false, run: EventHandler::new(move |_| settle(ui, &stop)) })
+                    .secondary_id("instance.snapshot.failed.cancel")
+                    .primary(Primary {
+                        label: tr("Ohne Sicherung fortfahren"),
+                        disabled: None,
+                        danger: true,
+                        run: EventHandler::new(move |_| {
+                            settle(ui, &go);
+                            run(&then);
+                        }),
+                    })
+                    .on_escape(move |_| settle(ui, &esc));
+                sheet::open(ui, card);
             }
         }
     });

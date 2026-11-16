@@ -49,6 +49,10 @@ pub mod frame {
     pub const NOTICE: f32 = 32.;
     /// How strongly the attention colour washes a notice strip.
     pub const NOTICE_WASH: f32 = 0.12;
+    /// How strongly the accent washes the glyph tile of an entry.
+    pub const TILE_WASH: f32 = 0.14;
+    /// How long the waiting arc takes for one turn, in milliseconds.
+    pub const SPIN_MS: u64 = 900;
 }
 
 /// The fonts the UI asks for, tried in order before the system's own.

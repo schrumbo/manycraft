@@ -22,6 +22,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::field::{self, Field};
 use crate::view::kit::group::{Line, group, status};
 use crate::view::kit::sheet::{self, Card, Primary};
+use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
 use crate::view::kit::{after, off_thread, off_ui, ring, toast, use_arrows, use_theme};
@@ -769,7 +770,7 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], scroll: ScrollController, mu
     let busy = *flow.picking.read() || *flow.scanning.read();
     body = body.child(PickFile { busy, press: EventHandler::new(move |_| flow.pick_files()) });
     if loading {
-        return body.child(rect().padding((space::L, 0.)).child(caption(t, tr("Suche Launcher …")))).into_element();
+        return body.child(rect().padding((space::L, 0.)).child(spinner::waiting(t, tr("Suche Launcher …")))).into_element();
     }
     let total = flow.total();
     if total == 0 {
@@ -959,7 +960,9 @@ fn options(flow: Flow, t: &Theme) -> Element {
 
 fn running_body(t: &Theme, run: &Run) -> Element {
     let state = if run.stopping { tr("Bricht ab …") } else { run.percent.map_or_else(|| tr("Prüft …"), |p| format!("{p} %")) };
-    let mut foot = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(rect().width(Size::flex(1.)).child(line(t, state, font::CALLOUT, t.text2).font_tabular()));
+    let state = line(t, state, font::CALLOUT, t.text2).font_tabular();
+    let state = if run.stopping || run.percent.is_none() { spinner::beside(state) } else { state.into_element() };
+    let mut foot = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(rect().width(Size::flex(1.)).child(state));
     if run.total > 1 {
         foot = foot.child(caption(t, trf("%1$lld von %2$lld", &[&(run.at + 1), &run.total])).font_tabular());
     }

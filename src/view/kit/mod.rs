@@ -11,6 +11,7 @@ pub mod row;
 pub mod segmented;
 pub mod select;
 pub mod sheet;
+pub mod spinner;
 pub mod stepper;
 pub mod switch;
 pub mod text;

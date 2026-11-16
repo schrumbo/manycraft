@@ -21,6 +21,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::group::note;
 use crate::view::kit::sheet::{self, Card, Primary};
+use crate::view::kit::spinner;
 use crate::view::kit::text::{line, mono, para, strong};
 use crate::view::kit::{after, off_thread, open_external, ring, toast, use_theme};
 use crate::view::store::{Store, use_store};
@@ -132,7 +133,7 @@ enum Copied {
 enum Step {
     Choose,
     Offline,
-    Saved(Vec<String>),
+    Saved(Vec<(String, String)>),
     Microsoft(Ms),
 }
 
@@ -374,9 +375,9 @@ impl Flow {
             self.saving.set(false);
             match result {
                 Ok(Ok(accounts)) if !accounts.is_empty() => {
-                    let names: Vec<String> = accounts.into_iter().map(|a| a.name).collect();
-                    self.added.write().extend(names.iter().cloned());
-                    self.go(Step::Saved(names));
+                    let saved: Vec<(String, String)> = accounts.into_iter().map(|a| (a.id.to_string(), a.name)).collect();
+                    self.added.write().extend(saved.iter().map(|(_, name)| name.clone()));
+                    self.go(Step::Saved(saved));
                 }
                 Ok(Ok(_)) => self.save_error.set(Some(Problem::plain(tr("Diese Namen gibt es inzwischen schon.")))),
                 Ok(Err(e)) => self.save_error.set(Some(forms::explain(&e))),
@@ -420,13 +421,8 @@ impl Flow {
         sheet::close(self.store.ui);
     }
 
-    fn onward(self, name: Option<&str>) {
+    fn onward(self, account: Option<String>) {
         self.stop();
-        let account = name.and_then(|n| {
-            let model = self.store.model.peek();
-            let mut named = model.accounts.iter().filter(|a| a.name == n);
-            named.next().filter(|_| named.next().is_none()).map(|a| a.id.to_string())
-        });
         crate::view::sheets::after_first_account(self.store, account);
     }
 }
@@ -446,7 +442,7 @@ fn act(label: String, disabled: Option<String>, mut run: impl FnMut() + 'static)
 }
 
 fn waiting(t: &Theme, text: String) -> Element {
-    para(t, text, font::CALLOUT, t.text2).into_element()
+    spinner::beside(para(t, text, font::CALLOUT, t.text2).width(Size::auto()))
 }
 
 fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
@@ -602,7 +598,7 @@ impl Component for AddAccount {
         let parts = match &step {
             Step::Choose => choose(flow, &t, choices),
             Step::Offline => offline(flow, &t, !microsoft),
-            Step::Saved(names) => saved(flow, &t, names),
+            Step::Saved(added) => saved(flow, &t, added),
             Step::Microsoft(ms) => microsoft_parts(flow, &t, ms, !microsoft),
         };
         let mut body = rect().width(Size::fill()).spacing(space::M).child(parts.body);
@@ -819,17 +815,17 @@ fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
     }
 }
 
-fn saved(flow: Flow, t: &Theme, names: &[String]) -> Parts {
-    let text = match names {
-        [one] => trf("„%@“ hinzugefügt.", &[one]),
-        _ => trf("%lld Offline-Accounts hinzugefügt.", &[&names.len()]),
+fn saved(flow: Flow, t: &Theme, added: &[(String, String)]) -> Parts {
+    let text = match added {
+        [(_, name)] => trf("„%@“ hinzugefügt.", &[name]),
+        _ => trf("%lld Offline-Accounts hinzugefügt.", &[&added.len()]),
     };
     let onward = first_run(flow.store);
-    let only = match names {
-        [one] => Some(one.clone()),
+    let only = match added {
+        [(id, _)] => Some(id.clone()),
         _ => None,
     };
-    let primary = if onward { act(tr("Weiter"), None, move || flow.onward(only.as_deref())) } else { act(tr("Fertig"), None, move || flow.finish()) };
+    let primary = if onward { act(tr("Weiter"), None, move || flow.onward(only.clone())) } else { act(tr("Fertig"), None, move || flow.finish()) };
     Parts {
         title: tr("Offline-Account"),
         message: None,

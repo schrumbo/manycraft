@@ -1,5 +1,5 @@
-//! Instanz erstellen and Mods verwalten: the sheets that set up a new instance with version, loader, mods and memory,
-//! and that change, update and remove the mods of an existing one.
+//! The new-instance sheet, which sets up an instance with version, loader, mods and memory, and the mods sheet, which
+//! changes, updates and removes the mods of an existing one.
 
 use std::collections::HashSet;
 
@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::app::event::Event as AppEvent;
 use crate::core::batch::ModRef;
 use crate::core::companion;
-use crate::core::fit::{self, Memory};
+use crate::core::fit::{self, Fit, Memory};
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
 use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
@@ -20,12 +20,13 @@ use crate::ui::forms::{self, Problem};
 use crate::ui::remote::{self, InstanceEdit};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
-use crate::view::instance::snapshots;
+use crate::view::instance::{Busy, snapshots};
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{self, Card, Primary};
+use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, mono, para, strong};
 use crate::view::kit::tooltip::WithTip;
@@ -48,7 +49,7 @@ const SNUG_PERCENT: u64 = 80;
 const NOTE_H: f32 = font::CAPTION * font::LINE * 2.;
 const NAME_H: f32 = font::CALLOUT * font::LINE + space::XS + control::M + space::XS + NOTE_H;
 const DETAIL_LINES: usize = 8;
-const TILE_WASH: f32 = 0.14;
+const BOX_EDGES: f32 = 2.;
 
 /// Opens the sheet that sets up a new instance; with `play`, it also starts the instance with that account (or the
 /// first one) once it is made.
@@ -110,14 +111,20 @@ fn version_text(v: &GameVersion) -> String {
     crate::ui::versions::kind_label(v.kind).map_or_else(|| v.id.clone(), |k| format!("{} · {k}", v.id))
 }
 
-fn waiting_reason(saving: bool, updating: bool) -> Option<String> {
+fn waiting_reason(saving: bool, held: Option<String>, updating: bool) -> Option<String> {
     if saving {
         Some(tr("Wird gerade gesichert …"))
+    } else if held.is_some() {
+        held
     } else if updating {
         Some(tr("Warte, bis die Updates fertig sind."))
     } else {
         None
     }
+}
+
+fn unsaved_reason() -> String {
+    tr("Sichere zuerst die Änderungen.")
 }
 
 fn body_max(store: Store) -> f32 {
@@ -126,7 +133,7 @@ fn body_max(store: Store) -> f32 {
 }
 
 fn rows_height(rows: usize) -> f32 {
-    (rows as f32 * ROW + space::XXS * 2. + 2.).min(LIST_MAX)
+    (rows as f32 * ROW + space::XXS * 2. + BOX_EDGES).min(LIST_MAX)
 }
 
 fn label(t: &Theme, text: String) -> Label {
@@ -165,7 +172,11 @@ fn problem_view(t: &Theme, key: &str, glyph: Icon, problem: &Problem, mut open: 
 }
 
 fn waiting(t: &Theme, text: String, rows: usize) -> Element {
-    rect().width(Size::fill()).height(Size::px(rows_height(rows))).main_align(Alignment::Center).child(caption(t, text)).into_element()
+    rect().width(Size::fill()).height(Size::px(rows_height(rows))).main_align(Alignment::Center).child(spinner::waiting(t, text)).into_element()
+}
+
+fn version_height() -> f32 {
+    control::M + space::XS + frame::SWITCH_H.max(font::CALLOUT * font::LINE)
 }
 
 fn rows_box(t: &Theme, rows: Vec<Element>, height: f32) -> Element {
@@ -200,11 +211,10 @@ fn local_files(t: &Theme, names: &[String]) -> Element {
 fn mod_list(t: &Theme, mods: &[ModRef], locked: Option<String>, remove: impl Fn(String) + Clone + 'static) -> Element {
     let rows = mods
         .iter()
-        .enumerate()
-        .map(|(i, m)| {
+        .map(|m| {
             let pid = m.project_id.clone();
             let remove = remove.clone();
-            let button = Button::icon(format!("instance.mod.{i}.remove"), Icon::Close, trf("„%@“ entfernen", &[&m.title])).disabled(locked.clone()).on_press({
+            let button = Button::icon(format!("instance.mod.{pid}.remove"), Icon::Close, trf("„%@“ entfernen", &[&m.title])).disabled(locked.clone()).on_press({
                 let pid = pid.clone();
                 move |_| remove(pid.clone())
             });
@@ -299,6 +309,16 @@ impl Make {
                 None => self.versions.set(Load::Failed(Problem::plain(forms::unexplained()))),
             }
         });
+    }
+
+    fn retry_failed(self) {
+        if matches!(*self.versions.peek(), Load::Failed(_)) && self.list.peek().is_empty() {
+            self.load_versions(true);
+        }
+        if self.mods_error.peek().is_some() && self.busy.peek().is_none() && !*self.saving.peek() {
+            let version = self.version.peek().clone();
+            self.load_mods(version);
+        }
     }
 
     fn read_memory(mut self) {
@@ -463,7 +483,10 @@ impl Make {
                         store.dispatch(AppEvent::InstanceAdded(made.clone()));
                     }
                     store.reload(true);
-                    if made.local_mods.is_empty() || !self.alive() {
+                    if !self.alive() {
+                        return;
+                    }
+                    if made.local_mods.is_empty() {
                         finish(store, made.id, play);
                     } else {
                         self.saving.set(false);
@@ -550,6 +573,8 @@ impl Component for Create {
         });
         let kind = flow.loader.read().name().to_owned();
         use_side_effect_with_deps(&kind, move |kind| flow.check_supported(kind.clone()));
+        let back = *store.back.read();
+        use_side_effect_with_deps(&back, move |_| flow.retry_failed());
 
         if let Some(made) = flow.made.read().clone() {
             return created(&t, flow, &made);
@@ -574,7 +599,7 @@ impl Component for Create {
                 .child(problem_view(&t, "instance.versions", Icon::CircleAlert, why, flow.details))
                 .child(rect().horizontal().child(Button::new("instance.versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.load_versions(true))))
                 .into_element(),
-            Load::Loading if list.is_empty() => rect().height(Size::px(control::M)).main_align(Alignment::Center).child(caption(&t, tr("Versionen werden geladen …"))).into_element(),
+            Load::Loading if list.is_empty() => rect().height(Size::px(version_height())).child(rect().height(Size::px(control::M)).main_align(Alignment::Center).child(spinner::waiting(&t, tr("Versionen werden geladen …")))).into_element(),
             _ => {
                 let known = flow.supported.read().as_ref().filter(|(k, _)| k == loader.name()).and_then(|(_, s)| s.clone());
                 let offered = shown(&list, everything, known.as_ref(), &version);
@@ -586,28 +611,15 @@ impl Component for Create {
                     }
                 });
                 let mut toggle = flow.everything;
-                let mut again = flow.everything;
-                let switchable = blocked.is_none();
-                let row = rect()
-                    .width(Size::fill())
-                    .horizontal()
-                    .cross_align(Alignment::Center)
-                    .spacing(space::S)
-                    .content(Content::flex())
-                    .child(Switch::new("instance.everything", tr("Snapshots und alte Versionen zeigen"), everything).disabled(blocked.is_some()).on_toggle(move |on: bool| toggle.set(on)))
-                    .child(
-                        para(&t, tr("Snapshots und alte Versionen zeigen"), font::CALLOUT, t.text2)
-                            .width(Size::flex(1.))
-                            .on_press(move |_| {
-                                if switchable {
-                                    again.set(!everything);
-                                }
-                            }),
-                    );
+                let row = SwitchLabel { id: "instance.everything", text: tr("Snapshots und alte Versionen zeigen"), on: everything, disabled: blocked.clone(), on_toggle: EventHandler::new(move |on: bool| toggle.set(on)) };
                 rect().width(Size::fill()).spacing(space::XS).child(select).child(row).into_element()
             }
         };
-        let version_note = if tried && version.is_empty() { Some(line(&t, tr("Wähle eine Version."), font::CAPTION, t.danger_text)) } else { companion_hint(&version).map(|h| caption(&t, h)) };
+        let version_note: Option<Element> = if tried && version.is_empty() {
+            Some(line(&t, tr("Wähle eine Version."), font::CAPTION, t.danger_text).into_element())
+        } else {
+            companion_hint(&version).map(|h| WithTip::new(Some(tr("Ab dieser Version spart Manycraft Rechenzeit, solange die Instanz im Hintergrund läuft.")), caption(&t, h)).into_element())
+        };
         let version_column = rect().width(Size::px(VERSION_WIDTH)).spacing(space::XS).child(label(&t, tr("Minecraft-Version"))).child(version_control).children(version_note);
         let name_error = flow.name_problem().filter(|_| tried || !name_text.is_empty());
         let name_column = rect().width(Size::flex(1.)).min_height(Size::px(NAME_H)).child(Field::new("instance.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Technik")).error(name_error).auto_focus());
@@ -618,7 +630,14 @@ impl Component for Create {
         let loader_control = Segmented::new(tr("Loader"), segments, chosen).disabled(blocked.clone()).on_choose(move |i| flow.pick_loader(i));
         let loader_column = rect().width(Size::fill()).spacing(space::XS).child(label(&t, tr("Loader"))).child(rect().horizontal().child(loader_control));
 
-        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M).child(top).child(loader_column).child(advanced(&t, flow, &loader, &version, blocked.clone(), total, memory_max));
+        let press = pressure(*flow.memory.read(), total, *flow.free.read(), memory_max);
+        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M).child(top);
+        if !*flow.advanced.read()
+            && let Some(text) = strain_text(&press, *flow.memory.read(), total)
+        {
+            form = form.child(strain_row(&t, flow, &press, text, t.attention_text));
+        }
+        form = form.child(loader_column).child(advanced(&t, flow, &loader, &version, blocked.clone(), total, memory_max, &press));
         if loader.takes_mods() {
             form = form.child(mods_section(&t, flow, &loader));
         }
@@ -628,8 +647,12 @@ impl Component for Create {
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
-        let invalid = flow.name_problem().or_else(|| version.is_empty().then(|| tr("Wähle eine Version.")));
-        let reason = invalid.or_else(|| blocked.clone());
+        let version_reason = version.is_empty().then(|| match &versions {
+            Load::Loading => tr("Versionen werden geladen …"),
+            Load::Failed(_) => tr("Versionen nicht geladen."),
+            Load::Ready(()) => tr("Wähle eine Version."),
+        });
+        let reason = version_reason.or_else(|| flow.name_problem()).or_else(|| blocked.clone());
         let primary = Primary { label: if play { tr("Erstellen und spielen") } else { tr("Erstellen") }, disabled: reason, danger: false, run: EventHandler::new(move |_| flow.create()) };
         Card::new("instance", tr("Instanz erstellen")).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(saving.then(|| tr("Wird gerade gesichert …")))
     }
@@ -649,14 +672,53 @@ fn created(t: &Theme, flow: Make, made: &Instance) -> Card {
     Card::new("instance", tr("Instanz erstellt")).width(WIDE).body(body).primary(done).primary_id("instance.done").inform()
 }
 
-fn advanced(t: &Theme, flow: Make, loader: &Loader, version: &str, locked: Option<String>, total: u64, memory_max: u32) -> Element {
-    let memory = *flow.memory.read();
-    let free = *flow.free.read();
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pressure {
+    over: bool,
+    tight: Option<Fit>,
+    snug: Option<Fit>,
+    lower: Option<u32>,
+}
+
+impl Pressure {
+    fn strained(&self) -> bool {
+        self.over || self.tight.is_some()
+    }
+}
+
+fn pressure(memory: u32, total: u64, free: Option<u64>, memory_max: u32) -> Pressure {
     let over = u64::from(memory) > total;
     let measured = free.map(|free| fit::fit_in(1, memory, Memory { total_mb: total, free_mb: free }));
     let snug = measured.filter(|f| f.fits() && f.needed_mb * 100 > f.free_mb * SNUG_PERCENT);
     let tight = measured.filter(|f| !f.fits());
-    let open = *flow.advanced.read() || over || tight.is_some() || snug.is_some();
+    let target = if over { Some(memory_max) } else { tight.map(|f| forms::memory_step(u32::try_from(f.free_mb).unwrap_or(u32::MAX), 0, memory_max)) };
+    Pressure { over, tight, snug, lower: target.filter(|to| *to < memory) }
+}
+
+fn strain_text(p: &Pressure, memory: u32, total: u64) -> Option<String> {
+    if p.over {
+        Some(trf("Das ist mehr, als dieser Rechner hat (%@).", &[&forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]))
+    } else {
+        p.tight.map(|fit| crate::ui::model::fit_line(1, memory, &fit))
+    }
+}
+
+fn strain_row(t: &Theme, flow: Make, p: &Pressure, text: String, color: Color) -> Element {
+    let mut row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(rect().width(Size::flex(1.)).child(notice(t, Icon::CircleAlert, color, text)));
+    if let Some(to) = p.lower {
+        let mut memory = flow.memory;
+        let mut error = flow.save_error;
+        row = row.child(Button::new("instance.memory.fix", tr("Arbeitsspeicher senken")).plain().on_press(move |_| {
+            memory.set(to);
+            error.set(None);
+        }));
+    }
+    row.into_element()
+}
+
+fn advanced(t: &Theme, flow: Make, loader: &Loader, version: &str, locked: Option<String>, total: u64, memory_max: u32, press: &Pressure) -> Element {
+    let memory = *flow.memory.read();
+    let open = *flow.advanced.read();
     let mut toggle = flow.advanced;
     let disclosure = Button::new("instance.advanced", tr("Erweitert")).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| toggle.set(!open));
     let mut column = rect().width(Size::fill()).spacing(space::S).child(rect().horizontal().child(disclosure));
@@ -672,15 +734,12 @@ fn advanced(t: &Theme, flow: Make, loader: &Loader, version: &str, locked: Optio
         .child(Button::icon("instance.memory.less", Icon::Minus, tr("Weniger Arbeitsspeicher")).disabled(less).on_press(move |_| flow.step_memory(-1, memory_max)))
         .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(t, forms::memory_label(memory), font::BODY, t.text1)))
         .child(Button::icon("instance.memory.more", Icon::Plus, tr("Mehr Arbeitsspeicher")).disabled(more).on_press(move |_| flow.step_memory(1, memory_max)));
-    let fit_line = |fit| crate::ui::model::fit_line(1, memory, &fit);
-    let note = if over {
-        para(t, trf("Das ist mehr, als dieser Rechner hat (%@).", &[&forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]), font::CAPTION, t.danger_text)
-    } else if let Some(fit) = tight {
-        para(t, fit_line(fit), font::CAPTION, t.danger_text)
-    } else if let Some(fit) = snug {
-        para(t, trf("%@. Das passt, wird aber knapp.", &[&fit_line(fit)]), font::CAPTION, t.text3)
+    let note: Element = if let Some(text) = strain_text(press, memory, total) {
+        strain_row(t, flow, press, text, t.danger_text)
+    } else if let Some(fit) = press.snug {
+        para(t, trf("%@. Das passt, wird aber knapp.", &[&crate::ui::model::fit_line(1, memory, &fit)]), font::CAPTION, t.text3).into_element()
     } else {
-        para(t, tr("Pro Account."), font::CAPTION, t.text3)
+        para(t, tr("Pro Account."), font::CAPTION, t.text3).into_element()
     };
     let memory_block = rect().width(Size::fill()).spacing(space::XS).child(label(t, tr("Arbeitsspeicher"))).child(stepper).child(rect().width(Size::fill()).min_height(Size::px(NOTE_H)).child(note));
     let mut inner = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::M);
@@ -709,7 +768,9 @@ fn mods_section(t: &Theme, flow: Make, loader: &Loader) -> Element {
         column = column.child(problem_view(t, "instance.mods", Icon::CircleAlert, &problem, flow.details)).child(rect().horizontal().child(retry));
     }
     if mods.is_empty() {
-        column = column.child(line(t, trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&loader.name()]), font::CALLOUT, t.text2));
+        if flow.mods_error.read().is_none() {
+            column = column.child(line(t, trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&loader.name()]), font::CALLOUT, t.text2));
+        }
     } else {
         column = column.child(mod_list(t, &mods, saving.then(|| tr("Wird gerade gesichert …")), move |pid| flow.remove_mod(&pid)));
     }
@@ -739,11 +800,46 @@ fn imports(flow: Make, blocked: Option<String>) -> Element {
             id: "instance.import.file",
             glyph: Icon::FileDown,
             title: tr("Datei importieren…"),
-            subtitle: tr("Modpack (.mrpack) oder Prism-Export"),
+            subtitle: tr("Modpack von Modrinth, Export oder Instanz aus Prism"),
             disabled: blocked.or_else(|| flow.picking.read().then(|| tr("Datei wird gewählt …"))),
             on_press: EventHandler::new(move |_| flow.pick_file()),
         })
         .into_element()
+}
+
+#[derive(PartialEq)]
+struct SwitchLabel {
+    id: &'static str,
+    text: String,
+    on: bool,
+    disabled: Option<String>,
+    on_toggle: EventHandler<bool>,
+}
+
+impl Component for SwitchLabel {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let mut hovered = use_state(|| false);
+        let enabled = self.disabled.is_none();
+        let (on, toggle) = (self.on, self.on_toggle.clone());
+        let flip = toggle.clone();
+        let ink = if !enabled { t.text3 } else if *hovered.read() { t.text1 } else { t.text2 };
+        let mut text = para(&t, self.text.clone(), font::CALLOUT, ink).width(Size::flex(1.)).cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed });
+        if enabled {
+            text = text.on_press(move |_| flip.call(!on));
+        }
+        let row = rect()
+            .width(Size::fill())
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .content(Content::flex())
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .child(Switch::new(self.id, self.text.clone(), on).disabled(!enabled).on_toggle(move |on: bool| toggle.call(on)))
+            .child(text);
+        WithTip::new(self.disabled.clone(), row)
+    }
 }
 
 #[derive(PartialEq)]
@@ -799,7 +895,7 @@ impl Component for Entry {
         if let Some(border) = ring(&t, focus()) {
             card = card.border(border);
         }
-        let tile = rect().width(Size::px(control::L)).height(Size::px(control::L)).center().corner_radius(t.shape.control).background(if enabled { t.accent.with_af32(TILE_WASH) } else { t.control }).child(icon(&t, self.glyph, iconsize::L, if enabled { t.accent_text } else { t.text3 }));
+        let tile = rect().width(Size::px(control::L)).height(Size::px(control::L)).center().corner_radius(t.shape.control).background(if enabled { t.accent.with_af32(frame::TILE_WASH) } else { t.control }).child(icon(&t, self.glyph, iconsize::L, if enabled { t.accent_text } else { t.text3 }));
         let text = rect().width(Size::flex(1.)).spacing(space::XXS).child(strong(&t, self.title.clone(), font::BODY, ink)).child(para(&t, self.subtitle.clone(), font::CALLOUT, quiet));
         WithTip::new(self.disabled.clone(), card.child(tile).child(text).child(icon(&t, Icon::ChevronRight, iconsize::M, t.text3)))
     }
@@ -819,6 +915,13 @@ impl Component for LoaderVersion {
         let mut versions = use_state(|| Load::<Versions>::Loading);
         let mut asked = use_state(|| 0u32);
         let mut ticket = use_state(|| 0u64);
+        let back = *use_store().back.read();
+        use_side_effect_with_deps(&back, move |_| {
+            if matches!(*versions.peek(), Load::Failed(_)) {
+                let next = asked.peek().wrapping_add(1);
+                asked.set(next);
+            }
+        });
         let key = (self.loader.with_version(None), self.game.clone(), *asked.read());
         use_side_effect_with_deps(&key, move |(kind, game, _)| {
             let (kind, game) = (kind.clone(), game.clone());
@@ -862,7 +965,7 @@ impl Component for LoaderVersion {
         });
         let mut column = rect().width(Size::fill()).spacing(space::XS).child(label(&t, heading)).child(select);
         match &*versions.read() {
-            Load::Loading => column = column.child(caption(&t, tr("Versionen werden geladen …"))),
+            Load::Loading => column = column.child(spinner::waiting(&t, tr("Versionen werden geladen …"))),
             Load::Failed(why) => {
                 column = column.child(
                     rect()
@@ -961,6 +1064,16 @@ impl Edit {
         });
     }
 
+    fn retry_updates(self) {
+        if matches!(self.updates.peek().as_ref(), Some(Load::Failed(_))) {
+            self.load_updates();
+        }
+    }
+
+    fn unsaved(self) -> bool {
+        *self.mods.peek() != self.base.peek().mods
+    }
+
     fn follow(mut self, now: Instance) {
         if !self.alive() || *self.saving.peek() || !self.updating.peek().is_empty() {
             return;
@@ -971,6 +1084,7 @@ impl Edit {
             self.base.set(now);
             self.applied.set(HashSet::new());
             self.note.set(None);
+            self.load_updates();
         }
     }
 
@@ -990,20 +1104,33 @@ impl Edit {
         if selection.is_empty() || !self.updating.peek().is_empty() || *self.saving.peek() {
             return;
         }
+        if self.unsaved() {
+            toast::show(self.store.ui, unsaved_reason(), None);
+            return;
+        }
         let reason = Reason::ModUpdates(selection.len());
-        let work = id.clone();
-        snapshots::before(self.store, &id, reason, move || self.apply_now(work, selection));
+        let (work, back, store) = (id.clone(), id.clone(), self.store);
+        snapshots::before_returning(store, &id, reason, move || mods(store, back.clone()), move || self.apply_now(work, selection));
     }
 
     fn apply_now(mut self, id: String, selection: Vec<Update>) {
         let store = self.store;
-        if self.alive() {
-            if !self.updating.peek().is_empty() || *self.saving.peek() {
+        let shown = self.alive();
+        if shown {
+            if *self.saving.peek() {
+                toast::show(store.ui, tr("Die Mods werden gerade gesichert. Starte das Update danach noch einmal."), None);
+                return;
+            }
+            if !self.updating.peek().is_empty() {
+                toast::show(store.ui, tr("Warte, bis die Updates fertig sind."), None);
                 return;
             }
             self.updating.write().extend(selection.iter().map(|u| u.current.project_id.clone()));
             self.update_error.set(None);
             self.note.set(None);
+        } else {
+            let mut busy = store.ui.instance.busy;
+            busy.write().insert(id.clone(), Busy { text: tr("Wird aktualisiert …"), progress: None });
         }
         let running = is_active(store, &id);
         spawn_in_window(async move {
@@ -1012,6 +1139,10 @@ impl Edit {
             let alive = self.alive();
             if alive {
                 self.updating.set(HashSet::new());
+            }
+            if !shown {
+                let mut busy = store.ui.instance.busy;
+                busy.write().remove(&id);
             }
             let n = selection.len();
             match result {
@@ -1026,7 +1157,9 @@ impl Edit {
                             }
                         }
                         self.applied.write().extend(selection.iter().map(|u| u.current.project_id.clone()));
-                        self.note.set(Some(if running {
+                        self.note.set(Some(if running && n == 1 {
+                            tr("1 Update vorgemerkt. Es gilt beim nächsten Start.")
+                        } else if running {
                             trf("%lld Updates vorgemerkt. Sie gelten beim nächsten Start.", &[&n])
                         } else if n == 1 {
                             tr("1 Mod aktualisiert.")
@@ -1131,6 +1264,8 @@ impl Component for Mods {
             details: use_state(HashSet::new),
         };
         use_hook(move || flow.load_updates());
+        let back = *store.back.read();
+        use_side_effect_with_deps(&back, move |_| flow.retry_updates());
         let watched = self.made.id.clone();
         use_side_effect(move || {
             let now = store.model.read().instance(&watched).cloned();
@@ -1143,9 +1278,9 @@ impl Component for Mods {
         let mods = flow.mods.read().clone();
         let saving = *flow.saving.read();
         let updating = !flow.updating.read().is_empty();
-        let held = store.ui.instance.busy.read().contains_key(&base.id);
+        let held = store.ui.instance.busy.read().get(&base.id).map(|b| b.text.clone());
         let running = store.model.read().games.values().any(|g| g.instance_id == base.id && g.phase.is_active());
-        let lock = waiting_reason(saving || held, updating);
+        let lock = waiting_reason(saving, held.clone(), updating);
 
         let mut column = rect().width(Size::fill()).padding(frame::RING).spacing(space::S);
         if running {
@@ -1179,7 +1314,7 @@ impl Component for Mods {
     }
 }
 
-fn updates_view(t: &Theme, flow: Edit, running: bool, held: bool) -> Option<Element> {
+fn updates_view(t: &Theme, flow: Edit, running: bool, held: Option<String>) -> Option<Element> {
     let note = flow.note.read().clone();
     if flow.mods.read().is_empty() && note.is_none() {
         return None;
@@ -1187,7 +1322,7 @@ fn updates_view(t: &Theme, flow: Edit, running: bool, held: bool) -> Option<Elem
     let updating = flow.updating.read().clone();
     let applied = flow.applied.read().clone();
     let saving = *flow.saving.read();
-    let reason = waiting_reason(saving || held, !updating.is_empty());
+    let reason = waiting_reason(saving, held, !updating.is_empty()).or_else(|| (*flow.mods.read() != flow.base.read().mods).then(|| unsaved_reason()));
     let updates = flow.updates.read().clone();
     let count = match &updates {
         Some(Load::Ready(list)) => list.iter().filter(|u| !applied.contains(&u.current.project_id)).count(),
@@ -1210,7 +1345,7 @@ fn updates_view(t: &Theme, flow: Edit, running: bool, held: bool) -> Option<Elem
     }
     match updates {
         None => {}
-        Some(Load::Loading) => column = column.child(caption(t, tr("Suche nach Updates …"))),
+        Some(Load::Loading) => column = column.child(spinner::waiting(t, tr("Suche nach Updates …"))),
         Some(Load::Failed(why)) => {
             column = column.child(problem_view(t, "instance.updates", Icon::WifiOff, &why, flow.details)).child(rect().horizontal().child(Button::new("instance.updates.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.load_updates())));
         }
@@ -1260,7 +1395,7 @@ fn updates_view(t: &Theme, flow: Edit, running: bool, held: bool) -> Option<Elem
 
 #[cfg(test)]
 mod tests {
-    use super::{build_edit, default_gaps, followed_name, name_problem};
+    use super::{build_edit, default_gaps, followed_name, name_problem, pressure, waiting_reason};
     use crate::core::batch::ModRef;
     use crate::core::instance::Loader;
 
@@ -1323,5 +1458,49 @@ mod tests {
     fn skipped_mods_are_counted_in_the_note() {
         assert!(default_gaps(3, &[], "26.3").is_none());
         assert!(default_gaps(3, &["skipped lithium: none".into()], "26.3").is_some());
+    }
+
+    #[test]
+    fn memory_that_fits_is_left_alone() {
+        let p = pressure(2048, 16_384, Some(8192), 14_336);
+        assert!(!p.strained());
+        assert!(p.snug.is_none());
+        assert!(p.lower.is_none());
+    }
+
+    #[test]
+    fn memory_over_the_machine_is_lowered_to_the_most_allowed() {
+        let p = pressure(20_480, 16_384, Some(8192), 14_336);
+        assert!(p.over);
+        assert_eq!(p.lower, Some(14_336));
+    }
+
+    #[test]
+    fn memory_over_what_is_free_is_lowered_to_what_fits() {
+        let p = pressure(6144, 16_384, Some(3000), 14_336);
+        assert!(p.tight.is_some());
+        assert_eq!(p.lower, Some(2560));
+    }
+
+    #[test]
+    fn nothing_fits_below_the_minimum_so_there_is_no_fix_at_the_minimum() {
+        let p = pressure(1024, 16_384, Some(500), 14_336);
+        assert!(p.tight.is_some());
+        assert!(p.lower.is_none());
+        assert_eq!(pressure(2048, 16_384, Some(500), 14_336).lower, Some(1024));
+    }
+
+    #[test]
+    fn memory_that_barely_fits_is_snug_and_unmeasured_memory_is_never_strained() {
+        assert!(pressure(3000, 16_384, Some(3500), 14_336).snug.is_some());
+        assert!(!pressure(3000, 16_384, None, 14_336).strained());
+    }
+
+    #[test]
+    fn a_save_outranks_a_held_instance_which_outranks_updates() {
+        assert!(waiting_reason(false, None, false).is_none());
+        assert_eq!(waiting_reason(false, Some("held".into()), true).as_deref(), Some("held"));
+        assert_ne!(waiting_reason(true, Some("held".into()), true).as_deref(), Some("held"));
+        assert!(waiting_reason(false, None, true).is_some());
     }
 }
