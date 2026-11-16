@@ -134,6 +134,43 @@ fn take(id: String, reason: Reason, cx: &mut App, then: impl FnOnce(&mut App) + 
     .detach();
 }
 
+fn put(made: crate::core::instance::Instance, cx: &mut App) {
+    model::get(cx).update(cx, |m, cx| {
+        if let Some(slot) = m.instances.iter_mut().find(|i| i.id == made.id) {
+            *slot = made;
+        }
+        cx.notify();
+    });
+}
+
+/// Takes back the restore of instance `id` to the snapshot from `when`, as its Rückgängig button.
+pub fn unrestore(id: String, name: String, when: String, before: crate::core::instance::Instance, trashed: Vec<String>, at: std::time::Instant, cx: &mut App) {
+    if running(&id, cx) {
+        undo::note(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
+        undo::retry(undo::Kind::Restored { instance_id: id, name, when, before, trashed }, at, cx);
+        return;
+    }
+    let kept = (before.clone(), trashed.clone());
+    let task = cx.background_spawn(async move { snapshot::unrestore(&kept.0, &kept.1) });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(made) => put(made, cx),
+                Err(e) => {
+                    undo::note(forms::explain_as(tr("Nicht zurückgeholt."), &e).text, cx);
+                    if !undo::permanent(&e) {
+                        undo::retry(undo::Kind::Restored { instance_id: id.clone(), name, when, before, trashed }, at, cx);
+                    }
+                }
+            }
+            instance_worlds::changed(&id, None, cx);
+            state::reload(cx);
+        });
+    })
+    .detach();
+}
+
 /// Asks whether instance `id` should go back to `snap`, then puts it back.
 pub fn ask_restore(id: &str, snap: Snapshot, window: &mut Window, cx: &mut App) {
     if sheet::busy(window, cx) || restoring(id, cx) {
@@ -164,13 +201,9 @@ fn restore(id: &str, snap: &Snapshot, cx: &mut App) {
             cx.default_global::<Restoring>().0.remove(&id);
             match result {
                 Ok(done) => {
-                    model::get(cx).update(cx, |m, cx| {
-                        if let Some(slot) = m.instances.iter_mut().find(|made| made.id == done.instance.id) {
-                            *slot = done.instance;
-                        }
-                        cx.notify();
-                    });
-                    undo::note(trf("Stand von %@ wiederhergestellt.", &[&when]), cx);
+                    let name = done.instance.name.clone();
+                    put(done.instance, cx);
+                    undo::offer(undo::Kind::Restored { instance_id: id.clone(), name, when, before: done.before, trashed: done.trashed }, cx);
                 }
                 Err(e) => undo::note(forms::explain_as(tr("Nicht wiederhergestellt."), &e).text, cx),
             }

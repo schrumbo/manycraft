@@ -244,11 +244,38 @@ pub fn delete(instance_dir: &Path, id: &str) -> Result<()> {
     instance::remove_dir(&dir(instance_dir).join(id))
 }
 
-/// What a restore did: the saved instance and the trash entries holding what was there before.
+/// What a restore did: the saved instance, the instance as it was before, and the trash entries holding what was there.
 #[derive(Debug)]
 pub struct Restored {
     pub instance: Instance,
+    pub before: Instance,
     pub trashed: Vec<String>,
+}
+
+/// Takes a restore back: the version, loader and mods of `before` again, and every entry of `trashed` swapped into its place,
+/// what the restore put there going to the trash. Refused while a game of the instance runs.
+pub fn unrestore(before: &Instance, trashed: &[String]) -> Result<Instance> {
+    unrestore_in(&instance::instances_dir(), before, trashed)
+}
+
+pub(super) fn unrestore_in(root: &Path, before: &Instance, trashed: &[String]) -> Result<Instance> {
+    if !instance::valid_id(&before.id) {
+        bail!("invalid instance {:?}", before.id);
+    }
+    let _quiet = instance::quiet_in(root, &before.id)?;
+    let dir = root.join(&before.id);
+    let _held = lock::exclusive(&dir.join(super::origin::MODS_LOCK))?;
+    let now: Instance = store::load(&dir.join(instance::FILE))?.ok_or_else(|| anyhow::Error::new(Final(tr("Diese Instanz gibt es nicht mehr."))))?;
+    if let Some(gone) = trashed.iter().find(|e| !trash::holds(&dir, e)) {
+        bail!(Final(trf("„%@“ liegt nicht mehr im Papierkorb.", &[gone])));
+    }
+    for entry in trashed {
+        trash::swap_back(&dir, entry)?;
+    }
+    let next = Instance { game_version: before.game_version.clone(), loader: before.loader.clone(), mods: before.mods.clone(), local_mods: before.local_mods.clone(), disabled: before.disabled.clone(), ..now };
+    instance::save_in(root, &next)?;
+    let _ = super::content::drop_state(&dir);
+    Ok(next)
 }
 
 /// Puts snapshot `id` of instance `instance_id` back: its version, loader and mods, its config and packs, and the worlds of every
@@ -316,6 +343,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
         undo(&trashed, &placed);
         return Err(fail(e));
     }
+    let before = now.clone();
     let next = Instance { game_version: then.game_version, loader: then.loader, mods: then.mods, local_mods: then.local_mods, disabled: then.disabled, ..now };
     if let Err(e) = instance::save_in(root, &next) {
         undo(&trashed, &placed);
@@ -323,7 +351,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
     }
     let _ = std::fs::remove_dir_all(&staging);
     let _ = super::content::drop_state(&dir);
-    Ok(Restored { instance: next, trashed: trashed.into_iter().map(|(_, entry)| entry).collect() })
+    Ok(Restored { instance: next, before, trashed: trashed.into_iter().map(|(_, entry)| entry).collect() })
 }
 
 fn staged_worlds(staging: &Path) -> Vec<PathBuf> {
@@ -420,6 +448,13 @@ mod tests {
         assert!(!done.trashed.is_empty() && done.trashed.iter().all(|e| trash::holds(&dir, e)));
         assert!(!dir.join(".restore-20").exists());
         assert_eq!(list(&dir).len(), 1);
+        let back = unrestore_in(root.path(), &done.before, &done.trashed).unwrap();
+        assert_eq!(back.game_version, "26.4");
+        assert_eq!(std::fs::read(dir.join("mods").join("a.jar")).unwrap(), b"a2");
+        assert_eq!(std::fs::read(dir.join("config").join("a.toml")).unwrap(), b"new");
+        assert_eq!(std::fs::read(world.join("region").join("r.0.0.mca")).unwrap(), b"upgraded");
+        assert_eq!(std::fs::read(later.join("level.dat")).unwrap(), b"new world");
+        assert!(unrestore_in(root.path(), &done.before, &done.trashed).is_err(), "a second undo finds nothing to put back");
     }
 
     #[test]
