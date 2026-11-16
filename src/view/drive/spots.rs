@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use freya::prelude::*;
 
@@ -30,7 +31,7 @@ pub fn enable() {
 /// Names the element this component draws: pass the result to its `on_sized`. An empty `id` names nothing.
 pub fn use_spot(id: &str, role: &'static str, label: &str, enabled: bool) -> impl FnMut(Event<SizedEventData>) + 'static {
     let on = ON.with(Cell::get) && !id.is_empty();
-    let key = use_hook(|| RefCell::new(String::new()));
+    let key = use_hook(|| Rc::new(RefCell::new(String::new())));
     if on {
         let mut old = key.borrow_mut();
         if *old != id {

@@ -118,7 +118,7 @@ pub struct WindowConfig {
     pub(crate) window_handle_hook: Option<WindowHandleHook>,
     /// Hook function called when the window is requested to close.
     pub(crate) on_close: Option<OnCloseHook>,
-    /// Whether the window is shown once created; when false, the window handle hook shows it.
+    /// Whether the window is shown once created; when false, a plugin shows it on `WindowCreated`.
     pub(crate) shown: bool,
 }
 
@@ -275,7 +275,7 @@ impl WindowConfig {
         self
     }
 
-    /// Leave the window hidden after creation, for a window handle hook that shows it its own way.
+    /// Leave the window hidden after creation, for a plugin that shows it its own way.
     pub fn with_shown(mut self, shown: bool) -> Self {
         self.shown = shown;
         self

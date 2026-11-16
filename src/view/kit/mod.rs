@@ -70,8 +70,7 @@ impl Bounds {
     /// The bounds of a sized element; layout measures in device pixels, the rest of the view in logical ones.
     pub fn of(e: &Event<SizedEventData>) -> Self {
         let a = e.area;
-        let s = scale();
-        Self { x: a.min_x() / s, y: a.min_y() / s, w: a.width() / s, h: a.height() / s }
+        Self { x: a.min_x(), y: a.min_y(), w: a.width(), h: a.height() }
     }
 
     /// The middle of the rectangle.

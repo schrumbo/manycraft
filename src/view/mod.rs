@@ -68,9 +68,6 @@ pub fn run(play: Option<Play>) {
                 let _ = window.request_inner_size(freya::winit::dpi::PhysicalSize::new((size.0 * device).round() as u32, (size.1 * device).round() as u32));
             }
             native::attach(window);
-            if away {
-                native::send_away();
-            }
         });
     launch(LaunchConfig::new().with_plugin(drive::Watch).with_window(window));
 }

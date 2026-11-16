@@ -7,6 +7,7 @@ use freya::prelude::*;
 use super::layout::{TWO_LINES, strip};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{Phase, Primary, primary, status, stopped_ban};
+use crate::core::account::Account;
 use crate::core::i18n::tr;
 use crate::view::commands::Command;
 use crate::view::drive::use_spot;
@@ -185,7 +186,7 @@ impl Component for Tile {
                 text = text.child(crate::view::kit::badge::dot(tone));
             }
         }
-        let strip_row = rect().width(Size::fill()).height(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).padding((0., space::XXS)).child(face_view(&t, face, game.phase.is_running())).child(text).content(Content::flex());
+        let strip_row = rect().width(Size::fill()).height(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).padding((0., space::XXS)).child(face_view(&t, m.account(game.account_id), face, matches!(game.phase, Phase::Playing { .. }) && !game.stopping)).child(text).content(Content::flex());
 
         let mut tile = rect()
             .a11y_id(a11y)
@@ -262,14 +263,17 @@ fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Element {
     }
 }
 
-fn face_view(t: &Theme, face: Option<ImageHandle>, running: bool) -> Element {
-    let inner = match face {
-        Some(face) => image(face).width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).corner_radius(t.shape.small).into_element(),
-        None => rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).corner_radius(t.shape.small).background(t.control).into_element(),
+fn face_view(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, playing: bool) -> Element {
+    let fill = account.map_or(t.control, |a| t.identity(usize::from(a.color())));
+    let mut chip = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).corner_radius(t.shape.small).background(fill).center().overflow(Overflow::Clip);
+    chip = match (face, account) {
+        (Some(face), _) => chip.padding(1.5).child(image(face).width(Size::fill()).height(Size::fill()).corner_radius(t.shape.small / 2.)),
+        (None, Some(a)) => chip.child(label().text(a.name.chars().next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default()).font_size(font::CAPTION).font_weight(FontWeight::BOLD).color(t.ink_on(fill))),
+        (None, None) => chip,
     };
-    let mut r = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).child(inner);
-    if running {
-        r = r.child(rect().position(Position::new_absolute().right(-2.).bottom(-2.)).width(Size::px(frame::DOT)).height(Size::px(frame::DOT)).corner_radius(frame::DOT).background(t.success).border(Border::new().fill(t.surface).width(1.5).alignment(BorderAlignment::Outer)));
+    let mut r = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).child(chip);
+    if playing {
+        r = r.child(rect().position(Position::new_absolute().right(0.).bottom(0.)).width(Size::px(frame::DOT)).height(Size::px(frame::DOT)).corner_radius(frame::DOT).background(t.success).border(Border::new().fill(t.surface).width(1.5).alignment(BorderAlignment::Inner)));
     }
     r.into_element()
 }

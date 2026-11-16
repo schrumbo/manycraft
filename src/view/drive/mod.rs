@@ -46,7 +46,12 @@ impl FreyaPlugin for Watch {
             return;
         }
         match event {
-            PluginEvent::WindowCreated { .. } => HANDLE.with(|h| *h.borrow_mut() = Some(handle)),
+            PluginEvent::WindowCreated { .. } => {
+                HANDLE.with(|h| *h.borrow_mut() = Some(handle));
+                if cfg!(target_os = "windows") && drive::away() {
+                    native::send_away();
+                }
+            }
             PluginEvent::StartedUpdatingTree { .. } => FRAME_START.with(|s| s.set(Some(Instant::now()))),
             PluginEvent::AfterPresenting { .. } => {
                 let now = Instant::now();
