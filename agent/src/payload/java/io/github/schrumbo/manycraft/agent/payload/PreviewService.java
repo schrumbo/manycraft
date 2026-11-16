@@ -4,6 +4,7 @@ import com.mojang.blaze3d.pipeline.RenderTarget;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -25,8 +26,11 @@ final class PreviewService {
 		return t;
 	});
 	private PreviewFile file;
-	private ByteBuffer staging;
+	private byte[] frame;
 	private byte[] pixels;
+	private byte[] shown;
+	private int shownW;
+	private int shownH;
 
 	PreviewService(Path path, Consumer<String> sink) {
 		this.path = path;
@@ -68,28 +72,35 @@ final class PreviewService {
 			inFlight.set(false);
 			return;
 		}
-		if (staging == null || staging.capacity() < bytes) {
-			staging = ByteBuffer.allocateDirect(bytes);
+		if (frame == null || frame.length < bytes) {
+			frame = new byte[bytes];
 		}
-		staging.clear().limit(bytes);
-		staging.put(data.duplicate().position(0).limit(bytes));
-		staging.flip();
-		ByteBuffer ready = staging;
+		data.get(0, frame, 0, bytes);
+		byte[] ready = frame;
 		worker.execute(() -> publish(ready, w, h, previewWidth));
 	}
 
-	private void publish(ByteBuffer frame, int srcW, int srcH, int previewWidth) {
+	private void publish(byte[] frame, int srcW, int srcH, int previewWidth) {
 		try {
 			int[] size = Downscaler.targetSize(srcW, srcH, previewWidth);
-			if (pixels == null || pixels.length < size[0] * size[1] * 4) {
-				pixels = new byte[size[0] * size[1] * 4];
+			int bytes = size[0] * size[1] * 4;
+			if (pixels == null || pixels.length < bytes) {
+				pixels = new byte[bytes];
 			}
 			Downscaler.boxFlipped(frame, srcW, srcH, size[0], size[1], pixels);
+			if (shown != null && shownW == size[0] && shownH == size[1] && Arrays.equals(pixels, 0, bytes, shown, 0, bytes)) {
+				return;
+			}
 			if (file == null) {
 				file = new PreviewFile(path);
 			}
 			int seq = file.write(size[0], size[1], pixels);
 			sink.accept(Protocol.preview(seq, size[0], size[1]));
+			byte[] spare = shown;
+			shown = pixels;
+			pixels = spare;
+			shownW = size[0];
+			shownH = size[1];
 		} catch (IOException | RuntimeException e) {
 			LOGGER.warn("preview write failed", e);
 		} finally {

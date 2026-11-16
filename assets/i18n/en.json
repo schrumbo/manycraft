@@ -1085,6 +1085,7 @@
   "Keine Mods. Die Instanz startet mit %@ allein.": "No mods. The instance starts with %@ alone.",
   "Wartet %lld/%lld": "Waiting %lld/%lld",
   "Das gewählte Java fehlt: %@": "The chosen Java is missing: %@",
+  "Der Proxy braucht Minecraft %@ oder neuer. Entferne ihn oder wähle eine neuere Version.": "The proxy needs Minecraft %@ or newer. Remove it or choose a newer version.",
   "Minecraft %@ braucht Java %@, gewählt ist Java %@.": "Minecraft %@ needs Java %@, Java %@ is chosen.",
   "In %@ ist kein Java.": "There is no Java in %@.",
   "Die Java-Version „%@“ ist unbekannt.": "The Java version “%@” is unknown.",

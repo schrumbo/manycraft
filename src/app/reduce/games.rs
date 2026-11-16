@@ -237,6 +237,10 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
                 fx.now.push(Effect::Send { key: key.clone(), message });
             }
             fx.now.push(Effect::Tint { key: key.clone(), pid });
+            if let Some(path) = preview_path(m, &key).filter(|_| m.session.adopted.contains(&key)) {
+                m.session.read_at.insert(key.clone(), env.now);
+                fx.now.push(Effect::ReadPreview { key: key.clone(), path });
+            }
             if m.session.adopted.contains(&key) && m.playing.as_deref() != Some(key.as_str()) {
                 fx.now.push(Effect::Send { key: key.clone(), message: ToMod::Hide });
             }
@@ -1038,6 +1042,17 @@ mod tests {
         assert_eq!(delay, Duration::ZERO);
         assert_eq!(*generation, m.session.reconnects[&key]);
         assert!(waits.is_empty());
+    }
+
+    #[test]
+    fn an_adopted_game_shows_its_last_frame_without_waiting_for_a_new_one() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let fresh = report(&mut m, &s, Report::Connected { key: key.clone(), pid: 1 });
+        assert!(!fresh.iter().any(|e| matches!(e, Effect::ReadPreview { .. })), "a fresh game's file may still hold its last run");
+        m.session.adopted.insert(key.clone());
+        let adopted = report(&mut m, &s, Report::Connected { key: key.clone(), pid: 1 });
+        assert!(adopted.iter().any(|e| matches!(e, Effect::ReadPreview { key: k, .. } if *k == key)));
     }
 
     #[test]
