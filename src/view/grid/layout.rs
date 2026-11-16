@@ -1,6 +1,8 @@
 //! Where the tiles go: one uniform 16:9 size for every tile, S, M, L or the largest that fits the window without
 //! scrolling, rows filled from the left and the whole block centred in the leftover space.
 
+use super::tile::Look;
+
 /// The tile size the person chose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TileSize {
@@ -60,18 +62,29 @@ pub const MEDIUM: f32 = 320.;
 pub const LARGE: f32 = 640.;
 /// Below this width a tile shows one line under its preview, from it on two.
 pub const TWO_LINES: f32 = 240.;
-/// The height of the strip under the preview with one line and with two.
-pub const STRIP_ONE: f32 = 28.;
-pub const STRIP_TWO: f32 = 46.;
-
-/// The strip height under a preview `width` wide.
+/// The height under the picture of a tile `width` wide: the caption with one line or two, and the panel's inset.
 pub fn strip(width: f32) -> f32 {
-    if width < TWO_LINES { STRIP_ONE } else { STRIP_TWO }
+    let two = width >= TWO_LINES;
+    match super::tile::look() {
+        Look::Caption => if two { 48. } else { 28. },
+        Look::Overlay => 0.,
+        Look::Panel => inset() * 2. + if two { 44. } else { 24. },
+    }
+}
+
+/// How far the picture sits inside the tile's edge.
+pub fn inset() -> f32 {
+    if super::tile::look() == Look::Panel { 4. } else { 0. }
+}
+
+/// The height of the picture of a tile `width` wide.
+pub fn picture_h(width: f32) -> f32 {
+    ((width - inset() * 2.) * 9. / 16.).floor()
 }
 
 /// The height of a whole tile `width` wide.
 pub fn tile_height(width: f32) -> f32 {
-    (width * 9. / 16.).floor() + strip(width)
+    picture_h(width) + strip(width)
 }
 
 /// The tiles placed in a box.
@@ -143,8 +156,8 @@ fn fit(count: usize, inner_w: f32, inner_h: f32, gap: f32) -> f32 {
         let rows = count.div_ceil(columns) as f32;
         let by_width = (inner_w - (columns - 1) as f32 * gap) / columns as f32;
         let room = (inner_h - (rows - 1.) * gap) / rows;
-        let two = (room - STRIP_TWO) * 16. / 9.;
-        let by_height = if two >= TWO_LINES { two } else { ((room - STRIP_ONE) * 16. / 9.).min(TWO_LINES - 1.) };
+        let two = (room - strip(TWO_LINES)) * 16. / 9. + inset() * 2.;
+        let by_height = if two >= TWO_LINES { two } else { ((room - strip(0.)) * 16. / 9. + inset() * 2.).min(TWO_LINES - 1.) };
         let w = by_width.min(by_height).min(LARGE);
         if w > best {
             best = w;
