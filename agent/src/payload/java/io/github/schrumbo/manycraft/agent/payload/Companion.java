@@ -99,7 +99,7 @@ final class Companion implements Bridge {
 		}
 		if (smoke != null) {
 			BackgroundController bg = background;
-			smoke.count(System.nanoTime()).ifPresent(fps -> LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), bg != null && bg.hidden()));
+			smoke.count(System.nanoTime()).ifPresent(w -> LOGGER.info("manycraft smoke fps {} hidden {} worst {} ms slow {}", Math.round(w.fps()), bg != null && bg.hidden(), w.worstMs(), w.slow()));
 		}
 	}
 
