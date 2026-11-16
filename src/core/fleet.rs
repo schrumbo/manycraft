@@ -1248,7 +1248,7 @@ fn name_stand_in(server: &str) -> Result<SocketAddr> {
 
 fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) -> Result<()> {
     if account.proxy.is_some() && companion_jar.is_none_or(|jar| !jar.is_file()) {
-        bail!("{} has a proxy, but this game runs without the companion, so it would connect without the proxy", account.name);
+        bail!(super::i18n::trf("Der Proxy braucht Minecraft %@ oder neuer. Entferne ihn oder wähle eine neuere Version.", &[&super::companion::first()]));
     }
     Ok(())
 }
@@ -2390,7 +2390,7 @@ mod tests {
         let mut alt = Account::offline("AltOne").unwrap();
         assert!(require_companion_for_proxy(&alt, None).is_ok());
         alt.proxy = Some("socks5://h:1".into());
-        assert!(format!("{:#}", require_companion_for_proxy(&alt, None).unwrap_err()).contains("without the companion"));
+        assert!(format!("{:#}", require_companion_for_proxy(&alt, None).unwrap_err()).contains("Minecraft 26.1"));
         assert!(require_companion_for_proxy(&alt, Some(&jar)).is_err());
         fs::write(&jar, b"jar").unwrap();
         assert!(require_companion_for_proxy(&alt, Some(&jar)).is_ok());
