@@ -268,7 +268,14 @@ impl Component for Settings {
                                 pick_version(store, &pick, v.id.clone());
                             }
                         }))
-                        .child(Toggle::new("instance.settings.everything", tr("Snapshots und alte Versionen zeigen"), all).disabled(why.is_some()).on_toggle(move |on| everything.set(on)))
+                        .child(
+                            rect()
+                                .horizontal()
+                                .cross_align(Alignment::Center)
+                                .spacing(space::S)
+                                .child(Toggle::new("instance.settings.everything", tr("Snapshots und alte Versionen zeigen"), all).disabled(why.is_some()).on_toggle(move |on| everything.set(on)))
+                                .child(line(&t, tr("Snapshots und alte Versionen zeigen"), font::CALLOUT, if why.is_some() { t.text3 } else { t.text2 })),
+                        )
                         .into_element()
                 }
                 (None, Load::Failed(e)) => rect()
