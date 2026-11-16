@@ -224,6 +224,19 @@ impl Store {
                 self.faces.write().retain(|id, _| accounts.contains(id));
             }
             Effect::ShowInstance(id) => self.ui.page.set(Page::Instance(id)),
+            Effect::SaveColor { ids, color } => {
+                let (tx, rx) = async_channel::bounded(1);
+                let _ = std::thread::Builder::new().name("color".into()).spawn(move || {
+                    let _ = tx.send_blocking(crate::ui::remote::set_color(&ids, color));
+                });
+                spawn_in_window(async move {
+                    if let Ok(Err(e)) = rx.recv().await {
+                        eprintln!("color: {e:#}");
+                        toast::show(self.ui, tr("Die Farbe wurde nicht gesichert. Versuch es noch einmal."), None);
+                    }
+                    self.reload(true);
+                });
+            }
             Effect::AddAccount => self.ui.page.set(Page::Accounts),
             Effect::AskQuit { running } => self.ask_quit(running),
             Effect::Quit { keep } => {

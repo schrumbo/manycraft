@@ -41,6 +41,15 @@ pub enum Command {
     Smaller,
     Fit,
     Quit,
+    AddAccount,
+    SignInWaiting,
+    RemoveAccounts,
+    AccountsAsList,
+    AccountsAsTable,
+    ImportPrism,
+    NewBatch,
+    NewInstance,
+    OpenTrash,
 }
 
 /// A key combination; `primary` is Ctrl, or Cmd on macOS.
@@ -92,6 +101,7 @@ impl Shortcut {
             Code::Minus => tr("Minus"),
             Code::Enter => tr("Eingabe"),
             Code::Escape => "Esc".to_owned(),
+            Code::Delete => tr("Entf"),
             Code::ArrowRight => "→".to_owned(),
             Code::ArrowLeft => "←".to_owned(),
             Code::ArrowDown => "↓".to_owned(),
@@ -124,7 +134,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 24] = [
+    pub const ALL: [Command; 33] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -149,6 +159,15 @@ impl Command {
         Command::OpenSettings,
         Command::OpenPalette,
         Command::Quit,
+        Command::AddAccount,
+        Command::SignInWaiting,
+        Command::RemoveAccounts,
+        Command::AccountsAsList,
+        Command::AccountsAsTable,
+        Command::ImportPrism,
+        Command::NewBatch,
+        Command::NewInstance,
+        Command::OpenTrash,
     ];
 
     /// The name the drive tool and the GPUI shell use for it.
@@ -178,6 +197,7 @@ impl Command {
             Command::Smaller => "Smaller",
             Command::Fit => "FitTiles",
             Command::Quit => "Quit",
+            c => c.page_name(),
         }
     }
 
@@ -214,6 +234,7 @@ impl Command {
             Command::Smaller => tr("Kleinere Kacheln"),
             Command::Fit => tr("Kacheln einpassen"),
             Command::Quit => tr("Manycraft beenden"),
+            c => c.page_label(),
         }
     }
 
@@ -236,6 +257,7 @@ impl Command {
             Command::ToggleSidebar => Icon::Sidebar,
             Command::Undo => Icon::Undo,
             Command::OpenPalette => Icon::Keyboard,
+            c => c.page_glyph(),
         }
     }
 
@@ -263,6 +285,7 @@ impl Command {
             Command::Fit => k(Code::Digit0),
             Command::Quit => k(Code::KeyQ),
             Command::ShowAttention | Command::StartAll | Command::StopAll => return None,
+            c => return c.page_shortcut(),
         })
     }
 
@@ -272,7 +295,11 @@ impl Command {
         let selected = store.ui.selection.peek();
         let picked = || selected.iter().filter_map(|k| m.games.get(k));
         let grid = matches!(*store.ui.page.peek(), Page::Grid(_));
+        let accounts = *store.ui.page.peek() == Page::Accounts;
         match self {
+            Command::SelectAll if accounts => !m.accounts.is_empty(),
+            Command::ClearSelection if accounts => !store.ui.accounts.picked.peek().is_empty(),
+            Command::FocusSearch if accounts => m.accounts.len() >= super::accounts::FILTER_FROM,
             Command::StartSelected => picked().any(|g| !g.phase.is_active()),
             Command::StopSelected => picked().any(|g| g.phase.is_active()),
             Command::RestartSelected => picked().any(|g| g.phase.has_process()),
@@ -285,6 +312,7 @@ impl Command {
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
             Command::FocusSearch => grid,
             Command::Undo => store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
+            c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash) => c.page_available(store),
             _ => true,
         }
     }
@@ -293,7 +321,13 @@ impl Command {
     pub fn run(self, store: Store) {
         let mut ui = store.ui;
         let keys = || store.ui.selection.peek().iter().cloned().collect::<Vec<String>>();
+        let accounts = *ui.page.peek() == Page::Accounts;
         match self {
+            Command::SelectAll if accounts => super::accounts::pick_all(store),
+            Command::ClearSelection if accounts => {
+                super::accounts::clear(store);
+            }
+            Command::FocusSearch if accounts => super::accounts::focus_filter(store),
             Command::OpenPalette => {
                 let open = !*ui.palette.peek();
                 ui.menu.set_if_modified(None);
@@ -315,7 +349,7 @@ impl Command {
             Command::ShowAll => ui.page.set(Page::Grid(Filter::All)),
             Command::ShowAttention => ui.page.set(Page::Grid(Filter::Attention)),
             Command::ShowAccounts => ui.page.set(Page::Accounts),
-            Command::OpenChat => ui.page.set(Page::Chat),
+            Command::OpenChat => super::chat::focus(store),
             Command::OpenSettings => ui.page.set(Page::Settings),
             Command::NextInstance => store.dispatch(Event::Step(HotkeyAction::Next)),
             Command::PreviousInstance => store.dispatch(Event::Step(HotkeyAction::Prev)),
@@ -341,6 +375,7 @@ impl Command {
             }
             Command::Fit => ui.size.set(TileSize::Fit),
             Command::Quit => store.dispatch(Event::Quit),
+            c => c.page_run(store),
         }
     }
 }
@@ -354,7 +389,7 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
             if layered && !matches!(command, Command::OpenPalette | Command::Quit) {
                 return false;
             }
-            if command == Command::ClearSelection && store.ui.selection.peek().is_empty() {
+            if command == Command::ClearSelection && !command.available(store) {
                 return false;
             }
             if command.available(store) || matches!(command, Command::OpenPalette | Command::Quit | Command::ToggleSidebar) {
@@ -371,5 +406,192 @@ pub fn prune(store: Store, keys: &HashSet<String>) {
     let mut selection = store.ui.selection;
     if selection.peek().iter().any(|k| !keys.contains(k)) {
         selection.write().retain(|k| keys.contains(k));
+    }
+}
+
+/// A sheet or flow another part of the window asks for; the sheets answer it once they are registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Want {
+    AddAccount,
+    AddMicrosoft,
+    /// Signs these Microsoft accounts in again, one after another.
+    SignInAgain(Vec<uuid::Uuid>),
+    /// Signs in the Microsoft accounts of these names, one after another, as Prism listed them.
+    SignInNames(Vec<String>),
+    ChangeSkin(uuid::Uuid),
+    OpenTrash,
+    NewInstance,
+    NewBatch,
+    /// A new batch playing this instance.
+    NewBatchFor(String),
+    EditBatch(String),
+    DeleteBatch(String),
+    RenameInstance(String),
+    DeleteInstance(String),
+    ExportBatch(String),
+    ExportInstance(String),
+    CloneInstance(String),
+    AddMods(String),
+    EditMods(String),
+    UpdateLoader(String),
+    ResetInstance(String),
+    CreateShortcut(String),
+    FetchUpdate,
+    CancelUpdate,
+    RestartToUpdate,
+    DismissNews,
+}
+
+/// Who answers wants: whether it takes one, and what it does with it.
+#[derive(Clone, Copy)]
+pub struct Answer {
+    pub takes: fn(&Want) -> bool,
+    pub run: fn(Store, Want),
+}
+
+thread_local! {
+    static ANSWER: std::cell::Cell<Option<Answer>> = const { std::cell::Cell::new(None) };
+}
+
+/// Registers who answers wants; the last one registered wins.
+pub fn answer_wants(answer: Answer) {
+    ANSWER.with(|a| a.set(Some(answer)));
+}
+
+/// Whether `want` would be answered now.
+pub fn can_want(want: &Want) -> bool {
+    ANSWER.with(std::cell::Cell::get).is_some_and(|a| (a.takes)(want))
+}
+
+/// Asks for `want`; false when nobody takes it.
+pub fn want(store: Store, want: Want) -> bool {
+    match ANSWER.with(std::cell::Cell::get) {
+        Some(a) if (a.takes)(&want) => {
+            (a.run)(store, want);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The reason a control that asks for `want` is off, while nobody takes it.
+pub fn want_blocked(want: &Want) -> Option<String> {
+    (!can_want(want)).then(|| tr("Zieht noch in die neue Oberfläche um."))
+}
+
+impl Command {
+    fn page_name(self) -> &'static str {
+        match self {
+            Command::AddAccount => "AddAccount",
+            Command::SignInWaiting => "SignInWaiting",
+            Command::RemoveAccounts => "RemoveAccounts",
+            Command::AccountsAsList => "AccountsAsList",
+            Command::AccountsAsTable => "AccountsAsTable",
+            Command::ImportPrism => "ImportPrismAccounts",
+            Command::NewBatch => "NewBatch",
+            Command::NewInstance => "NewInstance",
+            Command::OpenTrash => "OpenTrash",
+            _ => "",
+        }
+    }
+
+    fn page_label(self) -> String {
+        match self {
+            Command::AddAccount => tr("Account hinzufügen"),
+            Command::SignInWaiting => tr("Alle nacheinander anmelden"),
+            Command::RemoveAccounts => tr("Ausgewählte Accounts entfernen…"),
+            Command::AccountsAsList => tr("Accounts als Liste"),
+            Command::AccountsAsTable => tr("Accounts als Tabelle"),
+            Command::ImportPrism => tr("Accounts aus Prism übernehmen"),
+            Command::NewBatch => tr("Neuer Batch"),
+            Command::NewInstance => tr("Neue Instanz"),
+            Command::OpenTrash => tr("Papierkorb öffnen"),
+            _ => String::new(),
+        }
+    }
+
+    fn page_glyph(self) -> Icon {
+        match self {
+            Command::AddAccount => Icon::UserPlus,
+            Command::SignInWaiting => Icon::LogIn,
+            Command::RemoveAccounts | Command::OpenTrash => Icon::Trash,
+            Command::AccountsAsList => Icon::Rows,
+            Command::AccountsAsTable => Icon::Grid,
+            Command::ImportPrism => Icon::Download,
+            Command::NewBatch => Icon::Layers,
+            Command::NewInstance => Icon::Plus,
+            _ => Icon::Help,
+        }
+    }
+
+    fn page_shortcut(self) -> Option<Shortcut> {
+        Some(match self {
+            Command::AddAccount => k(Code::KeyN),
+            Command::NewInstance => ks(Code::KeyN),
+            Command::RemoveAccounts => bare(Code::Delete),
+            Command::AccountsAsList => k(Code::Digit1),
+            Command::AccountsAsTable => k(Code::Digit2),
+            _ => return None,
+        })
+    }
+
+    fn page_available(self, store: Store) -> bool {
+        let accounts = *store.ui.page.peek() == Page::Accounts;
+        let view = || super::accounts::view_of(&store.model.peek(), store.ui.accounts);
+        let any = || !store.model.peek().accounts.is_empty();
+        match self {
+            Command::AddAccount => can_want(&Want::AddAccount),
+            Command::SignInWaiting => !super::accounts::waiting(&store.model.peek()).is_empty() && can_want(&Want::SignInAgain(Vec::new())),
+            Command::RemoveAccounts => accounts && !super::accounts::targets(store).is_empty(),
+            Command::AccountsAsList => accounts && any() && view() != super::accounts::View::List,
+            Command::AccountsAsTable => accounts && any() && view() != super::accounts::View::Table,
+            Command::ImportPrism => {
+                let prism = store.ui.accounts.prism.peek();
+                prism.found > 0 && !prism.busy
+            }
+            Command::NewBatch => can_want(&Want::NewBatch),
+            Command::NewInstance => can_want(&Want::NewInstance),
+            Command::OpenTrash => can_want(&Want::OpenTrash),
+            _ => true,
+        }
+    }
+
+    fn page_run(self, store: Store) {
+        let mut shared = store.ui.accounts;
+        match self {
+            Command::AddAccount => {
+                want(store, Want::AddAccount);
+            }
+            Command::SignInWaiting => {
+                let ids = super::accounts::waiting(&store.model.peek());
+                super::accounts::sign_in(store, ids);
+            }
+            Command::RemoveAccounts => super::accounts::ask_remove(store, super::accounts::targets(store)),
+            Command::AccountsAsList => shared.view.set(Some(super::accounts::View::List)),
+            Command::AccountsAsTable => shared.view.set(Some(super::accounts::View::Table)),
+            Command::ImportPrism => {
+                let mut ui = store.ui;
+                ui.page.set(Page::Accounts);
+                super::accounts::import_prism(store);
+            }
+            Command::NewBatch => {
+                want(store, Want::NewBatch);
+            }
+            Command::NewInstance => {
+                want(store, Want::NewInstance);
+            }
+            Command::OpenTrash => {
+                want(store, Want::OpenTrash);
+            }
+            _ => {}
+        }
+    }
+
+    /// The label with the shortcut in brackets, for tooltips.
+    pub fn tip(self) -> String {
+        match self.shortcut() {
+            Some(s) => format!("{} ({})", self.label(), s.label()),
+            None => self.label(),
+        }
     }
 }

@@ -5,6 +5,8 @@ use std::time::Instant;
 
 use freya::prelude::*;
 
+use super::accounts;
+use super::chat;
 use super::grid::layout::TileSize;
 use super::kit::menu::Menu;
 use super::kit::sheet::Sheet;
@@ -54,6 +56,10 @@ pub struct Ui {
     pub tip: State<Option<Tip>>,
     /// When the last tooltip went away, so the next one shows at once.
     pub tip_seen: State<Option<Instant>>,
+    /// What the Accounts page shows and has picked.
+    pub accounts: accounts::Shared,
+    /// What the Chat page shows and is about to send.
+    pub chat: chat::Shared,
 }
 
 impl Ui {
@@ -75,6 +81,8 @@ impl Ui {
             toasts: State::create(Vec::new()),
             tip: State::create(None),
             tip_seen: State::create(None),
+            accounts: accounts::Shared::create(),
+            chat: chat::Shared::create(),
         }
     }
 

@@ -49,7 +49,7 @@ impl Component for Toolbar {
                 (name, Some(grid::count_line(&m, &keys)))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
-            Page::Accounts => (tr("Accounts"), Some(if m.accounts.len() == 1 { tr("1 Account") } else { crate::core::i18n::trf("%lld Accounts", &[&m.accounts.len()]) })),
+            Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
             Page::Settings => (tr("Einstellungen"), None),
         };
@@ -78,6 +78,12 @@ impl Component for Toolbar {
             }
             let search_w = if room >= frame::TOOLBAR_SEARCH { frame::SEARCH } else { frame::SEARCH_NARROW };
             bar = bar.child(Field::new("toolbar.search", ui.search).placeholder(tr("Suchen")).glyph(Icon::Search).width(Size::px(search_w)).a11y(search_a11y));
+        }
+        if page == Page::Accounts {
+            bar = bar.child(crate::view::accounts::Tools { room });
+        }
+        if page == Page::Chat {
+            bar = bar.child(crate::view::chat::Tools { room });
         }
         bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)))
     }

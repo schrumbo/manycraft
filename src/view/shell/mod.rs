@@ -9,6 +9,8 @@ use freya::prelude::*;
 use self::palette::Palette;
 use self::sidebar::Sidebar;
 use self::toolbar::Toolbar;
+use super::accounts::AccountsPage;
+use super::chat::ChatPage;
 use super::commands;
 use super::grid::GridPage;
 use super::icons::{Icon, icon};
@@ -33,8 +35,8 @@ impl Component for Shell {
         let content = match page {
             Page::Grid(filter) => GridPage { filter }.into_element(),
             Page::Instance(_) => pending(&t, Icon::Folder, tr("Instanz")),
-            Page::Accounts => pending(&t, Icon::Users, tr("Accounts")),
-            Page::Chat => pending(&t, Icon::Message, tr("Chat")),
+            Page::Accounts => AccountsPage.into_element(),
+            Page::Chat => ChatPage.into_element(),
             Page::Settings => pending(&t, Icon::Settings, tr("Einstellungen")),
         };
         let mut row = rect().width(Size::fill()).height(Size::fill()).horizontal();

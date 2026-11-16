@@ -1,5 +1,7 @@
 //! The Freya front end, behind the `freya` feature: the same core and runner as the GPUI shell, drawn with Freya.
 
+mod accounts;
+mod chat;
 mod commands;
 pub mod drive;
 mod grid;

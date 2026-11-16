@@ -471,6 +471,33 @@ pub fn restore_account(removed: &Removed) -> Result<()> {
     })
 }
 
+/// Appends the accounts of `ids` that batch `batch_id` does not hold yet, in order; returns those it added.
+pub fn join_batch(batch_id: &str, ids: &[Uuid]) -> Result<Vec<Uuid>> {
+    saved(|| {
+        let known = account::load()?;
+        let mut b = batch::load_all()?.into_iter().find(|b| b.id == batch_id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?;
+        let added: Vec<Uuid> = ids.iter().copied().filter(|id| known.iter().any(|a| a.id == *id) && !b.accounts.contains(id)).collect();
+        if !added.is_empty() {
+            b.accounts.extend(added.iter().copied());
+            batch::save(&b)?;
+        }
+        Ok(added)
+    })
+}
+
+/// Takes the accounts of `ids` out of batch `batch_id` again, for undoing [`join_batch`].
+pub fn leave_batch(batch_id: &str, ids: &[Uuid]) -> Result<()> {
+    saved(|| {
+        let Some(mut b) = batch::load_all()?.into_iter().find(|b| b.id == batch_id) else { return Ok(()) };
+        let before = b.accounts.len();
+        b.accounts.retain(|a| !ids.contains(a));
+        if b.accounts.len() != before {
+            batch::save(&b)?;
+        }
+        Ok(())
+    })
+}
+
 /// Checks that `proxy` reaches the internet: any HTTP answer through it counts.
 pub fn test_proxy(proxy: &str) -> Result<()> {
     if drive::fenced("proxy test", super::forms::proxy_display(proxy)) {
