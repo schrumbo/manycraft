@@ -117,7 +117,10 @@ impl Component for Palette {
             .on_mouse_down(move |_| ui.palette.set(false))
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 match &e.key {
-                    Key::Named(NamedKey::Escape) => ui.palette.set(false),
+                    Key::Named(NamedKey::Escape) => {
+                        e.prevent_default();
+                        ui.palette.set(false);
+                    }
                     Key::Named(NamedKey::ArrowDown) => hot.set((chosen + 1).min(count.saturating_sub(1))),
                     Key::Named(NamedKey::ArrowUp) => hot.set(chosen.saturating_sub(1)),
                     Key::Named(NamedKey::Tab) if e.modifiers.contains(Modifiers::SHIFT) => hot.set(chosen.saturating_sub(1)),

@@ -204,7 +204,7 @@ fn shown_of(has_page: bool, visible_empty: bool, fresh: bool, status: &Status) -
         return if matches!(status, Status::Failed(_)) { Shown::Failed } else { Shown::Skeleton };
     }
     if visible_empty {
-        return if fresh { Shown::Empty } else { Shown::Skeleton };
+        return Shown::Empty;
     }
     Shown::List { dim: !fresh || matches!(status, Status::Loading) }
 }
@@ -1274,6 +1274,10 @@ impl Flow {
         let held = self.live.peek().held.clone();
         if let Some(why) = held {
             toast::show(self.store.ui, why, None);
+            return;
+        }
+        if self.scope.adding.peek().contains(next.pid()) {
+            toast::show(self.store.ui, tr("Wird hinzugefügt …"), None);
             return;
         }
         match next {
@@ -2452,7 +2456,7 @@ mod tests {
         assert_eq!(shown_of(false, true, false, &Status::Loading), Shown::Skeleton);
         assert_eq!(shown_of(false, true, false, &Status::Failed(Problem::plain("x"))), Shown::Failed);
         assert_eq!(shown_of(true, true, true, &Status::Idle), Shown::Empty);
-        assert_eq!(shown_of(true, true, false, &Status::Idle), Shown::Skeleton);
+        assert_eq!(shown_of(true, true, false, &Status::Idle), Shown::Empty);
     }
 
     #[test]

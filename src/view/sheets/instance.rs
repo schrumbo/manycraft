@@ -131,8 +131,8 @@ fn waiting_reason(saving: bool, held: Option<String>, updating: bool) -> Option<
     }
 }
 
-fn form_dirty(mods: usize, name: &str, auto: &str) -> bool {
-    mods > 0 || (!name.trim().is_empty() && name.trim() != auto)
+fn form_dirty(touched: bool, name: &str, auto: &str) -> bool {
+    touched || (!name.trim().is_empty() && name.trim() != auto)
 }
 
 fn adding_wait() -> String {
@@ -347,7 +347,7 @@ impl Make {
         if matches!(*self.versions.peek(), Load::Failed(_)) && self.list.peek().is_empty() {
             self.load_versions(true);
         }
-        if self.mods_error.peek().is_some() && self.busy.peek().is_none() && !*self.saving.peek() && self.mods.peek().is_empty() {
+        if self.mods_error.peek().is_some() && self.busy.peek().is_none() && !*self.saving.peek() && self.mods.peek().is_empty() && self.adding.peek().is_empty() {
             let version = self.version.peek().clone();
             self.load_mods(version);
         }
@@ -658,7 +658,7 @@ impl Component for Create {
                 saving,
                 held: busy.as_ref().map(|_| tr("Einen Moment, die Mods werden geladen …")),
                 pending: false,
-                dirty: form_dirty(flow.mods.read().len(), &name_text, &flow.name_auto.read()),
+                dirty: form_dirty(*flow.touched.read(), &name_text, &flow.name_auto.read()),
                 follow: Some((flow.version, flow.loader)),
                 kind: *flow.kind.read(),
                 on_update: EventHandler::new(|_| {}),
@@ -1630,11 +1630,11 @@ mod tests {
 
     #[test]
     fn a_form_is_dirty_with_mods_or_a_typed_name() {
-        assert!(!form_dirty(0, "", ""));
-        assert!(!form_dirty(0, "Minecraft 26.3", "Minecraft 26.3"));
-        assert!(!form_dirty(0, "  ", "Minecraft 26.3"));
-        assert!(form_dirty(0, "Farm", "Minecraft 26.3"));
-        assert!(form_dirty(3, "", ""));
+        assert!(!form_dirty(false, "", ""));
+        assert!(!form_dirty(false, "Minecraft 26.3", "Minecraft 26.3"));
+        assert!(!form_dirty(false, "  ", "Minecraft 26.3"));
+        assert!(form_dirty(false, "Farm", "Minecraft 26.3"));
+        assert!(form_dirty(true, "", ""));
     }
 
     #[test]

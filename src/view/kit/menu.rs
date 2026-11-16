@@ -268,6 +268,7 @@ impl Component for Panel {
                     _ => return,
                 }
                 e.stop_propagation();
+                e.prevent_default();
             });
         if let Some(placeholder) = &menu.search {
             panel = panel.child(rect().width(Size::fill()).padding((0., 0., space::XS, 0.)).child(Field::new("menu.search", query).placeholder(placeholder.clone()).glyph(Icon::Search).auto_focus().rows_through()));
