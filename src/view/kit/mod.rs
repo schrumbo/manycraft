@@ -52,6 +52,34 @@ pub fn ring(t: &Theme, focus: Focus) -> Option<Border> {
 
 thread_local! {
     static HELD: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers::empty()) };
+    static ARROWS: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
+}
+
+/// Notes that the control `a11y` moves with the arrow keys itself while it has the focus.
+pub fn use_arrows(a11y: AccessibilityId) {
+    use_hook(|| ARROWS.with(|a| a.borrow_mut().insert(a11y)));
+    use_drop(move || {
+        ARROWS.with(|a| a.borrow_mut().remove(&a11y));
+    });
+}
+
+/// True while a control that moves with the arrow keys has the focus.
+pub fn arrows() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    ARROWS.with(|a| a.borrow().contains(&focused))
+}
+
+/// Gives the keyboard focus back to where it was when a layer opened, once the layer closes.
+pub fn use_focus_return(open: bool) {
+    let platform = use_hook(|| Platform::get().current_window());
+    let mut before = use_state(|| None::<AccessibilityId>);
+    use_side_effect_with_deps(&open, move |open| {
+        if *open {
+            before.set(Some(*platform.focused_accessibility_id.peek()));
+        } else if let Some(id) = before.write().take() {
+            platform.send(UserEvent::FocusAccessibilityNode(AccessibilityFocusStrategy::Node(id)));
+        }
+    });
 }
 
 /// The modifier keys held now, for clicks that select a range or add to the selection.

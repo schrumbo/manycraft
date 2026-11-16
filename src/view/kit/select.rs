@@ -51,6 +51,7 @@ impl Component for Select {
         let t = use_theme();
         let ui = use_consume::<Ui>();
         let a11y = use_a11y();
+        super::use_arrows(a11y);
         let focus = use_focus(a11y);
         let mut bounds = use_state(Bounds::default);
         let mut hovered = use_state(|| false);

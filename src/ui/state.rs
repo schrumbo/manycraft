@@ -64,6 +64,8 @@ struct Runtime {
     core: runner::Runtime,
     badge: usize,
     outbox: Option<phone::Outbox>,
+    /// The games each shown notification is about, by tag, so a click opens them.
+    notified: HashMap<String, Vec<String>>,
 }
 
 impl Global for Runtime {}
@@ -84,7 +86,7 @@ pub fn init(cx: &mut App) {
             return;
         }
     };
-    cx.set_global(Runtime { core: runner::Runtime::new(backend, shared_visible), badge: 0, outbox: None });
+    cx.set_global(Runtime { core: runner::Runtime::new(backend, shared_visible), badge: 0, outbox: None, notified: HashMap::new() });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
         dispatch(AppEvent::Notice(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))), cx);
@@ -170,17 +172,8 @@ pub fn init(cx: &mut App) {
         }
     });
     cx.on_system_notification_response(|response, cx| {
-        let batch = response.tag.strip_prefix("attention-").map(str::to_owned);
-        let whisper = response.tag.as_ref() == WHISPER_TAG;
-        cx.defer(move |cx| {
-            show_grid(cx);
-            if let Some(batch) = batch {
-                super::main_window::select_batch(&batch, cx);
-            }
-            if whisper {
-                super::chat::show(cx);
-            }
-        });
+        let tag = response.tag.to_string();
+        cx.defer(move |cx| notification_clicked(&tag, cx));
     });
     cx.on_app_quit(|cx| {
         awake::set(false);
@@ -317,6 +310,7 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
         }
         Effect::ReadMemory => read_memory(cx),
+        Effect::ReadUsage(pids) => read_usage(pids, cx),
         Effect::NetworkBack => super::remote::network_back(cx),
         Effect::After { delay, event } => {
             cx.spawn(async move |cx| {
@@ -352,9 +346,12 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             }
         }
         Effect::Place(key) => place_new(&key, cx),
-        Effect::Notify { tag, title, body } => {
+        Effect::Notify { tag, title, body, keys } => {
             if super::main_window::is_active(cx) && model::get(cx).read(cx).playing.is_none() {
                 return;
+            }
+            if let Some(rt) = runtime(cx) {
+                rt.notified.insert(tag.clone(), keys.clone());
             }
             if drive::fenced("notify", format!("{title} | {body}")) {
                 return;
@@ -522,6 +519,15 @@ pub fn delete_instance(id: &str, cx: &mut App) {
     .detach();
 }
 
+fn read_usage(pids: Vec<(String, u32)>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let pretend = drive::on();
+        let readings = cx.background_executor().spawn(async move { pids.into_iter().filter_map(|(key, pid)| fit::private_mb(pid).or_else(|| (pretend && pid == 0).then_some(1434)).map(|mb| (key, mb))).collect::<Vec<_>>() }).await;
+        cx.update(|cx| dispatch(AppEvent::Usage(readings), cx));
+    })
+    .detach();
+}
+
 fn read_memory(cx: &mut App) {
     if let Some(pretend) = drive::memory() {
         let m = model::get(cx).read(cx);
@@ -611,6 +617,14 @@ fn show(key: &str, before: Option<&str>, skipped: Option<String>, unshown: Unsho
     spread(cx);
 }
 
+/// Opens what the notification `tag` was about: its one tile, the attention tiles of its batch, or the chat.
+pub fn notification_clicked(tag: &str, cx: &mut App) {
+    let keys = cx.try_global::<Runtime>().and_then(|rt| rt.notified.get(tag).cloned()).unwrap_or_default();
+    if let Some(route) = super::route::of_notification(tag, &keys) {
+        super::route::go(route, cx);
+    }
+}
+
 /// Hides the game that is played and brings the manager back in its place.
 pub fn show_grid(cx: &mut App) {
     dispatch(AppEvent::ShowGrid, cx);
@@ -647,6 +661,24 @@ fn place_new(key: &str, cx: &mut App) {
     if rt.core.place_new(key, pid, playing.as_deref(), window) {
         dispatch(AppEvent::Placed { key: key.to_owned() }, cx);
     }
+}
+
+/// Tells the core where the user looks, so previews refresh fast where it matters and pause where nobody sees them.
+pub fn watch(change: impl FnOnce(&mut crate::app::session::Watch), cx: &mut App) {
+    if cx.try_global::<Runtime>().is_none() {
+        return;
+    }
+    let mut next = model::get(cx).read(cx).session.watch.clone();
+    change(&mut next);
+    if model::get(cx).read(cx).session.watch != next {
+        dispatch(AppEvent::Watch(next), cx);
+    }
+}
+
+/// Works out the preview rates again, after their setting changed.
+pub fn replan(cx: &mut App) {
+    let watch = model::get(cx).read(cx).session.watch.clone();
+    dispatch(AppEvent::Watch(watch), cx);
 }
 
 /// Tells the runtime which tiles are on screen, so their previews update at full rate.

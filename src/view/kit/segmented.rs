@@ -48,6 +48,7 @@ impl Component for Segmented {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let a11y = use_a11y();
+        super::use_arrows(a11y);
         let focus = use_focus(a11y);
         let inset = space::XXS;
         let count = self.items.len();

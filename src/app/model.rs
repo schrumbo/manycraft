@@ -245,6 +245,8 @@ pub struct Model {
     pub offline: bool,
     /// The frame each tile has, by game key.
     pub frames: HashMap<String, Frame>,
+    /// The memory one game of each batch was last measured to hold, in MB, by batch id.
+    pub measured: HashMap<String, u32>,
     pub session: Session,
 }
 

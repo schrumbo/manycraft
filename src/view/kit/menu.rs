@@ -146,7 +146,9 @@ pub struct Host;
 impl Component for Host {
     fn render(&self) -> impl IntoElement {
         let mut ui = use_consume::<Ui>();
-        let Some(menu) = ui.menu.read().clone() else { return rect().into_element() };
+        let menu = ui.menu.read().clone();
+        super::use_focus_return(menu.is_some());
+        let Some(menu) = menu else { return rect().into_element() };
         let (w, h) = *ui.window.read();
         let serial = menu.serial;
         rect()
@@ -232,6 +234,8 @@ impl Component for Panel {
             .collect();
         let mut panel = rect()
             .position(Position::new_absolute().left(x).top(y))
+            .a11y_role(AccessibilityRole::Menu)
+            .a11y_builder(|n| n.set_modal())
             .width(Size::px(width))
             .padding(space::XS)
             .background(t.raised)

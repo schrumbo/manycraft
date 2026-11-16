@@ -8,8 +8,10 @@ mod instance;
 mod kit;
 mod native;
 mod shell;
+mod stills;
 mod store;
 mod theme;
+mod tray;
 mod ui;
 
 use std::rc::Rc;
@@ -57,11 +59,16 @@ pub fn run(play: Option<Play>) {
     let size = drive_size().unwrap_or(SIZE);
     let scale = drive_scale();
     let away = cfg!(target_os = "windows") && crate::core::drive::away();
-    let window = WindowConfig::new_app(Root { play })
+    let (close, closes) = async_channel::unbounded();
+    let window = WindowConfig::new_app(Root { play, closes })
         .with_size(size.0, size.1)
         .with_min_size(MIN.0, MIN.1)
         .with_title("Manycraft")
         .with_shown(!away)
+        .with_on_close(move |_, _| {
+            let _ = close.try_send(());
+            CloseDecision::KeepOpen
+        })
         .with_window_handle(move |window| {
             let os = window.scale_factor();
             *OS_SCALE.lock().unwrap_or_else(|e| e.into_inner()) = os;
@@ -75,6 +82,7 @@ pub fn run(play: Option<Play>) {
 
 struct Root {
     play: Option<Play>,
+    closes: async_channel::Receiver<()>,
 }
 
 impl App for Root {
@@ -100,6 +108,7 @@ impl App for Root {
         let s = *root.read();
         window.set_if_modified((s.width, s.height));
         let play = self.play.clone();
+        let closes = self.closes.clone();
         let store = use_provide_context(move || {
             let (store, updates) = Store::create(ui);
             if let Some(updates) = updates {
@@ -113,6 +122,7 @@ impl App for Root {
                 let os = *OS_SCALE.lock().unwrap_or_else(|e| e.into_inner());
                 Platform::get().current_window().set_custom_scale_factor(device / os);
             }
+            store.listen(closes);
             drive::start(store);
             store
         });

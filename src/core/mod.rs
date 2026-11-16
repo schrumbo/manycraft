@@ -32,6 +32,7 @@ pub mod launch;
 pub mod logs;
 #[allow(dead_code)]
 pub mod lock;
+pub mod measured;
 pub mod migrate;
 pub mod modicons;
 #[allow(dead_code)]

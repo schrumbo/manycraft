@@ -1,5 +1,6 @@
 //! Toasts: a short note at the bottom of the window, with Rückgängig for what can be undone. At most three at once.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use freya::prelude::*;
@@ -14,6 +15,8 @@ use crate::view::ui::Ui;
 
 const PLAIN: Duration = Duration::from_secs(4);
 const UNDOABLE: Duration = Duration::from_secs(8);
+
+static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// One toast: what happened, and how to take it back.
 #[derive(Clone, PartialEq)]
@@ -36,7 +39,7 @@ pub fn show_kept(ui: Ui, text: impl Into<String>, undo: EventHandler<()>) -> u64
 }
 
 fn add(mut ui: Ui, text: String, undo: Option<EventHandler<()>>, keep: bool) -> u64 {
-    let id = ui.toasts.peek().iter().map(|t| t.id).max().unwrap_or(0) + 1;
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let wait = if undo.is_some() { UNDOABLE } else { PLAIN };
     {
         let mut toasts = ui.toasts.write();

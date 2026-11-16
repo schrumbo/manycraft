@@ -94,7 +94,8 @@ pub enum ToMod {
     /// Shows the game with its client area at `x`, `y`, `w`, `h`, then maximized or fullscreen as `mode` says.
     Show { x: i32, y: i32, w: u32, h: u32, #[serde(default, skip_serializing_if = "Mode::is_normal")] mode: Mode },
     Hide,
-    Profile { fps: u32, render_distance: u32, preview_interval_ms: u32, preview_width: u32 },
+    /// How often the game captures a preview and how wide it is.
+    Profile { preview_interval_ms: u32, preview_width: u32 },
     ChatSend { text: String },
     Reconnect,
     Respawn,

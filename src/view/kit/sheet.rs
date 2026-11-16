@@ -47,11 +47,13 @@ pub struct Card {
     pub primary: Option<Primary>,
     pub secondary: Option<Primary>,
     pub width: f32,
+    /// Only tells something: no Abbrechen, and Esc also runs the default action.
+    pub inform: bool,
 }
 
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, width: frame::SHEET }
+        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, width: frame::SHEET, inform: false }
     }
 
     pub fn message(mut self, message: impl Into<String>) -> Self {
@@ -79,6 +81,11 @@ impl Card {
         self.width = width;
         self
     }
+
+    pub fn inform(mut self) -> Self {
+        self.inform = true;
+        self
+    }
 }
 
 impl Component for Card {
@@ -94,8 +101,10 @@ impl Component for Card {
                 let b = Button::new(format!("{}.other", self.id), s.label.clone()).disabled(s.disabled.clone()).on_press(move |_| run.call(()));
                 footer = footer.child(if s.danger { b.danger() } else { b });
             }
+            None if self.inform => {}
             None => footer = footer.child(Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).on_press(move |_| close(ui))),
         }
+        let inform = self.inform;
         if let Some(p) = primary {
             let run = p.run.clone();
             let mut b = Button::new(format!("{}.ok", self.id), p.label.clone()).disabled(p.disabled.clone()).on_press(move |_| run.call(()));
@@ -105,6 +114,7 @@ impl Component for Card {
         let mut card = rect()
             .a11y_role(AccessibilityRole::Dialog)
             .a11y_alt(self.title.clone())
+            .a11y_builder(|n| n.set_modal())
             .width(Size::px(self.width))
             .padding(space::XL)
             .spacing(space::L)
@@ -115,7 +125,10 @@ impl Component for Card {
             .on_global_key_down(move |e: Event<KeyboardEventData>| match e.key {
                 Key::Named(NamedKey::Escape) => {
                     e.stop_propagation();
-                    close(ui);
+                    match &keys {
+                        Some(p) if inform => p.run.call(()),
+                        _ => close(ui),
+                    }
                 }
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() => {
                     if let Some(p) = &keys
@@ -151,6 +164,7 @@ impl Component for Host {
         let ui = use_consume::<Ui>();
         let sheet = ui.sheet.read().clone();
         let open = sheet.is_some();
+        super::use_focus_return(open);
         let fade = use_animation_with_dependencies(&open, |conf, open| {
             conf.on_creation(OnCreation::Finish);
             conf.on_change(OnChange::Rerun);

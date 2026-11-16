@@ -46,6 +46,18 @@ pub fn system_memory() -> Option<Memory> {
     platform::read()
 }
 
+/// The memory process `pid` holds for itself alone, in MB: what the system could not give anyone else while it runs.
+pub fn private_mb(pid: u32) -> Option<u64> {
+    platform::private(pid)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_smaps_rollup(text: &str) -> Option<u64> {
+    let kb = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
+    let private = kb("Private_Clean:")? + kb("Private_Dirty:")? + kb("Private_Hugetlb:").unwrap_or(0) + kb("Swap:").unwrap_or(0);
+    Some(private / 1024)
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn parse_meminfo(text: &str) -> Option<Memory> {
     let kb = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
@@ -69,6 +81,10 @@ mod platform {
     pub fn read() -> Option<Memory> {
         parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
     }
+
+    pub fn private(pid: u32) -> Option<u64> {
+        super::parse_smaps_rollup(&std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -86,13 +102,35 @@ mod platform {
         let total: u64 = run("sysctl", &["-n", "hw.memsize"])?.trim().parse().ok()?;
         parse_vm_stat(&run("vm_stat", &[])?, total)
     }
+
+    pub fn private(pid: u32) -> Option<u64> {
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        let pid = libc::c_int::try_from(pid).ok()?;
+        let done = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&raw mut info).cast::<libc::rusage_info_t>()) };
+        (done == 0).then_some(info.ri_phys_footprint >> 20)
+    }
 }
 
 #[cfg(windows)]
 mod platform {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ};
 
     use super::Memory;
+
+    pub fn private(pid: u32) -> Option<u64> {
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
+        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let done = unsafe { K32GetProcessMemoryInfo(process, (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(), counters.cb) };
+        unsafe { CloseHandle(process) };
+        (done != 0).then_some(counters.PrivateUsage as u64 >> 20)
+    }
 
     pub fn read() -> Option<Memory> {
         let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
@@ -111,6 +149,10 @@ mod platform {
     pub fn read() -> Option<Memory> {
         None
     }
+
+    pub fn private(_: u32) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -118,6 +160,25 @@ mod tests {
     use super::*;
 
     const MEM: Memory = Memory { total_mb: 32768, free_mb: 32000 };
+
+    #[test]
+    fn private_memory_adds_the_clean_and_dirty_private_pages() {
+        let text = "55a0-7ff0 ---p 00000000 00:00 0 [rollup]
+Rss:             2048000 kB
+Shared_Clean:     102400 kB
+Private_Clean:     51200 kB
+Private_Dirty:   1484800 kB
+Private_Hugetlb:       0 kB
+";
+        assert_eq!(parse_smaps_rollup(text), Some(1500));
+        assert_eq!(parse_smaps_rollup("Rss: 1 kB
+"), None);
+    }
+
+    #[test]
+    fn our_own_process_holds_some_private_memory() {
+        assert!(private_mb(std::process::id()).is_some_and(|mb| mb > 0) || cfg!(not(any(target_os = "linux", target_os = "macos", windows))));
+    }
 
     #[test]
     fn everything_fits_when_free_memory_is_enough() {

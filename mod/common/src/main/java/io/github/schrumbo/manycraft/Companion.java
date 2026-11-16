@@ -49,9 +49,16 @@ final class Companion {
 		this.config = config;
 		this.version = version;
 		this.link = new ManagerLink(config, this::handshake, this::onInbound);
-		this.state = new StateReporter(this::send, queue);
+		this.state = new StateReporter(this::reportState, queue);
 		this.chat = new ChatBridge(this::send, queue);
 		this.preview = config.preview() == null ? null : new PreviewService(config.preview(), this::send);
+	}
+
+	private void reportState(String line) {
+		send(line);
+		if (preview != null) {
+			preview.soon();
+		}
 	}
 
 	static Companion get() {
@@ -136,7 +143,7 @@ final class Companion {
 			return;
 		}
 		BackgroundController.Profile p = bg.profile();
-		boolean due = preview != null && preview.due(p.previewIntervalMs());
+		boolean due = preview != null && preview.due(p.previewIntervalMs(), bg.hidden() ? 1000 / Math.max(1, bg.hiddenFramerate()) : 0);
 		if (bg.skipsRender() && !due) {
 			return;
 		}
@@ -273,7 +280,14 @@ final class Companion {
 				options.shown();
 			}
 			case Protocol.Incoming.Hide hide -> bg.hide();
-			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
+			case Protocol.Incoming.Profile profile -> {
+				BackgroundController.Profile before = bg.profile();
+				bg.applyProfile(profile);
+				BackgroundController.Profile after = bg.profile();
+				if (preview != null && (after.previewIntervalMs() < before.previewIntervalMs() || after.previewWidth() != before.previewWidth())) {
+					preview.soon();
+				}
+			}
 			case Protocol.Incoming.Level level -> bg.applyLevel(level.level(), level.custom());
 			case Protocol.Incoming.ChatSend chatSend -> sendChat(mc, chatSend.text());
 			case Protocol.Incoming.Reconnect reconnect -> reconnect(mc);

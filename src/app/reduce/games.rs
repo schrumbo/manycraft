@@ -228,6 +228,8 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         Report::Connected { key, pid } => {
             m.set_hint(&key, |h| h.link_lost = false);
             m.session.pids.insert(key.clone(), pid);
+            m.session.shots.remove(&key);
+            m.session.planned.remove(&key);
             if env.place_windows {
                 m.session.unplaced.insert(key.clone());
             }
@@ -271,6 +273,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     }
     let s = &mut m.session;
     s.pids.remove(&key);
+    s.usage.remove(&key);
     s.unplaced.remove(&key);
     s.joined.remove(&key);
     s.adopted.remove(&key);
@@ -682,7 +685,7 @@ mod tests {
     use crate::core::settings::Settings;
 
     fn timers(fx: &[Effect]) -> Vec<(Duration, &Event)> {
-        later(fx).into_iter().filter(|(_, e)| !matches!(e, Event::AlertDue { .. } | Event::WhispersDue | Event::PhoneDue { .. })).collect()
+        later(fx).into_iter().filter(|(_, e)| !matches!(e, Event::AlertDue { .. } | Event::WhispersDue | Event::PhoneDue { .. } | Event::ShotsDue { .. } | Event::UsageDue)).collect()
     }
 
     fn joins(fx: &[Effect]) -> usize {

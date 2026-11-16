@@ -461,7 +461,10 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 (0, _) => tr("Noch keiner da."),
                 (1, 0) if attention == 0 => tr("Schläft noch."),
                 (_, 0) if attention == 0 => trf("Alle %lld schlummern.", &[&total]),
-                _ => trf("%lld von %lld laufen", &[&fine, &total]),
+                _ => match crate::app::reduce::usage::held(m, Some(&b.id)) {
+                    0 => trf("%lld von %lld laufen", &[&fine, &total]),
+                    mb => trf("%lld von %lld laufen · %@", &[&fine, &total, &super::forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX))]),
+                },
             };
             let stopped = total - running;
             let stoppable = m.games.values().filter(|i| i.batch_id == b.id && i.phase.stoppable()).count();
