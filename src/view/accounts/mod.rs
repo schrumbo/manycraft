@@ -382,11 +382,16 @@ pub fn context(store: Store, id: Uuid, at: (f32, f32)) -> Vec<Item> {
 
 /// The face chip of an account: its skin face on its colour, else the first letter.
 pub fn face(t: &Theme, store: Store, l: &Line, side: f32) -> Element {
-    let fill = t.identity(usize::from(l.color));
+    head(t, store, l.id, &l.name, l.color, side)
+}
+
+/// The skin face of account `id`, or its initial on its colour until the skin is there.
+pub fn head(t: &Theme, store: Store, id: Uuid, name: &str, color: u8, side: f32) -> Element {
+    let fill = t.identity(usize::from(color));
     let chip = rect().width(Size::px(side)).height(Size::px(side)).corner_radius(t.shape.small).background(fill).center().overflow(Overflow::Clip);
-    match store.faces.read().get(&l.id).cloned() {
+    match store.faces.read().get(&id).cloned() {
         Some(handle) => chip.padding(side / 12.).child(image(handle).width(Size::fill()).height(Size::fill()).corner_radius(t.shape.small / 2.)).into_element(),
-        None => chip.child(label().text(l.name.chars().next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default()).font_size(side * 0.5).font_weight(FontWeight::BOLD).color(t.ink_on(fill))).into_element(),
+        None => chip.child(label().text(name.chars().next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default()).font_size(side * 0.5).font_weight(FontWeight::BOLD).color(t.ink_on(fill))).into_element(),
     }
 }
 

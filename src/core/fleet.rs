@@ -111,7 +111,7 @@ impl Target {
     }
 
     fn background(&self) -> Background {
-        self.batch.as_ref().map_or_else(Background::default, |b| b.background)
+        self.batch.as_ref().map_or(Background::Full, |b| b.background)
     }
 }
 
@@ -460,14 +460,13 @@ struct Extra {
     secrets: Vec<(String, String)>,
 }
 
-fn extra_arguments(instance: &Instance, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str) -> Result<Extra> {
+fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str) -> Result<Extra> {
+    let instance = &target.instance;
     let mut jvm = instance.jvm_args.clone();
-    jvm.extend([
-        format!("-Dmanycraft.ipc={ipc_address}"),
-        format!("-Dmanycraft.instance={key}"),
-        format!("-Dmanycraft.preview={}", game_dir.join(PREVIEW_FILE).display()),
-        "-Dmanycraft.hidden=true".to_owned(),
-    ]);
+    jvm.extend([format!("-Dmanycraft.ipc={ipc_address}"), format!("-Dmanycraft.instance={key}")]);
+    if target.batch.is_some() {
+        jvm.extend([format!("-Dmanycraft.preview={}", game_dir.join(PREVIEW_FILE).display()), "-Dmanycraft.hidden=true".to_owned()]);
+    }
     let mut game = instance.options.game_arguments(&instance.game_version);
     let mut secrets = vec![(TOKEN_VAR.to_owned(), token.to_owned())];
     if let Some(url) = &account.proxy {
@@ -1206,7 +1205,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         quiet_early_window(&instance.config_dir())?;
     }
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
-    let mut extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token)?;
     if let Some(jar) = companion_jar {
         extra.jvm.push(format!("-javaagent:{}", jar.display()));
     }
@@ -2315,7 +2314,7 @@ mod tests {
         };
         let mut alt = Account::offline("AltOne").unwrap();
         alt.proxy = Some("socks5://10.1.1.1:1081".into());
-        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert_eq!(extra.game, ["--fullscreen", "--width", "1280", "--height", "720", "--graphicsBackend", "opengl", "--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
     }
 
@@ -2373,7 +2372,7 @@ mod tests {
         let batch = target("A");
         let mut alt = Account::offline("AltOne").unwrap();
         alt.proxy = Some("socks5://us%40r:p%3Ass@10.1.1.1:1081".into());
-        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert_eq!(extra.game, ["--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
         assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), "socks5://us%40r:p%3Ass@10.1.1.1:1081".to_owned())));
         assert!(extra.secrets.contains(&("MANYCRAFT_TOKEN".to_owned(), "tok".to_owned())));
@@ -2386,15 +2385,15 @@ mod tests {
         assert!(extra.jvm.contains(&"-Dmanycraft.instance=k".to_owned()));
         assert!(extra.jvm.contains(&"-Dmanycraft.ipc=127.0.0.1:9".to_owned()));
         alt.proxy = Some("http://proxy.example:3128".into());
-        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.game.is_empty());
         assert!(extra.jvm.contains(&"-Dhttps.proxyHost=proxy.example".to_owned()) && extra.jvm.contains(&"-Dhttps.proxyPort=3128".to_owned()));
         alt.proxy = None;
-        let extra = extra_arguments(&batch.instance, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.game.is_empty() && !extra.jvm.iter().any(|a| a.contains("proxy")));
         assert_eq!(extra.secrets.len(), 1);
         alt.proxy = Some("ftp://x:1".into());
-        assert!(extra_arguments(&batch.instance, &alt, Path::new("inst"), "", "k", "tok").is_err());
+        assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k", "tok").is_err());
     }
 
     #[test]
@@ -2653,8 +2652,20 @@ mod tests {
         let batch = target("A");
         let alt = Account::offline("AltOne").unwrap();
         let dir = batch.instance.game_dir(alt.id);
-        let extra = extra_arguments(&batch.instance, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch.instance, alt.id).display())));
+    }
+
+    #[test]
+    fn a_game_played_alone_opens_as_a_normal_window_without_previews_or_background_mode() {
+        let alone = Target::solo(&target("A").instance);
+        let alt = Account::offline("AltOne").unwrap();
+        let extra = extra_arguments(&alone, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        assert!(!extra.jvm.iter().any(|a| a.starts_with("-Dmanycraft.hidden") || a.starts_with("-Dmanycraft.preview")), "{:?}", extra.jvm);
+        assert!(extra.jvm.contains(&"-Dmanycraft.ipc=127.0.0.1:9".to_owned()));
+        assert!(identity_messages(&alone, &alt, true).contains(&ipc::ToMod::Level(ipc::Level::Full)));
+        let batch = target("A");
+        assert!(identity_messages(&batch, &alt, true).contains(&ipc::ToMod::Level(batch.background().into())));
     }
 
     #[test]

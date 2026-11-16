@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::super::effect::Effect;
 use super::super::event::Event;
-use super::super::model::Model;
+use super::super::model::{Game, Model};
 use super::super::session::Shot;
 use crate::core::ipc::ToMod;
 use crate::core::settings::PreviewRate;
@@ -24,12 +24,13 @@ pub fn plan(m: &Model, rate: PreviewRate) -> HashMap<String, Shot> {
     let width = WIDTHS.into_iter().find(|w| *w >= s.watch.width).unwrap_or(WIDTHS[2]);
     let width = if s.watch.width == 0 { WIDTHS[1] } else { width };
     let paused = Shot { interval_ms: PAUSED_MS, width };
+    let pids: Vec<&String> = s.pids.keys().filter(|k| !m.games.get(*k).is_some_and(Game::alone)).collect();
     if s.watch.away || m.playing.is_some() {
-        return s.pids.keys().map(|k| (k.clone(), paused)).collect();
+        return pids.into_iter().map(|k| (k.clone(), paused)).collect();
     }
     let mut hot: Vec<&String> = Vec::new();
     for key in s.watch.hovered.iter().chain(&s.watch.focused) {
-        if hot.len() < HOT_MAX && s.visible.contains(key) && s.pids.contains_key(key) && !hot.contains(&key) {
+        if hot.len() < HOT_MAX && s.visible.contains(key) && pids.contains(&key) && !hot.contains(&key) {
             hot.push(key);
         }
     }
@@ -39,10 +40,9 @@ pub fn plan(m: &Model, rate: PreviewRate) -> HashMap<String, Shot> {
         PreviewRate::Smooth => (HOT_MS, SHOWN_MS / 2),
     };
     let left = BUDGET.saturating_sub(hot.len() as u32 * (1000 / hot_ms)).max(1);
-    let shown = s.pids.keys().filter(|k| s.visible.contains(*k) && !hot.contains(k)).count() as u32;
+    let shown = pids.iter().filter(|k| s.visible.contains(**k) && !hot.contains(*k)).count() as u32;
     let shown_ms = if shown * 1000 / shown_ms > left { shown_ms.max(shown.div_ceil(left) * 1000) } else { shown_ms }.min(SLOWEST_MS);
-    s.pids
-        .keys()
+    pids.into_iter()
         .map(|k| {
             let interval_ms = if hot.contains(&k) {
                 hot_ms

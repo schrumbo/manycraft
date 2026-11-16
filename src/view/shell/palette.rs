@@ -53,7 +53,7 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
         let (bulk, rest): (Vec<Entry>, Vec<Entry>) = list.into_iter().partition(|e| matches!(e.target, Target::Command(Command::StartAll | Command::StopAll | Command::CancelStart | Command::StartAnyway | Command::ReconnectDropped | Command::StartSelected | Command::StopSelected | Command::RestartSelected | Command::ReconnectSelected | Command::MessageSelected)));
         return rest.into_iter().chain(bulk).collect();
     }
-    let mut games: Vec<Entry> = m.games.iter().map(|(key, g)| Entry { id: format!("palette.play.{key}"), label: g.name.clone(), glyph: Icon::Play, shortcut: None, target: Target::Play(key.clone()) }).collect();
+    let mut games: Vec<Entry> = m.games.iter().filter(|(_, g)| !g.alone()).map(|(key, g)| Entry { id: format!("palette.play.{key}"), label: g.name.clone(), glyph: Icon::Play, shortcut: None, target: Target::Play(key.clone()) }).collect();
     games.sort_by(|a, b| a.label.cmp(&b.label));
     list.extend(games);
     let mut scored: Vec<(usize, Entry)> = list.into_iter().filter_map(|e| { let l = e.label.to_lowercase(); l.find(&q).map(|at| (usize::from(at != 0) * 100 + at, e)) }).collect();

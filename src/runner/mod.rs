@@ -154,6 +154,21 @@ impl Runtime {
                     }
                 });
             }
+            Effect::SaveActiveAccount(id) => {
+                settings::set(settings::Settings { active_account: Some(id), ..settings::active().clone() });
+                std::thread::spawn(|| {
+                    if let Err(e) = settings::persist() {
+                        eprintln!("settings: {e:#}");
+                    }
+                });
+            }
+            Effect::SaveDefaultAccount { instance, account } => {
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::ui::remote::set_default_account(&instance, account) {
+                        eprintln!("default account: {e:#}");
+                    }
+                });
+            }
             Effect::SaveMeasured(seen) => {
                 std::thread::spawn(move || {
                     if let Err(e) = crate::core::measured::save(&seen) {

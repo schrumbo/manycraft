@@ -91,8 +91,6 @@ pub struct Session {
     pub joined: HashSet<String>,
     /// Whether the saved sign-ins were checked once.
     pub refreshed: bool,
-    /// The game to show once it can be shown, asked for at that time.
-    pub show_when_ready: Option<(String, Instant)>,
     /// Attention collected per batch for one notification.
     pub alerts: HashMap<String, Vec<(String, Alert)>>,
     /// Process ids of the games whose mod connected.

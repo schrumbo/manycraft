@@ -351,9 +351,6 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
         s.crash_restarts.remove(key);
         s.joined.remove(key);
         s.phone.forget(key);
-        if s.show_when_ready.as_ref().is_some_and(|(k, _)| k == key) {
-            s.show_when_ready = None;
-        }
         let has_pid = s.pids.contains_key(key);
         let Some(i) = m.games.get_mut(key) else { continue };
         i.memory_wait = None;
@@ -636,18 +633,6 @@ mod tests {
         let fx = run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
         assert_eq!(m.games[&key].phase, Phase::Stopped);
         assert!(!m.games[&key].stopping && !later(&fx).iter().any(|(_, e)| matches!(e, Event::StopOverdue { .. })));
-    }
-
-    #[test]
-    fn a_stop_drops_a_pending_show() {
-        let s = settings();
-        let (mut m, key) = setup(Phase::Starting { place: 0, total: 0 }, AccountKind::Offline, &[]);
-        m.session.show_when_ready = Some((key.clone(), Instant::now()));
-        run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
-        assert!(m.session.show_when_ready.is_none());
-        run(&mut m, &s, Instant::now(), Event::Start(vec![key.clone()]));
-        let fx = report(&mut m, &s, state(&key, crate::core::ipc::StateKind::Menu, None, None));
-        assert!(!fx.iter().any(|e| matches!(e, Effect::Show { .. })), "the new start is not shown by the old request");
     }
 
     #[test]

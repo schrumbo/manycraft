@@ -116,11 +116,14 @@ pub struct Settings {
     /// The id of the chosen theme; none or a theme that is gone means the default.
     pub theme: Option<String>,
     pub preview_rate: PreviewRate,
+    /// The account that plays an instance alone when the instance names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_account: Option<uuid::Uuid>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, active_account: None }
     }
 }
 

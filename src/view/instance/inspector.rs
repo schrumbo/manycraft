@@ -1,12 +1,8 @@
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
-
-use freya::elements::image::ImageHandle;
 use freya::prelude::*;
+use uuid::Uuid;
 
-use super::{Facts, actions, links, uptime_text};
+use super::{Facts, actions, links, uptime_text, use_minute};
 use crate::app::event::Event as AppEvent;
-use crate::core::account::AccountKind;
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::install;
@@ -18,14 +14,14 @@ use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
-use crate::view::kit::menu::{self, Item, Menu};
+use crate::view::kit::menu::{self, Face, Item, Menu};
 use crate::view::kit::text::{caption, hairline, line, spacer};
-use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{Bounds, after, off_ui, ring, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
+const ACCOUNTS_SEARCH_FROM: usize = 6;
 const PREVIEW_W: f32 = super::INSPECTOR - space::L * 2.;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -46,6 +42,12 @@ fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
         };
         return (t.accent, text);
     }
+    if let Some((_, overdue)) = f.stopping {
+        return (t.attention, if overdue { tr("Beendet sich nicht") } else { tr("Wird gestoppt…") });
+    }
+    if let Some(trouble) = &f.trouble {
+        return (t.danger, trouble.clone());
+    }
     let up = store.ui.instance.up.read();
     let since = f.stoppable.iter().filter_map(|(key, _)| up.get(key)).min().copied();
     match (f.stoppable.len(), since.and_then(uptime_text)) {
@@ -62,23 +64,17 @@ fn status_line(t: &Theme, color: Color, text: String) -> impl IntoElement {
     rect().horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(dot(color)).child(line(t, text, font::CALLOUT, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis))
 }
 
-fn use_minute(store: Store) {
-    let mut tick = use_state(|| 0u32);
-    let _ = tick.read();
-    use_hook(move || {
-        spawn(async move {
-            loop {
-                let up = store.ui.instance.up;
-                let since = up.peek().values().min().copied();
-                let wait = since.map_or(60, |s: Instant| 60 - s.elapsed().as_secs() % 60);
-                after(Duration::from_secs(wait) + Duration::from_millis(50)).await;
-                if since.is_some() {
-                    let next = tick.peek().wrapping_add(1);
-                    tick.set(next);
-                }
-            }
-        })
-    });
+fn status_row(t: &Theme, store: Store, f: &Facts, color: Color, text: String) -> Element {
+    let row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rect().width(Size::flex(1.)).child(status_line(t, color, text))).content(Content::flex());
+    if f.trouble.is_none() {
+        return row.into_element();
+    }
+    let mut tab = store.ui.instance.tab;
+    row.child(Button::new("instance.logs", tr("Protokoll ansehen")).plain().on_press(move |_| tab.set(super::Tab::Logs))).into_element()
+}
+
+fn face_of(m: &crate::app::model::Model, id: Uuid) -> Option<Face> {
+    m.account(id).map(|a| Face { id, name: a.name.clone(), color: a.color() })
 }
 
 fn play_menu(store: Store, f: &Facts) -> Vec<Item> {
@@ -87,28 +83,31 @@ fn play_menu(store: Store, f: &Facts) -> Vec<Item> {
     let mut items = Vec::new();
     for (account, name) in f.accounts.iter().filter(|_| several) {
         let (instance, account_id) = (f.made.id.clone(), *account);
-        let kind = m.account(*account).map_or_else(String::new, |a| if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") });
-        let item = Item::new(format!("instance.play.as.{account}"), format!("{name} · {kind}"), move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: Some(account_id) }));
-        items.push(if f.plain.contains(account) {
-            Item::new(format!("instance.play.as.{account}"), format!("{name} · {}", tr("Läuft · ohne Vorschau")), |_| {}).disabled(true)
+        let mut item = if f.playing.contains(account) {
+            Item::new(format!("instance.play.as.{account}"), name.clone(), |_| {}).shortcut(tr("Läuft")).disabled(true)
         } else {
-            item.checked(f.solo == Some(*account))
+            let item = Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: Some(account_id) }));
+            if f.pinned && f.solo == Some(*account) { item.shortcut(tr("Standard")) } else { item }
+        };
+        if let Some(face) = face_of(&m, *account) {
+            item = item.face(face);
+        }
+        items.push(item.checked(f.solo == Some(*account)));
+    }
+    if let Some(solo) = f.solo.filter(|_| several) {
+        let instance = f.made.id.clone();
+        items.push(Item::Separator);
+        items.push(if f.pinned {
+            Item::new("instance.play.default.clear", tr("Standard-Account entfernen"), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account: None }))
+        } else {
+            Item::new("instance.play.default.set", tr("Als Standard für diese Instanz"), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account: Some(solo) }))
         });
     }
-    if several && !f.stoppable.is_empty() {
+    if f.stoppable.len() > 1 {
         items.push(Item::Separator);
-    }
-    match f.stoppable.as_slice() {
-        [] => {}
-        [(key, _)] => {
+        for (key, name) in &f.stoppable {
             let key = key.clone();
-            items.push(Item::new("instance.play.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))).shortcut(Shortcut::primary(Code::Period).label()));
-        }
-        many => {
-            for (key, name) in many {
-                let key = key.clone();
-                items.push(Item::new(format!("instance.play.stop.{key}"), trf("„%@“ stoppen", &[name]), move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))));
-            }
+            items.push(Item::new(format!("instance.play.stop.{key}"), trf("„%@“ stoppen", &[name]), move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))));
         }
     }
     items
@@ -128,42 +127,41 @@ impl Component for PlayControl {
         if f.accounts.is_empty() {
             return rect().child(Button::new("instance.play", tr("Account hinzufügen")).glyph(Icon::Plus).primary().on_press(move |_| ui.page.set(Page::Accounts))).into_element();
         }
-        let name = f.solo.and_then(|a| f.accounts.iter().find(|(id, _)| *id == a)).map(|(_, n)| n.clone());
-        let instance = f.made.id.clone();
-        let (label, run): (String, Option<Box<dyn Fn()>>) = match (&f.shown, &name) {
-            (Some(key), _) => {
-                let key = key.clone();
-                (tr("Zeigen"), Some(Box::new(move || store.dispatch(AppEvent::Play(key.clone())))))
+        let main = if let Some((key, overdue)) = f.stopping.clone() {
+            if overdue {
+                Button::new("instance.play", tr("Sofort beenden")).glyph(Icon::Stop).danger().tip(trf("Nicht Gespeichertes geht verloren (%@)", &[&Shortcut::primary(Code::Period).label()])).on_press(move |_| store.dispatch(AppEvent::Stop(vec![key.clone()])))
+            } else {
+                Button::new("instance.play", tr("Wird gestoppt…")).glyph(Icon::Stop).disabled(Some(tr("Das Spiel speichert und beendet sich.")))
             }
-            (None, Some(name)) => {
-                let solo = f.solo;
-                (trf("Spielen als %@", &[name]), Some(Box::new(move || store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: solo }))))
-            }
-            (None, None) => (tr("Spielen"), None),
+        } else if !f.stoppable.is_empty() {
+            let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();
+            let label = if keys.len() == 1 { tr("Stoppen") } else { tr("Alle stoppen") };
+            Button::new("instance.play", label).glyph(Icon::Stop).tip(Shortcut::primary(Code::Period).label()).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone())))
+        } else {
+            let name = f.solo.and_then(|a| f.accounts.iter().find(|(id, _)| *id == a)).map(|(_, n)| n.clone());
+            let (instance, solo) = (f.made.id.clone(), f.solo);
+            let label = name.map_or_else(|| tr("Spielen"), |n| trf("Spielen als %@", &[&n]));
+            Button::new("instance.play", label).glyph(Icon::Play).primary().tip(Shortcut::primary(Code::KeyR).label()).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: solo }))
         };
         let menu_facts = f.clone();
-        let open = move || {
-            let items = play_menu(store, &menu_facts);
-            if !items.is_empty() {
-                menu::open(store.ui, Menu::under(items, *anchor.peek()));
-            }
-        };
-        let several = f.accounts.len() > 1;
-        let Some(run) = run else {
-            let open = open.clone();
-            return rect().on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e))).child(Button::new("instance.play", label).glyph(Icon::ChevronDown).primary().on_press(move |_| open())).into_element();
-        };
-        let main = Button::new("instance.play", label).glyph(Icon::Play).primary().on_press(move |_| run());
-        if !several && f.stoppable.is_empty() {
+        let items = play_menu(store, f);
+        if items.is_empty() {
             return rect().child(main).into_element();
         }
-        let chevron_label = if several { tr("Anderer Account") } else { tr("Weitere Aktionen") };
+        let label = tr("Anderer Account");
+        let mut more = Button::icon("instance.play.more", Icon::ChevronDown, label.clone()).tip(label);
+        if f.stoppable.is_empty() && f.stopping.is_none() {
+            more = more.primary();
+        }
         rect()
             .horizontal()
             .spacing(1.)
             .on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e)))
             .child(main)
-            .child(Button::icon("instance.play.more", Icon::ChevronDown, chevron_label.clone()).primary().tip(chevron_label).on_press(move |_| open()))
+            .child(more.on_press(move |_| {
+                let menu = Menu::under(play_menu(store, &menu_facts), *anchor.peek());
+                menu::open(store.ui, if menu_facts.accounts.len() >= ACCOUNTS_SEARCH_FROM { menu.searchable(tr("Account suchen")) } else { menu });
+            }))
             .into_element()
     }
 }
@@ -321,11 +319,6 @@ fn use_worlds(store: Store, made: &Instance) -> Option<Worlds> {
     found.read().as_ref().filter(|(id, _)| *id == made.id).map(|(_, w)| *w)
 }
 
-fn use_preview(store: Store, key: Option<String>) {
-    use_side_effect_with_deps(&key, move |key| store.set_visible(key.iter().cloned().collect::<HashSet<String>>()));
-    use_drop(move || store.set_visible(HashSet::new()));
-}
-
 #[derive(PartialEq)]
 struct Preview {
     facts: Facts,
@@ -335,48 +328,21 @@ struct Preview {
 impl Component for Preview {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        let store = use_store();
-        let mut hovered = use_state(|| false);
-        let spot = use_spot("instance.preview", "button", &tr("Zeigen"), self.facts.shown.is_some());
-        let pic = preview(&t, store, &self.facts, self.busy);
-        match self.facts.shown.clone() {
-            Some(key) => WithTip::new(
-                Some(tr("Zeigen")),
-                rect()
-                    .corner_radius(t.shape.tile)
-                    .cursor(CursorIcon::Pointer)
-                    .on_sized(spot)
-                    .on_pointer_enter(move |_| hovered.set(true))
-                    .on_pointer_leave(move |_| hovered.set_if_modified(false))
-                    .on_all_press(move |_| store.dispatch(AppEvent::Play(key.clone())))
-                    .child(pic)
-                    .child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(PREVIEW_W)).height(Size::px(PREVIEW_W * 9. / 16.)).corner_radius(t.shape.tile).background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })),
-            )
-            .into_element(),
-            None => rect().on_sized(spot).child(pic).into_element(),
+        let f = &self.facts;
+        let h = PREVIEW_W * 9. / 16.;
+        let (glyph, text) = if !f.playing.is_empty() {
+            (Icon::Play, tr("Läuft in eigenem Fenster"))
+        } else if f.running {
+            (Icon::Layers, tr("Läuft im Batch"))
+        } else {
+            (Icon::Moon, tr("Gestoppt"))
+        };
+        let mut pic = rect().width(Size::px(PREVIEW_W)).height(Size::px(h)).background(t.well).corner_radius(t.shape.tile).overflow(Overflow::Clip).center().spacing(space::XS).child(icon(&t, glyph, iconsize::L, t.text3)).child(caption(&t, text));
+        if let Some(done) = self.busy {
+            pic = pic.child(rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(PREVIEW_W * done)).height(Size::px(frame::PROGRESS)).background(t.accent));
         }
+        pic
     }
-}
-
-fn preview(t: &Theme, store: Store, f: &Facts, busy: Option<f32>) -> Element {
-    let h = PREVIEW_W * 9. / 16.;
-    let image = f.shown.as_ref().and_then(|k| store.previews.read().get(k).cloned());
-    let mut pic = rect().width(Size::px(PREVIEW_W)).height(Size::px(h)).background(t.well).corner_radius(t.shape.tile).overflow(Overflow::Clip).center();
-    pic = match &image {
-        Some(handle) => pic.child(image_el(handle.clone(), PREVIEW_W, h)),
-        None => {
-            let glyph = if f.running { Icon::Play } else { Icon::Moon };
-            pic.spacing(space::XS).child(icon(t, glyph, iconsize::L, t.text3)).child(caption(t, if f.running { tr("Keine Vorschau") } else { tr("Gestoppt") }))
-        }
-    };
-    if let Some(done) = busy {
-        pic = pic.child(rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(PREVIEW_W * done)).height(Size::px(frame::PROGRESS)).background(t.accent));
-    }
-    pic.into_element()
-}
-
-fn image_el(handle: ImageHandle, w: f32, h: f32) -> impl IntoElement {
-    image(handle).width(Size::px(w)).height(Size::px(h)).aspect_ratio(AspectRatio::Max).image_cover(ImageCover::Center)
 }
 
 /// The page's notices for instance `id`: why its last change was not saved, with a button that hides it.
@@ -418,8 +384,7 @@ impl Component for Inspector {
         let t = use_theme();
         let store = use_store();
         let f = super::facts(&store.model.read(), &self.id);
-        use_minute(store);
-        use_preview(store, f.as_ref().and_then(|f| f.shown.clone()));
+        use_minute(store, true);
         let fallback = Instance::new("", "", Loader::Vanilla);
         let made = f.as_ref().map_or(&fallback, |f| &f.made).clone();
         let news = use_loader_news(&made);
@@ -429,7 +394,7 @@ impl Component for Inspector {
         let busy = store.ui.instance.busy.read().get(&self.id).and_then(|b| b.progress);
 
         let mut col = rect().width(Size::fill()).padding(space::L).spacing(space::M);
-        col = col.child(Preview { facts: f.clone(), busy }).child(status_line(&t, color, text));
+        col = col.child(Preview { facts: f.clone(), busy }).child(status_row(&t, store, &f, color, text));
         col = col.child(PlayControl { facts: f.clone() }).child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() });
         if let Some(links) = batch_links(&t, &f.batches) {
             col = col.child(links);
@@ -499,7 +464,7 @@ impl Component for Strip {
         let t = use_theme();
         let store = use_store();
         let mut anchor = use_state(Bounds::default);
-        use_minute(store);
+        use_minute(store, true);
         let Some(f) = super::facts(&store.model.read(), &self.id) else { return rect().into_element() };
         let (color, text) = status(&t, store, &f, &self.id);
         let menu_facts = f.clone();
@@ -511,7 +476,7 @@ impl Component for Strip {
             .cross_align(Alignment::Center)
             .spacing(space::S)
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }).alignment(BorderAlignment::Inner))
-            .child(rect().width(Size::flex(1.)).child(status_line(&t, color, text)))
+            .child(rect().width(Size::flex(1.)).child(status_row(&t, store, &f, color, text)))
             .content(Content::flex())
             .child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() })
             .child(PlayControl { facts: f.clone() });

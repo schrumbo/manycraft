@@ -1,5 +1,6 @@
 //! The window's frame: sidebar, toolbar and the page, with the palette, sheets, menus, toasts and tooltips above.
 
+pub mod account;
 mod palette;
 mod sidebar;
 mod toolbar;
