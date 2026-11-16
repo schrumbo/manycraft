@@ -27,6 +27,12 @@ import java.lang.constant.ClassDesc;
 import java.lang.constant.MethodTypeDesc;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.URL;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -36,6 +42,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * Rewrites the game classes the companion hooks into. Every hook checks that its method and call site exist; a missing
@@ -279,11 +287,41 @@ final class Patcher implements ClassFileTransformer {
 	}
 
 	static ClassFile files(ClassLoader loader) {
-		ClassHierarchyResolver resolver = ClassHierarchyResolver.ofResourceParsing(loader == null ? ClassLoader.getSystemClassLoader() : loader)
+		ClassLoader own = loader == null ? ClassLoader.getSystemClassLoader() : loader;
+		ClassHierarchyResolver resolver = ClassHierarchyResolver.ofResourceParsing(desc -> resource(own, desc))
 			.orElse(ClassHierarchyResolver.ofResourceParsing(ClassLoader.getSystemClassLoader()))
 			.orElse(ClassHierarchyResolver.defaultResolver())
 			.cached();
 		return ClassFile.of(ClassFile.ClassHierarchyResolverOption.of(resolver));
+	}
+
+	/**
+	 * The class file behind {@code desc}, read past jar signatures a loader patched the classes under.
+	 */
+	static InputStream resource(ClassLoader loader, ClassDesc desc) {
+		String name = desc.descriptorString();
+		String path = name.substring(1, name.length() - 1) + ".class";
+		try (InputStream in = loader.getResourceAsStream(path)) {
+			return in == null ? null : new ByteArrayInputStream(in.readAllBytes());
+		} catch (SecurityException e) {
+			return unsigned(loader.getResource(path));
+		} catch (IOException e) {
+			return null;
+		}
+	}
+
+	private static InputStream unsigned(URL url) {
+		String s = url == null ? "" : url.toString();
+		int bang = s.indexOf("!/");
+		if (!s.startsWith("jar:") || bang < 0) {
+			return null;
+		}
+		try (JarFile jar = new JarFile(new File(URI.create(s.substring(4, bang))), false)) {
+			JarEntry entry = jar.getJarEntry(s.substring(bang + 2));
+			return entry == null ? null : new ByteArrayInputStream(jar.getInputStream(entry).readAllBytes());
+		} catch (IOException | IllegalArgumentException e) {
+			return null;
+		}
 	}
 
 	private static MethodTypeDesc type(ClassDesc ret, ClassDesc... params) {

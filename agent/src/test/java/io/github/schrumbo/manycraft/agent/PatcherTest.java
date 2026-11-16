@@ -7,6 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.FieldModel;
@@ -18,7 +22,10 @@ import java.lang.constant.MethodTypeDesc;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class PatcherTest {
 	private static byte[] bytes(String name) throws IOException {
@@ -107,5 +114,39 @@ class PatcherTest {
 		assertNotNull(out);
 		MethodModel extract = ClassFile.of().parse(out).methods().stream().filter(m -> m.methodName().equalsString("extractRenderState")).findFirst().orElseThrow();
 		assertTrue(extract.code().orElseThrow().elementStream().anyMatch(e -> e instanceof InvokeInstruction i && i.name().equalsString("hud")));
+	}
+
+	@Test
+	void classesBehindABrokenJarSignatureStillResolve(@TempDir Path dir) throws IOException {
+		byte[] bytes = bytes("io/github/schrumbo/manycraft/agent/Patches");
+		Path jar = dir.resolve("client.jar");
+		try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar))) {
+			out.putNextEntry(new JarEntry("io/github/schrumbo/manycraft/agent/Patches.class"));
+			out.write(bytes);
+		}
+		ClassLoader signed = new ClassLoader(null) {
+			@Override
+			public InputStream getResourceAsStream(String name) {
+				return new InputStream() {
+					@Override
+					public int read() {
+						throw new SecurityException("SHA-384 digest error for " + name);
+					}
+				};
+			}
+
+			@Override
+			public URL getResource(String name) {
+				try {
+					return URI.create("jar:" + jar.toUri() + "!/" + name).toURL();
+				} catch (IOException e) {
+					throw new IllegalStateException(e);
+				}
+			}
+		};
+		try (InputStream in = Patcher.resource(signed, ClassDesc.of("io.github.schrumbo.manycraft.agent.Patches"))) {
+			assertNotNull(in);
+			assertEquals(bytes.length, in.readAllBytes().length);
+		}
 	}
 }

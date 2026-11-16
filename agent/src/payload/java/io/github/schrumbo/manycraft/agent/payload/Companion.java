@@ -279,10 +279,13 @@ final class Companion implements Bridge {
 
 	private void started(Minecraft mc) {
 		BackgroundController bg = new BackgroundController(mc, guard, this::send);
-		if (config.hidden()) {
-			bg.startHidden();
+		try {
+			if (config.hidden()) {
+				bg.startHidden();
+			}
+		} finally {
+			background = bg;
 		}
-		background = bg;
 	}
 
 	@Override

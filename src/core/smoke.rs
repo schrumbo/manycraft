@@ -37,8 +37,10 @@ const BACKEND_FAILED: &str = "Failed to create backend ";
 const BACKEND_USED: &str = "Using graphics backend ";
 const BACKENDS: [&str; 2] = ["OpenGL", "Vulkan"];
 const TAIL: usize = 60;
-const FAULTS: [&str; 7] = [
+const FAULTS: [&str; 9] = [
     "hooks not found",
+    "does not verify",
+    "cannot patch",
     "failed, left to the game",
     "stopping the game",
     "the companion leaves it alone",
@@ -182,6 +184,9 @@ fn run(args: &[String]) -> Result<i32> {
     }
     if let Some(hooks) = log.lines().find_map(hook_map) {
         println!("hooks {hooks}");
+        if hooks.contains("=false") {
+            problems.push(format!("some hooks did not apply: {hooks}"));
+        }
     }
     for (name, check) in checks {
         println!("check {name} {}", check.word());
