@@ -105,8 +105,8 @@ pub(super) struct Options {
     width: Entity<InputState>,
     height: Entity<InputState>,
     pub(super) jvm_problem: Option<String>,
-    game_problem: Option<String>,
-    window_problem: Option<String>,
+    pub(super) game_problem: Option<String>,
+    pub(super) window_problem: Option<String>,
     synced: Option<(String, LaunchOptions)>,
     java_items: Option<(Option<PathBuf>, usize)>,
     gpu_focus: FocusHandle,
@@ -127,7 +127,7 @@ impl Options {
         let height = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Höhe")));
         let committed = |s: &mut InstancePage, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<InstancePage>| match e {
             InputEvent::PressEnter { .. } | InputEvent::Blur => s.commit_options(cx),
-            InputEvent::Change => s.commit_soon(cx),
+            InputEvent::Change => s.typing(cx),
             _ => {}
         };
         let subs = vec![

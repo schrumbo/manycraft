@@ -364,7 +364,6 @@ struct InstancePage {
     select_applied: Option<(String, u64, bool, bool)>,
     opts: Options,
     jvm: Entity<InputState>,
-    typed: u64,
     loader_version: Entity<LoaderVersion>,
     name: Entity<InputState>,
     renaming: bool,
@@ -401,7 +400,7 @@ impl InstancePage {
         let name = cx.new(|cx| InputState::new(window, cx));
         let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| match e {
             InputEvent::PressEnter { .. } | InputEvent::Blur => s.commit_inputs(cx),
-            InputEvent::Change => s.commit_soon(cx),
+            InputEvent::Change => s.typing(cx),
             _ => {}
         };
         let subs = vec![
@@ -468,7 +467,6 @@ impl InstancePage {
             select_applied: None,
             opts,
             jvm,
-            typed: 0,
             loader_version,
             name,
             renaming: false,
@@ -742,19 +740,13 @@ impl InstancePage {
         self.sync_options(made, window, cx);
     }
 
-    pub(super) fn commit_soon(&mut self, cx: &mut Context<Self>) {
-        self.typed += 1;
-        let typed = self.typed;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
-            let _ = this.update(cx, |s, cx| {
-                if s.typed == typed {
-                    s.commit_inputs(cx);
-                    s.commit_options(cx);
-                }
-            });
-        })
-        .detach();
+    pub(super) fn typing(&mut self, cx: &mut Context<Self>) {
+        if self.opts.jvm_problem.is_some() || self.opts.game_problem.is_some() || self.opts.window_problem.is_some() {
+            self.opts.jvm_problem = None;
+            self.opts.game_problem = None;
+            self.opts.window_problem = None;
+            cx.notify();
+        }
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {
