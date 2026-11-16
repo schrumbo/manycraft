@@ -689,6 +689,12 @@ mod tests {
         let fx = run(&mut m, &s, Instant::now(), Event::StopAll);
         assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if k.contains(&solo))));
         assert!(m.games[&solo].stopping);
+        let Some(Effect::Stopped(stopped)) = fx.iter().find(|e| matches!(e, Effect::Stopped(_))) else { panic!("no undo offer") };
+        assert_eq!(*stopped, vec![solo.clone()]);
+        let stopped = stopped.clone();
+        run(&mut m, &s, Instant::now(), Event::StartAgain(stopped));
+        let fx = report(&mut m, &s, Report::Exited { key: solo.clone(), code: Some(0) });
+        assert_eq!(started(&fx), vec![solo.clone()], "undo starts the solo game again once it is down");
     }
 
     #[test]
