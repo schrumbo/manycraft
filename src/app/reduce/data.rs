@@ -1,11 +1,14 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
 use super::super::effect::{Effect, Redraw};
 use super::super::event::Loaded;
 use super::super::model::{Game, Model, Phase};
 use super::super::phase::Why;
-use super::{Env, games, go, show};
+use super::{Env, fleet as launching, games, go, show};
 use crate::core::fleet::{self, Adoption};
+
+const START_WAITS_FOR: Duration = Duration::from_secs(10);
 
 pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Effect>) {
     let Loaded { data, logs, problems, recovered, keep, adopted } = loaded;
@@ -46,6 +49,16 @@ pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Eff
     if m.loaded {
         for (instance, account) in std::mem::take(&mut m.session.waiting_plays) {
             show::request_play(m, env, instance, account, out);
+        }
+    }
+    for (batch, since) in std::mem::take(&mut m.session.waiting_starts) {
+        if env.now.saturating_duration_since(since) > START_WAITS_FOR {
+            continue;
+        }
+        if super::startable(m, &batch) {
+            launching::launch(m, &batch, None, launching::Kick::Plain, out);
+        } else {
+            m.session.waiting_starts.push((batch, since));
         }
     }
 }
@@ -117,6 +130,63 @@ mod tests {
     use super::super::testing::*;
     use crate::core::account::AccountKind;
     use crate::core::fleet::Adoption;
+
+    #[test]
+    fn a_batch_started_before_a_load_knows_it_starts_with_the_load() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let batch = m.batches.remove(0);
+        m.games.clear();
+        let now = std::time::Instant::now();
+        let fx = run(&mut m, &s, now, super::super::super::event::Event::StartBatch(batch.id.clone()));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })));
+        m.batches.push(batch.clone());
+        let fx = adopt(&mut m, &s, Vec::new());
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { owner, .. } if *owner == batch.id)), "starts once the load knows the batch");
+        assert!(m.session.waiting_starts.is_empty());
+        let fx = adopt(&mut m, &s, Vec::new());
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })), "only once");
+    }
+
+    #[test]
+    fn a_batch_known_before_its_games_waits_for_them_and_a_solo_start_runs_at_once() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let batch = m.batches[0].id.clone();
+        let games = std::mem::take(&mut m.games);
+        let now = std::time::Instant::now();
+        let fx = run(&mut m, &s, now, super::super::super::event::Event::StartBatch(batch.clone()));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })));
+        assert_eq!(m.session.waiting_starts.len(), 1, "waits for the games the next load builds");
+        m.games = games;
+        m.session.waiting_starts.clear();
+        let solo = crate::core::fleet::solo_owner(&m.batches[0].instance_id);
+        let key = m.games.keys().next().cloned().unwrap();
+        m.batches.clear();
+        let mut game = m.games.remove(&key).unwrap();
+        m.games.clear();
+        game.batch_id = solo.clone();
+        m.games.insert(key, game.clone());
+        game.key = m.target(&solo).unwrap().key(game.account_id);
+        m.games.clear();
+        m.games.insert(game.key.clone(), game);
+        let fx = run(&mut m, &s, now, super::super::super::event::Event::StartBatch(solo.clone()));
+        assert!(m.session.waiting_starts.is_empty(), "a solo owner is never queued");
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { owner, .. } if *owner == solo)));
+    }
+
+    #[test]
+    fn a_start_for_a_batch_that_never_shows_up_is_dropped_after_a_while() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let long_ago = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(11)).unwrap();
+        m.session.waiting_starts.push(("missing".into(), std::time::Instant::now()));
+        adopt(&mut m, &s, Vec::new());
+        assert_eq!(m.session.waiting_starts.len(), 1, "kept while it may still come");
+        m.session.waiting_starts = vec![("missing".into(), long_ago)];
+        adopt(&mut m, &s, Vec::new());
+        assert!(m.session.waiting_starts.is_empty());
+    }
 
     #[test]
     fn adopted_games_without_a_tile_are_let_go_and_the_rest_may_talk() {

@@ -30,10 +30,12 @@ use super::versions::{self as picker, VersionItem};
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tile, tint};
 use super::toolbar;
 use super::widgets::{KeyNav, TakeFocus, icon, segment, segmented, tip};
+use crate::core::account::AccountKind;
 use crate::core::batch::ModRef;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, LOADERS, Loader};
 use crate::core::options::check_jvm_args;
+use crate::core::skins;
 use crate::core::versions::GameVersion;
 
 #[path = "instance_options.rs"]
@@ -388,6 +390,8 @@ impl InstancePage {
         .into_iter()
         .chain(opts_subs)
         .collect();
+        let everyone = model::get(cx).read(cx).accounts.clone();
+        sheet::warm_heads(everyone, cx);
         let mut page = Self {
             id: id.to_owned(),
             tab: Tab::Mods,
@@ -922,14 +926,18 @@ impl InstancePage {
         };
         let rings = super::theme::rings(cx);
         let (instance, accounts, current, plain) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone());
-        let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+        let menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
+            let m = super::model::get(cx).read(cx);
             for (account, name) in &accounts {
                 let action = Box::new(PlayInstance { instance: instance.clone(), account: Some(account.to_string()) });
+                let known = m.account(*account);
+                let kind = known.map_or_else(String::new, |a| if a.kind == AccountKind::Microsoft { tr("Microsoft") } else { tr("Offline") });
+                let (color, head) = known.map_or((0, None), |a| (a.color(), skins::head(a)));
                 menu = if plain.contains(account) {
-                    menu.menu_element_with_disabled(action, true, super::palette::menu_row(name.clone(), Some(tr("Läuft · ohne Vorschau")), true))
+                    menu.menu_element_with_disabled(action, true, account_row(name.clone(), tr("Läuft · ohne Vorschau"), color, head, true))
                 } else {
-                    menu.menu_with_check(name.clone(), current == Some(*account), action)
+                    menu.menu_element_with_check(current == Some(*account), action, account_row(name.clone(), kind, color, head, false))
                 };
             }
             menu
@@ -1330,6 +1338,23 @@ impl Render for InstancePage {
         let scroller = div().id("instance-body").flex_1().min_h_0();
         let scroller = if self.tab == Tab::Mods && f.made.loader.takes_mods() { scroller.flex().justify_center().child(body.h_full()) } else { scroller.overflow_y_scroll().track_scroll(&self.scroll).child(div().w_full().flex().justify_center().child(body)) };
         root.flex().flex_col().child(header).child(scroller).into_any_element()
+    }
+}
+
+/// A play menu row: the account's face, its name and what kind of account it is.
+fn account_row(name: String, detail: String, color: u8, head: Option<std::path::PathBuf>, disabled: bool) -> impl Fn(&mut Window, &mut App) -> AnyElement + 'static {
+    move |_, cx| {
+        let t = Theme::get(cx);
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .gap(px(space::S))
+            .when(disabled, |d| d.opacity(tint::DISABLED))
+            .child(super::identity::chip(&name, color, head.clone().map(ImageSource::from), iconsize::L, font::CAPTION))
+            .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+            .child(div().flex_none().pl(px(space::M)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(detail.clone()))
+            .into_any_element()
     }
 }
 

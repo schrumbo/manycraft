@@ -14,7 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, EditBatch, NewBatch, NewBatchFor, Reload};
+use super::actions::{AddAccount, DeleteBatch, EditBatch, NewBatch, NewBatchFor, NewBatchWith, Reload, ShowBatch, StartBatch};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::identity;
@@ -41,7 +41,6 @@ struct PickRows {
 
 const FILTER_FROM: usize = 12;
 const CHROME_HEIGHT: f32 = 150.;
-const SNUG_PERCENT: u64 = 80;
 const LAUNCH_CHOICES: [u32; 5] = [0, 1, 2, 4, 8];
 const SAVE_ERROR_MAX: f32 = 220.;
 const LIST_MIN: f32 = 96.;
@@ -78,22 +77,82 @@ impl SearchableListItem for Choice {
 
 /// Registers the batch sheet actions.
 pub fn init(cx: &mut App) {
-    cx.on_action(|_: &NewBatch, cx| open(None, None, cx));
-    cx.on_action(|action: &NewBatchFor, cx| open(None, Some(action.0.clone()), cx));
+    cx.on_action(|_: &NewBatch, cx| open(None, None, None, cx));
+    cx.on_action(|action: &NewBatchFor, cx| open(None, Some(action.0.clone()), None, cx));
+    cx.on_action(|action: &NewBatchWith, cx| open(None, None, Some(action.0.iter().filter_map(|id| id.parse().ok()).collect()), cx));
     cx.on_action(|action: &EditBatch, cx| {
         let batch = super::model::get(cx).read(cx).batch(&action.0).cloned();
         if let Some(batch) = batch {
-            open(Some(batch), None, cx);
+            open(Some(batch), None, None, cx);
         }
     });
+    cx.on_action(|action: &DeleteBatch, cx| ask_delete(action.0.clone(), cx));
 }
 
-fn open(batch: Option<Batch>, instance: Option<String>, cx: &mut App) {
+/// Why batch `id` cannot be deleted right now: while any of its games runs.
+pub fn delete_blocked(id: &str, cx: &App) -> Option<String> {
+    super::model::get(cx).read(cx).games.values().any(|g| g.batch_id == id && g.phase.is_active()).then(|| tr("Stoppe den Batch, bevor du ihn löschst."))
+}
+
+fn ask_delete(id: String, cx: &mut App) {
     sheet::in_window(cx, move |window, cx| {
         if sheet::busy(window, cx) {
             return;
         }
-        let view = cx.new(|cx| BatchSheet::new(batch, instance, window, cx));
+        let Some(batch) = super::model::get(cx).read(cx).batch(&id).cloned() else { return };
+        confirm_delete(batch, window, cx, |_, _| {});
+    });
+}
+
+fn confirm_delete(batch: Batch, window: &mut Window, cx: &mut App, deleted: impl Fn(&mut Window, &mut App) + 'static) {
+    let blocked_id = batch.id.clone();
+    sheet::confirm_danger(
+        window,
+        cx,
+        trf("„%@“ löschen?", &[&batch.name]),
+        tr("Der Batch verschwindet aus der Liste. Instanz, Welten und Einstellungen bleiben erhalten. Solange Manycraft offen ist, kannst du das rückgängig machen."),
+        tr("Löschen"),
+        move |cx| delete_blocked(&blocked_id, cx),
+        move |window, cx| {
+            delete(batch.clone(), cx);
+            deleted(window, cx);
+        },
+    );
+}
+
+fn delete(batch: Batch, cx: &mut App) {
+    if delete_blocked(&batch.id, cx).is_some() {
+        return;
+    }
+    let task = cx.background_spawn({
+        let batch = batch.clone();
+        async move { remote::delete_batch(&batch) }
+    });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(()) => {
+                    super::model::get(cx).update(cx, |m, cx| {
+                        m.batches.retain(|b| b.id != batch.id);
+                        cx.notify();
+                    });
+                    super::undo::offer(super::undo::Kind::BatchDeleted { batch }, cx);
+                }
+                Err(e) => super::undo::note(forms::explain_as(tr("Nicht gelöscht."), &e).text, cx),
+            }
+            super::state::reload(cx);
+        });
+    })
+    .detach();
+}
+
+fn open(batch: Option<Batch>, instance: Option<String>, picked: Option<HashSet<Uuid>>, cx: &mut App) {
+    sheet::in_window(cx, move |window, cx| {
+        if sheet::busy(window, cx) {
+            return;
+        }
+        let view = cx.new(|cx| BatchSheet::new(batch, instance, picked, window, cx));
         sheet::show(view, sheet::WIDE, window, cx);
     });
 }
@@ -107,6 +166,7 @@ pub(super) enum Load<T> {
 struct BatchSheet {
     original: Option<Batch>,
     name: Entity<InputState>,
+    name_auto: Option<String>,
     server: Entity<InputState>,
     filter: Entity<InputState>,
     instance: Option<String>,
@@ -145,7 +205,7 @@ struct BatchSheet {
 impl EventEmitter<Dismissed> for BatchSheet {}
 
 impl BatchSheet {
-    fn new(original: Option<Batch>, preselect: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(original: Option<Batch>, preselect: Option<String>, picked: Option<HashSet<Uuid>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = super::model::get(cx).read(cx);
         let mut listed: Vec<&crate::core::instance::Instance> = model.instances.iter().collect();
         listed.sort_by_key(|i| (i.name.to_lowercase(), i.id.clone()));
@@ -162,10 +222,12 @@ impl BatchSheet {
         let taken: Vec<&str> = model.batches.iter().map(|b| b.name.as_str()).collect();
         let name_value = original.as_ref().map_or_else(|| forms::next_batch_name(&taken), |b| b.name.clone());
         let server_value = original.as_ref().and_then(|b| b.server.clone()).unwrap_or_default();
-        let accounts: HashSet<Uuid> = match &original {
-            Some(b) => b.accounts.iter().copied().collect(),
-            None => model.accounts.iter().map(|a| a.id).collect(),
+        let accounts: HashSet<Uuid> = match (&original, picked) {
+            (Some(b), _) => b.accounts.iter().copied().collect(),
+            (None, Some(picked)) => picked,
+            (None, None) => model.accounts.iter().map(|a| a.id).collect(),
         };
+        let name_auto = original.is_none().then(|| name_value.clone());
         let total_ram = forms::total_ram_mb();
         let memory_max = forms::memory_max(total_ram);
         let own = instance.as_deref().and_then(|id| model.instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory_mb);
@@ -188,8 +250,29 @@ impl BatchSheet {
                     s.load_versions(cx);
                 }
             }),
-            cx.subscribe(&name, changed),
-            cx.subscribe(&server, changed),
+            cx.subscribe(&name, |s: &mut Self, name, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    s.save_error = None;
+                    if s.name_auto.as_deref().is_some_and(|auto| auto != name.read(cx).value().as_ref()) {
+                        s.name_auto = None;
+                    }
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&server, window, |s: &mut Self, server, e: &InputEvent, window, cx| {
+                if !matches!(e, InputEvent::Change) {
+                    return;
+                }
+                s.save_error = None;
+                if s.name_auto.is_some() {
+                    let taken: Vec<String> = super::model::get(cx).read(cx).batches.iter().map(|b| b.name.clone()).collect();
+                    let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+                    let next = forms::batch_name_for(&server.read(cx).value(), &taken);
+                    s.name.update(cx, |n, cx| n.set_value(next.clone(), window, cx));
+                    s.name_auto = Some(next);
+                }
+                cx.notify();
+            }),
             cx.subscribe(&filter, changed),
             cx.observe(&super::model::get(cx), |s: &mut Self, _, cx| {
                 s.rows_dirty = true;
@@ -220,6 +303,7 @@ impl BatchSheet {
         let mut sheet = Self {
             original,
             name,
+            name_auto,
             server,
             filter,
             instance,
@@ -327,8 +411,13 @@ impl BatchSheet {
         (name, server, version)
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn picked(&self, cx: &App) -> usize {
+        super::model::get(cx).read(cx).accounts.iter().filter(|a| self.accounts.contains(&a.id)).count()
+    }
+
+    fn save(&mut self, start: bool, cx: &mut Context<Self>) {
         self.tried = true;
+        let start = start && self.original.is_none() && self.picked(cx) > 0;
         let (name, server, version) = self.problems(cx);
         if self.saving || name.is_some() || server.is_some() || version.is_some() {
             cx.notify();
@@ -365,9 +454,13 @@ impl BatchSheet {
             let _ = this.update(cx, |s, cx| {
                 s.saving = false;
                 match result {
-                    Ok(_) => {
+                    Ok(batch) => {
                         cx.dispatch_action(&Reload);
                         cx.emit(Dismissed);
+                        if start {
+                            cx.dispatch_action(&StartBatch(batch.id.clone()));
+                            cx.dispatch_action(&ShowBatch(batch.id));
+                        }
                     }
                     Err(e) => s.save_error = Some(forms::explain_as(tr("Nicht gespeichert."), &e)),
                 }
@@ -380,36 +473,9 @@ impl BatchSheet {
     fn ask_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(batch) = self.original.clone() else { return };
         let sheet = cx.entity().downgrade();
-        sheet::ask(
-            window,
-            cx,
-            trf("„%@“ löschen?", &[&batch.name]),
-            tr("Der Batch verschwindet aus der Liste. Welten, Mods und Einstellungen bleiben im Instanzordner erhalten."),
-            tr("Löschen"),
-            move |_, cx| {
-                let batch = batch.clone();
-                let _ = sheet.update(cx, |s, cx| {
-                    s.saving = true;
-                    cx.notify();
-                    let task = cx.background_executor().spawn(async move { remote::delete_batch(&batch) });
-                    cx.spawn(async move |this, cx| {
-                        let result = task.await;
-                        let _ = this.update(cx, |s, cx| {
-                            s.saving = false;
-                            match result {
-                                Ok(()) => {
-                                    cx.dispatch_action(&Reload);
-                                    cx.emit(Dismissed);
-                                }
-                                Err(e) => s.save_error = Some(forms::explain_as(tr("Nicht gelöscht."), &e)),
-                            }
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                });
-            },
-        );
+        confirm_delete(batch, window, cx, move |_, cx| {
+            let _ = sheet.update(cx, |_, cx| cx.emit(Dismissed));
+        });
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -417,7 +483,7 @@ impl BatchSheet {
             cx.propagate();
             return;
         }
-        self.save(cx);
+        self.save(true, cx);
     }
 
     fn render_instance(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -458,26 +524,51 @@ impl BatchSheet {
         if active {
             body = body.child(sheet::notice("info", t.accent, t.accent_text, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
         }
-        body.child(sheet::field(tr("Name"), Input::new(&self.name), None, name_shown, t))
-            .child(self.render_instance(cx, t))
+        let ram_here = if self.memory_open() { None } else { self.render_ram(cx, t) };
+        body.child(self.render_instance(cx, t))
             .child(sheet::field(tr("Server"), Input::new(&self.server), Some(tr("Optional. Adresse mit oder ohne Port.")), server_problem, t))
             .child(self.render_accounts(cx, t))
+            .children(ram_here)
+            .child(sheet::field(tr("Name"), Input::new(&self.name), None, name_shown, t))
             .child(self.render_background(active, cx, t))
             .child(self.render_memory(active, cx, t))
     }
 
+    fn memory_open(&self) -> bool {
+        self.advanced || !self.inherit || self.launch_parallel != 0
+    }
+
+    fn each_memory(&self, cx: &App) -> u32 {
+        if self.inherit { self.instance_memory(cx) } else { self.memory }
+    }
+
+    fn render_ram(&mut self, cx: &mut Context<Self>, t: &Theme) -> Option<Stateful<Div>> {
+        let count = self.picked(cx);
+        let (total, budget) = forms::memory_need(count, self.each_memory(cx), self.total_ram)?;
+        let lower = forms::memory_fit(count, self.memory_max);
+        let need = trf("%lld Accounts brauchen zusammen bis zu %@. Dieser Rechner hat neben dem System nur %@.", &[&count, &forms::memory_label(total), &forms::memory_label(budget)]);
+        let text = if lower.is_some() { need } else { format!("{need} {}", tr("Wähle weniger Accounts.")) };
+        let fix = lower.map(|each| {
+            sheet::button("memory-lower", trf("Auf %@ pro Account senken", &[&forms::memory_label(each)]), None, Look::Secondary, false, false, t).on_click(cx.listener(move |s, _, _, cx| {
+                if s.saving {
+                    return;
+                }
+                s.inherit = false;
+                s.memory = each;
+                cx.notify();
+            }))
+        });
+        Some(div().id("ram-over").mark("warning", text.clone()).flex().flex_col().gap(px(space::S)).child(sheet::notice("triangle-alert", t.attention, t.attention_text, text)).children(fix.map(|b| div().flex().child(b))))
+    }
+
     fn render_memory(&mut self, active: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
         let count = self.accounts.len().max(1);
-        let each = if self.inherit { self.instance_memory(cx) } else { self.memory };
+        let each = self.each_memory(cx);
         let total = u64::from(each) * count as u64;
         let total_label = forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX));
-        let over = total > self.total_ram;
-        let measured = self.free_ram.map(|free| crate::core::fit::fit_in(u32::try_from(count).unwrap_or(u32::MAX), each, crate::core::fit::Memory { total_mb: self.total_ram, free_mb: free }));
-        let snug = measured.as_ref().filter(|f| f.fits() && f.needed_mb * 100 > f.free_mb * SNUG_PERCENT).cloned();
-        let tight = measured.filter(|f| !f.fits());
         let at_min = self.memory <= forms::MEMORY_MIN;
         let at_max = self.memory >= self.memory_max;
-        let open = self.advanced || !self.inherit || self.launch_parallel != 0 || over || tight.is_some() || snug.is_some();
+        let open = self.memory_open();
         let label = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
         let disclosure = div()
             .id("batch-advanced")
@@ -552,19 +643,13 @@ impl BatchSheet {
             .child(step("memory-less", "minus", tr("Weniger Arbeitsspeicher"), at_min.then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])), -1, cx))
             .child(div().id("memory-value").mark("value", forms::memory_label(self.memory)).min_w(px(control::STEPPER_VALUE)).text_center().text_size(px(font::BODY)).font_weight(FontWeight::MEDIUM).child(forms::memory_label(self.memory)))
             .child(step("memory-more", "plus", tr("Mehr Arbeitsspeicher"), at_max.then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(self.memory_max)])), 1, cx));
-        let line = if over {
-            sheet::note(None, Some(trf("%lld Accounts brauchen zusammen bis zu %@, mehr als dieser Rechner hat (%@).", &[&count, &total_label, &forms::memory_label(u32::try_from(self.total_ram).unwrap_or(u32::MAX))])), t)
-        } else if let Some(fit) = tight {
-            sheet::note(None, Some(super::model::fit_line(u32::try_from(count).unwrap_or(u32::MAX), each, &fit)), t)
-        } else if let Some(fit) = snug {
-            sheet::note(Some(trf("%@. Das passt, wird aber knapp.", &[&super::model::fit_line(u32::try_from(count).unwrap_or(u32::MAX), each, &fit)])), None, t)
-        } else if count > 1 {
+        let line = if count > 1 {
             sheet::note(Some(trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &total_label])), None, t)
         } else {
             sheet::note(Some(tr("Pro Account.")), None, t)
         };
         let manual = (!self.inherit).then(|| div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper));
-        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(inherit).children(manual).child(line.min_h(px(font::CAPTION * font::LINE * 2.)))).child(self.render_launch(active, cx, t))
+        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(inherit).children(manual).child(line.min_h(px(font::CAPTION * font::LINE * 2.)))).children(self.render_ram(cx, t)).child(self.render_launch(active, cx, t))
     }
 
     fn render_launch(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -802,11 +887,15 @@ impl BatchSheet {
             });
         }
         if std::mem::take(&mut self.focus_next) {
-            self.name.update(cx, |s, cx| {
-                let end = s.value().len();
-                s.take_focus(window, cx);
-                s.set_selected_range(0..end, cx);
-            });
+            if self.original.is_none() {
+                self.server.update(cx, |s, cx| s.take_focus(window, cx));
+            } else {
+                self.name.update(cx, |s, cx| {
+                    let end = s.value().len();
+                    s.take_focus(window, cx);
+                    s.set_selected_range(0..end, cx);
+                });
+            }
         }
     }
 }
@@ -831,7 +920,7 @@ impl Render for BatchSheet {
         let running = self.active(cx);
         let leading = if editing {
             let why = if running { Some(tr("Stoppe den Batch, bevor du ihn löschst.")) } else { self.saving.then(|| tr("Wird gerade gesichert …")) };
-            let delete = sheet::button_unless("batch-delete", tr("Batch löschen"), None, Look::Danger, why.clone().map(Into::into), false, &t);
+            let delete = sheet::button_unless("batch-delete", tr("Batch löschen…"), None, Look::Danger, why.clone().map(Into::into), false, &t);
             let delete = if why.is_some() { delete } else { delete.on_click(cx.listener(|s, _, window, cx| s.ask_delete(window, cx))) };
             vec![delete.into_any_element()]
         } else {
@@ -844,7 +933,12 @@ impl Render for BatchSheet {
             trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(self.problem("save-error", "circle-alert", t.danger_text, e, cx, &t)).into_any_element());
         }
         trailing.push(sheet::button_unless("batch-cancel", tr("Abbrechen"), None, Look::Secondary, self.saving.then(|| tr("Wird gerade gesichert …").into()), false, &t).on_click(cx.listener(|s, _, _, cx| if !s.saving { cx.emit(Dismissed) })).into_any_element());
-        trailing.push(sheet::button_unless("batch-save", if editing { tr("Sichern") } else { tr("Erstellen") }, None, Look::Primary, invalid.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
+        let starts = !editing && self.picked(cx) > 0;
+        if starts {
+            trailing.push(sheet::button_unless("batch-create-only", tr("Nur erstellen"), None, Look::Secondary, invalid.clone().or_else(|| self.saving.then(|| tr("Wird gerade gesichert …"))).map(Into::into), false, &t).on_click(cx.listener(|s, _, _, cx| s.save(false, cx))).into_any_element());
+        }
+        let save_label = if editing { tr("Sichern") } else if starts { tr("Erstellen und starten") } else { tr("Erstellen") };
+        trailing.push(sheet::button_unless("batch-save", save_label, None, Look::Primary, invalid.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(true, cx))).into_any_element());
         div()
             .id("batch-sheet")
             .track_focus(&self.root)
