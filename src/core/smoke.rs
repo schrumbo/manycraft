@@ -1,6 +1,6 @@
 //! `manycraft smoke`: starts one hidden offline game with the companion and checks that it connects, sends a preview
 //! frame, keeps to the background frame cap, keeps background values out of `options.txt` and found every hook. With
-//! `--server` it also joins that server and gets its own chat line back; `--proxy` routes it through a local SOCKS5
+//! `--server` it also joins that server and gets its own chat line, a disguised `/me` line and a system line back; `--proxy` routes it through a local SOCKS5
 //! relay. CI runs it for each supported version.
 
 use std::fs;
@@ -17,7 +17,7 @@ use super::account::Account;
 use super::batch::Batch;
 use super::fleet::{self, Fleet, Target};
 use super::instance::{self, Instance, Loader};
-use super::ipc::{self, FromMod, Level, StateKind, ToMod};
+use super::ipc::{self, ChatKind, FromMod, Level, StateKind, ToMod};
 
 const USAGE: &str = "usage: manycraft smoke --version <version> [--loader vanilla|fabric|quilt|forge|neoforge] [--timeout <seconds>] [--server <host:port> [--proxy]] [--companion <jar>]";
 const NAME: &str = "Smoke";
@@ -33,6 +33,9 @@ const FPS_LINE: &str = "manycraft smoke fps ";
 const SAVED_LINE: &str = "manycraft smoke saved options while hidden";
 const HOOKS_LINE: &str = " ms, hooks ";
 const CHAT_LINE: &str = "manycraft smoke chat";
+const SAY_LINE: &str = "manycraft smoke emote";
+const LIST_COMMAND: &str = "/list";
+const LIST_ANSWER: &str = "of a max of";
 const BACKEND_FAILED: &str = "Failed to create backend ";
 const BACKEND_USED: &str = "Using graphics backend ";
 const BACKENDS: [&str; 2] = ["OpenGL", "Vulkan"];
@@ -89,6 +92,8 @@ struct Progress {
     saved: bool,
     playing: bool,
     chat: bool,
+    say: bool,
+    system: bool,
 }
 
 fn run(args: &[String]) -> Result<i32> {
@@ -177,6 +182,8 @@ fn run(args: &[String]) -> Result<i32> {
         ("options", options),
         ("join", joined(progress.playing)),
         ("chat", joined(progress.chat)),
+        ("say", joined(progress.say)),
+        ("system", joined(progress.system)),
         ("proxy", proxied),
     ];
     if let Some(fps) = &progress.fps {
@@ -244,6 +251,9 @@ fn watch(fleet: &Fleet, events: &std::sync::mpsc::Receiver<ipc::Event>, key: &st
     let mut checked_from = 0;
     let mut chat_sent: Option<Instant> = None;
     let nonce = format!("{CHAT_LINE} {}", std::process::id());
+    let say = format!("{SAY_LINE} {}", std::process::id());
+    let mut say_sent: Option<Instant> = None;
+    let mut list_sent: Option<Instant> = None;
     while Instant::now() < deadline {
         match events.recv_timeout(POLL) {
             Ok(ipc::Event::Connected { instance, mod_version, .. }) if instance == key => {
@@ -266,6 +276,14 @@ fn watch(fleet: &Fleet, events: &std::sync::mpsc::Receiver<ipc::Event>, key: &st
                 FromMod::Chat { text, .. } if text.contains(&nonce) => {
                     println!("chat came back: {text}");
                     p.chat = true;
+                }
+                FromMod::Chat { kind: ChatKind::Player, text, .. } if text.contains(&say) => {
+                    println!("emote came back: {text}");
+                    p.say = true;
+                }
+                FromMod::Chat { kind: ChatKind::System, text, .. } if text.contains(LIST_ANSWER) => {
+                    println!("system chat came back: {text}");
+                    p.system = true;
                 }
                 _ => {}
             },
@@ -290,11 +308,19 @@ fn watch(fleet: &Fleet, events: &std::sync::mpsc::Receiver<ipc::Event>, key: &st
             fleet.send(key, &ToMod::ChatSend { text: nonce.clone() })?;
             chat_sent = Some(Instant::now());
         }
-        if p.fps.is_some() && p.saved && (!server || p.chat) {
+        if p.chat && !p.say && say_sent.is_none_or(|at| at.elapsed() >= CHAT_RETRY) {
+            fleet.send(key, &ToMod::ChatSend { text: format!("/me {say}") })?;
+            say_sent = Some(Instant::now());
+        }
+        if p.chat && !p.system && list_sent.is_none_or(|at| at.elapsed() >= CHAT_RETRY) {
+            fleet.send(key, &ToMod::ChatSend { text: LIST_COMMAND.to_string() })?;
+            list_sent = Some(Instant::now());
+        }
+        if p.fps.is_some() && p.saved && (!server || (p.chat && p.say && p.system)) {
             return Ok(());
         }
     }
-    bail!("timed out: connected {}, preview {}, fps {}, options saved {}, joined {}, chat {}", p.connected, p.previewed, p.fps.is_some(), p.saved, p.playing, p.chat)
+    bail!("timed out: connected {}, preview {}, fps {}, options saved {}, joined {}, chat {}, say {}, system {}", p.connected, p.previewed, p.fps.is_some(), p.saved, p.playing, p.chat, p.say, p.system)
 }
 
 fn judge(samples: &[(u32, bool)]) -> Result<Vec<u32>> {

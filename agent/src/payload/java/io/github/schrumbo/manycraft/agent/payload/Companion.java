@@ -193,6 +193,16 @@ final class Companion implements Bridge {
 	}
 
 	@Override
+	public void overlayChat(Object message) {
+		chat.onOverlay((Component) message);
+	}
+
+	@Override
+	public void disguisedChat(Object message, Object bound) {
+		chat.onDisguised((Component) message, (ChatType.Bound) bound);
+	}
+
+	@Override
 	public void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt) {
 		chat.onChat((Component) decorated, (PlayerChatMessage) signed, (GameProfile) sender, (ChatType.Bound) bound, (Instant) receivedAt);
 	}

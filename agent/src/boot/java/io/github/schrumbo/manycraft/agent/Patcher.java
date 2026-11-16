@@ -145,7 +145,10 @@ final class Patcher implements ClassFileTransformer {
 		add(t, "net/minecraft/client/multiplayer/chat/ChatListener",
 			new Hook("chat", "handleSystemMessage", "(Lnet/minecraft/network/chat/Component;Z*", head(b -> b.aload(1).iload(2).invokestatic(HOOKS, "systemChat", type(CD_void, CD_Object, CD_boolean)))),
 			new Hook("chat", "showMessageToPlayer", "(Lnet/minecraft/network/chat/ChatType$Bound;Lnet/minecraft/network/chat/PlayerChatMessage;Lnet/minecraft/network/chat/Component;Lcom/mojang/authlib/GameProfile;ZLjava/time/Instant;)Z",
-				head(b -> b.aload(1).aload(2).aload(3).aload(4).aload(6).invokestatic(HOOKS, "playerChat", type(CD_void, CD_Object, CD_Object, CD_Object, CD_Object, CD_Object)))));
+				head(b -> b.aload(1).aload(2).aload(3).aload(4).aload(6).invokestatic(HOOKS, "playerChat", type(CD_void, CD_Object, CD_Object, CD_Object, CD_Object, CD_Object)))),
+			new Hook("chat", "handleDisguisedChatMessage", "(Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/ChatType$Bound;*",
+				head(b -> b.aload(1).aload(2).invokestatic(HOOKS, "disguisedChat", type(CD_void, CD_Object, CD_Object)))),
+			new Hook("chat", "handleOverlay", "(Lnet/minecraft/network/chat/Component;*", head(b -> b.aload(1).invokestatic(HOOKS, "overlayChat", type(CD_void, CD_Object))), true));
 		add(t, "net/minecraft/client/gui/Hud",
 			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Gui",
