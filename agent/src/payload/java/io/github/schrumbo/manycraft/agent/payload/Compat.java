@@ -19,6 +19,7 @@ final class Compat {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final boolean GUI_SCREEN = has(Gui.class, "screen");
 	private static final Field SCREEN = GUI_SCREEN ? null : Access.field(Minecraft.class, "screen");
+	private static final Field OVERLAY = GUI_SCREEN ? null : Access.field(Minecraft.class, "overlay");
 	private static final boolean SHORTCUT_KEY = has(KeyEvent.class, "shortcutKey");
 	private static final boolean HUD = field(Gui.class, "hud");
 	private static final Field HIDE_GUI = HUD ? null : Access.field(Options.class, "hideGui");
@@ -33,6 +34,14 @@ final class Compat {
 
 	static Screen screen(Minecraft mc) {
 		return GUI_SCREEN ? mc.gui.screen() : Access.get(SCREEN, mc);
+	}
+
+	static boolean overlay(Minecraft mc) {
+		return GUI_SCREEN ? mc.gui.overlay() != null : Access.get(OVERLAY, mc) != null;
+	}
+
+	static int renderedSections(Minecraft mc) {
+		return LEVEL_EXTRACTOR ? mc.levelExtractor.countRenderedSections() : -1;
 	}
 
 	static int shortcutKey(KeyEvent event) {

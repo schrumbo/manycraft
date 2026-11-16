@@ -19,7 +19,9 @@ use super::phase::{self, Why};
 use crate::core::ipc::{ChatKind, FromMod};
 use crate::core::settings::Settings;
 
-pub use notify::{WHISPER_TAG, attention_batch, attention_tag};
+pub use notify::{WHISPER_TAG, attention_batch};
+#[cfg(test)]
+pub use notify::attention_tag;
 pub use show::{active_account, solo_account};
 
 /// What an event needs from outside the model: the time, chance and the settings.

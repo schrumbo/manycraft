@@ -853,7 +853,7 @@ impl AddAccountSheet {
     fn render_microsoft(&mut self, cx: &mut Context<Self>, t: &Theme) -> (Div, Vec<AnyElement>, Vec<AnyElement>) {
         let added = matches!(self.step, Step::Microsoft(Ms::Added(_)));
         let mut trailing = vec![sheet::button("cancel", if added { tr("Fertig") } else { tr("Abbrechen") }, None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx))).into_any_element()];
-        let mut leading = if self.again.is_none() && !added { vec![sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx))).into_any_element()] } else { Vec::new() };
+        let leading = if self.again.is_none() && !added { vec![sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx))).into_any_element()] } else { Vec::new() };
         let Step::Microsoft(ms) = &self.step else { return (div(), leading, trailing) };
         let body = match ms {
             Ms::Requesting => div().py(px(space::L)).child(sheet::waiting(if self.windowed { tr("Anmeldefenster wird geöffnet …") } else { tr("Code wird angefordert …") }, t)),

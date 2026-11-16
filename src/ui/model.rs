@@ -11,7 +11,7 @@ use crate::app;
 use crate::core::fit::Fit;
 use crate::core::i18n::{tr, trf};
 
-pub use crate::app::model::{ChatLine, Game, Import, Need, Outage, Phase, Run, UpdateStatus, Updates, banned_status, link_status, proxy_status, rank, restart_status};
+pub use crate::app::model::{ChatLine, Game, Import, Need, Outage, Phase, Run, UpdateStatus, Updates, banned_status, link_status, proxy_status, restart_status};
 
 use super::forms;
 

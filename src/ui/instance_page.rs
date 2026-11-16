@@ -15,12 +15,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMods, CloneInstance, CreateShortcut, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch, Stop, StopCurrent};
+use super::actions::{AddAccount, CloneInstance, CreateShortcut, DeleteInstance, NewBatchFor, OpenInstanceFolder, OpenInstanceSetting, Play, PlayInstance, Reload, RenameCurrent, RenameInstance, ResetInstance, ShowAll, ShowBatch, ShowInstance, StartBatch, Stop, StopCurrent};
 use super::batch_sheet::Load;
 use super::mod_list::ModList;
 use super::drive::Mark;
 use super::forms::{self, Problem};
-use super::loader_version::{self, LoaderVersion, Picked};
+use super::loader_version::{LoaderVersion, Picked};
 use super::model::{self, Game, Phase};
 use super::motion::Soft;
 use super::remote::{self, InstanceEdit};
@@ -1244,7 +1244,7 @@ impl InstancePage {
         div().flex().child(segmented("instance-tabs", segments, move |n, window, cx| pick(&n, window, cx), t))
     }
 
-    fn render_mods(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> AnyElement {
+    fn render_mods(&mut self, f: &Facts, _: &mut Context<Self>, t: &Theme) -> AnyElement {
         if !f.made.loader.takes_mods() {
             return div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Vanilla lädt keine Mods.")).into_any_element();
         }

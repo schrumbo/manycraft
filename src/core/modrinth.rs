@@ -59,6 +59,7 @@ pub enum Support {
 
 impl Hit {
     /// Whether the mod has a file for `game_version` and `loader`, and if not, which of the two is missing.
+    #[cfg(test)]
     pub fn support(&self, game_version: &str, loader: &Loader) -> Support {
         if keys(loader).is_empty() {
             return Support::OtherLoader;

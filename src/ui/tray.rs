@@ -3,9 +3,12 @@
 
 use gpui_kit::*;
 
+#[cfg(not(target_os = "macos"))]
 use super::actions::{OpenFromTray, Quit, QuitAll};
+#[cfg(not(target_os = "macos"))]
 use crate::core::i18n::tr;
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy)]
 enum Pick {
     Open,
@@ -17,6 +20,7 @@ struct Tray {
     #[cfg(not(target_os = "macos"))]
     icon: Option<tray_icon::TrayIcon>,
     shown: bool,
+    #[cfg(not(target_os = "macos"))]
     picks: async_channel::Sender<Pick>,
 }
 
@@ -24,23 +28,23 @@ impl Global for Tray {}
 
 /// Gets clicks on the icon and its menu to the actions that handle them.
 pub fn init(cx: &mut App) {
-    let (picks, rx) = async_channel::unbounded();
-    cx.set_global(Tray {
-        #[cfg(not(target_os = "macos"))]
-        icon: None,
-        shown: false,
-        picks,
-    });
-    cx.spawn(async move |cx| {
-        while let Ok(pick) = rx.recv().await {
-            cx.update(|cx| match pick {
-                Pick::Open => cx.dispatch_action(&OpenFromTray),
-                Pick::QuitAll => cx.dispatch_action(&QuitAll),
-                Pick::Quit => cx.dispatch_action(&Quit),
-            });
-        }
-    })
-    .detach();
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (picks, rx) = async_channel::unbounded();
+        cx.set_global(Tray { icon: None, shown: false, picks });
+        cx.spawn(async move |cx| {
+            while let Ok(pick) = rx.recv().await {
+                cx.update(|cx| match pick {
+                    Pick::Open => cx.dispatch_action(&OpenFromTray),
+                    Pick::QuitAll => cx.dispatch_action(&QuitAll),
+                    Pick::Quit => cx.dispatch_action(&Quit),
+                });
+            }
+        })
+        .detach();
+    }
+    #[cfg(target_os = "macos")]
+    cx.set_global(Tray { shown: false });
 }
 
 /// Whether the icon is up.

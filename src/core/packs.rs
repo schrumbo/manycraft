@@ -146,7 +146,7 @@ pub fn pack_files(dir: &Path) -> Vec<(String, String)> {
 fn sha1_of(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     let stamp = (meta.len(), meta.modified().ok()?);
-    let mut hashes = HASHES.lock().unwrap_or_else(PoisonError::into_inner);
+    let hashes = HASHES.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some((len, at, hash)) = hashes.get(path)
         && (*len, *at) == stamp
     {

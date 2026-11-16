@@ -14,8 +14,12 @@ const AGENT_FILE: &str = "manycraft-agent.jar";
 /// The first release the companion supports; older games run without it.
 const FIRST: (u32, u32) = (26, 1);
 
+/// The release `game` belongs to; a weekly snapshot like "26w14a" counts as its year's first release.
 fn release(game: &str) -> Option<(u32, u32)> {
-    let (major, rest) = game.split_once('.')?;
+    let Some((major, rest)) = game.split_once('.') else {
+        let (year, week) = game.split_once('w')?;
+        return week.starts_with(|c: char| c.is_ascii_digit()).then_some((year.parse().ok()?, FIRST.1));
+    };
     let minor: String = rest.chars().take_while(char::is_ascii_digit).collect();
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
@@ -77,7 +81,9 @@ mod tests {
         assert_eq!(release("26.1.2"), Some((26, 1)));
         assert_eq!(release("26.3-rc-1"), Some((26, 3)));
         assert_eq!(release("1.21.4"), Some((1, 21)));
-        assert_eq!(release("26w14a"), None);
+        assert_eq!(release("26w14a"), Some((26, 1)));
+        assert_eq!(release("25w45a"), Some((25, 1)));
+        assert_eq!(release("wild"), None);
         assert_eq!(release(""), None);
     }
 
@@ -89,6 +95,8 @@ mod tests {
         assert!(available("27.0"));
         assert!(!available("1.21.11"));
         assert!(!available("25.4"));
+        assert!(available("26w14a"));
+        assert!(!available("25w45a"));
         assert_eq!(first(), "26.1");
     }
 }
