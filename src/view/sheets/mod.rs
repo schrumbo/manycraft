@@ -20,7 +20,7 @@ pub fn answer() {
 }
 
 fn takes(want: &Want) -> bool {
-    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::AddMods(_) | Want::FindModpacks | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::NewBatch | Want::NewBatchFor(_) | Want::EditBatch(_) | Want::DeleteBatch(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
+    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::AddMods(_) | Want::FindModpacks | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::ExportInstance(_) | Want::ExportBatch(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::NewBatch | Want::NewBatchFor(_) | Want::EditBatch(_) | Want::DeleteBatch(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
 }
 
 fn run(store: Store, want: Want) {
@@ -43,6 +43,13 @@ fn run(store: Store, want: Want) {
         Want::RenameInstance(id) => actions::begin_rename(store, &id),
         Want::CloneInstance(id) => actions::clone(store, &id),
         Want::CreateShortcut(id) => actions::shortcut(store, &id),
+        Want::ExportInstance(id) => actions::export(store, &id),
+        Want::ExportBatch(id) => {
+            let made = store.model.peek().instance_of(&id).map(|i| i.id.clone());
+            if let Some(made) = made {
+                actions::export(store, &made);
+            }
+        }
         Want::UpdateLoader(id) => actions::look_for_loader(store, &id),
         Want::ResetInstance(id) => actions::ask_reset(store, &id),
         Want::DeleteInstance(id) => actions::ask_delete(store, &id),

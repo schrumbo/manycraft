@@ -39,8 +39,9 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
     let m = store.model.peek();
     for b in &m.batches {
         list.push(Entry { id: format!("palette.batch.{}", b.id), label: b.name.clone(), glyph: Icon::Layers, shortcut: None, target: Target::Page(Page::Grid(Filter::Batch(b.id.clone()))) });
-        for (suffix, label, glyph, what) in [("edit", trf("%@ bearbeiten", &[&b.name]), Icon::Pencil, Want::EditBatch(b.id.clone())), ("delete", trf("%@ löschen…", &[&b.name]), Icon::Trash, Want::DeleteBatch(b.id.clone()))] {
-            if can_want(&what) {
+        let exporting = m.exporting.contains(&b.instance_id);
+        for (suffix, label, glyph, what) in [("edit", trf("%@ bearbeiten", &[&b.name]), Icon::Pencil, Want::EditBatch(b.id.clone())), ("export", trf("%@ als .mrpack exportieren…", &[&b.name]), Icon::Upload, Want::ExportBatch(b.id.clone())), ("delete", trf("%@ löschen…", &[&b.name]), Icon::Trash, Want::DeleteBatch(b.id.clone()))] {
+            if can_want(&what) && !(exporting && suffix == "export") {
                 list.push(Entry { id: format!("palette.batch.{}.{suffix}", b.id), label, glyph, shortcut: None, target: Target::Extra(EventHandler::new(move |_| {
                     want(store, what.clone());
                 })) });
