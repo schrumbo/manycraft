@@ -319,13 +319,13 @@ public final class Hooks {
 		}
 	}
 
-	public static void hud(Object graphics, Object delta) {
+	public static void hud(Object graphics) {
 		Bridge b = bridge;
 		if (b == null) {
 			return;
 		}
 		try {
-			b.hud(graphics, delta);
+			b.hud(graphics);
 		} catch (Throwable e) {
 			Agent.fault("hud", e);
 		}

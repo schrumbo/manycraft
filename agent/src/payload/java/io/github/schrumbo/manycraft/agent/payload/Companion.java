@@ -11,7 +11,6 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.mojang.authlib.GameProfile;
-import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -34,6 +33,7 @@ import org.slf4j.LoggerFactory;
 final class Companion implements Bridge {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
 	private static final long SMOKE_WINDOW = 5_000_000_000L;
+	private static final int SMOKE_SAVE_AFTER = 2;
 	private static final long SMOKE_SHOWN_MS = 6000;
 
 	record Hotkeys(KeyChord next, KeyChord prev, KeyChord nextAttention, KeyChord grid) {
@@ -66,6 +66,7 @@ final class Companion implements Bridge {
 	private long shownAt;
 	private boolean shownDrawn;
 	private int shownSections;
+	private int smokeHiddenSamples;
 
 	private Companion(Config config, String version) {
 		this.config = config;
@@ -99,7 +100,14 @@ final class Companion implements Bridge {
 		}
 		if (smoke != null) {
 			BackgroundController bg = background;
-			smoke.count(System.nanoTime()).ifPresent(fps -> LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), bg != null && bg.hidden()));
+			smoke.count(System.nanoTime()).ifPresent(fps -> {
+				boolean hidden = bg != null && bg.hidden();
+				LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), hidden);
+				if (hidden && ++smokeHiddenSamples == SMOKE_SAVE_AFTER) {
+					((Minecraft) minecraft).options.save();
+					LOGGER.info("manycraft smoke saved options while hidden");
+				}
+			});
 		}
 	}
 
@@ -190,8 +198,8 @@ final class Companion implements Bridge {
 	}
 
 	@Override
-	public void hud(Object graphics, Object delta) {
-		identity.extractBadge((GuiGraphicsExtractor) graphics, (DeltaTracker) delta);
+	public void hud(Object graphics) {
+		identity.extractBadge((GuiGraphicsExtractor) graphics);
 	}
 
 	@Override
@@ -271,10 +279,10 @@ final class Companion implements Bridge {
 
 	private void started(Minecraft mc) {
 		BackgroundController bg = new BackgroundController(mc, guard, this::send);
-		background = bg;
 		if (config.hidden()) {
 			bg.startHidden();
 		}
+		background = bg;
 	}
 
 	@Override

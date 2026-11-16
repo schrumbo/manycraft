@@ -63,7 +63,8 @@ final class Patcher implements ClassFileTransformer {
 	}
 
 	/**
-	 * One change to one method: {@code method} with {@code descriptor} (null matches any) gets {@code edit}, which must
+	 * One change to one method: {@code method} with {@code descriptor} (null matches any, a trailing {@code *} matches the
+	 * rest, so a hook survives parameters added or dropped after the ones it reads) gets {@code edit}, which must
 	 * call {@code hit} at least once or the hook counts as missing. An {@code alternative} hook stands in for another
 	 * version's target and only counts when it hits; alternatives for one feature in one class count as missing only
 	 * when none of them hits.
@@ -71,6 +72,16 @@ final class Patcher implements ClassFileTransformer {
 	record Hook(String feature, String method, String descriptor, Edit edit, boolean alternative) {
 		Hook(String feature, String method, String descriptor, Edit edit) {
 			this(feature, method, descriptor, edit, false);
+		}
+
+		boolean matches(MethodModel m) {
+			if (method != null && !m.methodName().equalsString(method)) {
+				return false;
+			}
+			if (descriptor == null) {
+				return true;
+			}
+			return descriptor.endsWith("*") ? m.methodType().stringValue().startsWith(descriptor.substring(0, descriptor.length() - 1)) : m.methodType().equalsString(descriptor);
 		}
 	}
 
@@ -121,16 +132,16 @@ final class Patcher implements ClassFileTransformer {
 		add(t, "net/minecraft/client/multiplayer/ServerList",
 			new Hook("servers", "save", "()V", tail(b -> b.invokestatic(HOOKS, "serversSaved", type(CD_void)))));
 		add(t, "net/minecraft/client/gui/screens/ConnectScreen",
-			new Hook("connecting", "startConnecting", "(Lnet/minecraft/client/gui/screens/Screen;Lnet/minecraft/client/Minecraft;Lnet/minecraft/client/multiplayer/resolver/ServerAddress;Lnet/minecraft/client/multiplayer/ServerData;ZLnet/minecraft/client/multiplayer/TransferState;)V",
+			new Hook("connecting", "startConnecting", "(Lnet/minecraft/client/gui/screens/Screen;Lnet/minecraft/client/Minecraft;Lnet/minecraft/client/multiplayer/resolver/ServerAddress;Lnet/minecraft/client/multiplayer/ServerData;*",
 				head(b -> b.aload(3).invokestatic(HOOKS, "connecting", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/multiplayer/chat/ChatListener",
-			new Hook("chat", "handleSystemMessage", "(Lnet/minecraft/network/chat/Component;Z)V", head(b -> b.aload(1).iload(2).invokestatic(HOOKS, "systemChat", type(CD_void, CD_Object, CD_boolean)))),
+			new Hook("chat", "handleSystemMessage", "(Lnet/minecraft/network/chat/Component;Z*", head(b -> b.aload(1).iload(2).invokestatic(HOOKS, "systemChat", type(CD_void, CD_Object, CD_boolean)))),
 			new Hook("chat", "showMessageToPlayer", "(Lnet/minecraft/network/chat/ChatType$Bound;Lnet/minecraft/network/chat/PlayerChatMessage;Lnet/minecraft/network/chat/Component;Lcom/mojang/authlib/GameProfile;ZLjava/time/Instant;)Z",
 				head(b -> b.aload(1).aload(2).aload(3).aload(4).aload(6).invokestatic(HOOKS, "playerChat", type(CD_void, CD_Object, CD_Object, CD_Object, CD_Object, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Hud",
-			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/DeltaTracker;)V", tail(b -> b.aload(1).aload(2).invokestatic(HOOKS, "hud", type(CD_void, CD_Object, CD_Object)))));
+			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Gui",
-			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/DeltaTracker;)V", tail(b -> b.aload(1).aload(2).invokestatic(HOOKS, "hud", type(CD_void, CD_Object, CD_Object))), true));
+			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object))), true));
 		if (proxy) {
 			add(t, "io/netty/bootstrap/Bootstrap",
 				new Hook("proxy", "init", "(Lio/netty/channel/Channel;)V", head(b -> b.aload(1).invokestatic(HOOKS, "channel", type(CD_void, CD_Object)))));
@@ -190,7 +201,7 @@ final class Patcher implements ClassFileTransformer {
 			CodeTransform t = null;
 			for (int i = 0; i < list.size(); i++) {
 				Hook h = list.get(i);
-				if ((h.method() == null || m.methodName().equalsString(h.method())) && (h.descriptor() == null || m.methodType().equalsString(h.descriptor()))) {
+				if (h.matches(m)) {
 					AtomicInteger hit = hits[i];
 					CodeTransform next = h.edit().transform(hit::incrementAndGet);
 					t = t == null ? next : t.andThen(next);
