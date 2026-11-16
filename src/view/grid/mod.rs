@@ -191,6 +191,17 @@ pub fn key(store: Store, e: &KeyboardEventData) -> bool {
     true
 }
 
+/// Whether the page shows the shelf of instances played alone above its tiles.
+pub fn shelf_shown(filter: &Filter, search: &str, show: Show, view: View) -> bool {
+    *filter == Filter::All && search.is_empty() && show == Show::All && view == View::Tiles
+}
+
+/// The shelf's instances and how many of their games have a process, for the toolbar's count; None without instances.
+pub fn shelf_running(m: &Model) -> Option<usize> {
+    let shelf = shelf(m);
+    (!shelf.is_empty()).then(|| shelf.iter().filter(|(_, _, running)| running.as_ref().and_then(|k| m.games.get(k)).is_some_and(|g| g.phase.has_process())).count())
+}
+
 /// Instances played alone, most recently played first.
 fn shelf(m: &Model) -> Vec<(String, String, Option<String>)> {
     let mut list: Vec<(String, String, Option<String>)> = m
@@ -247,7 +258,7 @@ impl Component for GridPage {
         if view == View::Table {
             table::sort(&m, &mut keys, *ui.sort.read());
         }
-        let shelf = if self.filter == Filter::All && search.is_empty() && show == Show::All { shelf(&m) } else { Vec::new() };
+        let shelf = if shelf_shown(&self.filter, &search, show, view) { shelf(&m) } else { Vec::new() };
         let size = *ui.size.read();
         let Bounds { w, h, .. } = *area.read();
         let shelf_h = if shelf.is_empty() { 0. } else { SHELF_H + space::XL + font::CALLOUT + space::S };
@@ -337,7 +348,7 @@ impl Component for GridPage {
             return column.child(page.child(rect().center().width(Size::fill()).height(Size::fill()).child(secondary(&t, tr("Lädt …"))))).into_element();
         }
         if keys.is_empty() && shelf.is_empty() {
-            return column.child(page.child(empty(&t, &self.filter, show, &search, store))).into_element();
+            return column.child(page.child(empty(&t, &self.filter, show, &search, store, &m))).into_element();
         }
 
         if view == View::Table {
@@ -407,8 +418,9 @@ fn card(t: &super::theme::Theme, store: Store, id: String, name: String, running
         .child(action)
 }
 
-fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, store: Store) -> impl IntoElement {
+fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, store: Store, m: &Model) -> impl IntoElement {
     let searching = !search.trim().is_empty();
+    let unstarted = *filter == Filter::All && m.batches.is_empty() && !m.accounts.is_empty();
     let (glyph, title, text) = if searching {
         (Icon::Search, tr("Nichts gefunden"), trf("Zu „%@“ passt keiner.", &[&search.trim()]))
     } else if show == Show::Running {
@@ -417,6 +429,8 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
         (Icon::Check, tr("Nichts gestoppt"), tr("Alle sind wach."))
     } else if *filter == Filter::Attention {
         (Icon::Check, tr("Alles läuft"), tr("Kein Account braucht dich gerade."))
+    } else if unstarted {
+        (Icon::Grid, tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."))
     } else {
         (Icon::Users, tr("Noch keine Accounts"), tr("Füge einen Account hinzu, dann kannst du spielen."))
     };
@@ -428,19 +442,28 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
         col.child(Button::new("grid.empty.every", tr("Alle anzeigen")).tall().on_press(move |_| ui.show.set(Show::All)))
     } else if *filter == Filter::Attention {
         col.child(Button::new("grid.empty.all", tr("Alle anzeigen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+    } else if unstarted {
+        let (label, want) = if m.instances.is_empty() { (tr("Neue Instanz"), commands::Want::NewInstance) } else { (tr("Neuer Batch…"), commands::Want::NewBatch) };
+        col.child(Button::new("grid.empty.start", label).glyph(Icon::Plus).primary().tall().disabled(commands::want_blocked(&want)).on_press(move |_| {
+            commands::want(store, want.clone());
+        }))
     } else {
-        col.child(Button::new("grid.empty.add", tr("Account hinzufügen")).glyph(Icon::Plus).primary().tall().on_press(move |_| ui.page.set(Page::Accounts)))
+        col.child(Button::new("grid.empty.add", tr("Account hinzufügen")).glyph(Icon::UserPlus).primary().tall().disabled(commands::want_blocked(&commands::Want::AddAccount)).tip(commands::Command::AddAccount.tip()).on_press(move |_| {
+            commands::want(store, commands::Want::AddAccount);
+        }))
     };
     col
 }
 
-/// The word for how many games the page shows, for the toolbar.
-pub fn count_line(m: &Model, shown: &[String]) -> String {
+/// The word for how many games the page shows, for the toolbar; `shelf` counts the running games played alone on the shelf
+/// above, when the page shows one.
+pub fn count_line(m: &Model, shown: &[String], shelf: Option<usize>) -> String {
     let games = || shown.iter().filter_map(|k| m.games.get(k));
     let keys = shown.len();
-    let running = games().filter(|g: &&Game| g.phase.has_process()).count();
+    let running = games().filter(|g: &&Game| g.phase.has_process()).count() + shelf.unwrap_or(0);
     let attention = games().filter(|g| g.phase.needs_attention()).count();
-    let mut parts = vec![if keys == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&keys]) }, if running == 1 { tr("1 läuft") } else { trf("%lld laufen", &[&running]) }];
+    let mut parts = if keys == 0 && shelf.is_some() { Vec::new() } else { vec![if keys == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&keys]) }] };
+    parts.push(if running == 1 { tr("1 läuft") } else { trf("%lld laufen", &[&running]) });
     if attention == 1 {
         parts.push(tr("1 braucht dich"));
     } else if attention > 1 {

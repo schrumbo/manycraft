@@ -51,8 +51,10 @@ impl Component for Toolbar {
                     Filter::Batch(id) => m.batch(id).map_or_else(|| tr("Batch"), |b| b.name.clone()),
                 };
                 let show = grid::show_of(&m, filter, *ui.show.read());
-                let keys = grid::shown(&m, filter, show, &ui.search.read());
-                (name, Some(grid::count_line(&m, &keys)))
+                let search = ui.search.read();
+                let keys = grid::shown(&m, filter, show, &search);
+                let shelf = if grid::shelf_shown(filter, &search, show, *ui.view.read()) { grid::shelf_running(&m) } else { None };
+                (name, Some(grid::count_line(&m, &keys, shelf)))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
             Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
