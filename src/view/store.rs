@@ -164,9 +164,9 @@ impl Store {
         self.side.peek().clone()
     }
 
-    /// Carries out clicks on the tray icon and on notifications, requests to close the window and what happens to it, for
-    /// as long as the window lives.
-    pub fn listen(self, closes: async_channel::Receiver<()>, signals: async_channel::Receiver<Signal>) {
+    /// Carries out clicks on the tray icon and on notifications, what the system tells the window and what happens to
+    /// it, for as long as the window lives. On macOS closing the window only hides it; Manycraft stays in the Dock.
+    pub fn listen(self, told: async_channel::Receiver<native::Told>, signals: async_channel::Receiver<Signal>) {
         let clicks = self.side().borrow().clicks.as_ref().map(|(_, rx)| rx.clone());
         if let Some(clicks) = clicks {
             spawn(async move {
@@ -196,8 +196,15 @@ impl Store {
             });
         }
         spawn(async move {
-            while closes.recv().await.is_ok() {
-                self.dispatch(Event::CloseWindow);
+            while let Ok(told) = told.recv().await {
+                match told {
+                    native::Told::Close if cfg!(target_os = "macos") => native::hide(None),
+                    native::Told::Close => self.dispatch(Event::CloseWindow),
+                    native::Told::Activated if self.model.peek().playing.is_some() => self.dispatch(Event::ShowGrid),
+                    native::Told::Activated => {}
+                    native::Told::Reopen => self.dispatch(Event::ShowGrid),
+                    native::Told::Menu(id) => super::menubar::chosen(self, &id),
+                }
             }
         });
     }
@@ -540,7 +547,7 @@ impl Store {
                 }
                 if focused {
                     self.unstow_quietly();
-                    if self.model.peek().playing.is_some() {
+                    if cfg!(target_os = "windows") && self.model.peek().playing.is_some() {
                         self.dispatch(Event::ShowGrid);
                     }
                 }

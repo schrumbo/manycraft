@@ -362,6 +362,39 @@ pub fn missing_for(scan: &Scan, files: &[String]) -> Vec<String> {
     sorted_names(found.into_iter().map(|i| entries[i].file.clone()).collect())
 }
 
+/// For every switched-on mod on disk, the files of switched-off mods it needs, as [`missing_for`] names them for that one
+/// file; mods that need nothing are left out. Builds the provider index once, so it stays linear in the mods.
+pub fn missing_for_enabled(scan: &Scan) -> HashMap<String, Vec<String>> {
+    let entries = &scan.entries;
+    let index = providers(scan);
+    let mut base: HashSet<usize> = (0..entries.len()).filter(|i| entries[*i].enabled).collect();
+    base.insert(FIXED);
+    let mut out = HashMap::new();
+    for (start, e) in entries.iter().enumerate().filter(|(_, e)| e.enabled && e.on_disk) {
+        let mut added: HashSet<usize> = HashSet::new();
+        let mut queue = vec![start];
+        let mut found: Vec<usize> = Vec::new();
+        while let Some(i) = queue.pop() {
+            let Some(meta) = &entries[i].meta else { continue };
+            for dep in &meta.depends {
+                let Some(all) = index.get(dep.as_str()) else { continue };
+                if all.iter().any(|j| base.contains(j) || added.contains(j)) {
+                    continue;
+                }
+                if let Some(j) = all.first().copied() {
+                    added.insert(j);
+                    found.push(j);
+                    queue.push(j);
+                }
+            }
+        }
+        if !found.is_empty() {
+            out.insert(e.file.clone(), sorted_names(found.into_iter().map(|i| entries[i].file.clone()).collect()));
+        }
+    }
+    out
+}
+
 /// Mods whose jar has the same mod id: the files, newest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Duplicate {
@@ -1424,6 +1457,29 @@ mod tests {
         assert_eq!(missing_for(&scan, &names(&["needs-on.jar"])), ["lib.jar"]);
         assert_eq!(missing_for(&scan, &names(&["loop-a.jar"])), ["loop-b.jar"]);
         assert_eq!(missing_for(&scan, &names(&["lib.jar", "on.jar"])), Vec::<String>::new());
+    }
+
+    #[test]
+    fn what_every_switched_on_mod_needs_matches_asking_for_each_alone() {
+        let scan = scan_of(
+            vec![
+                entry("top.jar", "top", &["mid", "api"], &[], true),
+                entry("mid.jar", "mid", &["lib", "nobody"], &[], false),
+                entry("lib.jar", "lib", &[], &[], false),
+                entry("impl.jar", "impl", &[], &["api"], false),
+                entry("on.jar", "on", &[], &[], true),
+                entry("needs-on.jar", "needs-on", &["on", "lib"], &[], true),
+                entry("loop-a.jar", "loop-a", &["loop-b"], &[], true),
+                entry("loop-b.jar", "loop-b", &["loop-a"], &[], false),
+            ],
+            None,
+        );
+        let all = missing_for_enabled(&scan);
+        for e in scan.entries.iter().filter(|e| e.enabled && e.on_disk) {
+            let alone = missing_for(&scan, std::slice::from_ref(&e.file));
+            assert_eq!(all.get(&e.file).cloned().unwrap_or_default(), alone, "{}", e.file);
+        }
+        assert_eq!(all.len(), 3);
     }
 
     #[test]

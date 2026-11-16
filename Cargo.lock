@@ -5040,6 +5040,7 @@ dependencies = [
  "libc",
  "md-5",
  "minisign-verify",
+ "muda",
  "notify",
  "notify-rust",
  "objc2 0.6.5",
@@ -5072,6 +5073,7 @@ dependencies = [
  "windows-sys 0.59.0",
  "winresource",
  "wry",
+ "zbus 5.19.0",
  "zip",
 ]
 

@@ -159,12 +159,7 @@ fn analyze(scan: &Scan, scanned: bool) -> Analysis {
         }
     }
     if scanned {
-        for e in scan.entries.iter().filter(|e| e.enabled && e.on_disk) {
-            let missing = content::missing_for(scan, std::slice::from_ref(&e.file));
-            if !missing.is_empty() {
-                out.needs.insert(e.file.clone(), missing);
-            }
-        }
+        out.needs = content::missing_for_enabled(scan);
     }
     out
 }
