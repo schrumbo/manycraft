@@ -86,15 +86,20 @@ impl Component for Line {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let spot = use_spot(&self.id, "line", &self.label, !self.dim);
         let press = self.on_press.clone();
-        let mut text = rect().width(Size::flex(1.)).spacing(2.).child(line(&t, self.label.clone(), font::BODY, if self.dim { t.text3 } else { t.text1 }).max_lines(2));
+        let mut text = rect().width(Size::flex(1.)).spacing(space::XXS).child(line(&t, self.label.clone(), font::BODY, if self.dim { t.text3 } else { t.text1 }).max_lines(2));
         if let Some(h) = &self.hint {
             text = text.child(para(&t, h.clone(), font::CALLOUT, self.hint_tone.unwrap_or(if self.dim { t.text3 } else { t.text2 })));
         }
         let mut top = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::L).child(text).content(Content::flex());
         if let Some(c) = &self.control {
-            top = top.child(rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation()).child(c.clone()));
+            let mut held = rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation());
+            if press.is_some() {
+                held = held.on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation());
+            }
+            top = top.child(held.child(c.clone()));
         }
         let mut r = rect().width(Size::fill()).min_height(Size::px(control::L + space::M)).padding((space::M, space::L)).main_align(Alignment::Center).spacing(space::S).on_sized(spot).child(top);
         if let Some(b) = &self.below {
@@ -102,10 +107,15 @@ impl Component for Line {
         }
         if let Some(p) = press {
             r = r
-                .background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })
+                .background(if *pressed.read() { t.press } else if *hovered.read() { t.hover } else { Color::TRANSPARENT })
                 .cursor(CursorIcon::Pointer)
                 .on_pointer_enter(move |_| hovered.set(true))
-                .on_pointer_leave(move |_| hovered.set_if_modified(false))
+                .on_pointer_leave(move |_| {
+                    hovered.set_if_modified(false);
+                    pressed.set_if_modified(false);
+                })
+                .on_mouse_down(move |_| pressed.set(true))
+                .on_mouse_up(move |_| pressed.set_if_modified(false))
                 .on_pointer_press(move |e: Event<PointerEventData>| {
                     if let PointerEventData::Mouse(m) = &*e
                         && m.button == Some(MouseButton::Left)

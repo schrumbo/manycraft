@@ -15,12 +15,27 @@ use crate::view::kit::button::Button;
 use crate::view::kit::group::{Line, group, note, status};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::line;
-use crate::view::kit::{open_external, ring, toast, use_theme};
-use crate::view::store::use_store;
+use crate::view::kit::{off_thread, open_external, ring, toast, use_theme};
+use crate::view::store::{Store, use_store};
 use crate::view::theme::{color, font, iconsize, space};
 
 const COLUMNS: usize = 4;
 const SWATCH_H: f32 = 64.;
+const SWATCH_PAD: f32 = space::XS + 2.;
+const SWATCH_INSET: f32 = 2.;
+const FRAME_GROW: f32 = 4.;
+const SIDEBAR_SHARE: f32 = 28.;
+const SIDE_LINES: [f32; 3] = [80., 60., 70.];
+const TITLE_LINE: f32 = 55.;
+const ACCENT_H: f32 = 4.;
+const LINE_H: f32 = 3.;
+const LINE_ROUND: f32 = 2.;
+const PILL: (f32, f32) = (22., 6.);
+const TILE_ROUND: f32 = 0.6;
+const ROUND: (f32, f32) = (4., 8.);
+const ATTENTION_EDGE: f32 = 1.5;
+const EDGE: (f32, f32) = (1., 2.);
+const LABEL_GAP: f32 = 1.;
 
 fn wants_dark(appearance: Appearance) -> bool {
     match appearance {
@@ -61,8 +76,8 @@ impl Component for LookGroup {
         ];
         let at = modes.iter().position(|m| *m == appearance).unwrap_or(0);
         let theme_id = s.theme.clone();
-        let mode = Line::new("settings.look.row", tr("Erscheinungsbild"))
-            .control(Segmented::new(tr("Erscheinungsbild"), segments, at).on_choose(move |i| choose(p, look, modes[i.min(2)], theme_id.clone())))
+        let mode = Line::new("settings.look.row", tr("Hell oder dunkel"))
+            .control(Segmented::new(tr("Hell oder dunkel"), segments, at).on_choose(move |i| choose(p, look, modes[i.min(2)], theme_id.clone())))
             .into_element();
         let dark = wants_dark(appearance);
         let mut pick = Line::new("settings.theme.row", tr("Theme")).below(Picker { library: library.clone(), chosen: chosen.clone(), dark, appearance });
@@ -90,7 +105,13 @@ impl Component for LookGroup {
         let mut rows = vec![mode, pick.into_element(), own];
         for broken in &library.broken {
             let first = broken.errors.first().cloned().unwrap_or_default();
-            rows.push(Line::new(format!("settings.theme.broken.{}", broken.file), broken.file.clone()).below(status(&t, first, t.danger_text)).into_element());
+            rows.push(
+                Line::new(format!("settings.theme.broken.{}", broken.file), broken.file.clone())
+                    .hint(tr("Korrigiere die Datei im Themes-Ordner oder entferne sie."))
+                    .control(Button::new(format!("settings.theme.broken.{}.folder", broken.file), tr("Ordner öffnen")).on_press(move |_| open_folder()))
+                    .below(status(&t, first, t.danger_text))
+                    .into_element(),
+            );
         }
         group(&t, Some(tr("Erscheinungsbild")), rows, None)
     }
@@ -103,21 +124,18 @@ fn open_folder() {
     }
 }
 
-fn copy(store: crate::view::store::Store, look: Look, p: Prefs, appearance: Appearance, source: themes::Theme) {
-    let (tx, rx) = async_channel::bounded(1);
-    let spawned = std::thread::Builder::new().name("theme-copy".into()).spawn(move || {
-        let _ = tx.send_blocking(themes::copy_as_template(&source, &themes::dir()).map_err(|e| e.to_string()));
-    });
-    if spawned.is_err() {
-        return;
-    }
+fn copy(store: Store, look: Look, p: Prefs, appearance: Appearance, source: themes::Theme) {
+    let Some(rx) = off_thread("theme-copy", move || themes::copy_as_template(&source, &themes::dir()).map_err(|e| e.to_string())) else { return };
     spawn_in_window(async move {
         match rx.recv().await {
             Ok(Ok(path)) => {
-                look.reload();
                 let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                choose(p, look, appearance, Some(format!("user/{stem}")));
                 toast::show(store.ui, tr("Kopie liegt im Themes-Ordner"), None);
+                look.reload_then(move || {
+                    if p.alive() {
+                        choose(p, look, appearance, Some(format!("user/{stem}")));
+                    }
+                });
             }
             Ok(Err(e)) => store.dispatch(crate::app::event::Event::Error(trf("Das Theme ließ sich nicht kopieren: %@", &[&e]))),
             Err(_) => {}
@@ -193,7 +211,15 @@ impl Component for Picker {
             grid = grid.child(row.content(Content::flex()));
         }
         if self.library.themes.is_empty() {
-            grid = grid.child(note(&t, tr("Keine Themes gefunden.")));
+            grid = grid.child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(space::S)
+                    .child(note(&t, tr("Keine Themes gefunden.")))
+                    .child(Button::new("settings.theme.empty.folder", tr("Ordner öffnen")).on_press(move |_| open_folder())),
+            );
         }
         grid
     }
@@ -212,50 +238,61 @@ impl Component for Card {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let th = &self.theme;
         let spot = use_spot(&format!("settings.theme.{}", th.id.replace('/', ".")), "radio", &th.name, true);
         let pal = th.palette(self.dark);
         let c = |k: Token| color(pal.get(k));
-        let r = (th.radius * 4.).clamp(0., 8.);
+        let r = (th.radius * ROUND.0).clamp(0., ROUND.1);
         let tile = |attention: bool| {
-            let mut b = rect().width(Size::flex(1.)).height(Size::fill()).corner_radius(r * 0.6).background(c(Token::Raised));
+            let mut b = rect().width(Size::flex(1.)).height(Size::fill()).corner_radius(r * TILE_ROUND).background(c(Token::Raised));
             if attention {
-                b = b.border(Border::new().fill(c(Token::Attention)).width(1.5).alignment(BorderAlignment::Inner));
+                b = b.border(Border::new().fill(c(Token::Attention)).width(ATTENTION_EDGE).alignment(BorderAlignment::Inner));
             }
             b
         };
-        let swatch = rect()
+        let bar = |share: f32, h: f32, token: Token| rect().width(Size::percent(share)).height(Size::px(h)).corner_radius(LINE_ROUND).background(c(token));
+        let swatch_radius = t.shape.small + SWATCH_INSET;
+        let mut swatch = rect()
             .width(Size::fill())
             .height(Size::px(SWATCH_H))
-            .corner_radius(t.shape.small + 2.)
+            .corner_radius(swatch_radius)
             .background(c(Token::Surface))
             .overflow(Overflow::Clip)
             .horizontal()
             .child(
                 rect()
-                    .width(Size::percent(28.))
+                    .width(Size::percent(SIDEBAR_SHARE))
                     .height(Size::fill())
                     .background(c(Token::Sidebar))
-                    .padding(space::XS + 2.)
+                    .padding(SWATCH_PAD)
                     .spacing(space::XS)
-                    .child(rect().width(Size::percent(80.)).height(Size::px(4.)).corner_radius(2.).background(c(Token::Accent)))
-                    .child(rect().width(Size::percent(60.)).height(Size::px(3.)).corner_radius(2.).background(c(Token::Text3)))
-                    .child(rect().width(Size::percent(70.)).height(Size::px(3.)).corner_radius(2.).background(c(Token::Text3))),
+                    .child(bar(SIDE_LINES[0], ACCENT_H, Token::Accent))
+                    .child(bar(SIDE_LINES[1], LINE_H, Token::Text3))
+                    .child(bar(SIDE_LINES[2], LINE_H, Token::Text3)),
             )
             .child(
                 rect()
                     .width(Size::flex(1.))
                     .height(Size::fill())
-                    .padding(space::XS + 2.)
+                    .padding(SWATCH_PAD)
                     .spacing(space::XS)
-                    .child(rect().width(Size::percent(55.)).height(Size::px(4.)).corner_radius(2.).background(c(Token::Text1)))
+                    .child(bar(TITLE_LINE, ACCENT_H, Token::Text1))
                     .child(rect().width(Size::fill()).height(Size::flex(1.)).horizontal().spacing(space::XS).child(tile(false)).child(tile(true)).content(Content::flex()))
-                    .child(rect().width(Size::fill()).horizontal().main_align(Alignment::End).child(rect().width(Size::px(22.)).height(Size::px(6.)).corner_radius(3.).background(c(Token::Accent))))
+                    .child(rect().width(Size::fill()).horizontal().main_align(Alignment::End).child(rect().width(Size::px(PILL.0)).height(Size::px(PILL.1)).corner_radius(PILL.1 / 2.).background(c(Token::Accent))))
                     .content(Content::flex()),
             )
             .content(Content::flex());
+        if *pressed.read() {
+            swatch = swatch.child(rect().position(Position::new_absolute().top(0.).left(0.)).width(Size::fill()).height(Size::fill()).background(t.press));
+        }
         let edge = if self.on { t.accent } else if *hovered.read() { t.text3 } else { t.separator };
-        let mut frame = rect().width(Size::fill()).padding(2.).corner_radius(t.shape.small + 4.).border(Border::new().fill(edge).width(if self.on { 2. } else { 1. }).alignment(BorderAlignment::Inner)).child(swatch);
+        let mut frame = rect()
+            .width(Size::fill())
+            .padding(SWATCH_INSET)
+            .corner_radius(t.shape.small + FRAME_GROW)
+            .border(Border::new().fill(edge).width(if self.on { EDGE.1 } else { EDGE.0 }).alignment(BorderAlignment::Inner))
+            .child(swatch);
         if self.ring
             && let Some(b) = ring(&t, Focus::Keyboard)
         {
@@ -280,7 +317,12 @@ impl Component for Card {
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |_| pressed.set(true))
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_pointer_press(move |e: Event<PointerEventData>| {
                 if let PointerEventData::Mouse(m) = &*e
                     && m.button == Some(MouseButton::Left)
@@ -289,6 +331,6 @@ impl Component for Card {
                 }
             })
             .child(frame)
-            .child(rect().padding((0., space::XXS)).spacing(1.).child(name).child(line(&t, kind, font::CAPTION, t.text3)))
+            .child(rect().padding((0., space::XXS)).spacing(LABEL_GAP).child(name).child(line(&t, kind, font::CAPTION, t.text3)))
     }
 }

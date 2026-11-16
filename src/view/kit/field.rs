@@ -147,7 +147,7 @@ impl Component for Field {
             .theme_colors(colors(&t, self.error.is_some()))
             .theme_layout(InputLayoutThemePartial {
                 corner_radius: Some(CornerRadius::new_all(t.shape.field).into()),
-                padding: Some(Gaps::new((control::M - font::BODY * 1.3) / 2., space::S + 2., (control::M - font::BODY * 1.3) / 2., space::S + 2.).into()),
+                padding: Some(Gaps::new((control::M - font::BODY * font::LINE) / 2., space::S + 2., (control::M - font::BODY * font::LINE) / 2., space::S + 2.).into()),
             });
         if self.secret {
             input = input.mode(InputMode::new_password());
@@ -157,10 +157,9 @@ impl Component for Field {
         }
         if self.lines > 1 {
             let (submit, value) = (self.on_submit.clone(), self.value);
-            input = input.multiline(true).height(Size::px(control::M + (self.lines - 1) as f32 * font::BODY * 1.3)).on_pre_key_down(Callback::new(move |e: Event<KeyboardEventData>| match &e.key {
+            input = input.multiline(true).height(Size::px(control::M + (self.lines - 1) as f32 * font::BODY * font::LINE)).on_pre_key_down(Callback::new(move |e: Event<KeyboardEventData>| match &e.key {
                 Key::Named(NamedKey::Enter) if e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META) => {
                     e.stop_propagation();
-                    e.prevent_default();
                     if let Some(h) = &submit {
                         h.call(value.peek().clone());
                     }
@@ -169,8 +168,9 @@ impl Component for Field {
                 Key::Named(NamedKey::Escape | NamedKey::Shift) => true,
                 Key::Named(NamedKey::Tab) => false,
                 _ => {
-                    e.stop_propagation();
-                    e.prevent_default();
+                    if !e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META) {
+                        e.stop_propagation();
+                    }
                     true
                 }
             }));

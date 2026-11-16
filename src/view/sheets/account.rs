@@ -31,6 +31,7 @@ const COPIED_FOR: Duration = Duration::from_secs(2);
 const LIST_ROWS: (usize, usize) = (3, 8);
 const LIST_PROBLEMS: usize = 4;
 const DETAIL_LINES: usize = 8;
+const ADDED_SHOWN: usize = 3;
 const TILE_WASH: f32 = 0.14;
 const ADDED_NOTES: f32 = font::BODY * font::LINE * 2. + font::CAPTION * font::LINE * 2. + space::XS * 2.;
 const CODE_PAD: f32 = space::L;
@@ -481,11 +482,11 @@ fn failure_text(e: &SignInError, again: Option<&Account>) -> (String, String, St
         SignInError::Closed => (tr("Das Anmeldefenster wurde geschlossen."), tr("Es wurde nichts gespeichert."), tr("Erneut öffnen"), false),
         SignInError::NoClientId => (
             tr("Die Anmeldung mit Microsoft gibt es in dieser Version noch nicht."),
-            if again.is_some() { tr("Eine spätere Version kann Microsoft-Konten anmelden.") } else { tr("Offline-Konten kannst du schon hinzufügen.") },
+            if again.is_some() { tr("Eine spätere Version kann Microsoft-Accounts anmelden.") } else { tr("Offline-Accounts kannst du schon hinzufügen.") },
             retry,
             again.is_none(),
         ),
-        SignInError::NotOwned => (tr("Dieses Konto besitzt Minecraft: Java Edition nicht."), tr("Melde dich mit dem Konto an, mit dem du Minecraft gekauft hast."), tr("Anderes Konto"), false),
+        SignInError::NotOwned => (tr("Dieser Account besitzt Minecraft: Java Edition nicht."), tr("Melde dich mit dem Account an, mit dem du Minecraft gekauft hast."), tr("Anderer Account"), false),
         SignInError::WrongAccount(name) => (
             trf("Du hast dich als %@ angemeldet.", &[name]),
             trf("Melde dich mit %@ an, um diesen Account zu erneuern.", &[&again.map_or_else(String::new, |a| a.name.clone())]),
@@ -494,6 +495,14 @@ fn failure_text(e: &SignInError, again: Option<&Account>) -> (String, String, St
         ),
         SignInError::Network => (tr("Keine Verbindung zu Microsoft."), tr("Prüfe die Internetverbindung und den Proxy, dann versuche es erneut."), retry, false),
         SignInError::Other(why) => (tr("Die Anmeldung hat nicht geklappt."), if why.text == forms::unexplained() { tr("Versuche es noch einmal. Bleibt es so, helfen die Details bei der Fehlersuche.") } else { why.text.clone() }, retry, false),
+    }
+}
+
+fn capped(names: &[&str], shown: usize) -> String {
+    let list = names.iter().take(shown).copied().collect::<Vec<_>>().join(", ");
+    match names.len().saturating_sub(shown) {
+        0 => list,
+        more => format!("{list} {}", trf("und %lld weitere", &[&more])),
     }
 }
 
@@ -605,6 +614,9 @@ impl Component for AddAccount {
         if let Some((id, p)) = parts.primary {
             card = card.primary(p).primary_id(id);
         }
+        if parts.back {
+            card = card.on_escape(move |_| flow.back());
+        }
         card
     }
 }
@@ -624,7 +636,7 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
             before: None,
             after: Some(second),
             glyph: Icon::KeyRound,
-            title: tr("Microsoft-Konto"),
+            title: tr("Microsoft-Account"),
             subtitle: tr("Für alle Server. Du meldest dich bei Microsoft an."),
             disabled: problem.clone(),
             first: !open,
@@ -636,7 +648,7 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
             before: Some(first),
             after: None,
             glyph: Icon::User,
-            title: tr("Offline-Konto"),
+            title: tr("Offline-Account"),
             subtitle: tr("Nur für Server ohne Anmeldeprüfung."),
             disabled: problem.clone(),
             first: false,
@@ -653,7 +665,7 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
         let check = flow.check.read().clone();
         let running = check == Check::Running;
         let reason = if running { Some(tr("Wird geprüft …")) } else if !filled { Some(tr("Erst eine Proxy-Adresse eintragen")) } else { problem.clone() };
-        let field = Field::new("account.add.proxy", flow.proxy).placeholder(tr("z. B. socks5://host:1080")).hint(tr("Gilt für Anmeldung und Spiel. Leer lassen für keinen Proxy.")).error(problem).width(Size::flex(1.)).auto_focus();
+        let field = Field::new("account.add.proxy", flow.proxy).placeholder(tr("z. B. socks5://host:1080")).hint(tr("Gilt für Anmeldung und Spiel. Leer lassen für keinen Proxy.")).error(problem).width(Size::flex(1.)).on_submit(move |_| flow.run_check()).auto_focus();
         let test = Button::new("account.add.check", tr("Prüfen")).disabled(reason).on_press(move |_| flow.run_check());
         let mut block = rect()
             .width(Size::fill())
@@ -691,6 +703,7 @@ impl Component for Choice {
         let own = self.own;
         let focus = use_focus(own);
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let enabled = self.disabled.is_none();
         let spot = use_spot(self.id, "radio", &self.title, enabled);
         let (before, after) = (self.before, self.after);
@@ -708,13 +721,18 @@ impl Component for Choice {
             .spacing(space::M)
             .padding(space::M)
             .corner_radius(t.shape.tile)
-            .background(if enabled && *hovered.read() { t.hover } else { Color::TRANSPARENT })
+            .background(if enabled && *pressed.read() { t.press } else if enabled && *hovered.read() { t.hover } else { Color::TRANSPARENT })
             .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
             .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed })
             .content(Content::flex())
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |_| pressed.set(true))
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_key_down(move |e: Event<KeyboardEventData>| {
                 if !own.is_focused() {
                     return;
@@ -765,13 +783,14 @@ fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
         if summary.hidden > 0 {
             column = column.child(line(t, trf("und %lld weitere", &[&summary.hidden]), font::CALLOUT, t.text3));
         }
-        body = body.child(column.child(note(t, tr("Ein Name pro Zeile. Ungültige und vorhandene werden übersprungen."))));
+        let submit = if cfg!(target_os = "macos") { tr("⌘+Enter fügt hinzu") } else { tr("Strg+Enter fügt hinzu") };
+        body = body.child(column.child(note(t, tr("Ein Name pro Zeile. Ungültige und vorhandene werden übersprungen."))).child(note(t, submit)));
         ((summary.fine == 0).then(|| tr("In der Liste steht kein gültiger Name.")), trf("%lld hinzufügen", &[&summary.fine]))
     } else {
         let name = text.trim();
         let problem = forms::offline_name_problem(name, &model.accounts);
         let shown = problem.clone().filter(|_| !name.is_empty() && error.is_none());
-        let field = Field::new("account.add.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Steve")).hint(tr("3 bis 16 Zeichen: Buchstaben, Ziffern und _. Für mehrere füge eine Liste ein.")).error(shown).auto_focus();
+        let field = Field::new("account.add.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Steve")).hint(tr("3 bis 16 Zeichen: Buchstaben, Ziffern und _. Für mehrere füge eine Liste ein.")).error(shown).on_submit(move |_| flow.add_offline()).auto_focus();
         body = body.child(field);
         (problem, tr("Hinzufügen"))
     };
@@ -783,9 +802,10 @@ fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
     if let Some(proxy) = flow.chosen_proxy() {
         body = body.child(para(t, trf("Proxy: %@", &[&forms::proxy_display(&proxy)]), font::CALLOUT, t.text2));
     }
-    let (label, reason) = if saving { (tr("Wird hinzugefügt …"), Some(tr("Wird hinzugefügt …"))) } else { (add_label, unready) };
+    let reason = if saving { Some(tr("Wird hinzugefügt …")) } else { unready };
+    let label = add_label;
     Parts {
-        title: tr("Offline-Konto"),
+        title: tr("Offline-Account"),
         message: Some(tr("Ohne Anmeldung, nur mit Namen.")),
         body: body.into_element(),
         back: can_back,
@@ -797,12 +817,12 @@ fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
 fn saved(flow: Flow, t: &Theme, names: &[String]) -> Parts {
     let text = match names {
         [one] => trf("„%@“ hinzugefügt.", &[one]),
-        _ => trf("%lld Offline-Konten hinzugefügt.", &[&names.len()]),
+        _ => trf("%lld Offline-Accounts hinzugefügt.", &[&names.len()]),
     };
     let onward = first_run(flow.store);
     let primary = if onward { act(tr("Weiter"), None, move || flow.onward()) } else { act(tr("Fertig"), None, move || flow.finish()) };
     Parts {
-        title: tr("Offline-Konto"),
+        title: tr("Offline-Account"),
         message: None,
         body: rect().width(Size::fill()).padding((space::S, 0.)).child(notice(t, Icon::CircleCheck, t.success_text, text)).into_element(),
         back: false,
@@ -816,8 +836,8 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
     let added = matches!(ms, Ms::Added(_));
     let (title, message) = match (&pending.again, ms) {
         (Some(a), _) => (tr("Erneut anmelden"), Some(a.name.clone())),
-        (None, Ms::Added(_)) => (trf("Konto %lld hinzugefügt", &[&flow.added.read().len()]), None),
-        (None, _) => (tr("Mit Microsoft anmelden"), pending.queue.first().map(|n| trf("Für das Konto „%@“", &[n]))),
+        (None, Ms::Added(_)) => (trf("Account %lld hinzugefügt", &[&flow.added.read().len()]), None),
+        (None, _) => (tr("Mit Microsoft anmelden"), pending.queue.first().map(|n| trf("Für den Account „%@“", &[n]))),
     };
     let mut parts = Parts { title, message, body: rect().into_element(), back: can_back && pending.again.is_none() && !added, secondary: None, primary: None };
     let spacing = space::M;
@@ -828,8 +848,8 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
         }
         Ms::Window => {
             let instruction = match pending.again.as_ref().map(|a| &a.name).or(pending.queue.first()) {
-                Some(name) => trf("Melde dich im Anmeldefenster mit dem Konto „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
-                None => tr("Melde dich im Anmeldefenster mit dem Konto an, das du hinzufügen willst. Danach geht es hier von selbst weiter."),
+                Some(name) => trf("Melde dich im Anmeldefenster mit dem Account „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
+                None => tr("Melde dich im Anmeldefenster mit dem Account an, den du hinzufügen willst. Danach geht es hier von selbst weiter."),
             };
             parts.body = rect()
                 .width(Size::fill())
@@ -859,10 +879,10 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
                 .child(copy_code);
             let minutes = (code.expires_in / 60).max(1);
             let instruction = match pending.queue.first() {
-                Some(name) => trf("Öffne die Microsoft-Seite, prüfe den Code und melde dich mit dem Konto „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
+                Some(name) => trf("Öffne die Microsoft-Seite, prüfe den Code und melde dich mit dem Account „%@“ an. Danach geht es hier von selbst weiter.", &[name]),
                 None => tr("Öffne die Microsoft-Seite, prüfe den Code und melde dich an. Danach geht es hier von selbst weiter."),
             };
-            let hint = if code.private { tr("Die Seite öffnet sich in einem privaten Fenster, unabhängig von deiner Anmeldung im Browser.") } else { tr("Melde dich vorher bei Microsoft ab, wenn du ein anderes Konto nehmen willst.") };
+            let hint = if code.private { tr("Die Seite öffnet sich in einem privaten Fenster, unabhängig von deiner Anmeldung im Browser.") } else { tr("Melde dich vorher bei Microsoft ab, wenn du einen anderen Account nehmen willst.") };
             let state = match copied {
                 Some(Copied::Code) => notice(t, Icon::Check, t.success_text, tr("Code kopiert. Auf der Seite einfügen.")),
                 Some(Copied::Link) => notice(t, Icon::Check, t.success_text, tr("Link kopiert. Der Code steckt schon darin.")),
@@ -909,18 +929,18 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             let before: Vec<&String> = all.iter().filter(|n| *n != name).collect();
             let mut lines = rect().width(Size::fill()).min_height(Size::px(ADDED_NOTES)).spacing(space::XS);
             if !before.is_empty() {
-                lines = lines.child(line(t, trf("Schon hinzugefügt: %@", &[&before.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")]), font::CAPTION, t.text3));
+                lines = lines.child(line(t, trf("Schon hinzugefügt: %@", &[&capped(&before.iter().map(|n| n.as_str()).collect::<Vec<_>>(), ADDED_SHOWN)]), font::CAPTION, t.text3));
             }
             lines = match next {
                 Some(next) => {
                     let rest = pending.queue.len();
-                    lines.child(para(t, if rest == 1 { trf("Als Nächstes: %@. Das ist das letzte Konto.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }, font::BODY, t.text1).max_lines(2))
+                    lines.child(para(t, if rest == 1 { trf("Als Nächstes: %@. Das ist der letzte Account.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }, font::BODY, t.text1).max_lines(2))
                 }
                 None if onward => lines.child(para(t, tr("Als Nächstes legst du die Instanz an, mit der du spielst."), font::CALLOUT, t.text2)),
-                None => lines.child(para(t, tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."), font::CALLOUT, t.text2)),
+                None => lines.child(para(t, tr("Du kannst gleich noch einen Microsoft-Account hinzufügen."), font::CALLOUT, t.text2)),
             };
             if *flow.private_left_open.read() {
-                lines = lines.child(para(t, tr("Schließ das private Fenster, bevor du das nächste Konto anmeldest."), font::CALLOUT, t.text2));
+                lines = lines.child(para(t, tr("Schließ das private Fenster, bevor du den nächsten Account anmeldest."), font::CALLOUT, t.text2));
             }
             if pending.again.is_none()
                 && let Some(proxy) = flow.chosen_proxy()
@@ -946,7 +966,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
                 column = column.child(rect().horizontal().child(Button::new("account.add.skip", tr("Überspringen")).plain().on_press(move |_| flow.skip())));
             }
             parts.primary = Some(if to_offline {
-                ("account.add.offline", act(tr("Offline-Konto hinzufügen"), None, move || {
+                ("account.add.offline", act(tr("Offline-Account hinzufügen"), None, move || {
                     let mut step = flow.step;
                     step.set(Step::Offline);
                 }))
@@ -1013,6 +1033,14 @@ mod tests {
         assert_eq!(s.problems.len(), LIST_PROBLEMS);
         assert_eq!(s.hidden, 6 - LIST_PROBLEMS);
         assert!(s.counts.contains('1'));
+    }
+
+    #[test]
+    fn capped_names_show_the_first_few_and_count_the_rest() {
+        assert_eq!(capped(&["A", "B"], 3), "A, B");
+        let all = ["A", "B", "C", "D", "E"];
+        let text = capped(&all, 3);
+        assert!(text.starts_with("A, B, C ") && text.contains('2') && !text.contains('D'));
     }
 
     #[test]

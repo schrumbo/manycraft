@@ -60,7 +60,7 @@ impl Component for Ask {
             sheet::close(store.ui);
             updates::quit(store, how);
         }) };
-        let mut card = Card::new(id, heading).message(message).primary(primary).width(frame::SHEET * 0.8);
+        let mut card = Card::new(id, heading).message(message).primary(primary).width(frame::SHEET_NARROW);
         if let Some(reason) = blocked {
             card = card.body(status(&t, reason, t.attention_text));
         }

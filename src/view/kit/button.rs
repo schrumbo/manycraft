@@ -127,7 +127,10 @@ impl Component for Button {
             .a11y_id(a11y)
             .a11y_focusable(enabled)
             .a11y_role(AccessibilityRole::Button)
-            .a11y_alt(self.label.clone())
+            .a11y_alt(match &self.disabled {
+                Some(reason) => format!("{}: {reason}", self.label),
+                None => self.label.clone(),
+            })
             .height(Size::px(h))
             .horizontal()
             .center()

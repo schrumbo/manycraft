@@ -58,9 +58,22 @@ pub struct Look {
 }
 
 impl Look {
-    /// Reads the user's theme files again.
-    pub fn reload(mut self) {
-        self.library.set(Rc::new(Library::load(&themes::dir())));
+    /// Reads the user's theme files again, off the UI thread.
+    pub fn reload(self) {
+        self.reload_then(|| {});
+    }
+
+    /// Reads the user's theme files again and runs `then` once the new library is in place.
+    pub fn reload_then(mut self, then: impl FnOnce() + 'static) {
+        let Some(rx) = kit::off_thread("themes-load", || Library::load(&themes::dir())) else { return };
+        spawn_in_window(async move {
+            let Ok(library) = rx.recv().await else { return };
+            if self.library.try_peek().is_none() {
+                return;
+            }
+            self.library.set(Rc::new(library));
+            then();
+        });
     }
 }
 
@@ -123,6 +136,7 @@ impl App for Root {
         drive::share_theme(theme);
         let key = (dark, id.clone(), Rc::as_ptr(&library) as usize);
         use_side_effect_with_deps(&key, move |(dark, id, _)| {
+            let library = look.library.peek().clone();
             let next = Rc::new(load(&library, id.as_deref(), *dark));
             if *theme.peek() != next {
                 theme.set(next);

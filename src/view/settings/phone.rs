@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use freya::elements::image::ImageHandle;
+use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use super::{toggle, use_prefs};
@@ -12,16 +14,18 @@ use crate::app::event::Event;
 use crate::core::i18n::{tr, trf};
 use crate::core::phone::{self, Secret, Service, Slot};
 use crate::core::settings;
+use crate::ui::theme::phone_qr;
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::group::{Line, group, note, status};
 use crate::view::kit::segmented::{Segment, Segmented};
-use crate::view::kit::{after, off_thread, use_theme};
+use crate::view::kit::{after, off_thread, scale, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, space};
 
 const SAVE_AFTER: Duration = Duration::from_millis(400);
 const DISCORD_EXAMPLE: &str = "https://discord.com/api/webhooks/…";
+const QR_DARK: [u8; 3] = [0, 0, 0];
 
 /// A field of the phone settings: a keychain secret or a plain setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +94,8 @@ struct Form {
     saved: State<[String; 5]>,
     shown: State<[bool; 5]>,
     errors: State<[Option<String>; 5]>,
+    dirty: State<[bool; 5]>,
+    generated: State<bool>,
     savers: Rc<[Arc<Saver>; 5]>,
     testing: State<bool>,
     tested: State<Option<Result<String, String>>>,
@@ -100,6 +106,10 @@ struct Form {
 impl Form {
     fn value(&self, kind: Kind) -> String {
         self.values[kind as usize].peek().trim().to_owned()
+    }
+
+    fn alive(&self) -> bool {
+        self.saved.try_peek().is_some()
     }
 }
 
@@ -113,10 +123,11 @@ fn typed(form: &Form, store: Store, kind: Kind) {
     }
     let saver = Arc::clone(&form.savers[ix]);
     let n = saver.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    if value == form.saved.peek()[ix] && form.errors.peek()[ix].is_none() {
+    if value == form.saved.peek()[ix] && !form.dirty.peek()[ix] {
         return;
     }
-    let (mut saved, mut errors) = (form.saved, form.errors);
+    let (mut saved, mut errors, mut dirty) = (form.saved, form.errors, form.dirty);
+    dirty.write()[ix] = true;
     spawn_in_window(async move {
         after(SAVE_AFTER).await;
         if saver.generation.load(Ordering::SeqCst) != n {
@@ -139,8 +150,14 @@ fn typed(form: &Form, store: Store, kind: Kind) {
             return;
         }
         if result.is_ok() {
-            saved.write()[ix] = value;
             store.dispatch(Event::PhoneOutcome(None));
+        }
+        if saved.try_peek().is_none() {
+            return;
+        }
+        dirty.write()[ix] = result.is_err();
+        if result.is_ok() {
+            saved.write()[ix] = value;
         }
         errors.write()[ix] = result.err();
     });
@@ -155,6 +172,7 @@ fn test(form: &Form, store: Store) {
     current.ntfy_server = form.value(Kind::Server);
     let secret = Secret::new(form.value(Kind::of(current.service)));
     let (mut testing, mut tested) = (form.testing, form.tested);
+    let form = form.clone();
     testing.set(true);
     tested.set(None);
     let Some(rx) = off_thread("phone-test", move || phone::Target::new(&current, secret).and_then(|t| phone::send_now(&t, &phone::test_text()))) else {
@@ -163,10 +181,13 @@ fn test(form: &Form, store: Store) {
     };
     spawn_in_window(async move {
         let result = rx.recv().await.unwrap_or_else(|_| Err(tr("Die Testnachricht ließ sich nicht senden.")));
-        testing.set(false);
         if result.is_ok() {
             store.dispatch(Event::PhoneOutcome(None));
         }
+        if !form.alive() {
+            return;
+        }
+        testing.set(false);
         tested.set(Some(result.map(|()| tr("Gesendet. Schau aufs Handy."))));
     });
 }
@@ -187,6 +208,9 @@ fn find_chat(form: &Form, store: Store) {
     let form = form.clone();
     spawn_in_window(async move {
         let result = rx.recv().await.unwrap_or_else(|_| Err(tr("Der Chat ließ sich nicht finden.")));
+        if !form.alive() {
+            return;
+        }
         finding.set(false);
         let text = result.map(|c| {
             chat.set(c.id.clone());
@@ -197,9 +221,65 @@ fn find_chat(form: &Form, store: Store) {
     });
 }
 
-fn random_topic() -> String {
-    let id = uuid::Uuid::new_v4().simple().to_string();
-    format!("manycraft-{}", id.get(..16).unwrap_or(&id))
+fn link_key(link: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    link.hash(&mut hasher);
+    hasher.finish().to_string()
+}
+
+fn qr_pixels(text: &str, target: u32) -> Option<(u32, Vec<u8>)> {
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let modules = code.width();
+    let cells = modules + 2 * phone_qr::QUIET;
+    let cell = (usize::try_from(target).ok()? / cells).max(1);
+    let side = cells * cell;
+    let mut rgba = vec![u8::MAX; side * side * 4];
+    for (i, color) in code.to_colors().into_iter().enumerate() {
+        if color != qrcode::Color::Dark {
+            continue;
+        }
+        let (x0, y0) = ((i % modules + phone_qr::QUIET) * cell, (i / modules + phone_qr::QUIET) * cell);
+        for y in y0..y0 + cell {
+            for x in x0..x0 + cell {
+                let at = (y * side + x) * 4;
+                rgba[at..at + 3].copy_from_slice(&QR_DARK);
+            }
+        }
+    }
+    Some((u32::try_from(side).ok()?, rgba))
+}
+
+/// The QR code of an ntfy link, drawn once per link at whole device pixels per module.
+#[derive(PartialEq)]
+struct Qr {
+    link: String,
+}
+
+impl Component for Qr {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let link = self.link.clone();
+        let device = scale();
+        let code = use_hook(move || {
+            let target = (phone_qr::SIZE * device).floor() as u32;
+            let (side, rgba) = qr_pixels(&link, target)?;
+            let handle = ImageHandle::from_rgba(side, side, Bytes::from(rgba), AlphaType::Unpremul)?;
+            Some((handle, side as f32 / device))
+        });
+        let Some((handle, size)) = code else {
+            return note(&t, tr("Zu lang für einen QR-Code.")).into_element();
+        };
+        rect()
+            .width(Size::px(phone_qr::SIZE))
+            .height(Size::px(phone_qr::SIZE))
+            .center()
+            .corner_radius(t.shape.small)
+            .background(Color::WHITE)
+            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
+            .child(image(handle).sampling_mode(SamplingMode::Nearest).aspect_ratio(AspectRatio::None).width(Size::px(size)).height(Size::px(size)))
+            .into_element()
+    }
 }
 
 /// The phone group: on or off, the service, its fields, a test message and what to report.
@@ -218,6 +298,8 @@ impl Component for PhoneGroup {
             saved: State::create([String::new(), String::new(), current.telegram_chat.clone(), current.ntfy_server.clone(), String::new()]),
             shown: State::create([false; 5]),
             errors: State::create(Default::default()),
+            dirty: State::create([false; 5]),
+            generated: State::create(false),
             savers: Rc::new(Kind::ALL.map(|_| Arc::new(Saver::default()))),
             testing: State::create(false),
             tested: State::create(None),
@@ -230,6 +312,9 @@ impl Component for PhoneGroup {
             let form = loader;
             spawn_in_window(async move {
                 let Ok(secrets) = rx.recv().await else { return };
+                if !form.alive() {
+                    return;
+                }
                 let (mut saved, mut errors) = (form.saved, form.errors);
                 for (kind, read) in secrets {
                     let ix = kind as usize;
@@ -284,7 +369,7 @@ impl Component for PhoneGroup {
                 let no_token = form.values[Kind::Token as usize].read().trim().is_empty();
                 let reason = if finding { Some(tr("Sucht …")) } else { no_token.then(|| tr("Erst den Bot-Token eintragen")) };
                 let finder = form.clone();
-                let find = Button::new("settings.phone.find", if finding { tr("Sucht …") } else { tr("Chat-ID finden") }).disabled(reason).on_press(move |_| find_chat(&finder, store)).into_element();
+                let find = Button::new("settings.phone.find", tr("Chat-ID finden")).disabled(reason).on_press(move |_| find_chat(&finder, store)).into_element();
                 let below = match form.found.read().clone() {
                     Some(Ok(found)) => status(&t, found, t.success_text),
                     Some(Err(e)) => status(&t, e, t.danger_text),
@@ -295,13 +380,28 @@ impl Component for PhoneGroup {
             Service::Ntfy => {
                 rows.push(field_row(&t, &form, Kind::Server, tr("Server"), phone::NTFY_DEFAULT.to_owned(), None, note(&t, tr("Nur ändern, wenn du einen eigenen ntfy-Server hast."))));
                 let mut topic = form.values[Kind::Topic as usize];
-                let roll = Button::new("settings.phone.topic.new", tr("Zufällig")).tip(tr("Ein langes zufälliges Thema, das niemand errät")).on_press(move |_| topic.set(random_topic())).into_element();
-                rows.push(field_row(&t, &form, Kind::Topic, tr("Thema"), tr("z. B. farm-alarm-7f3k9q"), Some(roll), note(&t, tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes."))));
+                let mut generated = form.generated;
+                let roll = Button::new("settings.phone.topic.new", tr("Zufällig"))
+                    .tip(tr("Ein langes zufälliges Thema, das niemand errät"))
+                    .on_press(move |_| {
+                        generated.set(true);
+                        topic.set(phone::new_topic(uuid::Uuid::new_v4().as_u128()).expose().to_owned());
+                    })
+                    .into_element();
+                let hint = if *form.generated.read() { tr("Manycraft hat ein langes, zufälliges Thema gewählt. Wer es kennt, liest mit.") } else { tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.") };
+                rows.push(field_row(&t, &form, Kind::Topic, tr("Thema"), tr("z. B. farm-alarm-7f3k9q"), Some(roll), note(&t, hint)));
+                let named = form.values[Kind::Topic as usize].read().trim().to_owned();
+                if !named.is_empty() {
+                    let server = form.values[Kind::Server as usize].read().clone();
+                    let link = phone::ntfy_link(&server, &named).expose().to_owned();
+                    let key = link_key(&link);
+                    rows.push(Line::new("settings.phone.qr.row", tr("Handy verbinden")).hint(tr("Mit der Handy-Kamera scannen und das Thema in ntfy abonnieren.")).control(rect().key(key).child(Qr { link })).into_element());
+                }
             }
         }
         let testing = *form.testing.read();
         let tester = form.clone();
-        let send = Button::new("settings.phone.test", if testing { tr("Sendet …") } else { tr("Testnachricht senden") }).disabled(testing.then(|| tr("Sendet …"))).on_press(move |_| test(&tester, store));
+        let send = Button::new("settings.phone.test", tr("Testnachricht senden")).disabled(testing.then(|| tr("Sendet …"))).on_press(move |_| test(&tester, store));
         let trouble = store.model.read().phone_trouble.clone();
         let outcome = match (form.tested.read().clone(), trouble) {
             (Some(Ok(done)), _) => Some(status(&t, done, t.success_text)),
@@ -344,4 +444,33 @@ fn field_row(t: &Theme, form: &Form, kind: Kind, label: String, placeholder: Str
         None => below,
     };
     Line::new(format!("settings.phone.{}.row", kind.id()), label).below(rect().width(Size::fill()).spacing(space::XS).child(line).child(below)).into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qr_pixels_use_whole_modules_inside_a_light_quiet_zone() {
+        let (side, rgba) = qr_pixels("https://ntfy.sh/example", 160).expect("a short link fits");
+        let side = side as usize;
+        assert!(side <= 160 && rgba.len() == side * side * 4);
+        assert!(rgba[..4] == [u8::MAX; 4]);
+        let first = rgba.chunks(4).position(|p| p[0] == 0).expect("the code has dark modules");
+        let (x, y) = (first % side, first / side);
+        assert_eq!(x, y);
+        assert_eq!(x % phone_qr::QUIET, 0);
+        let cell = x / phone_qr::QUIET;
+        assert!(cell >= 1 && side % cell == 0);
+    }
+
+    #[test]
+    fn qr_pixels_refuse_a_link_too_long_for_a_code() {
+        assert!(qr_pixels(&"x".repeat(4000), 160).is_none());
+    }
+
+    #[test]
+    fn link_keys_differ_per_link() {
+        assert_ne!(link_key("https://ntfy.sh/a"), link_key("https://ntfy.sh/b"));
+    }
 }

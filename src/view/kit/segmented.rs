@@ -103,6 +103,7 @@ impl Component for Piece {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let spot = use_spot(&self.item.id, "segment", &self.item.label, true);
         let press = self.on_press.clone();
         let inset = space::XXS;
@@ -114,11 +115,18 @@ impl Component for Piece {
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |_| pressed.set(true))
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_press(move |_| press.call(()))
             .child(line(&t, self.item.label.clone(), font::CALLOUT, if self.on { t.text1 } else { t.text2 }).font_weight(if self.on { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM }));
         if self.on {
             p = p.background(if t.dark { t.separator } else { t.surface }).shadow(Shadow::from((0., 1., 2., 0., Color::BLACK.with_af32(if t.dark { 0.35 } else { 0.12 }))));
+        } else if *pressed.read() {
+            p = p.background(t.press);
         } else if *hovered.read() {
             p = p.background(t.hover);
         }

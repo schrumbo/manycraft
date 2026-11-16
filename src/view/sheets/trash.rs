@@ -22,6 +22,8 @@ use crate::view::theme::{font, frame, iconsize, space};
 const LIST: f32 = 360.;
 const ROW: f32 = 48.;
 const RECHECK: Duration = Duration::from_millis(600);
+const EMPTY_ICON: f32 = iconsize::L * 1.5;
+const TEXT_GAP: f32 = 1.;
 
 /// Opens the Papierkorb.
 pub fn open(store: Store) {
@@ -85,7 +87,7 @@ fn instance_dir(store: Store, instance: &str) -> Option<PathBuf> {
 /// Whether `item` can be put back now, and why not when it cannot.
 fn blocked(store: Store, item: &Item) -> Option<String> {
     match &item.what {
-        What::Reset(None) | What::Mods(None) => Some(tr("Dafür fehlen die Angaben, was zurückgehört.")),
+        What::Reset(None) | What::Mods(None) => Some(tr("Dafür fehlen die Angaben, was zurückgelegt werden soll.")),
         What::Instance => None,
         _ if instance_dir(store, &item.instance).is_none() => Some(tr("Diese Instanz gibt es nicht mehr.")),
         What::Reset(Some(_)) | What::File { taken: true, .. } if running(store, &item.instance) => Some(tr("Stoppe zuerst die laufenden Spiele.")),
@@ -105,7 +107,7 @@ fn put_back(store: Store, item: Item) -> Result<(), String> {
         What::Reset(Some(meta)) => {
             let current = current.ok_or_else(|| tr("Diese Instanz gibt es nicht mehr."))?;
             if !crate::ui::remote::same_files(&current, &meta.after) {
-                return Err(trf("„%@“ lässt sich nicht zurückholen: Mods oder Version wurden inzwischen geändert.", &[&title]));
+                return Err(trf("„%@“ lässt sich nicht zurücklegen: Mods oder Version wurden inzwischen geändert.", &[&title]));
             }
             let (id, entry) = (item.instance.clone(), item.entry.clone());
             Box::new(move || crate::ui::remote::restore_reset(&id, &meta.before, &meta.after, &entry).map(|_| ()))
@@ -138,17 +140,17 @@ fn put_back(store: Store, item: Item) -> Result<(), String> {
                 })
             })
         }
-        What::Reset(None) | What::Mods(None) => return Err(tr("Dafür fehlen die Angaben, was zurückgehört.")),
+        What::Reset(None) | What::Mods(None) => return Err(tr("Dafür fehlen die Angaben, was zurückgelegt werden soll.")),
     };
-    let rx = off_thread("trash-back", work).ok_or_else(|| tr("Nicht zurückgeholt."))?;
+    let rx = off_thread("trash-back", work).ok_or_else(|| tr("Nicht zurückgelegt."))?;
     spawn_in_window(async move {
         match rx.recv().await {
             Ok(Ok(())) => {
-                toast::show(store.ui, trf("„%@“ ist zurück", &[&title]), None);
+                toast::show(store.ui, trf("„%@“ liegt wieder an seinem Platz", &[&title]), None);
                 store.reload(true);
             }
             Ok(Err(e)) => {
-                toast::show(store.ui, explain_as(tr("Nicht zurückgeholt."), &e).text, None);
+                toast::show(store.ui, explain_as(tr("Nicht zurückgelegt."), &e).text, None);
             }
             Err(_) => {}
         }
@@ -169,12 +171,15 @@ impl Component for Trash {
         let mut asking = use_state(|| false);
         let mut ticket = use_state(|| 0u64);
         let mut reload = move || {
+            if ticket.try_peek().is_none() {
+                return;
+            }
             let n = *ticket.peek() + 1;
             ticket.set(n);
             let Some(rx) = off_thread("trash-list", bin::list) else { return };
             spawn_in_window(async move {
                 let Ok(items) = rx.recv().await else { return };
-                if *ticket.peek() != n {
+                if ticket.try_peek().is_none_or(|t| *t != n) {
                     return;
                 }
                 taken.write().clear();
@@ -203,7 +208,7 @@ impl Component for Trash {
                 Vec::new(),
             ),
             Load::Ready(items) if items.is_empty() => (
-                rect().width(Size::fill()).padding((space::XL, 0.)).center().spacing(space::S).child(icon(&t, Icon::Trash, iconsize::L * 1.5, t.text3)).child(line(&t, tr("Der Papierkorb ist leer."), font::BODY, t.text2)).into_element(),
+                rect().width(Size::fill()).padding((space::XL, 0.)).center().spacing(space::S).child(icon(&t, Icon::Trash, EMPTY_ICON, t.text3)).child(line(&t, tr("Der Papierkorb ist leer."), font::BODY, t.text2)).into_element(),
                 Some(tr("Was du löschst oder ersetzt, bleibt hier 7 Tage.")),
                 Vec::new(),
             ),
@@ -247,7 +252,7 @@ impl Component for Trash {
                     .width(Size::fill())
                     .padding(space::M)
                     .corner_radius(t.shape.control)
-                    .background(t.danger.with_af32(0.1))
+                    .background(t.danger.with_af32(frame::NOTICE_WASH))
                     .horizontal()
                     .cross_align(Alignment::Center)
                     .spacing(space::S)
@@ -264,6 +269,9 @@ impl Component for Trash {
                             if let Ok((_, Err(e))) = rx.recv().await {
                                 toast::show(store.ui, explain_as(tr("Nicht alles wurde gelöscht."), &e).text, None);
                             }
+                            if emptying.try_peek().is_none() {
+                                return;
+                            }
                             emptying.set(false);
                             reload();
                         });
@@ -272,14 +280,14 @@ impl Component for Trash {
             );
         }
         let done = Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(store.ui)) };
-        let mut card = Card::new("trash", tr("Papierkorb")).body(content).primary(done).width(frame::SHEET);
+        let busy = *emptying.read();
+        let mut card = Card::new("trash", tr("Papierkorb")).body(content).primary(done).primary_id("trash.done").locked(busy.then(|| tr("Wird geleert …"))).width(frame::SHEET);
         if let Some(s) = subtitle {
             card = card.message(s);
         }
         if !items.is_empty() {
-            let busy = *emptying.read();
-            card = card.secondary(Primary {
-                label: if busy { tr("Wird geleert …") } else { tr("Papierkorb leeren…") },
+            card = card.secondary_id("trash.empty").secondary(Primary {
+                label: tr("Papierkorb leeren…"),
                 disabled: busy.then(|| tr("Wird geleert …")),
                 danger: true,
                 run: EventHandler::new(move |_| asking.set(true)),
@@ -305,7 +313,7 @@ fn row(t: &crate::view::theme::Theme, item: &Item, button: Element) -> Element {
         .cross_align(Alignment::Center)
         .spacing(space::M)
         .child(icon(t, glyph, iconsize::M, t.text3))
-        .child(rect().width(Size::flex(1.)).spacing(1.).child(line(t, title, font::BODY, t.text1)).child(line(t, parts.join(" · "), font::CAPTION, t.text2).font_tabular()))
+        .child(rect().width(Size::flex(1.)).spacing(TEXT_GAP).child(line(t, title, font::BODY, t.text1)).child(line(t, parts.join(" · "), font::CAPTION, t.text2).font_tabular()))
         .child(spacer())
         .child(button)
         .content(Content::flex())

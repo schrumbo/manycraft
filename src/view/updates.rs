@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use freya::prelude::*;
 
-use super::kit::after;
+use super::kit::{after, off_thread};
 use super::store::Store;
 use crate::app::event::Event;
 use crate::app::model::{Phase, UpdateStatus, Updates};
@@ -45,21 +45,10 @@ enum Msg {
     Done(Result<String, (Option<Skip>, Option<Trouble>)>),
 }
 
-fn background<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send + 'static) -> Option<async_channel::Receiver<T>> {
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::Builder::new()
-        .name(name.into())
-        .spawn(move || {
-            let _ = tx.send_blocking(work());
-        })
-        .ok()
-        .map(|_| rx)
-}
-
 /// Starts the hourly check, counts this start as working after a while, and reads what the last run kept.
 pub fn start(store: Store) {
     let _ = std::thread::Builder::new().name("update-hold".into()).spawn(install::hold);
-    let Some(saved) = background("update-state", || {
+    let Some(saved) = off_thread("update-state", || {
         let dir = updater::dir();
         let state = updater::load(&dir);
         (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION).map(|r| r.version), state.declined)
@@ -126,7 +115,7 @@ pub fn check(store: Store, asked: bool) {
         });
     }
     let (auto, prereleases) = (settings::active().auto_update, settings::active().prereleases);
-    let Some(rx) = background("update-check", move || {
+    let Some(rx) = off_thread("update-check", move || {
         let found = updater::check(VERSION, prereleases, asked)?;
         let dir = updater::dir();
         let ready = updater::ready_for(&updater::load(&dir), &dir, VERSION).map(|r| r.version);

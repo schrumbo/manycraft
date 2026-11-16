@@ -19,6 +19,8 @@ pub mod frame {
     pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
     pub const SHEET: f32 = 560.;
+    /// The width of a sheet that only asks or tells.
+    pub const SHEET_NARROW: f32 = 448.;
     pub const SHEET_TOP: f32 = 72.;
     pub const PALETTE: f32 = 560.;
     pub const PALETTE_ROW: f32 = 36.;

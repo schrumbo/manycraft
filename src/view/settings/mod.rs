@@ -17,7 +17,7 @@ use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::stepper::Stepper;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{line, para};
-use crate::view::kit::{open_external, use_theme};
+use crate::view::kit::{off_thread, open_external, use_theme};
 use crate::view::sheets;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, space};
@@ -35,6 +35,11 @@ pub struct Prefs {
 }
 
 impl Prefs {
+    /// Whether the page that owns these settings is still there.
+    pub fn alive(self) -> bool {
+        self.rev.try_peek().is_some()
+    }
+
     /// The settings now, read so the caller draws again when they change.
     pub fn read(self) -> Settings {
         let _ = *self.rev.read();
@@ -74,13 +79,7 @@ impl Prefs {
 
 /// Writes the settings file off the UI thread; a failure shows in the notice strip.
 pub fn save(store: Store) {
-    let (tx, rx) = async_channel::bounded(1);
-    let spawned = std::thread::Builder::new().name("settings-save".into()).spawn(move || {
-        let _ = tx.send_blocking(settings::persist());
-    });
-    if spawned.is_err() {
-        return;
-    }
+    let Some(rx) = off_thread("settings-save", settings::persist) else { return };
     spawn_in_window(async move {
         if let Ok(Err(e)) = rx.recv().await {
             store.dispatch(Event::Error(trf("Die Einstellungen wurden nicht gespeichert: %@", &[&format!("{e:#}")])));
@@ -101,8 +100,10 @@ fn toggle(p: Prefs, id: &str, label: String, hint: String, on: bool, apply: fn(&
         .into_element()
 }
 
-fn attempts(p: Prefs, id: &str, label: String, value: u32, enabled: bool, apply: fn(&mut Settings, u32)) -> Element {
-    let stepper = Stepper::new(id, label.clone(), i64::from(value), ATTEMPTS.0, ATTEMPTS.1).disabled(!enabled).on_change(move |v: i64| p.change(|s| apply(s, u32::try_from(v).unwrap_or(1))));
+fn attempts(p: Prefs, id: &str, label: String, value: u32, requires: Option<&str>, apply: fn(&mut Settings, u32)) -> Element {
+    let enabled = requires.is_none();
+    let reason = requires.map(|switch| trf("Erst „%@“ einschalten.", &[&tr(switch)]));
+    let stepper = Stepper::new(id, label.clone(), i64::from(value), ATTEMPTS.0, ATTEMPTS.1).disabled(reason).on_change(move |v: i64| p.change(|s| apply(s, u32::try_from(v).unwrap_or(1))));
     Line::new(format!("{id}.row"), label).dim(!enabled).control(stepper).into_element()
 }
 
@@ -157,9 +158,9 @@ impl Component for SettingsPage {
             Some(tr("Verbindung")),
             vec![
                 toggle(p, "settings.reconnect", tr("Automatisch neu verbinden"), tr("Geht nach einem Verbindungsabbruch wieder auf den Server."), s.reconnect.enabled, |s, on| s.reconnect.enabled = on),
-                attempts(p, "settings.reconnect.attempts", tr("Versuche beim Verbinden"), s.reconnect.max_attempts, s.reconnect.enabled, |s, n| s.reconnect.max_attempts = n),
+                attempts(p, "settings.reconnect.attempts", tr("Versuche beim Verbinden"), s.reconnect.max_attempts, (!s.reconnect.enabled).then_some("Automatisch neu verbinden"), |s, n| s.reconnect.max_attempts = n),
                 toggle(p, "settings.restart", tr("Nach einem Absturz neu starten"), tr("Startet eine Instanz, deren Spiel unerwartet beendet wurde."), s.crash_restart.enabled, |s, on| s.crash_restart.enabled = on),
-                attempts(p, "settings.restart.attempts", tr("Versuche beim Neustart"), s.crash_restart.max_attempts, s.crash_restart.enabled, |s, n| s.crash_restart.max_attempts = n),
+                attempts(p, "settings.restart.attempts", tr("Versuche beim Neustart"), s.crash_restart.max_attempts, (!s.crash_restart.enabled).then_some("Nach einem Absturz neu starten"), |s, n| s.crash_restart.max_attempts = n),
             ],
             Some(tr("Nach den letzten Versuchen zeigt die Kachel, dass der Account dich braucht. Gesperrte Accounts verbinden sich nie von selbst neu.")),
         );
@@ -244,13 +245,13 @@ fn updates_group(t: &Theme, store: Store, p: Prefs, s: &Settings) -> Element {
     let blocked = updates::blocked(store);
     let action = match &u.status {
         UpdateStatus::Ready { .. } => Button::new("settings.update.restart", tr("Neu starten")).primary().disabled(blocked.clone()).on_press(move |_| sheets::updates::restart(store)),
-        UpdateStatus::Downloading { .. } if u.cancelling => Button::new("settings.update.cancel", tr("Bricht ab …")).disabled(Some(tr("Bricht ab …"))),
+        UpdateStatus::Downloading { .. } if u.cancelling => Button::new("settings.update.cancel", tr("Abbrechen")).disabled(Some(tr("Bricht ab …"))),
         UpdateStatus::Downloading { .. } => Button::new("settings.update.cancel", tr("Abbrechen")).on_press(move |_| updates::cancel(store)),
         UpdateStatus::Available { page, installs: false, .. } => {
             let page = page.clone();
             Button::new("settings.update.page", tr("Download-Seite öffnen")).on_press(move |_| open_external("open url", page.clone()))
         }
-        UpdateStatus::Checking => Button::new("settings.update.check", tr("Sucht …")).disabled(Some(tr("Sucht …"))),
+        UpdateStatus::Checking => Button::new("settings.update.check", tr("Nach Updates suchen")).disabled(Some(tr("Sucht …"))),
         _ => Button::new("settings.update.check", tr("Nach Updates suchen")).on_press(move |_| updates::check(store, true)),
     };
     let mut status = updates::status_line(&u);
