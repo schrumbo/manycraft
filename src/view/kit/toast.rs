@@ -92,7 +92,7 @@ impl Component for Host {
                 .a11y_role(AccessibilityRole::Alert)
                 .a11y_alt(toast.text.clone())
                 .width(Size::fill())
-                .min_height(Size::px(40.))
+                .min_height(Size::px(40. - space::XS * 2.))
                 .padding((space::XS, space::XS, space::XS, space::M))
                 .horizontal()
                 .cross_align(Alignment::Center)

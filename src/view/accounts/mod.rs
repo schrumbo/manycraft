@@ -644,7 +644,7 @@ fn sign_in_strip(t: &Theme, store: Store, ids: Vec<Uuid>) -> Element {
 fn strip(t: &Theme, glyph: Icon, ink: Color, wash: Color) -> Rect {
     rect()
         .width(Size::fill())
-        .min_height(Size::px(frame::NOTICE + space::S))
+        .min_height(Size::px(frame::NOTICE))
         .padding((space::XS, space::XS, space::XS, space::M))
         .horizontal()
         .cross_align(Alignment::Center)

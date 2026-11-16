@@ -46,8 +46,6 @@ const LIST_MAX: f32 = 220.;
 const ROW: f32 = control::M + space::XS;
 const DEFAULT_ROWS: usize = 4;
 const SNUG_PERCENT: u64 = 80;
-const NOTE_H: f32 = font::CAPTION * font::LINE * 2.;
-const NAME_H: f32 = font::CALLOUT * font::LINE + space::XS + control::M + space::XS + NOTE_H;
 const DETAIL_LINES: usize = 8;
 const BOX_EDGES: f32 = 2.;
 
@@ -618,11 +616,11 @@ impl Component for Create {
         let version_note: Option<Element> = if tried && version.is_empty() {
             Some(line(&t, tr("Wähle eine Version."), font::CAPTION, t.danger_text).into_element())
         } else {
-            companion_hint(&version).map(|h| WithTip::new(Some(tr("Ab dieser Version spart Manycraft Rechenzeit, solange die Instanz im Hintergrund läuft.")), caption(&t, h)).into_element())
+            companion_hint(&version).map(|h| WithTip::new(Some(tr("Ab dieser Version spart Manycraft Rechenzeit, solange die Instanz im Hintergrund läuft.")), caption(&t, h)).fill().into_element())
         };
         let version_column = rect().width(Size::px(VERSION_WIDTH)).spacing(space::XS).child(label(&t, tr("Minecraft-Version"))).child(version_control).children(version_note);
         let name_error = flow.name_problem().filter(|_| tried || !name_text.is_empty());
-        let name_column = rect().width(Size::flex(1.)).min_height(Size::px(NAME_H)).child(Field::new("instance.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Technik")).error(name_error).auto_focus());
+        let name_column = rect().width(Size::flex(1.)).child(Field::new("instance.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Technik")).error(name_error).auto_focus());
         let top = rect().width(Size::fill()).horizontal().spacing(space::M).content(Content::flex()).child(name_column).child(version_column);
 
         let chosen = LOADERS.iter().position(|l| loader.same_kind(l)).unwrap_or(0);
@@ -741,7 +739,7 @@ fn advanced(t: &Theme, flow: Make, loader: &Loader, version: &str, locked: Optio
     } else {
         para(t, tr("Pro Account."), font::CAPTION, t.text3).into_element()
     };
-    let memory_block = rect().width(Size::fill()).spacing(space::XS).child(label(t, tr("Arbeitsspeicher"))).child(stepper).child(rect().width(Size::fill()).min_height(Size::px(NOTE_H)).child(note));
+    let memory_block = rect().width(Size::fill()).spacing(space::XS).child(label(t, tr("Arbeitsspeicher"))).child(stepper).child(note);
     let mut inner = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::M);
     if loader.takes_mods() {
         let mut pin = flow.loader;
@@ -824,7 +822,7 @@ impl Component for SwitchLabel {
         let (on, toggle) = (self.on, self.on_toggle.clone());
         let flip = toggle.clone();
         let ink = if !enabled { t.text3 } else if *hovered.read() { t.text1 } else { t.text2 };
-        let mut text = para(&t, self.text.clone(), font::CALLOUT, ink).width(Size::flex(1.)).cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed });
+        let mut text = para(&t, self.text.clone(), font::CALLOUT, ink).width(Size::fill()).cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed });
         if enabled {
             text = text.on_press(move |_| flip.call(!on));
         }
@@ -833,12 +831,11 @@ impl Component for SwitchLabel {
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
-            .content(Content::flex())
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
             .child(Switch::new(self.id, self.text.clone(), on).disabled(!enabled).on_toggle(move |on: bool| toggle.call(on)))
             .child(text);
-        WithTip::new(self.disabled.clone(), row)
+        WithTip::new(self.disabled.clone(), row).fill()
     }
 }
 

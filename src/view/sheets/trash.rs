@@ -307,7 +307,7 @@ fn row(t: &crate::view::theme::Theme, item: &Item, button: Element) -> Element {
     parts.push(bytes(item.size));
     rect()
         .width(Size::fill())
-        .min_height(Size::px(ROW))
+        .min_height(Size::px(ROW - space::XS * 2.))
         .padding((space::XS, space::M))
         .horizontal()
         .cross_align(Alignment::Center)

@@ -24,11 +24,18 @@ pub struct Tip {
 pub struct WithTip {
     pub tip: Option<String>,
     pub child: Element,
+    pub fill: bool,
 }
 
 impl WithTip {
     pub fn new(tip: Option<String>, child: impl IntoElement) -> Self {
-        Self { tip, child: child.into_element() }
+        Self { tip, child: child.into_element(), fill: false }
+    }
+
+    /// Takes the full width, for children that wrap text.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
     }
 }
 
@@ -40,6 +47,7 @@ impl Component for WithTip {
         let tip = self.tip.clone();
         let enter_tip = tip.clone();
         rect()
+            .width(if self.fill { Size::fill() } else { Size::auto() })
             .on_sized(move |e: Event<SizedEventData>| bounds.set_if_modified(Bounds::of(&e)))
             .on_pointer_enter(move |_| {
                 hovered.set(true);
