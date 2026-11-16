@@ -12,6 +12,8 @@ enum BackgroundLevel {
 	static final int SKIP_DRAW_MAX_FPS = 10;
 	static final int OPTION_FPS_STEP = 10;
 	static final int OPTION_FPS_MAX = 260;
+	static final int FRAMES_PER_PREVIEW = 2;
+	static final int PREVIEW_FPS_MAX = 10;
 
 	static Optional<BackgroundLevel> parse(String wire) {
 		if (wire == null) {
@@ -28,6 +30,10 @@ enum BackgroundLevel {
 
 	boolean skipsRender(Custom custom) {
 		return this == SAVING || this == CUSTOM && custom.fps() <= SKIP_DRAW_MAX_FPS;
+	}
+
+	static int previewFramerate(int intervalMs) {
+		return Math.min(PREVIEW_FPS_MAX, (FRAMES_PER_PREVIEW * 1000 + intervalMs - 1) / Math.max(1, intervalMs));
 	}
 
 	static int optionFramerate(int fps) {

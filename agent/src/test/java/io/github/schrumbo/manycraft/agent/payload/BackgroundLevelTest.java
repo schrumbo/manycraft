@@ -59,6 +59,16 @@ class BackgroundLevelTest {
 	}
 
 	@Test
+	void previewsGetTwoFramesEachUpToTen() {
+		assertEquals(8, BackgroundLevel.previewFramerate(250));
+		assertEquals(4, BackgroundLevel.previewFramerate(500));
+		assertEquals(2, BackgroundLevel.previewFramerate(1000));
+		assertEquals(1, BackgroundLevel.previewFramerate(30_000));
+		assertEquals(10, BackgroundLevel.previewFramerate(100));
+		assertEquals(10, BackgroundLevel.previewFramerate(0));
+	}
+
+	@Test
 	void customValuesFallBackAndClamp() {
 		assertEquals(new BackgroundLevel.Custom(5, 4), BackgroundLevel.Custom.of(null, null));
 		assertEquals(new BackgroundLevel.Custom(10, 6), BackgroundLevel.Custom.of(10, 6));
