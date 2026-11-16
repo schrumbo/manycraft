@@ -47,8 +47,8 @@ pub enum Kind {
     Restored { instance_id: String, name: String, when: String, before: Instance, trashed: Vec<String> },
     /// Accounts by id with the colour they had before they all got `color`; `name` is the account's when it was one.
     Colored { before: Vec<(String, u8)>, color: u8, name: Option<String> },
-    /// Games one stop of many ended, by key; `name` is the account's when it was one.
-    Stopped { keys: Vec<String>, name: Option<String> },
+    /// Games one stop of many ended, by key; `name` is the account's when it was one; `closed` when the player closed its window.
+    Stopped { keys: Vec<String>, name: Option<String>, closed: bool },
     BatchDeleted { batch: Batch },
 }
 
@@ -108,7 +108,16 @@ pub fn toasts(cx: &mut App) -> Entity<UndoToasts> {
     if let Some(toasts) = cx.try_global::<Toasts>() {
         return toasts.0.clone();
     }
-    let toasts = cx.new(|_| UndoToasts { items: Pending::new(), notes: Vec::new(), next_note: 0 });
+    let games = model::get(cx);
+    let toasts = cx.new(|cx| {
+        cx.observe(&games, |t: &mut UndoToasts, _, cx| {
+            if t.items.items.iter().any(|(_, o)| o.shown && matches!(o.kind, Kind::Stopped { .. })) {
+                cx.notify();
+            }
+        })
+        .detach();
+        UndoToasts { items: Pending::new(), notes: Vec::new(), next_note: 0 }
+    });
     cx.set_global(Toasts(toasts.clone()));
     toasts
 }
@@ -276,6 +285,7 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
             Line { at: r.at, target: Target::Account(r.id), key: format!("remove-{}", r.id), text, name: r.name, failed: r.failed, shown: r.shown, hovered: r.hovered }
         })
         .collect();
+    let games = &model::get(cx).read(cx).games;
     for (id, offer) in &items.items {
         let (name, done, undone) = match &offer.kind {
             Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
@@ -296,10 +306,11 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
                 let many = trf("%lld Accounts", &[&before.len()]);
                 (many.clone(), trf("Farbe von %lld Accounts auf %@ gesetzt.", &[&before.len(), &super::identity::name(*color)]), trf("%@ wurde nicht zurückgestellt.", &[&many]))
             }
-            Kind::Stopped { name: Some(name), .. } => (name.clone(), trf("„%@“ gestoppt.", &[name]), trf("„%@“ wurde nicht neu gestartet.", &[name])),
-            Kind::Stopped { keys, name: None } => {
-                let many = trf("%lld Spiele", &[&keys.len()]);
-                (many.clone(), trf("%lld Spiele gestoppt.", &[&keys.len()]), trf("%@ wurden nicht neu gestartet.", &[&many]))
+            Kind::Stopped { keys, name, closed } => {
+                let going = keys.iter().any(|k| games.get(k).is_some_and(|g| g.stopping));
+                let label = name.clone().unwrap_or_else(|| trf("%lld Spiele", &[&keys.len()]));
+                let undone = if name.is_some() { trf("„%@“ wurde nicht neu gestartet.", &[&label]) } else { trf("%@ wurden nicht neu gestartet.", &[&label]) };
+                (label, stopped_text(name.as_deref(), keys.len(), *closed, going), undone)
             }
             Kind::Edited { name, what, .. } => {
                 let done = match what {
@@ -316,6 +327,17 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
     }
     lines.sort_by_key(|l| l.at);
     lines
+}
+
+fn stopped_text(name: Option<&str>, count: usize, closed: bool, going: bool) -> String {
+    match (name, closed, going) {
+        (Some(name), true, true) => trf("„%@“ wird beendet…", &[&name]),
+        (Some(name), true, false) => trf("„%@“ beendet.", &[&name]),
+        (Some(name), false, true) => trf("„%@“ wird gestoppt…", &[&name]),
+        (Some(name), false, false) => trf("„%@“ gestoppt.", &[&name]),
+        (None, _, true) => trf("%lld Spiele werden gestoppt…", &[&count]),
+        (None, _, false) => trf("%lld Spiele gestoppt.", &[&count]),
+    }
 }
 
 fn current(cx: &App) -> Vec<Line> {
@@ -568,7 +590,15 @@ impl Render for UndoToasts {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{Kind, MAX_OFFERS, Offer, evict, forms, permanent, slot};
+    use super::{Kind, MAX_OFFERS, Offer, evict, forms, permanent, slot, stopped_text};
+
+    #[test]
+    fn a_stop_says_it_is_done_only_once_the_games_are_down() {
+        assert_eq!(stopped_text(None, 3, false, true), "3 Spiele werden gestoppt…");
+        assert_eq!(stopped_text(None, 3, false, false), "3 Spiele gestoppt.");
+        assert_eq!(stopped_text(Some("Dev"), 1, true, true), "„Dev“ wird beendet…");
+        assert_eq!(stopped_text(Some("Dev"), 1, true, false), "„Dev“ beendet.");
+    }
 
     fn offer_of(kind: Kind) -> (u64, Offer) {
         (0, Offer { kind, failed: false, at: Instant::now(), shown: true, hovered: false, round: 0 })

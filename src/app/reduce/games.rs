@@ -110,7 +110,9 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
         out.push(Effect::Stop(fx.stop));
     }
     if !fx.closing.is_empty() {
+        let closed: Vec<String> = fx.closing.iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.stopping)).cloned().collect();
         fleet::stop_keys(m, fx.closing, out);
+        out.extend(closed.into_iter().filter(|k| m.games.get(k).is_some_and(|g| g.stopping)).map(Effect::Closed));
     }
     out.extend(fx.check_proxy);
     if fx.suspect_offline {
@@ -1322,8 +1324,10 @@ mod tests {
         assert_eq!(stops(&fx), 1, "the fleet still ends it if it hangs");
         assert!(m.playing.is_none() && fx.iter().any(|e| matches!(e, Effect::ShowManager)));
         assert!(later(&fx).iter().any(|(_, e)| matches!(e, Event::StopOverdue { .. })));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Closed(k) if *k == key)), "offers to start it again");
         let fx = report(&mut m, &s, Report::Mod { key: key.clone(), message: FromMod::Closing });
         assert_eq!(stops(&fx), 0, "once is enough");
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Closed(_))));
         exited(&mut m, &s, &key, Some(0));
         assert_eq!(m.games[&key].phase, Phase::Stopped);
     }

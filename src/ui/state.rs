@@ -705,7 +705,11 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
                 [one] => model::get(cx).read(cx).games.get(one).map(|g| g.name.clone()),
                 _ => None,
             };
-            super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
+            super::undo::offer(super::undo::Kind::Stopped { keys, name, closed: false }, cx);
+        }
+        Effect::Closed(key) => {
+            let name = model::get(cx).read(cx).games.get(&key).map(|g| g.name.clone());
+            super::undo::offer(super::undo::Kind::Stopped { keys: vec![key], name, closed: true }, cx);
         }
         Effect::ReadMemory => read_memory(cx),
         Effect::ReadUsage(pids) => read_usage(pids, cx),
