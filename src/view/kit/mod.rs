@@ -42,6 +42,19 @@ thread_local! {
     static HELD: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers::empty()) };
 }
 
+/// Gives the keyboard focus back to where it was when a layer opened, once the layer closes.
+pub fn use_focus_return(open: bool) {
+    let platform = use_hook(|| Platform::get().current_window());
+    let mut before = use_state(|| None::<AccessibilityId>);
+    use_side_effect_with_deps(&open, move |open| {
+        if *open {
+            before.set(Some(*platform.focused_accessibility_id.peek()));
+        } else if let Some(id) = before.write().take() {
+            platform.send(UserEvent::FocusAccessibilityNode(AccessibilityFocusStrategy::Node(id)));
+        }
+    });
+}
+
 /// The modifier keys held now, for clicks that select a range or add to the selection.
 pub fn held() -> Modifiers {
     HELD.with(std::cell::Cell::get)

@@ -55,7 +55,7 @@ impl Component for Shell {
             .font_size(super::theme::font::BODY)
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 note_held(e.modifiers);
-                if commands::shortcut(store, &e) {
+                if super::grid::key(store, &e) || commands::shortcut(store, &e) {
                     e.stop_propagation();
                 }
             })

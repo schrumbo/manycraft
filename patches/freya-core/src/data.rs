@@ -433,6 +433,7 @@ pub struct AccessibilityState {
     pub a11y_id: AccessibilityId,
     pub a11y_focusable: Focusable,
     pub a11y_member_of: Option<AccessibilityId>,
+    pub a11y_modal: bool,
     a11y_intrinsic_id: AccessibilityId,
 }
 
@@ -474,6 +475,7 @@ impl AccessibilityState {
             a11y_id,
             a11y_focusable: data.a11y_focusable.clone(),
             a11y_member_of: data.builder.member_of(),
+            a11y_modal: data.builder.is_modal(),
             a11y_intrinsic_id,
         }
     }
@@ -523,6 +525,7 @@ impl AccessibilityState {
         }
 
         self.a11y_focusable = data.a11y_focusable.clone();
+        self.a11y_modal = data.builder.is_modal();
     }
 }
 

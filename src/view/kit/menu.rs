@@ -115,7 +115,9 @@ impl Component for Host {
         let t = use_theme();
         let mut ui = use_consume::<Ui>();
         let mut hot = use_state(|| None::<usize>);
-        let Some(menu) = ui.menu.read().clone() else {
+        let menu = ui.menu.read().clone();
+        super::use_focus_return(menu.is_some());
+        let Some(menu) = menu else {
             if hot.peek().is_some() {
                 hot.set(None);
             }
@@ -174,6 +176,8 @@ impl Component for Host {
             .child(
                 rect()
                     .position(Position::new_absolute().left(x).top(y))
+                    .a11y_role(AccessibilityRole::Menu)
+                    .a11y_builder(|n| n.set_modal())
                     .width(Size::px(width))
                     .padding(space::XS)
                     .background(t.raised)
