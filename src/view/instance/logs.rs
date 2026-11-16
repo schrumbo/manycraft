@@ -469,7 +469,7 @@ impl Component for Logs {
             extras.push(Extra { id: "instance.logs.find".into(), label: tr("Im Protokoll suchen"), glyph: Icon::Search, shortcut: Some(Shortcut::primary(Code::KeyF)), run: EventHandler::new(move |_| find()) });
             extras.push(Extra { id: "instance.logs.copy".into(), label: tr("Ganzes Protokoll kopieren"), glyph: Icon::Copy, shortcut: None, run: EventHandler::new(move |_| all()) });
             extras.push(Extra { id: "instance.logs.reveal".into(), label: tr("Protokoll im Ordner zeigen"), glyph: Icon::Folder, shortcut: None, run: EventHandler::new(move |_| folder()) });
-            extras.push(Extra { id: "instance.logs.upload".into(), label: tr("Protokoll hochladen…"), glyph: Icon::Rows, shortcut: None, run: EventHandler::new(move |_| send()) });
+            extras.push(Extra { id: "instance.logs.upload".into(), label: tr("Protokoll hochladen…"), glyph: Icon::Upload, shortcut: None, run: EventHandler::new(move |_| send()) });
             if *find_open.read() && !hits.list.0.is_empty() {
                 extras.push(Extra { id: "instance.logs.next".into(), label: tr("Nächster Treffer"), glyph: Icon::ChevronDown, shortcut: Some(Shortcut::bare(Code::F3)), run: EventHandler::new(move |_| jump(ctx, 1)) });
                 extras.push(Extra { id: "instance.logs.previous".into(), label: tr("Vorheriger Treffer"), glyph: Icon::ChevronDown, shortcut: Some(Shortcut { code: Code::F3, primary: false, shift: true, alt: false, ctrl: false }), run: EventHandler::new(move |_| jump(ctx, -1)) });

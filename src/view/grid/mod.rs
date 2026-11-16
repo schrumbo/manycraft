@@ -196,10 +196,10 @@ pub fn shelf_shown(filter: &Filter, search: &str, show: Show, view: View) -> boo
     *filter == Filter::All && search.is_empty() && show == Show::All && view == View::Tiles
 }
 
-/// The shelf's instances and how many of their games have a process, for the toolbar's count; None without instances.
+/// How many games played alone have a process, for the toolbar's count; None while the shelf is empty.
 pub fn shelf_running(m: &Model) -> Option<usize> {
     let shelf = shelf(m);
-    (!shelf.is_empty()).then(|| shelf.iter().filter(|(_, _, running)| running.as_ref().and_then(|k| m.games.get(k)).is_some_and(|g| g.phase.has_process())).count())
+    (!shelf.is_empty()).then(|| m.games.values().filter(|g| g.alone() && g.phase.has_process()).count())
 }
 
 /// Instances played alone, most recently played first.
@@ -420,7 +420,7 @@ fn card(t: &super::theme::Theme, store: Store, id: String, name: String, running
 
 fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, store: Store, m: &Model) -> impl IntoElement {
     let searching = !search.trim().is_empty();
-    let unstarted = *filter == Filter::All && m.batches.is_empty() && !m.accounts.is_empty();
+    let unstarted = *filter == Filter::All && m.batches.is_empty() && !m.accounts.is_empty() && !m.games.values().any(|g| g.alone() && g.phase.is_active());
     let (glyph, title, text) = if searching {
         (Icon::Search, tr("Nichts gefunden"), trf("Zu „%@“ passt keiner.", &[&search.trim()]))
     } else if show == Show::Running {
@@ -443,8 +443,8 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
     } else if *filter == Filter::Attention {
         col.child(Button::new("grid.empty.all", tr("Alle anzeigen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
     } else if unstarted {
-        let (label, want) = if m.instances.is_empty() { (tr("Neue Instanz"), commands::Want::NewInstance) } else { (tr("Neuer Batch…"), commands::Want::NewBatch) };
-        col.child(Button::new("grid.empty.start", label).glyph(Icon::Plus).primary().tall().disabled(commands::want_blocked(&want)).on_press(move |_| {
+        let (label, want, command) = if m.instances.is_empty() { (tr("Neue Instanz"), commands::Want::NewInstance, commands::Command::NewInstance) } else { (tr("Neuer Batch…"), commands::Want::NewBatch, commands::Command::NewBatch) };
+        col.child(Button::new("grid.empty.start", label).glyph(Icon::Plus).primary().tall().disabled(commands::want_blocked(&want)).tip(command.tip()).on_press(move |_| {
             commands::want(store, want.clone());
         }))
     } else {
