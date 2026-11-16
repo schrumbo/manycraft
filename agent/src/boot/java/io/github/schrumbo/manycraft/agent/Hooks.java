@@ -48,6 +48,30 @@ public final class Hooks {
 		}
 	}
 
+	/**
+	 * Whether the headless prototype is on: a hidden game then skips whole frames instead of only the world render.
+	 */
+	public static boolean headless() {
+		return Boolean.getBoolean("manycraft.headless");
+	}
+
+	/**
+	 * Runs {@link #frame} and tells whether the rest of the frame is skipped.
+	 */
+	public static boolean frameOrSkip(Object minecraft) {
+		frame(minecraft);
+		Bridge b = bridge;
+		if (b == null) {
+			return false;
+		}
+		try {
+			return b.skipFrame(minecraft);
+		} catch (Throwable e) {
+			Agent.fault("headless", e);
+			return false;
+		}
+	}
+
 	public static void tick(Object minecraft) {
 		Bridge b = bridge;
 		if (b == null) {
@@ -319,13 +343,13 @@ public final class Hooks {
 		}
 	}
 
-	public static void hud(Object graphics, Object delta) {
+	public static void hud(Object graphics) {
 		Bridge b = bridge;
 		if (b == null) {
 			return;
 		}
 		try {
-			b.hud(graphics, delta);
+			b.hud(graphics);
 		} catch (Throwable e) {
 			Agent.fault("hud", e);
 		}

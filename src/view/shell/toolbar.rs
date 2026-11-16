@@ -112,7 +112,7 @@ impl Component for Toolbar {
             bar = bar.child(Field::new("toolbar.search", ui.search).placeholder(hint).glyph(Icon::Search).width(Size::px(search_w)).a11y(search_a11y));
             let (toggle, glyph, label) = if view == View::Tiles { (Command::ShowTable, Icon::Rows, tr("Tabelle")) } else { (Command::ShowTiles, Icon::Grid, tr("Kacheln")) };
             bar = bar.child(Button::icon("toolbar.view", glyph, label).plain().tip(shortcut_tip(toggle)).on_press(move |_| toggle.run(store)));
-            let scope = || m.games.values().filter(|g| batch.as_ref().is_none_or(|b| g.batch_id == *b));
+            let scope = || m.games.values().filter(|g| !g.alone() && batch.as_ref().is_none_or(|b| g.batch_id == *b));
             let running = scope().filter(|g| g.phase.stoppable() && !g.stopping).count();
             let startable = scope().filter(|g| !g.phase.is_active()).count();
             let (start_label, stop_label) = if batch.is_some() { (tr("Starten"), tr("Stoppen")) } else { (tr("Alle starten"), tr("Alle stoppen")) };

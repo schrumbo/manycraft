@@ -121,9 +121,14 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
     let i = id.to_owned();
     let alone: Vec<String> = m.solo_games(id).filter(|g| g.phase.is_active()).map(|g| g.key.clone()).collect();
     let mut items = vec![if alone.is_empty() {
-        let who = crate::app::reduce::solo_account(&m, made).and_then(|a| m.account(a)).map(|a| a.name.clone());
-        let label = who.map_or_else(|| tr("Spielen"), |n| trf("Spielen als %@", &[&n]));
-        Item::new("instance.play", label, move |_| store.dispatch(AppEvent::PlayInstance { instance: i.clone(), account: None }))
+        let who = crate::app::reduce::solo_account(&m, made).and_then(|a| m.account(a)).map(|a| (a.id, a.name.clone()));
+        match who {
+            Some((account, name)) if m.sign_in_expired(account) => Item::new("instance.play", trf("Anmelden als %@", &[&name]), move |_| crate::view::accounts::sign_in(store, vec![account])),
+            who => {
+                let label = who.map_or_else(|| tr("Spielen"), |(_, n)| trf("Spielen als %@", &[&n]));
+                Item::new("instance.play", label, move |_| store.dispatch(AppEvent::PlayInstance { instance: i.clone(), account: None }))
+            }
+        }
     } else {
         Item::new("instance.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::Stop(alone.clone())))
     }];

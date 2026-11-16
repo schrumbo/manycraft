@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn stopping_all_stops_games_played_outside_a_batch_too() {
+    fn stopping_all_leaves_games_played_alone_running() {
         let s = settings();
         let (mut m, keys) = farm(1, 2048);
         let made = m.instances[0].clone();
@@ -789,14 +789,9 @@ mod tests {
         m.games.insert(solo.clone(), Game { phase: Phase::Menu, ..Game::new(solo.clone(), crate::core::fleet::solo_owner(&made.id), made.id.clone(), account, "Alt0".into()) });
         m.session.pids.insert(solo.clone(), 7);
         let fx = run(&mut m, &s, Instant::now(), Event::StopAll);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if k.contains(&solo))));
-        assert!(m.games[&solo].stopping);
-        let Some(Effect::Stopped(stopped)) = fx.iter().find(|e| matches!(e, Effect::Stopped(_))) else { panic!("no undo offer") };
-        assert_eq!(*stopped, vec![solo.clone()]);
-        let stopped = stopped.clone();
-        run(&mut m, &s, Instant::now(), Event::StartAgain(stopped));
-        let fx = report(&mut m, &s, Report::Exited { key: solo.clone(), code: Some(0) });
-        assert_eq!(started(&fx), vec![solo.clone()], "undo starts the solo game again once it is down");
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Stop(k) if k.contains(&solo))), "a game played alone is the player's own window");
+        assert!(!m.games[&solo].stopping);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Stopped(k) if k.contains(&solo))));
     }
 
     #[test]

@@ -14,12 +14,14 @@ use std::time::Instant;
 
 use super::effect::{Effect, Redraw};
 use super::event::{Event, Report};
-use super::model::{Model, Phase};
+use super::model::{Game, Model, Phase};
 use super::phase::{self, Why};
 use crate::core::ipc::{ChatKind, FromMod};
 use crate::core::settings::Settings;
 
-pub use notify::{attention_batch, attention_tag};
+pub use notify::attention_batch;
+#[cfg(test)]
+pub use notify::attention_tag;
 pub use show::{active_account, solo_account};
 
 /// What an event needs from outside the model: the time, chance and the settings.
@@ -130,8 +132,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::StopAll => {
-            let stopped = fleet::stoppable(model, None);
-            for id in owners(model) {
+            let stopped: Vec<String> = fleet::stoppable(model, None).into_iter().filter(|k| !model.games.get(k).is_some_and(Game::alone)).collect();
+            for id in owners(model).into_iter().filter(|o| crate::core::fleet::solo_instance(o).is_none()) {
                 fleet::stop_batch(model, &id, &mut out);
             }
             if !stopped.is_empty() {

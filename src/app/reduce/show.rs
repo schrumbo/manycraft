@@ -174,14 +174,17 @@ pub(super) fn play_instance(m: &mut Model, id: &str, account: Option<Uuid>, out:
     Some(key)
 }
 
-/// Plays `instance` as another start of Manycraft or a shortcut asked, and brings the manager up when it cannot; waits for the first load when the data is not there yet.
+/// Plays `instance` as another start of Manycraft or a shortcut asked, and brings the manager up when it cannot or the
+/// game already runs; waits for the first load when the data is not there yet.
 pub(super) fn request_play(m: &mut Model, instance: String, account: Option<String>, out: &mut Vec<Effect>) {
     if !m.loaded {
         m.session.waiting_plays.push((instance, account));
         return;
     }
     let account = account.as_deref().and_then(|id| id.parse().ok());
-    if play_instance(m, &instance, account, out).is_none() {
+    let from = out.len();
+    let started = play_instance(m, &instance, account, out);
+    if started.is_none() || out[from..].iter().any(|e| matches!(e, Effect::ShowInstance(_))) {
         show_grid(m, out);
     }
 }
@@ -305,7 +308,8 @@ mod tests {
 
     #[test]
     fn a_game_played_alone_starts_as_a_normal_window_and_never_swaps_in() {
-        let s = settings();
+        let mut s = settings();
+        s.phone.enabled = true;
         let (mut m, batch_key) = setup(Phase::Menu, AccountKind::Offline, &[]);
         let (key, fx) = play_alone(&mut m, &s);
         assert!(fx.iter().any(|e| matches!(e, Effect::Start { target, .. } if target.batch.is_none())));
@@ -320,6 +324,10 @@ mod tests {
         let fx = run(&mut m, &s, std::time::Instant::now(), Event::PlayInstance { instance, account: None });
         assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. } | Effect::Show { .. })), "playing it again leaves the running game be");
         assert!(fx.iter().any(|e| matches!(e, Effect::ShowInstance(_))), "and shows where it runs");
+        let instance = m.instances[0].id.clone();
+        m.loaded = true;
+        let fx = report(&mut m, &s, Report::PlayRequest { instance, account: None });
+        assert!(fx.iter().any(|e| matches!(e, Effect::ShowManager)) && !fx.iter().any(|e| matches!(e, Effect::Start { .. })), "a shortcut to it brings the manager up where it runs");
         let fx = report(&mut m, &s, Report::Mod { key: key.clone(), message: FromMod::Closing });
         assert!(m.games[&key].stopping && !fx.iter().any(|e| matches!(e, Effect::Closed(_) | Effect::ShowManager)), "quitting it is a normal quit, nothing to undo");
         m.games.get_mut(&key).unwrap().stopping = false;
@@ -327,7 +335,10 @@ mod tests {
         assert!(!fx.iter().any(|e| matches!(e, Effect::Show { .. } | Effect::Send { .. } | Effect::ShowManager)), "its hotkeys switch and hide nothing");
         m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         let fx = report(&mut m, &s, state(&key, crate::core::ipc::StateKind::Disconnected, Some("mc.example"), Some(crate::core::ipc::DisconnectCause::Banned)));
-        assert!(m.session.alerts.is_empty() && !fx.iter().any(|e| matches!(e, Effect::Notify { .. })), "its trouble shows on its instance page, not as an alert");
+        assert!(m.session.alerts.is_empty() && m.session.phone.next_due().is_none(), "its trouble shows on its instance page, not as an alert or on the phone");
+        m.games.get_mut(&key).unwrap().phase = Phase::Playing { server: "mc.example".into(), since: std::time::Instant::now() };
+        report(&mut m, &s, state(&key, crate::core::ipc::StateKind::Disconnected, Some("mc.example"), Some(crate::core::ipc::DisconnectCause::ServerDown)));
+        assert!(m.session.phone.next_due().is_none(), "nor does a drop it reconnects from");
         m.playing = Some(batch_key.clone());
         let fx = run(&mut m, &s, std::time::Instant::now(), Event::Step(HotkeyAction::Next));
         assert!(!fx.iter().any(|e| matches!(e, Effect::Show { key: k, .. } if *k == key)), "stepping skips it");

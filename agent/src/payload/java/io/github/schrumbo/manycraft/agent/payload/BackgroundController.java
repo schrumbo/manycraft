@@ -13,7 +13,6 @@ import net.minecraft.client.Options;
 import net.minecraft.server.level.ParticleStatus;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.LenientJsonParser;
-import net.minecraft.util.Mth;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -270,6 +269,6 @@ final class BackgroundController {
 
 	private static int clamp(OptionInstance<Integer> option, int wanted) {
 		int[] range = Compat.range(option);
-		return range == null ? wanted : Mth.clamp(wanted, range[0], range[1]);
+		return range == null ? wanted : Math.clamp(wanted, range[0], range[1]);
 	}
 }

@@ -186,12 +186,6 @@ pub fn latest_release() -> Result<String> {
     Ok(known(&paths::data_dir().join("cache"), || net::get_json(&agent, MANIFEST_URL), online::offline())?.latest)
 }
 
-/// Release versions Mojang lists, newest first; without a connection, the last list that arrived.
-pub fn releases() -> Result<Vec<String>> {
-    let agent = net::agent(None)?;
-    Ok(known(&paths::data_dir().join("cache"), || net::get_json(&agent, MANIFEST_URL), online::offline())?.releases)
-}
-
 fn known(cache: &Path, fetch: impl FnOnce() -> Result<Manifest>, offline: bool) -> Result<Known> {
     let path = cache.join(RELEASES_CACHE);
     let saved = || std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<Known>(&bytes).ok());

@@ -319,6 +319,7 @@ impl Model {
     }
 
     /// Whether game `key` waits for free memory before it starts.
+    #[cfg(test)]
     pub fn waits_for_memory(&self, key: &str) -> bool {
         self.games.get(key).is_some_and(|g| g.memory_wait.is_some() && g.phase.waiting())
     }
@@ -443,6 +444,11 @@ impl Model {
             Some(batch) => Some(batch.name.clone()),
             None => self.instance(instance).map(|i| trf("%@ · allein", &[&i.name])),
         }
+    }
+
+    /// Whether a game of `account` waits for it to sign in again.
+    pub fn sign_in_expired(&self, account: Uuid) -> bool {
+        self.games.values().any(|g| g.account_id == account && g.phase == Phase::LoginNeeded)
     }
 
     /// Games of `instance` played alone.

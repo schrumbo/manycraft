@@ -111,11 +111,6 @@ pub(super) fn list_in(root: &Path) -> Result<Vec<Item>> {
     Ok(out)
 }
 
-/// Deletes `item` for good; not being there is fine.
-pub fn delete(item: &Item) -> Result<()> {
-    delete_in(&instance::instances_dir(), item)
-}
-
 pub(super) fn delete_in(root: &Path, item: &Item) -> Result<()> {
     let path = path_in(root, item)?;
     let dir = root.join(&item.instance);

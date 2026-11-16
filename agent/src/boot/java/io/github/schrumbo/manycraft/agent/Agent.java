@@ -86,7 +86,7 @@ public final class Agent {
 				Object bridge = install.invoke(null, Patches.applied());
 				if (bridge instanceof Bridge b) {
 					Hooks.bridge = b;
-					log("companion ready in " + (System.nanoTime() - start) / 1_000_000 + " ms, hooks " + Patches.applied().keySet());
+					log("companion ready in " + (System.nanoTime() - start) / 1_000_000 + " ms, hooks " + Patches.applied());
 				} else {
 					Hooks.failed = true;
 					reveal(anchor);

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 const POLL: Duration = Duration::from_millis(50);
+const SETTLE: u32 = 5;
 
 /// A held lock; it is released when this is dropped.
 #[derive(Debug)]
@@ -32,7 +33,7 @@ pub fn exclusive(path: &Path) -> Result<Guard> {
 pub fn exclusive_within(path: &Path, timeout: Duration) -> Result<Guard> {
     let until = Instant::now() + timeout;
     loop {
-        if let Some(guard) = try_exclusive(path)? {
+        if let Some(guard) = try_once(path)? {
             return Ok(guard);
         }
         if Instant::now() >= until {
@@ -42,8 +43,21 @@ pub fn exclusive_within(path: &Path, timeout: Duration) -> Result<Guard> {
     }
 }
 
-/// Takes the exclusive lock on `path` when it is free right now.
+/// Takes the exclusive lock on `path` when it is free. A lock that is busy is tried again for about 250 ms before giving up,
+/// because a process spawned in the same instant can hold a copy of a handle that was just released.
 pub fn try_exclusive(path: &Path) -> Result<Option<Guard>> {
+    for attempt in 0..=SETTLE {
+        if attempt > 0 {
+            std::thread::sleep(POLL);
+        }
+        if let Some(guard) = try_once(path)? {
+            return Ok(Some(guard));
+        }
+    }
+    Ok(None)
+}
+
+fn try_once(path: &Path) -> Result<Option<Guard>> {
     let file = open(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(Guard { _file: file })),
@@ -75,6 +89,31 @@ mod tests {
         assert!(exclusive_within(&path, Duration::from_millis(120)).is_err());
         drop(first);
         assert!(try_exclusive(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_lock_released_within_the_settle_time_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let held = open(&path).unwrap();
+        held.lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            drop(held);
+        });
+        assert!(try_exclusive(&path).unwrap().is_some());
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn a_lock_held_past_the_settle_time_is_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let held = exclusive(&path).unwrap();
+        let start = Instant::now();
+        assert!(try_exclusive(&path).unwrap().is_none());
+        assert!(start.elapsed() >= Duration::from_millis(250));
+        drop(held);
     }
 
     #[test]

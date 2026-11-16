@@ -22,7 +22,7 @@ use super::model;
 use super::motion::Soft;
 use super::sheet::{self, Look};
 use super::theme::{Theme, control, font, iconsize, radius, shell, space, tint};
-use super::widgets::{TakeFocus, icon, tip};
+use super::widgets::{TakeFocus, icon};
 use crate::core::content::{self, Answer, Bisect, Entry, Outcome, Scan, Source, Trashed};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;

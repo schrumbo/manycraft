@@ -2444,8 +2444,6 @@ dependencies = [
 [[package]]
 name = "freya-components"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c5cdb0c938bdd22633593faf9e7466f7d794eca160ca8bb250a27864bc23adb"
 dependencies = [
  "accesskit 0.25.2",
  "anyhow",

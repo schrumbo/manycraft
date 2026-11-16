@@ -125,4 +125,5 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 gpui-pre = { path = "patches/gpui-pre" }
 gpui-pre-windows = { path = "patches/gpui-pre-windows" }
 freya-core = { path = "patches/freya-core" }
+freya-components = { path = "patches/freya-components" }
 freya-winit = { path = "patches/freya-winit" }

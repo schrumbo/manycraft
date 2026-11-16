@@ -1850,5 +1850,7 @@
   "Beendet sich nicht": "Not quitting",
   "Nicht Gespeichertes geht verloren (%@)": "Unsaved progress is lost (%@)",
   "Nur bei %@ angekommen.": "Only %@ got this.",
+  "Anmelden als %@": "Sign in as %@",
+  "Die Anmeldung ist abgelaufen.": "The sign-in has expired.",
   "„%@“ ist jetzt Version %@. Auch hinzugefügt: %@.": "“%@” is now version %@. Also added: %@."
 }
