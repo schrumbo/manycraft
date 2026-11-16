@@ -1007,7 +1007,7 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
                 "end" => Move::Last,
                 "enter" => {
                     if let Some(key) = this.grid.selected.clone().filter(|k| this.grid.shown.contains(k)) {
-                        if model::get(cx).read(cx).games.get(&key).is_some_and(|i| super::tile::playable(&i.phase) && !matches!(i.phase, Phase::Disconnected { .. } | Phase::Dead { .. })) {
+                        if model::get(cx).read(cx).games.get(&key).is_some_and(|i| super::tile::playable(&i.phase) && !i.stopping && !matches!(i.phase, Phase::Disconnected { .. } | Phase::Dead { .. })) {
                             window.dispatch_action(Box::new(Play(key)), cx);
                         } else {
                             super::tile::primary_action(&key, window, cx);

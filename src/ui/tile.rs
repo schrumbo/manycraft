@@ -651,7 +651,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let menu_view = view.clone();
     let menu_key = d.key.clone();
     let menu_batch = d.batch_id.clone();
-    let (can_play, running, stopping, overdue) = (playable(&d.phase), d.phase.is_running(), d.stopping, d.stopping && d.overdue);
+    let (can_play, running, stopping, overdue) = (playable(&d.phase) && !d.stopping, d.phase.is_running(), d.stopping, d.stopping && d.overdue);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
     let dropped = matches!(d.phase, Phase::Disconnected { .. });
