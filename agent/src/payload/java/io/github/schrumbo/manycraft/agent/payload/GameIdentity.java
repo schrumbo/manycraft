@@ -27,8 +27,9 @@ final class GameIdentity {
 
 	private volatile Protocol.Incoming.Identity identity;
 	private volatile boolean badge = true;
-	private volatile String hint;
-	private volatile long hintUntil;
+	private volatile Shown hint;
+
+	private record Shown(String text, long until) {}
 
 	static String title(String name, String batch) {
 		return name + " · " + batch;
@@ -53,8 +54,7 @@ final class GameIdentity {
 	}
 
 	void showHint(String text) {
-		hintUntil = System.nanoTime() + HINT_NANOS;
-		hint = text;
+		hint = new Shown(text, 0);
 	}
 
 	void extractBadge(GuiGraphicsExtractor g, DeltaTracker delta) {
@@ -74,16 +74,20 @@ final class GameIdentity {
 			g.text(font, id.name(), MARGIN + PAD + CHIP + GAP, y + PAD, TEXT, false);
 			y += h + GAP;
 		}
-		String line = hint;
-		if (line == null) {
+		Shown shown = hint;
+		if (shown == null) {
 			return;
 		}
-		if (System.nanoTime() - hintUntil > 0) {
+		if (shown.until() == 0) {
+			shown = new Shown(shown.text(), System.nanoTime() + HINT_NANOS);
+			hint = shown;
+		}
+		if (System.nanoTime() - shown.until() > 0) {
 			hint = null;
 			return;
 		}
-		g.fill(MARGIN, y, MARGIN + PAD + font.width(line) + PAD, y + h, BACKDROP);
-		g.text(font, line, MARGIN + PAD, y + PAD, TEXT, false);
+		g.fill(MARGIN, y, MARGIN + PAD + font.width(shown.text()) + PAD, y + h, BACKDROP);
+		g.text(font, shown.text(), MARGIN + PAD, y + PAD, TEXT, false);
 	}
 
 	private static void setIcon(Minecraft mc, String path) {
