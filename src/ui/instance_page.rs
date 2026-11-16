@@ -1050,11 +1050,11 @@ impl InstancePage {
             .child(div().flex_none().flex().items_center().gap(px(space::S)).child(self.batch_control(f, cx, t)).child(self.play_control(f, cx, t)))
     }
 
-    fn stop_shown(&mut self, cx: &mut Context<Self>) {
+    fn stop_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = self.facts(cx) else { return };
         let key = f.shown.filter(|k| f.stoppable.iter().any(|(s, _)| s == k)).or_else(|| f.stoppable.first().or(f.forceable.first()).map(|(k, _)| k.clone()));
         if let Some(key) = key {
-            cx.dispatch_action(&Stop(key));
+            window.dispatch_action(Box::new(Stop(key)), cx);
         }
     }
 
@@ -1471,7 +1471,7 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
 impl Render for InstancePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &StopCurrent, _, cx| s.stop_shown(cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
+        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &StopCurrent, window, cx| s.stop_shown(window, cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
         if let Some(WantsTab(id, tab)) = cx.try_global::<WantsTab>()
             && *id == self.id
