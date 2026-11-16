@@ -110,6 +110,8 @@ pub struct Settings {
     pub prevent_sleep: bool,
     /// Whether the hint that closing the window keeps Manycraft in the notification area was seen.
     pub tray_explained: bool,
+    /// Whether the first game shown in the manager's place showed how to close it and get back.
+    pub swap_explained: bool,
     pub appearance: Appearance,
     /// The id of the chosen theme; none or a theme that is gone means the default.
     pub theme: Option<String>,
@@ -118,7 +120,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal }
     }
 }
 

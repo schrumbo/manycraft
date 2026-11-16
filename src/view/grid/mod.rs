@@ -218,6 +218,7 @@ pub struct GridPage {
 impl Component for GridPage {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
+        let gap = tile::gap(&t);
         let store = use_store();
         let mut ui = store.ui;
         let mut area = use_state(Bounds::default);
@@ -250,13 +251,13 @@ impl Component for GridPage {
         let size = *ui.size.read();
         let Bounds { w, h, .. } = *area.read();
         let shelf_h = if shelf.is_empty() { 0. } else { SHELF_H + space::XL + font::CALLOUT + space::S };
-        let grid = layout(keys.len(), size, w, (h - shelf_h).max(0.), t.grid_gap, t.grid_pad);
+        let grid = layout(keys.len(), size, w, (h - shelf_h).max(0.), gap, t.grid_pad);
         if view == View::Tiles && *ui.tile_w.peek() != grid.tile_w {
             ui.tile_w.set(grid.tile_w);
         }
         let bar_room = if ui.selection.read().len() >= 2 { control::L + space::L * 2. } else { 0. };
         let (content, per_row, row_h) = match view {
-            View::Tiles => (grid.content_h + shelf_h + bar_room, grid.columns.max(1), grid.tile_h + t.grid_gap),
+            View::Tiles => (grid.content_h + shelf_h + bar_room, grid.columns.max(1), grid.tile_h + gap),
             View::Table => (ROW * (keys.len() as f32 + 1.) + bar_room, 1, ROW),
         };
         let page_rows = ((h - if view == View::Table { ROW } else { 0. }) / row_h.max(1.)).floor().max(1.) as usize;
@@ -349,7 +350,7 @@ impl Component for GridPage {
                         .position(Position::new_absolute().left(grid.left.min(t.grid_pad)).top(t.grid_pad - at))
                         .spacing(space::S)
                         .child(line(&t, tr("Zuletzt gespielt"), font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD))
-                        .child(rect().horizontal().spacing(t.grid_gap).children(shelf.into_iter().map(|(id, name, running)| card(&t, store, id, name, running).into_element()))),
+                        .child(rect().horizontal().spacing(gap).children(shelf.into_iter().map(|(id, name, running)| card(&t, store, id, name, running).into_element()))),
                 );
             }
             for (i, key) in keys.iter().enumerate().take(last).skip(first) {

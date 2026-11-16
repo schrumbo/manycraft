@@ -136,6 +136,8 @@ impl Need {
 pub struct Able {
     pub start: usize,
     pub stop: usize,
+    /// Chosen games whose stop is overdue, which a stop now ends at once.
+    pub force: usize,
     pub restart: usize,
     pub reconnect: usize,
     pub message: usize,
@@ -179,6 +181,8 @@ pub struct Game {
     pub reconnect_attempts: u32,
     pub unread_whispers: u32,
     pub stopping: bool,
+    /// The stop has run for a while without the game ending; stopping it again ends it at once.
+    pub overdue: bool,
     pub hint: Hint,
     /// Its place in the line of bulk starts that wait for free memory, while it waits there.
     pub memory_wait: Option<u64>,
@@ -187,7 +191,7 @@ pub struct Game {
 impl Game {
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, hint: Hint::default(), memory_wait: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None }
     }
 }
 
@@ -343,7 +347,8 @@ impl Model {
         for i in keys.iter().filter_map(|k| self.games.get(k)) {
             let fresh = !i.stopping;
             n.start += usize::from(fresh && !i.phase.is_running() && i.phase != Phase::LoginNeeded);
-            n.stop += usize::from(fresh && i.phase.stoppable());
+            n.stop += usize::from((fresh || i.overdue) && i.phase.stoppable());
+            n.force += usize::from(i.stopping && i.overdue && i.phase.stoppable());
             n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
             n.reconnect += usize::from(fresh && i.phase.reconnectable());
             n.message += usize::from(i.phase.on_server());
@@ -541,20 +546,43 @@ pub enum Primary {
     SignIn,
     /// Ends the account's game in another instance and starts this one.
     TakeOver,
+    /// Ends a game whose stop is overdue at once.
+    ForceQuit,
+}
+
+/// How far a stop has come: not stopping, stopping, or stopping for long enough to end the game at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stopping {
+    No,
+    Yes,
+    Overdue,
+}
+
+impl Stopping {
+    /// The stop of a game from its `stopping` and `overdue` flags.
+    pub fn of(stopping: bool, overdue: bool) -> Self {
+        match (stopping, overdue) {
+            (false, _) => Self::No,
+            (true, false) => Self::Yes,
+            (true, true) => Self::Overdue,
+        }
+    }
 }
 
 /// The main action of a game in `phase`, `busy` when its account plays the same instance in another game.
-pub fn main_action(phase: &Phase, stopping: bool, busy: bool) -> Option<Primary> {
+pub fn main_action(phase: &Phase, stopping: Stopping, busy: bool) -> Option<Primary> {
     match primary(phase, stopping) {
         Some(Primary::Start) if busy && !phase.is_active() => Some(Primary::TakeOver),
         other => other,
     }
 }
 
-/// The main action of a game in `phase`; nothing while it stops or while nothing helps.
-pub fn primary(phase: &Phase, stopping: bool) -> Option<Primary> {
-    if stopping {
-        return None;
+/// The main action of a game in `phase`; nothing while it stops or while nothing helps, ending it at once once its stop is overdue.
+pub fn primary(phase: &Phase, stopping: Stopping) -> Option<Primary> {
+    match stopping {
+        Stopping::Overdue => return Some(Primary::ForceQuit),
+        Stopping::Yes => return None,
+        Stopping::No => {}
     }
     match phase {
         Phase::Disconnected { .. } => Some(Primary::Reconnect),
@@ -579,6 +607,7 @@ impl Primary {
             Self::Retry => tr("Erneut versuchen"),
             Self::SignIn => tr("Anmelden"),
             Self::TakeOver => tr("Dort beenden und hier starten"),
+            Self::ForceQuit => tr("Sofort beenden"),
         }
     }
 }

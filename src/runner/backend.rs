@@ -61,6 +61,8 @@ pub trait Backend: Send + Sync {
     fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>);
     /// Asks the instances to quit and ends them after a grace period.
     fn stop(&self, keys: Vec<String>);
+    /// Ends the instances at once, without waiting for them to save.
+    fn kill(&self, keys: Vec<String>);
     /// Sends a message to an instance's companion mod.
     fn send(&self, key: &str, message: ToMod);
     /// Reads the newest preview frame from `path` and reports it.
@@ -253,7 +255,7 @@ impl<P: Pixels> Backend for Real<P> {
                     Ok(key) => {
                         lock(&watch).insert(key.clone());
                         if !lock(&owners).contains_key(&key) {
-                            fleet.stop_all(std::slice::from_ref(&key));
+                            fleet.kill(std::slice::from_ref(&key));
                         } else if let Some(home) = home.filter(|_| prepared.plain()) {
                             fleet.bring_home(&key, home);
                         }
@@ -288,6 +290,11 @@ impl<P: Pixels> Backend for Real<P> {
         }
         let fleet = Arc::clone(&self.fleet);
         let _ = std::thread::Builder::new().name("fleet-stop".into()).spawn(move || fleet.stop_all(&keys));
+    }
+
+    fn kill(&self, keys: Vec<String>) {
+        let fleet = Arc::clone(&self.fleet);
+        let _ = std::thread::Builder::new().name("fleet-kill".into()).spawn(move || fleet.kill(&keys));
     }
 
     fn send(&self, key: &str, message: ToMod) {

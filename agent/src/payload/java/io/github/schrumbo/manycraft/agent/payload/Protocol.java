@@ -35,6 +35,8 @@ final class Protocol {
 
 		record Badge(boolean visible) implements Incoming {}
 
+		record Hint(String text) implements Incoming {}
+
 		record Level(BackgroundLevel level, BackgroundLevel.Custom custom) implements Incoming {}
 
 		record Options(Map<String, String> values) implements Incoming {}
@@ -91,6 +93,10 @@ final class Protocol {
 		return GSON.toJson(o);
 	}
 
+	static String closing() {
+		return GSON.toJson(message("closing"));
+	}
+
 	static String window(boolean visible, boolean focused) {
 		JsonObject o = message("window");
 		o.addProperty("visible", visible);
@@ -132,6 +138,7 @@ final class Protocol {
 				case "hotkeys" -> new Incoming.Hotkeys(string(o, "next"), string(o, "prev"), string(o, "next_attention"), string(o, "grid"));
 				case "identity" -> string(o, "name") == null || string(o, "batch") == null ? null : new Incoming.Identity(string(o, "name"), string(o, "batch"), requireInt(o, "rgb") & 0xFFFFFF, string(o, "icon"));
 				case "badge" -> bool(o, "visible") == null ? null : new Incoming.Badge(bool(o, "visible"));
+				case "hint" -> string(o, "text") == null ? null : new Incoming.Hint(string(o, "text"));
 				case "level" -> BackgroundLevel.parse(string(o, "level")).map(l -> new Incoming.Level(l, BackgroundLevel.Custom.of(integer(o, "fps"), integer(o, "render_distance")))).orElse(null);
 				case "options" -> strings(o, "values") == null ? null : new Incoming.Options(strings(o, "values"));
 				case "servers" -> new Incoming.Servers();

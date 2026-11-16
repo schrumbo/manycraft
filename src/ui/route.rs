@@ -69,7 +69,7 @@ pub fn of_notification(tag: &str, keys: &[String]) -> Option<Route> {
     if tag == crate::app::reduce::WHISPER_TAG {
         return Some(Route::Whispers);
     }
-    let batch = tag.strip_prefix("attention-")?;
+    let batch = crate::app::reduce::attention_batch(tag)?;
     Some(match keys {
         [key] => Route::Tile { batch: batch.to_owned(), key: key.clone() },
         _ => Route::Attention(batch.to_owned()),
@@ -89,5 +89,35 @@ mod tests {
         assert_eq!(of_notification("attention-b1", &[]), Some(Route::Attention("b1".into())));
         assert_eq!(of_notification(crate::app::reduce::WHISPER_TAG, &one), Some(Route::Whispers));
         assert_eq!(of_notification("update", &one), None);
+    }
+
+    #[test]
+    fn the_tags_of_the_notifications_the_core_raises_lead_back_to_their_route() {
+        use crate::app::reduce::{WHISPER_TAG, attention_tag};
+        let one = vec!["k".to_owned()];
+        let many = vec!["k".to_owned(), "l".to_owned()];
+        for batch in ["b1", "attention-x", "ü 1", ""] {
+            let tag = attention_tag(batch);
+            assert_eq!(of_notification(&tag, &one), Some(Route::Tile { batch: batch.into(), key: "k".into() }), "{batch}");
+            assert_eq!(of_notification(&tag, &many), Some(Route::Attention(batch.into())), "{batch}");
+        }
+        assert_ne!(attention_tag("b1"), attention_tag("b2"));
+        assert_ne!(attention_tag("b1"), WHISPER_TAG);
+        assert_eq!(of_notification(WHISPER_TAG, &many), Some(Route::Whispers));
+        assert_eq!(of_notification("", &one), None);
+    }
+
+    #[test]
+    fn the_app_identity_matches_the_packaging() {
+        let id = crate::core::APP_ID;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+        let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
+        assert!(read("macos/Info.plist").contains(&format!("<string>{id}</string>")));
+        assert!(read("linux/manycraft.desktop").contains(&format!("StartupWMClass={id}")));
+        let installer = read("windows/installer.nsi");
+        assert!(installer.contains(&format!("!define APP_ID \"{id}\"")));
+        let key = "HKCU \"Software\\Classes\\AppUserModelId\\${APP_ID}\"";
+        assert!(installer.contains(&format!("WriteRegStr {key} \"DisplayName\"")));
+        assert!(installer.contains(&format!("DeleteRegKey {key}")));
     }
 }

@@ -93,8 +93,8 @@ final class Patcher implements ClassFileTransformer {
 			new Hook("render", "render", null, Patcher::guardRender));
 		add(t, "com/mojang/blaze3d/platform/Window",
 			new Hook("hidden", null, null, Patcher::hideWindow),
-			new Hook("close", "requestClose", "()V", cancel(b -> b.invokestatic(HOOKS, "closeToGrid", type(CD_boolean))), true),
-			new Hook("close", "shouldClose", "()Z", Patcher::keepOpen, true));
+			new Hook("close", "requestClose", "()V", head(b -> b.invokestatic(HOOKS, "closeRequested", type(CD_void))), true),
+			new Hook("close", "shouldClose", "()Z", Patcher::watchClose, true));
 		add(t, "com/mojang/blaze3d/platform/FramerateLimitTracker",
 			new Hook("fps", "getFramerateLimit", "()I", head(b -> {
 				Label original = b.newLabel();
@@ -354,7 +354,7 @@ final class Patcher implements ClassFileTransformer {
 		};
 	}
 
-	private static CodeTransform keepOpen(Runnable hit) {
+	private static CodeTransform watchClose(Runnable hit) {
 		return (b, e) -> {
 			b.with(e);
 			if (invokes(e, "org/lwjgl/glfw/GLFW", "glfwWindowShouldClose", "(J)Z") || invokes(e, "com/mojang/blaze3d/platform/GLX", "_shouldClose", "(Lcom/mojang/blaze3d/platform/Window;)Z")) {

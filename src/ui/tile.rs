@@ -14,7 +14,7 @@ use super::drive::Mark;
 use super::main_window::MainWindow;
 use super::route::Section;
 use super::model::{self, Game, Model, Phase};
-use crate::app::model::{Primary, main_action, primary};
+use crate::app::model::{Primary, Stopping, main_action, primary};
 use super::motion::Soft;
 use super::identity;
 use super::theme::{Theme, control, font, iconsize, radius, space, tile, tint, with_alpha};
@@ -39,6 +39,8 @@ pub struct TileData {
     /// The newest events, newest first, while the history popover of this tile is open.
     pub history: Option<Vec<Moment>>,
     pub stopping: bool,
+    /// Whether the stop has run long enough that the tile offers to end the game at once.
+    pub overdue: bool,
     pub whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
     /// Whether `preview` is the running game rather than the still of an earlier run.
@@ -65,6 +67,7 @@ impl TileData {
             && self.reason == other.reason
             && self.history == other.history
             && self.stopping == other.stopping
+            && self.overdue == other.overdue
             && self.whispers == other.whispers
             && self.selected == other.selected
             && self.picked == other.picked
@@ -256,12 +259,14 @@ impl Look for Primary {
             Self::Retry => "refresh-cw",
             Self::SignIn => "log-in",
             Self::TakeOver => "arrow-right-left",
+            Self::ForceQuit => "power",
         }
     }
 
     fn action(self, key: &str, account: Uuid) -> Box<dyn Action> {
         match self {
             Self::Play => Box::new(Play(key.to_owned())),
+            Self::ForceQuit => Box::new(Stop(key.to_owned())),
             Self::Reconnect => Box::new(Reconnect(key.to_owned())),
             Self::Respawn => Box::new(Respawn(key.to_owned())),
             Self::Start | Self::Retry => Box::new(Start(key.to_owned())),
@@ -279,9 +284,9 @@ pub fn busy(game: &Game, m: &Model) -> bool {
 /// Runs what the tile's main button would, for Enter on a tile whose game cannot be shown.
 pub fn primary_action(key: &str, window: &mut Window, cx: &mut App) {
     let m = model::get(cx).read(cx);
-    let Some((phase, stopping, account)) = m.games.get(key).map(|i| (i.phase.clone(), i.stopping, i.account_id)) else { return };
+    let Some((phase, stopping, account)) = m.games.get(key).map(|i| (i.phase.clone(), Stopping::of(i.stopping, i.overdue), i.account_id)) else { return };
     let busy = m.games.get(key).is_some_and(|i| busy(i, m));
-    if let Some(p) = main_action(&phase, stopping, busy) {
+    if let Some(p) = main_action(&phase, stopping, busy).filter(|p| *p != Primary::ForceQuit) {
         window.dispatch_action(p.action(key, account), cx);
     }
 }
@@ -299,7 +304,11 @@ fn dispatch(action: Box<dyn Action>) -> impl Fn(&ClickEvent, &mut Window, &mut A
 
 fn pill(id: String, p: Primary, d: &TileData, compact: bool, t: &Theme) -> Stateful<Div> {
     let label = p.label();
-    let (fill, text) = if p == Primary::SignIn { (t.danger, t.on_danger) } else { (t.accent, t.on_accent) };
+    let (fill, text) = match p {
+        Primary::SignIn => (t.danger, t.on_danger),
+        Primary::ForceQuit => (with_alpha(t.material, tint::FLOATING), t.primary),
+        _ => (t.accent, t.on_accent),
+    };
     div()
         .id(SharedString::from(id))
         .mark("button", label.clone())
@@ -316,7 +325,8 @@ fn pill(id: String, p: Primary, d: &TileData, compact: bool, t: &Theme) -> State
         .items_center()
         .gap(px(space::XS))
         .cursor_pointer()
-        .soft(t.shade, radius::FULL)
+        .when(p == Primary::ForceQuit && t.dark, |d| d.border(px(tile::HAIRLINE)).border_color(t.primary.opacity(tint::OUTLINE)))
+        .soft(if p == Primary::ForceQuit { t.ink.opacity(tint::HOVER * 2.) } else { t.shade }, radius::FULL)
         .child(icon(p.icon(), iconsize::XS, text))
         .when(!compact, |d| d.child(label.clone()))
         .when(compact, |d| d.tooltip(tip(label)))
@@ -390,7 +400,7 @@ fn picture(d: &TileData, g: &Geometry, t: &Theme) -> Option<AnyElement> {
 
 fn actions(d: &TileData, g: &Geometry, t: &Theme) -> Option<Div> {
     let active = d.phase.stoppable() && !d.stopping;
-    let main = main_action(&d.phase, d.stopping, d.busy);
+    let main = main_action(&d.phase, Stopping::of(d.stopping, d.overdue), d.busy);
     let stop = (active && (main != Some(Primary::Start) || matches!(d.phase, Phase::Restarting { .. }))).then(|| round_button(format!("stop-{}", d.key), "square", tr("Stoppen"), Box::new(Stop(d.key.clone())), t));
     if main.is_none() && stop.is_none() {
         return None;
@@ -580,7 +590,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let menu_view = view.clone();
     let menu_key = d.key.clone();
     let menu_batch = d.batch_id.clone();
-    let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
+    let (can_play, running, stopping, overdue) = (playable(&d.phase) && !d.stopping, d.phase.is_running(), d.stopping, d.stopping && d.overdue);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
     let dropped = matches!(d.phase, Phase::Disconnected { .. });
@@ -602,7 +612,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         .children(mark)
         .children(face)
         .child(strip(d, g, t))
-        .children(actions(d, g, t).filter(|_| hovered || d.selected || d.phase == Phase::LoginNeeded))
+        .children(actions(d, g, t).filter(|_| hovered || d.selected || d.phase == Phase::LoginNeeded || (d.stopping && d.overdue)))
         .children(ring.map(|c| div().absolute().inset_0().border(px(tile::RING)).border_color(c)))
         .children(history(d, t))
         .when(g.wordless(), |tile| tile.tooltip(tip(format!("{} · {}", d.name, d.detail))))
@@ -664,7 +674,9 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         let space = Keystroke::parse("space").ok().map(|k| super::palette::label(&k));
         let menu = menu.menu_element_with_disabled(Box::new(ShowHistory(menu_key.clone())), false, super::palette::menu_row(tr("Verlauf"), space, false));
         let menu = if crashed { menu.menu(tr("Absturzbericht…"), Box::new(ShowCrash { instance: menu_instance.clone(), account: account.to_string() })) } else { menu };
-        let menu = if running || stopping || waits {
+        let menu = if overdue {
+            menu.menu_element_with_disabled(Box::new(Stop(menu_key.clone())), false, row(tr("Sofort beenden"), &StopSelected, false))
+        } else if running || stopping || waits {
             menu.menu_element_with_disabled(Box::new(Stop(menu_key.clone())), stopping, row(tr("Stoppen"), &StopSelected, stopping))
         } else if login {
             menu.menu(tr("Anmelden"), Box::new(SignInAgain(account.to_string())))
@@ -701,23 +713,25 @@ pub fn accounts_of(keys: &[String], cx: &App) -> (Vec<String>, Option<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Geometry, Phase, Primary, main_action, primary, tile};
+    use super::{Geometry, Phase, Primary, Stopping, main_action, primary, tile};
 
     #[test]
     fn the_main_button_follows_the_phase() {
         let lost = Phase::Disconnected { server: None, reason: String::new() };
-        assert!(primary(&lost, false) == Some(Primary::Reconnect));
+        assert!(primary(&lost, Stopping::No) == Some(Primary::Reconnect));
         let dead = Phase::Dead { server: None, reason: String::new() };
-        assert!(primary(&dead, false) == Some(Primary::Respawn));
-        assert!(primary(&Phase::Stopped, false) == Some(Primary::Start));
-        assert!(primary(&Phase::Crashed { code: Some(1) }, false) == Some(Primary::Start));
-        assert!(primary(&Phase::Menu, false) == Some(Primary::Play));
-        assert!(primary(&Phase::LoginNeeded, false) == Some(Primary::SignIn));
-        assert!(primary(&Phase::Starting { place: 1, total: 2 }, false).is_none());
-        assert!(primary(&Phase::Menu, true).is_none());
-        assert!(main_action(&Phase::Failed { reason: String::new() }, false, true) == Some(Primary::TakeOver));
-        assert!(main_action(&Phase::Stopped, false, false) == Some(Primary::Start));
-        assert!(primary(&Phase::Banned { server: None, reason: String::new() }, false).is_none());
+        assert!(primary(&dead, Stopping::No) == Some(Primary::Respawn));
+        assert!(primary(&Phase::Stopped, Stopping::No) == Some(Primary::Start));
+        assert!(primary(&Phase::Crashed { code: Some(1) }, Stopping::No) == Some(Primary::Start));
+        assert!(primary(&Phase::Menu, Stopping::No) == Some(Primary::Play));
+        assert!(primary(&Phase::LoginNeeded, Stopping::No) == Some(Primary::SignIn));
+        assert!(primary(&Phase::Starting { place: 1, total: 2 }, Stopping::No).is_none());
+        assert!(primary(&Phase::Menu, Stopping::Yes).is_none());
+        assert!(primary(&Phase::Menu, Stopping::Overdue) == Some(Primary::ForceQuit));
+        assert!(primary(&Phase::Starting { place: 0, total: 0 }, Stopping::Overdue) == Some(Primary::ForceQuit));
+        assert!(main_action(&Phase::Failed { reason: String::new() }, Stopping::No, true) == Some(Primary::TakeOver));
+        assert!(main_action(&Phase::Stopped, Stopping::No, false) == Some(Primary::Start));
+        assert!(primary(&Phase::Banned { server: None, reason: String::new() }, Stopping::No).is_none());
     }
 
     #[test]

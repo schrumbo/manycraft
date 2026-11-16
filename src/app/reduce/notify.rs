@@ -17,9 +17,16 @@ const WHISPER_PREVIEW: usize = 90;
 /// The tag of whisper notifications.
 pub const WHISPER_TAG: &str = "whisper";
 
+const ATTENTION_PREFIX: &str = "attention-";
+
 /// The tag of attention notifications for `batch`.
 pub fn attention_tag(batch: &str) -> String {
-    format!("attention-{batch}")
+    format!("{ATTENTION_PREFIX}{batch}")
+}
+
+/// The batch an attention notification tag belongs to.
+pub fn attention_batch(tag: &str) -> Option<&str> {
+    tag.strip_prefix(ATTENTION_PREFIX)
 }
 
 pub(super) fn phone_what(phase: &Phase) -> Option<What> {

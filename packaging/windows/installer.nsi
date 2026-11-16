@@ -1,6 +1,8 @@
 ﻿Unicode true
 !include "MUI2.nsh"
 
+!define APP_ID "io.github.schrumbo.manycraft"
+
 Name "Manycraft"
 OutFile "Manycraft-Setup-${VERSION}-windows-x64.exe"
 InstallDir "$LOCALAPPDATA\Programs\Manycraft"
@@ -34,6 +36,8 @@ Section "Install"
   File "..\..\target\release\manycraft.exe"
   File "..\icons\manycraft.ico"
   CreateShortcut "$SMPROGRAMS\Manycraft.lnk" "$INSTDIR\manycraft.exe" "" "$INSTDIR\manycraft.ico"
+  WriteRegStr HKCU "Software\Classes\AppUserModelId\${APP_ID}" "DisplayName" "Manycraft"
+  WriteRegStr HKCU "Software\Classes\AppUserModelId\${APP_ID}" "IconUri" "$INSTDIR\manycraft.ico"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "DisplayName" "Manycraft"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "DisplayVersion" "${VERSION}"
@@ -49,6 +53,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Manycraft.lnk"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft"
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\${APP_ID}"
 SectionEnd
 
 Function un.RemoveData

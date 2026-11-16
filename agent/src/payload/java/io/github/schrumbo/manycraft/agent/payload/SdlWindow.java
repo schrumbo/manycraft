@@ -36,9 +36,6 @@ record SdlWindow(long handle) implements NativeWindow {
 	}
 
 	@Override
-	public void keepOpen() {}
-
-	@Override
 	public void setSize(int w, int h) {
 		SDLVideo.SDL_SetWindowSize(handle, w, h);
 	}

@@ -60,18 +60,22 @@ pub const MEDIUM: f32 = 320.;
 pub const LARGE: f32 = 640.;
 /// Below this width a tile shows one line under its preview, from it on two.
 pub const TWO_LINES: f32 = 240.;
-/// The height of the strip under the preview with one line and with two.
+/// The height of the caption with one line and with two.
 pub const STRIP_ONE: f32 = 28.;
-pub const STRIP_TWO: f32 = 46.;
-
-/// The strip height under a preview `width` wide.
+pub const STRIP_TWO: f32 = 44.;
+/// The height of the caption under a picture `width` wide, with one line or two.
 pub fn strip(width: f32) -> f32 {
     if width < TWO_LINES { STRIP_ONE } else { STRIP_TWO }
 }
 
+/// The height of the picture of a tile `width` wide.
+pub fn picture_h(width: f32) -> f32 {
+    (width * 9. / 16.).floor()
+}
+
 /// The height of a whole tile `width` wide.
 pub fn tile_height(width: f32) -> f32 {
-    (width * 9. / 16.).floor() + strip(width)
+    picture_h(width) + strip(width)
 }
 
 /// The tiles placed in a box.
