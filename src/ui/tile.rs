@@ -102,8 +102,10 @@ impl Render for TileView {
             if *hovered {
                 unhover_except(Some(&key), cx);
                 cx.set_global(Hovered(Some((key.clone(), me.downgrade()))));
+                super::state::watch(|w| w.hovered = Some(key.clone()), cx);
             } else if cx.try_global::<Hovered>().and_then(|h| h.0.as_ref()).is_some_and(|(k, _)| *k == key) {
                 cx.set_global(Hovered(None));
+                super::state::watch(|w| w.hovered = None, cx);
             }
             me.update(cx, |v, cx| {
                 if v.hovered != *hovered {
@@ -134,6 +136,7 @@ pub fn unhover_except(key: Option<&str>, cx: &mut App) {
         return;
     }
     cx.set_global(Hovered(None));
+    super::state::watch(|w| w.hovered = None, cx);
     view.update(cx, |v, cx| {
         if v.hovered {
             v.hovered = false;

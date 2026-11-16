@@ -633,7 +633,9 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
     } else if running == 0 {
         tr("gestoppt")
     } else { trf("%lld von %lld laufen", &[&fine, &total]) };
-    let summary = [server, Some(state)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let held = crate::app::reduce::usage::held(m, Some(batch));
+    let held = (held > 0 && run.is_none()).then(|| super::forms::memory_label(u32::try_from(held).unwrap_or(u32::MAX)));
+    let summary = [server, Some(state), held].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let id = batch.to_owned();
     let exporting = m.batch(batch).is_some_and(|b| m.exporting.contains(&b.instance_id));
     let stopped = total - running;
@@ -878,6 +880,12 @@ pub fn render(this: &mut MainWindow, batch: Option<&str>, window: &mut Window, c
         this.grid.drawn_picks = Rc::new(this.grid.picks.set.clone());
     }
     let picked = Rc::clone(&this.grid.drawn_picks);
+    let focused: Vec<String> = selected.iter().chain(this.grid.shown.iter().filter(|k| picked.contains(*k) && this.grid.visible.contains(*k))).take(4).cloned().collect();
+    let tile_px = (tile_h * tile::ASPECT * window.scale_factor()).round() as u32;
+    super::state::watch(|w| {
+        w.focused = focused;
+        w.width = tile_px;
+    }, cx);
     let opened = this.grid.history.clone();
     let progress = this.grid.moved_at.map(|at| (at.elapsed().as_secs_f32() / SLOW.as_secs_f32()).min(1.));
     if progress.is_some_and(|p| p >= 1.) {

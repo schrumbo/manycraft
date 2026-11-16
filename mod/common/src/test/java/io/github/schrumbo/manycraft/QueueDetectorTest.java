@@ -30,6 +30,17 @@ class QueueDetectorTest {
 	}
 
 	@Test
+	void previewScheduleSoonFiresOnTheNextFrame() {
+		PreviewSchedule s = new PreviewSchedule();
+		s.mark(0);
+		assertFalse(s.due(1_000_000L, 30_000));
+		s.soon();
+		assertTrue(s.due(1_000_000L, 30_000));
+		s.mark(1_000_000L);
+		assertFalse(s.due(2_000_000L, 30_000));
+	}
+
+	@Test
 	void stripsChatDecoration() {
 		String template = "Rcon whispers to you: \u0000";
 		org.junit.jupiter.api.Assertions.assertEquals("hi", ChatBridge.stripDecoration("Rcon whispers to you: hi", template));

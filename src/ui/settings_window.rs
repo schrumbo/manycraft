@@ -19,7 +19,7 @@ use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{KeyNav, icon, segment, segmented, tip};
 use crate::core::i18n::{tr, trf};
 use crate::core::phone::{self, Secret, Service, Slot};
-use crate::core::settings::{self, HOTKEYS, Settings};
+use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings};
 
 const WIDTH: f32 = 560.;
 const HEIGHT: f32 = 700.;
@@ -418,6 +418,7 @@ impl SettingsView {
         edit(&mut next);
         let badge_changed = next.game_badge != before.game_badge;
         let sleep_changed = next.prevent_sleep != before.prevent_sleep;
+        let rate_changed = next.preview_rate != before.preview_rate;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         settings::set(next);
         if badge_changed {
@@ -425,6 +426,9 @@ impl SettingsView {
         }
         if sleep_changed {
             super::state::keep_awake(cx);
+        }
+        if rate_changed {
+            super::state::replan(cx);
         }
         if recheck {
             super::updates::check(false, cx);
@@ -648,6 +652,19 @@ impl Render for SettingsView {
             Some(tr("Diese Kürzel gelten in jedem Spiel.")),
             &t,
         );
+        let rates = [(PreviewRate::Saving, tr("Sparsam")), (PreviewRate::Normal, tr("Normal")), (PreviewRate::Smooth, tr("Flüssig"))];
+        let picked = s.preview_rate;
+        let segments = rates.iter().enumerate().map(|(n, (rate, label))| segment(SharedString::from(format!("set-preview-rate-{n}")), label.clone(), *rate == picked, true, &t)).collect::<Vec<_>>();
+        let pick = cx.listener(move |s, n: &usize, _, cx| {
+            let next = rates.get(*n).map_or(PreviewRate::Normal, |(rate, _)| *rate);
+            s.change(|st| st.preview_rate = next, cx);
+        });
+        let advanced = group(
+            tr("Erweitert"),
+            vec![row(tr("Vorschau-Rate"), Some(tr("Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger.")), segmented("set-preview-rate", segments, move |n, window, cx| pick(&n, window, cx), &t), &t)],
+            None,
+            &t,
+        );
         let follows = div().px(px(space::XS)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Sprache und Erscheinungsbild folgen dem System."));
         let error = self.error.clone().map(|e| sheet::notice("circle-alert", t.danger, t.danger_text, e));
         let page = div()
@@ -673,6 +690,7 @@ impl Render for SettingsView {
                     .child(phone)
                     .child(connection)
                     .child(hotkeys)
+                    .child(advanced)
                     .child(follows),
             );
         let root = div()

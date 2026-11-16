@@ -1363,5 +1363,10 @@
   "„%@“: gibt es schon": "“%@”: already exists",
   "„%@“: steht doppelt in der Liste": "“%@”: listed twice",
   "Erst stoppen": "Stop first",
-  "In der Liste steht kein gültiger Name.": "The list has no valid name."
+  "In der Liste steht kein gültiger Name.": "The list has no valid name.",
+  "Normal": "Normal",
+  "Flüssig": "Smooth",
+  "Vorschau-Rate": "Preview rate",
+  "Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger.": "How often tiles refresh. Smooth costs the games more processing time, Economical less.",
+  "%lld von %lld laufen · %@": "%lld of %lld running · %@"
 }

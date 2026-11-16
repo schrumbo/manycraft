@@ -1,5 +1,6 @@
 //! What the core asks the front end to do: talk to games and the fleet, write files, show windows and notifications, wait.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,10 @@ pub enum Effect {
     Stopped(Vec<String>),
     /// Reads the memory of the machine and answers with [`Event::Memory`].
     ReadMemory,
+    /// Reads the memory each of these games, by key and process, holds for itself.
+    ReadUsage(Vec<(String, u32)>),
+    /// Keeps the measured memory per game of each batch for the next run.
+    SaveMeasured(HashMap<String, u32>),
     ReadPreview { key: String, path: PathBuf },
     /// The game ended: its preview file is closed so the instance folder can be moved or deleted.
     ReleasePreview(String),

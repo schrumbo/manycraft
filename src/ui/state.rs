@@ -692,6 +692,15 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
         }
         Effect::ReadMemory => read_memory(cx),
+        Effect::ReadUsage(pids) => read_usage(pids, cx),
+        Effect::SaveMeasured(seen) => {
+            cx.background_spawn(async move {
+                if let Err(e) = crate::core::measured::save(&seen) {
+                    eprintln!("measured: {e:#}");
+                }
+            })
+            .detach();
+        }
         Effect::ReadPreview { key, path } => {
             if let Some(backend) = backend {
                 backend.read_preview(key, path);
@@ -879,10 +888,10 @@ fn reload_with(cx: &mut App, keep: bool) {
             _ => Vec::new(),
         };
         let loaded = batches.and_then(|b| instances.map(|i| (b, i)));
-        (accounts, loaded, logs, moved.problems, store::take_recovered())
+        (accounts, loaded, logs, moved.problems, store::take_recovered(), crate::core::measured::load())
     });
     cx.spawn(async move |cx| {
-        let (accounts, batches, logs, problems, recovered) = task.await;
+        let (accounts, batches, logs, problems, recovered, measured) = task.await;
         cx.update(|cx| {
             let data = match (accounts, batches) {
                 (Ok(accounts), Ok((batches, instances))) => Ok((accounts, batches, instances)),
@@ -893,7 +902,7 @@ fn reload_with(cx: &mut App, keep: bool) {
                 _ => Vec::new(),
             };
             let recovered = recovered_notice(&recovered);
-            dispatch(AppEvent::Loaded(Box::new(Loaded { data, logs, problems, recovered, keep, adopted })), cx);
+            dispatch(AppEvent::Loaded(Box::new(Loaded { data, logs, problems, recovered, keep, adopted, measured })), cx);
         });
     })
     .detach();
@@ -1001,6 +1010,15 @@ pub fn delete_instance(id: &str, cx: &mut App) {
             }
             reload(cx);
         });
+    })
+    .detach();
+}
+
+fn read_usage(pids: Vec<(String, u32)>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let pretend = drive::on();
+        let readings = cx.background_executor().spawn(async move { pids.into_iter().filter_map(|(key, pid)| fit::private_mb(pid).or_else(|| (pretend && pid == 0).then_some(1434)).map(|mb| (key, mb))).collect::<Vec<_>>() }).await;
+        cx.update(|cx| dispatch(AppEvent::Usage(readings), cx));
     })
     .detach();
 }
@@ -1173,6 +1191,24 @@ fn place_new(key: &str, cx: &mut App) {
         game_window::place_hidden(pid, place.frame);
     }
     dispatch(AppEvent::Placed { key: key.to_owned() }, cx);
+}
+
+/// Tells the core where the user looks, so previews refresh fast where it matters and pause where nobody sees them.
+pub fn watch(change: impl FnOnce(&mut crate::app::session::Watch), cx: &mut App) {
+    if cx.try_global::<Runtime>().is_none() {
+        return;
+    }
+    let mut next = model::get(cx).read(cx).session.watch.clone();
+    change(&mut next);
+    if model::get(cx).read(cx).session.watch != next {
+        dispatch(AppEvent::Watch(next), cx);
+    }
+}
+
+/// Works out the preview rates again, after their setting changed.
+pub fn replan(cx: &mut App) {
+    let watch = model::get(cx).read(cx).session.watch.clone();
+    dispatch(AppEvent::Watch(watch), cx);
 }
 
 /// Tells the runtime which tiles are on screen, so their previews update at full rate.

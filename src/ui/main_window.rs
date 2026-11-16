@@ -141,6 +141,10 @@ impl MainWindow {
                     cx.notify();
                 }
             }),
+            cx.observe_window_visibility(window, |_, visibility, _, cx| {
+                let away = !visibility.is_visible();
+                cx.defer(move |cx| super::state::watch(|w| w.away = away, cx));
+            }),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() && model::get(cx).read(cx).playing.is_some() {
                     cx.defer(super::state::show_grid);
@@ -326,7 +330,8 @@ impl MainWindow {
         }
         let mut per: Vec<(u32, u32)> = m.batches.iter().filter_map(|b| {
             let n = scope.iter().filter(|i| i.batch_id == b.id).count();
-            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory_mb))))
+            let each = m.measured.get(&b.id).copied().unwrap_or_else(|| b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory_mb)));
+            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), each))
         }).collect();
         per.sort_unstable();
         let key: FitScope = (batch.map(str::to_owned), per.clone());

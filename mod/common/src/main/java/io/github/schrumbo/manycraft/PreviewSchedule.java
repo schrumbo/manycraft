@@ -8,6 +8,10 @@ final class PreviewSchedule {
 		return !taken || nowNanos - lastNanos >= intervalMs * 1_000_000L;
 	}
 
+	void soon() {
+		taken = false;
+	}
+
 	void mark(long nowNanos) {
 		taken = true;
 		lastNanos = nowNanos;

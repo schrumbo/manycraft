@@ -40,6 +40,10 @@ final class PreviewService {
 		return !inFlight.get() && schedule.due(System.nanoTime(), intervalMs);
 	}
 
+	void soon() {
+		schedule.soon();
+	}
+
 	void capture(RenderTarget target, int previewWidth) {
 		GpuTexture texture = target.getColorTexture();
 		int w = target.width;
