@@ -59,6 +59,8 @@ fn main() {
     let app = gpui_kit::application().with_assets(Assets);
     app.on_reopen(ui::state::show_grid);
     app.run(|cx: &mut App| {
+        #[cfg(windows)]
+        cx.set_app_identity(core::APP_ID, "Manycraft");
         gpui_kit::init(cx);
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
         ui::theme::watch_focus(cx);

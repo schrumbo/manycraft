@@ -629,6 +629,7 @@ app drop <target|x y> <path>...  drops files from outside, as the file manager w
 app dialog <path>... | --cancel  answers the next file dialog instead of showing it (temp folder only)
 app events                       what the app tried to do outside: dialogs, menus and whatever is fenced through core::drive
 app state                        data folder, focus context
+app toast <tag> <title> [body]    posts one real, silent system notification (the only one that leaves the fence)
 app wait [idle|<target>] [--gone] [--for-window T] [--timeout S]
 app resize <w> <h> | app theme light|dark|system
 app screenshot <name> [--full]         screenshot of the window, prints the path
@@ -836,6 +837,10 @@ def main(argv):
     elif cmd == "events":
         for e in inst.call("events")["events"]:
             print(e)
+    elif cmd == "toast":
+        if len(args) < 2:
+            die("app toast <tag> <title> [body]")
+        inst.call("toast", tag=args[0], title=args[1], body=args[2] if len(args) > 2 else "")
     elif cmd == "state":
         out = inst.call("state")
         print(json.dumps({k: v for k, v in out.items() if k != "ok"}, ensure_ascii=False, indent=1))

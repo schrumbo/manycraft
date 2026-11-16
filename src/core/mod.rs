@@ -1,3 +1,6 @@
+/// The identity of Manycraft to the operating system: window class, Windows AppUserModelID, macOS bundle identifier and the Linux desktop entry.
+pub const APP_ID: &str = "io.github.schrumbo.manycraft";
+
 pub mod account;
 pub mod adopt;
 pub mod auth;
