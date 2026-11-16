@@ -170,71 +170,48 @@ fn single(c: Command) -> String {
     }
 }
 
-/// How a tile draws its frame, name and states; picked once per run from `MANYCRAFT_TILE_LOOK`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Look {
-    Caption,
-    Overlay,
-    Panel,
-}
-
-/// The tile look of this run.
-pub fn look() -> Look {
-    static LOOK: std::sync::OnceLock<Look> = std::sync::OnceLock::new();
-    *LOOK.get_or_init(|| match std::env::var("MANYCRAFT_TILE_LOOK").unwrap_or_default().as_str() {
-        "overlay" | "b" => Look::Overlay,
-        "panel" | "c" => Look::Panel,
-        _ => Look::Caption,
-    })
-}
-
-/// The space between tiles: room for a halo outside the tile where the look draws one.
+/// The space between tiles: every tile keeps a gutter for its selection ring, so the rings of neighbours never touch.
 pub(super) fn gap(t: &Theme) -> f32 {
-    match look() {
-        Look::Overlay => t.grid_gap,
-        Look::Caption | Look::Panel => t.grid_gap.max(space::M),
-    }
+    t.grid_gap.max(HALO * 2. + space::XS)
 }
 
 const HALO: f32 = frame::RING + frame::RING_GAP;
-const FACE_TWO: f32 = 20.;
-const FACE_ONE: f32 = 16.;
-const BADGE: f32 = 28.;
-const SCRIM_TWO: f32 = 64.;
-const SCRIM_ONE: f32 = 40.;
+const HEAD: f32 = 16.;
+const STATUS_DOT: f32 = 6.;
+const NAME_ROW: f32 = 16.;
+const STATUS_ROW: f32 = 14.;
+const HOVER_LIFT: f32 = 0.04;
+const PRESS_SHADE: f32 = 0.08;
+const DOWN_DIM: f32 = 0.3;
 
 fn mix(a: Color, b: Color, share: f32) -> Color {
     let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * share).round() as u8;
     Color::from_argb(255, m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
-fn outline(w: f32, h: f32, out: f32, radius: f32, width: f32, color: Color) -> Rect {
-    rect()
-        .position(Position::new_absolute().left(-out).top(-out))
-        .width(Size::px(w + out * 2.))
-        .height(Size::px(h + out * 2.))
-        .corner_radius((radius + out).max(0.))
-        .border(Border::new().fill(color).width(width).alignment(BorderAlignment::Inner))
+fn cover(w: f32, h: f32, fill: Color) -> Rect {
+    rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(w)).height(Size::px(h)).background(fill)
 }
 
-fn cover(w: f32, h: f32, color: impl Into<Fill>, radius: f32) -> Rect {
-    rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(w)).height(Size::px(h)).corner_radius(radius).background(color)
+fn dot(color: Color) -> Rect {
+    rect().width(Size::px(STATUS_DOT)).height(Size::px(STATUS_DOT)).corner_radius(STATUS_DOT / 2.).background(color)
 }
 
-fn status_dot(t: &Theme, g: &Game, severe: bool, attention: bool) -> Option<Color> {
-    if severe {
-        Some(t.danger)
-    } else if attention {
-        Some(t.attention)
-    } else if g.stopping {
-        Some(t.text3)
-    } else {
-        match g.phase {
-            Phase::Stopped => None,
-            Phase::Playing { .. } => Some(t.success),
-            _ => Some(t.text3),
-        }
+/// How far a start has come, from 0 to 1, or `None` while it runs without a measure.
+fn progress(g: &Game, m: &Model) -> Option<Option<f32>> {
+    let Phase::Starting { place, total } = g.phase else { return None };
+    if g.stopping {
+        return None;
     }
+    Some(if g.memory_wait.is_some() {
+        None
+    } else if let Some(p) = m.preparing.get(&g.batch_id) {
+        Some(f32::from(*p) / 100.)
+    } else if total > 1 && place > 0 {
+        Some(total.saturating_sub(place) as f32 / total as f32)
+    } else {
+        None
+    })
 }
 
 fn whisper_badge(t: &Theme, n: u32) -> Option<Rect> {
@@ -254,18 +231,6 @@ fn whisper_badge(t: &Theme, n: u32) -> Option<Rect> {
     })
 }
 
-fn state_badge(t: &Theme, phase: &Phase, severe: bool) -> Rect {
-    let (fill, ink) = if severe { (t.danger, t.on_danger) } else { (t.attention, t.on_attention) };
-    let glyph = match phase {
-        Phase::LoginNeeded => Icon::LogIn,
-        Phase::Banned { .. } => Icon::Ban,
-        Phase::Crashed { .. } => Icon::Crash,
-        Phase::Disconnected { .. } | Phase::Dead { .. } => Icon::Wifi,
-        _ => Icon::Alert,
-    };
-    rect().width(Size::px(BADGE)).height(Size::px(BADGE)).corner_radius(radius::FULL).center().background(fill).child(icon(t, glyph, iconsize::M, ink))
-}
-
 impl Component for Tile {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
@@ -275,6 +240,7 @@ impl Component for Tile {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let mut track = use_state(Track::default);
         super::use_node(&self.key, a11y);
         let preview = use_preview(&self.key);
@@ -282,7 +248,6 @@ impl Component for Tile {
         let Some(game) = m.games.get(&self.key) else {
             return rect().into_element();
         };
-        let look = look();
         let selected = store.ui.selection.read().contains(&self.key);
         let face = store.faces.read().get(&game.account_id).cloned();
         let attention = game.phase.needs_attention();
@@ -290,6 +255,7 @@ impl Component for Tile {
         let detail = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
         let reason = words::reason(game, &m);
         let line2 = words::line(game, &m);
+        let said = words::caption(game, &m);
         let action = action_of(game, &m);
         let spot = use_spot(&format!("tile.{}", self.key), "tile", &format!("{} · {line2}", self.name), true);
         let two = self.width >= TWO_LINES;
@@ -297,110 +263,88 @@ impl Component for Tile {
         let keyboard = focus() == Focus::Keyboard;
         let (key, index) = (self.key.clone(), self.index);
         let (enter_key, menu_key) = (key.clone(), key.clone());
-        let tone = if severe { t.danger_text } else if attention { t.attention_text } else { t.text2 };
-        let dot = status_dot(&t, game, severe, attention);
-        let r = t.shape.tile;
-        let inset = layout::inset();
-        let pic_w = self.width - inset * 2.;
-        let pic_h = layout::picture_h(self.width);
-        let pic_r = (r - inset).max(0.);
-        let stopped = game.phase == Phase::Stopped;
-        let halo = if keyboard { Some(t.focus) } else if selected && look != Look::Panel { Some(t.accent) } else { None };
-
-        let mut pic = rect().width(Size::px(pic_w)).height(Size::px(pic_h)).background(t.well).corner_radius(pic_r).overflow(Overflow::Clip);
-        pic = match &preview {
-            Some(handle) => pic.child(frame_image(handle.clone(), pic_w, pic_h, if attention { 0.5 } else { 1. })),
-            None => pic.center().child(placeholder(&t, &game.phase, face.clone(), look == Look::Caption && attention)),
-        };
-        if stopped && preview.is_some() {
-            pic = pic.child(cover(pic_w, pic_h, t.surface.with_af32(t.hidden_dim), 0.));
-        }
-        if look == Look::Caption && attention && preview.is_some() {
-            pic = pic.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(pic_w)).height(Size::px(pic_h)).center().child(state_badge(&t, &game.phase, severe)));
-        }
-        let rim = if look == Look::Overlay {
-            Some(if hover { Color::WHITE.with_af32(0.28) } else if t.dark { Color::WHITE.with_af32(0.07) } else { Color::BLACK.with_af32(0.08) })
-        } else if preview.is_none() {
-            Some(t.elevation.rim.unwrap_or_else(|| t.separator.with_af32(0.6)))
-        } else {
+        let stopped = game.phase == Phase::Stopped && !game.stopping;
+        let tinted = attention || severe;
+        let tone = if severe { t.danger_text } else if attention { t.attention_text } else if stopped { t.text3 } else { t.text2 };
+        let signal = if severe {
+            Some(t.danger)
+        } else if attention {
+            Some(t.attention)
+        } else if matches!(game.phase, Phase::Playing { .. }) && !game.stopping {
+            Some(t.success)
+        } else if stopped {
             None
+        } else {
+            Some(t.text3)
         };
-        if hover && look != Look::Overlay && preview.is_some() {
-            pic = pic.child(cover(pic_w, pic_h, Color::WHITE.with_af32(0.06), 0.));
-        }
-        if look == Look::Overlay {
-            let scrim = if two { SCRIM_TWO } else { SCRIM_ONE };
-            let deep = if hover || selected { 0.72 } else { 0.6 };
-            pic = pic.child(
-                rect()
-                    .position(Position::new_absolute().left(0.).bottom(0.))
-                    .width(Size::fill())
-                    .height(Size::px(scrim.min(pic_h)))
-                    .background(LinearGradient::new().stop((Color::BLACK.with_af32(0.), 0.)).stop((Color::BLACK.with_af32(deep), 100.))),
-            );
-            if attention || game.stopping || !matches!(game.phase, Phase::Playing { .. } | Phase::Stopped) {
-                let (fill, ink) = if severe {
-                    (t.danger, t.on_danger)
-                } else if attention {
-                    (t.attention, t.on_attention)
-                } else {
-                    (Color::BLACK.with_af32(0.55), Color::WHITE)
-                };
-                let word = words::word(game, &m);
-                pic = pic.child(
-                    rect()
-                        .position(Position::new_absolute().left(space::S).top(space::S))
-                        .height(Size::px(frame::BADGE + space::XXS))
-                        .padding((0., space::S))
-                        .center()
-                        .corner_radius(radius::FULL)
-                        .background(fill)
-                        .child(line(&t, word, font::CAPTION, ink).font_weight(FontWeight::SEMI_BOLD).max_lines(1)),
-                );
+        let r = t.shape.tile;
+        let (w, h) = (self.width, layout::picture_h(self.width));
+
+        let well = mix(t.surface, t.text1, if t.dark { 0.05 } else { 0.06 });
+        let mut pic = rect().width(Size::px(w)).height(Size::px(h)).background(well).corner_radius(r).overflow(Overflow::Clip);
+        if let Some(handle) = &preview {
+            pic = pic.child(frame_image(handle.clone(), w, h, if attention { DOWN_DIM } else { 1. }));
+            if stopped {
+                pic = pic.child(cover(w, h, t.surface.with_af32(t.hidden_dim)));
             }
+        }
+        if let Some(mark) = placeholder(&t, &game.phase, if preview.is_none() { face.clone() } else { None }) {
+            pic = pic.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(w)).height(Size::px(h)).center().child(mark));
+        }
+        if *pressed.read() {
+            pic = pic.child(cover(w, h, Color::BLACK.with_af32(PRESS_SHADE)));
+        } else if hover {
+            pic = pic.child(cover(w, h, Color::WHITE.with_af32(HOVER_LIFT)));
+        }
+        if let Some(done) = progress(game, &m) {
+            let mut bar = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(w)).height(Size::px(frame::RING)).background(t.text1.with_af32(0.16));
+            if let Some(done) = done {
+                bar = bar.child(rect().width(Size::px((w * done.clamp(0., 1.)).round())).height(Size::fill()).background(t.accent));
+            }
+            pic = pic.child(bar);
         }
         if let Some(b) = whisper_badge(&t, game.unread_whispers) {
             pic = pic.child(rect().position(Position::new_absolute().right(space::S).top(space::S)).child(b));
         }
-        if let Some(c) = rim {
-            pic = pic.child(cover(pic_w, pic_h, Color::TRANSPARENT, pic_r).border(Border::new().fill(c).width(1.).alignment(BorderAlignment::Inner)));
+        if preview.is_none() {
+            pic = pic.child(cover(w, h, Color::TRANSPARENT).corner_radius(r).border(Border::new().fill(t.elevation.rim.unwrap_or_else(|| t.separator.with_af32(0.6))).width(1.).alignment(BorderAlignment::Inner)));
         }
-        let show_pill = hover || keyboard;
-        let pill_el = action.filter(|_| show_pill).map(|p| {
+        if let Some(p) = action.filter(|_| hover || keyboard) {
             let k = key.clone();
-            pill(&t, p, !two).on_press(move |e: Event<PressEventData>| {
+            pic = pic.child(rect().position(Position::new_absolute().right(space::S).bottom(space::S)).child(pill(&t, p, !two).on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
                 run(store, &k, p);
-            })
-        });
+            })));
+        }
 
-        let over = look == Look::Overlay;
-        let (ink, quiet) = if over { (Color::WHITE, Color::WHITE.with_af32(0.8)) } else if selected && look == Look::Caption { (t.accent_text, tone) } else { (t.text1, tone) };
-        let quiet = if stopped && !over { t.text3 } else { quiet };
-        let name_size = if two { font::BODY } else { font::CALLOUT };
-        let name = line(&t, self.name.clone(), name_size, ink).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis);
-        let face_size = if two { FACE_TWO } else { FACE_ONE };
-        let chip = face_chip(&t, m.account(game.account_id), face, face_size);
-        let text: Element = if two {
-            let mut status_row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS);
-            if let Some(c) = dot {
-                status_row = status_row.child(crate::view::kit::badge::dot(c));
+        let head = face_chip(&t, m.account(game.account_id), face, HEAD);
+        let caption = if two {
+            let name = line(&t, self.name.clone(), font::BODY, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
+            let mut lead = rect().width(Size::px(HEAD)).height(Size::px(STATUS_ROW)).center();
+            if let Some(c) = signal.map(|c| if tinted { t.text3 } else { c }) {
+                lead = lead.child(dot(c));
             }
-            status_row = status_row.child(line(&t, line2.clone(), font::CALLOUT, quiet).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.))).content(Content::flex());
-            rect().width(Size::flex(1.)).spacing(0.).child(name).child(status_row).into_element()
+            let words = line(&t, said, font::CAPTION, tone).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
+            rect()
+                .width(Size::fill())
+                .padding((space::S, 0., 0., 0.))
+                .spacing(space::XXS)
+                .child(rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(head).child(name).content(Content::flex()))
+                .child(rect().width(Size::fill()).height(Size::px(STATUS_ROW)).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(lead).child(words).content(Content::flex()))
+                .into_element()
         } else {
-            let mut row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(name.width(Size::flex(1.))).content(Content::flex());
-            if let Some(c) = dot.filter(|_| attention || severe || matches!(game.phase, Phase::Playing { .. })) {
-                row = row.child(crate::view::kit::badge::dot(c));
+            let name = line(&t, self.name.clone(), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
+            let mut row = rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(head).child(name).content(Content::flex());
+            if let Some(c) = signal.filter(|_| !stopped) {
+                row = row.child(dot(c));
             }
             let tip = match &reason {
                 Some(r) if detail.contains(r.as_str()) => detail.clone(),
                 Some(r) if *r != line2 => format!("{detail}\n{r}"),
                 _ => line2.clone(),
             };
-            rect().width(Size::flex(1.)).child(WithTip::new(Some(tip), row)).into_element()
+            rect().width(Size::fill()).padding((space::S - space::XXS, 0., 0., 0.)).child(WithTip::new(Some(tip), row)).into_element()
         };
-        let caption = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(chip).child(text).content(Content::flex());
 
         let (over_key, leave_key) = (self.key.clone(), self.key.clone());
         let mut tile = rect()
@@ -410,7 +354,6 @@ impl Component for Tile {
             .a11y_alt(format!("{}, {line2}", self.name))
             .width(Size::px(self.width))
             .height(Size::px(self.height))
-            .corner_radius(r)
             .on_sized(spot)
             .on_pointer_enter(move |_| {
                 hovered.set(true);
@@ -418,10 +361,17 @@ impl Component for Tile {
             })
             .on_pointer_leave(move |_| {
                 hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
                 unhover(store, &leave_key);
             })
             .cursor(CursorIcon::Pointer)
-            .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                e.stop_propagation();
+                if e.button == Some(MouseButton::Left) {
+                    pressed.set(true);
+                }
+            })
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
                 a11y.request_focus();
@@ -439,62 +389,19 @@ impl Component for Tile {
                     let at = (m.global_location.x as f32, m.global_location.y as f32);
                     menu::open(store.ui, Menu::at(context(store, &menu_key), at));
                 }
-            });
-
-        match look {
-            Look::Caption => {
-                if let Some(p) = pill_el {
-                    pic = pic.child(rect().position(Position::new_absolute().right(space::S).bottom(space::S)).child(p));
-                }
-                let top = if two { space::S } else { space::S - space::XXS };
-                tile = tile.child(pic).child(rect().width(Size::fill()).height(Size::flex(1.)).padding((top, 0., 0., 0.)).child(caption)).content(Content::flex());
-                if let Some(c) = halo {
-                    tile = tile.child(outline(pic_w, pic_h, HALO, r, frame::RING, c));
-                }
-            }
-            Look::Overlay => {
-                let pad = if two { space::M } else { space::S };
-                let mut row = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::fill()).padding((0., pad, pad, pad)).horizontal().cross_align(Alignment::End).spacing(space::S).child(caption.width(Size::flex(1.))).content(Content::flex());
-                if let Some(p) = pill_el {
-                    row = row.child(p);
-                }
-                pic = pic.child(row);
-                if let Some(c) = halo {
-                    pic = pic.child(cover(pic_w, pic_h, Color::TRANSPARENT, pic_r).border(Border::new().fill(c).width(frame::RING).alignment(BorderAlignment::Inner)));
-                    pic = pic.child(rect().position(Position::new_absolute().left(frame::RING).top(frame::RING)).width(Size::px(pic_w - frame::RING * 2.)).height(Size::px(pic_h - frame::RING * 2.)).corner_radius((pic_r - frame::RING).max(0.)).border(Border::new().fill(Color::BLACK.with_af32(0.4)).width(1.).alignment(BorderAlignment::Inner)));
-                }
-                tile = tile.child(pic);
-            }
-            Look::Panel => {
-                let base = t.raised;
-                let fill = if selected {
-                    mix(base, t.accent, if t.dark { 0.2 } else { 0.14 })
-                } else if severe {
-                    mix(base, t.danger, frame::NOTICE_WASH)
-                } else if attention {
-                    mix(base, t.attention, frame::NOTICE_WASH + 0.02)
-                } else if hover {
-                    mix(base, t.text1, if t.dark { 0.05 } else { 0.035 })
-                } else {
-                    base
-                };
-                if let Some(p) = pill_el {
-                    pic = pic.child(rect().position(Position::new_absolute().right(space::S).bottom(space::S)).child(p));
-                }
-                let side = space::XS;
-                let top = if two { space::S } else { space::S - space::XXS };
-                tile = tile.padding(inset).background(fill).child(pic).child(rect().width(Size::fill()).height(Size::flex(1.)).padding((top, side, 0., side)).child(caption)).content(Content::flex());
-                if let Some(s) = t.elevation.card.clone() {
-                    tile = tile.shadow(s);
-                }
-                let edge = if selected { Some(t.accent.with_af32(0.55)) } else { t.elevation.rim };
-                if let Some(c) = edge {
-                    tile = tile.child(outline(self.width - inset * 2., self.height - inset * 2., inset, r - inset, 1., c));
-                }
-                if let Some(c) = halo {
-                    tile = tile.child(outline(self.width - inset * 2., self.height - inset * 2., inset + HALO, r - inset, frame::RING, c));
-                }
-            }
+            })
+            .child(pic)
+            .child(caption);
+        let ring = if keyboard { Some(t.focus) } else if selected { Some(t.accent) } else { None };
+        if let Some(c) = ring {
+            tile = tile.child(
+                rect()
+                    .position(Position::new_absolute().left(-HALO).top(-HALO))
+                    .width(Size::px(w + HALO * 2.))
+                    .height(Size::px(h + HALO * 2.))
+                    .corner_radius(r + HALO)
+                    .border(Border::new().fill(c).width(frame::RING).alignment(BorderAlignment::Inner)),
+            );
         }
         tile.into_element()
     }
@@ -597,22 +504,20 @@ fn frame_image(handle: ImageHandle, w: f32, h: f32, opacity: f32) -> impl IntoEl
     image(handle).width(Size::px(w)).height(Size::px(h)).aspect_ratio(AspectRatio::Max).image_cover(ImageCover::Center).opacity(opacity)
 }
 
-fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>, badge: bool) -> Element {
-    let severe = matches!(phase, Phase::LoginNeeded | Phase::Banned { .. });
-    if badge {
-        return state_badge(t, phase, severe).into_element();
-    }
+fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<Element> {
     let glyph = match phase {
-        Phase::Stopped => None,
-        Phase::LoginNeeded => Some(Icon::LogIn),
-        Phase::Crashed { .. } | Phase::Failed { .. } | Phase::Dead { .. } => Some(Icon::Alert),
-        Phase::Disconnected { .. } | Phase::NetworkLost { .. } | Phase::NoNetwork => Some(Icon::Wifi),
+        Phase::LoginNeeded => Some((Icon::LogIn, t.text2)),
+        Phase::Banned { .. } => Some((Icon::Ban, t.text2)),
+        Phase::Crashed { .. } => Some((Icon::Crash, t.text2)),
+        Phase::Disconnected { .. } | Phase::Dead { .. } => Some((Icon::Wifi, t.text2)),
+        Phase::Failed { .. } => Some((Icon::Alert, t.text2)),
+        Phase::NetworkLost { .. } | Phase::NoNetwork => Some((Icon::Wifi, t.text3)),
         _ => None,
     };
     match (glyph, face) {
-        (Some(g), _) => icon(t, g, iconsize::L, t.text3),
-        (None, Some(face)) => image(face).width(Size::px(space::XXL)).height(Size::px(space::XXL)).opacity(0.5).into_element(),
-        (None, None) => rect().into_element(),
+        (Some((g, c)), _) => Some(icon(t, g, iconsize::L, c)),
+        (None, Some(face)) if *phase != Phase::Stopped => Some(image(face).width(Size::px(space::XXL)).height(Size::px(space::XXL)).opacity(0.5).into_element()),
+        _ => None,
     }
 }
 
@@ -621,7 +526,7 @@ fn face_chip(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, si
     let mut chip = rect().width(Size::px(size)).height(Size::px(size)).corner_radius(t.shape.small).background(fill).center().overflow(Overflow::Clip);
     chip = match (face, account) {
         (Some(face), _) => chip.padding(space::XXS).child(image(face).width(Size::fill()).height(Size::fill()).corner_radius(t.shape.small / 2.)),
-        (None, Some(a)) => chip.child(label().text(a.name.chars().next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default()).font_size(if size > FACE_ONE { font::CAPTION } else { font::CAPTION2 }).font_weight(FontWeight::BOLD).color(t.ink_on(fill))),
+        (None, Some(a)) => chip.child(label().text(a.name.chars().next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default()).font_size(if size > HEAD { font::CAPTION } else { font::CAPTION2 }).font_weight(FontWeight::BOLD).color(t.ink_on(fill))),
         (None, None) => chip,
     };
     chip

@@ -65,6 +65,14 @@ pub fn line(g: &Game, m: &Model) -> String {
     }
 }
 
+/// The second line under a tile's picture: the server alone while all is well, otherwise as [`line`].
+pub fn caption(g: &Game, m: &Model) -> String {
+    match &g.phase {
+        Phase::Playing { server, .. } if !server.is_empty() && !g.stopping && !g.hint.link_lost && reason(g, m).is_none() => server.strip_suffix(":25565").unwrap_or(server).to_owned(),
+        _ => line(g, m),
+    }
+}
+
 /// Why `g` dropped, in a few words, while it is down.
 pub fn reason(g: &Game, m: &Model) -> Option<String> {
     if g.stopping {
