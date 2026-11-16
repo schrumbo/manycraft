@@ -183,18 +183,23 @@ public final class Hooks {
 		}
 	}
 
-	public static boolean closeToGrid() {
+	public static void closeRequested() {
 		Bridge b = bridge;
+		if (b == null) {
+			return;
+		}
 		try {
-			return b != null && b.closeToGrid();
+			b.closeRequested();
 		} catch (Throwable e) {
 			Agent.fault("close", e);
-			return false;
 		}
 	}
 
 	public static boolean closing(boolean closing) {
-		return closing && !closeToGrid();
+		if (closing) {
+			closeRequested();
+		}
+		return closing;
 	}
 
 	public static boolean key(int action, Object event) {

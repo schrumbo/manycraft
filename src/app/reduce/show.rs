@@ -21,7 +21,7 @@ pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
         out.push(Effect::Redraw(Redraw::All));
         return;
     }
-    if !m.games.get(key).is_some_and(|i| i.phase.playable() && !i.hint.link_lost) {
+    if !m.games.get(key).is_some_and(|i| i.phase.playable() && !i.hint.link_lost && !i.stopping) {
         return;
     }
     let s = &mut m.session;
@@ -224,6 +224,15 @@ mod tests {
         assert_eq!(hides(&fx), [key.as_str()]);
         assert_eq!(fx.iter().filter(|e| matches!(e, Effect::Send { .. })).count(), 1);
         assert_eq!(m.playing.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn a_stopping_game_is_not_shown() {
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        m.games.get_mut(&key).unwrap().stopping = true;
+        let mut fx = Vec::new();
+        super::play(&mut m, &key, &mut fx);
+        assert!(m.playing.is_none() && fx.is_empty());
     }
 
     #[test]

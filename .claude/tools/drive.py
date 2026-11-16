@@ -389,7 +389,7 @@ def start(opts):
     if subprocess.run([sys.executable, "-I", str(TOOLS / "fixture.py"), str(home), str(opts["instances"])]).returncode:
         die("fixture failed")
     w, h = opts["size"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FAKE_SLOW_STOP")}
     env.update(MANYCRAFT_HOME=str(home), MANYCRAFT_DRIVE=str(d), MANYCRAFT_DRIVE_OWNER=str(owner), MANYCRAFT_DRIVE_TTL=str(opts["ttl"]),
                MANYCRAFT_DRIVE_SIZE=f"{w}x{h}", RUST_BACKTRACE="1", TMP=str(d / "tmp"), TEMP=str(d / "tmp"), TMPDIR=str(d / "tmp"))
     if opts["theme"]:
@@ -608,7 +608,8 @@ app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH
                                  --live-modrinth lets mod search, defaults and icons read the real Modrinth (read only);
                                  --still: the fake games repeat one picture and nobody whispers, for measuring idle frames
                                  MANYCRAFT_FAKE_OUTAGE=S drops every fake game S seconds after start and refuses reconnects
-                                 for MANYCRAFT_FAKE_OUTAGE_FOR seconds (default 90), like a server restart
+                                 for MANYCRAFT_FAKE_OUTAGE_FOR seconds (default 90), like a server restart;
+                                 MANYCRAFT_FAKE_SLOW_STOP=S makes every fake game take S seconds to stop
 app ps | app gc                  instances of this worktree | remove dead ones
 app stop [--all]                 quit the selected instance (or all of yours)
 app windows                      window id, size, position, scale, theme, title (alias: list)

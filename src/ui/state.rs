@@ -75,6 +75,8 @@ pub trait Backend: Send + Sync {
     fn start(&self, target: Target, accounts: Vec<Account>, cancel: Arc<AtomicBool>, home: Option<Rect>);
     /// Asks the instances to quit and ends them after a grace period.
     fn stop(&self, keys: Vec<String>);
+    /// Ends the instances at once, without waiting for them to save.
+    fn kill(&self, keys: Vec<String>);
     /// Sends a message to an instance's companion mod.
     fn send(&self, key: &str, message: ToMod);
     /// Reads the newest preview frame from `path` and reports it.
@@ -265,7 +267,7 @@ impl Backend for Real {
                     Ok(key) => {
                         lock(&watch).insert(key.clone());
                         if !lock(&owners).contains_key(&key) {
-                            fleet.stop_all(std::slice::from_ref(&key));
+                            fleet.kill(std::slice::from_ref(&key));
                         } else if let Some(home) = home.filter(|_| prepared.plain()) {
                             fleet.bring_home(&key, home);
                         }
@@ -300,6 +302,11 @@ impl Backend for Real {
         }
         let fleet = Arc::clone(&self.fleet);
         let _ = std::thread::Builder::new().name("fleet-stop".into()).spawn(move || fleet.stop_all(&keys));
+    }
+
+    fn kill(&self, keys: Vec<String>) {
+        let fleet = Arc::clone(&self.fleet);
+        let _ = std::thread::Builder::new().name("fleet-kill".into()).spawn(move || fleet.kill(&keys));
     }
 
     fn send(&self, key: &str, message: ToMod) {
@@ -688,12 +695,21 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
                 backend.stop(keys);
             }
         }
+        Effect::Kill(keys) => {
+            if let Some(backend) = backend {
+                backend.kill(keys);
+            }
+        }
         Effect::Stopped(keys) => {
             let name = match keys.as_slice() {
                 [one] => model::get(cx).read(cx).games.get(one).map(|g| g.name.clone()),
                 _ => None,
             };
-            super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
+            super::undo::offer(super::undo::Kind::Stopped { keys, name, closed: false }, cx);
+        }
+        Effect::Closed(key) => {
+            let name = model::get(cx).read(cx).games.get(&key).map(|g| g.name.clone());
+            super::undo::offer(super::undo::Kind::Stopped { keys: vec![key], name, closed: true }, cx);
         }
         Effect::ReadMemory => read_memory(cx),
         Effect::ReadUsage(pids) => read_usage(pids, cx),
@@ -1121,11 +1137,27 @@ fn show(key: &str, before: Option<&str>, skipped: Option<String>, unshown: Unsho
     drive::note(format!("play {key}"));
     if let Some(backend) = backend(cx) {
         backend.send(key, ToMod::Show { x: client.x, y: client.y, w: client.w, h: client.h, mode: place.mode });
+        if !settings::active().swap_explained {
+            backend.send(key, ToMod::Hint { text: swap_hint() });
+            settings::set(settings::Settings { swap_explained: true, ..settings::active().clone() });
+            cx.background_spawn(async {
+                if let Err(e) = settings::persist() {
+                    eprintln!("settings: {e:#}");
+                }
+            })
+            .detach();
+        }
         if let Some(skipped) = skipped {
             backend.send(&skipped, ToMod::Hide);
         }
     }
     spread(cx);
+}
+
+fn swap_hint() -> String {
+    let grid = crate::core::settings::HOTKEYS.iter().find(|(label, _)| *label == "Zurück zum Raster").map_or("ctrl+alt+g", |(_, chord)| chord);
+    let keys = super::settings_window::chord_keys(grid).join(if cfg!(target_os = "macos") { "" } else { "+" });
+    trf("× beendet das Spiel · %@ zurück zum Raster", &[&keys])
 }
 
 /// Opens what the notification `tag` was about: its one tile, the attention tiles of its batch, or the chat.
@@ -1449,7 +1481,7 @@ mod tests {
 
     use super::{AuthError, Game, Phase, needs_sign_in, render_image, status, stopped_ban};
     use crate::app::event::Report;
-    use crate::app::reduce::testing::{report, settings, setup, state};
+    use crate::app::reduce::testing::{report, run, settings, setup, state};
     use crate::core::account::AccountKind;
     use crate::core::history::{self, Entry, Kind};
     use crate::core::ipc::{DisconnectCause, FromMod, StateKind};
@@ -1536,6 +1568,7 @@ mod tests {
         let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        run(&mut m, &s, Instant::now(), crate::app::event::Event::LinkLostDue { key: key.clone() });
         assert_eq!(status(&m.games[&key], None), "Keine Verbindung zum Spiel");
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         report(&mut m, &s, Report::LinkLost { key: key.clone() });

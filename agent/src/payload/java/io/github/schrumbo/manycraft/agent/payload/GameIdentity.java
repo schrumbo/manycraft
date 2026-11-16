@@ -21,11 +21,15 @@ final class GameIdentity {
 	private static final int GAP = 4;
 	private static final int BACKDROP = 0x80000000;
 	private static final int TEXT = 0xE6FFFFFF;
+	private static final long HINT_NANOS = 8_000_000_000L;
 
 	static final Identifier BADGE = Identifier.fromNamespaceAndPath("manycraft", "badge");
 
 	private volatile Protocol.Incoming.Identity identity;
 	private volatile boolean badge = true;
+	private volatile Shown hint;
+
+	private record Shown(String text, long until) {}
 
 	static String title(String name, String batch) {
 		return name + " · " + batch;
@@ -49,19 +53,41 @@ final class GameIdentity {
 		badge = visible;
 	}
 
+	void showHint(String text) {
+		hint = new Shown(text, 0);
+	}
+
 	void extractBadge(GuiGraphicsExtractor g, DeltaTracker delta) {
 		Protocol.Incoming.Identity id = identity;
 		Minecraft mc = Minecraft.getInstance();
-		if (!badge || id == null || Compat.hudHidden(mc) || mc.getDebugOverlay().showDebugScreen()) {
+		if (Compat.hudHidden(mc) || mc.getDebugOverlay().showDebugScreen()) {
 			return;
 		}
 		Font font = mc.font;
 		int h = font.lineHeight + PAD * 2 - 1;
-		int w = PAD + CHIP + GAP + font.width(id.name()) + PAD;
-		int chipY = MARGIN + (h - CHIP) / 2;
-		g.fill(MARGIN, MARGIN, MARGIN + w, MARGIN + h, BACKDROP);
-		g.fill(MARGIN + PAD, chipY, MARGIN + PAD + CHIP, chipY + CHIP, 0xFF000000 | id.rgb());
-		g.text(font, id.name(), MARGIN + PAD + CHIP + GAP, MARGIN + PAD, TEXT, false);
+		int y = MARGIN;
+		if (badge && id != null) {
+			int w = PAD + CHIP + GAP + font.width(id.name()) + PAD;
+			int chipY = y + (h - CHIP) / 2;
+			g.fill(MARGIN, y, MARGIN + w, y + h, BACKDROP);
+			g.fill(MARGIN + PAD, chipY, MARGIN + PAD + CHIP, chipY + CHIP, 0xFF000000 | id.rgb());
+			g.text(font, id.name(), MARGIN + PAD + CHIP + GAP, y + PAD, TEXT, false);
+			y += h + GAP;
+		}
+		Shown shown = hint;
+		if (shown == null) {
+			return;
+		}
+		if (shown.until() == 0) {
+			shown = new Shown(shown.text(), System.nanoTime() + HINT_NANOS);
+			hint = shown;
+		}
+		if (System.nanoTime() - shown.until() > 0) {
+			hint = null;
+			return;
+		}
+		g.fill(MARGIN, y, MARGIN + PAD + font.width(shown.text()) + PAD, y + h, BACKDROP);
+		g.text(font, shown.text(), MARGIN + PAD, y + PAD, TEXT, false);
 	}
 
 	private static void setIcon(Minecraft mc, String path) {

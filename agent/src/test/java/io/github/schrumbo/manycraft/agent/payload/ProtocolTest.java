@@ -87,6 +87,8 @@ class ProtocolTest {
 	@Test
 	void parsesChatSendReconnectRespawnQuitHotkeys() {
 		assertEquals("/say hi", assertInstanceOf(Protocol.Incoming.ChatSend.class, Protocol.parse("{\"t\":\"chat_send\",\"text\":\"/say hi\"}").orElseThrow()).text());
+		assertEquals("× quits", assertInstanceOf(Protocol.Incoming.Hint.class, Protocol.parse("{\"t\":\"hint\",\"text\":\"× quits\"}").orElseThrow()).text());
+		assertTrue(Protocol.parse("{\"t\":\"hint\"}").isEmpty());
 		assertInstanceOf(Protocol.Incoming.Reconnect.class, Protocol.parse("{\"t\":\"reconnect\"}").orElseThrow());
 		assertInstanceOf(Protocol.Incoming.Respawn.class, Protocol.parse("{\"t\":\"respawn\"}").orElseThrow());
 		assertInstanceOf(Protocol.Incoming.Quit.class, Protocol.parse("{\"t\":\"quit\"}").orElseThrow());

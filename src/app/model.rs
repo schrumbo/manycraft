@@ -136,6 +136,8 @@ impl Need {
 pub struct Able {
     pub start: usize,
     pub stop: usize,
+    /// Chosen games whose stop is overdue, which a stop now ends at once.
+    pub force: usize,
     pub restart: usize,
     pub reconnect: usize,
     pub message: usize,
@@ -179,6 +181,8 @@ pub struct Game {
     pub reconnect_attempts: u32,
     pub unread_whispers: u32,
     pub stopping: bool,
+    /// The stop has run for a while without the game ending; stopping it again ends it at once.
+    pub overdue: bool,
     pub hint: Hint,
     /// Its place in the line of bulk starts that wait for free memory, while it waits there.
     pub memory_wait: Option<u64>,
@@ -187,7 +191,7 @@ pub struct Game {
 impl Game {
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, hint: Hint::default(), memory_wait: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None }
     }
 }
 
@@ -343,7 +347,8 @@ impl Model {
         for i in keys.iter().filter_map(|k| self.games.get(k)) {
             let fresh = !i.stopping;
             n.start += usize::from(fresh && !i.phase.is_running() && i.phase != Phase::LoginNeeded);
-            n.stop += usize::from(fresh && i.phase.stoppable());
+            n.stop += usize::from((fresh || i.overdue) && i.phase.stoppable());
+            n.force += usize::from(i.stopping && i.overdue && i.phase.stoppable());
             n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
             n.reconnect += usize::from(fresh && i.phase.reconnectable());
             n.message += usize::from(i.phase.on_server());
