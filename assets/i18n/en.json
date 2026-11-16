@@ -1740,5 +1740,22 @@
   "Accounts als Tabelle": "Accounts as table",
   "Alle Proxys entfernen": "Remove all proxies",
   "Alle %lld auswählen": "Select all %lld",
-  "Die Accounts werden auch aus %@ entfernt.": "The accounts are also removed from %@."
+  "Die Accounts werden auch aus %@ entfernt.": "The accounts are also removed from %@.",
+  "Importieren …": "Import …",
+  "„%@“ importiert.": "“%@” imported.",
+  "%lld Instanzen importiert.": "%lld instances imported.",
+  "Import abgebrochen.": "Import cancelled.",
+  "Import abgebrochen. %lld sind schon importiert.": "Import cancelled. %lld were already imported.",
+  "Die Suche ließ sich nicht starten.": "The search could not be started.",
+  "Die Suche ließ sich nicht abschließen.": "The search could not be completed.",
+  "Ordner wählen": "Choose folder",
+  "Modpack wählen": "Choose modpack",
+  "Der Import ließ sich nicht starten.": "The import could not be started.",
+  "Der Import ist unerwartet abgebrochen.": "The import ended unexpectedly.",
+  "%lld importieren": "Import %lld",
+  "Wird importiert …": "Importing …",
+  "Modpack-Datei wählen …": "Choose modpack file …",
+  "Gesucht wird nach %@.": "Looking for %@.",
+  "Abgebrochen. Der Rest wurde nicht importiert.": "Cancelled. The rest was not imported.",
+  "Nicht importiert": "Not imported"
 }

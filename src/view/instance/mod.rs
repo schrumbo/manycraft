@@ -1,6 +1,6 @@
 //! The page of one instance: its tabs on the left, and on the right what runs, how to play it and what to do with it.
 
-mod actions;
+pub(crate) mod actions;
 mod inspector;
 mod logs;
 mod logs_lines;

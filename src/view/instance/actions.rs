@@ -128,7 +128,7 @@ fn open_folder(store: Store, id: &str) {
     });
 }
 
-fn shortcut(store: Store, id: &str) {
+pub(crate) fn shortcut(store: Store, id: &str) {
     let m = store.model.peek();
     let Some(made) = m.instance(id) else { return };
     let solo = super::facts(&m, id).and_then(|f| f.solo);
@@ -150,7 +150,7 @@ fn shortcut(store: Store, id: &str) {
     });
 }
 
-fn clone(store: Store, id: &str) {
+pub(crate) fn clone(store: Store, id: &str) {
     let source = id.to_owned();
     spawn_in_window(async move {
         let from = source.clone();
@@ -212,7 +212,7 @@ fn leave(store: Store, id: &str, to: Option<&str>) {
     page.set(next.map_or(Page::Grid(Filter::All), Page::Instance));
 }
 
-fn ask_delete(store: Store, id: &str) {
+pub(crate) fn ask_delete(store: Store, id: &str) {
     let m = store.model.peek();
     let Some(made) = m.instance(id) else { return };
     let name = made.name.clone();
@@ -279,7 +279,7 @@ fn restore(store: Store, name: String, entry: String) {
     });
 }
 
-fn ask_reset(store: Store, id: &str) {
+pub(crate) fn ask_reset(store: Store, id: &str) {
     let Some(made) = store.model.peek().instance(id).cloned() else { return };
     if let Some(why) = super::blocked(store, id) {
         toast::show(store.ui, why, None);

@@ -59,6 +59,7 @@ pub enum Command {
     NewBatch,
     NewInstance,
     OpenTrash,
+    Import,
 }
 
 /// A key combination; `primary` is Ctrl, or Cmd on macOS.
@@ -155,7 +156,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 42] = [
+    pub const ALL: [Command; 43] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -198,6 +199,7 @@ impl Command {
         Command::NewBatch,
         Command::NewInstance,
         Command::OpenTrash,
+        Command::Import,
     ];
 
     /// The name the drive tool and the GPUI shell use for it.
@@ -236,6 +238,7 @@ impl Command {
             Command::Smaller => "Smaller",
             Command::Fit => "FitTiles",
             Command::Quit => "Quit",
+            Command::Import => "Import",
             c => c.page_name(),
         }
     }
@@ -282,6 +285,7 @@ impl Command {
             Command::Smaller => tr("Kleinere Kacheln"),
             Command::Fit => tr("Kacheln einpassen"),
             Command::Quit => tr("Manycraft beenden"),
+            Command::Import => tr("Importieren …"),
             c => c.page_label(),
         }
     }
@@ -309,6 +313,7 @@ impl Command {
             Command::ToggleSidebar => Icon::Sidebar,
             Command::Undo => Icon::Undo,
             Command::OpenPalette => Icon::Keyboard,
+            Command::Import => Icon::Download,
             c => c.page_glyph(),
         }
     }
@@ -338,6 +343,7 @@ impl Command {
             Command::ShowTiles => k(Code::Digit1),
             Command::ShowTable => k(Code::Digit2),
             Command::Quit => k(Code::KeyQ),
+            Command::Import => k(Code::KeyO),
             Command::ShowAttention
             | Command::StartAll
             | Command::StopAll
@@ -383,6 +389,7 @@ impl Command {
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
             Command::FocusSearch => grid,
             Command::Undo => store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
+            Command::Import => can_want(&Want::Import),
             c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash) => c.page_available(store),
             _ => true,
         }
@@ -464,6 +471,9 @@ impl Command {
             }
             Command::Fit => ui.size.set(TileSize::Fit),
             Command::Quit => store.dispatch(Event::Quit),
+            Command::Import => {
+                want(store, Want::Import);
+            }
             c => c.page_run(store),
         }
     }
@@ -551,6 +561,9 @@ pub enum Want {
     CancelUpdate,
     RestartToUpdate,
     DismissNews,
+    Import,
+    /// Imports the pack or Prism export at this path at once.
+    ImportFile(std::path::PathBuf),
 }
 
 /// Who answers wants: whether it takes one, and what it does with it.
