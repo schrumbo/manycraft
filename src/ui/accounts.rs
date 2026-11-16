@@ -7,14 +7,14 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
 use gpui_kit::component::FocusableExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{AddAccount, AddMicrosoft, ChangeSkin, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
+use super::actions::{AddAccount, AddMicrosoft, ChangeSkin, NewBatchWith, NewInstanceToPlay, Reload, SignInAgain, SignInEach, UndoRemoveAccount};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::identity;
@@ -31,6 +31,8 @@ use crate::core::prism::AccountImport;
 use crate::core::skins;
 
 const COPIED_FOR: Duration = Duration::from_secs(2);
+const LIST_ROWS: (usize, usize) = (3, 8);
+const LIST_PROBLEMS: usize = 4;
 pub(super) const UNDO_FOR: Duration = Duration::from_secs(10);
 const ADDED_NOTES: f32 = font::BODY * font::LINE * 2. + font::CAPTION * font::LINE * 2. + space::XS * 2.;
 
@@ -257,6 +259,7 @@ enum Step {
     Choose,
     Microsoft(Ms),
     Offline,
+    OfflineAdded(Vec<String>),
 }
 
 enum Ms {
@@ -280,6 +283,8 @@ struct AddAccountSheet {
     details: bool,
     queue: Vec<String>,
     added: Vec<String>,
+    list: Option<Entity<TextareaState>>,
+    list_sub: Option<Subscription>,
     copied: Option<Copied>,
     windowed: bool,
     via: Via,
@@ -287,6 +292,7 @@ struct AddAccountSheet {
     private_left_open: bool,
     cancel: Arc<AtomicBool>,
     first: FocusHandle,
+    second: FocusHandle,
     main: FocusHandle,
     focus_next: bool,
     root: FocusHandle,
@@ -332,6 +338,8 @@ impl AddAccountSheet {
             details: false,
             queue,
             added: Vec::new(),
+            list: None,
+            list_sub: None,
             copied: None,
             windowed: false,
             via: Via::Window,
@@ -339,6 +347,7 @@ impl AddAccountSheet {
             private_left_open: false,
             cancel: Arc::new(AtomicBool::new(false)),
             first: cx.focus_handle().tab_index(0).tab_stop(true),
+            second: cx.focus_handle().tab_index(0).tab_stop(true),
             main: cx.focus_handle().tab_index(0).tab_stop(true),
             focus_next: true,
             root: cx.focus_handle(),
@@ -448,7 +457,60 @@ impl AddAccountSheet {
         self.cancel.store(true, Ordering::SeqCst);
         self._pump = None;
         self.save_error = None;
+        self.list = None;
+        self.list_sub = None;
         self.go(Step::Choose, cx);
+    }
+
+    fn first_run(cx: &App) -> bool {
+        let m = super::model::get(cx).read(cx);
+        m.loaded && m.instances.is_empty() && m.batches.is_empty()
+    }
+
+    fn paste(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.list.is_some() || forms::split_names(text).len() < 2 {
+            return false;
+        }
+        let typed = input_value(&self.name, cx);
+        let names: Vec<&str> = forms::split_names(&typed).into_iter().chain(forms::split_names(text)).collect();
+        let joined = names.join("\n");
+        let list = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx).auto_grow(LIST_ROWS.0, LIST_ROWS.1);
+            state.set_value(joined, window, cx);
+            state
+        });
+        self.list_sub = Some(cx.subscribe(&list, |s: &mut Self, _, e: &InputEvent, cx| match e {
+            InputEvent::Change => {
+                s.save_error = None;
+                cx.notify();
+            }
+            InputEvent::PressEnter { secondary: true, .. } => s.add_offline(cx),
+            _ => {}
+        }));
+        self.list = Some(list);
+        self.save_error = None;
+        self.focus_next = true;
+        cx.notify();
+        true
+    }
+
+    fn listed(&self, cx: &App) -> Option<Vec<(String, forms::Listed)>> {
+        let list = self.list.as_ref()?;
+        let accounts = &super::model::get(cx).read(cx).accounts;
+        Some(forms::check_names(&list.read(cx).value(), accounts))
+    }
+
+    fn another(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.list = None;
+        self.list_sub = None;
+        self.save_error = None;
+        self.name.update(cx, |n, cx| n.clean(window, cx));
+        self.go(Step::Offline, cx);
+    }
+
+    fn play_now(&mut self, account: Option<String>, cx: &mut Context<Self>) {
+        self.finish(cx);
+        cx.dispatch_action(&NewInstanceToPlay(account));
     }
 
     fn open_page(&mut self, cx: &mut Context<Self>) {
@@ -498,23 +560,54 @@ impl AddAccountSheet {
     }
 
     fn add_offline(&mut self, cx: &mut Context<Self>) {
-        let name = input_value(&self.name, cx);
-        let accounts = super::model::get(cx).read(cx).accounts.clone();
-        if self.saving || forms::offline_name_problem(&name, &accounts).is_some() {
+        let names: Vec<String> = match self.listed(cx) {
+            Some(listed) => listed.into_iter().filter(|(_, v)| *v == forms::Listed::Fine).map(|(n, _)| n).collect(),
+            None => {
+                let name = input_value(&self.name, cx);
+                let accounts = &super::model::get(cx).read(cx).accounts;
+                forms::offline_name_problem(&name, accounts).is_none().then_some(name).into_iter().collect()
+            }
+        };
+        if self.saving || names.is_empty() || !matches!(self.step, Step::Offline) {
             return;
         }
         self.saving = true;
         cx.notify();
         let proxy = self.chosen_proxy(cx);
-        let task = cx.background_executor().spawn(async move { remote::add_offline(&name, proxy) });
+        let first_run = Self::first_run(cx);
+        let task = cx.background_executor().spawn(async move { remote::add_offline_many(&names, proxy) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |s, cx| {
                 s.saving = false;
                 match result {
-                    Ok(_) => {
+                    Ok(added) if !added.is_empty() => {
+                        super::model::get(cx).update(cx, |m, cx| {
+                            for account in &added {
+                                if !m.accounts.iter().any(|a| a.id == account.id) {
+                                    m.accounts.push(account.clone());
+                                }
+                            }
+                            cx.notify();
+                        });
                         cx.dispatch_action(&Reload);
-                        s.finish(cx);
+                        let ids: Vec<String> = added.iter().map(|a| a.id.to_string()).collect();
+                        match ids.as_slice() {
+                            [one] if first_run => s.play_now(Some(one.clone()), cx),
+                            [_, _, ..] if first_run => {
+                                s.finish(cx);
+                                cx.dispatch_action(&NewBatchWith(ids));
+                            }
+                            _ => {
+                                s.added.extend(added.iter().map(|a| a.name.clone()));
+                                s.go(Step::OfflineAdded(added.into_iter().map(|a| a.name).collect()), cx);
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        s.save_error = Some(Problem::plain(tr("Diese Namen gibt es inzwischen schon.")));
+                        s.details = false;
+                        cx.notify();
                     }
                     Err(e) => {
                         s.save_error = Some(forms::explain(&e));
@@ -556,7 +649,11 @@ impl AddAccountSheet {
             return;
         }
         match &self.step {
-            Step::Offline => self.name.update(cx, |s, cx| s.take_focus(window, cx)),
+            Step::Offline => match &self.list {
+                Some(list) => list.update(cx, |s, cx| s.focus(window, cx)),
+                None => self.name.update(cx, |s, cx| s.take_focus(window, cx)),
+            },
+            Step::OfflineAdded(_) => window.focus(&self.main, cx),
             Step::Choose => {
                 let first = self.first.clone();
                 window.on_next_frame(move |window, cx| window.focus(&first, cx));
@@ -569,10 +666,10 @@ impl AddAccountSheet {
     fn render_choose(&mut self, cx: &mut Context<Self>, t: &Theme) -> (Div, Vec<AnyElement>, Vec<AnyElement>) {
         let problem = self.proxy_problem(cx);
         let blocked = problem.is_some();
-        let option = |id: &'static str, icon_name: &'static str, title: String, subtitle: String, focus: Option<&FocusHandle>| {
+        let option = |id: &'static str, icon_name: &'static str, title: String, subtitle: String, focus: &FocusHandle| {
             let row = div()
                 .id(id)
-                .mark("option", title.clone())
+                .mark("radio", title.clone())
                 .w_full()
                 .flex()
                 .items_center()
@@ -582,15 +679,15 @@ impl AddAccountSheet {
                 .rounded(px(radius::CARD))
                 .border_1()
                 .border_color(t.separator)
-                .when_some(focus, |d, f| d.track_focus(f));
+                .when(!blocked, |d| d.track_focus(focus));
             let row = if blocked { row.opacity(tint::DISABLED) } else { row.cursor_pointer().key_nav().soft(t.ink.opacity(tint::HOVER), radius::CARD) };
             row.child(div().size(px(control::L)).flex_none().rounded(px(radius::CONTROL)).bg(with_alpha(t.accent, tint::ATTENTION)).flex().items_center().justify_center().child(icon(icon_name, iconsize::L, t.accent_text)))
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(space::XXS)).child(div().text_size(px(font::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title)).child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(subtitle)))
                 .child(icon("chevron-right", iconsize::M, t.tertiary))
         };
-        let microsoft = option("choose-microsoft", "key-round", tr("Microsoft-Konto"), tr("Für alle Server. Du meldest dich bei Microsoft an."), Some(&self.first))
+        let microsoft = option("choose-microsoft", "key-round", tr("Microsoft-Konto"), tr("Für alle Server. Du meldest dich bei Microsoft an."), &self.first)
             .when(!blocked, |d| d.on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx))));
-        let offline = option("choose-offline", "user", tr("Offline-Konto"), tr("nur für Server ohne Online-Mode"), None).when(!blocked, |d| d.on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))));
+        let offline = option("choose-offline", "user", tr("Offline-Konto"), tr("Nur für Server ohne Anmeldeprüfung."), &self.second).when(!blocked, |d| d.on_click(cx.listener(|s, _, _, cx| s.go(Step::Offline, cx))));
         let open = self.advanced || blocked;
         let filled = !self.proxy_text(cx).is_empty();
         let label = if filled && !open { tr("Erweitert · Proxy gesetzt") } else { tr("Erweitert") };
@@ -632,17 +729,38 @@ impl AddAccountSheet {
             .child(proxy_row)
             .child(sheet::note(Some(tr("Gilt für Anmeldung und Spiel. Leer lassen für keinen Proxy.")), problem, t))
             .children(check_line(&self.check, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t));
-        let body = div().flex().flex_col().gap(px(space::S)).child(microsoft).child(offline).child(div().pt(px(space::S)).child(disclosure)).when(open, |d| d.child(proxy_field));
+        let (first, second) = (self.first.clone(), self.second.clone());
+        let cards = div().flex().flex_col().gap(px(space::S)).child(microsoft).child(offline).on_key_down(move |e: &KeyDownEvent, window, cx| {
+            let target = match e.keystroke.key.as_str() {
+                "down" | "right" if first.is_focused(window) => &second,
+                "up" | "left" if second.is_focused(window) => &first,
+                "down" | "up" | "left" | "right" => return cx.stop_propagation(),
+                _ => return,
+            };
+            window.focus(target, cx);
+            cx.stop_propagation();
+        });
+        let body = div().flex().flex_col().gap(px(space::S)).child(cards).child(div().pt(px(space::S)).child(disclosure)).when(open, |d| d.child(proxy_field));
         let cancel = sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx)));
         (body, Vec::new(), vec![cancel.into_any_element()])
     }
 
     fn render_offline(&mut self, cx: &mut Context<Self>, t: &Theme) -> (Div, Vec<AnyElement>, Vec<AnyElement>) {
-        let name = input_value(&self.name, cx);
-        let accounts = super::model::get(cx).read(cx).accounts.clone();
-        let problem = forms::offline_name_problem(&name, &accounts);
-        let shown = problem.clone().filter(|_| !name.is_empty() && self.save_error.is_none());
-        let mut body = div().flex().flex_col().gap(px(space::M)).child(sheet::field(tr("Name"), Input::new(&self.name), Some(tr("3 bis 16 Zeichen: Buchstaben, Ziffern und _")), shown, t));
+        let (mut body, unready, add_label) = match (self.listed(cx), &self.list) {
+            (Some(listed), Some(list)) => {
+                let fine = listed.iter().filter(|(_, v)| *v == forms::Listed::Fine).count();
+                (div().flex().flex_col().gap(px(space::M)).child(self.render_list(list, &listed, t)), (fine == 0).then(|| tr("In der Liste steht kein gültiger Name.")), trf("%lld hinzufügen", &[&fine]))
+            }
+            _ => {
+                let name = input_value(&self.name, cx);
+                let accounts = &super::model::get(cx).read(cx).accounts;
+                let problem = forms::offline_name_problem(&name, accounts);
+                let shown = problem.clone().filter(|_| !name.is_empty() && self.save_error.is_none());
+                let me = cx.entity().downgrade();
+                let input = Input::new(&self.name).on_paste(move |item, window, cx| item.text().is_some_and(|text| me.update(cx, |s, cx| s.paste(&text, window, cx)).unwrap_or(false)));
+                (div().flex().flex_col().gap(px(space::M)).child(sheet::field(tr("Name"), input, Some(tr("3 bis 16 Zeichen: Buchstaben, Ziffern und _. Für mehrere füge eine Liste ein.")), shown, t)), problem, tr("Hinzufügen"))
+            }
+        };
         if let Some(why) = &self.save_error {
             body = body.child(sheet::problem("add-offline-error", "circle-alert", t.danger_text, why, self.details, cx.listener(|s, _, _, cx| s.toggle_details(cx)), t));
         }
@@ -651,8 +769,53 @@ impl AddAccountSheet {
         }
         let back = sheet::button("back", tr("Zurück"), Some("chevron-left"), Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.back(cx)));
         let cancel = sheet::button("cancel", tr("Abbrechen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx)));
-        let add = sheet::button("add-offline", tr("Hinzufügen"), None, Look::Primary, problem.is_some(), self.saving, t).on_click(cx.listener(|s, _, _, cx| s.add_offline(cx)));
+        let add = sheet::button_unless("add-offline", add_label, None, Look::Primary, unready.map(Into::into), self.saving, t).on_click(cx.listener(|s, _, _, cx| s.add_offline(cx)));
         (body, vec![back.into_any_element()], vec![cancel.into_any_element(), add.into_any_element()])
+    }
+
+    fn render_list(&self, list: &Entity<TextareaState>, listed: &[(String, forms::Listed)], t: &Theme) -> Div {
+        let count = |want: fn(&forms::Listed) -> bool| listed.iter().filter(|(_, v)| want(v)).count();
+        let fine = count(|v| *v == forms::Listed::Fine);
+        let there = count(|v| matches!(v, forms::Listed::Taken | forms::Listed::Twice));
+        let invalid = count(|v| matches!(v, forms::Listed::Invalid(_)));
+        let mut summary = vec![trf("%lld gültig", &[&fine])];
+        if there > 0 {
+            summary.push(trf("%lld schon vorhanden", &[&there]));
+        }
+        if invalid > 0 {
+            summary.push(trf("%lld ungültig", &[&invalid]));
+        }
+        let problems: Vec<String> = listed
+            .iter()
+            .filter_map(|(name, v)| match v {
+                forms::Listed::Fine => None,
+                forms::Listed::Taken => Some(trf("„%@“: gibt es schon", &[name])),
+                forms::Listed::Twice => Some(trf("„%@“: steht doppelt in der Liste", &[name])),
+                forms::Listed::Invalid(why) => Some(trf("„%@“: %@", &[name, why])),
+            })
+            .collect();
+        let hidden = problems.len().saturating_sub(LIST_PROBLEMS);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(sheet::label(tr("Namen"), t))
+            .child(Textarea::new(list))
+            .child(div().id("list-summary").mark("status", summary.join(" · ")).text_size(px(font::CALLOUT)).text_color(t.secondary).child(summary.join(" · ")))
+            .children(problems.into_iter().take(LIST_PROBLEMS).map(|line| div().truncate().text_size(px(font::CALLOUT)).text_color(t.attention_text).child(line)))
+            .children((hidden > 0).then(|| div().text_size(px(font::CALLOUT)).text_color(t.tertiary).child(trf("und %lld weitere", &[&hidden]))))
+            .child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Ein Name pro Zeile. Ungültige und vorhandene werden übersprungen.")))
+    }
+
+    fn render_offline_added(&mut self, names: &[String], cx: &mut Context<Self>, t: &Theme) -> (Div, Vec<AnyElement>, Vec<AnyElement>) {
+        let text = match names {
+            [one] => trf("„%@“ hinzugefügt.", &[one]),
+            _ => trf("%lld Offline-Konten hinzugefügt.", &[&names.len()]),
+        };
+        let body = div().py(px(space::S)).child(div().id("offline-added").mark("status", text.clone()).child(sheet::status("circle-check", t.success_text, text)));
+        let done = sheet::button("cancel", tr("Fertig"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| s.finish(cx)));
+        let more = sheet::button("add-another", tr("Noch einen"), Some("plus"), Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, window, cx| s.another(window, cx)));
+        (body, Vec::new(), vec![done.into_any_element(), more.into_any_element()])
     }
 
     fn toggle_details(&mut self, cx: &mut Context<Self>) {
@@ -735,11 +898,18 @@ impl AddAccountSheet {
             }
             Ms::Added(name) => {
                 let next = self.queue.first().cloned();
+                let onward = next.is_none() && self.again.is_none() && Self::first_run(cx);
                 let more = match &next {
                     Some(next) => sheet::button("sign-in-more", trf("Weiter mit %@", &[next]), Some("arrow-right"), Look::Primary, false, false, t),
+                    None if onward => sheet::button("sign-in-more", tr("Noch einen"), Some("plus"), Look::Secondary, false, false, t),
                     None => sheet::button("sign-in-more", tr("Noch einen"), Some("plus"), Look::Primary, false, false, t),
                 };
-                trailing.push(more.track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx))).into_any_element());
+                let more = more.on_click(cx.listener(|s, _, _, cx| s.start_microsoft(cx)));
+                if onward {
+                    trailing = vec![more.into_any_element(), sheet::button("play-next", tr("Weiter"), Some("arrow-right"), Look::Primary, false, false, t).track_focus(&self.main).on_click(cx.listener(|s, _, _, cx| s.play_now(None, cx))).into_any_element()];
+                } else {
+                    trailing.push(more.track_focus(&self.main).into_any_element());
+                }
                 let before: Vec<&String> = self.added.iter().filter(|n| *n != name).collect();
                 let mut more_lines = div().min_h(px(ADDED_NOTES)).flex().flex_col().gap(px(space::XS));
                 if !before.is_empty() {
@@ -750,6 +920,7 @@ impl AddAccountSheet {
                         let rest = self.queue.len();
                         more_lines.child(div().line_clamp(2).text_size(px(font::BODY)).text_color(t.primary).child(if rest == 1 { trf("Als Nächstes: %@. Das ist der letzte Prism-Account.", &[&next]) } else { trf("Als Nächstes: %@. Danach noch %lld.", &[&next, &(rest - 1)]) }))
                     }
+                    None if onward => more_lines.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Als Nächstes legst du die Instanz an, mit der du spielst."))),
                     None => more_lines.child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Du kannst gleich noch ein Microsoft-Konto hinzufügen."))),
                 };
                 if self.private_left_open {
@@ -830,12 +1001,17 @@ impl Render for AddAccountSheet {
             (Step::Microsoft(_), Some(a)) => (tr("Erneut anmelden"), Some(a.name.clone())),
             (Step::Microsoft(Ms::Added(_)), None) => (trf("Konto %lld hinzugefügt", &[&self.added.len()]), None),
             (Step::Microsoft(_), None) => (tr("Mit Microsoft anmelden"), self.queue.first().map(|n| trf("Für das Prism-Konto „%@“", &[n]))),
-            (Step::Offline, _) => (tr("Offline-Konto"), Some(tr("Ohne Anmeldung, nur mit Namen. Für Server ohne Online-Mode."))),
+            (Step::Offline, _) => (tr("Offline-Konto"), Some(tr("Ohne Anmeldung, nur mit Namen. Nur für Server ohne Anmeldeprüfung."))),
+            (Step::OfflineAdded(_), _) => (tr("Offline-Konto"), None),
             (Step::Choose, _) => (tr("Account hinzufügen"), None),
         };
-        let (body, leading, trailing) = match self.step {
+        let (body, leading, trailing) = match &self.step {
             Step::Choose => self.render_choose(cx, &t),
             Step::Offline => self.render_offline(cx, &t),
+            Step::OfflineAdded(names) => {
+                let names = names.clone();
+                self.render_offline_added(&names, cx, &t)
+            }
             Step::Microsoft(_) => self.render_microsoft(cx, &t),
         };
         div()
@@ -849,7 +1025,7 @@ impl Render for AddAccountSheet {
             .on_action(cx.listener(|s, _: &Cancel, _, cx| {
                 if matches!(s.step, Step::Choose) || s.again.is_some() {
                     cx.propagate();
-                } else if matches!(s.step, Step::Microsoft(Ms::Added(_))) {
+                } else if matches!(s.step, Step::Microsoft(Ms::Added(_)) | Step::OfflineAdded(_)) {
                     s.finish(cx);
                 } else {
                     s.back(cx);
@@ -1582,7 +1758,7 @@ impl Render for AccountsPage {
                         .gap(px(space::M))
                         .child(icon("users", iconsize::HERO, t.tertiary))
                         .child(div().id("accounts-empty").mark("heading", title.clone()).text_size(px(font::TITLE2)).font_weight(FontWeight::SEMIBOLD).child(title))
-                        .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Online-Mode.")))
+                        .child(div().max_w(px(control::READING)).text_center().text_size(px(font::CALLOUT)).text_color(t.secondary).child(tr("Füge ein Microsoft-Konto hinzu oder ein Offline-Konto für Server ohne Anmeldeprüfung.")))
                         .child(div().mt(px(space::S)).flex().items_center().gap(px(space::S)).child(add).when(self.prism_found, |d| d.child(self.prism_button(cx, &t))))
                         .children(self.prism_result(&self.accounts, cx, &t).map(|c| div().mt(px(space::S)).w_full().max_w(px(control::READING)).child(c))),
                 )

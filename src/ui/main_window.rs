@@ -6,8 +6,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PickColor, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, StartMany, StartSelected, StopMany, StopSelected,
-    ToggleFullscreen, ToggleSidebar, Quit,
+    AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PickColor, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, NewInstanceToPlay, StartMany, StartSelected, StopMany, StopSelected,
+    ToggleFullscreen, ToggleSidebar, Quit, EditShownBatch, EditBatch, StartBatch, StopBatch,
 };
 use super::drive::Mark;
 use super::grid::Grid;
@@ -112,6 +112,12 @@ impl MainWindow {
                     };
                     if exists {
                         this.page = page;
+                    }
+                }
+                if let Page::Grid(Some(batch)) = &this.page {
+                    let m = model.read(cx);
+                    if m.loaded && m.batch(batch).is_none() && !m.games.values().any(|g| &g.batch_id == batch) && !m.session.waiting_starts.iter().any(|(b, _)| b == batch) {
+                        this.page = Page::Grid(None);
                     }
                 }
                 let playing = model.read(cx).playing.clone();
@@ -286,6 +292,21 @@ impl MainWindow {
         window.dispatch_action(make(keys), cx);
     }
 
+    /// Like [`Self::on_chosen`], but with nothing chosen on a batch's page acts on that batch.
+    fn on_chosen_or_shown(&mut self, make: fn(Vec<String>) -> Box<dyn Action>, whole: fn(String) -> Box<dyn Action>, window: &mut Window, cx: &mut Context<Self>) {
+        let keys = if matches!(self.page, Page::Grid(_)) { self.grid.chosen() } else { Vec::new() };
+        match (keys.is_empty(), self.shown_batch(cx)) {
+            (false, _) => window.dispatch_action(make(keys), cx),
+            (true, Some(batch)) => window.dispatch_action(whole(batch), cx),
+            (true, None) => cx.propagate(),
+        }
+    }
+
+    fn shown_batch(&self, cx: &App) -> Option<String> {
+        let Page::Grid(Some(batch)) = &self.page else { return None };
+        model::get(cx).read(cx).batch(batch).map(|b| b.id.clone())
+    }
+
     /// The quiet memory line for `batch` while nothing in it runs: worked out off the UI thread once per scope, `None` when everything fits.
     fn fit_line(&mut self, batch: Option<&str>, cx: &mut Context<Self>) -> Option<String> {
         let m = model::get(cx).read(cx);
@@ -397,7 +418,7 @@ impl MainWindow {
                 tr("Eine Instanz legt Version, Loader und Mods fest. Spiel sie allein oder schick mehrere Accounts als Batch los."),
                 "new-instance",
                 tr("Instanz erstellen"),
-                Box::new(NewInstance),
+                Box::new(NewInstanceToPlay(None)),
                 (self.prism.0 > 0).then(|| (tr("Oder aus anderem Launcher importieren"), Box::new(ImportFromLauncher) as Box<dyn Action>)),
             )
         } else {
@@ -562,8 +583,12 @@ impl Render for MainWindow {
                     cx.propagate();
                 }
             }))
-            .on_action(cx.listener(|this, _: &StartSelected, window, cx| this.on_chosen(|k| Box::new(StartMany(k)), window, cx)))
-            .on_action(cx.listener(|this, _: &StopSelected, window, cx| this.on_chosen(|k| Box::new(StopMany(k)), window, cx)))
+            .on_action(cx.listener(|this, _: &StartSelected, window, cx| this.on_chosen_or_shown(|k| Box::new(StartMany(k)), |b| Box::new(StartBatch(b)), window, cx)))
+            .on_action(cx.listener(|this, _: &StopSelected, window, cx| this.on_chosen_or_shown(|k| Box::new(StopMany(k)), |b| Box::new(StopBatch(b)), window, cx)))
+            .on_action(cx.listener(|this, _: &EditShownBatch, window, cx| match this.shown_batch(cx) {
+                Some(batch) => window.dispatch_action(Box::new(EditBatch(batch)), cx),
+                None => cx.propagate(),
+            }))
             .on_action(cx.listener(|this, _: &RestartSelected, window, cx| this.on_chosen(|k| Box::new(RestartMany(k)), window, cx)))
             .on_action(cx.listener(|this, _: &ReconnectSelected, window, cx| this.on_chosen(|k| Box::new(ReconnectMany(k)), window, cx)))
             .on_action(cx.listener(|this, _: &MessageSelected, window, cx| {
@@ -647,6 +672,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
         KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
         KeyBinding::new(k("shift-n"), NewInstance, Some("MainWindow")),
+        KeyBinding::new(k("e"), EditShownBatch, Some("MainWindow")),
         KeyBinding::new(fullscreen, ToggleFullscreen, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-right", NextInstance, Some("MainWindow")),
         KeyBinding::new("ctrl-alt-left", PreviousInstance, Some("MainWindow")),

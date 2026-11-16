@@ -4,7 +4,7 @@ use gpui_kit::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks, Quit, QuitAll, OpenFromTray]);
+actions!(manycraft, [ShowGrid, ToggleFullscreen, NextInstance, PreviousInstance, NextAttention, StartAll, StopAll, ToggleSidebar, NewBatch, AddAccount, AddMicrosoft, Reload, OpenSettings, OpenChat, OpenPalette, ShowAll, ShowAccounts, SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, MessageSelected, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, UndoRemoveAccount, Undo, CheckForUpdates, CancelUpdate, RestartToUpdate, PreviousVersion, DismissNews, ImportBatch, RenameCurrent, FindModpacks, Quit, QuitAll, OpenFromTray, EditShownBatch]);
 
 /// Gives these accounts (ids) colour `color`, an index into `core::account::COLORS`.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -170,6 +170,21 @@ pub struct PlayInstance {
     pub instance: String,
     pub account: Option<String>,
 }
+
+/// Opens the instance sheet to create an instance and play it at once, with this account (id) or the one it would pick.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct NewInstanceToPlay(pub Option<String>);
+
+/// Opens the batch sheet for a new batch with these accounts (ids) picked.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct NewBatchWith(pub Vec<String>);
+
+/// Asks, then deletes a batch (id); its games and instance stay, and an undo brings it back.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct DeleteBatch(pub String);
 
 /// Opens the batch sheet for a new batch on this instance (id).
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]

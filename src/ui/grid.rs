@@ -12,7 +12,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelStart, ClearSelection, EditBatch, MessageSelected, NewInstance, Play, ShowInstance, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartAnyway, StartBatch, StartSelected, StopSelected};
+use super::actions::{CancelStart, ClearSelection, EditBatch, MessageSelected, NewInstance, Play, ShowInstance, ReconnectSelected, RestartSelected, SendChatMany, StartAll, StartAnyway, StartBatch, StartSelected, StopBatch, StopSelected};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
 use super::model::{self, Game, Model, Phase};
@@ -596,6 +596,26 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
                 window.dispatch_action(Box::new(CancelStart(Some(cancel.clone()))), cx);
             }))
         })
+        .when(solo.is_none() && m.batch(batch).is_some(), |d| {
+            let group = SharedString::from(format!("heading-{batch}"));
+            let act = |name: &str, icon_name: &'static str, label: String, action: Box<dyn Action>| {
+                sheet::icon_button(format!("heading-{name}-{batch}"), icon_name, label.clone(), t.secondary, t).tab_stop(false).tooltip(tip(label)).on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    window.dispatch_action(action.boxed_clone(), cx);
+                })
+            };
+            d.group(group.clone()).child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .invisible()
+                    .group_hover(group, |s| s.visible())
+                    .when(stopped > 0, |d| d.child(act("start", "play", tr("Starten"), Box::new(StartBatch(id.clone())))))
+                    .when(stoppable > 0, |d| d.child(act("stop", "square", tr("Stoppen"), Box::new(StopBatch(id.clone())))))
+                    .child(act("edit", "pencil", tr("Bearbeiten…"), Box::new(EditBatch(id.clone())))),
+            )
+        })
         .when(attention > 0, |d| {
             d.child(
                 div()
@@ -617,7 +637,7 @@ fn heading(batch: &str, pinned: bool, m: &Model, t: &Theme) -> AnyElement {
         .when_some(solo.clone(), |d, instance| d.cursor_pointer().on_click(move |_, window, cx| window.dispatch_action(Box::new(ShowInstance(instance.clone())), cx)))
         .context_menu(move |menu, _, cx| match &solo {
             Some(instance) => super::sidebar::instance_menu(menu, instance, cx),
-            None => super::sidebar::batch_menu(menu, &id, stoppable, stopped, exporting, run),
+            None => super::sidebar::batch_menu(menu, &id, stoppable, stopped, exporting, run, false, cx),
         })
         .into_any_element()
 }
