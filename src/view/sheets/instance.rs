@@ -285,7 +285,6 @@ struct Make {
     loader: State<Loader>,
     list: State<Vec<GameVersion>>,
     versions: State<Load<()>>,
-    everything: State<bool>,
     supported: State<Option<(String, Option<HashSet<String>>)>>,
     memory: State<u32>,
     advanced: State<bool>,
@@ -593,7 +592,6 @@ impl Component for Create {
             loader: use_state(Loader::default),
             list: use_state(Vec::new),
             versions: use_state(|| Load::Loading),
-            everything: use_state(|| settings::active().all_versions),
             supported: use_state(|| None),
             memory: use_state(move || forms::memory_step(DEFAULT_MEMORY_MB, 0, memory_max)),
             advanced: use_state(|| false),
@@ -633,7 +631,7 @@ impl Component for Create {
         let loader = flow.loader.read().clone();
         let versions = flow.versions.read().clone();
         let list = flow.list.read().clone();
-        let everything = *flow.everything.read();
+        let everything = *store.ui.all_versions.read();
         let busy = flow.busy.read().clone();
         let saving = *flow.saving.read();
         let tried = *flow.tried.read();
@@ -684,16 +682,12 @@ impl Component for Create {
                         flow.change_version(v.id.clone());
                     }
                 });
-                let mut toggle = flow.everything;
                 let row = SwitchLabel {
                     id: "instance.everything",
                     text: tr("Snapshots und alte Versionen zeigen"),
                     on: everything,
                     disabled: blocked.clone(),
-                    on_toggle: EventHandler::new(move |on: bool| {
-                        toggle.set(on);
-                        remember_all_versions(store, on);
-                    }),
+                    on_toggle: EventHandler::new(move |on: bool| remember_all_versions(store, on)),
                 };
                 rect().width(Size::fill()).spacing(space::XS).child(select).child(row).into_element()
             }

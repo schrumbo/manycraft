@@ -109,6 +109,8 @@ pub struct Ui {
     pub tip: State<Option<Tip>>,
     /// The removal the open content browser would undo next; the palette and Ctrl or Cmd+Z reach it from here.
     pub browser_undo: State<Option<BrowserUndo>>,
+    /// Whether version pickers also offer snapshots, pre-releases and old versions; remembered in the settings.
+    pub all_versions: State<bool>,
     /// The deletions still to undo, newest first; the palette and Ctrl or Cmd+Z reach them after their toasts are gone.
     pub session_undo: State<Vec<SessionUndo>>,
     /// When the last tooltip went away, so the next one shows at once.
@@ -147,6 +149,7 @@ impl Ui {
             toasts: State::create(Vec::new()),
             tip: State::create(None),
             browser_undo: State::create(None),
+            all_versions: State::create(crate::core::settings::active().all_versions),
             session_undo: State::create(Vec::new()),
             tip_seen: State::create(None),
             accounts: accounts::Shared::create(),

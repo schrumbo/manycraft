@@ -236,12 +236,11 @@ impl Component for Settings {
                 }
             });
         });
-        let mut everything = use_state(|| settings::active().all_versions);
 
         let mut col = rect().width(Size::fill()).padding(space::XL).spacing(space::XL);
 
         let version_control: Element = {
-            let all = *everything.read();
+            let all = *store.ui.all_versions.read();
             let catalog = catalog.read().clone();
             let list: Option<Vec<GameVersion>> = match &catalog {
                 Load::Ready(list) => {
@@ -267,10 +266,7 @@ impl Component for Settings {
                             text: tr("Snapshots und alte Versionen zeigen"),
                             on: all,
                             disabled: why.clone(),
-                            on_toggle: EventHandler::new(move |on: bool| {
-                                everything.set(on);
-                                remember_all_versions(store, on);
-                            }),
+                            on_toggle: EventHandler::new(move |on: bool| remember_all_versions(store, on)),
                         })
                         .into_element()
                 }
@@ -297,7 +293,7 @@ impl Component for Settings {
             .width(Size::fill())
             .horizontal()
             .spacing(space::XL)
-            .child(rect().spacing(space::XS).child(label_row(&t, tr("Minecraft-Version"), None)).child(version_control))
+            .child(rect().width(Size::px(control::VERSION_MENU)).spacing(space::XS).child(label_row(&t, tr("Minecraft-Version"), None)).child(version_control))
             .child(rect().spacing(space::XS).child(label_row(&t, tr("Loader"), None)).child(loader_control));
         let mut top = rect().width(Size::fill()).spacing(space::S).child(game);
         match (nav.busy.read().get(&id), &why) {
