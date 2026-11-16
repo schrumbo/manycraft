@@ -25,6 +25,8 @@ pub mod frame {
     pub const PALETTE_ROWS: usize = 9;
     pub const MENU: f32 = 220.;
     pub const MENU_ROW: f32 = 26.;
+    /// Rows a long menu shows before it scrolls.
+    pub const MENU_ROWS: usize = 12;
     pub const TOAST: f32 = 420.;
     pub const TOASTS: usize = 3;
     pub const TOOLTIP: f32 = 280.;
