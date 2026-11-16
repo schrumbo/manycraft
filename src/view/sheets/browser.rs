@@ -1296,7 +1296,16 @@ impl Component for Browser {
                 }
             }))));
         }
-        column = column.child(Field::new("browser.search", query).placeholder(placeholder_text(kind)).glyph(Icon::Search).auto_focus().a11y(search));
+        let claimer = flow.clone();
+        let field = Field::new("browser.search", query).placeholder(placeholder_text(kind)).glyph(Icon::Search).auto_focus().a11y(search).claim(move |e: Event<KeyboardEventData>| {
+            let undo = matches!(&e.key, Key::Character(c) if c.eq_ignore_ascii_case("z")) && e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META) && !e.modifiers.contains(Modifiers::SHIFT);
+            if undo && claimer.notice.peek().as_ref().is_some_and(Notice::undoable) {
+                claimer.undo();
+                return true;
+            }
+            false
+        });
+        column = column.child(field);
         column = column.child(rect().width(Size::fill()).height(Size::px(font::CAPTION * font::LINE)).child(caption(&t, selected.unwrap_or_default())));
         if kind == Kind::DataPack {
             column = column.child(target_row(&t, &flow, &facts));

@@ -33,6 +33,7 @@ pub struct Field {
     secret: bool,
     lines: usize,
     on_submit: Option<EventHandler<String>>,
+    claim: Option<Callback<Event<KeyboardEventData>, bool>>,
     a11y: Option<AccessibilityId>,
 }
 
@@ -52,6 +53,7 @@ impl Field {
             secret: false,
             lines: 1,
             on_submit: None,
+            claim: None,
             a11y: None,
         }
     }
@@ -107,6 +109,12 @@ impl Field {
 
     pub fn on_submit(mut self, handler: impl FnMut(String) + 'static) -> Self {
         self.on_submit = Some(EventHandler::new(handler));
+        self
+    }
+
+    /// Lets `claim` see each key first; a key it returns true for never reaches the text.
+    pub fn claim(mut self, claim: impl Fn(Event<KeyboardEventData>) -> bool + 'static) -> Self {
+        self.claim = Some(Callback::new(claim));
         self
     }
 
@@ -174,8 +182,13 @@ impl Component for Field {
                     true
                 }
             }));
-        } else if let Some(h) = self.on_submit.clone() {
-            input = input.on_submit(move |s| h.call(s));
+        } else {
+            if let Some(h) = self.on_submit.clone() {
+                input = input.on_submit(move |s| h.call(s));
+            }
+            if let Some(claim) = self.claim.clone() {
+                input = input.on_pre_key_down(Callback::new(move |e: Event<KeyboardEventData>| !claim.call(e)));
+            }
         }
         let mut boxed = rect().width(Size::fill()).corner_radius(t.shape.field).on_sized(spot).child(input);
         if let Some(border) = ring(&t, focus()) {
