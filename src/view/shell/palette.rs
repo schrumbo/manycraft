@@ -1,7 +1,7 @@
 use freya::prelude::*;
 
 use crate::core::i18n::tr;
-use crate::view::commands::Command;
+use crate::view::commands::{self, Command};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::field::Field;
@@ -16,6 +16,7 @@ enum Target {
     Command(Command),
     Page(Page),
     Play(String),
+    Extra(EventHandler<()>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -34,6 +35,7 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
         .filter(|c| *c != Command::OpenPalette && c.available(store))
         .map(|c| Entry { id: format!("palette.{}", c.name()), label: c.label(), glyph: c.glyph(), shortcut: c.shortcut().map(|s| s.label()), target: Target::Command(c) })
         .collect();
+    list.extend(commands::extras(store).into_iter().map(|x| Entry { id: format!("palette.{}", x.id), label: x.label, glyph: x.glyph, shortcut: x.shortcut.map(|s| s.label()), target: Target::Extra(x.run) }));
     let m = store.model.peek();
     list.extend(m.batches.iter().map(|b| Entry { id: format!("palette.batch.{}", b.id), label: b.name.clone(), glyph: Icon::Layers, shortcut: None, target: Target::Page(Page::Grid(Filter::Batch(b.id.clone()))) }));
     list.extend(m.instances.iter().map(|i| Entry { id: format!("palette.instance.{}", i.id), label: i.name.clone(), glyph: Icon::Folder, shortcut: None, target: Target::Page(Page::Instance(i.id.clone())) }));
@@ -56,6 +58,7 @@ fn run(store: Store, target: &Target) {
         Target::Command(c) => c.run(store),
         Target::Page(p) => ui.page.set(p.clone()),
         Target::Play(key) => store.dispatch(crate::app::event::Event::Play(key.clone())),
+        Target::Extra(run) => run.call(()),
     }
 }
 

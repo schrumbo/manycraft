@@ -96,6 +96,13 @@ fn busy(busy: bool) -> bool {
     FLIGHT.with(|f| std::mem::replace(&mut f.borrow_mut().busy, busy))
 }
 
+/// Loads the update the check found, when it installs here.
+pub fn fetch(store: Store) {
+    if matches!(store.model.peek().updates.status, UpdateStatus::Available { installs: true, .. }) {
+        check(store, true);
+    }
+}
+
 /// Looks for a newer release; `asked` when the person wants an answer now, which skips the daily wait and shows progress.
 pub fn check(store: Store, asked: bool) {
     if !allowed() && !asked {

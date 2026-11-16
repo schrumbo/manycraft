@@ -9,8 +9,11 @@ use freya::prelude::*;
 use self::palette::Palette;
 use self::sidebar::Sidebar;
 use self::toolbar::Toolbar;
+use super::accounts::AccountsPage;
+use super::chat::ChatPage;
 use super::commands;
 use super::grid::GridPage;
+use super::instance::{InstancePage, Uptime};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::text::{heading, line, secondary};
@@ -32,9 +35,9 @@ impl Component for Shell {
         let page = ui.page.read().clone();
         let content = match page {
             Page::Grid(filter) => GridPage { filter }.into_element(),
-            Page::Instance(_) => pending(&t, Icon::Folder, tr("Instanz")),
-            Page::Accounts => pending(&t, Icon::Users, tr("Accounts")),
-            Page::Chat => pending(&t, Icon::Message, tr("Chat")),
+            Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
+            Page::Accounts => AccountsPage.into_element(),
+            Page::Chat => ChatPage.into_element(),
             Page::Settings => super::settings::SettingsPage.into_element(),
         };
         let mut row = rect().width(Size::fill()).height(Size::fill()).horizontal();
@@ -61,6 +64,7 @@ impl Component for Shell {
             })
             .on_global_key_up(move |e: Event<KeyboardEventData>| note_held(e.modifiers))
             .child(row)
+            .child(Uptime)
             .child(Palette)
             .child(sheet::Host)
             .child(menu::Host)

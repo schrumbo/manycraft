@@ -53,6 +53,18 @@ pub fn open_external(what: &str, target: String) {
     }
 }
 
+/// Runs `work` on a thread of its own and hands its result back to the UI thread; `None` when the thread died.
+pub async fn off_ui<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::Builder::new()
+        .name("work".into())
+        .spawn(move || {
+            let _ = tx.send_blocking(work());
+        })
+        .ok()?;
+    rx.recv().await.ok()
+}
+
 /// The keyboard focus ring drawn around a focused control.
 pub fn ring(t: &Theme, focus: Focus) -> Option<Border> {
     (focus == Focus::Keyboard).then(|| Border::new().fill(t.focus).width(frame::RING).alignment(BorderAlignment::Outer))

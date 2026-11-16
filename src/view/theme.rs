@@ -29,6 +29,11 @@ pub mod frame {
     pub const MENU_ROW: f32 = 26.;
     /// Rows a long menu shows before it scrolls.
     pub const MENU_ROWS: usize = 12;
+    /// The content width from which the instance page shows its inspector beside the tabs.
+    pub const INSPECTOR_SPLIT: f32 = 860.;
+    pub const INSPECTOR: f32 = 300.;
+    /// The widest the content of an instance tab grows.
+    pub const CONTENT_MAX: f32 = 760.;
     pub const TOAST: f32 = 420.;
     pub const TOASTS: usize = 3;
     pub const TOOLTIP: f32 = 280.;

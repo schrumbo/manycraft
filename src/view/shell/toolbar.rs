@@ -5,6 +5,7 @@ use crate::core::i18n::{tr, trf};
 use crate::view::commands::Command;
 use crate::view::grid::{self, layout::TileSize};
 use crate::view::icons::Icon;
+use crate::view::instance;
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::segmented::{Segment, Segmented};
@@ -54,15 +55,21 @@ impl Component for Toolbar {
                 (name, Some(grid::count_line(&m, &keys)))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
-            Page::Accounts => (tr("Accounts"), Some(if m.accounts.len() == 1 { tr("1 Account") } else { crate::core::i18n::trf("%lld Accounts", &[&m.accounts.len()]) })),
+            Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
             Page::Settings => (tr("Einstellungen"), None),
         };
 
-        let mut heading_col = rect().spacing(1.).child(title(&t, heading).max_lines(1).text_overflow(TextOverflow::Ellipsis));
-        if let Some(s) = sub {
-            heading_col = heading_col.child(caption(&t, s));
-        }
+        let heading_col = match &page {
+            Page::Instance(id) => rect().child(instance::Title { id: id.clone() }),
+            _ => {
+                let mut col = rect().spacing(1.).child(title(&t, heading).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+                if let Some(s) = sub {
+                    col = col.child(caption(&t, s));
+                }
+                col
+            }
+        };
         let mut bar = rect()
             .a11y_role(AccessibilityRole::Toolbar)
             .width(Size::fill())
@@ -75,6 +82,11 @@ impl Component for Toolbar {
             .child(rect().width(Size::flex(1.)).child(heading_col))
             .content(Content::flex());
         let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
+        if let Page::Instance(_) = &page
+            && room >= frame::TOOLBAR_FULL
+        {
+            bar = bar.child(instance::Tabs);
+        }
         if let Page::Grid(filter) = &page {
             let view = *ui.view.read();
             let batch = match filter {
@@ -126,6 +138,12 @@ impl Component for Toolbar {
                             None => AppEvent::StartAll,
                         })),
                 );
+        }
+        if page == Page::Accounts {
+            bar = bar.child(crate::view::accounts::Tools { room });
+        }
+        if page == Page::Chat {
+            bar = bar.child(crate::view::chat::Tools { room });
         }
         bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)))
     }

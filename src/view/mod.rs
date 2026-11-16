@@ -1,9 +1,12 @@
 //! The Freya front end, behind the `freya` feature: the same core and runner as the GPUI shell, drawn with Freya.
 
+mod accounts;
+mod chat;
 mod commands;
 pub mod drive;
 mod grid;
 mod icons;
+mod instance;
 mod kit;
 mod native;
 mod settings;
@@ -168,6 +171,7 @@ impl App for Root {
             store.listen(closes);
             drive::start(store);
             updates::start(store);
+            sheets::answer();
             store
         });
         use_drop(move || {
