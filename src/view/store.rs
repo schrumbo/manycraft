@@ -118,8 +118,9 @@ impl Store {
         self.side.peek().clone()
     }
 
-    /// Carries out clicks on the tray icon and requests to close the window, for as long as the window lives.
-    pub fn listen(self, closes: async_channel::Receiver<()>) {
+    /// Carries out clicks on the tray icon and what the system tells the window, for as long as the window lives. On
+    /// macOS closing the window only hides it; Manycraft stays in the Dock.
+    pub fn listen(self, told: async_channel::Receiver<native::Told>) {
         if let Some(picks) = self.side().borrow_mut().picks.take() {
             spawn(async move {
                 while let Ok(pick) = picks.recv().await {
@@ -136,8 +137,15 @@ impl Store {
             });
         }
         spawn(async move {
-            while closes.recv().await.is_ok() {
-                self.dispatch(Event::CloseWindow);
+            while let Ok(told) = told.recv().await {
+                match told {
+                    native::Told::Close if cfg!(target_os = "macos") => native::hide(None),
+                    native::Told::Close => self.dispatch(Event::CloseWindow),
+                    native::Told::Activated if self.model.peek().playing.is_some() => self.dispatch(Event::ShowGrid),
+                    native::Told::Activated => {}
+                    native::Told::Reopen => self.dispatch(Event::ShowGrid),
+                    native::Told::Menu(id) => super::menubar::chosen(self, &id),
+                }
             }
         });
     }

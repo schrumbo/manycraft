@@ -8,6 +8,7 @@ mod grid;
 mod icons;
 mod instance;
 mod kit;
+mod menubar;
 mod native;
 mod shell;
 mod stills;
@@ -61,14 +62,15 @@ pub fn run(play: Option<Play>) {
     let size = drive_size().unwrap_or(SIZE);
     let scale = drive_scale();
     let away = cfg!(target_os = "windows") && crate::core::drive::away();
-    let (close, closes) = async_channel::unbounded();
-    let window = WindowConfig::new_app(Root { play, closes })
+    let (told, hears) = async_channel::unbounded();
+    let close = told.clone();
+    let window = WindowConfig::new_app(Root { play, hears })
         .with_size(size.0, size.1)
         .with_min_size(MIN.0, MIN.1)
         .with_title("Manycraft")
         .with_shown(!away)
         .with_on_close(move |_, _| {
-            let _ = close.try_send(());
+            let _ = close.try_send(native::Told::Close);
             CloseDecision::KeepOpen
         })
         .with_window_handle(move |window| {
@@ -79,12 +81,12 @@ pub fn run(play: Option<Play>) {
             }
             native::attach(window);
         });
-    launch(LaunchConfig::new().with_plugin(drive::Watch).with_window(window));
+    launch(LaunchConfig::new().with_plugin(drive::Watch).with_plugin(native::Follow::new(told)).with_window(window));
 }
 
 struct Root {
     play: Option<Play>,
-    closes: async_channel::Receiver<()>,
+    hears: async_channel::Receiver<native::Told>,
 }
 
 impl App for Root {
@@ -110,7 +112,7 @@ impl App for Root {
         let s = *root.read();
         window.set_if_modified((s.width, s.height));
         let play = self.play.clone();
-        let closes = self.closes.clone();
+        let hears = self.hears.clone();
         let store = use_provide_context(move || {
             let (store, updates) = Store::create(ui);
             if let Some(updates) = updates {
@@ -124,10 +126,14 @@ impl App for Root {
                 let os = *OS_SCALE.lock().unwrap_or_else(|e| e.into_inner());
                 Platform::get().current_window().set_custom_scale_factor(device / os);
             }
-            store.listen(closes);
+            store.listen(hears);
             drive::start(store);
             store
         });
+        #[cfg(not(target_os = "windows"))]
+        use_side_effect(move || native::attention(store.model.read().attention_count(None)));
+        #[cfg(target_os = "macos")]
+        use_side_effect(move || menubar::refresh(store));
         use_drop(move || store.close());
         shell::Shell
     }

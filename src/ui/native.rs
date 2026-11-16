@@ -8,9 +8,8 @@ use crate::core::place::{Mode, Place, Rect};
 #[cfg(not(target_os = "windows"))]
 fn rect_of(window: &Window) -> Rect {
     let b = window.bounds();
-    let scale = if cfg!(target_os = "macos") { 1. } else { window.scale_factor() };
-    let at = |p: Pixels| (f32::from(p) * scale).round();
-    Rect { x: at(b.origin.x) as i32, y: at(b.origin.y) as i32, w: at(b.size.width).max(1.) as u32, h: at(b.size.height).max(1.) as u32 }
+    let at = |p: Pixels| f64::from(f32::from(p));
+    crate::core::manager_window::game_units((at(b.origin.x), at(b.origin.y), at(b.size.width), at(b.size.height)), f64::from(window.scale_factor()))
 }
 
 #[cfg(target_os = "windows")]
@@ -38,18 +37,16 @@ pub fn place_of(window: &Window) -> Option<(Rect, Mode)> {
     Some((rect_of(window), if fullscreen { Mode::Fullscreen } else { Mode::Normal }))
 }
 
-static CENTER: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
-
 /// Remembers the middle of `window`, for windows that should open on its monitor.
 pub fn note_center(window: &Window) {
     if let Some((frame, _)) = place_of(window) {
-        *CENTER.lock().unwrap_or_else(|e| e.into_inner()) = Some((frame.x + (frame.w / 2) as i32, frame.y + (frame.h / 2) as i32));
+        crate::core::manager_window::note_center(frame);
     }
 }
 
 /// The middle of the manager window as it was last seen, in screen pixels.
 pub fn center() -> Option<(i32, i32)> {
-    *CENTER.lock().unwrap_or_else(|e| e.into_inner())
+    crate::core::manager_window::center()
 }
 
 /// Moves `window` to `place`'s frame, maximized when it says so; a minimized window comes back there in one step.
@@ -91,12 +88,7 @@ fn set_placement(hwnd: windows_sys::Win32::Foundation::HWND, place: Place, show:
 
 /// Lets the game process `pid` bring its window to the front, which Windows refuses to background processes otherwise.
 pub fn allow_foreground(pid: u32) {
-    #[cfg(target_os = "windows")]
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = pid;
+    crate::core::manager_window::allow_foreground(pid);
 }
 
 #[cfg(target_os = "windows")]
@@ -216,22 +208,7 @@ pub fn show(window: &mut Window, place: Option<Place>, cx: &mut App) {
 
 /// Shows how many accounts need attention on the dock icon; other platforms show it in the window title.
 pub fn set_badge(count: usize) {
-    #[cfg(target_os = "macos")]
-    unsafe {
-        use objc2::runtime::AnyObject;
-        use objc2::{class, msg_send};
-        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-        let tile: *mut AnyObject = msg_send![app, dockTile];
-        if count == 0 {
-            let nil: *const AnyObject = std::ptr::null();
-            let _: () = msg_send![tile, setBadgeLabel: nil];
-        } else {
-            let label = objc2_foundation::NSString::from_str(&count.to_string());
-            let _: () = msg_send![tile, setBadgeLabel: &*label];
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = count;
+    crate::core::manager_window::set_badge(count);
 }
 
 #[cfg(test)]

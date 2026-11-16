@@ -494,6 +494,19 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
     false
 }
 
+/// The command a menu item for `command` runs now: the one its shortcut runs on the shown page, else `command` itself
+/// while it can run; while a sheet, menu or the palette is open only the palette toggle and Quit.
+#[cfg(target_os = "macos")]
+pub fn for_menu(store: Store, command: Command) -> Option<Command> {
+    let free = |c: Command| matches!(c, Command::OpenPalette | Command::Quit);
+    if store.ui.layered() && !free(command) {
+        return None;
+    }
+    let ready = |c: Command| c.available(store) || free(c) || c == Command::ToggleSidebar;
+    let keys = command.shortcut();
+    keys.and_then(|keys| Command::ALL.into_iter().find(|c| c.shortcut() == Some(keys) && ready(*c))).or_else(|| ready(command).then_some(command))
+}
+
 /// A command the shown page offers beyond the window's: in the palette, and through its shortcut while the page is shown.
 #[derive(Clone, PartialEq)]
 pub struct Extra {
