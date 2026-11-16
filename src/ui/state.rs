@@ -307,7 +307,11 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
                 [one] => model::get(cx).read(cx).games.get(one).map(|g| g.name.clone()),
                 _ => None,
             };
-            super::undo::offer(super::undo::Kind::Stopped { keys, name }, cx);
+            super::undo::offer(super::undo::Kind::Stopped { keys, name, closed: false }, cx);
+        }
+        Effect::Closed(key) => {
+            let name = model::get(cx).read(cx).games.get(&key).map(|g| g.name.clone());
+            super::undo::offer(super::undo::Kind::Stopped { keys: vec![key], name, closed: true }, cx);
         }
         Effect::ReadMemory => read_memory(cx),
         Effect::ReadUsage(pids) => read_usage(pids, cx),
@@ -818,7 +822,7 @@ mod tests {
     use super::{AuthError, Game, Phase, render_image, status, stopped_ban};
     use crate::runner::backend::needs_sign_in;
     use crate::app::event::Report;
-    use crate::app::reduce::testing::{report, settings, setup, state};
+    use crate::app::reduce::testing::{report, run, settings, setup, state};
     use crate::core::account::AccountKind;
     use crate::core::history::{self, Entry, Kind};
     use crate::core::ipc::{DisconnectCause, FromMod, StateKind};
@@ -906,6 +910,7 @@ mod tests {
         let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         report(&mut m, &s, Report::LinkLost { key: key.clone() });
+        run(&mut m, &s, Instant::now(), crate::app::event::Event::LinkLostDue { key: key.clone() });
         assert_eq!(status(&m.games[&key], None), "Keine Verbindung zum Spiel");
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         report(&mut m, &s, Report::LinkLost { key: key.clone() });

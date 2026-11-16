@@ -10,7 +10,7 @@ use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::base::input::Escape;
-use gpui_kit::component::{FocusableExt, IndexPath, Sizable, WindowExt};
+use gpui_kit::component::{Disableable, FocusableExt, IndexPath, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
@@ -346,6 +346,13 @@ struct Facts {
     running: bool,
     plain: Vec<Uuid>,
     stoppable: Vec<(String, String)>,
+    /// Games whose stop is overdue, which a stop now ends at once.
+    forceable: Vec<(String, String)>,
+    /// Games on their way down that cannot be ended at once yet.
+    slow: Vec<(String, String)>,
+    stopping: bool,
+    /// Whether the game the main button shows is on its way down.
+    shown_stopping: bool,
 }
 
 struct InstancePage {
@@ -364,7 +371,6 @@ struct InstancePage {
     select_applied: Option<(String, u64, bool, bool)>,
     opts: Options,
     jvm: Entity<InputState>,
-    typed: u64,
     loader_version: Entity<LoaderVersion>,
     name: Entity<InputState>,
     renaming: bool,
@@ -401,7 +407,7 @@ impl InstancePage {
         let name = cx.new(|cx| InputState::new(window, cx));
         let committed = |s: &mut Self, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<Self>| match e {
             InputEvent::PressEnter { .. } | InputEvent::Blur => s.commit_inputs(cx),
-            InputEvent::Change => s.commit_soon(cx),
+            InputEvent::Change => s.typing(cx),
             _ => {}
         };
         let subs = vec![
@@ -468,7 +474,6 @@ impl InstancePage {
             select_applied: None,
             opts,
             jvm,
-            typed: 0,
             loader_version,
             name,
             renaming: false,
@@ -640,14 +645,23 @@ impl InstancePage {
         let batches = m.batches.iter().filter(|b| b.instance_id == made.id).map(|b| (b.id.clone(), b.name.clone())).collect();
         let accounts = m.accounts.iter().map(|a| (a.id, a.name.clone())).collect();
         let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
-        let mut stoppable: Vec<(String, String)> = live.iter().filter(|g| !g.stopping).map(|g| (g.key.clone(), g.name.clone())).collect();
-        stoppable.sort_by_key(|(_, name)| name.to_lowercase());
+        let named = |keep: &dyn Fn(&Game) -> bool| {
+            let mut games: Vec<(String, String)> = live.iter().filter(|g| keep(g)).map(|g| (g.key.clone(), g.name.clone())).collect();
+            games.sort_by_key(|(_, name)| name.to_lowercase());
+            games
+        };
+        let stoppable = named(&|g| !g.stopping);
+        let forceable = named(&|g| g.stopping && g.overdue);
+        let slow = named(&|g| g.stopping && !g.overdue);
+        let stopping = live.iter().any(|g| g.stopping);
         let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
         let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
         let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
-        let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
+        let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first());
+        let shown_stopping = shown.is_some_and(|g| g.stopping);
+        let shown = shown.map(|g| g.key.clone());
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-        Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable })
+        Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable, forceable, slow, stopping, shown_stopping })
     }
 
     fn instance(&self, cx: &App) -> Option<Instance> {
@@ -731,27 +745,24 @@ impl InstancePage {
         }
         let shown = (made.id.clone(), made.jvm_args.join(" "), made.loader.version().unwrap_or_default().to_owned());
         if self.synced.as_ref() != Some(&shown) {
+            let untouched = self.synced.as_ref().is_none_or(|old| old.0 != shown.0 || split_args(&self.jvm.read(cx).value()) == split_args(&old.1));
             let jvm = shown.1.clone();
             self.synced = Some(shown);
-            self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
+            if untouched {
+                self.jvm.update(cx, |s, cx| s.set_value(jvm, window, cx));
+            }
         }
         self.loader_version.update(cx, |p, cx| p.show(&made.loader, &made.game_version, cx));
         self.sync_options(made, window, cx);
     }
 
-    pub(super) fn commit_soon(&mut self, cx: &mut Context<Self>) {
-        self.typed += 1;
-        let typed = self.typed;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
-            let _ = this.update(cx, |s, cx| {
-                if s.typed == typed {
-                    s.commit_inputs(cx);
-                    s.commit_options(cx);
-                }
-            });
-        })
-        .detach();
+    pub(super) fn typing(&mut self, cx: &mut Context<Self>) {
+        if self.opts.jvm_problem.is_some() || self.opts.game_problem.is_some() || self.opts.window_problem.is_some() {
+            self.opts.jvm_problem = None;
+            self.opts.game_problem = None;
+            self.opts.window_problem = None;
+            cx.notify();
+        }
     }
 
     fn commit_inputs(&mut self, cx: &mut Context<Self>) {
@@ -833,7 +844,9 @@ impl InstancePage {
     }
 
     fn finished(&mut self, id: &str, switched: bool, result: anyhow::Result<(Instance, Vec<String>)>, cx: &mut Context<Self>) {
-        let renamed = matches!(self.in_flight.take(), Some((_, Job::Save(Change::Name(_)))));
+        let job = self.in_flight.take();
+        let renamed = matches!(job, Some((_, Job::Save(Change::Name(_)))));
+        let typed = matches!(job, Some((_, Job::Save(Change::JvmArgs(_) | Change::Option(_)))));
         let changed = self.changing.take();
         if switched && self.switching.as_ref().is_some_and(|b| b.id == id) {
             self.switching = None;
@@ -860,7 +873,9 @@ impl InstancePage {
                 if let Some(kind) = edited {
                     super::undo::offer(kind, cx);
                 }
-                cx.dispatch_action(&Reload);
+                if !typed {
+                    cx.dispatch_action(&Reload);
+                }
             }
             Err(e) => {
                 let problem = forms::explain_as(tr("Nicht gespeichert."), &e);
@@ -1042,11 +1057,11 @@ impl InstancePage {
             .child(div().flex_none().flex().items_center().gap(px(space::S)).child(self.batch_control(f, cx, t)).child(self.play_control(f, cx, t)))
     }
 
-    fn stop_shown(&mut self, cx: &mut Context<Self>) {
+    fn stop_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = self.facts(cx) else { return };
-        let key = f.shown.filter(|k| f.stoppable.iter().any(|(s, _)| s == k)).or_else(|| f.stoppable.first().map(|(k, _)| k.clone()));
+        let key = f.shown.filter(|k| f.stoppable.iter().chain(&f.forceable).any(|(s, _)| s == k)).or_else(|| f.stoppable.first().or(f.forceable.first()).map(|(k, _)| k.clone()));
         if let Some(key) = key {
-            cx.dispatch_action(&Stop(key));
+            window.dispatch_action(Box::new(Stop(key)), cx);
         }
     }
 
@@ -1054,6 +1069,10 @@ impl InstancePage {
         let (mark, text, tick) = if let Some(done) = snapshots::progress(&self.id, cx) {
             (icon("archive-restore", iconsize::XS, t.secondary).into_any_element(), trf("Wird gesichert … %lld %", &[&((done * 100.).round() as u32)]), None)
         } else {
+            if f.stoppable.is_empty() && f.stopping {
+                let ring = div().size(px(shell::DOT)).flex_none().rounded(px(radius::FULL)).border(px(tile::HAIRLINE)).border_color(t.secondary).into_any_element();
+                return Some(chip(ring, tr("Wird gestoppt…"), t));
+            }
             let up = cx.try_global::<Uptime>()?;
             let since = f.stoppable.iter().filter_map(|(key, _)| up.0.get(key)).min().copied()?;
             let text = match (f.stoppable.len(), uptime_text(since)) {
@@ -1078,17 +1097,7 @@ impl InstancePage {
             })
             .detach();
         }
-        Some(
-            div()
-                .id("instance-status")
-                .mark("status", text.clone())
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(space::XS))
-                .child(mark)
-                .child(div().text_size(px(font::CALLOUT)).font_features(toolbar::tabular()).text_color(t.secondary).child(text)),
-        )
+        Some(chip(mark, text, t))
     }
 
     fn play_control(&self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> AnyElement {
@@ -1104,7 +1113,7 @@ impl InstancePage {
         };
         let rings = super::theme::rings(cx);
         let several = f.accounts.len() > 1;
-        let (instance, accounts, current, plain, stoppable) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone(), f.stoppable.clone());
+        let (instance, accounts, current, plain, stoppable, forceable, slow) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone(), f.stoppable.clone(), f.forceable.clone(), f.slow.clone());
         let stop_keys = super::palette::shortcut(&StopCurrent, cx);
         let menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
@@ -1120,17 +1129,19 @@ impl InstancePage {
                     menu.menu_element_with_check(current == Some(*account), action, account_row(name.clone(), kind, color, head, false))
                 };
             }
-            if several && !stoppable.is_empty() {
+            if several && !(stoppable.is_empty() && forceable.is_empty() && slow.is_empty()) {
                 menu = menu.separator();
             }
-            match stoppable.as_slice() {
-                [] => {}
-                [(key, _)] => menu = menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Stoppen"), stop_keys.clone(), false)),
-                many => {
-                    for (key, name) in many {
-                        menu = menu.menu(trf("„%@“ stoppen", &[name]), Box::new(Stop(key.clone())));
-                    }
-                }
+            let one = stoppable.len() + forceable.len() + slow.len() == 1;
+            for (key, name) in &stoppable {
+                menu = if one { menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Stoppen"), stop_keys.clone(), false)) } else { menu.menu(trf("„%@“ stoppen", &[name]), Box::new(Stop(key.clone()))) };
+            }
+            for (key, name) in &forceable {
+                menu = if one { menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Sofort beenden"), stop_keys.clone(), false)) } else { menu.menu(trf("„%@“ sofort beenden", &[name]), Box::new(Stop(key.clone()))) };
+            }
+            for (key, name) in &slow {
+                let label = if one { tr("Stoppen") } else { trf("„%@“ stoppen", &[name]) };
+                menu = menu.menu_element_with_disabled(Box::new(Stop(key.clone())), true, super::palette::menu_row(label, stop_keys.clone().filter(|_| one), true));
             }
             menu
         };
@@ -1139,7 +1150,7 @@ impl InstancePage {
             let button = Button::new("play-menu").primary().small().h(px(control::M)).px(px(space::M)).focus_ring(rings).dropdown_caret(true).child(words(label.clone())).dropdown_menu(menu);
             return div().id("play").mark("button", label).flex_none().child(button).into_any_element();
         };
-        if !several && f.stoppable.is_empty() {
+        if !several && f.stoppable.is_empty() && f.forceable.is_empty() && f.slow.is_empty() {
             return sheet::button("play", label, None, Look::Primary, false, false, t).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)).into_any_element();
         }
         let main = Button::new("play-main")
@@ -1150,6 +1161,7 @@ impl InstancePage {
             .rounded_tr(px(0.))
             .rounded_br(px(0.))
             .focus_ring(rings)
+            .disabled(f.shown_stopping)
             .child(words(label.clone()))
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx));
         let chevron_label = if several { tr("Anderer Account") } else { tr("Weitere Aktionen") };
@@ -1471,7 +1483,7 @@ fn switched(made: &Instance, switch: &Switch) -> anyhow::Result<(Instance, Vec<S
 impl Render for InstancePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
-        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &StopCurrent, _, cx| s.stop_shown(cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
+        let root = div().id("instance-page").key_context(PAGE_CONTEXT).on_action(cx.listener(|s, _: &RenameCurrent, window, cx| s.begin_rename(window, cx))).on_action(cx.listener(|s, _: &StopCurrent, window, cx| s.stop_shown(window, cx))).on_action(cx.listener(|s, _: &Escape, window, cx| s.cancel_rename(window, cx))).size_full().bg(t.window).text_color(t.primary).font_family(Theme::font_family()).text_size(px(font::BODY)).track_focus(&self.root);
         let Some(f) = self.facts(cx) else { return self.render_gone(root, &t).into_any_element() };
         if let Some(WantsTab(id, tab)) = cx.try_global::<WantsTab>()
             && *id == self.id
@@ -1531,6 +1543,18 @@ impl Render for InstancePage {
         let scroller = if self.tab == Tab::Mods && f.made.loader.takes_mods() { scroller.flex().justify_center().child(body.h_full()) } else { scroller.overflow_y_scroll().track_scroll(&self.scroll).child(div().w_full().flex().justify_center().child(body)) };
         root.flex().flex_col().child(header).child(scroller).into_any_element()
     }
+}
+
+fn chip(mark: AnyElement, text: String, t: &Theme) -> Stateful<Div> {
+    div()
+        .id("instance-status")
+        .mark("status", text.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(space::XS))
+        .child(mark)
+        .child(div().text_size(px(font::CALLOUT)).font_features(toolbar::tabular()).text_color(t.secondary).child(text))
 }
 
 /// A play menu row: the account's face, its name and what kind of account it is.

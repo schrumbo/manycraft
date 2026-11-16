@@ -27,7 +27,7 @@ public interface Bridge {
 
 	void serversSaved();
 
-	boolean closeToGrid();
+	void closeRequested();
 
 	boolean key(int action, Object event);
 

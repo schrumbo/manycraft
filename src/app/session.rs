@@ -125,6 +125,8 @@ pub struct Session {
     pub memory_asked: bool,
     /// Whether a timer to read the free memory again waits.
     pub memory_timer: bool,
+    /// Games whose link to Manycraft dropped and is not back yet, before their tile says so.
+    pub lost: HashSet<String>,
     /// Plays asked for before the data was read, by instance and account.
     pub waiting_plays: Vec<(String, Option<String>)>,
     /// Batch starts asked for before a load knew the batch, by batch and when they were asked.

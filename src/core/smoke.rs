@@ -22,6 +22,10 @@ const SAMPLES: usize = 3;
 const POLL: Duration = Duration::from_millis(250);
 const DEFAULT_TIMEOUT: u64 = 900;
 const FPS_LINE: &str = "manycraft smoke fps ";
+const BACKEND_FAILED: &str = "Failed to create backend ";
+const BACKEND_USED: &str = "Using graphics backend ";
+const BACKENDS: [&str; 2] = ["OpenGL", "Vulkan"];
+const TAIL: usize = 60;
 const FAULTS: [&str; 7] = [
     "hooks not found",
     "failed, left to the game",
@@ -79,6 +83,9 @@ fn run(args: &[String]) -> Result<i32> {
     for line in log.lines().filter(|l| l.contains("[manycraft-agent]")) {
         println!("{line}");
     }
+    if let Some(backend) = log.lines().find_map(|l| message(l, BACKEND_USED)) {
+        println!("{backend}");
+    }
     let mut problems = match outcome {
         Ok(fps) => {
             println!("handshake ok, preview ok, hidden fps {fps:?} (cap {CAP})");
@@ -93,6 +100,17 @@ fn run(args: &[String]) -> Result<i32> {
     }
     for problem in &problems {
         eprintln!("smoke failed: {problem}");
+    }
+    let logs = game_dir.join("logs");
+    let modified = |name: &str| fs::metadata(logs.join(name)).and_then(|m| m.modified()).ok();
+    let latest = match (modified("latest.log"), modified("manycraft-launch.log")) {
+        (Some(latest), Some(launch)) if latest >= launch => read_log(&logs.join("latest.log")),
+        _ => String::new(),
+    };
+    let (name, text) = if latest.is_empty() { ("manycraft-launch.log", &log) } else { ("latest.log", &latest) };
+    eprintln!("last lines of {name}:");
+    for line in tail(text, TAIL) {
+        eprintln!("  {line}");
     }
     Ok(1)
 }
@@ -150,6 +168,9 @@ fn watch(fleet: &Fleet, events: &std::sync::mpsc::Receiver<ipc::Event>, key: &st
         if !fleet.is_running(key) {
             bail!("the game exited (code {:?})", fleet.exit_code(key).flatten());
         }
+        if !connected && let Some(why) = no_backend(&read_log(log)) {
+            bail!("no graphics backend started, the game waits on its error dialog: {why}");
+        }
         if previewed {
             let samples: Vec<(u32, bool)> = fps_samples(&read_log(log)).into_iter().skip(checked_from).collect();
             if samples.len() >= SAMPLES {
@@ -187,6 +208,36 @@ fn fps_samples(log: &str) -> Vec<(u32, bool)> {
         .collect()
 }
 
+fn message(line: &str, prefix: &str) -> Option<String> {
+    let text = &line[line.find(prefix)?..];
+    Some(text.split("]]>").next().unwrap_or(text).trim().to_owned())
+}
+
+fn no_backend(log: &str) -> Option<String> {
+    if log.contains(BACKEND_USED) {
+        return None;
+    }
+    let lines: Vec<&str> = log.lines().collect();
+    let failed: Vec<(String, String)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let name: String = line.split_once(BACKEND_FAILED)?.1.chars().take_while(|c| c.is_alphanumeric()).collect();
+            let reason = lines[i + 1..].iter().take(3).find_map(|l| l.split_once("BackendCreationException: ").map(|(_, r)| r.trim().to_owned()));
+            Some((name, reason.unwrap_or_default()))
+        })
+        .collect();
+    BACKENDS
+        .iter()
+        .all(|b| failed.iter().any(|(name, _)| name == b))
+        .then(|| failed.iter().map(|(name, reason)| format!("{name}: {reason}")).collect::<Vec<_>>().join("; "))
+}
+
+fn tail(text: &str, n: usize) -> Vec<&str> {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].to_vec()
+}
+
 fn faults(log: &str) -> Vec<String> {
     log.lines().filter(|l| FAULTS.iter().any(|f| l.contains(f))).map(|l| l.trim().to_owned()).collect()
 }
@@ -214,6 +265,54 @@ mod tests {
         let log = "[manycraft-agent] hooks not found in net/minecraft/client/Options: save (options)\nfine\n[x/WARN]: Hud has none of a, b, the companion leaves it alone\n";
         assert_eq!(faults(log).len(), 2);
         assert!(faults("[manycraft-agent] patched 17 features").is_empty());
+    }
+
+    #[test]
+    fn every_backend_failing_is_found_in_plain_and_xml_logs() {
+        let plain = "[10:48:46] [Render thread/ERROR]: Failed to create backend OpenGL
+com.mojang.renderpearl.api.device.BackendCreationException: Failed to create window for OpenGL context: Couldn't find matching GLX visual
+	at x
+[10:48:46] [Render thread/ERROR]: Failed to create backend Vulkan
+com.mojang.renderpearl.api.device.BackendCreationException: Vulkan is not supported
+";
+        assert_eq!(
+            no_backend(plain).unwrap(),
+            "OpenGL: Failed to create window for OpenGL context: Couldn't find matching GLX visual; Vulkan: Vulkan is not supported"
+        );
+        let xml = "<log4j:Message><![CDATA[Failed to create backend OpenGL]]></log4j:Message>
+<log4j:Throwable><![CDATA[com.mojang.renderpearl.api.device.BackendCreationException: no visual
+<log4j:Message><![CDATA[Failed to create backend Vulkan]]></log4j:Message>
+";
+        assert_eq!(no_backend(xml).unwrap(), "OpenGL: no visual; Vulkan: ");
+        assert!(no_backend("[x]: Failed to create backend Vulkan
+[x]: Using graphics backend OpenGL, using drivers: llvmpipe
+").is_none());
+        assert!(no_backend(&format!("{plain}[x]: Using graphics backend Vulkan, using drivers: lavapipe
+")).is_none());
+        assert!(no_backend("[x]: Failed to create backend 
+<![CDATA[Failed to create backend ]]>
+").is_none());
+        assert!(no_backend("fine
+").is_none());
+    }
+
+    #[test]
+    fn the_used_backend_reads_without_xml() {
+        let xml = "    <log4j:Message><![CDATA[Using graphics backend OpenGL, using drivers: 4.5 Mesa]]></log4j:Message>";
+        assert_eq!(message(xml, BACKEND_USED).unwrap(), "Using graphics backend OpenGL, using drivers: 4.5 Mesa");
+        assert_eq!(message("[x]: Using graphics backend Vulkan", BACKEND_USED).unwrap(), "Using graphics backend Vulkan");
+        assert!(message("other", BACKEND_USED).is_none());
+    }
+
+    #[test]
+    fn the_tail_keeps_the_last_lines() {
+        assert_eq!(tail("a
+b
+c
+", 2), vec!["b", "c"]);
+        assert_eq!(tail("a
+", 5), vec!["a"]);
+        assert!(tail("", 5).is_empty());
     }
 
     #[test]

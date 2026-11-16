@@ -39,6 +39,7 @@ enum Cmd {
     Known(Vec<(String, String)>),
     Start(Target, Vec<Account>, Arc<AtomicBool>),
     Stop(Vec<String>),
+    Kill(Vec<String>),
     Send(String, ToMod),
 }
 
@@ -62,6 +63,10 @@ impl Backend for Fake {
 
     fn stop(&self, keys: Vec<String>) {
         let _ = self.tx.send(Cmd::Stop(keys));
+    }
+
+    fn kill(&self, keys: Vec<String>) {
+        let _ = self.tx.send(Cmd::Kill(keys));
     }
 
     fn send(&self, key: &str, message: ToMod) {
@@ -181,9 +186,16 @@ impl<P: Pixels> Sim<P> {
                 }
             }
             Cmd::Stop(keys) => {
+                let took = secs("MANYCRAFT_FAKE_SLOW_STOP").unwrap_or(Duration::from_millis(300));
                 for key in keys {
                     self.queue.retain(|(_, _, u)| !touches(u, &key));
-                    self.at(Duration::from_millis(300), None, Update::Exited { key, code: Some(0) });
+                    self.at(took, None, Update::Exited { key, code: Some(0) });
+                }
+            }
+            Cmd::Kill(keys) => {
+                for key in keys {
+                    self.queue.retain(|(_, _, u)| !touches(u, &key));
+                    self.at(Duration::ZERO, None, Update::Exited { key, code: Some(1) });
                 }
             }
             Cmd::Send(key, message) => self.message(&key, message),
@@ -223,7 +235,7 @@ impl<P: Pixels> Sim<P> {
                     (run.every, run.width) = (every, width);
                 }
             }
-            ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
+            ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
         }
     }
 

@@ -105,8 +105,8 @@ pub(super) struct Options {
     width: Entity<InputState>,
     height: Entity<InputState>,
     pub(super) jvm_problem: Option<String>,
-    game_problem: Option<String>,
-    window_problem: Option<String>,
+    pub(super) game_problem: Option<String>,
+    pub(super) window_problem: Option<String>,
     synced: Option<(String, LaunchOptions)>,
     java_items: Option<(Option<PathBuf>, usize)>,
     gpu_focus: FocusHandle,
@@ -127,7 +127,7 @@ impl Options {
         let height = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Höhe")));
         let committed = |s: &mut InstancePage, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<InstancePage>| match e {
             InputEvent::PressEnter { .. } | InputEvent::Blur => s.commit_options(cx),
-            InputEvent::Change => s.commit_soon(cx),
+            InputEvent::Change => s.typing(cx),
             _ => {}
         };
         let subs = vec![
@@ -210,7 +210,11 @@ impl InstancePage {
         }
         let options = &made.options;
         let saved = self.opts.synced.as_ref().filter(|(id, _)| *id == made.id).map(|(_, saved)| saved);
-        let (args_stale, window_stale, stale) = (saved.is_none_or(|s| s.game_args != options.game_args), saved.is_none_or(|s| s.window != options.window), saved != Some(options));
+        let typed_args: Vec<String> = self.opts.game_args.read(cx).value().split_whitespace().map(str::to_owned).collect();
+        let typed_window = crate::core::options::parse_window(&self.opts.width.read(cx).value(), &self.opts.height.read(cx).value());
+        let args_stale = saved.is_none_or(|s| s.game_args != options.game_args && typed_args == s.game_args);
+        let window_stale = saved.is_none_or(|s| s.window != options.window && typed_window == Ok(s.window));
+        let stale = saved != Some(options);
         if stale {
             self.opts.synced = Some((made.id.clone(), options.clone()));
         }

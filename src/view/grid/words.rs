@@ -263,7 +263,7 @@ pub struct Offer {
 
 /// The selection bar's actions for `keys`.
 pub fn offers(keys: &[String], m: &Model) -> [Offer; 5] {
-    let Able { start, stop, restart, reconnect, message } = m.able(keys);
+    let Able { start, stop, restart, reconnect, message, .. } = m.able(keys);
     let total = keys.iter().filter(|k| m.games.contains_key(*k)).count();
     let offer = |id: &'static str, name: String, able: usize, why: String| {
         let skipped = total.saturating_sub(able);

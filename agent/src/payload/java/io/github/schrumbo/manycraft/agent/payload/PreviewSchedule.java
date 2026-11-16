@@ -5,7 +5,7 @@ final class PreviewSchedule {
 	private boolean taken;
 
 	boolean due(long nowNanos, long intervalMs) {
-		return !taken || nowNanos - lastNanos >= intervalMs * 1_000_000L;
+		return !taken || nowNanos - lastNanos >= intervalMs * 875_000L;
 	}
 
 	void mark(long nowNanos) {

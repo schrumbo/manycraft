@@ -125,12 +125,13 @@ final class BackgroundController {
 	}
 
 	int hiddenFramerate() {
-		return switch (level) {
+		int fps = switch (level) {
 			case SAVING -> profile.fps();
 			case BALANCED -> Math.min(BackgroundLevel.BALANCED_FPS, mc.options.framerateLimit().get());
 			case FULL -> mc.options.framerateLimit().get();
 			case CUSTOM -> Math.min(custom.fps(), mc.options.framerateLimit().get());
 		};
+		return Math.max(fps, BackgroundLevel.previewFramerate(profile.previewIntervalMs()));
 	}
 
 	void applyLevel(BackgroundLevel next, BackgroundLevel.Custom nextCustom) {

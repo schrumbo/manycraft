@@ -172,6 +172,12 @@ async fn run(b: &Value, cx: &mut AsyncApp) -> Result<Value, String> {
             Ok(json!({}))
         }
         "state" => Ok(cx.update(state)),
+        "toast" => {
+            let text = |key: &str| SharedString::from(b[key].as_str().unwrap_or_default().to_owned());
+            let notification = SystemNotification { tag: text("tag"), title: text("title"), body: text("body"), actions: Vec::new() };
+            cx.update(|cx| cx.show_system_notification(notification));
+            Ok(json!({}))
+        }
         "notification" => {
             let tag = b["tag"].as_str().unwrap_or_default().to_owned();
             cx.update(|cx| super::state::notification_clicked(&tag, cx));
