@@ -30,8 +30,11 @@ pub fn show(mut ui: Ui, text: impl Into<String>, undo: Option<EventHandler<()>>)
     {
         let mut toasts = ui.toasts.write();
         toasts.push(Toast { id, text: text.into(), undo });
-        let extra = toasts.len().saturating_sub(frame::TOASTS);
-        toasts.drain(..extra);
+        while toasts.len() > frame::TOASTS {
+            let last = toasts.len() - 1;
+            let oldest = toasts[..last].iter().position(|t| t.undo.is_none()).unwrap_or(0);
+            toasts.remove(oldest);
+        }
     }
     spawn_in_window(async move {
         after(wait).await;

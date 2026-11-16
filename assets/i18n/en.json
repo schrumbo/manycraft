@@ -1566,18 +1566,15 @@
   "Zu Batch hinzufügen": "Add to batch",
   "Leg zuerst einen Batch an.": "Create a batch first.",
   "Proxy…": "Proxy…",
-  "Auswahl aufheben (Esc)": "Deselect (Esc)",
   "Art": "Kind",
   "Status": "Status",
   "Zuletzt online": "Last online",
-  "Nach dieser Spalte sortieren": "Sort by this column",
   "Proxy gesichert": "Proxy saved",
   "Proxy entfernt": "Proxy removed",
   "Proxy für %lld Accounts gesichert": "Proxy saved for %lld accounts",
   "Proxy für %lld Accounts entfernt": "Proxy removed for %lld accounts",
   "Der alte Proxy wurde nicht zurückgeholt.": "The old proxy was not restored.",
   "%lld Accounts entfernen?": "Remove %lld accounts?",
-  "Sie werden auch aus %@ entfernt.": "They are also removed from %@.",
   "Gespeicherte Anmeldungen werden gelöscht; zum Wiederherstellen meldest du dich neu an.": "Saved sign-ins are deleted; to restore them, sign in again.",
   "Die Spielordner dieser Accounts bleiben erhalten.": "The game folders of these accounts are kept.",
   "%lld entfernen": "Remove %lld",
@@ -1597,5 +1594,8 @@
   "Zieht noch in die neue Oberfläche um.": "Still moving to the new interface.",
   "Ausgewählte Accounts entfernen…": "Remove selected accounts…",
   "Accounts als Liste": "Accounts as list",
-  "Accounts als Tabelle": "Accounts as table"
+  "Accounts als Tabelle": "Accounts as table",
+  "Alle Proxys entfernen": "Remove all proxies",
+  "Alle %lld auswählen": "Select all %lld",
+  "Die Accounts werden auch aus %@ entfernt.": "The accounts are also removed from %@."
 }

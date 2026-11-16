@@ -36,10 +36,11 @@ impl Component for List {
         let editing = *shared.editing.read();
         let cursor = *shared.cursor.read();
         let edit_at = editing.and_then(|e| self.lines.iter().position(|l| l.id == e));
-        let size = move |i: usize| if Some(i) == edit_at { ROW_H + EDIT_H } else { ROW_H };
         let cursor_at = cursor.and_then(|c| self.lines.iter().position(|l| l.id == c));
         use_side_effect_with_deps(&(cursor_at, edit_at), move |(at, edit)| {
             let Some(at) = at.or(*edit) else { return };
+            let edit = *edit;
+            let size = move |i: usize| if Some(i) == edit { ROW_H + EDIT_H } else { ROW_H };
             let mut scroll = scroll;
             let top: f32 = (0..at).map(size).sum();
             let bottom = top + size(at);
@@ -62,7 +63,7 @@ impl Component for List {
                 .into_element()
         }, scroll)
         .length(n)
-        .item_size(size)
+        .item_size(move |i: usize| if Some(i) == edit_at { ROW_H + EDIT_H } else { ROW_H })
         .width(Size::fill())
         .height(Size::fill())
         .on_sized(move |e: Event<SizedEventData>| viewport.set_if_modified(e.area.height()))
@@ -227,19 +228,36 @@ impl Component for ProxyEditor {
             }
         };
         let ids = self.ids.clone();
-        let unchanged = typed == self.start.trim() && self.ids.len() == 1;
-        let mut save = move || {
-            let typed = value.peek().trim().to_owned();
+        let mixed = {
+            let m = store.model.peek();
+            let mut proxies = m.accounts.iter().filter(|a| self.ids.contains(&a.id)).map(|a| a.proxy.clone());
+            let first = proxies.next();
+            proxies.any(|p| Some(p) != first)
+        };
+        let unchanged = typed == self.start.trim();
+        let store_proxy = move |typed: String| {
             if *saving.peek() || proxy_problem(&typed).is_some() {
                 return;
             }
             saving.set(true);
             save_proxy(store, ids.clone(), typed, move |ok| {
-                saving.set(false);
+                if let Some(mut busy) = saving.try_write() {
+                    *busy = false;
+                }
                 if ok {
                     close();
                 }
             });
+        };
+        let start = self.start.trim().to_owned();
+        let mut clear_all = store_proxy.clone();
+        let mut write = store_proxy;
+        let mut save = move || {
+            let typed = value.peek().trim().to_owned();
+            if typed == start {
+                return;
+            }
+            write(typed);
         };
         let mut submit = save.clone();
         let test_value = typed.clone();
@@ -291,10 +309,14 @@ impl Component for ProxyEditor {
         }
         let mut buttons = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S);
         buttons = buttons
-            .child(Button::new("accounts.proxy.test", tr("Testen")).glyph(Icon::Wifi).disabled(test_off).on_press(move |_| test_proxy(test_value.clone(), check)))
+            .child(Button::new("accounts.proxy.test", tr("Testen")).glyph(Icon::Wifi).disabled(test_off).on_press(move |_| test_proxy(test_value.clone(), check, value)))
             .child(spacer())
             .content(Content::flex())
-            .child(Button::new("accounts.proxy.cancel", tr("Abbrechen")).on_press(move |_| close()))
+            .child(Button::new("accounts.proxy.cancel", tr("Abbrechen")).on_press(move |_| close()));
+        if mixed {
+            buttons = buttons.child(Button::new("accounts.proxy.clear", tr("Alle Proxys entfernen")).plain().disabled((*saving.read()).then(|| tr("Wird gesichert …"))).on_press(move |_| clear_all(String::new())));
+        }
+        buttons = buttons
             .child(Button::new("accounts.proxy.save", tr("Sichern")).primary().disabled(save_off).on_press(move |_| save()));
         col.child(buttons)
     }

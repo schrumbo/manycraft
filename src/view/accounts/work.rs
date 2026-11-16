@@ -90,16 +90,21 @@ pub enum Check {
     Failed(Problem),
 }
 
-/// Checks that `proxy` reaches the internet and reports into `check`.
-pub fn test_proxy(proxy: String, mut check: State<Check>) {
+/// Checks that `proxy` reaches the internet and reports into `check`, unless `field` holds another proxy by then.
+pub fn test_proxy(proxy: String, mut check: State<Check>, field: State<String>) {
     if proxy.is_empty() || forms::proxy_problem(&proxy).is_some() || *check.peek() == Check::Running {
         return;
     }
     check.set(Check::Running);
     let asked = proxy.clone();
     off("proxy-test", move || remote::test_proxy(&asked).map_err(|e| Problem { text: tr("Über diesen Proxy kommt kein Internet. Prüfe Adresse, Port und Zugangsdaten."), detail: forms::explain(&e).detail }), move |result| {
-        if *check.peek() == Check::Running {
-            check.set(result.map_or_else(Check::Failed, |()| Check::Passed));
+        let same = field.try_peek().is_some_and(|v| v.trim() == proxy);
+        let running = check.try_peek().is_some_and(|c| *c == Check::Running);
+        if !running {
+            return;
+        }
+        if let Some(mut c) = check.try_write() {
+            *c = if same { result.map_or_else(Check::Failed, |()| Check::Passed) } else { Check::Idle };
         }
     });
 }
@@ -108,9 +113,9 @@ pub fn test_proxy(proxy: String, mut check: State<Check>) {
 pub fn save_proxy(store: Store, ids: Vec<Uuid>, proxy: String, done: impl FnOnce(bool) + 'static) {
     let before: Vec<(Uuid, Option<String>)> = store.model.peek().accounts.iter().filter(|a| ids.contains(&a.id)).map(|a| (a.id, a.proxy.clone())).collect();
     let value = Some(proxy).filter(|p| !p.is_empty());
-    let set = value.clone();
+    let set: Vec<(Uuid, Option<String>)> = ids.iter().map(|id| (*id, value.clone())).collect();
     let count = before.len();
-    off("proxy-save", move || ids.iter().try_for_each(|id| remote::set_proxy(*id, set.clone())), move |result| {
+    off("proxy-save", move || remote::set_proxies(&set), move |result| {
         store.reload(true);
         match result {
             Ok(()) => {
@@ -124,7 +129,7 @@ pub fn save_proxy(store: Store, ids: Vec<Uuid>, proxy: String, done: impl FnOnce
                 let back = Rc::new(RefCell::new(Some(before)));
                 toast::show(store.ui, text, Some(EventHandler::new(move |_| {
                     let Some(before) = back.borrow_mut().take() else { return };
-                    off("proxy-undo", move || before.iter().try_for_each(|(id, p)| remote::set_proxy(*id, p.clone())), move |result| {
+                    off("proxy-undo", move || remote::set_proxies(&before), move |result| {
                         if let Err(e) = result {
                             fail(store, forms::explain_as(tr("Der alte Proxy wurde nicht zurückgeholt."), &e));
                         }
@@ -155,7 +160,7 @@ pub fn ask_remove(store: Store, ids: Vec<Uuid>) {
     let mut message = match (batches.is_empty(), one) {
         (true, _) => String::new(),
         (false, true) => trf("Der Account wird auch aus %@ entfernt.", &[&batches.join(", ")]),
-        (false, false) => trf("Sie werden auch aus %@ entfernt.", &[&batches.join(", ")]),
+        (false, false) => trf("Die Accounts werden auch aus %@ entfernt.", &[&batches.join(", ")]),
     };
     if microsoft {
         if !message.is_empty() {
@@ -212,12 +217,8 @@ fn offer_undo(store: Store, removed: Vec<Removed>) {
             let mut left = Vec::new();
             let mut error = None;
             for r in removed.into_iter().rev() {
-                if error.is_some() {
-                    left.push(r);
-                    continue;
-                }
                 if let Err(e) = remote::restore_account(&r) {
-                    error = Some(e);
+                    error.get_or_insert(e);
                     left.push(r);
                 }
             }

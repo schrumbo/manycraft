@@ -398,6 +398,19 @@ pub fn set_proxy(id: Uuid, proxy: Option<String>) -> Result<()> {
     })
 }
 
+/// Sets each account's proxy in one save; ids no longer saved are skipped.
+pub fn set_proxies(proxies: &[(Uuid, Option<String>)]) -> Result<()> {
+    saved(|| {
+        let mut accounts = account::load()?;
+        for a in &mut accounts {
+            if let Some((_, p)) = proxies.iter().find(|(id, _)| *id == a.id) {
+                a.proxy.clone_from(p);
+            }
+        }
+        account::save(&accounts)
+    })
+}
+
 /// Gives the accounts `ids` colour `color`; ids no longer saved are skipped.
 pub fn set_color(ids: &[Uuid], color: u8) -> Result<()> {
     saved(|| {

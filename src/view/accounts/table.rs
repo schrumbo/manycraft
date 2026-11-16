@@ -9,7 +9,6 @@ use crate::view::kit::badge::{Tone, dot};
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Menu};
 use crate::view::kit::text::line;
-use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{ring, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
@@ -139,7 +138,7 @@ impl Component for HeaderCell {
         if let Some(border) = ring(&t, focus()) {
             cell = cell.border(border);
         }
-        WithTip::new(Some(tr("Nach dieser Spalte sortieren")), cell)
+        cell
     }
 }
 

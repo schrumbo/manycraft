@@ -18,7 +18,7 @@ use super::kit::button::Button;
 use super::kit::field::Field;
 use super::kit::menu::{self, Item, Menu};
 use super::kit::segmented::{Segment, Segmented};
-use super::kit::text::{caption, heading, line, para, secondary, strong};
+use super::kit::text::{caption, heading, line, para, secondary, spacer, strong};
 use super::kit::{Bounds, held, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{Theme, font, frame, iconsize, space};
@@ -376,7 +376,7 @@ pub fn context(store: Store, id: Uuid, at: (f32, f32)) -> Vec<Item> {
     }).disabled(m.batches.is_empty()));
     items.push(Item::Separator);
     let gone = ids;
-    items.push(Item::new("accounts.menu.remove", if one { tr("Entfernen…") } else { trf("%lld Accounts entfernen…", &[&chosen.len()]) }, move |_| ask_remove(store, gone.clone())).shortcut(tr("Entf")).danger());
+    items.push(Item::new("accounts.menu.remove", if one { tr("Entfernen…") } else { trf("%lld Accounts entfernen…", &[&chosen.len()]) }, move |_| ask_remove(store, gone.clone())).shortcut(super::commands::Command::RemoveAccounts.keys()).danger());
     items
 }
 
@@ -439,11 +439,14 @@ impl Component for Tools {
         use_side_effect_with_deps(&focus_at, move |at| {
             if at.is_some() {
                 filter_a11y.request_focus();
+                let mut asked = store.ui.accounts.focus_filter;
+                asked.set(None);
             }
         });
         use_hook(move || look_for_prism(store));
         let m = store.model.read();
         let count = m.accounts.len();
+        let _ = shared.view.read();
         let view = view_of(&m, shared);
         let prism = shared.prism.read().clone();
         let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
@@ -483,8 +486,12 @@ impl Component for AccountsPage {
         let _ = shared.view.read();
         let shown = lines(&m, shared);
         let known: BTreeSet<Uuid> = m.accounts.iter().map(|a| a.id).collect();
-        use_side_effect_with_deps(&known, move |known| {
+        let listed = view_of(&m, shared) == View::List;
+        use_side_effect_with_deps(&(known, listed), move |(known, listed)| {
             let mut s = store.ui.accounts;
+            if s.editing.peek().is_some_and(|e| !*listed || !known.contains(&e)) {
+                s.editing.set(None);
+            }
             if s.picked.peek().iter().any(|i| !known.contains(i)) {
                 s.picked.write().retain(|i| known.contains(i));
             }
@@ -493,8 +500,16 @@ impl Component for AccountsPage {
             }
         });
         let mut page = rect().width(Size::fill()).height(Size::fill()).on_global_key_down(move |e: Event<KeyboardEventData>| keys(store, &e));
-        if !m.loaded && m.error.is_none() {
-            return page.center().child(secondary(&t, tr("Lädt …"))).into_element();
+        if !m.loaded {
+            return match m.error.clone() {
+                None => page.center().child(secondary(&t, tr("Lädt …"))).into_element(),
+                Some(why) => page
+                    .center()
+                    .spacing(space::M)
+                    .child(rect().max_width(Size::px(PAGE_MAX * 0.6)).child(para(&t, why, font::BODY, t.text2).text_align(TextAlign::Center)))
+                    .child(Button::new("accounts.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| store.reload(true)))
+                    .into_element(),
+            };
         }
         let view = view_of(&m, shared);
         let wide = view == View::Table;
@@ -513,9 +528,12 @@ impl Component for AccountsPage {
             strips = strips.child(sign_in_strip(&t, store, waiting));
             any = true;
         }
-        let picked = shared.picked.read().len();
+        let picked = {
+            let p = shared.picked.read();
+            shown.iter().filter(|l| p.contains(&l.id)).count()
+        };
         if picked > 1 {
-            strips = strips.child(SelectionBar { count: picked });
+            strips = strips.child(SelectionBar { count: picked, all: shown.len() });
             any = true;
         }
         let mut column = rect().width(Size::fill()).height(Size::fill()).cross_align(Alignment::Center);
@@ -735,6 +753,7 @@ fn prism_card(t: &Theme, store: Store, m: &Model) -> Option<Element> {
 #[derive(PartialEq)]
 struct SelectionBar {
     count: usize,
+    all: usize,
 }
 
 impl Component for SelectionBar {
@@ -753,20 +772,24 @@ impl Component for SelectionBar {
             .spacing(space::S)
             .corner_radius(t.shape.control)
             .background(t.selection)
-            .child(strong(&t, trf("%lld ausgewählt", &[&self.count]), font::CALLOUT, t.accent_text).width(Size::flex(1.)))
+            .child(strong(&t, trf("%lld ausgewählt", &[&self.count]), font::CALLOUT, t.accent_text))
             .content(Content::flex());
+        if self.count < self.all {
+            bar = bar.child(Button::new("accounts.bulk.all", trf("Alle %lld auswählen", &[&self.all])).plain().tip(super::commands::Command::SelectAll.tip()).on_press(move |_| pick_all(store)));
+        }
+        bar = bar.child(spacer());
         bar = bar
-            .child(rect().on_sized(move |e: Event<SizedEventData>| batch_at.set_if_modified(Bounds::of(&e))).child(Button::new("accounts.bulk.batch", tr("Zu Batch hinzufügen")).glyph(Icon::Layers).disabled(no_batch.then(|| tr("Leg zuerst einen Batch an."))).on_press(move |_| {
+            .child(rect().on_sized(move |e: Event<SizedEventData>| batch_at.set_if_modified(Bounds::of(&e))).child(Button::new("accounts.bulk.batch", tr("Zu Batch hinzufügen…")).glyph(Icon::Layers).disabled(no_batch.then(|| tr("Leg zuerst einen Batch an."))).on_press(move |_| {
                 let ids = targets(store);
                 menu::open(store.ui, Menu::under(batch_items(store, ids), *batch_at.peek()));
             })))
             .child(Button::new("accounts.bulk.proxy", tr("Proxy…")).glyph(Icon::Globe).on_press(move |_| work::edit_proxy(store, targets(store))))
-            .child(rect().on_sized(move |e: Event<SizedEventData>| color_at.set_if_modified(Bounds::of(&e))).child(Button::new("accounts.bulk.color", tr("Farbe")).glyph(Icon::Palette).on_press(move |_| {
+            .child(rect().on_sized(move |e: Event<SizedEventData>| color_at.set_if_modified(Bounds::of(&e))).child(Button::new("accounts.bulk.color", tr("Farbe…")).glyph(Icon::Palette).on_press(move |_| {
                 let ids = targets(store);
                 menu::open(store.ui, Menu::under(color_items(store, ids), *color_at.peek()));
             })))
             .child(Button::new("accounts.bulk.remove", tr("Entfernen…")).glyph(Icon::Trash).danger().on_press(move |_| ask_remove(store, targets(store))))
-            .child(Button::icon("accounts.bulk.clear", Icon::Close, tr("Auswahl aufheben")).plain().tip(tr("Auswahl aufheben (Esc)")).on_press(move |_| {
+            .child(Button::icon("accounts.bulk.clear", Icon::Close, tr("Auswahl aufheben")).plain().tip(super::commands::Command::ClearSelection.tip()).on_press(move |_| {
                 clear(store);
             }));
         bar

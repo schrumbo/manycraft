@@ -12,7 +12,7 @@ use super::kit::button::Button;
 use super::kit::field::Field;
 use super::kit::segmented::{Segment, Segmented};
 use super::kit::select::Select;
-use super::kit::text::{caption, heading, line, para};
+use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
 use super::kit::use_theme;
 use super::drive::use_spot;
@@ -268,7 +268,8 @@ impl Component for ChatPage {
         let m = store.model.read();
         let mut s = scope(shared);
         s.batch = s.batch.filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
-        let unread = m.games.values().any(|i| i.unread_whispers > 0 && s.batch.as_deref().is_none_or(|b| i.batch_id == b));
+        let seen = *Platform::get().current_window().is_app_focused.read() || crate::core::drive::on();
+        let unread = seen && m.games.values().any(|i| i.unread_whispers > 0 && s.batch.as_deref().is_none_or(|b| i.batch_id == b));
         use_side_effect_with_deps(&(unread, s.batch.clone()), move |(unread, batch)| {
             if *unread {
                 store.dispatch(AppEvent::ClearWhispers(batch.clone()));
@@ -277,6 +278,9 @@ impl Component for ChatPage {
         let merged = settings::active().merged_chat;
         let broadcast = settings::active().broadcast;
         let mut page = rect().width(Size::fill()).height(Size::fill());
+        if !m.loaded {
+            return page.center().child(secondary(&t, tr("Lädt …"))).into_element();
+        }
         if !merged {
             return page.child(empty(&t, Icon::Message, tr("Der gemeinsame Chat ist aus"), tr("Manycraft sammelt keine Chatzeilen. In den Einstellungen schaltest du ihn wieder ein."), Some(Button::new("chat.off.settings", tr("Einstellungen öffnen")).glyph(Icon::Settings).tall().on_press(move |_| Command::OpenSettings.run(store)).into_element()))).into_element();
         }
@@ -473,6 +477,8 @@ impl Component for Composer {
         use_side_effect_with_deps(&focus_at, move |at| {
             if at.is_some() {
                 field.request_focus();
+                let mut asked = store.ui.chat.focus;
+                asked.set(None);
             }
         });
         let draft = shared.draft.read().clone();

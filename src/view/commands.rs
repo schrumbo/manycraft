@@ -102,6 +102,7 @@ impl Shortcut {
             Code::Enter => tr("Eingabe"),
             Code::Escape => "Esc".to_owned(),
             Code::Delete => tr("Entf"),
+            Code::Backspace => "⌫".to_owned(),
             Code::ArrowRight => "→".to_owned(),
             Code::ArrowLeft => "←".to_owned(),
             Code::ArrowDown => "↓".to_owned(),
@@ -389,13 +390,10 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
             if layered && !matches!(command, Command::OpenPalette | Command::Quit) {
                 return false;
             }
-            if command == Command::ClearSelection && !command.available(store) {
-                return false;
-            }
             if command.available(store) || matches!(command, Command::OpenPalette | Command::Quit | Command::ToggleSidebar) {
                 command.run(store);
+                return true;
             }
-            return true;
         }
     }
     false
@@ -528,7 +526,7 @@ impl Command {
         Some(match self {
             Command::AddAccount => k(Code::KeyN),
             Command::NewInstance => ks(Code::KeyN),
-            Command::RemoveAccounts => bare(Code::Delete),
+            Command::RemoveAccounts => bare(if cfg!(target_os = "macos") { Code::Backspace } else { Code::Delete }),
             Command::AccountsAsList => k(Code::Digit1),
             Command::AccountsAsTable => k(Code::Digit2),
             _ => return None,
@@ -585,6 +583,11 @@ impl Command {
             }
             _ => {}
         }
+    }
+
+    /// The shortcut as the platform writes it, or nothing.
+    pub fn keys(self) -> String {
+        self.shortcut().map(|s| s.label()).unwrap_or_default()
     }
 
     /// The label with the shortcut in brackets, for tooltips.

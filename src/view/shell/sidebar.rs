@@ -30,18 +30,16 @@ fn count(t: &Theme, text: String, selected: bool) -> Element {
     line(t, text, font::CAPTION, if selected { t.accent_text } else { t.text3 }).into_element()
 }
 
+fn open_with_system(target: &std::ffi::OsStr) -> std::io::Result<()> {
+    let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    std::process::Command::new(opener).arg(target).spawn()?.wait().map(drop)
+}
+
 /// Opens `dir` in the system's file manager, creating it first.
 pub fn open_folder(store: Store, dir: PathBuf) {
-    let shown = dir.clone();
-    off("open-folder", move || std::fs::create_dir_all(&dir).map(|()| dir), move |result: std::io::Result<PathBuf>| match result {
-        Ok(dir) if !crate::core::drive::fenced("open folder", shown.display()) => {
-            let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-            if std::process::Command::new(opener).arg(&dir).spawn().is_err() {
-                toast::show(store.ui, tr("Der Ordner lässt sich nicht öffnen."), None);
-            }
-        }
-        Ok(_) => {}
-        Err(_) => {
+    let fenced = crate::core::drive::fenced("open folder", dir.display());
+    off("open-folder", move || std::fs::create_dir_all(&dir).and_then(|()| if fenced { Ok(()) } else { open_with_system(dir.as_os_str()) }), move |result: std::io::Result<()>| {
+        if result.is_err() {
             toast::show(store.ui, tr("Der Ordner lässt sich nicht öffnen."), None);
         }
     });
@@ -232,7 +230,7 @@ impl Component for Sidebar {
         top = top.child(chat);
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
-        if !m.batches.is_empty() || !m.imports.is_empty() {
+        if !m.batches.is_empty() || !m.imports.is_empty() || can_want(&Want::NewBatch) {
             list = list.child(section(&t, tr("Batches")));
             for b in batch_lines(&m) {
                 let to = Page::Grid(Filter::Batch(b.id.clone()));
@@ -257,13 +255,13 @@ impl Component for Sidebar {
             if more > 0 {
                 list = list.child(rect().height(Size::px(frame::ROW)).padding((0., space::S)).main_align(Alignment::Center).child(caption(&t, trf("und %lld weitere", &[&more]))));
             }
-            if can_want(&Want::NewBatch) && !m.batches.is_empty() {
+            if can_want(&Want::NewBatch) {
                 list = list.child(new_row(&t, "nav.batch.new", tr("Neuer Batch"), move || {
                     want(store, Want::NewBatch);
                 }));
             }
         }
-        if !m.instances.is_empty() {
+        if !m.instances.is_empty() || can_want(&Want::NewInstance) {
             list = list.child(section(&t, tr("Instanzen")));
             let mut made: Vec<&Instance> = m.instances.iter().collect();
             made.sort_by_cached_key(|i| i.name.to_lowercase());
@@ -341,7 +339,9 @@ impl Component for ImportRow {
         let state = if stopping { tr("Bricht ab …") } else { self.import.percent.map_or_else(|| tr("Prüft …"), |p| format!("{p} %")) };
         let stop = move || {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            asked.set(true);
+            if let Some(mut a) = asked.try_write() {
+                *a = true;
+            }
         };
         let mut press = stop.clone();
         let end = rect()
@@ -402,8 +402,8 @@ fn update_row(t: &Theme, store: Store, updates: &Updates, launching: bool) -> Op
                 Some(trf("Version %@ auf GitHub ansehen", &[&version])),
                 row("nav.update.page", tr("Update verfügbar"), Icon::Download).trailing(count(t, version, false)).on_press(move |_| {
                     if !crate::core::drive::fenced("open url", &url) {
-                        let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                        let _ = std::process::Command::new(opener).arg(&url).spawn();
+                        let url = url.clone();
+                        off("open-url", move || open_with_system(std::ffi::OsStr::new(&url)), |_| {});
                     }
                 }),
             )
