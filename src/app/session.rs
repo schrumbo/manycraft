@@ -109,4 +109,6 @@ pub struct Session {
     pub memory_timer: bool,
     /// Plays asked for before the data was read, by instance and account.
     pub waiting_plays: Vec<(String, Option<String>)>,
+    /// Batch starts asked for before a load knew the batch, by batch and when they were asked.
+    pub waiting_starts: Vec<(String, Instant)>,
 }

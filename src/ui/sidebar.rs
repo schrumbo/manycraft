@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelStart, StartAnyway, EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, OpenTrash, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, StartBatch, StopBatch};
+use super::actions::{CancelStart, StartAnyway, EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, OpenTrash, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, DeleteBatch, EditShownBatch, StartBatch, StartSelected, StopBatch, StopSelected};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -301,8 +301,8 @@ fn update_row(updates: &Updates, launching: bool, t: &Theme) -> Option<Stateful<
     }
 }
 
-/// The menu of a batch, in the sidebar and over its tiles.
-pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, exporting: bool, run: Option<model::Run>) -> PopupMenu {
+/// The menu of a batch, in the sidebar and over its tiles; `shown` when its page is open, where the shortcuts act on it.
+pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, exporting: bool, run: Option<model::Run>, shown: bool, cx: &App) -> PopupMenu {
     let menu = match run {
         Some(run) => menu
             .when(run.memory > 0, |menu| menu.menu(tr("Trotzdem alle starten"), Box::new(StartAnyway(Some(id.to_owned())))))
@@ -310,12 +310,17 @@ pub fn batch_menu(menu: PopupMenu, id: &str, stoppable: usize, stopped: usize, e
             .separator(),
         None => menu,
     };
-    menu.menu_with_disabled(tr("Starten"), Box::new(StartBatch(id.to_owned())), stopped == 0)
-        .menu_with_disabled(tr("Stoppen"), Box::new(StopBatch(id.to_owned())), stoppable == 0)
-        .separator()
-        .menu(tr("Batch bearbeiten"), Box::new(EditBatch(id.to_owned())))
+    let keys = |action: &dyn Action| if shown { super::palette::shortcut(action, cx) } else { None };
+    let row = |menu: PopupMenu, text: String, keys: Option<String>, disabled: bool, action: Box<dyn Action>| menu.menu_element_with_disabled(action, disabled, super::palette::menu_row(text, keys, disabled));
+    let blocked = super::batch_sheet::delete_blocked(id, cx);
+    let menu = row(menu, tr("Starten"), keys(&StartSelected), stopped == 0, Box::new(StartBatch(id.to_owned())));
+    let menu = row(menu, tr("Stoppen"), keys(&StopSelected), stoppable == 0, Box::new(StopBatch(id.to_owned())));
+    let menu = row(menu.separator(), tr("Bearbeiten…"), keys(&EditShownBatch), false, Box::new(EditBatch(id.to_owned())));
+    let menu = menu
         .menu(tr("Ordner öffnen"), Box::new(OpenBatchFolder(id.to_owned())))
         .when(!exporting, |menu| menu.menu(tr("Als .mrpack exportieren…"), Box::new(ExportBatch(id.to_owned()))))
+        .separator();
+    row(menu, tr("Löschen…"), blocked.as_ref().map(|_| tr("Erst stoppen")), blocked.is_some(), Box::new(DeleteBatch(id.to_owned())))
 }
 
 /// How many running imports the sidebar lists one by one; the rest are counted in one line.
@@ -503,7 +508,11 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
     let mut batch_rows = Vec::new();
     for (r, id, stoppable, stopped, exporting, run) in batches {
         let key = r.id.clone();
-        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| menu_of(&key, batch_menu(menu, &id, stoppable, stopped, exporting, run), window, cx));
+        let shown = this.page == Page::Grid(Some(id.clone()));
+        let element = row(this, r, &t, cx).context_menu(move |menu, window, cx| {
+            let menu = batch_menu(menu, &id, stoppable, stopped, exporting, run, shown, cx);
+            menu_of(&key, menu, window, cx)
+        });
         batch_rows.push(element.into_any_element());
     }
     if waiting > 0 {
@@ -522,6 +531,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         );
     }
     batch_rows.extend(imports);
+    let has_instances = !instances.is_empty();
     let instance_rows = instance_list(instances, this.page.clone(), cx);
     let new_batch = tr("Neuer Batch");
     let new_instance = tr("Neue Instanz");
@@ -551,12 +561,8 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 .flex_col()
                 .gap(px(space::XXS))
                 .child(row(this, all, &t, cx))
-                .child(heading(tr("Batches"), &t))
-                .children(batch_rows)
-                .child(new_row("nav-new-batch", new_batch, Box::new(NewBatch), &t))
-                .child(heading(tr("Instanzen"), &t))
-                .children(instance_rows)
-                .child(new_row("nav-new-instance", new_instance, Box::new(NewInstance), &t))
+                .when(!batch_rows.is_empty(), |d| d.child(heading(tr("Batches"), &t)).children(batch_rows).child(new_row("nav-new-batch", new_batch, Box::new(NewBatch), &t)))
+                .when(has_instances, |d| d.child(heading(tr("Instanzen"), &t)).children(instance_rows).child(new_row("nav-new-instance", new_instance, Box::new(NewInstance), &t)))
                 .child(div().h(px(space::M)))
                 .child(row(this, accounts, &t, cx))
                 .child(row(this, chat, &t, cx)),

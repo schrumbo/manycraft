@@ -10,6 +10,7 @@ use super::accounts::{self, Pending};
 use super::actions::Undo;
 use super::drive::Mark;
 use super::remote::InstanceEdit;
+use crate::core::batch::Batch;
 use crate::core::instance::Instance;
 use super::sheet::{self, Look};
 use super::theme::{Theme, font, radius, shell, space, tint, with_alpha};
@@ -48,6 +49,7 @@ pub enum Kind {
     Colored { before: Vec<(String, u8)>, color: u8, name: Option<String> },
     /// Games one stop of many ended, by key; `name` is the account's when it was one.
     Stopped { keys: Vec<String>, name: Option<String> },
+    BatchDeleted { batch: Batch },
 }
 
 struct Offer {
@@ -173,7 +175,7 @@ fn slot(ats: impl Iterator<Item = Instant>, at: Instant) -> usize {
 }
 
 fn evict(items: &[(u64, Offer)]) -> Option<usize> {
-    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. } | Kind::Reset { .. } | Kind::Restored { .. });
+    let capped = |o: &Offer| !matches!(o.kind, Kind::Deleted { .. } | Kind::Reset { .. } | Kind::Restored { .. } | Kind::BatchDeleted { .. });
     if items.iter().filter(|(_, o)| capped(o)).count() <= MAX_OFFERS {
         return None;
     }
@@ -277,6 +279,7 @@ fn lines(items: &Pending<Offer>, cx: &App) -> Vec<Line> {
     for (id, offer) in &items.items {
         let (name, done, undone) = match &offer.kind {
             Kind::Deleted { name, .. } => (name.clone(), trf("„%@“ gelöscht.", &[name]), trf("„%@“ wurde nicht zurückgeholt.", &[name])),
+            Kind::BatchDeleted { batch } => (batch.name.clone(), trf("„%@“ gelöscht.", &[&batch.name]), trf("„%@“ wurde nicht zurückgeholt.", &[&batch.name])),
             Kind::Cloned { name, .. } => (name.clone(), trf("„%@“ geklont.", &[name]), trf("„%@“ wurde nicht gelöscht.", &[name])),
             Kind::ModsSwitched { label, on: true, .. } => (label.clone(), trf("%@ eingeschaltet.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
             Kind::ModsSwitched { label, on: false, .. } => (label.clone(), trf("%@ ausgeschaltet.", &[label]), trf("%@ wurde nicht zurückgestellt.", &[label])),
@@ -371,6 +374,7 @@ fn same(a: &Kind, b: &Kind) -> bool {
 fn run(kind: Kind, at: Instant, cx: &mut App) {
     match kind {
         Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
+        Kind::BatchDeleted { batch } => restore_batch(batch, at, cx),
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
         Kind::ModsSwitched { instance_id, files, on, label } => super::mod_list::undo_switch(instance_id, files, on, label, at, cx),
         Kind::ModsAdded { instance_id, files, label } => super::mod_list::undo_add(instance_id, files, label, at, cx),
@@ -417,6 +421,38 @@ fn restore(id: String, name: String, entry: String, at: Instant, cx: &mut App) {
                     note(forms::explain_as(tr("Nicht zurückgeholt."), &e).text, cx);
                     if !permanent(&e) {
                         retry(Kind::Deleted { id, name, entry }, at, cx);
+                    }
+                }
+            }
+            state::reload(cx);
+        });
+    })
+    .detach();
+}
+
+fn restore_batch(batch: Batch, at: Instant, cx: &mut App) {
+    let task = cx.background_spawn({
+        let batch = batch.clone();
+        async move { remote::restore_batch(&batch) }
+    });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            match result {
+                Ok(()) => {
+                    let id = batch.id.clone();
+                    model::get(cx).update(cx, |m, cx| {
+                        if !m.batches.iter().any(|b| b.id == batch.id) {
+                            m.batches.push(batch);
+                        }
+                        cx.notify();
+                    });
+                    sheet::in_window(cx, move |window, cx| window.dispatch_action(Box::new(super::actions::ShowBatch(id)), cx));
+                }
+                Err(e) => {
+                    note(forms::explain_as(tr("Nicht zurückgeholt."), &e).text, cx);
+                    if !permanent(&e) {
+                        retry(Kind::BatchDeleted { batch }, at, cx);
                     }
                 }
             }

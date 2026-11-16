@@ -10,7 +10,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{AddMods, EditMods, FindModpacks, FindResourcePacks, FindShaders, ImportFromLauncher, NewInstance, Reload};
+use super::actions::{AddMods, EditMods, FindModpacks, FindResourcePacks, FindShaders, ImportFromLauncher, NewInstance, NewInstanceToPlay, PlayInstance, Reload};
 use super::batch_sheet::{Load, body_max, list_max};
 use super::drive::Mark;
 use super::forms::{self, Problem};
@@ -39,6 +39,20 @@ const NOTE_LINE: &str = "\u{a0}";
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &NewInstance, cx| open(Mode::Create, None, cx));
+    cx.on_action(|action: &NewInstanceToPlay, cx| {
+        let account = action.0.clone();
+        sheet::in_window(cx, move |window, cx| {
+            if sheet::busy(window, cx) {
+                return;
+            }
+            let view = cx.new(|cx| {
+                let mut sheet = InstanceSheet::new(Mode::Create, window, cx);
+                sheet.play = Some(account);
+                sheet
+            });
+            sheet::show(view, sheet::WIDE, window, cx);
+        });
+    });
     cx.on_action(|_: &FindModpacks, cx| open(Mode::Create, Some(modrinth::Kind::Modpack), cx));
     cx.on_action(|action: &FindResourcePacks, cx| find(&action.0, modrinth::Kind::ResourcePack, cx));
     cx.on_action(|action: &FindShaders, cx| find(&action.0, modrinth::Kind::Shader, cx));
@@ -87,6 +101,7 @@ pub(super) enum Mode {
 
 pub(super) struct InstanceSheet {
     pub(super) mode: Mode,
+    play: Option<Option<String>>,
     pub(super) setup: Option<setup::Instance>,
     name: Entity<InputState>,
     loader_version: Entity<LoaderVersion>,
@@ -207,6 +222,7 @@ impl InstanceSheet {
             mods: setup.as_ref().map(|i| i.mods.clone()).unwrap_or_default(),
             mods_touched: editing,
             mode,
+            play: None,
             setup,
             name,
             loader_version,
@@ -662,8 +678,12 @@ impl InstanceSheet {
 
     fn finish(&mut self, id: String, cx: &mut Context<Self>) {
         cx.emit(Dismissed);
+        let play = self.play.take();
         cx.defer(move |cx| {
             super::main_window::show_instance(&id, cx);
+            if let Some(account) = play {
+                cx.dispatch_action(&PlayInstance { instance: id, account });
+            }
         });
     }
 
@@ -1220,7 +1240,7 @@ impl Render for InstanceSheet {
                 trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(self.problem("save-error", "circle-alert", t.danger_text, e, cx, &t)).into_any_element());
             }
             trailing.push(sheet::button_unless("instance-cancel", tr("Abbrechen"), None, Look::Secondary, (!self.closable()).then(|| if self.saving { tr("Wird gerade gesichert …") } else { tr("Warte, bis die Updates fertig sind.") }.into()), false, &t).on_click(cx.listener(|s, _, _, cx| if s.closable() { cx.emit(Dismissed) })).into_any_element());
-            trailing.push(sheet::button_unless("instance-save", if creating { tr("Erstellen") } else { tr("Sichern") }, None, Look::Primary, wait.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
+            trailing.push(sheet::button_unless("instance-save", if !creating { tr("Sichern") } else if self.play.is_some() { tr("Erstellen und spielen") } else { tr("Erstellen") }, None, Look::Primary, wait.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
             (Vec::new(), trailing)
         };
         let me = cx.entity().downgrade();

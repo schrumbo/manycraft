@@ -104,6 +104,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             let keys = fleet::signed_in(model, &keys);
             fleet::start_keys(model, &keys, &mut out);
         }
+        Event::StartBatch(batch) if !startable(model, &batch) => model.session.waiting_starts.push((batch, env.now)),
         Event::StartBatch(batch) => fleet::launch(model, &batch, None, fleet::Kick::Plain, &mut out),
         Event::StartAll => {
             for id in batch_ids(model) {
@@ -227,6 +228,11 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
         }
     }
     if chat && env.settings.merged_chat { Redraw::Chat } else { Redraw::Nothing }
+}
+
+/// Whether a start of `owner` can run now: it is known and, when it has accounts, its games are built.
+pub(super) fn startable(m: &Model, owner: &str) -> bool {
+    m.target(owner).is_some() && (m.batch(owner).is_none_or(|b| b.accounts.is_empty()) || m.games.values().any(|g| g.batch_id == owner))
 }
 
 #[cfg(test)]
