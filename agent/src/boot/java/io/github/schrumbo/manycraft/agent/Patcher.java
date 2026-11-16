@@ -45,6 +45,8 @@ final class Patcher implements ClassFileTransformer {
 	private static final ClassDesc HOOKS = ClassDesc.of("io.github.schrumbo.manycraft.agent.Hooks");
 	private static final ClassDesc PROXY = ClassDesc.of("java.net.Proxy");
 	private static final ClassDesc OPTIONAL = ClassDesc.of("java.util.Optional");
+	private static final ClassDesc HTTP_CLIENT = ClassDesc.of("java.net.http.HttpClient");
+	static final List<String> REALMS = List.of("com/mojang/realmsclient/client/FileDownload", "com/mojang/realmsclient/client/FileUpload");
 	private static final ClassDesc GLFW = ClassDesc.of("org.lwjgl.glfw.GLFW");
 	private static final int GLFW_VISIBLE = 0x20004;
 
@@ -128,11 +130,11 @@ final class Patcher implements ClassFileTransformer {
 					.invokestatic(HOOKS, "javaProxy", type(CD_Object, CD_Object)).checkcast(PROXY)
 					.putfield(ClassDesc.ofInternalName("net/minecraft/client/main/GameConfig$UserData"), "proxy", PROXY))));
 			add(t, "net/minecraft/client/multiplayer/resolver/ServerNameResolver",
-				new Hook("dns", "resolveAddress", "(Lnet/minecraft/client/multiplayer/resolver/ServerAddress;)Ljava/util/Optional;", head(b -> {
-					Label original = b.newLabel();
-					b.aload(1).invokestatic(HOOKS, "remoteName", type(CD_Object, CD_Object)).dup().ifnull(original).checkcast(OPTIONAL).areturn().labelBinding(original);
-					b.pop();
-				})));
+				new Hook("dns", "resolveAddress", "(Lnet/minecraft/client/multiplayer/resolver/ServerAddress;)Ljava/util/Optional;", Patcher::remoteResolve));
+			for (String realms : REALMS) {
+				add(t, realms, new Hook("realms", null, null, Patcher::proxiedHttp));
+			}
+			add(t, "com/mojang/realmsclient/client/Ping", new Hook("realms", "ping", "(Ljava/lang/String;)I", Patcher::noDirectPing));
 		}
 		return t;
 	}
@@ -159,6 +161,8 @@ final class Patcher implements ClassFileTransformer {
 			}
 			Agent.log("cannot patch " + name + ", left as it was: " + e);
 			return null;
+		} finally {
+			Agent.haltIfProxyUnhooked();
 		}
 	}
 
@@ -191,6 +195,14 @@ final class Patcher implements ClassFileTransformer {
 		};
 		ClassTransform transform = name.equals("net/minecraft/client/Options") ? methods.andThen(unfinal("optionsFile")) : methods;
 		byte[] out = cf.transformClass(model, transform);
+		List<VerifyError> errors = verify(cf, out);
+		if (!errors.isEmpty()) {
+			for (Hook h : list) {
+				Patches.record(h.feature(), false);
+			}
+			Agent.log("patched " + name + " does not verify, left as it was: " + errors.getFirst().getMessage());
+			return null;
+		}
 		boolean any = false;
 		List<String> missing = new ArrayList<>();
 		Map<String, Integer> alternatives = new HashMap<>();
@@ -237,6 +249,13 @@ final class Patcher implements ClassFileTransformer {
 				b.with(e);
 			}
 		};
+	}
+
+	/**
+	 * What is wrong with {@code bytes}, leaving out classes of libraries this loader cannot see.
+	 */
+	static List<VerifyError> verify(ClassFile cf, byte[] bytes) {
+		return cf.verify(bytes).stream().filter(error -> !String.valueOf(error.getMessage()).contains("Could not resolve class")).toList();
 	}
 
 	static ClassFile files(ClassLoader loader) {
@@ -294,6 +313,45 @@ final class Patcher implements ClassFileTransformer {
 			b.aload(0).invokestatic(HOOKS, "beforeRender", type(CD_boolean, CD_Object)).ifne(original).return_().labelBinding(original);
 		}).transform(hit);
 		return skip.andThen(tail(b -> b.aload(0).invokestatic(HOOKS, "afterRender", type(CD_void, CD_Object))).transform(() -> {}));
+	}
+
+	private static CodeTransform remoteResolve(Runnable hit) {
+		return (b, e) -> {
+			if (!invokes(e, "net/minecraft/client/multiplayer/resolver/ServerAddressResolver", "resolve", "(Lnet/minecraft/client/multiplayer/resolver/ServerAddress;)Ljava/util/Optional;")) {
+				b.with(e);
+				return;
+			}
+			Label original = b.newLabel();
+			Label done = b.newLabel();
+			b.dup().invokestatic(HOOKS, "remoteName", type(CD_Object, CD_Object)).dup().ifnull(original);
+			b.dup_x2().pop().pop2().checkcast(OPTIONAL).goto_(done);
+			b.labelBinding(original).pop();
+			b.with(e);
+			b.labelBinding(done);
+			hit.run();
+		};
+	}
+
+	private static CodeTransform proxiedHttp(Runnable hit) {
+		return (b, e) -> {
+			if (invokes(e, "java/net/http/HttpClient$Builder", "build", "()Ljava/net/http/HttpClient;")) {
+				b.invokestatic(HOOKS, "httpClient", type(CD_Object, CD_Object)).checkcast(HTTP_CLIENT);
+				hit.run();
+			} else {
+				b.with(e);
+			}
+		};
+	}
+
+	private static CodeTransform noDirectPing(Runnable hit) {
+		return (b, e) -> {
+			if (invokes(e, "java/net/Socket", "connect", "(Ljava/net/SocketAddress;I)V")) {
+				b.invokestatic(HOOKS, "ping", type(CD_void, CD_Object, CD_Object, CD_int));
+				hit.run();
+			} else {
+				b.with(e);
+			}
+		};
 	}
 
 	private static CodeTransform keepOpen(Runnable hit) {

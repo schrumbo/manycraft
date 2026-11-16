@@ -46,6 +46,18 @@ public final class Proxies {
 	}
 
 	/**
+	 * Whether the JVM's HTTP client can use the proxy: it follows the default selector for HTTP proxies only.
+	 */
+	public static boolean reachesHttpClients() {
+		try {
+			ProxySpec spec = spec();
+			return spec != null && spec.kind() == ProxySpec.Kind.HTTP;
+		} catch (RuntimeException e) {
+			return false;
+		}
+	}
+
+	/**
 	 * The parsed proxy, or null without one. Throws when one is configured but unusable, so callers refuse to go direct.
 	 */
 	public static ProxySpec spec() {

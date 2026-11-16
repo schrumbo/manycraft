@@ -17,6 +17,10 @@ public final class Patches {
 		APPLIED.merge(feature, applied, Boolean::logicalAnd);
 	}
 
+	static boolean missing(String feature) {
+		return Boolean.FALSE.equals(APPLIED.get(feature));
+	}
+
 	public static boolean has(String feature) {
 		if (CORE.equals(feature)) {
 			return has("tick") && has("frame");

@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Method;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -15,6 +16,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class Agent {
 	static final String PAYLOAD = "io.github.schrumbo.manycraft.agent.payload.Entry";
 	private static final Set<String> FAULTS = ConcurrentHashMap.newKeySet();
+	private static final List<String> PROXY_FEATURES = List.of("proxy", "signin", "dns", "realms");
+	private static final List<String> PROXIED_CLASSES = List.of("io.netty.bootstrap.Bootstrap", "net.minecraft.client.multiplayer.resolver.ServerNameResolver",
+		"com.mojang.realmsclient.client.FileDownload", "com.mojang.realmsclient.client.FileUpload", "com.mojang.realmsclient.client.Ping");
 	private static volatile Instrumentation inst;
 	private static volatile boolean loaded;
 
@@ -96,13 +100,22 @@ public final class Agent {
 	}
 
 	static boolean proxyHooked(ClassLoader game) {
-		try {
-			Class.forName("io.netty.bootstrap.Bootstrap", true, game);
-		} catch (Throwable e) {
-			log("netty not found: " + e);
-			return false;
+		for (String name : PROXIED_CLASSES) {
+			try {
+				Class.forName(name, false, game);
+			} catch (Throwable e) {
+				log(name + " not found: " + e);
+				return false;
+			}
 		}
-		return Patches.has("proxy") && Patches.has("signin");
+		return PROXY_FEATURES.stream().allMatch(Patches::has);
+	}
+
+	static void haltIfProxyUnhooked() {
+		if (Proxies.requested() && PROXY_FEATURES.stream().anyMatch(Patches::missing)) {
+			log("a proxy is set but its hooks are missing " + Patches.applied() + ", stopping the game instead of connecting without it");
+			Runtime.getRuntime().halt(1);
+		}
 	}
 
 	private static void reveal(Object minecraft) {

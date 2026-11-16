@@ -10,6 +10,8 @@ import java.io.InputStream;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.FieldModel;
+import java.lang.classfile.MethodModel;
+import java.lang.classfile.instruction.InvokeInstruction;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,7 +35,7 @@ class PatcherTest {
 			}
 			byte[] out = Patcher.patch(loader, e.getKey(), bytes(e.getKey()), e.getValue());
 			assertNotNull(out, e.getKey());
-			Patcher.files(loader).verify(out).forEach(error -> problems.add(e.getKey() + ": " + error.getMessage()));
+			Patcher.verify(Patcher.files(loader), out).forEach(error -> problems.add(e.getKey() + ": " + error.getMessage()));
 		}
 		assertEquals(List.of(), problems);
 		Patcher.table(true).values().stream().flatMap(List::stream).filter(h -> !h.alternative()).forEach(h -> assertTrue(Patches.has(h.feature()), h.feature()));
@@ -63,5 +65,24 @@ class PatcherTest {
 		List<Patcher.Hook> wrong = List.of(new Patcher.Hook("test-missing", "noSuchMethod", "()V", hit -> (b, e) -> b.with(e)));
 		assertNull(Patcher.patch(PatcherTest.class.getClassLoader(), name, bytes(name), wrong));
 		assertEquals(false, Patches.applied().get("test-missing"));
+	}
+
+	@Test
+	void proxiedNamesStillFollowRedirectsAndTheBlocklist() throws IOException {
+		String name = "net/minecraft/client/multiplayer/resolver/ServerNameResolver";
+		byte[] out = Patcher.patch(PatcherTest.class.getClassLoader(), name, bytes(name), Patcher.table(true).get(name));
+		MethodModel resolve = ClassFile.of().parse(out).methods().stream().filter(m -> m.methodName().equalsString("resolveAddress")).findFirst().orElseThrow();
+		List<String> calls = resolve.code().orElseThrow().elementStream().filter(e -> e instanceof InvokeInstruction).map(e -> ((InvokeInstruction) e).name().stringValue()).toList();
+		assertEquals(2, calls.stream().filter("remoteName"::equals).count());
+		assertTrue(calls.contains("lookupRedirect"));
+		assertTrue(calls.contains("isAllowed"));
+	}
+
+	@Test
+	void aPatchThatDoesNotVerifyLeavesTheClassAlone() throws IOException {
+		String name = "net/minecraft/client/Options";
+		List<Patcher.Hook> broken = List.of(new Patcher.Hook("test-broken", "save", "()V", Patcher.head(b -> b.aconst_null().areturn())));
+		assertNull(Patcher.patch(PatcherTest.class.getClassLoader(), name, bytes(name), broken));
+		assertEquals(false, Patches.applied().get("test-broken"));
 	}
 }

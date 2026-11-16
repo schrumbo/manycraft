@@ -1,5 +1,11 @@
 package io.github.schrumbo.manycraft.agent;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.http.HttpClient;
+
 /**
  * What patched game code calls. Lives on the boot class path so every loader sees it and forwards to the payload; every
  * hook leaves the game alone when the payload is missing or fails, except that a requested proxy is never bypassed.
@@ -226,6 +232,20 @@ public final class Hooks {
 			throw new IllegalStateException("proxy requested but the companion is not ready, refusing a direct connection");
 		}
 		b.channel(channel);
+	}
+
+	public static void ping(Object socket, Object address, int timeout) throws IOException {
+		if (Proxies.requested()) {
+			throw new IOException("a proxy is set, Realms regions are not pinged directly");
+		}
+		((Socket) socket).connect((SocketAddress) address, timeout);
+	}
+
+	public static Object httpClient(Object builder) {
+		if (Proxies.requested() && !Proxies.reachesHttpClients()) {
+			throw new UncheckedIOException(new IOException("a SOCKS proxy is set and this transfer cannot use it, refused instead of going direct"));
+		}
+		return ((HttpClient.Builder) builder).build();
 	}
 
 	public static Object javaProxy(Object current) {
