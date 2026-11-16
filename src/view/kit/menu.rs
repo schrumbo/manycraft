@@ -12,7 +12,7 @@ use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::store::use_store;
-use crate::view::theme::{control, font, frame, iconsize, space};
+use crate::view::theme::{control, font, frame, level, iconsize, space};
 use crate::view::ui::Ui;
 
 /// An account's face in front of a menu entry.
@@ -171,7 +171,7 @@ impl Component for Host {
         let serial = menu.serial;
         rect()
             .position(Position::new_global().left(0.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::MENU))
             .width(Size::px(w))
             .height(Size::px(h))
             .on_mouse_down(move |_| ui.menu.set(None))
@@ -286,9 +286,10 @@ impl Component for Panel {
                     _ => return,
                 }
                 e.stop_propagation();
+                e.prevent_default();
             });
         if let Some(placeholder) = &menu.search {
-            panel = panel.child(rect().width(Size::fill()).padding((0., 0., space::XS, 0.)).child(Field::new("menu.search", query).placeholder(placeholder.clone()).glyph(Icon::Search).auto_focus()));
+            panel = panel.child(rect().width(Size::fill()).padding((0., 0., space::XS, 0.)).child(Field::new("menu.search", query).placeholder(placeholder.clone()).glyph(Icon::Search).auto_focus().rows_through()));
         }
         if items.is_empty() {
             return panel.child(rect().width(Size::fill()).height(Size::px(list_h)).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3))).into_element();

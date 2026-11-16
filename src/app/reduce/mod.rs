@@ -199,6 +199,12 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::Quit => quit::ask(model, &mut out),
         Event::QuitChosen { keep } => out.push(Effect::Quit { keep }),
         Event::RestartForUpdate => quit::restart_for_update(model, &mut out),
+        Event::Updates(updates) => {
+            if model.updates != *updates {
+                model.updates = *updates;
+                out.push(Effect::Redraw(Redraw::All));
+            }
+        }
     }
     fleet::finish_take_overs(model, env.now, &mut out);
     if !model.session.runs.is_empty() {

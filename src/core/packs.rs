@@ -244,6 +244,33 @@ pub fn rename_selected(instance_dir: &Path, kind: Kind, old: &str, new: &str) ->
     }
 }
 
+/// The files that say which packs of `kind` are selected, as they read now, for [`restore_selection`].
+pub fn saved_selection(instance_dir: &Path, kind: Kind) -> Vec<(PathBuf, String)> {
+    let read = || selection_files(instance_dir, kind).into_iter().filter_map(|path| std::fs::read_to_string(&path).ok().map(|text| (path, text))).collect();
+    if kind == Kind::ResourcePack { super::sync::with_templates(read) } else { read() }
+}
+
+/// Writes back what [`saved_selection`] read wherever it changed since.
+pub fn restore_selection(kind: Kind, saved: &[(PathBuf, String)]) -> Result<()> {
+    let write = || -> Result<()> {
+        for (path, text) in saved {
+            if std::fs::read_to_string(path).ok().as_deref() != Some(text.as_str()) {
+                net::write_atomic(path, text.as_bytes())?;
+            }
+        }
+        Ok(())
+    };
+    if kind == Kind::ResourcePack { super::sync::with_templates(write) } else { write() }
+}
+
+fn selection_files(instance_dir: &Path, kind: Kind) -> Vec<PathBuf> {
+    match kind {
+        Kind::ResourcePack => vec![instance_dir.join(super::sync::OPTIONS_FILE)],
+        Kind::Shader => SHADER_SETTINGS.iter().map(|name| instance_dir.join("config").join(name)).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn rewrite(path: &Path, change: impl Fn(&str) -> Option<String>) -> Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,

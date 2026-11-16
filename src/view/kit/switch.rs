@@ -3,9 +3,11 @@
 use freya::animation::*;
 use freya::prelude::*;
 
+use super::text::para;
+use super::tooltip::WithTip;
 use super::{ring, use_theme};
 use crate::view::drive::use_spot;
-use crate::view::theme::{frame, motion, space};
+use crate::view::theme::{font, frame, motion, space};
 
 /// An on/off switch named `id`, described by `label` for screen readers and the drive tool.
 #[derive(Clone, PartialEq)]
@@ -85,5 +87,45 @@ impl Component for Switch {
             s = s.border(border);
         }
         s
+    }
+}
+
+/// A switch with its text beside it; a click on the text flips it too, and a disabled one shows its reason as a tip.
+#[derive(PartialEq)]
+pub struct SwitchLabel {
+    /// The drive id of the switch.
+    pub id: &'static str,
+    /// The text beside the switch, also its name for screen readers.
+    pub text: String,
+    /// Whether the switch is on.
+    pub on: bool,
+    /// Why the switch cannot be flipped now, if it cannot.
+    pub disabled: Option<String>,
+    /// Called with the new value when the person flips the switch or clicks the text.
+    pub on_toggle: EventHandler<bool>,
+}
+
+impl Component for SwitchLabel {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let mut hovered = use_state(|| false);
+        let enabled = self.disabled.is_none();
+        let (on, toggle) = (self.on, self.on_toggle.clone());
+        let flip = toggle.clone();
+        let ink = if !enabled { t.text3 } else if *hovered.read() { t.text1 } else { t.text2 };
+        let mut text = para(&t, self.text.clone(), font::CALLOUT, ink).width(Size::fill()).cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed });
+        if enabled {
+            text = text.on_press(move |_| flip.call(!on));
+        }
+        let row = rect()
+            .width(Size::fill())
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .child(Switch::new(self.id, self.text.clone(), on).disabled(!enabled).on_toggle(move |on: bool| toggle.call(on)))
+            .child(text);
+        WithTip::new(self.disabled.clone(), row).fill()
     }
 }

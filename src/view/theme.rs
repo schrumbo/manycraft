@@ -6,6 +6,15 @@ use freya::prelude::*;
 pub use crate::core::scale::{control, font, iconsize, motion, radius, space};
 use crate::core::themes::{self, Density, Library, Rgba, Signature, Token};
 
+/// Paint levels of the window-wide overlays; Freya paints nodes that share a level in no fixed order.
+pub mod level {
+    pub const SHEET: u8 = 2;
+    pub const PALETTE: u8 = 3;
+    pub const MENU: u8 = 4;
+    pub const TOAST: u8 = 5;
+    pub const TIP: u8 = 6;
+}
+
 /// Fixed sizes of the window's frame around the content.
 pub mod frame {
     pub const SIDEBAR: f32 = 232.;
@@ -19,9 +28,17 @@ pub mod frame {
     pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
     /// A thin line that shows progress along an edge.
-    pub const HAIRLINE: f32 = 2.;
+    pub const PROGRESS_EDGE: f32 = 2.;
     pub const SHEET: f32 = 560.;
+    /// The width of a sheet that only asks or tells.
+    pub const SHEET_NARROW: f32 = 448.;
     pub const SHEET_TOP: f32 = 72.;
+    /// The width of a picker on a sheet, such as the Minecraft version or the world to install into.
+    pub const PICK_W: f32 = 232.;
+    /// The bars a loading row of the content browser shows in place of its name and its text, and their height.
+    pub const BAR_NAME: f32 = 120.;
+    pub const BAR_TEXT: f32 = 220.;
+    pub const BAR_H: f32 = 10.;
     pub const PALETTE: f32 = 560.;
     pub const PALETTE_ROW: f32 = 36.;
     pub const PALETTE_ROWS: usize = 9;
@@ -42,11 +59,33 @@ pub mod frame {
     pub const RING: f32 = 2.;
     pub const RING_GAP: f32 = 2.;
     pub const PROGRESS: f32 = 3.;
+    /// The hairline that divides the rows of a group.
+    pub const HAIRLINE: f32 = 1.;
     pub const FACE: f32 = 18.;
     pub const DOT: f32 = 7.;
     pub const NOTICE: f32 = 32.;
     /// How strongly the attention colour washes a notice strip.
     pub const NOTICE_WASH: f32 = 0.12;
+    /// How strongly the accent washes the glyph tile of an entry.
+    pub const TILE_WASH: f32 = 0.14;
+    /// How long the waiting arc takes for one turn, in milliseconds.
+    pub const SPIN_MS: u64 = 900;
+    /// The line height of wrapped paragraphs, as a multiple of the font size.
+    pub const PARA_LINE: f32 = 1.35;
+    /// The outline of an empty checkbox.
+    pub const BOX_EDGE: f32 = 1.5;
+    /// The height of a gallery image on a project page.
+    pub const SHOT_HEIGHT: f32 = 270.;
+    /// The height of a version or dependency row on a project page.
+    pub const VERSION_ROW: f32 = 44.;
+    /// The widest the add button of a version row lets its label grow.
+    pub const VERSION_ACTION_LABEL: f32 = 220.;
+    /// How far an arrow key scrolls a project page.
+    pub const LINE_STEP: f32 = 40.;
+    /// The width of the bullet or number column of a list in markdown.
+    pub const MARKER_W: f32 = 24.;
+    /// The width of the bar beside a quote in markdown.
+    pub const QUOTE_BAR: f32 = 2.;
 }
 
 /// The fonts the UI asks for, tried in order before the system's own.

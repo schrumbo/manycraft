@@ -277,7 +277,7 @@ impl Component for Tile {
             pic = pic.child(cover(w, h, Color::WHITE.with_af32(HOVER_LIFT)));
         }
         if let Some(done) = progress(game, &m) {
-            let mut bar = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(w)).height(Size::px(frame::HAIRLINE)).background(t.text1.with_af32(TRACK));
+            let mut bar = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(w)).height(Size::px(frame::PROGRESS_EDGE)).background(t.text1.with_af32(TRACK));
             if let Some(done) = done {
                 bar = bar.child(rect().width(Size::px((w * done.clamp(0., 1.)).round())).height(Size::fill()).background(t.accent));
             }

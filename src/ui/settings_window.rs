@@ -150,13 +150,13 @@ impl Field {
     }
 
     fn set(self, value: String) {
-        let mut next = settings::active().clone();
-        if self == Field::Chat {
-            next.phone.telegram_chat = value;
-        } else {
-            next.phone.ntfy_server = value;
-        }
-        settings::set(next);
+        settings::update(|next| {
+            if self == Field::Chat {
+                next.phone.telegram_chat = value;
+            } else {
+                next.phone.ntfy_server = value;
+            }
+        });
     }
 }
 
@@ -470,14 +470,11 @@ impl SettingsView {
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        let before = settings::active().clone();
-        let mut next = before.clone();
-        edit(&mut next);
+        let (before, next) = settings::update(edit);
         let badge_changed = next.game_badge != before.game_badge;
         let sleep_changed = next.prevent_sleep != before.prevent_sleep;
         let rate_changed = next.preview_rate != before.preview_rate;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
-        settings::set(next);
         if badge_changed {
             super::state::tell_games(cx);
         }

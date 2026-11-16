@@ -215,11 +215,11 @@ impl Component for Updates {
         };
         let mut card = Card::new("instance.mods.updates", tr("Mod-Updates")).message(name).body(content).width(frame::SHEET * 1.25);
         card = match &state {
-            Load::Failed(_) => card.primary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, run: EventHandler::new(move |_| {
+            Load::Failed(_) => card.primary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| {
                 let next = asked.peek().wrapping_add(1);
                 asked.set(next);
             }) }),
-            Load::Ready(list) if list.is_empty() => card.primary(Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(ui)) }),
+            Load::Ready(list) if list.is_empty() => card.primary(Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) }),
             Load::Loading => card,
             Load::Ready(_) => {
                 let label = match n {
@@ -236,8 +236,8 @@ impl Component for Updates {
                 } else {
                     None
                 };
-                card.secondary(Primary { label: tr("Abbrechen"), disabled: busy.then(|| tr("Wird aktualisiert …")), danger: false, run: EventHandler::new(move |_| sheet::close(ui)) })
-                    .primary(Primary { label, disabled: why, danger: false, run: EventHandler::new(move |_| apply()) })
+                card.secondary(Primary { label: tr("Abbrechen"), disabled: busy.then(|| tr("Wird aktualisiert …")), danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) })
+                    .primary(Primary { label, disabled: why, danger: false, busy, run: EventHandler::new(move |_| apply()) })
             }
         };
         card

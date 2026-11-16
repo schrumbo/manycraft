@@ -26,7 +26,7 @@ use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::row::Row;
 use crate::view::kit::sheet;
 use crate::view::kit::text::{figure, hairline, heading, line, mono, para, secondary, strong};
-use crate::view::kit::{Bounds, after, off_ui, toast, use_theme};
+use crate::view::kit::{Bounds, after, button_focused, off_ui, toast, use_theme};
 use crate::view::native;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
@@ -152,10 +152,6 @@ fn mode_label(mode: Mode) -> String {
         Mode::Adventure => tr("Abenteuer"),
         Mode::Spectator => tr("Zuschauer"),
     }
-}
-
-fn button_focused() -> bool {
-    Platform::get().current_window().focused_accessibility_node.peek().role() == AccessibilityRole::Button
 }
 
 fn reveal(mut scroll: ScrollController, at: usize, view: f32) {

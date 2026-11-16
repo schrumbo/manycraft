@@ -259,7 +259,7 @@ impl Component for Mods {
         let add = links::add_mods(store, &made.id, &made.name);
         let packs = links::resource_packs(store, &made.id);
         let shaders = links::shaders(store, &made.id);
-        super::use_extras(ctx.extras(&add));
+        super::use_extras(ctx.extras());
 
         let loading = !scan.scanned && fault_now.is_none();
         let lock = ctx.locked().or_else(|| loading.then(|| tr("Mods werden gelesen …")));

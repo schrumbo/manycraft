@@ -1,14 +1,14 @@
 use freya::prelude::*;
 
-use crate::core::i18n::tr;
-use crate::view::commands::{self, Command};
+use crate::core::i18n::{tr, trf};
+use crate::view::commands::{self, Command, Want, can_want, want};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::field::Field;
 use crate::view::kit::text::{line, spacer};
 use crate::view::kit::use_theme;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{font, frame, iconsize, space};
+use crate::view::theme::{font, frame, level, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
 #[derive(Clone, PartialEq)]
@@ -33,11 +33,21 @@ fn entries(store: Store, query: &str) -> Vec<Entry> {
     let mut list: Vec<Entry> = Command::ALL
         .into_iter()
         .filter(|c| *c != Command::OpenPalette && c.available(store))
-        .map(|c| Entry { id: format!("palette.{}", c.name()), label: c.label(), glyph: c.glyph(), shortcut: c.shortcut().map(|s| s.label()), target: Target::Command(c) })
+        .map(|c| Entry { id: format!("palette.{}", c.name()), label: if c == Command::Undo { commands::undo_label(store).unwrap_or_else(|| c.label()) } else { c.label() }, glyph: c.glyph(), shortcut: c.shortcut().map(|s| s.label()), target: Target::Command(c) })
         .collect();
     list.extend(commands::extras(store).into_iter().map(|x| Entry { id: format!("palette.{}", x.id), label: x.label, glyph: x.glyph, shortcut: x.shortcut.map(|s| s.label()), target: Target::Extra(x.run) }));
     let m = store.model.peek();
-    list.extend(m.batches.iter().map(|b| Entry { id: format!("palette.batch.{}", b.id), label: b.name.clone(), glyph: Icon::Layers, shortcut: None, target: Target::Page(Page::Grid(Filter::Batch(b.id.clone()))) }));
+    for b in &m.batches {
+        list.push(Entry { id: format!("palette.batch.{}", b.id), label: b.name.clone(), glyph: Icon::Layers, shortcut: None, target: Target::Page(Page::Grid(Filter::Batch(b.id.clone()))) });
+        let exporting = m.exporting.contains(&b.instance_id);
+        for (suffix, label, glyph, what) in [("edit", trf("%@ bearbeiten", &[&b.name]), Icon::Pencil, Want::EditBatch(b.id.clone())), ("export", trf("%@ als .mrpack exportieren…", &[&b.name]), Icon::Upload, Want::ExportBatch(b.id.clone())), ("delete", trf("%@ löschen…", &[&b.name]), Icon::Trash, Want::DeleteBatch(b.id.clone()))] {
+            if can_want(&what) && !(exporting && suffix == "export") {
+                list.push(Entry { id: format!("palette.batch.{}.{suffix}", b.id), label, glyph, shortcut: None, target: Target::Extra(EventHandler::new(move |_| {
+                    want(store, what.clone());
+                })) });
+            }
+        }
+    }
     list.extend(m.instances.iter().map(|i| Entry { id: format!("palette.instance.{}", i.id), label: i.name.clone(), glyph: Icon::Folder, shortcut: None, target: Target::Page(Page::Instance(i.id.clone())) }));
     if q.is_empty() {
         let (bulk, rest): (Vec<Entry>, Vec<Entry>) = list.into_iter().partition(|e| matches!(e.target, Target::Command(Command::StartAll | Command::StopAll | Command::CancelStart | Command::StartAnyway | Command::ReconnectDropped | Command::StartSelected | Command::StopSelected | Command::RestartSelected | Command::ReconnectSelected | Command::MessageSelected)));
@@ -99,7 +109,7 @@ impl Component for Palette {
         body = if count == 0 { body.padding(space::L).center().child(line(&t, tr("Nichts gefunden"), font::BODY, t.text3)) } else { body.children(rows) };
         rect()
             .position(Position::new_global().left(0.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::PALETTE))
             .width(Size::px(w))
             .height(Size::px(h))
             .background(t.scrim.with_a(t.scrim.a() / 2))
@@ -108,12 +118,16 @@ impl Component for Palette {
             .on_mouse_down(move |_| ui.palette.set(false))
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 match &e.key {
-                    Key::Named(NamedKey::Escape) => ui.palette.set(false),
+                    Key::Named(NamedKey::Escape) => {
+                        e.prevent_default();
+                        ui.palette.set(false);
+                    }
                     Key::Named(NamedKey::ArrowDown) => hot.set((chosen + 1).min(count.saturating_sub(1))),
                     Key::Named(NamedKey::ArrowUp) => hot.set(chosen.saturating_sub(1)),
                     Key::Named(NamedKey::Tab) if e.modifiers.contains(Modifiers::SHIFT) => hot.set(chosen.saturating_sub(1)),
                     Key::Named(NamedKey::Tab) => hot.set((chosen + 1).min(count.saturating_sub(1))),
                     Key::Named(NamedKey::Enter) => {
+                        e.prevent_default();
                         if let Some(entry) = keys_list.get(chosen) {
                             run(store, &entry.target);
                         }
@@ -133,7 +147,7 @@ impl Component for Palette {
                     .shadow(t.elevation.float.clone())
                     .overflow(Overflow::Clip)
                     .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
-                    .child(rect().width(Size::fill()).padding(space::S).child(Field::new("palette.query", query).placeholder(tr("Befehl, Account oder Batch suchen")).glyph(Icon::Search).width(Size::fill()).auto_focus()))
+                    .child(rect().width(Size::fill()).padding(space::S).child(Field::new("palette.query", query).placeholder(tr("Befehl, Account oder Batch suchen")).glyph(Icon::Search).rows_through().width(Size::fill()).auto_focus()))
                     .child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator))
                     .child(body),
             )

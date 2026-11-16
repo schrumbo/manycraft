@@ -2,7 +2,7 @@
 
 use freya::prelude::*;
 
-use crate::view::theme::{Theme, faces, font};
+use crate::view::theme::{Theme, faces, font, frame};
 
 fn with_faces(mut l: Label, t: &Theme, chain: [&'static str; 4]) -> Label {
     if let Some(f) = &t.font {
@@ -51,7 +51,7 @@ pub fn heading(t: &Theme, s: impl Into<String>) -> Label {
 
 /// A paragraph that wraps to its width.
 pub fn para(t: &Theme, s: impl Into<String>, size: f32, color: Color) -> Label {
-    with_faces(label().text(s.into()).font_size(size).color(color).width(Size::fill()).line_height(1.35), t, faces::BODY)
+    with_faces(label().text(s.into()).font_size(size).color(color).width(Size::fill()).line_height(frame::PARA_LINE), t, faces::BODY)
 }
 
 /// Numbers that line up under each other.

@@ -250,19 +250,19 @@ fn explain(label: &str, e: &anyhow::Error) -> String {
     }
 }
 
-fn local_io(e: &anyhow::Error) -> bool {
+pub(crate) fn local_io(e: &anyhow::Error) -> bool {
     let io = e.chain().find_map(|c| c.downcast_ref::<std::io::Error>());
     let network = e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some()) || ["cannot download", "cannot look the mods up", "cannot find the Fabric loader"].iter().any(|m| format!("{e:#}").contains(m));
     io.is_some_and(|i| !matches!(i.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull)) && !network
 }
 
-fn file_name(name: &str) -> String {
+pub(crate) fn file_name(name: &str) -> String {
     let clean: String = name.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
     let clean = clean.trim().trim_end_matches('.');
     format!("{}.{}", if clean.is_empty() { "batch" } else { clean }, mrpack::EXTENSION)
 }
 
-fn with_extension(path: PathBuf) -> PathBuf {
+pub(crate) fn with_extension(path: PathBuf) -> PathBuf {
     if path.extension().is_some() { path } else { path.with_extension(mrpack::EXTENSION) }
 }
 

@@ -1,6 +1,6 @@
 //! The page of one instance: its tabs on the left, and on the right what runs, how to play it and what to do with it.
 
-mod actions;
+pub(crate) mod actions;
 mod inspector;
 mod logs;
 mod logs_lines;
@@ -13,7 +13,7 @@ mod worlds;
 pub mod links;
 mod save;
 mod settings;
-mod snapshots;
+pub(crate) mod snapshots;
 mod title;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -196,6 +196,11 @@ pub fn blocked(store: Store, id: &str) -> Option<String> {
     store.model.peek().games.values().any(|g| g.instance_id == id && g.phase.is_active()).then(|| tr("Stoppe zuerst die laufenden Spiele."))
 }
 
+/// Why the browser and the mods sheet wait on instance `id`: work on it, such as a restore, that holds it.
+pub fn held(store: Store, id: &str) -> Option<String> {
+    store.ui.instance.busy.read().get(id).map(|b| b.text.clone())
+}
+
 /// Draws again each full minute of the oldest running game, or of the oldest played alone when `alone`, so uptimes
 /// stay current.
 pub fn use_minute(store: Store, alone: bool) {
@@ -247,6 +252,11 @@ pub fn subtitle(made: &Instance) -> String {
         }
     }
     parts.join(" · ")
+}
+
+/// "26.3-rc1 · Vorabversion" for the version pickers; a release is just its id.
+pub fn version_text(v: &crate::core::versions::GameVersion) -> String {
+    crate::ui::versions::kind_label(v.kind).map_or_else(|| v.id.clone(), |k| format!("{} · {k}", v.id))
 }
 
 /// Notes when each running game started, so the page can say how long it runs. Lives in the shell, so leaving the
@@ -440,4 +450,20 @@ pub fn use_extras(extras: Vec<Extra>) {
     latest.set_if_modified(extras);
     use_side_effect_with_deps(&ids, move |_| tab_extras.set(latest.peek().clone()));
     use_drop(move || tab_extras.set(Vec::new()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_text;
+    use crate::core::versions::{GameVersion, Kind};
+
+    #[test]
+    fn every_kind_has_one_name_in_every_picker() {
+        let text = |id: &str, kind| version_text(&GameVersion { id: id.into(), kind });
+        assert_eq!(text("26.3", Kind::Release), "26.3");
+        assert_eq!(text("26.4-snapshot-1", Kind::Snapshot), "26.4-snapshot-1 · Snapshot");
+        assert_eq!(text("26.3-rc1", Kind::PreRelease), "26.3-rc1 · Vorabversion");
+        assert_eq!(text("b1.7.3", Kind::OldBeta), "b1.7.3 · Alte Beta");
+        assert_eq!(text("a1.2.6", Kind::OldAlpha), "a1.2.6 · Alte Alpha");
+    }
 }

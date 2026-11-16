@@ -11,6 +11,8 @@ mod instance;
 mod kit;
 mod menubar;
 mod native;
+mod settings;
+mod sheets;
 mod shell;
 mod signals;
 mod stills;
@@ -18,6 +20,7 @@ mod store;
 mod theme;
 mod tray;
 mod ui;
+mod updates;
 
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -28,6 +31,7 @@ use self::store::Store;
 use self::theme::Theme;
 use self::ui::Ui;
 use crate::app::event::Event;
+use crate::core::settings::{self as prefs, Appearance};
 use crate::core::shortcut::Play;
 use crate::core::themes::{self, Library};
 
@@ -49,6 +53,34 @@ fn drive_scale() -> Option<f64> {
         return None;
     }
     Some(std::env::var("MANYCRAFT_DRIVE_SCALE").ok().and_then(|s| s.parse().ok()).filter(|s: &f64| *s >= 1. && *s <= 4.).unwrap_or(2.))
+}
+
+/// The theme choice the window draws with: the theme library and the saved appearance and theme, so Settings can change
+/// them live.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Look {
+    pub library: State<Rc<Library>>,
+    pub choice: State<(Appearance, Option<String>)>,
+}
+
+impl Look {
+    /// Reads the user's theme files again, off the UI thread.
+    pub fn reload(self) {
+        self.reload_then(|| {});
+    }
+
+    /// Reads the user's theme files again and runs `then` once the new library is in place.
+    pub fn reload_then(mut self, then: impl FnOnce() + 'static) {
+        let Some(rx) = kit::off_thread("themes-load", || Library::load(&themes::dir())) else { return };
+        spawn_in_window(async move {
+            let Ok(library) = rx.recv().await else { return };
+            if self.library.try_peek().is_none() {
+                return;
+            }
+            self.library.set(Rc::new(library));
+            then();
+        });
+    }
 }
 
 fn appearance() -> Option<bool> {
@@ -95,14 +127,26 @@ impl App for Root {
     fn render(&self) -> impl IntoElement {
         let platform = Platform::get().current_window();
         let os_dark = *platform.preferred_theme.read() == PreferredTheme::Dark;
-        let dark = appearance().unwrap_or(os_dark);
-        let library = use_hook(|| Rc::new(Library::load(&themes::dir())));
-        let mut theme = use_provide_context(|| State::create(Rc::new(load(&library, dark))));
+        let look = use_provide_context(|| {
+            let s = prefs::loaded();
+            Look { library: State::create(Rc::new(Library::load(&themes::dir()))), choice: State::create((s.appearance, s.theme.clone())) }
+        });
+        let library = look.library.read().clone();
+        let (chosen, id) = look.choice.read().clone();
+        let dark = appearance().unwrap_or(match chosen {
+            Appearance::System => os_dark,
+            Appearance::Light => false,
+            Appearance::Dark => true,
+        });
+        let id = std::env::var("MANYCRAFT_FREYA_THEME").ok().or(id);
+        let mut theme = use_provide_context(|| State::create(Rc::new(load(&library, id.as_deref(), dark))));
         drive::share_theme(theme);
-        let lib = library.clone();
-        use_side_effect_with_deps(&dark, move |dark| {
-            if theme.peek().dark != *dark {
-                theme.set(Rc::new(load(&lib, *dark)));
+        let key = (dark, id.clone(), Rc::as_ptr(&library) as usize);
+        use_side_effect_with_deps(&key, move |(dark, id, _)| {
+            let library = look.library.peek().clone();
+            let next = Rc::new(load(&library, id.as_deref(), *dark));
+            if *theme.peek() != next {
+                theme.set(next);
             }
         });
         let root = platform.root_size;
@@ -127,18 +171,22 @@ impl App for Root {
             }
             store.listen(hears, signals::listen());
             drive::start(store);
+            updates::start(store);
+            sheets::answer();
             store
         });
         #[cfg(not(target_os = "windows"))]
         use_side_effect(move || native::attention(store.model.read().attention_count(None)));
         #[cfg(target_os = "macos")]
         use_side_effect(move || menubar::refresh(store));
-        use_drop(move || store.close());
+        use_drop(move || {
+            updates::on_quit(store);
+            store.close();
+        });
         shell::Shell
     }
 }
 
-fn load(library: &Library, dark: bool) -> Theme {
-    let id = std::env::var("MANYCRAFT_FREYA_THEME").ok();
-    Theme::load(library, id.as_deref(), dark).expect("the built-in themes always load")
+fn load(library: &Library, id: Option<&str>, dark: bool) -> Theme {
+    Theme::load(library, id, dark).expect("the built-in themes always load")
 }
