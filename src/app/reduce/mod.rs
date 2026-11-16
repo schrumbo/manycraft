@@ -367,7 +367,7 @@ mod tests {
         let (mut m, lost) = setup(Phase::Menu, AccountKind::Offline, &[]);
         m.set_hint(&lost, |h| h.link_lost = true);
         let message = |instance: &str, message: FromMod| Report::Mod { key: instance.into(), message };
-        let chat = |instance: &str, kind: ChatKind| message(instance, FromMod::Chat { kind, from: None, text: "hi".into() });
+        let chat = |instance: &str, kind: ChatKind| message(instance, FromMod::Chat { kind, from: None, text: "hi".into(), runs: Vec::new() });
         let notice = |instance: &str| message(instance, FromMod::Preview { seq: 2, w: 1, h: 1 });
         let drawn = |reports: &[Report]| redraw(&m, &env, reports);
         assert_eq!(drawn(&[notice("redraw-a"), notice("redraw-b")]), Redraw::Nothing);

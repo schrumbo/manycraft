@@ -4,6 +4,7 @@
 mod picker;
 mod target;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -22,12 +23,14 @@ use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
 use super::kit::{Bounds, ring, use_theme};
 use super::store::{Store, use_store};
-use super::theme::{Theme, control, font, iconsize, space};
+use super::theme::{Theme, color, control, font, iconsize, space};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{ChatLine, Model};
 use crate::core::batch::MAX_CHAT_CHARS;
+use crate::core::chat_text::{self, Run};
 use crate::core::i18n::{tr, trf};
 use crate::core::settings;
+use crate::core::themes::Rgba;
 
 const KEPT_HISTORY: usize = 100;
 const SHOWN_CHARS: usize = 600;
@@ -340,7 +343,7 @@ impl Component for ChatPage {
                 .zip(ids[older..].iter().copied())
                 .map(|(l, id)| {
                     let tag = names.iter().find(|(b, _)| *b == l.batch).map(|(_, n)| n.clone());
-                    let mentions = mentions(&l.text, &own);
+                    let mentions = marks(&l, &own);
                     let about_own = l.from.is_none() && !mentions.is_empty();
                     let heard = if about_own { None } else { heard_by(&m, &l, &running) };
                     let seen = 1 + l.also.len();
@@ -388,12 +391,29 @@ fn heard_by(m: &Model, l: &ChatLine, running: &HashMap<String, usize>) -> Option
         return None;
     }
     let names: Vec<&str> = std::iter::once(l.account.as_str()).chain(l.also.iter().map(|(_, n, _)| n.as_str())).collect();
-    let account = m.games.get(&l.instance).map(|g| g.account_id);
-    Some(Heard { names: names.join(", "), first: l.account.clone(), key: l.instance.clone(), account })
+    Some(Heard { names: names.join(", ") })
 }
 
 fn own_names(m: &Model) -> HashSet<String> {
     m.accounts.iter().map(|a| a.name.to_lowercase()).filter(|n| n.chars().count() >= MENTION_MIN).collect()
+}
+
+/// The text a line shows: the whole line as the game styled it, else its words.
+fn shown(l: &ChatLine) -> Cow<'_, str> {
+    if l.runs.is_empty() { Cow::Borrowed(l.text.as_str()) } else { Cow::Owned(chat_text::plain(&l.runs)) }
+}
+
+/// Where the person's account names stand in what `l` shows, leaving out the sender's own name.
+fn marks(l: &ChatLine, own: &HashSet<String>) -> Vec<(usize, usize)> {
+    let text = shown(l);
+    let mut out = mentions(&text, own);
+    if !l.runs.is_empty()
+        && let Some(from) = l.from.as_deref()
+        && let Some(i) = out.iter().position(|&(s, e)| text[s..e].eq_ignore_ascii_case(from))
+    {
+        out.remove(i);
+    }
+    out
 }
 
 /// Byte ranges of the person's account names in `text`, as whole words.
@@ -438,9 +458,6 @@ fn empty(t: &Theme, glyph: Icon, title: String, text: String, action: Option<Ele
 #[derive(Clone, Debug, PartialEq)]
 struct Heard {
     names: String,
-    first: String,
-    key: String,
-    account: Option<uuid::Uuid>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -553,29 +570,24 @@ impl Component for Row {
         let t = use_theme();
         let r = &self.row;
         let l = &r.line;
-        let text = clip(&l.text);
-        let prefix = l.from.as_ref().map(|from| format!("{from}:"));
-        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(if l.from.is_none() { t.text2 } else { t.text1 }).line_height(1.3);
-        if let Some(p) = prefix {
-            body = body.span(Span::new(format!("{p} ")).color(t.text2).font_weight(FontWeight::SEMI_BOLD));
-        }
-        let limit = if text.len() == l.text.len() { text.len() } else { text.len() - '…'.len_utf8() };
-        let mut at = 0;
-        for (s, e) in r.mentions.iter().copied() {
-            if e > limit || s < at {
-                continue;
+        let base = if l.from.is_none() { t.text2 } else { t.text1 };
+        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(base).line_height(1.35);
+        let plain;
+        let runs = if l.runs.is_empty() {
+            if let Some(from) = &l.from {
+                body = body.span(Span::new(format!("{from}: ")).color(t.text2).font_weight(FontWeight::SEMI_BOLD));
             }
-            let (Some(plain), Some(name)) = (text.get(at..s), text.get(s..e)) else { continue };
-            if !plain.is_empty() {
-                body = body.span(Span::new(plain.to_owned()));
-            }
-            body = body.span(Span::new(name.to_owned()).color(t.accent_text).font_weight(FontWeight::SEMI_BOLD));
-            at = e;
-        }
-        if let Some(rest) = text.get(at..).filter(|r| !r.is_empty()) {
-            body = body.span(Span::new(rest.to_owned()));
-        }
-        let summary = format!("{}: {}", l.from.as_deref().unwrap_or(&l.account), l.text);
+            plain = [Run { text: l.text.clone(), ..Run::default() }];
+            &plain[..]
+        } else {
+            &l.runs[..]
+        };
+        body = body.spans_iter(spans(&t, runs, &r.mentions, base).into_iter());
+        let text = shown(l);
+        let summary = match &l.from {
+            Some(_) if !l.runs.is_empty() => text.into_owned(),
+            from => format!("{}: {text}", from.as_deref().unwrap_or(&l.account)),
+        };
         let spot = use_spot(&format!("chat.line.{}", r.id), "chat-line", &summary, true);
         let mut row = rect()
             .on_sized(spot)
@@ -593,7 +605,9 @@ impl Component for Row {
                 tags = tags.child(rect().max_width(Size::px(TAG_MAX)).child(caption(&t, b.clone())));
             }
             if let Some(h) = &r.heard {
-                tags = tags.child(HeardTag { heard: h.clone(), id: r.id });
+                let tip = trf("Nur bei %@ angekommen.", &[&h.names]);
+                let names = rect().max_width(Size::px(TAG_MAX)).a11y_alt(tip.clone()).child(caption(&t, h.names.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+                tags = tags.child(WithTip::new(Some(tip), names));
             }
             row = row.child(tags);
         }
@@ -602,60 +616,52 @@ impl Component for Row {
     }
 }
 
-/// Which of the person's accounts got a line only some of them saw; a click answers from that account.
-#[derive(PartialEq)]
-struct HeardTag {
-    heard: Heard,
-    id: u64,
-}
-
-impl Component for HeardTag {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = use_store();
-        let mut hovered = use_state(|| false);
-        let a11y = use_a11y();
-        let focus = use_focus(a11y);
-        let h = &self.heard;
-        let spot = use_spot(&format!("chat.heard.{}", self.id), "button", &h.names, true);
-        let key = h.key.clone();
-        let tip = trf("Nur bei %@ angekommen. Klicken, um als %@ zu antworten.", &[&h.names, &h.first]);
-        let pressed = key.clone();
-        let mut chip = rect()
-            .a11y_id(a11y)
-            .a11y_focusable(true)
-            .a11y_role(AccessibilityRole::Button)
-            .a11y_alt(tip.clone())
-            .on_sized(spot)
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::XS)
-            .padding((space::XXS, space::XS))
-            .corner_radius(t.shape.small)
-            .max_width(Size::px(TAG_MAX))
-            .cursor(CursorIcon::Pointer)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
-            .on_press(move |_| pick(store, Target::Instance(key.clone())))
-            .on_key_down(move |e: Event<KeyboardEventData>| {
-                let activates = matches!(&e.key, Key::Named(NamedKey::Enter)) || matches!(&e.key, Key::Character(c) if c == " ");
-                if a11y.is_focused() && activates {
-                    e.stop_propagation();
-                    pick(store, Target::Instance(pressed.clone()));
-                }
-            });
-        if let Some(border) = ring(&t, focus()) {
-            chip = chip.border(border);
+/// The spans for `runs` in their colours, each made readable on the page, with the person's names in `marks` in accent,
+/// cut after `SHOWN_CHARS` characters.
+fn spans(t: &Theme, runs: &[Run], marks: &[(usize, usize)], base: Color) -> Vec<Span<'static>> {
+    let back = Rgba { r: t.surface.r(), g: t.surface.g(), b: t.surface.b(), a: 255 };
+    let mut out = Vec::new();
+    let mut left = SHOWN_CHARS;
+    let mut start = 0;
+    for run in runs {
+        let end = start + run.text.len();
+        let ink = run.color.map_or(base, |c| color(Rgba::rgb(c).readable_on(back, 4.5)));
+        let mut cuts: Vec<usize> = marks.iter().flat_map(|&(s, e)| [s, e]).filter(|&b| b > start && b < end).map(|b| b - start).collect();
+        cuts.push(run.text.len());
+        let mut from = 0;
+        for to in cuts {
+            let Some(piece) = run.text.get(from..to).filter(|p| !p.is_empty()) else { continue };
+            let marked = marks.iter().any(|&(s, e)| s <= start + from && start + to <= e);
+            let n = piece.chars().count();
+            let cut = n > left;
+            let mut text: String = if cut { piece.chars().take(left).collect() } else { piece.to_owned() };
+            if cut {
+                text.push('…');
+            }
+            left = left.saturating_sub(n);
+            let mut span = Span::new(text).color(if marked { t.accent_text } else { ink });
+            if run.bold {
+                span = span.font_weight(FontWeight::BOLD);
+            } else if marked {
+                span = span.font_weight(FontWeight::SEMI_BOLD);
+            }
+            if run.italic {
+                span = span.font_slant(FontSlant::Italic);
+            }
+            if run.strike {
+                span = span.text_decoration(TextDecoration::LineThrough);
+            } else if run.underline {
+                span = span.text_decoration(TextDecoration::Underline);
+            }
+            out.push(span);
+            if cut {
+                return out;
+            }
+            from = to;
         }
-        if let Some(id) = h.account {
-            chip = chip.child(face(&t, store, id, &h.first, iconsize::S));
-        }
-        chip = chip.child(line(&t, h.names.clone(), font::CAPTION, if *hovered.read() { t.text1 } else { t.text2 }).max_lines(1).text_overflow(TextOverflow::Ellipsis));
-        if *hovered.read() {
-            chip = chip.background(t.hover);
-        }
-        WithTip::new(Some(tip), chip)
+        start = end;
     }
+    out
 }
 
 fn separator(t: &Theme, text: String, ink: Color, rule: Color) -> Element {
@@ -1123,7 +1129,7 @@ mod tests {
     use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clock, day_title, heard_by, in_scope, line_problem, mentions, now, recall_step, same_day, unique};
 
     fn line(batch: &str) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into(), runs: Vec::new() }
     }
 
     #[test]
@@ -1142,7 +1148,7 @@ mod tests {
         let mut l = line("farm");
         assert_eq!(heard_by(&m, &l, &running).map(|h| h.names), Some("Alex".into()));
         l.also.push(("k2".into(), "Bert".into(), "farm".into()));
-        assert_eq!(heard_by(&m, &l, &running).map(|h| (h.names, h.first)), Some(("Alex, Bert".into(), "Alex".into())));
+        assert_eq!(heard_by(&m, &l, &running).map(|h| h.names), Some("Alex, Bert".into()));
         l.also.push(("k3".into(), "Cara".into(), "farm".into()));
         assert_eq!(heard_by(&m, &l, &running), None);
         let crowd: HashMap<String, usize> = [("farm".to_owned(), 30)].into();

@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::core::account::Account;
 use crate::core::batch::Batch;
+use crate::core::chat_text;
 use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
 use crate::core::instance::Instance;
@@ -216,6 +217,8 @@ pub struct ChatLine {
     pub at: i64,
     pub from: Option<String>,
     pub text: String,
+    /// The line as the game shows it, styled; empty when `from` and `text` say it all.
+    pub runs: Vec<chat_text::Run>,
 }
 
 /// Everything the views read. Only the reducer and the shell that runs its effects change it.
@@ -814,7 +817,7 @@ mod tests {
     }
 
     fn line(n: u64) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), also: Vec::new(), at: 0, from: None, text: n.to_string() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), also: Vec::new(), at: 0, from: None, text: n.to_string(), runs: Vec::new() }
     }
 
     #[test]
@@ -842,7 +845,7 @@ mod tests {
     }
 
     fn said(key: &str, account: &str, from: Option<&str>, text: &str) -> ChatLine {
-        ChatLine { instance: key.into(), account: account.into(), batch: "b".into(), also: Vec::new(), at: 0, from: from.map(Into::into), text: text.into() }
+        ChatLine { instance: key.into(), account: account.into(), batch: "b".into(), also: Vec::new(), at: 0, from: from.map(Into::into), text: text.into(), runs: Vec::new() }
     }
 
     #[test]

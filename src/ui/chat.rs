@@ -768,7 +768,7 @@ mod tests {
     use super::{ChatLine, MAX_CHAT_CHARS, Scope, chat, clip, clock, day_title, in_scope, line_problem, now, recall_step, same_day, unique};
 
     fn line(batch: &str) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into(), runs: Vec::new() }
     }
 
     #[test]

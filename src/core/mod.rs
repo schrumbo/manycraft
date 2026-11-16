@@ -9,6 +9,7 @@ pub mod awake;
 pub mod batch;
 pub mod bin;
 pub mod browser;
+pub mod chat_text;
 pub mod cli;
 #[allow(dead_code)]
 pub mod companion;

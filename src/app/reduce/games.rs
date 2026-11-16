@@ -8,6 +8,7 @@ use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, Reveal};
 use super::{Env, fleet, go, notify, redraw, show};
 use crate::core::account::AccountKind;
+use crate::core::chat_text;
 use crate::core::fleet as fleets;
 use crate::core::history::{self, Entry, Kind};
 use crate::core::i18n::tr;
@@ -560,12 +561,14 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
     }
     match message {
         FromMod::State { kind, server, reason, cause } => on_state(m, env, fx, key, kind, server, reason, cause),
-        FromMod::Chat { from, text, .. } => {
+        FromMod::Chat { from, text, runs, .. } => {
+            let runs = if chat_text::needs_runs(&runs, &text) { chat_text::styled(&runs, &text) } else { Vec::new() };
+            let text = if text.contains('§') { chat_text::plain(&chat_text::styled(&[], &text)) } else { text };
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
             if env.settings.merged_chat {
                 let server = m.games.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
                 let shared = !(from.is_none() && text.contains(&account));
-                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text }, server.as_deref(), shared, env.now, KEPT_CHAT);
+                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text, runs }, server.as_deref(), shared, env.now, KEPT_CHAT);
             }
         }
         FromMod::Preview { .. } => {

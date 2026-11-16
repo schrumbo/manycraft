@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use super::backend::{Backend, Pixels, Update};
 use crate::app::model::Phase;
 use crate::core::account::Account;
+use crate::core::chat_text::Run;
 use crate::core::fleet::Target;
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
 
@@ -223,7 +224,8 @@ impl<P: Pixels> Sim<P> {
             }
             ToMod::ChatSend { text } => {
                 let from = self.names.get(key).cloned();
-                self.at(Duration::from_millis(100), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind: ChatKind::Player, from, text } }));
+                let runs = from.iter().map(|f| Run { text: format!("<{f}> "), ..Run::default() }).chain([Run { text: text.clone(), ..Run::default() }]).collect();
+                self.at(Duration::from_millis(100), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind: ChatKind::Player, from, text, runs } }));
             }
             ToMod::Quit => self.at(Duration::from_millis(300), None, Update::Exited { key: key.to_owned(), code: Some(0) }),
             ToMod::Profile { preview_interval_ms, preview_width } => {
@@ -244,16 +246,21 @@ impl<P: Pixels> Sim<P> {
         self.chat_n += 1;
         let h = hash(&format!("{key}{}", self.chat_n));
         let name = self.names.get(key).cloned().unwrap_or_default();
-        let (kind, from, text) = match if direct { h % 10 } else { 1 + h % 9 } {
-            0 => (ChatKind::System, None, format!("{} -> du: {}", SPEAKERS[(h >> 8) as usize % 2], DIRECTS[(h >> 16) as usize % DIRECTS.len()])),
-            1 => (ChatKind::System, None, format!("{name} joined the game")),
-            2 => (ChatKind::System, None, format!("{name} was slain by Zombie")),
+        let (kind, from, text, runs) = match if direct { h % 10 } else { 1 + h % 9 } {
+            0 => (ChatKind::System, None, format!("§d[{} -> du]§r {}", SPEAKERS[(h >> 8) as usize % 2], DIRECTS[(h >> 16) as usize % DIRECTS.len()]), Vec::new()),
+            1 => (ChatKind::System, None, format!("§e{name} joined the game"), Vec::new()),
+            2 => (ChatKind::System, None, format!("{name} was slain by Zombie"), Vec::new()),
             _ => {
                 let said = SAYINGS[(h >> 16) as usize % SAYINGS.len()];
-                (ChatKind::Player, Some(SPEAKERS[(h >> 8) as usize % SPEAKERS.len()].to_owned()), if unique { format!("{said} ({})", self.chat_n) } else { said.to_owned() })
+                let speaker = (h >> 8) as usize % SPEAKERS.len();
+                let from = SPEAKERS[speaker];
+                let text = if unique { format!("{said} ({})", self.chat_n) } else { said.to_owned() };
+                let rank = if speaker % 3 == 0 { "§6[VIP]§r " } else { "" };
+                let runs = vec![Run { text: format!("{rank}<{from}> "), ..Run::default() }, Run { text: text.clone(), ..Run::default() }];
+                (ChatKind::Player, Some(from.to_owned()), text, runs)
             }
         };
-        Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind, from, text } })
+        Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Chat { kind, from, text, runs } })
     }
 
     fn backlog(&mut self) {
@@ -363,9 +370,9 @@ impl<P: Pixels> Sim<P> {
                 let key = keys[(hash(&self.chat_n.to_string()) as usize) % keys.len()].clone();
                 let line = self.chat_line(&key, !self.still && (self.chat_n + 1).is_multiple_of(DIRECT_EVERY), false);
                 let lines = match &line {
-                    Update::Ipc(Event::Message { message: FromMod::Chat { kind: ChatKind::Player, from, text }, .. }) => keys
+                    Update::Ipc(Event::Message { message: FromMod::Chat { kind: ChatKind::Player, from, text, runs }, .. }) => keys
                         .iter()
-                        .map(|k| Update::Ipc(Event::Message { instance: k.clone(), message: FromMod::Chat { kind: ChatKind::Player, from: from.clone(), text: text.clone() } }))
+                        .map(|k| Update::Ipc(Event::Message { instance: k.clone(), message: FromMod::Chat { kind: ChatKind::Player, from: from.clone(), text: text.clone(), runs: runs.clone() } }))
                         .collect(),
                     _ => vec![line],
                 };

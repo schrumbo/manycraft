@@ -78,7 +78,8 @@ pub enum HotkeyAction {
 pub enum FromMod {
     Hello { instance: String, token: String, pid: u32, mod_version: String },
     State { kind: StateKind, server: Option<String>, reason: Option<String>, #[serde(default)] cause: Option<DisconnectCause> },
-    Chat { kind: ChatKind, from: Option<String>, text: String },
+    /// A chat line: its sender and words, and with a current agent the whole line as the game shows it.
+    Chat { kind: ChatKind, from: Option<String>, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] runs: Vec<crate::core::chat_text::Run> },
     Preview { seq: u32, w: u32, h: u32 },
     Hotkey { action: HotkeyAction },
     Window { visible: bool, focused: bool },

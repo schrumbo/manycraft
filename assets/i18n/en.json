@@ -1682,7 +1682,6 @@
   "An alle senden": "Send to Everyone",
   "Beim Betreten sendet jeder Account: %@": "On joining, every account sends: %@",
   "Dort ist gerade niemand im Spiel.": "Nobody there is in the game right now.",
-  "Nur bei %@ angekommen. Klicken, um als %@ zu antworten.": "Only %@ got this. Click to reply as %@.",
   "Senden als": "Send as",
   "Senden als · Enter wählt · Esc schließt": "Send as · Enter picks · Esc closes",
   "Senden als …": "Send As…",
@@ -1720,5 +1719,6 @@
   "Gilt, wenn du diese Instanz allein spielst. Batches haben eigene Accounts.": "Applies when you play this instance on its own. Batches have their own accounts.",
   "%@ h": "%@ h",
   "Beendet sich nicht": "Not quitting",
-  "Nicht Gespeichertes geht verloren (%@)": "Unsaved progress is lost (%@)"
+  "Nicht Gespeichertes geht verloren (%@)": "Unsaved progress is lost (%@)",
+  "Nur bei %@ angekommen.": "Only %@ got this."
 }
