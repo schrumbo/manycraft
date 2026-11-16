@@ -93,6 +93,18 @@ impl Store {
         (store, Some(updates))
     }
 
+    /// Tells the core where the user looks, so previews refresh fast where it matters and pause where nobody sees them.
+    pub fn watch(self, change: impl FnOnce(&mut crate::app::session::Watch)) {
+        if self.failed() {
+            return;
+        }
+        let mut next = self.model.peek().session.watch.clone();
+        change(&mut next);
+        if self.model.peek().session.watch != next {
+            self.dispatch(Event::Watch(next));
+        }
+    }
+
     /// Whether the fleet could not start, so nothing will ever load.
     pub fn failed(self) -> bool {
         self.runtime.peek().is_none()
@@ -395,6 +407,7 @@ impl Store {
     fn stow(self) {
         let tray = self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
         if tray {
+            self.watch(|w| w.away = true);
             native::stow();
         } else {
             native::hide(None);
@@ -408,6 +421,7 @@ impl Store {
         tray.hide();
         drop(side);
         native::unstow();
+        self.watch(|w| w.away = false);
     }
 
     fn explain_tray(self) {

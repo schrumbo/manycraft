@@ -33,7 +33,8 @@ pub enum Column {
 
 const SINCE_W: f32 = 112.;
 const ATTEMPTS_W: f32 = 64.;
-const PREVIEW_W: f32 = 192.;
+/// The width of the preview of the row under the pointer.
+pub const PREVIEW_W: f32 = 192.;
 
 impl Column {
     const SHOWN: [Column; 7] = [Column::Account, Column::Batch, Column::Status, Column::Reason, Column::Server, Column::Since, Column::Attempts];
@@ -151,9 +152,11 @@ impl Component for Table {
         let store = use_store();
         let mut hovered = use_state(|| None::<(String, f32)>);
         use_side_effect(move || {
-            let peek: std::collections::HashSet<String> = hovered.read().iter().map(|(k, _)| k.clone()).collect();
-            store.set_visible(peek);
+            let now = hovered.read().as_ref().map(|(k, _)| k.clone());
+            store.set_visible(now.iter().cloned().collect());
+            store.watch(|w| w.hovered = now);
         });
+        use_drop(move || store.watch(|w| w.hovered = None));
         let sort = *store.ui.sort.read();
         let columns: Vec<Column> = Column::SHOWN.into_iter().filter(|c| self.batches || *c != Column::Batch).collect();
         let first = ((self.top / ROW).floor() as usize).min(self.keys.len());

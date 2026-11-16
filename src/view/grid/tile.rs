@@ -61,6 +61,15 @@ fn action_of(g: &Game, m: &Model) -> Option<Primary> {
     main_action(&g.phase, g.stopping, busy)
 }
 
+/// Forgets the pointer over `key` once it leaves the tile or row.
+pub(super) fn unhover(store: Store, key: &str) {
+    store.watch(|w| {
+        if w.hovered.as_deref() == Some(key) {
+            w.hovered = None;
+        }
+    });
+}
+
 pub(super) fn pick(store: Store, key: &str, index: usize) {
     let mut ui = store.ui;
     ui.history.set_if_modified(None);
@@ -148,6 +157,8 @@ impl Component for Tile {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
+        let gone = self.key.clone();
+        use_drop(move || unhover(store, &gone));
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
@@ -219,6 +230,7 @@ impl Component for Tile {
         let text = rect().width(Size::flex(1.)).child(text);
         let strip_row = rect().width(Size::fill()).height(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).padding((0., space::XXS)).child(face_view(&t, m.account(game.account_id), face, matches!(game.phase, Phase::Playing { .. }) && !game.stopping)).child(text).content(Content::flex());
 
+        let (over_key, leave_key) = (self.key.clone(), self.key.clone());
         let mut tile = rect()
             .a11y_id(a11y)
             .a11y_focusable(true)
@@ -228,8 +240,14 @@ impl Component for Tile {
             .height(Size::px(self.height))
             .corner_radius(t.shape.tile + frame::RING_GAP)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_enter(move |_| {
+                hovered.set(true);
+                store.watch(|w| w.hovered = Some(over_key.clone()));
+            })
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                unhover(store, &leave_key);
+            })
             .cursor(CursorIcon::Pointer)
             .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |e: Event<PressEventData>| {

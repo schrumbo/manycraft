@@ -287,6 +287,17 @@ impl Component for GridPage {
             }
             commands::prune(store_c, set);
         });
+        let focused: Vec<String> = {
+            let picked = ui.selection.read();
+            cursor.iter().chain(keys[first.min(last)..last].iter().filter(|k| picked.contains(*k) && cursor.as_ref() != Some(*k))).take(4).cloned().collect()
+        };
+        let width = ((if view == View::Tiles { grid.tile_w } else { table::PREVIEW_W }) * super::kit::scale()).round() as u32;
+        use_side_effect_with_deps(&(focused, width), move |(focused, width)| {
+            store_c.watch(|w| {
+                w.focused = focused.clone();
+                w.width = *width;
+            });
+        });
 
         let mut page = rect()
             .width(Size::fill())
