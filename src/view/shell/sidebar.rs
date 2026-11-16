@@ -119,7 +119,14 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
     let pinned = matches!(made.loader, Loader::Fabric(Some(_)) | Loader::Quilt(Some(_)));
     let dir = made.dir();
     let i = id.to_owned();
-    let mut items = vec![Item::new("instance.play", tr("Spielen"), move |_| store.dispatch(AppEvent::PlayInstance { instance: i.clone(), account: None }))];
+    let alone: Vec<String> = m.solo_games(id).filter(|g| g.phase.is_active()).map(|g| g.key.clone()).collect();
+    let mut items = vec![if alone.is_empty() {
+        let who = crate::app::reduce::solo_account(&m, made).and_then(|a| m.account(a)).map(|a| a.name.clone());
+        let label = who.map_or_else(|| tr("Spielen"), |n| trf("Spielen als %@", &[&n]));
+        Item::new("instance.play", label, move |_| store.dispatch(AppEvent::PlayInstance { instance: i.clone(), account: None }))
+    } else {
+        Item::new("instance.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::Stop(alone.clone())))
+    }];
     items.extend(wanted("instance.rename", tr("Umbenennen…"), Want::RenameInstance(id.to_owned()), store));
     if made.loader.takes_mods() {
         items.extend(wanted("instance.mods.add", tr("Mods hinzufügen…"), Want::AddMods(id.to_owned()), store));
@@ -210,12 +217,14 @@ impl Component for Sidebar {
         let store = use_store();
         let mut page = store.ui.page;
         let now = page.read().clone();
+        crate::view::instance::use_minute(store, true);
+        let up = store.ui.instance.up.read().clone();
         let m = store.model.read();
         let attention = m.attention_count(None);
         let go = move |to: Page| move |_| page.set(to.clone());
 
         let mut top = rect().width(Size::fill()).spacing(1.);
-        top = top.child(Row::new("nav.all", tr("Alle")).glyph(Icon::Grid).height(frame::ROW).selected(now == Page::Grid(Filter::All)).trailing(count(&t, m.games.len().to_string(), now == Page::Grid(Filter::All))).on_press(go(Page::Grid(Filter::All))));
+        top = top.child(Row::new("nav.all", tr("Alle")).glyph(Icon::Grid).height(frame::ROW).selected(now == Page::Grid(Filter::All)).trailing(count(&t, m.games.values().filter(|g| !g.alone()).count().to_string(), now == Page::Grid(Filter::All))).on_press(go(Page::Grid(Filter::All))));
         let mut need = Row::new("nav.attention", tr("Brauchen dich")).glyph(Icon::Alert).height(frame::ROW).selected(now == Page::Grid(Filter::Attention)).on_press(go(Page::Grid(Filter::Attention)));
         if attention > 0 {
             need = need.trailing(badge(&t, attention.to_string(), Tone::Attention));
@@ -264,14 +273,24 @@ impl Component for Sidebar {
                 let to = Page::Instance(i.id.clone());
                 let selected = now == to;
                 let running = m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active());
+                let since = m.solo_games(&i.id).filter(|g| g.phase.is_active()).filter_map(|g| up.get(&g.key)).min().copied();
                 let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
                 if running {
                     end = end.child(dot(t.success));
                 }
-                end = end.child(count(&t, i.loader.name().to_owned(), selected));
+                let alone = m.solo_games(&i.id).any(|g| g.phase.is_active());
+                match since.and_then(crate::view::instance::uptime_text) {
+                    Some(up) => end = end.child(count(&t, up, selected)),
+                    None if alone => {}
+                    None => end = end.child(count(&t, i.loader.name().to_owned(), selected)),
+                }
+                let tip = match since.and_then(crate::view::instance::uptime_text) {
+                    Some(up) => Some(trf("Läuft · %@", &[&up])),
+                    None => running.then(|| tr("Läuft gerade")),
+                };
                 let id = i.id.clone();
                 let row = Row::new(format!("nav.instance.{}", i.id), i.name.clone()).glyph(Icon::Package).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(instance_items(store, &id), at)));
-                list = list.child(WithTip::new(running.then(|| tr("Läuft gerade")), row));
+                list = list.child(WithTip::new(tip, row));
             }
             if can_want(&Want::NewInstance) {
                 list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {
@@ -294,6 +313,7 @@ impl Component for Sidebar {
             }));
         }
         foot = foot.child(WithTip::new(Some(Command::OpenSettings.tip()), Row::new("nav.settings", tr("Einstellungen")).glyph(Icon::Settings).height(frame::ROW).selected(now == Page::Settings).on_press(go(Page::Settings))));
+        foot = foot.child(super::account::AccountSwitch);
 
         rect()
             .a11y_role(AccessibilityRole::Navigation)

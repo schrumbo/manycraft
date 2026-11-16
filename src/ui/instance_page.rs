@@ -656,10 +656,7 @@ impl InstancePage {
         let stopping = live.iter().any(|g| g.stopping);
         let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
         let solo = super::state::solo_account(m, &made).filter(|a| !plain.contains(a));
-        let live: Vec<&Game> = live.into_iter().filter(|g| super::tile::playable(&g.phase)).collect();
-        let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first());
-        let shown_stopping = shown.is_some_and(|g| g.stopping);
-        let shown = shown.map(|g| g.key.clone());
+        let (shown, shown_stopping) = (None, false);
         let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
         Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable, forceable, slow, stopping, shown_stopping })
     }

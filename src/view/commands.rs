@@ -24,6 +24,7 @@ pub enum Command {
     ShowAll,
     ShowAttention,
     ShowAccounts,
+    SwitchAccount,
     OpenChat,
     OpenSettings,
     NextInstance,
@@ -155,7 +156,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 42] = [
+    pub const ALL: [Command; 43] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -180,6 +181,7 @@ impl Command {
         Command::ShowAll,
         Command::ShowAttention,
         Command::ShowAccounts,
+        Command::SwitchAccount,
         Command::OpenChat,
         Command::Larger,
         Command::Smaller,
@@ -210,6 +212,7 @@ impl Command {
             Command::ShowAll => "ShowAll",
             Command::ShowAttention => "ShowAttention",
             Command::ShowAccounts => "ShowAccounts",
+            Command::SwitchAccount => "SwitchAccount",
             Command::OpenChat => "OpenChat",
             Command::OpenSettings => "OpenSettings",
             Command::NextInstance => "NextInstance",
@@ -256,6 +259,7 @@ impl Command {
             Command::ShowAll => tr("Alle anzeigen"),
             Command::ShowAttention => tr("Brauchen dich anzeigen"),
             Command::ShowAccounts => tr("Accounts"),
+            Command::SwitchAccount => tr("Account wechseln…"),
             Command::OpenChat => tr("Chat"),
             Command::OpenSettings => tr("Einstellungen"),
             Command::NextInstance => tr("Nächsten Account spielen"),
@@ -301,6 +305,7 @@ impl Command {
             Command::FocusSearch => Icon::Search,
             Command::ShowAll => Icon::Grid,
             Command::ShowAccounts => Icon::Users,
+            Command::SwitchAccount => Icon::ChevronsUpDown,
             Command::OpenChat => Icon::Message,
             Command::OpenSettings => Icon::Settings,
             Command::Larger => Icon::Plus,
@@ -321,6 +326,7 @@ impl Command {
             Command::FocusSearch => k(Code::KeyF),
             Command::ShowAll => ks(Code::KeyG),
             Command::ShowAccounts => ks(Code::KeyU),
+            Command::SwitchAccount => ks(Code::KeyA),
             Command::OpenChat => ks(Code::KeyC),
             Command::OpenSettings => k(Code::Comma),
             Command::NextInstance => ca(Code::ArrowRight),
@@ -383,6 +389,7 @@ impl Command {
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
             Command::FocusSearch => grid,
             Command::Undo => store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
+            Command::SwitchAccount => store.model.peek().loaded,
             c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash) => c.page_available(store),
             _ => true,
         }
@@ -420,6 +427,7 @@ impl Command {
             Command::ShowAll => ui.page.set(Page::Grid(Filter::All)),
             Command::ShowAttention => ui.page.set(Page::Grid(Filter::Attention)),
             Command::ShowAccounts => ui.page.set(Page::Accounts),
+            Command::SwitchAccount => super::shell::account::open_from_keys(store),
             Command::OpenChat => super::chat::focus(store),
             Command::OpenSettings => ui.page.set(Page::Settings),
             Command::NextInstance => store.dispatch(Event::Step(HotkeyAction::Next)),

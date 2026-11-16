@@ -386,11 +386,10 @@ impl Component for GridPage {
 fn card(t: &super::theme::Theme, store: Store, id: String, name: String, running: Option<String>) -> impl IntoElement {
     let status = if running.is_some() { tr("Läuft") } else { tr("Gestoppt") };
     let play_id = id.clone();
-    let mut action = Button::icon(format!("shelf.{id}.play"), Icon::Play, tr("Spielen")).primary();
-    action = action.on_press(move |_| match &running {
-        Some(key) => store.dispatch(AppEvent::Play(key.clone())),
-        None => store.dispatch(AppEvent::PlayInstance { instance: play_id.clone(), account: None }),
-    });
+    let action = match running {
+        Some(key) => Button::icon(format!("shelf.{id}.stop"), Icon::Stop, tr("Stoppen")).tip(tr("Stoppen")).on_press(move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))),
+        None => Button::icon(format!("shelf.{id}.play"), Icon::Play, tr("Spielen")).primary().tip(tr("Spielen")).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: play_id.clone(), account: None })),
+    };
     let mut c = rect()
         .width(Size::px(SHELF_CARD))
         .height(Size::px(SHELF_H))

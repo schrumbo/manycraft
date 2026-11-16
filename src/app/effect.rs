@@ -27,7 +27,6 @@ pub enum Redraw {
 pub struct Unshown {
     pub playing: Option<String>,
     pub reveal: Option<Reveal>,
-    pub show_when_ready: Option<(String, Instant)>,
     /// The whispers the game had unread.
     pub whispers: u32,
 }
@@ -90,6 +89,10 @@ pub enum Effect {
     AddAccount,
     ShowInstance(String),
     RememberAccount { instance: String, account: Uuid },
+    /// Keeps `0` as the account that plays instances alone that name none.
+    SaveActiveAccount(Uuid),
+    /// Saves the account `instance` always plays with alone; none falls back to the active account.
+    SaveDefaultAccount { instance: String, account: Option<Uuid> },
     SaveColor { ids: Vec<Uuid>, color: u8 },
     /// Drops images and caches of games and accounts that are gone.
     Retain,

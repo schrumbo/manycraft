@@ -17,7 +17,7 @@ mod snapshots;
 mod title;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use freya::prelude::*;
 use uuid::Uuid;
@@ -28,12 +28,12 @@ use super::commands::{Extra, Shortcut};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::text::{heading, secondary};
-use super::kit::use_theme;
+use super::kit::{after, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{frame, iconsize, space};
 use super::ui::{Filter, Page};
 use crate::app::event::Event;
-use crate::app::model::{Game, Model, Phase};
+use crate::app::model::{Game, Model};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 
@@ -151,14 +151,18 @@ pub struct Facts {
     pub accounts: Vec<(Uuid, String)>,
     /// The account that plays it alone next.
     pub solo: Option<Uuid>,
-    /// The running game Play swaps in.
-    pub shown: Option<String>,
+    /// Whether `solo` is the instance's own default rather than the active account.
+    pub pinned: bool,
     /// Whether any game of it runs, alone or in a batch.
     pub running: bool,
-    /// Accounts whose game runs without the companion mod, so it cannot be shown.
-    pub plain: Vec<Uuid>,
+    /// Accounts whose game of it runs alone.
+    pub playing: Vec<Uuid>,
     /// Running games played alone that can be stopped, by key and name.
     pub stoppable: Vec<(String, String)>,
+    /// The game of it played alone that is being stopped, and whether it took too long so it can be ended at once.
+    pub stopping: Option<(String, bool)>,
+    /// What went wrong with its last game played alone, while none runs.
+    pub trouble: Option<String>,
 }
 
 /// The facts of instance `id`, when it exists.
@@ -169,12 +173,19 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
     let live: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.is_active()).collect();
     let mut stoppable: Vec<(String, String)> = live.iter().filter(|g| !g.stopping).map(|g| (g.key.clone(), g.name.clone())).collect();
     stoppable.sort_by_key(|(_, name)| name.to_lowercase());
-    let plain: Vec<Uuid> = live.iter().filter(|g| matches!(g.phase, Phase::Plain)).map(|g| g.account_id).collect();
-    let solo = crate::app::reduce::solo_account(m, &made).filter(|a| !plain.contains(a));
-    let live: Vec<&Game> = live.into_iter().filter(|g| g.phase.playable()).collect();
-    let shown = live.iter().find(|g| Some(g.account_id) == solo).or(live.first()).map(|g| g.key.clone());
+    let playing: Vec<Uuid> = live.iter().map(|g| g.account_id).collect();
+    let stopping = live.iter().find(|g| g.stopping).map(|g| (g.key.clone(), g.overdue));
+    let solo = crate::app::reduce::solo_account(m, &made);
+    let pinned = made.default_account.is_some() && made.default_account == solo;
+    let trouble = if live.is_empty() {
+        let mut ended: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.needs_attention()).collect();
+        ended.sort_by_key(|g| Some(g.account_id) != solo);
+        ended.first().map(|g| crate::app::model::status(g, None))
+    } else {
+        None
+    };
     let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-    Some(Facts { made, batches, accounts, solo, shown, running, plain, stoppable })
+    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble })
 }
 
 /// Why changes to the instance wait: work on it, or games that run.
@@ -185,14 +196,37 @@ pub fn blocked(store: Store, id: &str) -> Option<String> {
     store.model.peek().games.values().any(|g| g.instance_id == id && g.phase.is_active()).then(|| tr("Stoppe zuerst die laufenden Spiele."))
 }
 
-/// "12 Min.", "1 Std.", "1 Std. 5 Min." since `since`; nothing in the first minute.
+/// Draws again each full minute of the oldest running game, or of the oldest played alone when `alone`, so uptimes
+/// stay current.
+pub fn use_minute(store: Store, alone: bool) {
+    let mut tick = use_state(|| 0u32);
+    let _ = tick.read();
+    use_hook(move || {
+        spawn(async move {
+            loop {
+                let up = store.ui.instance.up;
+                let since = {
+                    let m = store.model.peek();
+                    up.peek().iter().filter(|(k, _)| !alone || m.games.get(*k).is_some_and(Game::alone)).map(|(_, at)| *at).min()
+                };
+                let wait = since.map_or(60, |s: Instant| 60 - s.elapsed().as_secs() % 60);
+                after(Duration::from_secs(wait) + Duration::from_millis(50)).await;
+                if since.is_some() {
+                    let next = tick.peek().wrapping_add(1);
+                    tick.set(next);
+                }
+            }
+        })
+    });
+}
+
+/// "12 Min." under an hour, else "1:05 h", since `since`; nothing in the first minute.
 pub fn uptime_text(since: Instant) -> Option<String> {
     let minutes = since.elapsed().as_secs() / 60;
     Some(match (minutes / 60, minutes % 60) {
         (0, 0) => return None,
         (0, m) => trf("%lld Min.", &[&m]),
-        (h, 0) => trf("%lld Std.", &[&h]),
-        (h, m) => trf("%1$lld Std. %2$lld Min.", &[&h, &m]),
+        (h, m) => trf("%@ h", &[&format!("{h}:{m:02}")]),
     })
 }
 
@@ -367,19 +401,23 @@ pub fn extras(store: Store) -> Vec<Extra> {
     let rename_id = id.clone();
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
     let play_key = Some(Shortcut::primary(Code::KeyR));
-    if let Some(key) = f.shown.clone() {
-        push("play", tr("Zeigen"), Icon::Play, play_key, EventHandler::new(move |_| store.dispatch(Event::Play(key.clone()))));
-    }
-    for (n, (account, who)) in f.accounts.iter().filter(|(a, _)| !f.plain.contains(a)).enumerate() {
+    for (n, (account, who)) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a)).enumerate() {
         let (instance, account) = (id.clone(), *account);
-        let first = f.shown.is_none() && (f.solo == Some(account) || (f.solo.is_none() && n == 0));
+        let first = f.playing.is_empty() && (f.solo == Some(account) || (f.solo.is_none() && n == 0));
         push(&format!("play.{account}"), trf("Spielen als %@", &[who]), Icon::Play, play_key.filter(|_| first), EventHandler::new(move |_| store.dispatch(Event::PlayInstance { instance: instance.clone(), account: Some(account) })));
+    }
+    if let Some(solo) = f.solo.filter(|_| f.accounts.len() > 1) {
+        let instance = id.clone();
+        let (key, label, account) = if f.pinned { ("default.clear", tr("Standard-Account entfernen"), None) } else { ("default.set", tr("Als Standard für diese Instanz"), Some(solo)) };
+        push(key, label, Icon::Users, None, EventHandler::new(move |_| store.dispatch(Event::SetDefaultAccount { instance: instance.clone(), account })));
     }
     for (batch, label) in &f.batches {
         let batch = batch.clone();
         push(&format!("batch.start.{batch}"), trf("Batch „%@“ starten", &[label]), Icon::Layers, None, EventHandler::new(move |_| store.dispatch(Event::StartBatch(batch.clone()))));
     }
-    if let Some(key) = f.shown.clone().or_else(|| f.stoppable.first().map(|(k, _)| k.clone())).filter(|k| f.stoppable.iter().any(|(s, _)| s == k)) {
+    if let Some((key, true)) = f.stopping.clone() {
+        push("kill", tr("Sofort beenden"), Icon::Stop, Some(Shortcut::primary(Code::Period)), EventHandler::new(move |_| store.dispatch(Event::Stop(vec![key.clone()]))));
+    } else if let Some((key, _)) = f.stoppable.first().cloned() {
         push("stop", tr("Stoppen"), Icon::Stop, Some(Shortcut::primary(Code::Period)), EventHandler::new(move |_| store.dispatch(Event::Stop(vec![key.clone()]))));
     }
     if f.stoppable.len() > 1 {

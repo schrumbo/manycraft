@@ -86,6 +86,7 @@ fn build(told: async_channel::Sender<Told>) -> anyhow::Result<()> {
             &item(Command::ShowAll),
             &item(Command::ShowAttention),
             &item(Command::ShowAccounts),
+            &item(Command::SwitchAccount),
             &item(Command::OpenChat),
             &separator(),
             &item(Command::ShowTiles),

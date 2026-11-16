@@ -20,7 +20,7 @@ use crate::core::ipc::{ChatKind, FromMod};
 use crate::core::settings::Settings;
 
 pub use notify::{WHISPER_TAG, attention_batch, attention_tag};
-pub use show::solo_account;
+pub use show::{active_account, solo_account};
 
 /// What an event needs from outside the model: the time, chance and the settings.
 pub struct Env<'a> {
@@ -89,7 +89,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::InstanceChanged(made) => {
             if let Some(slot) = model.instances.iter_mut().find(|i| i.id == made.id) {
-                *slot = made;
+                *slot = crate::core::instance::Instance { default_account: slot.default_account, last_account: slot.last_account, ..made };
                 out.push(Effect::Redraw(Redraw::All));
             }
         }
@@ -162,9 +162,11 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::Play(key) => show::play(model, &key, &mut out),
         Event::PlayInstance { instance, account } => {
-            show::play_and_show(model, env, &instance, account, &mut out);
+            show::play_instance(model, &instance, account, &mut out);
         }
-        Event::RequestPlay { instance, account } => show::request_play(model, env, instance, account, &mut out),
+        Event::RequestPlay { instance, account } => show::request_play(model, instance, account, &mut out),
+        Event::ChooseAccount(id) => show::choose_account(model, id, &mut out),
+        Event::SetDefaultAccount { instance, account } => show::set_default_account(model, &instance, account, &mut out),
         Event::ShowGrid => show::show_grid(model, &mut out),
         Event::Step(action) => show::step(model, action, &mut out),
         Event::SendChat { key, text } => {

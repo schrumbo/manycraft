@@ -5,9 +5,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use freya::prelude::*;
+use uuid::Uuid;
 
 use super::save::{self, Change, Job, OptionChange, Switch};
 use super::{Facts, snapshots};
+use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
 use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
@@ -313,6 +315,9 @@ impl Component for Settings {
             top = top.child(caption(&t, n.clone()));
         }
         col = col.child(top);
+        if let Some(account) = account_setting(&t, store, f) {
+            col = col.child(account);
+        }
 
         let open = *nav.advanced.read();
         let mut adv = nav.advanced;
@@ -576,6 +581,27 @@ impl Component for Advanced {
         }
         col
     }
+}
+
+fn account_setting(t: &Theme, store: Store, f: &Facts) -> Option<Element> {
+    if f.accounts.len() < 2 {
+        return None;
+    }
+    let m = store.model.read();
+    let active = crate::app::reduce::active_account(&m).and_then(|a| m.account(a)).map(|a| a.name.clone());
+    let mut labels = vec![active.map_or_else(|| tr("Aktiver Account"), |n| trf("Aktiver Account (%@)", &[&n]))];
+    labels.extend(f.accounts.iter().map(|(_, n)| n.clone()));
+    let own = f.made.default_account.and_then(|d| f.accounts.iter().position(|(a, _)| *a == d));
+    let at = own.map_or(0, |n| n + 1);
+    let ids: Vec<Uuid> = f.accounts.iter().map(|(a, _)| *a).collect();
+    let instance = f.made.id.clone();
+    let select = Select::new("instance.settings.account", tr("Spielen als"), labels, at).width(control::VERSION_MENU).on_choose(move |i| {
+        let account = i.checked_sub(1).and_then(|n| ids.get(n).copied());
+        store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account });
+    });
+    let reset_id = f.made.id.clone();
+    let clear = own.map(|_| reset("account", tr("Spielen als"), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: reset_id.clone(), account: None })));
+    Some(setting(t, tr("Spielen als"), clear, select.into_element(), Some(tr("Gilt, wenn du diese Instanz allein spielst. Batches haben eigene Accounts.")), None))
 }
 
 fn choice_row<T: Copy + PartialEq + 'static>(store: Store, id: &str, key: &str, label: String, now: Option<T>, choices: Vec<(Option<T>, String)>, wrap: fn(Option<T>) -> OptionChange) -> Element {

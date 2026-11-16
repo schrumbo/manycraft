@@ -943,6 +943,18 @@ pub fn remember_account(id: &str, account: Uuid) -> Result<()> {
     })
 }
 
+/// Makes `account` the one instance `id` always plays with alone; `None` leaves it to the active account.
+pub fn set_default_account(id: &str, account: Option<Uuid>) -> Result<()> {
+    saved(|| {
+        let mut made = find_instance(id)?;
+        if made.default_account != account {
+            made.default_account = account;
+            setup::save(&made)?;
+        }
+        Ok(())
+    })
+}
+
 /// Deletes a batch; its instance with worlds, mods and settings stays.
 pub fn delete_batch(b: &Batch) -> Result<()> {
     saved(|| fleet::delete_batch(b))

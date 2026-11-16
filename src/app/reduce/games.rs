@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
-use super::super::model::{ChatLine, Model, Phase, rank};
+use super::super::model::{ChatLine, Game, Model, Phase, rank};
 use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, Reveal, Whisper};
 use super::{Env, fleet, go, notify, redraw, show};
@@ -84,7 +84,7 @@ pub(super) fn reports(m: &mut Model, env: &Env, reports: Vec<Report>, out: &mut 
         if before.is_some_and(|b| b.0 != after.0) {
             m.order_seq += 1;
         }
-        if after.1 && !seeded && before.is_some_and(|b| !b.1) {
+        if after.1 && !seeded && !i.alone() && before.is_some_and(|b| !b.1) {
             fx.alerts.push((i.batch_id.clone(), i.name.clone(), Alert::of(&i.phase)));
             if let Some(what) = notify::phone_what(&i.phase) {
                 fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, what, notify::phase_reason(&i.phase), i.phase.server())));
@@ -110,7 +110,7 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
         out.push(Effect::Stop(fx.stop));
     }
     if !fx.closing.is_empty() {
-        let closed: Vec<String> = fx.closing.iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.stopping)).cloned().collect();
+        let closed: Vec<String> = fx.closing.iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.stopping && !g.alone())).cloned().collect();
         fleet::stop_keys(m, fx.closing, out);
         out.extend(closed.into_iter().filter(|k| m.games.get(k).is_some_and(|g| g.stopping)).map(Effect::Closed));
     }
@@ -148,9 +148,8 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
         show::show_grid(m, out);
     }
     for (instance, account) in fx.plays {
-        show::request_play(m, env, instance, account, out);
+        show::request_play(m, instance, account, out);
     }
-    show::show_ready(m, env, out);
     for action in fx.hotkeys {
         show::step(m, action, out);
     }
@@ -161,12 +160,6 @@ fn note(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: Kind, server: Op
     history::push(m.history.entry(key.to_owned()).or_default(), Entry::at(at, kind, server, reason));
     if !fx.histories.iter().any(|k| k == key) {
         fx.histories.push(key.to_owned());
-    }
-}
-
-fn forget_show_when_ready(m: &mut Model, key: &str) {
-    if m.session.show_when_ready.as_ref().is_some_and(|(k, _)| k == key) {
-        m.session.show_when_ready = None;
     }
 }
 
@@ -185,7 +178,6 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             }
         }
         Report::Failed { key, reason, login, offline } => {
-            forget_show_when_ready(m, &key);
             if let Some(i) = m.games.get(&key) {
                 m.preparing.remove(&i.batch_id);
             }
@@ -222,7 +214,6 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             m.order_seq += 1;
         }
         Report::Exited { key, code } => {
-            forget_show_when_ready(m, &key);
             on_exit(m, env, fx, key, code);
         }
         Report::Frame { key, seq, image } => {
@@ -247,12 +238,13 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             }
         }
         Report::Connected { key, pid } => {
+            let alone = m.games.get(&key).is_some_and(Game::alone);
             m.session.lost.remove(&key);
             m.set_hint(&key, |h| h.link_lost = false);
             m.session.pids.insert(key.clone(), pid);
             m.session.shots.remove(&key);
             m.session.planned.remove(&key);
-            if env.place_windows {
+            if env.place_windows && !alone {
                 m.session.unplaced.insert(key.clone());
             }
             for message in identity(m, env, &key) {
@@ -263,7 +255,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
                 m.session.read_at.insert(key.clone(), env.now);
                 fx.now.push(Effect::ReadPreview { key: key.clone(), path });
             }
-            if m.session.adopted.contains(&key) && m.playing.as_deref() != Some(key.as_str()) {
+            if !alone && m.session.adopted.contains(&key) && m.playing.as_deref() != Some(key.as_str()) {
                 fx.now.push(Effect::Send { key: key.clone(), message: ToMod::Hide });
             }
             if m.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Starting { .. })) {
@@ -567,6 +559,7 @@ fn seed_state(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: StateKind,
 
 fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut Fx) {
     let playing = m.playing.as_deref() == Some(key.as_str());
+    let seen = playing || m.games.get(&key).is_some_and(Game::alone);
     if m.session.unplaced.contains(&key) {
         fx.placed.push(key.clone());
     }
@@ -576,14 +569,14 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
             let whisper = kind == ChatKind::Whisper;
             let merged = env.settings.merged_chat;
             if whisper
-                && !playing
+                && !seen
                 && merged
                 && let Some(i) = m.games.get_mut(&key)
             {
                 i.unread_whispers += 1;
             }
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
-            if whisper && !playing {
+            if whisper && !seen {
                 fx.whispers.push(Whisper { account: account.clone(), from: from.clone(), text: text.clone() });
             }
             if merged {
@@ -606,6 +599,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 s.stale.insert(key, env.now);
             }
         }
+        FromMod::Hotkey { .. } if m.games.get(&key).is_some_and(Game::alone) => {}
         FromMod::Hotkey { action } => {
             if playing || m.session.reveal.as_ref().is_some_and(|r| r.hide.contains(&key)) {
                 fx.hotkeys.push(action);
@@ -628,7 +622,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
 }
 
 fn preview_path(m: &Model, key: &str) -> Option<std::path::PathBuf> {
-    let i = m.games.get(key)?;
+    let i = m.games.get(key).filter(|i| !i.alone())?;
     Some(fleets::preview_path(m.instance(&i.instance_id)?, i.account_id))
 }
 
@@ -906,15 +900,6 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1 && accounts[0].id == account(&m))));
         report(&mut m, &s, Report::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false });
         assert!(matches!(m.games[&key].phase, Phase::Failed { .. }));
-    }
-
-    #[test]
-    fn an_empty_batch_still_shows_a_requested_game_once_ready() {
-        let s = settings();
-        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
-        m.session.show_when_ready = Some((key.clone(), Instant::now()));
-        let fx = run(&mut m, &s, Instant::now(), Event::Reports(Vec::new()));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Show { key: k, .. } if *k == key)));
     }
 
     #[test]
