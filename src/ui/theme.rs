@@ -204,6 +204,8 @@ pub mod files {
     pub const DECODERS: usize = 4;
     /// Width of the log file picker.
     pub const LOG_PICKER: f32 = 220.;
+    /// Narrowest the log toolbar shows its buttons with their words; narrower, some show only their icon.
+    pub const LOG_BAR_WORDS: f32 = 880.;
     /// Width of the account picker of the logs.
     pub const ACCOUNT_PICKER: f32 = 160.;
     /// Width of the search field of the logs.

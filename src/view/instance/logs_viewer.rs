@@ -58,7 +58,7 @@ fn line_at(item: VirtualItem, d: &Rows) -> Element {
         Level::Error => t.danger_text,
     };
     let here = on_line(&d.hits.0, item.index);
-    let mut r = rect().key(item.index).width(Size::px(d.width)).height(Size::px(item.size)).padding((0., space::S)).cross_align(Alignment::Center);
+    let mut r = rect().key(item.index).width(Size::px(d.width)).height(Size::px(item.size)).padding((0., space::S)).horizontal().cross_align(Alignment::Center);
     if d.current == Some(item.index) {
         r = r.background(t.selection);
     }

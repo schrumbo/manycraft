@@ -296,6 +296,7 @@ impl Component for Logs {
         let mut find_epoch = use_state(|| 0u32);
         let query = use_state(String::new);
         let mut copied = use_state(|| false);
+        let mut narrow = use_state(|| false);
         let mut link_copied = use_state(|| false);
         let mut upload = use_state(|| None::<Upload>);
         let mut upload_ask = use_state(|| 0u32);
@@ -499,7 +500,13 @@ impl Component for Logs {
         }
         let empty = shown.accounts.is_empty() || shown.files.is_empty() && file_now.is_none();
 
-        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S);
+        let mut bar = rect()
+            .width(Size::fill())
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .on_sized(move |e: Event<SizedEventData>| narrow.set_if_modified(e.area.width() < files::LOG_BAR_WORDS));
+        let words = !*narrow.read();
         if let Some(account) = shown.account {
             let names: Vec<String> = shown.accounts.iter().map(|(a, _)| name_of(&f.accounts, *a)).collect();
             if shown.accounts.len() < 2 {
@@ -531,19 +538,22 @@ impl Component for Logs {
             let (find, all) = (open_find, copy_all);
             bar = bar
                 .child(Button::new("instance.logs.find", tr("Suchen")).glyph(Icon::Search).tip(Shortcut::primary(Code::KeyF).label()).on_press(move |_| find()))
-                .child(
-                    Button::new("instance.logs.copy", if *copied.read() { tr("Kopiert") } else { tr("Alles kopieren") })
-                        .glyph(if *copied.read() { Icon::Check } else { Icon::Copy })
-                        .on_press(move |_| all()),
-                );
+                .child(if words {
+                    Button::new("instance.logs.copy", if *copied.read() { tr("Kopiert") } else { tr("Alles kopieren") }).glyph(if *copied.read() { Icon::Check } else { Icon::Copy })
+                } else {
+                    Button::icon("instance.logs.copy", if *copied.read() { Icon::Check } else { Icon::Copy }, if *copied.read() { tr("Kopiert") } else { tr("Alles kopieren") })
+                }
+                .on_press(move |_| all()));
         }
         if file_now.is_some() {
             let folder = reveal_file;
-            bar = bar.child(Button::new("instance.logs.reveal", tr("Im Ordner zeigen")).glyph(Icon::Folder).on_press(move |_| folder()));
+            let reveal = if words { Button::new("instance.logs.reveal", tr("Im Ordner zeigen")).glyph(Icon::Folder) } else { Button::icon("instance.logs.reveal", Icon::Folder, tr("Im Ordner zeigen")) };
+            bar = bar.child(reveal.on_press(move |_| folder()));
         }
         if has {
             let send = ask;
-            bar = bar.child(Button::new("instance.logs.upload", tr("Hochladen…")).disabled(sending.then(|| tr("Wird hochgeladen …"))).on_press(move |_| send()));
+            let upload = if words { Button::new("instance.logs.upload", tr("Hochladen…")).glyph(Icon::Upload) } else { Button::icon("instance.logs.upload", Icon::Upload, tr("Hochladen…")) };
+            bar = bar.child(upload.disabled(sending.then(|| tr("Wird hochgeladen …"))).on_press(move |_| send()));
         }
         let bar = bar.content(Content::flex());
 
