@@ -36,8 +36,12 @@ final class PreviewService {
 		this.sink = sink;
 	}
 
-	boolean due(int intervalMs) {
-		return !inFlight.get() && schedule.due(System.nanoTime(), intervalMs);
+	boolean due(int intervalMs, int frameMs) {
+		return !inFlight.get() && schedule.due(System.nanoTime(), intervalMs, frameMs);
+	}
+
+	void soon() {
+		schedule.soon();
 	}
 
 	void capture(RenderTarget target, int previewWidth) {

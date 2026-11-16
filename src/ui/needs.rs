@@ -4,9 +4,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{ReconnectMany, RespawnMany, SignInAgain, SignInAgainEach, StartMany};
+use super::actions::{OpenSettingsAt, ReconnectMany, RespawnMany, SignInAgain, SignInAgainEach, StartMany};
 use super::drive::Mark;
 use super::main_window::{Filter, MainWindow};
+use super::route::Section;
 use super::model::{Model, Need, Outage};
 use super::motion::Soft;
 use super::sheet::{self, Look};
@@ -102,8 +103,30 @@ pub fn chips(this: &MainWindow, batch: Option<&str>, cx: &mut Context<MainWindow
         .gap(px(space::S))
         .border_b_1()
         .border_color(t.separator)
-        .children(list.into_iter().map(|(need, count, fix)| chip(need, count, fix, chosen == Some(need), &t, cx)));
+        .children(list.into_iter().map(|(need, count, fix)| chip(need, count, fix, chosen == Some(need), &t, cx)))
+        .when(!crate::core::settings::active().phone.enabled, |d| d.child(div().flex_1()).child(phone_link(&t)));
     Some(row.into_any_element())
+}
+
+fn phone_link(t: &Theme) -> Stateful<Div> {
+    let label = tr("Aufs Handy…");
+    div()
+        .id("needs-phone")
+        .mark("button", label.clone())
+        .h(px(control::M))
+        .px(px(space::S))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(space::XS))
+        .rounded(px(radius::FULL))
+        .cursor_pointer()
+        .key_nav()
+        .soft(t.ink.opacity(tint::HOVER), radius::FULL)
+        .child(icon("smartphone", iconsize::XS, t.secondary))
+        .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(label))
+        .tooltip(tip(tr("Meldungen aufs Handy schicken, wenn ein Account dich braucht")))
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettingsAt(Section::Phone)), cx))
 }
 
 fn chip(need: Need, count: usize, fix: Option<(String, Box<dyn Action>)>, chosen: bool, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {

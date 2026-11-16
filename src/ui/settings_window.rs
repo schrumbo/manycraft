@@ -15,11 +15,12 @@ use super::drive::Mark;
 use super::motion::Soft;
 use super::model::{self, UpdateStatus};
 use super::sheet::{self, Look};
-use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
+use super::route::Section;
+use super::theme::{self, Theme, control, font, iconsize, phone_qr, radius, space, tint};
 use super::widgets::{KeyNav, icon, segment, segmented, tip};
 use crate::core::i18n::{tr, trf};
 use crate::core::phone::{self, Secret, Service, Slot};
-use crate::core::settings::{self, HOTKEYS, Settings};
+use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings};
 
 const WIDTH: f32 = 560.;
 const HEIGHT: f32 = 700.;
@@ -76,6 +77,34 @@ pub fn open(cx: &mut App) {
     }
 }
 
+/// Opens the settings window, or brings it to the front, scrolled to `section` and outlining it for a moment.
+pub fn open_at(section: Section, cx: &mut App) {
+    open(cx);
+    let Some(handle) = existing(cx) else { return };
+    let _ = handle.update(cx, |view, window, cx| {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<SettingsView>() {
+            view.update(cx, |s, cx| {
+                let generation = s.pointed.map_or(0, |(_, g)| g + 1);
+                s.jump = Some(section);
+                s.pointed = Some((section, generation));
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(super::motion::POINT_OUT).await;
+                    let _ = this.update(cx, |s, cx| {
+                        if s.pointed.is_some_and(|(_, g)| g == generation) {
+                            s.pointed = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+                cx.notify();
+            });
+        }
+    });
+}
+
 fn title() -> String {
     format!("{} – Manycraft", tr("Einstellungen"))
 }
@@ -85,6 +114,8 @@ struct SettingsView {
     scroll: ScrollHandle,
     error: Option<String>,
     phone: PhoneForm,
+    jump: Option<Section>,
+    pointed: Option<(Section, u64)>,
     _subs: Vec<Subscription>,
 }
 
@@ -160,6 +191,9 @@ struct PhoneForm {
     tested: Option<Result<String, String>>,
     finding: bool,
     found: Option<Result<String, String>>,
+    loaded: bool,
+    offered: bool,
+    generated: bool,
 }
 
 impl PhoneForm {
@@ -216,6 +250,9 @@ impl SettingsView {
             tested: None,
             finding: false,
             found: None,
+            loaded: false,
+            offered: false,
+            generated: false,
         };
         cx.spawn_in(window, async move |this, cx| {
             let secrets = cx.background_spawn(async { [Field::Discord, Field::Token, Field::Topic].map(|f| (f, f.slot().map(phone::read_secret))) }).await;
@@ -233,11 +270,28 @@ impl SettingsView {
                         None => {}
                     }
                 }
+                s.phone.loaded = true;
                 cx.notify();
             });
         })
         .detach();
-        Self { focus, scroll: ScrollHandle::new(), error: None, phone, _subs: subs }
+        Self { focus, scroll: ScrollHandle::new(), error: None, phone, jump: None, pointed: None, _subs: subs }
+    }
+
+    fn fill_topic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = &settings::active().phone;
+        let topic = Field::Topic as usize;
+        if !current.enabled || current.service != Service::Ntfy || !self.phone.loaded || self.phone.offered || self.phone.errors[topic].is_some() {
+            return;
+        }
+        self.phone.offered = true;
+        if !self.phone.value(Field::Topic, cx).is_empty() {
+            return;
+        }
+        self.phone.generated = true;
+        let fresh = phone::new_topic(uuid::Uuid::new_v4().as_u128());
+        self.phone.input(Field::Topic).update(cx, |i, cx| i.set_value(fresh.expose().to_owned(), window, cx));
+        self.typed(Field::Topic, cx);
     }
 
     fn typed(&mut self, field: Field, cx: &mut Context<Self>) {
@@ -355,11 +409,11 @@ impl SettingsView {
         Row { below: Some(below.into_any_element()), ..row(label, None, div(), t) }
     }
 
-    fn phone_group(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
+    fn phone_group(&self, outlined: bool, t: &Theme, cx: &mut Context<Self>) -> Div {
         let current = settings::active().phone.clone();
         let mut rows = vec![self.toggle("set-phone", tr("Aufs Handy schicken"), tr("Schickt dieselben Meldungen über Discord, Telegram oder ntfy, gesammelt pro Batch."), current.enabled, |st, on| st.phone.enabled = on, t, cx)];
         if !current.enabled {
-            return group(tr("Aufs Handy"), rows, None, t);
+            return outlined_group(tr("Aufs Handy"), rows, None, outlined, t);
         }
         let service = current.service;
         let segments = Service::ALL.map(|sv| segment(SharedString::from(format!("set-phone-{}", sv.name().to_lowercase())), sv.name().to_owned(), sv == service, true, t));
@@ -394,7 +448,11 @@ impl SettingsView {
             }
             Service::Ntfy => {
                 rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Nur ändern, wenn du einen eigenen ntfy-Server hast.")), None, t), t, cx));
-                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.")), None, t), t, cx));
+                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(if self.phone.generated { tr("Manycraft hat ein langes, zufälliges Thema gewählt. Wer es kennt, liest mit.") } else { tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.") }), None, t), t, cx));
+                let topic = self.phone.value(Field::Topic, cx);
+                if let Some(code) = (!topic.is_empty()).then(|| qr(phone::ntfy_link(&self.phone.value(Field::Server, cx), &topic).expose(), t)).flatten() {
+                    rows.push(row(tr("Handy verbinden"), Some(tr("Mit der Handy-Kamera scannen und das Thema in ntfy abonnieren.")), code, t));
+                }
             }
         }
         let testing = self.phone.testing;
@@ -409,7 +467,7 @@ impl SettingsView {
         rows.push(Row { below: outcome.map(IntoElement::into_any_element), ..row(tr("Testnachricht"), Some(tr("Prüft, ob Meldungen auf dem Handy ankommen.")), send, t) });
         rows.push(self.toggle("set-phone-back", tr("Auch wenn sie zurück sind"), tr("Meldet auch, wenn getrennte Accounts wieder auf dem Server sind."), current.reconnected, |st, on| st.phone.reconnected = on, t, cx));
         rows.push(self.toggle("set-phone-whispers", tr("Auch Flüsternachrichten"), tr("Schickt Flüsternachrichten aufs Handy weiter."), current.whispers, |st, on| st.phone.whispers = on, t, cx));
-        group(tr("Aufs Handy"), rows, Some(tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems.")), t)
+        outlined_group(tr("Aufs Handy"), rows, Some(tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems.")), outlined, t)
     }
 
     fn change(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
@@ -418,6 +476,7 @@ impl SettingsView {
         edit(&mut next);
         let badge_changed = next.game_badge != before.game_badge;
         let sleep_changed = next.prevent_sleep != before.prevent_sleep;
+        let rate_changed = next.preview_rate != before.preview_rate;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         settings::set(next);
         if badge_changed {
@@ -425,6 +484,9 @@ impl SettingsView {
         }
         if sleep_changed {
             super::state::keep_awake(cx);
+        }
+        if rate_changed {
+            super::state::replan(cx);
         }
         if recheck {
             super::updates::check(false, cx);
@@ -494,6 +556,10 @@ fn row(label: String, hint: Option<String>, control: impl IntoElement, t: &Theme
 }
 
 fn group(title: String, rows: Vec<Row>, footer: Option<String>, t: &Theme) -> Div {
+    outlined_group(title, rows, footer, false, t)
+}
+
+fn outlined_group(title: String, rows: Vec<Row>, footer: Option<String>, outlined: bool, t: &Theme) -> Div {
     let last = rows.len().saturating_sub(1);
     let inner = radius::CARD - 1.;
     let rows = rows.into_iter().enumerate().map(|(i, r)| {
@@ -524,11 +590,47 @@ fn group(title: String, rows: Vec<Row>, footer: Option<String>, t: &Theme) -> Di
         .flex_col()
         .gap(px(space::S))
         .child(div().px(px(space::XS)).text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).text_color(t.secondary).child(title))
-        .child(div().flex().flex_col().rounded(px(radius::CARD)).bg(t.content).border_1().border_color(t.separator).overflow_hidden().children(rows))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .rounded(px(radius::CARD))
+                .bg(t.content)
+                .border_1()
+                .border_color(t.separator)
+                .relative()
+                .overflow_hidden()
+                .children(rows)
+                .when(outlined, |d| d.child(div().absolute().inset_0().rounded(px(radius::CARD - 1.)).border_2().border_color(theme::ring::color()))),
+        )
         .children(footer.map(|f| div().px(px(space::XS)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(f)))
 }
 
-fn keycap(text: String, t: &Theme) -> Div {
+fn qr(text: &str, t: &Theme) -> Option<Div> {
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let n = code.width();
+    let dark: Vec<bool> = code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect();
+    let paint = canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let scale = window.scale_factor();
+            let cells = (n + 2 * phone_qr::QUIET) as f32;
+            let cell = (f32::from(bounds.size.width) * scale / cells).floor().max(1.) / scale;
+            let inset = (f32::from(bounds.size.width) - cell * n as f32) / 2.;
+            for (i, on) in dark.iter().enumerate() {
+                if *on {
+                    let at = point(bounds.origin.x + px(inset + (i % n) as f32 * cell), bounds.origin.y + px(inset + (i / n) as f32 * cell));
+                    window.paint_quad(fill(Bounds::new(at, size(px(cell), px(cell))), phone_qr::DARK));
+                }
+            }
+        },
+    )
+    .size_full();
+    Some(div().size(px(phone_qr::SIZE)).flex_none().rounded(px(radius::SMALL)).border_1().border_color(t.separator).bg(phone_qr::LIGHT).child(paint))
+}
+
+/// One key as a cap, as the keyboard prints it.
+pub(super) fn keycap(text: String, t: &Theme) -> Div {
     div()
         .h(px(control::S))
         .min_w(px(control::S))
@@ -545,7 +647,7 @@ fn keycap(text: String, t: &Theme) -> Div {
 }
 
 /// The keys of a chord like `ctrl+alt+right` as they are printed on this system's keyboard.
-fn chord_keys(chord: &str) -> Vec<String> {
+pub(super) fn chord_keys(chord: &str) -> Vec<String> {
     let mac = cfg!(target_os = "macos");
     chord
         .split('+')
@@ -568,6 +670,7 @@ fn chord_keys(chord: &str) -> Vec<String> {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.fill_topic(window, cx);
         super::perf::frame_start();
         super::theme::follow_focus(window, cx);
         let t = Theme::get(cx);
@@ -627,8 +730,9 @@ impl Render for SettingsView {
             Some(tr("Meldungen kommen gesammelt und nie mit Ton.")),
             &t,
         );
-        let phone = self.phone_group(&t, cx);
-        let connection = group(
+        let pointed = self.pointed.map(|(section, _)| section);
+        let phone = self.phone_group(pointed == Some(Section::Phone), &t, cx);
+        let connection = outlined_group(
             tr("Verbindung"),
             vec![
                 self.toggle("set-reconnect", tr("Automatisch neu verbinden"), tr("Geht nach einem Verbindungsabbruch wieder auf den Server."), s.reconnect.enabled, |st, on| st.reconnect.enabled = on, &t, cx),
@@ -637,6 +741,7 @@ impl Render for SettingsView {
                 self.attempts("set-restart-attempts", tr("Versuche beim Neustart"), s.crash_restart.max_attempts, s.crash_restart.enabled, |st, n| st.crash_restart.max_attempts = n, &t, cx),
             ],
             Some(tr("Nach den letzten Versuchen zeigt die Kachel, dass der Account dich braucht. Gesperrte Accounts verbinden sich nie von selbst neu.")),
+            pointed == Some(Section::Reconnect),
             &t,
         );
         let hotkeys = group(
@@ -648,33 +753,51 @@ impl Render for SettingsView {
             Some(tr("Diese Kürzel gelten in jedem Spiel.")),
             &t,
         );
+        let rates = [(PreviewRate::Saving, tr("Sparsam")), (PreviewRate::Normal, tr("Normal")), (PreviewRate::Smooth, tr("Flüssig"))];
+        let picked = s.preview_rate;
+        let segments = rates.iter().enumerate().map(|(n, (rate, label))| segment(SharedString::from(format!("set-preview-rate-{n}")), label.clone(), *rate == picked, true, &t)).collect::<Vec<_>>();
+        let pick = cx.listener(move |s, n: &usize, _, cx| {
+            let next = rates.get(*n).map_or(PreviewRate::Normal, |(rate, _)| *rate);
+            s.change(|st| st.preview_rate = next, cx);
+        });
+        let advanced = group(
+            tr("Erweitert"),
+            vec![row(tr("Vorschau-Rate"), Some(tr("Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger.")), segmented("set-preview-rate", segments, move |n, window, cx| pick(&n, window, cx), &t), &t)],
+            None,
+            &t,
+        );
         let follows = div().px(px(space::XS)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Sprache und Erscheinungsbild folgen dem System."));
         let error = self.error.clone().map(|e| sheet::notice("circle-alert", t.danger, t.danger_text, e));
+        let parts: Vec<(Option<Section>, AnyElement)> = error
+            .map(|e| (None, e.into_any_element()))
+            .into_iter()
+            .chain([
+                (None, updates_group.into_any_element()),
+                (None, general.into_any_element()),
+                (None, chat.into_any_element()),
+                (None, notices.into_any_element()),
+                (Some(Section::Phone), phone.into_any_element()),
+                (Some(Section::Reconnect), connection.into_any_element()),
+                (None, hotkeys.into_any_element()),
+                (None, advanced.into_any_element()),
+                (None, follows.into_any_element()),
+            ])
+            .collect();
+        if let Some(ix) = self.jump.take().and_then(|jump| parts.iter().position(|(section, _)| *section == Some(jump))) {
+            self.scroll.scroll_to_top_of_item(ix);
+        }
         let page = div()
             .id("settings-page")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .child(
-                div()
-                    .mx_auto()
-                    .w_full()
-                    .max_w(px(PAGE_MAX + space::XL * 2.))
-                    .px(px(space::XL))
-                    .py(px(space::XL))
-                    .flex()
-                    .flex_col()
-                    .gap(px(space::XL))
-                    .children(error)
-                    .child(updates_group)
-                    .child(general)
-                    .child(chat)
-                    .child(notices)
-                    .child(phone)
-                    .child(connection)
-                    .child(hotkeys)
-                    .child(follows),
-            );
+            .flex()
+            .flex_col()
+            .items_center()
+            .px(px(space::XL))
+            .py(px(space::XL))
+            .gap(px(space::XL))
+            .children(parts.into_iter().map(|(_, part)| div().w_full().max_w(px(PAGE_MAX)).flex_none().child(part)));
         let root = div()
             .id("settings")
             .key_context("Settings")

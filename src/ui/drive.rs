@@ -309,6 +309,11 @@ async fn run(b: &Value, cx: &mut AsyncApp) -> Result<Value, String> {
             Ok(json!({}))
         }
         "state" => Ok(cx.update(state)),
+        "notification" => {
+            let tag = b["tag"].as_str().unwrap_or_default().to_owned();
+            cx.update(|cx| super::state::notification_clicked(&tag, cx));
+            Ok(json!({}))
+        }
         "actions" => Ok(json!({ "actions": cx.update(|cx| cx.all_action_names().iter().map(|a| a.to_string()).collect::<Vec<_>>()) })),
         "frames" => {
             let since = b["since"].as_u64().unwrap_or(u64::MAX);

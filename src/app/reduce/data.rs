@@ -11,7 +11,10 @@ use crate::core::fleet::{self, Adoption};
 const START_WAITS_FOR: Duration = Duration::from_secs(10);
 
 pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Effect>) {
-    let Loaded { data, logs, problems, recovered, keep, adopted } = loaded;
+    let Loaded { data, logs, problems, recovered, keep, adopted, measured } = loaded;
+    for (batch, mb) in measured {
+        m.measured.entry(batch).or_insert(mb);
+    }
     if let Some(text) = recovered {
         let s = &mut m.session;
         s.notice = Some(s.notice.take().map_or(text.clone(), |before| format!("{before} {text}")));

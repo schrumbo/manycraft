@@ -84,7 +84,9 @@ pub(super) fn flush_alert(m: &mut Model, env: &Env, batch_id: &str, out: &mut Ve
     if n > ALERT_NAMES {
         body = trf("%@ und %lld weitere", &[&body, &(n - ALERT_NAMES)]);
     }
-    out.push(Effect::Notify { tag: attention_tag(batch_id), title, body });
+    let mut keys: Vec<String> = m.games.iter().filter(|(_, i)| i.batch_id == batch_id && i.phase.needs_attention() && names.contains(&i.name)).map(|(k, _)| k.clone()).collect();
+    keys.sort();
+    out.push(Effect::Notify { tag: attention_tag(batch_id), title, body, keys });
 }
 
 pub(super) fn queue_whisper(m: &mut Model, env: &Env, whisper: Whisper, out: &mut Vec<Effect>) {
@@ -129,7 +131,7 @@ pub(super) fn flush_whispers(m: &mut Model, env: &Env, out: &mut Vec<Effect>) {
         }
         (trf("%lld Flüsternachrichten", &[&n]), body)
     };
-    out.push(Effect::Notify { tag: WHISPER_TAG.to_owned(), title, body });
+    out.push(Effect::Notify { tag: WHISPER_TAG.to_owned(), title, body, keys: Vec::new() });
 }
 
 pub(super) fn queue_phone(m: &mut Model, env: &Env, incidents: Vec<(String, Incident)>, out: &mut Vec<Effect>) {
