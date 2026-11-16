@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use super::instance::Loader;
 use super::{net, paths};
 
 const AGENT: &[u8] = include_bytes!(env!("MANYCRAFT_AGENT_JAR"));
@@ -21,16 +20,20 @@ fn release(game: &str) -> Option<(u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
-/// Whether this build carries the companion for `game`, which previews, background saving and chat need. The loader
-/// does not matter: the agent works the same on all of them.
-pub fn available(_loader: &Loader, game: &str) -> bool {
+/// The first release the companion reaches, as people read it: "26.1".
+pub fn first() -> String {
+    format!("{}.{}", FIRST.0, FIRST.1)
+}
+
+/// Whether this build carries the companion for `game`, which previews, background saving and chat need, on every loader.
+pub fn available(game: &str) -> bool {
     !AGENT.is_empty() && release(game).is_some_and(|r| r >= FIRST)
 }
 
 /// Path of the companion agent for `game` on disk, written from the built-in copy when missing; `None` when there is
 /// none, so the game runs without it. Each build gets its own folder, since running games hold their copy open.
-pub fn jar(loader: &Loader, game: &str) -> Result<Option<PathBuf>> {
-    if !available(loader, game) {
+pub fn jar(game: &str) -> Result<Option<PathBuf>> {
+    if !available(game) {
         return Ok(None);
     }
     let sha = sha1(AGENT);
@@ -79,14 +82,13 @@ mod tests {
     }
 
     #[test]
-    fn every_loader_gets_it_from_26_1_on() {
-        for loader in [Loader::Vanilla, Loader::Fabric(None), Loader::Quilt(Some("0.30.0".into())), Loader::NeoForge(None), Loader::Forge(None)] {
-            assert!(available(&loader, "26.1"));
-            assert!(available(&loader, "26.1.2"));
-            assert!(available(&loader, "26.3"));
-            assert!(available(&loader, "27.0"));
-            assert!(!available(&loader, "1.21.11"));
-            assert!(!available(&loader, "25.4"));
-        }
+    fn games_get_it_from_26_1_on() {
+        assert!(available("26.1"));
+        assert!(available("26.1.2"));
+        assert!(available("26.3"));
+        assert!(available("27.0"));
+        assert!(!available("1.21.11"));
+        assert!(!available("25.4"));
+        assert_eq!(first(), "26.1");
     }
 }

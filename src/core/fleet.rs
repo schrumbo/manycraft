@@ -865,7 +865,7 @@ impl Fleet {
         choose_java(&mut installed, instance)?;
         let companion_jar = match companion_jar {
             Some(jar) => Some(jar.to_path_buf()),
-            None => super::companion::jar(&instance.loader, &instance.game_version)?,
+            None => super::companion::jar(&instance.game_version)?,
         };
         Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar })
     }
@@ -1371,7 +1371,7 @@ pub(super) fn new_instance(name: &str, version: Option<&str>, loader: Loader, me
     if let Some(mb) = memory {
         made.memory_mb = mb;
     }
-    if super::companion::available(&made.loader, &made.game_version) {
+    if super::companion::available(&made.game_version) {
         let defaults = super::modrinth::default_mods(&made.game_version, &made.loader)?;
         for note in &defaults.notes {
             println!("{note}");

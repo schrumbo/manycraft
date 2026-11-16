@@ -1122,7 +1122,7 @@ fn name_problem(name: &str, taken: &[&str]) -> Option<String> {
 
 /// The quiet line under a version the companion does not reach, or nothing when games of `game` have it.
 pub(super) fn companion_hint(game: &str) -> Option<String> {
-    (!game.is_empty() && !companion::available(&Loader::Vanilla, game)).then(|| tr("Hintergrundmodus ab 26.1"))
+    (!game.is_empty() && !companion::available(game)).then(|| trf("Hintergrundmodus ab %@", &[&companion::first()]))
 }
 
 fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> remote::InstanceEdit {
