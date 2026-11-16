@@ -8,8 +8,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::actions::{
-    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway,
-    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut,
+    AddAccount, AddMicrosoft, CancelUpdate, ChangeSkin, CheckForUpdates, ClearSelection, DismissNews, CancelImport, ExportBatch, ImportBatch, OpenBatchFolder, OpenGameFolder, PickColor, PreviousVersion, RestartToUpdate, SetColor, EditBatch, ImportPrismAccounts, ImportFromLauncher, PickShortcutInstance, SignInEach, MessageSelected, NewBatch, NextAttention, NextInstance, OpenChat, OpenSettings, Play, PreviousInstance, ReconnectMany, ReconnectSelected, RestartSelected, SelectAll, ShowAccounts, ShowAll, ShowBatch, SignInAgain, Start, StartAll, StartBatch, StartSelected, StopAll, StopBatch, StopSelected, ToggleFullscreen, ToggleSidebar, Undo, Quit, CancelStart, StartAnyway, DeleteBatch,
+    AddMods, CloneInstance, DeleteInstance, EditMods, FindModpacks, FindResourcePacks, FindShaders, ResetInstance, UpdateLoader, ExportInstance, NewBatchFor, NewInstance, OpenInstanceFolder, OpenInstanceSetting, PlayInstance, RenameInstance, ShowInstance, CreateShortcut, Stop, StopCurrent,
 };
 use super::drive::Mark;
 use super::main_window::{FocusSearch, MainWindow, Page};
@@ -60,6 +60,8 @@ pub struct Entry {
     pub enabled: bool,
     /// Whether it starts, stops or deletes many games or a whole instance at once, so the cursor never starts on it.
     pub mass: bool,
+    /// Whether it ranks below every other hit, like a retry for a banned account.
+    pub later: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -188,6 +190,7 @@ fn pick_shortcut_instance(this: &mut MainWindow, window: &mut Window, cx: &mut C
             action: Box::new(CreateShortcut { instance: made.id.clone(), account: made.last_account.map(|a| a.to_string()) }),
             enabled: true,
             mass: false,
+            later: false,
         })
         .collect();
     let Some(p) = this.palette.as_mut() else { return };
@@ -259,7 +262,7 @@ fn rows(entries: &[Entry], query: &str) -> Vec<Row> {
         return rows;
     }
     let mut hits: Vec<(i32, usize)> = entries.iter().enumerate().filter(|(_, e)| e.group != Group::Recent).filter_map(|(ix, e)| score(query, &e.label, e.detail.as_deref().unwrap_or("")).map(|s| (s, ix))).collect();
-    hits.sort_by_key(|(s, ix)| (-s, *ix));
+    hits.sort_by_key(|(s, ix)| (entries[*ix].later, -s, *ix));
     hits.into_iter().map(|(_, ix)| Row::Entry(ix)).collect()
 }
 
@@ -378,7 +381,7 @@ pub fn menu_row(text: String, keys: Option<String>, disabled: bool) -> impl Fn(&
 
 fn entry(group: Group, icon: &'static str, label: String, detail: Option<String>, action: Box<dyn Action>, cx: &App) -> Entry {
     let keys = shortcut(action.as_ref(), cx);
-    Entry { group, icon, label, detail, keys, action, enabled: true, mass: false }
+    Entry { group, icon, label, detail, keys, action, enabled: true, mass: false, later: false }
 }
 
 fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
@@ -391,7 +394,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             [one] => m.games.get(one).map(|i| i.name.clone()),
             many => Some(trf("%lld Accounts", &[&many.len()])),
         };
-        let n = super::grid::offers(&chosen, m).map(|o| o.3);
+        let n = super::grid::offers(&chosen, m).map(|o| o.able);
         let several = chosen.len() > 1;
         for (icon, label, action, able) in [
             ("play", tr("Ausgewählte starten"), Box::new(StartSelected) as Box<dyn Action>, n[0] > 0),
@@ -401,6 +404,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
             ("message-square", tr("Nachricht senden…"), Box::new(MessageSelected), several && n[4] > 0),
             ("x", tr("Auswahl aufheben"), Box::new(ClearSelection), true),
             ("folder-open", tr("Spielordner öffnen"), Box::new(OpenGameFolder(chosen[0].clone())), !several),
+            ("rotate-ccw-clock", tr("Verlauf"), Box::new(super::actions::ShowHistory(chosen[0].clone())), !several),
         ] {
             if able {
                 out.push(entry(Group::Selection, icon, label, detail.clone(), action, cx));
@@ -439,6 +443,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
         ("maximize", tr("Vollbild ein- oder ausschalten"), Box::new(ToggleFullscreen), true),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
+        ("trash", tr("Papierkorb öffnen"), Box::new(super::actions::OpenTrash), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
         ("x", tr("Laden abbrechen"), Box::new(CancelUpdate), super::updates::cancellable(&m.updates)),
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),
@@ -449,6 +454,23 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     ] {
         if able {
             out.push(entry(Group::Commands, icon, label, None, action, cx));
+        }
+    }
+    let scope = if let Page::Grid(batch) = &this.page { batch.clone() } else { None };
+    for (need, count, fix) in super::needs::fixes(scope.as_deref(), m) {
+        if let Some((label, action)) = fix {
+            let (_, _, icon) = super::needs::look(need, &Theme::get(cx));
+            out.push(entry(Group::Commands, icon, label, Some(super::needs::label(need, count)), action, cx));
+        }
+    }
+    let outages: Vec<String> = match scope.as_deref() {
+        Some(b) => vec![b.to_owned()],
+        None => m.batches.iter().map(|b| b.id.clone()).collect(),
+    };
+    for id in outages {
+        if let Some(outage) = m.outage(&id) {
+            let name = m.batch(&id).map(|b| b.name.clone());
+            out.push(entry(Group::Commands, "refresh-cw", tr("Jetzt alle verbinden"), Some(super::needs::outage_line(&outage, name.as_deref(), m)), Box::new(ReconnectMany(outage.keys)), cx));
         }
     }
     if let Some(newest) = super::undo::newest(cx) {
@@ -497,12 +519,22 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         out.push(entry(Group::Batches, "pencil", trf("%@ bearbeiten", &[&b.name]), server.clone(), Box::new(EditBatch(b.id.clone())), cx));
         out.push(entry(Group::Batches, "folder-open", trf("Ordner von %@ öffnen", &[&b.name]), server.clone(), Box::new(OpenBatchFolder(b.id.clone())), cx));
         if !m.exporting.contains(&b.instance_id) {
-            out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server, Box::new(ExportBatch(b.id.clone())), cx));
+            out.push(entry(Group::Batches, "upload", trf("%@ als .mrpack exportieren…", &[&b.name]), server.clone(), Box::new(ExportBatch(b.id.clone())), cx));
         }
+        out.push(entry(Group::Batches, "trash-2", trf("%@ löschen…", &[&b.name]), server, Box::new(DeleteBatch(b.id.clone())), cx));
     }
     if let Page::Instance(shown) = &this.page
         && let Some(made) = m.instances.iter().find(|i| &i.id == shown)
     {
+        let mut live: Vec<_> = m.solo_games(&made.id).filter(|g| g.phase.is_active() && !g.stopping).collect();
+        live.sort_by_cached_key(|g| g.name.to_lowercase());
+        let several = live.len() > 1;
+        for g in live {
+            let label = if several { trf("„%@“ stoppen", &[&g.name]) } else { tr("Stoppen") };
+            let mut stop = entry(Group::Instances, "square", label, Some(made.name.clone()), Box::new(Stop(g.key.clone())), cx);
+            stop.keys = shortcut(&StopCurrent, cx).filter(|_| !several);
+            out.push(stop);
+        }
         let settings = [
             ("memory-stick", tr("Arbeitsspeicher einstellen"), "memory", true),
             ("coffee", tr("Java wählen"), "java", true),
@@ -561,18 +593,33 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
     }
     let mut instances: Vec<_> = m.games.values().collect();
     instances.sort_by_cached_key(|i| (i.name.to_lowercase(), m.batch(&i.batch_id).map(|b| b.name.to_lowercase())));
+    let mut retries = Vec::new();
     for i in instances {
         let batch = m.batch(&i.batch_id).map(|b| b.name.clone()).unwrap_or_default();
         let detail = Some(format!("{batch} · {}", super::state::status(i, None)));
-        let (icon, verb, action): (&'static str, String, Box<dyn Action>) = if super::tile::playable(&i.phase) {
+        let banned = matches!(i.phase, Phase::Banned { .. });
+        let (icon, verb, action): (&'static str, String, Box<dyn Action>) = if banned {
+            ("refresh-cw", tr("Erneut versuchen"), Box::new(Start(i.key.clone())))
+        } else if super::tile::playable(&i.phase) {
             ("gamepad-2", tr("Spielen"), Box::new(Play(i.key.clone())))
         } else if i.phase == Phase::LoginNeeded {
             ("log-in", tr("Anmelden"), Box::new(SignInAgain(i.account_id.to_string())))
+        } else if super::tile::busy(i, m) {
+            ("arrow-right-left", tr("Dort beenden und hier starten"), Box::new(super::actions::TakeOver(i.key.clone())))
         } else {
             ("play", tr("Starten"), Box::new(Start(i.key.clone())))
         };
-        out.push(Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail, keys: None, action, enabled: true, mass: false });
+        let row = Entry { group: Group::Accounts, icon, label: format!("{} — {verb}", i.name), detail: detail.clone(), keys: None, action, enabled: true, mass: false, later: banned };
+        if banned {
+            retries.push(row);
+        } else {
+            out.push(row);
+        }
+        if matches!(i.phase, Phase::Crashed { .. }) {
+            out.push(Entry { group: Group::Accounts, icon: "triangle-alert", label: format!("{} — {}", i.name, tr("Absturzbericht…")), detail, keys: None, action: Box::new(super::instance_files::ShowCrash { instance: i.instance_id.clone(), account: i.account_id.to_string() }), enabled: true, mass: false, later: false });
+        }
     }
+    out.extend(retries);
     let several = chosen.len() > 1;
     for e in &mut out {
         e.mass = mass(e.action.as_ref(), several);
@@ -582,7 +629,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         .map(|r| {
             r.0.iter()
                 .filter_map(|a| out.iter().find(|e| e.enabled && e.action.partial_eq(a.as_ref())))
-                .map(|e| Entry { group: Group::Recent, icon: e.icon, label: e.label.clone(), detail: e.detail.clone(), keys: e.keys.clone(), action: e.action.boxed_clone(), enabled: true, mass: e.mass })
+                .map(|e| Entry { group: Group::Recent, icon: e.icon, label: e.label.clone(), detail: e.detail.clone(), keys: e.keys.clone(), action: e.action.boxed_clone(), enabled: true, mass: e.mass, later: e.later })
                 .collect()
         })
         .unwrap_or_default();
@@ -732,7 +779,7 @@ mod tests {
     fn the_cursor_never_starts_on_a_mass_action() {
         let entry = |label: &str, action: Box<dyn Action>| {
             let mass = mass(action.as_ref(), false);
-            Entry { group: Group::Commands, icon: "play", label: label.into(), detail: None, keys: None, action, enabled: true, mass }
+            Entry { group: Group::Commands, icon: "play", label: label.into(), detail: None, keys: None, action, enabled: true, mass, later: false }
         };
         let entries = vec![entry("Alle starten", Box::new(StartAll)), entry("Alle stoppen", Box::new(StopAll)), entry("Test starten", Box::new(StartBatch("b".into()))), entry("Neuer Batch", Box::new(NewBatch))];
         for query in ["", "a", "alle", "start", "st", "neu", "batch"] {
@@ -745,6 +792,13 @@ mod tests {
         assert!(mass(&StopBatch("b".into()), false) && mass(&StartSelected, true));
         assert!(!mass(&StartSelected, false), "one chosen game is no mass action");
         assert!(mass(&CancelStart(None), false), "cancelling stops every game still in line");
+    }
+
+    #[test]
+    fn a_later_hit_ranks_below_better_matches_and_worse_ones() {
+        let entry = |label: &str, later: bool| Entry { group: Group::Accounts, icon: "play", label: label.into(), detail: None, keys: None, action: Box::new(NewBatch), enabled: true, mass: false, later };
+        let entries = vec![entry("Dev — Erneut versuchen", true), entry("Dev2 — Starten", false), entry("Mein Dev — Starten", false)];
+        assert_eq!(rows(&entries, "dev"), [Row::Entry(1), Row::Entry(2), Row::Entry(0)]);
     }
     use gpui_kit::Keystroke;
 

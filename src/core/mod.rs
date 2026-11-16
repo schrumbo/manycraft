@@ -4,6 +4,7 @@ pub mod auth;
 pub mod awake;
 #[allow(dead_code)]
 pub mod batch;
+pub mod bin;
 pub mod browser;
 pub mod cli;
 #[allow(dead_code)]
@@ -52,6 +53,8 @@ pub mod ratelimit;
 pub mod reconnect;
 pub mod scrub;
 pub mod skins;
+pub mod smoke;
+pub mod snapshot;
 pub mod stagger;
 #[allow(dead_code)]
 pub mod settings;

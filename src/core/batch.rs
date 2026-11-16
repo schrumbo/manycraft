@@ -190,6 +190,18 @@ pub fn delete(batch: &Batch) -> Result<()> {
     delete_in(&batches_dir(), batch)
 }
 
+/// Saves a deleted `batch` again as it was; leaves a batch of the same id that exists by now alone.
+pub fn restore(batch: &Batch) -> Result<()> {
+    restore_in(&batches_dir(), batch)
+}
+
+fn restore_in(root: &Path, batch: &Batch) -> Result<()> {
+    if store::load::<Batch>(&root.join(&batch.id).join(FILE))?.is_some() {
+        return Ok(());
+    }
+    save_in(root, batch)
+}
+
 pub(super) fn delete_in(root: &Path, batch: &Batch) -> Result<()> {
     if !super::instance::valid_id(&batch.id) {
         bail!("invalid batch id {:?}", batch.id);
@@ -241,6 +253,23 @@ pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deleted_batch_comes_back_as_it_was_and_never_over_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("A", "i1");
+        b.accounts = vec![Uuid::from_u128(1)];
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b.clone()]);
+        delete_in(dir.path(), &b).unwrap();
+        restore_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b.clone()]);
+        let mut newer = b.clone();
+        newer.name = "B".into();
+        save_in(dir.path(), &newer).unwrap();
+        restore_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![newer]);
+    }
 
     #[test]
     fn rejoin_keeps_the_place_and_refuses_twice() {

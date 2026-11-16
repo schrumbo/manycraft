@@ -99,6 +99,8 @@ pub struct Session {
     pub foreign: HashSet<String>,
     /// The games of each batch's bulk start, while some of them still wait to launch.
     pub runs: HashMap<String, Vec<String>>,
+    /// Games stopped to free their account, by key, with the game that starts once they are down and until when it waits.
+    pub take_overs: HashMap<String, (String, Instant)>,
     /// The last place given out in the line of games that wait for free memory.
     pub memory_seq: u64,
     /// Whether a reading of the free memory is on its way.
@@ -107,4 +109,6 @@ pub struct Session {
     pub memory_timer: bool,
     /// Plays asked for before the data was read, by instance and account.
     pub waiting_plays: Vec<(String, Option<String>)>,
+    /// Batch starts asked for before a load knew the batch, by batch and when they were asked.
+    pub waiting_starts: Vec<(String, Instant)>,
 }

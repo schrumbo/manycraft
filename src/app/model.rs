@@ -17,6 +17,9 @@ use crate::core::proxy::Fault;
 
 use super::session::{Frame, Session};
 
+/// How far apart, in seconds, drops may lie to count as one outage.
+const OUTAGE_WINDOW: u64 = 60;
+
 /// Where an instance is in its life, as the grid shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
@@ -93,6 +96,58 @@ impl Phase {
     pub fn playable(&self) -> bool {
         matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
     }
+
+    /// What kind of work the user has here, when there is some.
+    pub fn need(&self) -> Option<Need> {
+        match self {
+            Phase::LoginNeeded => Some(Need::SignIn),
+            Phase::Disconnected { .. } => Some(Need::Disconnected),
+            Phase::Dead { .. } => Some(Need::Dead),
+            Phase::Crashed { .. } => Some(Need::Crashed),
+            Phase::Failed { .. } => Some(Need::Failed),
+            Phase::Banned { .. } => Some(Need::Banned),
+            _ => None,
+        }
+    }
+
+    /// Whether a reconnect can be asked of a game in this phase: it runs with the mod, is past its start and is not banned.
+    pub fn reconnectable(&self) -> bool {
+        self.is_running() && !matches!(self, Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. })
+    }
+}
+
+/// The kinds of work an account can need, in the order the grid lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Need {
+    SignIn,
+    Disconnected,
+    Dead,
+    Crashed,
+    Failed,
+    Banned,
+}
+
+impl Need {
+    pub const ALL: [Need; 6] = [Need::SignIn, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
+}
+
+/// How many of a set of games each selection action acts on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Able {
+    pub start: usize,
+    pub stop: usize,
+    pub restart: usize,
+    pub reconnect: usize,
+    pub message: usize,
+}
+
+/// Many games of one batch dropped off the server together and wait to get back on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outage {
+    /// Seconds since 1970 of the first drop among them, when it was recorded.
+    pub since: Option<u64>,
+    /// The games that dropped and can be reconnected, by key.
+    pub keys: Vec<String>,
 }
 
 /// A bulk start under way: how many of its games launched, of how many, and how many wait for free memory.
@@ -269,6 +324,67 @@ impl Model {
     /// How many instances of `batch_id` (all when `None`) need attention.
     pub fn attention_count(&self, batch_id: Option<&str>) -> usize {
         self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && i.phase.needs_attention()).count()
+    }
+
+    /// How many instances of `batch_id` (all when `None`) need each kind of work, in the grid's order, leaving out kinds nobody needs.
+    pub fn needs(&self, batch_id: Option<&str>) -> Vec<(Need, usize)> {
+        let mut counts: HashMap<Need, usize> = HashMap::new();
+        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b)).filter_map(|i| i.phase.need()) {
+            *counts.entry(need).or_default() += 1;
+        }
+        Need::ALL.into_iter().filter_map(|n| counts.get(&n).map(|c| (n, *c))).collect()
+    }
+
+    /// How many of `keys` each selection action would act on.
+    pub fn able(&self, keys: &[String]) -> Able {
+        let mut n = Able::default();
+        for i in keys.iter().filter_map(|k| self.games.get(k)) {
+            let fresh = !i.stopping;
+            n.start += usize::from(fresh && !i.phase.is_running() && i.phase != Phase::LoginNeeded);
+            n.stop += usize::from(fresh && i.phase.stoppable());
+            n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
+            n.reconnect += usize::from(fresh && i.phase.reconnectable());
+            n.message += usize::from(i.phase.on_server());
+        }
+        n
+    }
+
+    /// The games of `batch_id` that lost the server together, within a minute of each other, and wait to reconnect or gave up,
+    /// when they are at least two and at least half of the batch's running games: a server restart rather than one account's bad luck.
+    /// Kicks and bans never count.
+    pub fn outage(&self, batch_id: &str) -> Option<Outage> {
+        let mine: Vec<&Game> = self.games.values().filter(|i| i.batch_id == batch_id && !i.stopping).collect();
+        let mut dropped: Vec<(u64, &Game)> = mine
+            .iter()
+            .copied()
+            .filter(|i| matches!(i.phase, Phase::Disconnected { .. }) || (matches!(i.phase, Phase::Connecting { .. }) && i.reconnect_attempts > 0))
+            .filter_map(|i| {
+                let log = self.history.get(&i.key)?;
+                let run: Vec<&history::Entry> = log.iter().rev().take_while(|e| e.kind != history::Kind::Connected).collect();
+                let first = run.last()?;
+                run.iter().all(|e| e.kind == history::Kind::Disconnected).then_some((first.at, i))
+            })
+            .collect();
+        dropped.sort_by_key(|(at, i)| (*at, i.key.clone()));
+        let mut best = 0..0;
+        let mut from = 0;
+        for to in 0..dropped.len() {
+            while dropped[to].0 - dropped[from].0 > OUTAGE_WINDOW {
+                from += 1;
+            }
+            if to + 1 - from >= best.len() {
+                best = from..to + 1;
+            }
+        }
+        let together = &dropped[best];
+        let running = mine.iter().filter(|i| i.phase.is_running() && !matches!(i.phase, Phase::Banned { .. })).count();
+        if together.len() < 2 || together.len() * 2 < running {
+            return None;
+        }
+        let since = together.first().map(|(at, _)| *at);
+        let mut keys: Vec<String> = together.iter().map(|(_, i)| i.key.clone()).collect();
+        keys.sort_by_key(|k| (self.games.get(k).map(|i| i.name.to_lowercase()), k.clone()));
+        Some(Outage { since, keys })
     }
 
     /// The saved account with this id.
@@ -461,6 +577,86 @@ mod tests {
         let mut m = Model::default();
         m.games.insert("1".into(), instance("1", "a", "a", banned));
         assert_eq!(m.attention_count(None), 1);
+    }
+
+    fn mixed() -> Model {
+        let mut m = Model::default();
+        let lost = || Phase::Disconnected { server: Some("s".into()), reason: "Zeitüberschreitung".into() };
+        for (key, phase) in [
+            ("1", Phase::LoginNeeded),
+            ("2", lost()),
+            ("3", Phase::Banned { server: None, reason: "x".into() }),
+            ("4", lost()),
+            ("5", Phase::Crashed { code: Some(1) }),
+            ("6", Phase::Playing { server: "s".into(), since: Instant::now() }),
+            ("7", Phase::Stopped),
+            ("8", Phase::LoginNeeded),
+        ] {
+            m.games.insert(key.into(), instance(key, key, "a", phase));
+        }
+        m.games.insert("9".into(), instance("9", "9", "b", Phase::Dead { server: None, reason: String::new() }));
+        m
+    }
+
+    #[test]
+    fn needs_are_counted_per_kind_in_a_fixed_order() {
+        let m = mixed();
+        assert_eq!(m.needs(Some("a")), [(Need::SignIn, 2), (Need::Disconnected, 2), (Need::Crashed, 1), (Need::Banned, 1)]);
+        assert_eq!(m.needs(None).iter().map(|(_, n)| n).sum::<usize>(), m.attention_count(None));
+        assert_eq!(m.needs(Some("b")), [(Need::Dead, 1)]);
+        assert!(m.needs(Some("none")).is_empty());
+        assert!(Phase::Restarting { attempt: 1, of: 3 }.need().is_none() && Phase::Stopped.need().is_none());
+    }
+
+    #[test]
+    fn selection_actions_count_only_the_games_they_can_act_on() {
+        let m = mixed();
+        let keys: Vec<String> = (1..=9).map(|n| n.to_string()).collect();
+        let n = m.able(&keys);
+        assert_eq!(n.reconnect, 4, "the playing, the dead and the two disconnected, never banned or signed out");
+        assert_eq!(n.start, 2, "stopped and crashed, nothing that needs a sign-in");
+        assert_eq!(n.stop, 5);
+        assert_eq!(n.restart, 7);
+        assert_eq!(n.message, 1);
+        let mut m = m;
+        m.games.get_mut("6").unwrap().stopping = true;
+        assert_eq!(m.able(&keys).reconnect, 3);
+        assert_eq!(m.able(&["gone".into()]), Able::default());
+    }
+
+    #[test]
+    fn an_outage_needs_most_of_the_batch_dropped_and_starts_at_the_first_drop() {
+        let mut m = Model::default();
+        for n in 0..4 {
+            m.games.insert(n.to_string(), instance(&n.to_string(), &format!("p{n}"), "a", Phase::Playing { server: "s".into(), since: Instant::now() }));
+        }
+        let note = |m: &mut Model, key: &str, at: u64, kind: history::Kind| history::push(m.history.entry(key.into()).or_default(), Entry { at, kind, server: None, reason: String::new() });
+        let drop = |m: &mut Model, key: &str, at: u64, waits: bool| {
+            let i = m.games.get_mut(key).unwrap();
+            i.phase = if waits { Phase::Connecting { server: "s".into() } } else { Phase::Disconnected { server: Some("s".into()), reason: String::new() } };
+            i.reconnect_attempts = 2;
+            note(m, key, at, history::Kind::Disconnected);
+        };
+        drop(&mut m, "0", 100, true);
+        assert!(m.outage("a").is_none(), "one drop is bad luck");
+        drop(&mut m, "1", 90, false);
+        let outage = m.outage("a").expect("half the batch dropped");
+        assert_eq!(outage.since, Some(90));
+        assert_eq!(outage.keys, ["0", "1"]);
+        note(&mut m, "1", 400, history::Kind::Disconnected);
+        assert_eq!(m.outage("a").and_then(|o| o.since), Some(90), "failed retries do not move the start");
+        m.games.get_mut("0").unwrap().reconnect_attempts = 0;
+        assert!(m.outage("a").is_none(), "a first connect is no reconnect");
+        m.games.insert("4".into(), instance("4", "p4", "a", Phase::Banned { server: None, reason: String::new() }));
+        m.games.get_mut("0").unwrap().reconnect_attempts = 1;
+        assert_eq!(m.outage("a").map(|o| o.keys.len()), Some(2), "banned ones are not part of it");
+        assert!(m.outage("b").is_none());
+        note(&mut m, "0", 4000, history::Kind::Connected);
+        drop(&mut m, "0", 9000, false);
+        assert!(m.outage("a").is_none(), "drops hours apart are no outage");
+        note(&mut m, "0", 9001, history::Kind::Kicked);
+        drop(&mut m, "2", 9010, false);
+        assert!(m.outage("a").is_none(), "a kick is no outage");
     }
 
     #[test]

@@ -16,15 +16,16 @@ use uuid::Uuid;
 
 use super::drive::Mark;
 use super::forms::{self, Problem};
-use super::instance_files::{self as files, BackUpWorld, CopyWorld, DeleteWorld, FileUndo, OpenBackups, OpenWorldFolder, RestoreBackup};
+use super::instance_files::{self as files, BackUpWorld, CopyWorld, DeleteWorld, FileUndo, OpenBackups, OpenWorldFolder, RestoreBackup, RestoreSnapshot};
 use super::motion::Soft;
 use super::palette::{Entry, Group};
 use super::sheet::{self, Look};
 use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
 use super::widgets::{icon, menu_of, tip};
-use super::{model, undo};
+use super::{model, snapshots, undo};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::games_dir;
+use crate::core::snapshot::{self, Snapshot};
 use crate::core::worlds::{self, Backup, Mode, Progress, World};
 
 /// Key context of the world list.
@@ -74,6 +75,7 @@ struct Worlds {
     loaded: bool,
     rows: Vec<Row>,
     backups: Vec<Backup>,
+    snapshots: Vec<Snapshot>,
     sizes: HashMap<PathBuf, u64>,
     icons: HashMap<PathBuf, Arc<RenderImage>>,
     selected: Option<PathBuf>,
@@ -111,6 +113,16 @@ pub fn init(cx: &mut App) {
     cx.on_action(|a: &RestoreBackup, cx| {
         let path = PathBuf::from(&a.0);
         with(cx, move |s, window, cx| s.ask_restore(&path, window, cx));
+    });
+    cx.on_action(|a: &RestoreSnapshot, cx| {
+        let a = a.clone();
+        with(cx, move |s, window, cx| {
+            if s.id == a.instance
+                && let Some(snap) = s.snapshots.iter().find(|n| n.id == a.id).cloned()
+            {
+                snapshots::ask_restore(&a.instance, snap, window, cx);
+            }
+        });
     });
     cx.on_action(|a: &CopyWorld, cx| {
         let (path, account) = (PathBuf::from(&a.world), Uuid::parse_str(&a.account).ok());
@@ -155,8 +167,9 @@ pub fn view(id: &str, fresh: bool, window: &mut Window, cx: &mut App) -> AnyElem
     view.into_any_element()
 }
 
-/// Reads the worlds of instance `id` again if they are shown, and selects `back` when it came back.
+/// Reads the worlds of instance `id` again where they are shown, and selects `back` when it came back.
 pub fn changed(id: &str, back: Option<PathBuf>, cx: &mut App) {
+    super::instance_page::worlds_changed(id, cx);
     let Some(view) = cx.try_global::<Shown>().map(|s| s.0.clone()) else { return };
     view.update(cx, |s, cx| {
         if s.id == id {
@@ -196,6 +209,9 @@ pub fn palette(id: &str, cx: &App) -> Vec<Entry> {
         Some(Row::Lone(b)) => out.push(files::entry(Group::Selection, "archive-restore", trf("„%@“ wiederherstellen", &[&b.name]), Some(files::stamp(b.at)), Box::new(RestoreBackup(b.path.display().to_string())), None, cx)),
         None => {}
     }
+    for snap in &s.snapshots {
+        out.push(files::entry(Group::Commands, "archive-restore", trf("Stand „%@“ wiederherstellen", &[&snap.reason.label()]), Some(files::stamp(snap.at)), Box::new(RestoreSnapshot { instance: id.to_owned(), id: snap.id.clone() }), None, cx));
+    }
     out.push(files::entry(Group::Commands, "folder-open", tr("Ordner mit den Sicherungen öffnen"), None, Box::new(OpenBackups(id.to_owned())), None, cx));
     out
 }
@@ -218,6 +234,7 @@ impl Worlds {
             loaded: false,
             rows: Vec::new(),
             backups: Vec::new(),
+            snapshots: Vec::new(),
             sizes: HashMap::new(),
             icons: HashMap::new(),
             selected: None,
@@ -247,6 +264,7 @@ impl Worlds {
         self.loaded = false;
         self.rows.clear();
         self.backups.clear();
+        self.snapshots.clear();
         self.sizes.clear();
         self.selected = None;
         self.outcome = None;
@@ -276,15 +294,17 @@ impl Worlds {
                     Some((w.dir.clone(), picture.width(), picture.height(), picture.into_raw()))
                 })
                 .collect();
-            (found, backups, icons)
+            let snaps = snapshot::list(&dir);
+            (found, backups, icons, snaps)
         });
         cx.spawn(async move |this, cx| {
-            let (found, backups, icons) = task.await;
+            let (found, backups, icons, snaps) = task.await;
             let dirs: Vec<PathBuf> = found.iter().map(|w| w.dir.clone()).collect();
             let fresh = this.update(cx, |s, cx| {
                 if s.scan != scan {
                     return false;
                 }
+                s.snapshots = snaps;
                 s.take(found, backups, icons, cx);
                 true
             });
@@ -562,7 +582,7 @@ impl Worlds {
         }
         let view = cx.entity();
         let title = trf("„%@“ löschen?", &[&world.name()]);
-        sheet::confirm_danger(window, cx, title, tr("Die Welt kommt in den Papierkorb. Solange Manycraft läuft, holst du sie mit „Rückgängig“ zurück."), tr("Löschen"), |_| None, move |_, cx| {
+        sheet::confirm_danger(window, cx, title, tr("Die Welt kommt in den Papierkorb und bleibt dort 7 Tage."), tr("Löschen"), |_| None, move |_, cx| {
             let world = world.clone();
             view.update(cx, |s, cx| s.delete(world, cx));
         });
@@ -706,6 +726,61 @@ impl Worlds {
             .children(trailing)
             .context_menu(move |menu, window, cx| menu_of(&open_key, row_menu(menu, &menu_row, &backups, &accounts, window, cx), window, cx))
             .into_any_element()
+    }
+
+    fn snapshot_section(&self, cx: &mut Context<Self>, t: &Theme) -> Option<Div> {
+        let taking = snapshots::progress(&self.id, cx);
+        if self.snapshots.is_empty() && taking.is_none() {
+            return None;
+        }
+        let blocked = (!self.playing.is_empty()).then(|| SharedString::from(tr("Stoppe zuerst die laufenden Spiele.")));
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if let Some(done) = taking {
+            let text = trf("Wird gesichert … %lld %", &[&((done * 100.).round() as u32)]);
+            rows.push(div().h(px(theme::files::SNAPSHOT_ROW)).px(px(space::S)).flex().items_center().gap(px(space::M)).child(icon("archive-restore", iconsize::M, t.tertiary)).child(div().flex_1().min_w_0().truncate().text_size(px(font::CALLOUT)).font_features(super::toolbar::tabular()).text_color(t.secondary).child(text)).into_any_element());
+        }
+        for (at, snap) in self.snapshots.iter().enumerate() {
+            let label = snap.reason.label();
+            let line = [files::when(snap.at), snap.version_line.clone(), files::bytes(snap.size)].join(" · ");
+            let action = RestoreSnapshot { instance: self.id.clone(), id: snap.id.clone() };
+            let restoring = super::snapshots::restoring(&self.id, cx);
+            let restore = sheet::button_unless(SharedString::from(format!("snapshot-restore-{at}")), tr("Wiederherstellen…"), None, Look::Plain, blocked.clone(), restoring, t)
+                .when(blocked.is_none() && !restoring, |b| b.on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx)));
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("snapshot-{at}")))
+                    .mark("row", label.clone())
+                    .h(px(theme::files::SNAPSHOT_ROW))
+                    .px(px(space::S))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::M))
+                    .child(icon("archive-restore", iconsize::M, t.tertiary))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().text_size(px(font::BODY)).child(label))
+                            .child(div().truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).child(line)),
+                    )
+                    .child(restore)
+                    .into_any_element(),
+            );
+        }
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(space::XXS))
+                .pt(px(space::S))
+                .border_t_1()
+                .border_color(t.separator)
+                .child(div().px(px(space::S)).text_size(px(font::CALLOUT)).font_weight(FontWeight::SEMIBOLD).text_color(t.secondary).child(tr("Vor Änderungen gesichert")))
+                .children(rows),
+        )
     }
 
     fn copy_targets(&self, row: &Row, cx: &App) -> Vec<(Uuid, String)> {
@@ -869,8 +944,9 @@ impl Render for Worlds {
             }), &t).flex_none()),
             None => None,
         };
+        let saved = self.snapshot_section(cx, &t);
         if self.rows.is_empty() {
-            return root.children(outcome).child(files::empty("worlds-empty", "earth", tr("Noch keine Welten"), tr("Sobald ein Account in dieser Instanz eine Welt anlegt, erscheint sie hier."), None, &t)).into_any_element();
+            return root.children(outcome).child(files::empty("worlds-empty", "earth", tr("Noch keine Welten"), tr("Sobald ein Account in dieser Instanz eine Welt anlegt, erscheint sie hier."), None, &t)).children(saved).into_any_element();
         }
         let count = self.rows.len();
         let list = uniform_list(
@@ -885,6 +961,6 @@ impl Render for Worlds {
         .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
-        root.child(self.toolbar(cx, &t)).children(outcome).child(list).into_any_element()
+        root.child(self.toolbar(cx, &t)).children(outcome).child(list).children(saved).into_any_element()
     }
 }

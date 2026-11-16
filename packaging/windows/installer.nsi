@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 !include "MUI2.nsh"
 
 Name "Manycraft"
@@ -15,8 +15,19 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
+!define MUI_FINISHPAGE_TEXT "$(KeptText)"
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_NOTCHECKED
+!define MUI_FINISHPAGE_RUN_TEXT "$(RemoveText)"
+!define MUI_FINISHPAGE_RUN_FUNCTION un.RemoveData
+!insertmacro MUI_UNPAGE_FINISH
 !insertmacro MUI_LANGUAGE "German"
 !insertmacro MUI_LANGUAGE "English"
+
+LangString KeptText ${LANG_GERMAN} "Manycraft wurde entfernt.$\r$\n$\r$\nInstanzen, Welten und Accounts bleiben in $LOCALAPPDATA\Manycraft.$\r$\n$\r$\nDie Anmeldungen der Accounts bleiben in der Windows-Anmeldeinformationsverwaltung, auch wenn du die Daten löschst. Entferne die Accounts vorher in Manycraft, um sie mitzulöschen."
+LangString KeptText ${LANG_ENGLISH} "Manycraft has been removed.$\r$\n$\r$\nInstances, worlds and accounts stay in $LOCALAPPDATA\Manycraft.$\r$\n$\r$\nAccount sign-ins stay in Windows Credential Manager, even if you delete the data. Remove the accounts in Manycraft first to delete them too."
+LangString RemoveText ${LANG_GERMAN} "Auch diese Daten löschen"
+LangString RemoveText ${LANG_ENGLISH} "Also delete this data"
 
 Section "Install"
   SetOutPath "$INSTDIR"
@@ -39,3 +50,10 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft"
 SectionEnd
+
+Function un.RemoveData
+  StrCmp $LOCALAPPDATA "" done
+  IfFileExists "$LOCALAPPDATA\Manycraft\*.*" 0 +2
+  nsExec::Exec '"$SYSDIR\cmd.exe" /c rmdir /s /q "$LOCALAPPDATA\Manycraft"'
+  done:
+FunctionEnd

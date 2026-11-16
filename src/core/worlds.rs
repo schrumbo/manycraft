@@ -383,8 +383,8 @@ fn back_up_at(instance_dir: &Path, world: &World, at: i64, stamp: &str, progress
     Ok(Backup { path, account: world.account, folder: world.folder.clone(), name: world.name().to_owned(), at, size })
 }
 
-fn add_tree<W: Write + std::io::Seek>(zip: &mut zip::ZipWriter<W>, dir: &Path, prefix: &str, progress: &Progress) -> Result<()> {
-    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(false);
+pub(super) fn add_tree<W: Write + std::io::Seek>(zip: &mut zip::ZipWriter<W>, dir: &Path, prefix: &str, progress: &Progress) -> Result<()> {
+    let options = zip_options();
     let mut entries: Vec<_> = std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))?.filter_map(Result::ok).collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
@@ -398,18 +398,28 @@ fn add_tree<W: Write + std::io::Seek>(zip: &mut zip::ZipWriter<W>, dir: &Path, p
         } else if meta.is_file() && name == LOCK {
             progress.add(meta.len());
         } else if meta.is_file() {
-            zip.start_file(&inner, options.large_file(meta.len() >= u32::MAX.into()))?;
-            let mut file = std::fs::File::open(&path).with_context(|| format!("cannot read {}", path.display()))?;
-            let mut buf = vec![0; 64 << 10];
-            loop {
-                let n = file.read(&mut buf).with_context(|| format!("cannot read {}", path.display()))?;
-                if n == 0 {
-                    break;
-                }
-                zip.write_all(&buf[..n])?;
-                progress.add(n as u64);
-            }
+            add_file(zip, &path, &inner, progress)?;
         }
+    }
+    Ok(())
+}
+
+fn zip_options() -> zip::write::SimpleFileOptions {
+    zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(false)
+}
+
+pub(super) fn add_file<W: Write + std::io::Seek>(zip: &mut zip::ZipWriter<W>, path: &Path, inner: &str, progress: &Progress) -> Result<()> {
+    let mut file = std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let len = file.metadata()?.len();
+    zip.start_file(inner, zip_options().large_file(len >= u32::MAX.into()))?;
+    let mut buf = vec![0; 64 << 10];
+    loop {
+        let n = file.read(&mut buf).with_context(|| format!("cannot read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        zip.write_all(&buf[..n])?;
+        progress.add(n as u64);
     }
     Ok(())
 }
@@ -538,7 +548,7 @@ fn fresh_temp(saves: &Path, folder: &str, what: &str) -> Result<PathBuf> {
     bail!("no free temporary folder in {}", saves.display())
 }
 
-fn copy_tree(from: &Path, to: &Path, progress: &Progress) -> Result<()> {
+pub(super) fn copy_tree(from: &Path, to: &Path, progress: &Progress) -> Result<()> {
     std::fs::create_dir_all(to).with_context(|| format!("cannot create {}", to.display()))?;
     for entry in std::fs::read_dir(from).with_context(|| format!("cannot read {}", from.display()))? {
         let entry = entry?;

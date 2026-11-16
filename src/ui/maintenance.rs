@@ -8,8 +8,9 @@ use gpui_kit::*;
 use super::actions::{ResetInstance, UpdateLoader};
 use super::remote::{self, InstanceEdit};
 use super::undo::{self, Edit, Kind};
-use super::{forms, model, sheet, state};
+use super::{forms, model, sheet, snapshots, state};
 use crate::core::i18n::{tr, trf};
+use crate::core::snapshot::Reason;
 use crate::core::{install, origin};
 use crate::core::instance::Instance;
 
@@ -45,9 +46,9 @@ fn ask_reset(id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let message = if origin::is_kept(&made) {
-        tr("Mods, Konfiguration, Ressourcen- und Shader-Pakete gehen auf den Stand von der Erstellung zurück. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+        tr("Mods, Konfiguration, Ressourcen- und Shader-Pakete gehen auf den Stand von der Erstellung zurück. Welten, Screenshots, Serverliste und Optionen bleiben. Der jetzige Stand bleibt 7 Tage im Papierkorb.")
     } else {
-        tr("Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+        tr("Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Der jetzige Stand bleibt 7 Tage im Papierkorb.")
     };
     let (id, blocked_id) = (id.to_owned(), id.to_owned());
     sheet::ask_blocked(
@@ -57,7 +58,10 @@ fn ask_reset(id: &str, window: &mut Window, cx: &mut App) {
         message,
         tr("Zurücksetzen"),
         move |cx| running(&blocked_id, cx).then(|| tr("Stoppe zuerst die laufenden Spiele.")),
-        move |_, cx| reset(&id, cx),
+        move |_, cx| {
+            let id = id.clone();
+            snapshots::before(&id.clone(), Reason::Reset, cx, move |cx| reset(&id, cx));
+        },
     );
 }
 
@@ -205,7 +209,11 @@ pub fn ask_loader(id: &str, to: &str, window: &mut Window, cx: &mut App) {
     let Some(made) = model::get(cx).read(cx).instance(id).cloned() else { return };
     let message = if running(id, cx) { tr("Laufende Spiele bleiben unverändert. Der neue Loader gilt ab dem nächsten Start.") } else { tr("Mods und Welten bleiben. Der neue Loader wird beim nächsten Start installiert.") };
     let (id, to) = (id.to_owned(), to.to_owned());
-    sheet::confirm(window, cx, trf("Auf %@ %@ aktualisieren?", &[&made.loader.name(), &to]), message, tr("Aktualisieren"), |_| None, move |_, cx| update_loader(&id, &to, cx));
+    let target = format!("{} {to}", made.loader.name());
+    sheet::confirm(window, cx, trf("Auf %@ %@ aktualisieren?", &[&made.loader.name(), &to]), message, tr("Aktualisieren"), |_| None, move |_, cx| {
+        let (id, to) = (id.clone(), to.clone());
+        snapshots::before(&id.clone(), Reason::LoaderUpdate(target.clone()), cx, move |cx| update_loader(&id, &to, cx));
+    });
 }
 
 fn update_loader(id: &str, to: &str, cx: &mut App) {
