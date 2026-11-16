@@ -321,7 +321,15 @@ impl Component for GridPage {
 
         if store.failed() {
             let reason = m.error.clone().unwrap_or_else(|| tr("Starte Manycraft neu."));
-            let col = rect().center().width(Size::fill()).height(Size::fill()).spacing(space::M).child(icon(&t, Icon::Alert, iconsize::L * 2., t.text3)).child(heading(&t, tr("Manycraft konnte nicht starten"))).child(secondary(&t, reason));
+            let col = rect()
+                .center()
+                .width(Size::fill())
+                .height(Size::fill())
+                .spacing(space::M)
+                .child(icon(&t, Icon::Alert, iconsize::L * 2., t.text3))
+                .child(heading(&t, tr("Manycraft konnte nicht starten")))
+                .child(secondary(&t, reason))
+                .child(Button::new("grid.failed.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).tall().on_press(move |_| store.retry()));
             return column.child(page.child(col)).into_element();
         }
         if !m.loaded {

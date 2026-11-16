@@ -121,7 +121,10 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected] {
         if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| !matches!(action_of(g, &m), Some(Primary::Start | Primary::TakeOver))) {
             let label = if many { c.label() } else { single(c) };
-            let mut item = Item::new(format!("menu.{}", c.name()), label, move |_| c.run(store)).disabled(!c.available(store));
+            if !c.available(store) {
+                continue;
+            }
+            let mut item = Item::new(format!("menu.{}", c.name()), label, move |_| c.run(store));
             if let Some(s) = c.shortcut() {
                 item = item.shortcut(s.label());
             }
@@ -130,7 +133,9 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     }
     if let Some(g) = m.games.get(key) {
         let instance = g.instance_id.clone();
-        items.push(Item::Separator);
+        if !items.is_empty() {
+            items.push(Item::Separator);
+        }
         if !many {
             let k = key.to_owned();
             items.push(Item::new(format!("menu.{key}.history"), tr("Verlauf"), move |_| toggle_history(store, &k)).shortcut(tr("Leertaste")));
@@ -175,10 +180,7 @@ impl Component for Tile {
         let severe = matches!(game.phase, Phase::LoginNeeded | Phase::Banned { .. });
         let detail = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
         let reason = words::reason(game, &m);
-        let line2 = match &reason {
-            Some(r) => format!("{} · {r}", words::word(game, &m)),
-            None => detail.clone(),
-        };
+        let line2 = words::line(game, &m);
         let action = action_of(game, &m);
         let spot = use_spot(&format!("tile.{}", self.key), "tile", &format!("{} · {line2}", self.name), true);
         let preview_h = self.height - strip(self.width);
@@ -221,9 +223,9 @@ impl Component for Tile {
             text.into_element()
         } else {
             let tip = match &reason {
-                Some(r) => format!("{detail}
+                Some(r) if *r != line2 => format!("{detail}
 {r}"),
-                None => detail.clone(),
+                _ => line2.clone(),
             };
             WithTip::new(Some(tip), text.width(Size::fill())).into_element()
         };

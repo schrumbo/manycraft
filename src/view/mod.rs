@@ -1,6 +1,7 @@
 //! The Freya front end, behind the `freya` feature: the same core and runner as the GPUI shell, drawn with Freya.
 
 mod accounts;
+mod alert;
 mod chat;
 mod commands;
 pub mod drive;
@@ -10,6 +11,7 @@ mod instance;
 mod kit;
 mod native;
 mod shell;
+mod signals;
 mod stills;
 mod store;
 mod theme;
@@ -79,7 +81,7 @@ pub fn run(play: Option<Play>) {
             }
             native::attach(window);
         });
-    launch(LaunchConfig::new().with_plugin(drive::Watch).with_window(window));
+    launch(LaunchConfig::new().with_plugin(drive::Watch).with_plugin(signals::Watch::default()).with_window(window));
 }
 
 struct Root {
@@ -112,11 +114,8 @@ impl App for Root {
         let play = self.play.clone();
         let closes = self.closes.clone();
         let store = use_provide_context(move || {
-            let (store, updates) = Store::create(ui);
-            if let Some(updates) = updates {
-                spawn(store.pump(updates));
-                store.reload(false);
-            }
+            let store = Store::create(ui);
+            store.start();
             if let Some(play) = play {
                 store.dispatch(Event::RequestPlay { instance: play.instance, account: play.account });
             }
@@ -124,7 +123,7 @@ impl App for Root {
                 let os = *OS_SCALE.lock().unwrap_or_else(|e| e.into_inner());
                 Platform::get().current_window().set_custom_scale_factor(device / os);
             }
-            store.listen(closes);
+            store.listen(closes, signals::listen());
             drive::start(store);
             store
         });

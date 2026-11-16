@@ -56,6 +56,15 @@ pub fn detail(g: &Game, m: &Model) -> String {
     stopped_ban(g, m).unwrap_or_else(|| status(g, m.preparing.get(&g.batch_id).copied()))
 }
 
+/// The second line of a tile: the status word and why, or the reason alone where it already says what the word says.
+pub fn line(g: &Game, m: &Model) -> String {
+    match reason(g, m) {
+        Some(r) if g.phase == Phase::LoginNeeded => r,
+        Some(r) => format!("{} · {r}", word(g, m)),
+        None => detail(g, m),
+    }
+}
+
 /// Why `g` dropped, in a few words, while it is down.
 pub fn reason(g: &Game, m: &Model) -> Option<String> {
     if g.stopping {
@@ -261,4 +270,22 @@ pub fn offers(keys: &[String], m: &Model) -> [Offer; 5] {
         offer("reconnect", tr("Neu verbinden"), reconnect, tr("nicht im Spiel oder gesperrt")),
         offer("message", tr("Nachricht senden…"), message, tr("auf keinem Server")),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn game(phase: Phase) -> Game {
+        Game { phase, ..Game::new("k".into(), "b".into(), "i".into(), Uuid::nil(), "Alex".into()) }
+    }
+
+    #[test]
+    fn a_tile_line_says_each_thing_once() {
+        crate::core::i18n::init("de");
+        let m = Model::default();
+        assert_eq!(line(&game(Phase::LoginNeeded), &m), "Anmeldung abgelaufen");
+        assert_eq!(line(&game(Phase::Failed { reason: "Kein Java".into() }), &m), "Fehlgeschlagen · Kein Java");
+        assert_eq!(line(&game(Phase::Stopped), &m), "Gestoppt");
+    }
 }
