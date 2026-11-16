@@ -477,12 +477,12 @@ impl Component for Lines {
         let mut scroll = use_scroll_controller(|| ScrollConfig { default_vertical_position: ScrollPosition::End, ..Default::default() });
         let mut follow = use_state(|| true);
         let mut away = use_state(|| None::<u64>);
-        let mut tall = use_state(|| 0f32);
+        let mut tall = use_state(|| (0f32, 0f32));
         use_side_effect(move || {
             let Some((content, viewport)) = *scroll.bounds.read() else { return };
             let y = scroll.position().y;
-            if content.height != *tall.peek() {
-                tall.set(content.height);
+            if (content.height, viewport.height) != *tall.peek() {
+                tall.set((content.height, viewport.height));
                 if *follow.peek() {
                     scroll.scroll_to(ScrollPosition::End, Direction::Vertical);
                 }
@@ -797,18 +797,26 @@ impl Component for Composer {
         let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
         let all = choices(&m, &shared.recent.read());
         let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
-        let hint = match (&target, shared.sent.read().clone()) {
-            (_, Some(sent)) => Some(sent),
-            (None, None) => Some(tr("Der gewählte Absender ist weg. Wähle, wer sendet.")),
-            (Some(tg), None) if reach == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
-            (Some(_), None) => None,
+        let absent = match &target {
+            None => Some(tr("Der gewählte Absender ist weg. Wähle, wer sendet.")),
+            Some(tg @ Target::Instance(_)) if reach == 0 => Some(trf("%@ ist gerade nicht im Spiel.", &[&name(&m, tg)])),
+            Some(tg) if reach == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
+            Some(_) => None,
         };
+        let hint = shared.sent.read().clone().or_else(|| absent.clone());
         let joins: Vec<String> = match &target {
             Some(Target::Batch(id)) => m.batch(id).map(|b| b.join_lines()).unwrap_or_default(),
             _ => Vec::new(),
         };
-        let can_send = !draft.trim().is_empty();
-        let mut send_button = Button::new("chat.send", tr("Senden")).glyph(Icon::Send).disabled((!can_send).then(|| tr("Schreib zuerst eine Nachricht.")));
+        let blocked = if absent.is_some() {
+            absent
+        } else if draft.trim().is_empty() {
+            Some(tr("Schreib zuerst eine Nachricht."))
+        } else {
+            None
+        };
+        let can_send = blocked.is_none();
+        let mut send_button = Button::new("chat.send", tr("Senden")).glyph(Icon::Send).disabled(blocked);
         if can_send {
             send_button = send_button.primary();
         }

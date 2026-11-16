@@ -1716,5 +1716,6 @@
   "Der gewählte Absender ist weg. Wähle, wer sendet.": "The chosen sender is gone. Choose who sends.",
   "Neue Zeilen": "New lines",
   "Wähle, wer sendet.": "Choose who sends.",
-  "„@%@“ passt nicht zu genau einem Account. Wähle den Absender links.": "“@%@” doesn’t match exactly one account. Choose the sender on the left."
+  "„@%@“ passt nicht zu genau einem Account. Wähle den Absender links.": "“@%@” doesn’t match exactly one account. Choose the sender on the left.",
+  "%@ ist gerade nicht im Spiel.": "%@ isn’t in game right now."
 }
