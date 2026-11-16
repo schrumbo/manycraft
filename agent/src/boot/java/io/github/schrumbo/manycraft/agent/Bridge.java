@@ -43,5 +43,5 @@ public interface Bridge {
 
 	void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt);
 
-	void hud(Object graphics, Object delta);
+	void hud(Object graphics);
 }
