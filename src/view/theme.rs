@@ -42,6 +42,8 @@ pub mod frame {
     pub const RING: f32 = 2.;
     pub const RING_GAP: f32 = 2.;
     pub const PROGRESS: f32 = 3.;
+    /// The hairline that divides the rows of a group.
+    pub const HAIRLINE: f32 = 1.;
     pub const FACE: f32 = 18.;
     pub const DOT: f32 = 7.;
     pub const NOTICE: f32 = 32.;

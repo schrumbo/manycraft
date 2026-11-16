@@ -1741,7 +1741,6 @@
   "Alle Proxys entfernen": "Remove all proxies",
   "Alle %lld auswählen": "Select all %lld",
   "Die Accounts werden auch aus %@ entfernt.": "The accounts are also removed from %@.",
-  "Importieren …": "Import …",
   "„%@“ importiert.": "“%@” imported.",
   "%lld Instanzen importiert.": "%lld instances imported.",
   "Import abgebrochen.": "Import cancelled.",
@@ -1752,10 +1751,9 @@
   "Modpack wählen": "Choose modpack",
   "Der Import ließ sich nicht starten.": "The import could not be started.",
   "Der Import ist unerwartet abgebrochen.": "The import ended unexpectedly.",
-  "%lld importieren": "Import %lld",
   "Wird importiert …": "Importing …",
-  "Modpack-Datei wählen …": "Choose modpack file …",
   "Gesucht wird nach %@.": "Looking for %@.",
   "Abgebrochen. Der Rest wurde nicht importiert.": "Cancelled. The rest was not imported.",
-  "Nicht importiert": "Not imported"
+  "Nicht importiert": "Not imported",
+  "Der Loader %@ wird nicht unterstützt.": "The %@ loader is not supported."
 }

@@ -114,6 +114,7 @@ impl Component for Palette {
                     Key::Named(NamedKey::Tab) if e.modifiers.contains(Modifiers::SHIFT) => hot.set(chosen.saturating_sub(1)),
                     Key::Named(NamedKey::Tab) => hot.set((chosen + 1).min(count.saturating_sub(1))),
                     Key::Named(NamedKey::Enter) => {
+                        e.prevent_default();
                         if let Some(entry) = keys_list.get(chosen) {
                             run(store, &entry.target);
                         }

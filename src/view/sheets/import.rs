@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use freya::prelude::*;
 
@@ -25,10 +24,10 @@ use crate::view::kit::group::{Line, group, status};
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
-use crate::view::kit::{after, off_thread, off_ui, ring, toast, use_theme};
+use crate::view::kit::{after, off_thread, off_ui, ring, toast, use_arrows, use_theme};
 use crate::view::native;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, frame, iconsize, space};
+use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
 
 const FILTER_FROM: usize = 8;
 const LIST_MIN: f32 = 140.;
@@ -40,21 +39,22 @@ const FOOT_H: f32 = font::CAPTION + space::S;
 const BLOCK_GAP: f32 = space::M;
 const BLOCK_INNER: f32 = space::XS;
 const BOX: f32 = iconsize::M;
-const BOX_RING: f32 = 1.5;
-const BAR: f32 = space::XS;
 const FAILED_MAX: f32 = 180.;
-const EMPTY_ICON: f32 = iconsize::L * 1.5;
-const TEXT_GAP: f32 = 1.;
-const PROGRESS_EVERY: Duration = Duration::from_millis(120);
 const LOOKED_FOR: [Launcher; 7] = [Launcher::Prism, Launcher::MultiMc, Launcher::Modrinth, Launcher::CurseForge, Launcher::AtLauncher, Launcher::GdLauncher, Launcher::Vanilla];
 
 /// Opens the import sheet.
 pub fn open(store: Store) {
+    if store.ui.sheet.peek().is_some() {
+        return;
+    }
     sheet::open(store.ui, Import { file: None });
 }
 
 /// Opens the import sheet and imports the pack or Prism export at `path` at once.
 pub fn open_file(store: Store, path: PathBuf) {
+    if store.ui.sheet.peek().is_some() {
+        return;
+    }
     sheet::open(store.ui, Import { file: Some(path) });
 }
 
@@ -84,7 +84,6 @@ fn picked(libs: &[Library], chosen: &HashSet<String>, known: &HashMap<String, Pr
     libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && chosen.contains(&i.key())).filter(|i| seen.insert(profile_of(known, i))).cloned().collect()
 }
 
-/// Adds what a folder scan found to `libs`, leaving out profiles already listed; false when nothing new was there.
 fn merge(libs: &mut Vec<Library>, known: &mut HashMap<String, Profile>, found: Vec<Library>, scanned: HashMap<String, Profile>) -> (bool, Vec<String>) {
     let listed: HashSet<Profile> = libs.iter().flat_map(|l| &l.instances).map(|i| profile_of(known, i)).collect();
     let found: Vec<Library> = found
@@ -126,29 +125,17 @@ fn keys(list: &[Shown]) -> Vec<String> {
     list.iter().flat_map(|s| &s.items).filter(|(_, i)| i.importable()).map(|(_, i)| i.key()).collect()
 }
 
-fn step(keys: &[String], cursor: Option<&str>, delta: i32) -> Option<String> {
-    if keys.is_empty() {
-        return None;
-    }
-    let next = match cursor.and_then(|c| keys.iter().position(|k| k == c)) {
-        Some(at) => (at as i32 + delta).clamp(0, keys.len() as i32 - 1) as usize,
-        None => 0,
-    };
-    keys.get(next).cloned()
-}
-
 fn block_height(rows: usize) -> f32 {
-    HEAD_H + BLOCK_INNER + rows as f32 * ROW_H + rows.saturating_sub(1) as f32 + BLOCK_INNER + FOOT_H
+    HEAD_H + BLOCK_INNER + rows as f32 * ROW_H + rows.saturating_sub(1) as f32 * frame::HAIRLINE + BLOCK_INNER + FOOT_H
 }
 
-/// Where the row `key` starts in the list and how tall it is; the first row of a group takes the group's caption with it.
 fn top_of(list: &[Shown], key: &str) -> Option<(f32, f32)> {
     let mut top = 0.;
     for s in list {
         let first = top + HEAD_H + BLOCK_INNER;
         for (at, (_, i)) in s.items.iter().enumerate() {
             if i.key() == key {
-                let row = first + at as f32 * (ROW_H + 1.);
+                let row = first + at as f32 * (ROW_H + frame::HAIRLINE);
                 return Some(if at == 0 { (top, row - top + ROW_H) } else { (row, ROW_H) });
             }
         }
@@ -160,7 +147,7 @@ fn top_of(list: &[Shown], key: &str) -> Option<(f32, f32)> {
 fn reason(why: &Unsupported) -> String {
     match why {
         Unsupported::NoVersion => tr("Ohne Minecraft-Version."),
-        Unsupported::Loader(loader) => trf("Der Mod-Loader %@ wird nicht unterstützt.", &[&loader]),
+        Unsupported::Loader(loader) => trf("Der Loader %@ wird nicht unterstützt.", &[&loader]),
         Unsupported::Unreadable => tr("Die Instanz ist unvollständig oder beschädigt."),
     }
 }
@@ -184,7 +171,6 @@ fn local_io(e: &anyhow::Error) -> bool {
     io.is_some_and(|i| !matches!(i.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull)) && !network
 }
 
-/// What went wrong with importing `label`, in plain German.
 fn explain(label: &str, e: &anyhow::Error) -> String {
     let Some(refused) = e.chain().find_map(|c| c.downcast_ref::<Refused>()) else {
         let what = trf("„%@“ nicht importiert.", &[&label]);
@@ -232,6 +218,7 @@ impl Job {
 enum Outcome {
     Made(String),
     Failed(String),
+    Left(String),
     Stopped,
 }
 
@@ -251,10 +238,23 @@ struct Run {
     stopping: bool,
 }
 
+#[derive(Clone, PartialEq)]
+struct Failure {
+    job: Job,
+    why: String,
+    again: bool,
+}
+
+impl Failure {
+    fn new(job: &Job, why: String) -> Self {
+        Self { job: job.clone(), why, again: true }
+    }
+}
+
 #[derive(Clone, Default, PartialEq)]
 struct Summary {
     made: Vec<String>,
-    failed: Vec<(Job, String)>,
+    failed: Vec<Failure>,
     stopped: bool,
 }
 
@@ -262,7 +262,8 @@ impl Summary {
     fn record(&mut self, outcome: Outcome, job: &Job) {
         match outcome {
             Outcome::Made(name) => self.made.push(name),
-            Outcome::Failed(why) => self.failed.push((job.clone(), why)),
+            Outcome::Failed(why) => self.failed.push(Failure::new(job, why)),
+            Outcome::Left(why) => self.failed.push(Failure { again: false, ..Failure::new(job, why) }),
             Outcome::Stopped => self.stopped = true,
         }
     }
@@ -273,6 +274,10 @@ impl Summary {
             [one] => Some(trf("„%@“ importiert.", &[one])),
             many => Some(trf("%lld Instanzen importiert.", &[&many.len()])),
         }
+    }
+
+    fn again(&self) -> Vec<Job> {
+        self.failed.iter().filter(|f| f.again).map(|f| f.job.clone()).collect()
     }
 
     fn toast(&self) -> Option<String> {
@@ -295,7 +300,7 @@ fn outcome(job: &Job, result: anyhow::Result<Instance>, cancel: &AtomicBool) -> 
     match result {
         Ok(made) if stopped => match remote::drop_import(&made) {
             Ok(()) => Outcome::Stopped,
-            Err(e) => Outcome::Failed(explain_as(trf("„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.", &[&job.label()]), &e).text),
+            Err(e) => Outcome::Left(explain_as(trf("„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.", &[&job.label()]), &e).text),
         },
         Ok(made) => Outcome::Made(made.name),
         Err(e) if stopped || is_cancelled(&e) => Outcome::Stopped,
@@ -322,6 +327,12 @@ fn work(jobs: &[Job], take: Take, cancel: &AtomicBool, tx: &async_channel::Sende
     let _ = tx.send_blocking(Report::Finished);
 }
 
+type Ids = Rc<RefCell<HashMap<String, AccessibilityId>>>;
+
+fn id_of(ids: &Ids, key: &str) -> AccessibilityId {
+    *ids.borrow_mut().entry(key.to_owned()).or_insert_with(AccessibilityId::new_unique)
+}
+
 #[derive(Clone, Copy)]
 struct Flow {
     store: Store,
@@ -329,11 +340,13 @@ struct Flow {
     libs: State<Option<Vec<Library>>>,
     known: State<HashMap<String, Profile>>,
     chosen: State<HashSet<String>>,
-    cursor: State<Option<String>>,
+    reveal: State<Option<String>>,
+    ids: State<Ids>,
     filter: State<String>,
     settings: State<bool>,
     worlds: State<bool>,
     note: State<Option<String>>,
+    failed: State<Option<String>>,
     scanning: State<bool>,
     picking: State<bool>,
     cancel: State<Token>,
@@ -358,8 +371,10 @@ impl Flow {
     }
 
     fn picked(self) -> Vec<Found> {
+        let seen: HashSet<String> = keys(&self.visible()).into_iter().collect();
+        let chosen: HashSet<String> = self.chosen.peek().iter().filter(|k| seen.contains(*k)).cloned().collect();
         let libs = self.libs.peek();
-        picked(libs.as_deref().unwrap_or_default(), &self.chosen.peek(), &self.known.peek())
+        picked(libs.as_deref().unwrap_or_default(), &chosen, &self.known.peek())
     }
 
     fn fresh(self) -> Arc<AtomicBool> {
@@ -372,13 +387,14 @@ impl Flow {
     }
 
     fn scan(mut self) {
+        self.failed.set(None);
         let Some(rx) = off_thread("import-scan", || {
             let libs = remote::launcher_libraries();
             let known = profiles(&libs);
             (libs, known)
         }) else {
             self.libs.set(Some(Vec::new()));
-            self.note.set(Some(tr("Die Suche ließ sich nicht starten.")));
+            self.failed.set(Some(tr("Die Suche ließ sich nicht starten.")));
             return;
         };
         spawn_in_window(async move {
@@ -392,20 +408,28 @@ impl Flow {
                     if let [only] = all.as_slice() {
                         self.chosen.write().insert(only.clone());
                     }
-                    self.cursor.set(all.first().cloned());
                     self.known.set(known);
                     self.libs.set(Some(libs));
                 }
                 Err(_) => {
                     self.libs.set(Some(Vec::new()));
-                    self.note.set(Some(tr("Die Suche ließ sich nicht abschließen.")));
+                    self.failed.set(Some(tr("Die Suche ließ sich nicht abschließen.")));
                 }
             }
         });
     }
 
+    fn rescan(mut self) {
+        if self.libs.peek().is_none() {
+            return;
+        }
+        self.libs.set(None);
+        self.note.set(None);
+        self.scan();
+    }
+
     fn choose_folder(mut self) {
-        if *self.scanning.peek() || *self.picking.peek() {
+        if *self.scanning.peek() || *self.picking.peek() || self.libs.peek().is_none() {
             return;
         }
         self.picking.set(true);
@@ -448,10 +472,7 @@ impl Flow {
             self.note.set(if added { None } else { Some(tr("In diesem Ordner liegt keine neue Instanz, die sich übernehmen lässt.")) });
             self.known.set(known);
             self.libs.set(Some(libs));
-            self.chosen.write().extend(fresh.iter().cloned());
-            if let Some(first) = fresh.into_iter().next() {
-                self.cursor.set(Some(first));
-            }
+            self.chosen.write().extend(fresh);
         });
     }
 
@@ -472,19 +493,9 @@ impl Flow {
     }
 
     fn toggle(mut self, key: &str) {
-        {
-            let mut chosen = self.chosen.write();
-            if !chosen.remove(key) {
-                chosen.insert(key.to_owned());
-            }
-        }
-        self.cursor.set(Some(key.to_owned()));
-    }
-
-    fn toggle_cursor(self) {
-        let at = self.cursor.peek().clone();
-        if let Some(at) = at {
-            self.toggle(&at);
+        let mut chosen = self.chosen.write();
+        if !chosen.remove(key) {
+            chosen.insert(key.to_owned());
         }
     }
 
@@ -504,26 +515,25 @@ impl Flow {
         self.flip(keys);
     }
 
-    fn flip_all(self) {
-        self.flip(keys(&self.visible()));
-    }
-
-    fn step_by(mut self, delta: i32) {
+    fn select_all(mut self) {
         let all = keys(&self.visible());
-        let next = step(&all, self.cursor.peek().as_deref(), delta);
-        if next.is_some() {
-            self.cursor.set(next);
-        }
+        self.chosen.write().extend(all);
     }
 
     fn start(self) {
-        if !matches!(*self.phase.peek(), Phase::Pick) {
+        if *self.picking.peek() || !matches!(*self.phase.peek(), Phase::Pick) {
             return;
         }
         self.run(self.picked().into_iter().map(Job::Found).collect());
     }
 
-    fn run(mut self, jobs: Vec<Job>) {
+    fn run(self, jobs: Vec<Job>) {
+        if matches!(*self.phase.peek(), Phase::Pick) {
+            self.begin(jobs);
+        }
+    }
+
+    fn begin(mut self, jobs: Vec<Job>) {
         let Some(first) = jobs.first() else { return };
         let token = self.fresh();
         let take = Take { settings: *self.settings.peek(), worlds: *self.worlds.peek() };
@@ -533,7 +543,7 @@ impl Flow {
         let work_token = Arc::clone(&token);
         if std::thread::Builder::new().name("import".into()).spawn(move || work(&work_jobs, take, &work_token, &tx)).is_err() {
             let why = tr("Der Import ließ sich nicht starten.");
-            self.finished(Summary { failed: jobs.into_iter().map(|j| (j, why.clone())).collect(), ..Summary::default() });
+            self.finished(Summary { failed: jobs.iter().map(|j| Failure::new(j, why.clone())).collect(), ..Summary::default() });
             return;
         }
         spawn_in_window(async move { self.follow(jobs, token, rx).await });
@@ -570,6 +580,9 @@ impl Flow {
                 }
             }
             if !self.alive() {
+                if !summary.made.is_empty() {
+                    self.store.reload(true);
+                }
                 return;
             }
             if over {
@@ -577,12 +590,12 @@ impl Flow {
             }
             run.stopping |= token.load(Ordering::SeqCst);
             self.phase.set_if_modified(Phase::Running(run.clone()));
-            after(PROGRESS_EVERY).await;
+            after(motion::FAST).await;
         }
         summary.stopped |= token.load(Ordering::SeqCst);
         if !over && !summary.stopped {
             let why = tr("Der Import ist unerwartet abgebrochen.");
-            summary.failed.extend(jobs.iter().skip(ended).map(|j| (j.clone(), why.clone())));
+            summary.failed.extend(jobs.iter().skip(ended).map(|j| Failure::new(j, why.clone())));
         }
         self.finished(summary);
     }
@@ -613,7 +626,9 @@ impl Flow {
     }
 
     fn retry(self, jobs: Vec<Job>) {
-        self.run(jobs);
+        if matches!(*self.phase.peek(), Phase::Done(_)) {
+            self.begin(jobs);
+        }
     }
 }
 
@@ -639,11 +654,13 @@ impl Component for Import {
             libs: use_state(|| None),
             known: use_state(HashMap::new),
             chosen: use_state(HashSet::new),
-            cursor: use_state(|| None),
+            reveal: use_state(|| None),
+            ids: use_state(Ids::default),
             filter: use_state(String::new),
             settings: use_state(|| true),
             worlds: use_state(|| false),
             note: use_state(|| None),
+            failed: use_state(|| None),
             scanning: use_state(|| false),
             picking: use_state(|| false),
             cancel: use_state(move || cell),
@@ -657,19 +674,16 @@ impl Component for Import {
         });
         let typed = flow.filter.read().clone();
         use_side_effect_with_deps(&typed, move |_| {
-            let mut cursor = flow.cursor;
-            let first = keys(&flow.visible()).into_iter().next();
-            if *cursor.peek() != first {
-                cursor.set(first);
-            }
+            let mut reveal = flow.reveal;
+            reveal.set_if_modified(None);
             let mut scroll = scroll;
             scroll.scroll_to_y(0);
         });
         let _ = flow.libs.read();
         let _ = flow.chosen.read();
         let list = flow.visible();
-        let cursor = flow.cursor.read().clone();
-        let at = cursor.as_deref().and_then(|k| top_of(&list, k));
+        let revealed = flow.reveal.read().clone();
+        let at = revealed.as_deref().and_then(|k| top_of(&list, k));
         use_side_effect_with_deps(&at, move |at| {
             let Some((top, height)) = *at else { return };
             let mut scroll = scroll;
@@ -682,7 +696,7 @@ impl Component for Import {
             }
         });
         let phase = flow.phase.read().clone();
-        let mut card = Card::new("import", tr("Importieren")).width(frame::SHEET);
+        let mut card = Card::new("import", tr("Aus anderem Launcher importieren")).width(frame::SHEET);
         match &phase {
             Phase::Pick => {
                 let (_, window_h) = *store.ui.window.read();
@@ -690,34 +704,48 @@ impl Component for Import {
                 let loading = flow.libs.read().is_none();
                 let count = flow.picked().len();
                 let scanning = *flow.scanning.read();
-                let blocked = if loading { Some(tr("Suche Launcher …")) } else if count == 0 { Some(tr("Wähle mindestens eine Instanz.")) } else { None };
-                let label = if count == 0 { tr("Importieren") } else { trf("%lld importieren", &[&count]) };
-                let folder = Button::new("import.folder", if scanning { tr("Suche …") } else { tr("Ordner wählen…") })
-                    .glyph(Icon::Folder)
-                    .disabled(scanning.then(|| tr("Der Ordner wird gerade durchsucht.")))
-                    .on_press(move |_| flow.choose_folder());
+                let picking = *flow.picking.read();
+                let blocked = if loading {
+                    Some(tr("Suche Launcher …"))
+                } else if picking {
+                    Some(tr("Datei wird gewählt …"))
+                } else if count == 0 {
+                    Some(tr("Wähle mindestens eine Instanz."))
+                } else {
+                    None
+                };
+                let label = match count {
+                    0 => tr("Importieren"),
+                    1 => tr("Instanz importieren"),
+                    n => trf("%lld Instanzen importieren", &[&n]),
+                };
+                let waiting = if loading { Some(tr("Suche Launcher …")) } else { scanning.then(|| tr("Der Ordner wird gerade durchsucht.")) };
+                let folder = Button::new("import.folder", if scanning { tr("Suche …") } else { tr("Ordner wählen…") }).glyph(Icon::Folder).disabled(waiting).on_press(move |_| flow.choose_folder());
                 card = card
                     .message(tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."))
                     .body(pick_body(flow, &t, &list, scroll, viewport, list_max, loading))
                     .leading(folder)
-                    .primary(Primary { label, disabled: blocked, danger: false, run: EventHandler::new(move |_| flow.start()) });
+                    .primary(Primary { label, disabled: blocked, danger: false, run: EventHandler::new(move |_| flow.start()) })
+                    .primary_id("import.start");
             }
             Phase::Running(run) => {
                 let stopping = run.stopping;
                 card = card
                     .body(running_body(&t, run))
                     .primary(Primary { label: tr("Importieren"), disabled: Some(tr("Wird importiert …")), danger: false, run: EventHandler::new(|_| {}) })
+                    .primary_id("import.start")
                     .secondary(Primary { label: tr("Abbrechen"), disabled: stopping.then(|| tr("Bricht ab …")), danger: false, run: EventHandler::new(move |_| flow.stop()) })
                     .secondary_id("import.cancel")
                     .on_escape(move |_| flow.stop());
             }
             Phase::Done(summary) => {
-                let jobs: Vec<Job> = summary.failed.iter().map(|(j, _)| j.clone()).collect();
-                card = card
-                    .body(done_body(&t, summary))
-                    .primary(Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(store.ui)) })
-                    .secondary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, run: EventHandler::new(move |_| flow.retry(jobs.clone())) })
-                    .secondary_id("import.retry");
+                let jobs = summary.again();
+                card = card.body(done_body(&t, summary)).primary(Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(store.ui)) });
+                card = if jobs.is_empty() {
+                    card.inform()
+                } else {
+                    card.secondary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, run: EventHandler::new(move |_| flow.retry(jobs.clone())) }).secondary_id("import.retry")
+                };
             }
         }
         card
@@ -729,35 +757,37 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], scroll: ScrollController, mu
         if !matches!(*flow.phase.peek(), Phase::Pick) {
             return;
         }
-        let plain = e.modifiers.is_empty();
-        match &e.key {
-            Key::Named(NamedKey::ArrowDown) if plain => flow.step_by(1),
-            Key::Named(NamedKey::ArrowUp) if plain => flow.step_by(-1),
-            Key::Character(c) if c == " " && plain && !field::typing() => flow.toggle_cursor(),
-            Key::Character(c) if c.eq_ignore_ascii_case("a") && primary_held(e.modifiers) && !field::typing() => flow.flip_all(),
-            _ => return,
+        if let Key::Character(c) = &e.key
+            && c.eq_ignore_ascii_case("a")
+            && primary_held(e.modifiers)
+            && !field::typing()
+        {
+            e.stop_propagation();
+            flow.select_all();
         }
-        e.stop_propagation();
     });
     let busy = *flow.picking.read() || *flow.scanning.read();
-    body = body.child(group(
-        t,
-        None,
-        vec![Line::new("import.file", tr("Modpack-Datei wählen …")).hint(tr("Modpack (.mrpack) oder Prism-Export")).control(icon(t, Icon::ChevronRight, iconsize::S, t.text3)).dim(busy).on_press(move |_| flow.pick_files()).into_element()],
-        None,
-    ));
+    body = body.child(PickFile { busy, press: EventHandler::new(move |_| flow.pick_files()) });
     if loading {
         return body.child(rect().padding((space::L, 0.)).child(caption(t, tr("Suche Launcher …")))).into_element();
     }
     let total = flow.total();
     if total == 0 {
+        if let Some(why) = flow.failed.read().clone() {
+            return body.child(failure(flow, t, why)).into_element();
+        }
         if let Some(note) = flow.note.read().clone() {
             body = body.child(status(t, note, t.attention_text));
         }
         return body.child(nothing(t)).into_element();
     }
     if total > FILTER_FROM {
-        body = body.child(Field::new("import.filter", flow.filter).placeholder(tr("Instanzen filtern")).glyph(Icon::Search));
+        let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(Field::new("import.filter", flow.filter).placeholder(tr("Instanzen filtern")).glyph(Icon::Search).width(Size::flex(1.)));
+        if !flow.filter.read().is_empty() {
+            let mut filter = flow.filter;
+            head = head.child(Button::icon("import.filter.clear", Icon::Close, tr("Filter löschen")).plain().on_press(move |_| filter.set(String::new())));
+        }
+        body = body.child(head);
     }
     if let Some(note) = flow.note.read().clone() {
         body = body.child(status(t, note, t.attention_text));
@@ -767,17 +797,29 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], scroll: ScrollController, mu
         body = body.child(rect().width(Size::fill()).padding((space::L, 0.)).child(para(t, trf("Keine Instanz passt zu „%@“. Lösche den Filter oder suche anders.", &[&query]), font::CALLOUT, t.text2)));
     } else {
         let chosen = flow.chosen.read().clone();
-        let cursor = flow.cursor.read().clone();
+        let ids = flow.ids.read().clone();
+        let order = keys(list);
         let mut column = rect().width(Size::fill()).spacing(BLOCK_GAP);
         for s in list {
-            column = column.child(library(flow, t, s, &chosen, cursor.as_deref()));
+            column = column.child(library(flow, t, s, &chosen, &ids, &order));
         }
         body = body.child(rect().width(Size::fill()).on_sized(move |e: Event<SizedEventData>| viewport.set_if_modified(e.area.height())).child(ScrollView::new_controlled(scroll).width(Size::fill()).max_height(Size::px(list_max)).child(column)));
     }
     body.child(options(flow, t)).into_element()
 }
 
-fn library(flow: Flow, t: &Theme, s: &Shown, chosen: &HashSet<String>, cursor: Option<&str>) -> Element {
+fn failure(flow: Flow, t: &Theme, why: String) -> Element {
+    rect()
+        .width(Size::fill())
+        .padding((space::L, 0.))
+        .center()
+        .spacing(space::M)
+        .child(para(t, why, font::CALLOUT, t.danger_text).text_align(TextAlign::Center))
+        .child(Button::new("import.scan.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.rescan()))
+        .into_element()
+}
+
+fn library(flow: Flow, t: &Theme, s: &Shown, chosen: &HashSet<String>, ids: &Ids, order: &[String]) -> Element {
     let any = s.items.iter().any(|(_, i)| i.importable());
     let all = s.items.iter().filter(|(_, i)| i.importable()).all(|(_, i)| chosen.contains(&i.key()));
     let lib = s.lib;
@@ -788,16 +830,31 @@ fn library(flow: Flow, t: &Theme, s: &Shown, chosen: &HashSet<String>, cursor: O
     let rows: Vec<Element> = s
         .items
         .iter()
-        .map(|(at, found)| {
+        .map(|(_, found)| {
             let key = found.key();
             let why = found.unsupported.as_ref().map(reason);
             let detail = why.clone().unwrap_or_else(|| subtitle(found));
-            let id = format!("import.row.{}.{at}", s.launcher.key());
-            let toggled = key.clone();
+            let id = format!("import.row.{key}");
+            let place = order.iter().position(|k| *k == key);
+            let before = place.and_then(|p| p.checked_sub(1)).and_then(|p| order.get(p)).map(|k| id_of(ids, k));
+            let after = place.and_then(|p| order.get(p + 1)).map(|k| id_of(ids, k));
+            let (toggled, shown) = (key.clone(), key.clone());
+            let mut reveal = flow.reveal;
             rect()
                 .key(id.clone())
                 .width(Size::fill())
-                .child(Entry { id, title: found.name.clone(), detail, on: chosen.contains(&key), cursor: cursor == Some(key.as_str()), reason: why, press: EventHandler::new(move |_| flow.toggle(&toggled)) })
+                .child(Entry {
+                    id,
+                    own: id_of(ids, &key),
+                    before,
+                    after,
+                    title: found.name.clone(),
+                    detail,
+                    on: chosen.contains(&key),
+                    reason: why,
+                    press: EventHandler::new(move |_| flow.toggle(&toggled)),
+                    reveal: EventHandler::new(move |_| reveal.set_if_modified(Some(shown.clone()))),
+                })
                 .into_element()
         })
         .collect();
@@ -817,10 +874,57 @@ fn nothing(t: &Theme) -> Element {
         .padding((space::L, 0.))
         .center()
         .spacing(space::S)
-        .child(icon(t, Icon::Folder, EMPTY_ICON, t.text3))
+        .child(icon(t, Icon::Folder, iconsize::HERO, t.text3))
         .child(para(t, tr("Kein anderer Launcher gefunden. Wähle den Ordner eines Launchers oder einer Instanz."), font::BODY, t.text2).text_align(TextAlign::Center))
         .child(para(t, trf("Gesucht wird nach %@.", &[&names]), font::CAPTION, t.text3).text_align(TextAlign::Center))
         .into_element()
+}
+
+#[derive(PartialEq)]
+struct PickFile {
+    busy: bool,
+    press: EventHandler<()>,
+}
+
+impl Component for PickFile {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let a11y = use_a11y();
+        let focus = use_focus(a11y);
+        let label = tr("Aus Datei importieren…");
+        let busy = self.busy;
+        let keyed = self.press.clone();
+        let clicked = self.press.clone();
+        let mut r = rect()
+            .a11y_id(a11y)
+            .a11y_focusable(!busy)
+            .a11y_role(AccessibilityRole::Button)
+            .a11y_alt(label.clone())
+            .width(Size::fill())
+            .corner_radius(t.shape.tile)
+            .on_key_down(move |e: Event<KeyboardEventData>| {
+                if busy || !a11y.is_focused() {
+                    return;
+                }
+                if matches!(&e.key, Key::Named(NamedKey::Enter)) || matches!(&e.key, Key::Character(c) if c == " ") {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    keyed.call(());
+                }
+            });
+        if let Some(border) = ring(&t, focus()) {
+            r = r.border(border);
+        }
+        let pick = Line::new("import.file", label)
+            .hint(tr("Modpack von Modrinth, Export oder Instanz aus Prism"))
+            .control(icon(&t, Icon::ChevronRight, iconsize::S, t.text3))
+            .dim(busy)
+            .on_press(move |_| {
+                a11y.request_focus();
+                clicked.call(());
+            });
+        r.child(group(&t, None, vec![pick.into_element()], None))
+    }
 }
 
 fn options(flow: Flow, t: &Theme) -> Element {
@@ -873,11 +977,11 @@ fn bar(t: &Theme, percent: Option<u8>) -> Element {
     let share = f32::from(percent.unwrap_or(0).min(100));
     rect()
         .width(Size::fill())
-        .height(Size::px(BAR))
-        .corner_radius(BAR / 2.)
+        .height(Size::px(frame::PROGRESS))
+        .corner_radius(frame::PROGRESS / 2.)
         .background(t.separator)
         .overflow(Overflow::Clip)
-        .child(rect().width(Size::percent(share)).height(Size::px(BAR)).background(t.accent))
+        .child(rect().width(Size::percent(share)).height(Size::px(frame::PROGRESS)).background(t.accent))
         .into_element()
 }
 
@@ -900,13 +1004,13 @@ fn done_body(t: &Theme, summary: &Summary) -> Element {
     let rows: Vec<Element> = summary
         .failed
         .iter()
-        .map(|(job, why)| {
+        .map(|f| {
             rect()
                 .width(Size::fill())
                 .padding((space::M, space::L))
-                .spacing(TEXT_GAP)
-                .child(strong(t, job.label(), font::BODY, t.text1))
-                .child(para(t, why.clone(), font::CALLOUT, t.danger_text))
+                .spacing(space::XXS)
+                .child(strong(t, f.job.label(), font::BODY, t.text1))
+                .child(para(t, f.why.clone(), font::CALLOUT, t.danger_text))
                 .into_element()
         })
         .collect();
@@ -916,35 +1020,50 @@ fn done_body(t: &Theme, summary: &Summary) -> Element {
 #[derive(PartialEq)]
 struct Entry {
     id: String,
+    own: AccessibilityId,
+    before: Option<AccessibilityId>,
+    after: Option<AccessibilityId>,
     title: String,
     detail: String,
     on: bool,
-    cursor: bool,
     reason: Option<String>,
     press: EventHandler<()>,
+    reveal: EventHandler<()>,
 }
 
 impl Component for Entry {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        let a11y = use_a11y();
-        let focus = use_focus(a11y);
+        let own = self.own;
+        use_arrows(own);
+        let focus = use_focus(own);
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let enabled = self.reason.is_none();
         let spot = use_spot(&self.id, "checkbox", &self.title, enabled);
-        let press = self.press.clone();
+        let keyed = focus() == Focus::Keyboard;
+        let reveal = self.reveal.clone();
+        use_side_effect_with_deps(&keyed, move |keyed| {
+            if *keyed {
+                reveal.call(());
+            }
+        });
+        let (press, space_press) = (self.press.clone(), self.press.clone());
+        let (before, after) = (self.before, self.after);
         let fill = if !enabled {
             Color::TRANSPARENT
+        } else if *pressed.read() {
+            t.press
         } else if self.on {
             t.selection
-        } else if self.cursor || *hovered.read() {
+        } else if *hovered.read() {
             t.hover
         } else {
             Color::TRANSPARENT
         };
-        let (ink, quiet) = if enabled { (t.text1, t.text2) } else { (t.text3, t.text3) };
+        let (ink, quiet) = if enabled { (t.text1, t.text2) } else { (t.text3, t.text2) };
         let mut r = rect()
-            .a11y_id(a11y)
+            .a11y_id(own)
             .a11y_focusable(enabled)
             .a11y_role(AccessibilityRole::CheckBox)
             .a11y_alt(self.title.clone())
@@ -958,24 +1077,51 @@ impl Component for Entry {
             .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed })
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false));
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |_| pressed.set(true))
+            .on_mouse_up(move |_| pressed.set_if_modified(false));
         if enabled {
-            r = r.on_all_press(move |e: Event<PressEventData>| {
-                if let PressEventData::Mouse(m) = &*e
-                    && m.button != Some(MouseButton::Left)
-                {
-                    return;
-                }
-                a11y.request_focus();
-                press.call(());
-            });
+            r = r
+                .on_all_press(move |e: Event<PressEventData>| {
+                    match &*e {
+                        PressEventData::Mouse(m) if m.button != Some(MouseButton::Left) => return,
+                        PressEventData::Keyboard(_) => return,
+                        _ => {}
+                    }
+                    own.request_focus();
+                    press.call(());
+                })
+                .on_key_down(move |e: Event<KeyboardEventData>| {
+                    if !own.is_focused() {
+                        return;
+                    }
+                    let target = match &e.key {
+                        Key::Named(NamedKey::ArrowDown) => Some(after),
+                        Key::Named(NamedKey::ArrowUp) => Some(before),
+                        Key::Character(c) if c == " " && e.modifiers.is_empty() => {
+                            e.stop_propagation();
+                            space_press.call(());
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        e.stop_propagation();
+                        if let Some(id) = target {
+                            id.request_focus();
+                        }
+                    }
+                });
         }
-        if let Some(border) = ring(&t, focus()) {
-            r = r.border(border);
+        if keyed {
+            r = r.border(Border::new().fill(t.focus).width(frame::RING).alignment(BorderAlignment::Inner));
         }
-        let lead = if enabled { checkbox(&t, self.on) } else { icon(&t, Icon::CircleAlert, iconsize::M, t.text3) };
+        let lead = if enabled { checkbox(&t, self.on) } else { icon(&t, Icon::CircleAlert, iconsize::M, t.attention_text) };
         r.child(lead)
-            .child(rect().width(Size::flex(1.)).spacing(TEXT_GAP).child(line(&t, self.title.clone(), font::BODY, ink).font_weight(FontWeight::SEMI_BOLD)).child(line(&t, self.detail.clone(), font::CALLOUT, quiet)))
+            .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(line(&t, self.title.clone(), font::BODY, ink).font_weight(FontWeight::SEMI_BOLD)).child(line(&t, self.detail.clone(), font::CALLOUT, quiet)))
             .content(Content::flex())
     }
 }
@@ -987,7 +1133,7 @@ fn checkbox(t: &Theme, on: bool) -> Element {
         .center()
         .corner_radius(t.shape.small)
         .background(if on { t.accent } else { Color::TRANSPARENT })
-        .border(Border::new().fill(if on { t.accent } else { t.text3 }).width(BOX_RING).alignment(BorderAlignment::Inner));
+        .border(Border::new().fill(if on { t.accent } else { t.text3 }).width(t.icon_stroke).alignment(BorderAlignment::Inner));
     if on {
         b = b.child(icon(t, Icon::Check, iconsize::XS, t.on_accent));
     }
@@ -1022,17 +1168,6 @@ mod tests {
     }
 
     #[test]
-    fn stepping_clamps_at_both_ends_and_starts_at_the_first() {
-        let keys: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
-        assert_eq!(step(&keys, None, 1).as_deref(), Some("a"));
-        assert_eq!(step(&keys, Some("a"), -1).as_deref(), Some("a"));
-        assert_eq!(step(&keys, Some("a"), 1).as_deref(), Some("b"));
-        assert_eq!(step(&keys, Some("c"), 1).as_deref(), Some("c"));
-        assert_eq!(step(&keys, Some("gone"), 1).as_deref(), Some("a"));
-        assert_eq!(step(&[], Some("a"), 1), None);
-    }
-
-    #[test]
     fn the_filter_keeps_matching_names_and_drops_empty_groups() {
         let libs = vec![library(vec![found("a", "Farm", Loader::Vanilla, 0), found("b", "Base", Loader::Vanilla, 0)])];
         assert_eq!(shown(&libs, "").iter().map(|s| s.items.len()).sum::<usize>(), 2);
@@ -1055,7 +1190,7 @@ mod tests {
         let libs = vec![library(vec![found("a", "A", Loader::Vanilla, 0), found("b", "B", Loader::Vanilla, 0)]), library(vec![found("c", "C", Loader::Vanilla, 0)])];
         let list = shown(&libs, "");
         assert_eq!(top_of(&list, "prism:a"), Some((0., HEAD_H + BLOCK_INNER + ROW_H)));
-        assert_eq!(top_of(&list, "prism:b"), Some((HEAD_H + BLOCK_INNER + ROW_H + 1., ROW_H)));
+        assert_eq!(top_of(&list, "prism:b"), Some((HEAD_H + BLOCK_INNER + ROW_H + frame::HAIRLINE, ROW_H)));
         assert_eq!(top_of(&list, "prism:c").map(|(top, _)| top), Some(block_height(2) + BLOCK_GAP));
         assert_eq!(top_of(&list, "prism:none"), None);
     }
@@ -1102,6 +1237,9 @@ mod tests {
         assert!(s.toast().is_some_and(|t| t.contains('2')));
         s.record(Outcome::Failed("kaputt".into()), &job);
         assert_eq!(s.failed.len(), 1);
+        s.record(Outcome::Left("links".into()), &job);
+        assert_eq!(s.failed.len(), 2);
+        assert_eq!(s.again().len(), 1);
         s.record(Outcome::Stopped, &job);
         assert!(s.stopped && s.toast().is_some_and(|t| t.contains('2')));
     }

@@ -182,6 +182,7 @@ impl Component for Card {
                     if let Some(p) = &keys
                         && p.disabled.is_none()
                         && held.is_none()
+                        && !*ui.palette.peek()
                     {
                         e.stop_propagation();
                         p.run.call(());

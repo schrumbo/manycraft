@@ -22,6 +22,9 @@ fn takes(want: &Want) -> bool {
 }
 
 fn run(store: Store, want: Want) {
+    if store.ui.sheet.peek().is_some() && !matches!(want, Want::FetchUpdate | Want::CancelUpdate | Want::DismissNews) {
+        return;
+    }
     match want {
         Want::AddAccount => account::open(store, account::Start::Choose),
         Want::AddMicrosoft => account::open(store, account::Start::Microsoft),

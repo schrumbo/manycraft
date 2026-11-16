@@ -285,7 +285,7 @@ impl Command {
             Command::Smaller => tr("Kleinere Kacheln"),
             Command::Fit => tr("Kacheln einpassen"),
             Command::Quit => tr("Manycraft beenden"),
-            Command::Import => tr("Importieren …"),
+            Command::Import => tr("Instanz importieren…"),
             c => c.page_label(),
         }
     }

@@ -498,6 +498,7 @@ impl Make {
             }
             self.picking.set(false);
             if let Some(path) = paths.into_iter().next() {
+                sheet::close(store.ui);
                 import::open_file(store, path);
             }
         });
@@ -729,7 +730,10 @@ fn imports(flow: Make, blocked: Option<String>) -> Element {
             title: tr("Aus anderem Launcher importieren…"),
             subtitle: tr("Prism, Modrinth, CurseForge, ATLauncher und mehr"),
             disabled: blocked.clone(),
-            on_press: EventHandler::new(move |_| import::open(store)),
+            on_press: EventHandler::new(move |_| {
+                sheet::close(store.ui);
+                import::open(store);
+            }),
         })
         .child(Entry {
             id: "instance.import.file",
