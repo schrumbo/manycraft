@@ -1368,5 +1368,12 @@
   "Flüssig": "Smooth",
   "Vorschau-Rate": "Preview rate",
   "Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger.": "How often tiles refresh. Smooth costs the games more processing time, Economical less.",
-  "%lld von %lld laufen · %@": "%lld of %lld running · %@"
+  "%lld von %lld laufen · %@": "%lld of %lld running · %@",
+  "Tastenkürzel": "Keyboard shortcuts",
+  "Fenster": "Window",
+  "Auswahl im Raster": "Selection in the grid",
+  "Spiele wechseln": "Switching games",
+  "Manycraft hat ein langes, zufälliges Thema gewählt. Wer es kennt, liest mit.": "Manycraft picked a long, random topic. Anyone who knows it can read along.",
+  "Handy verbinden": "Connect your phone",
+  "Mit der Handy-Kamera scannen und das Thema in ntfy abonnieren.": "Scan with your phone's camera and subscribe to the topic in ntfy."
 }

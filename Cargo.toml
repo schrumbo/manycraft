@@ -22,6 +22,7 @@ hickory-resolver = "0.26"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 md-5 = "0.10"
+qrcode = { version = "0.14", default-features = false }
 raw-window-handle = "0.6"
 rayon = "1"
 rust-embed = "8"

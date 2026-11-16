@@ -161,6 +161,27 @@ pub mod shell {
 }
 
 /// The command palette.
+pub mod phone_qr {
+    use gpui_kit::Hsla;
+
+    /// Side of the QR code tile, quiet zone included.
+    pub const SIZE: f32 = 160.;
+    /// Light modules around the code, in modules.
+    pub const QUIET: usize = 4;
+    pub const DARK: Hsla = Hsla { h: 0., s: 0., l: 0., a: 1. };
+    pub const LIGHT: Hsla = Hsla { h: 0., s: 0., l: 1., a: 1. };
+}
+
+pub mod shortcuts {
+    pub const WIDTH: f32 = 760.;
+    /// Distance from the top and the least distance from the bottom of the window.
+    pub const TOP: f32 = 56.;
+    /// Height of one shortcut.
+    pub const ROW: f32 = 30.;
+    /// The least panel width that fits two columns.
+    pub const TWO_COLUMNS: f32 = 620.;
+}
+
 pub mod palette {
     pub const WIDTH: f32 = 560.;
     /// Distance from the top of the window.

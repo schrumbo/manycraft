@@ -15,7 +15,7 @@ use super::drive::Mark;
 use super::motion::Soft;
 use super::model::{self, UpdateStatus};
 use super::sheet::{self, Look};
-use super::theme::{self, Theme, control, font, iconsize, radius, space, tint};
+use super::theme::{self, Theme, control, font, iconsize, phone_qr, radius, space, tint};
 use super::widgets::{KeyNav, icon, segment, segmented, tip};
 use crate::core::i18n::{tr, trf};
 use crate::core::phone::{self, Secret, Service, Slot};
@@ -160,6 +160,10 @@ struct PhoneForm {
     tested: Option<Result<String, String>>,
     finding: bool,
     found: Option<Result<String, String>>,
+    /// Whether the secrets were read from the keychain, so an empty topic is really empty.
+    loaded: bool,
+    /// Whether this window already made up an ntfy topic, so clearing it on purpose stays empty.
+    generated: bool,
 }
 
 impl PhoneForm {
@@ -216,6 +220,8 @@ impl SettingsView {
             tested: None,
             finding: false,
             found: None,
+            loaded: false,
+            generated: false,
         };
         cx.spawn_in(window, async move |this, cx| {
             let secrets = cx.background_spawn(async { [Field::Discord, Field::Token, Field::Topic].map(|f| (f, f.slot().map(phone::read_secret))) }).await;
@@ -233,11 +239,24 @@ impl SettingsView {
                         None => {}
                     }
                 }
+                s.phone.loaded = true;
                 cx.notify();
             });
         })
         .detach();
         Self { focus, scroll: ScrollHandle::new(), error: None, phone, _subs: subs }
+    }
+
+    fn fill_topic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = &settings::active().phone;
+        let topic = Field::Topic as usize;
+        if !current.enabled || current.service != Service::Ntfy || !self.phone.loaded || self.phone.generated || self.phone.errors[topic].is_some() || !self.phone.value(Field::Topic, cx).is_empty() {
+            return;
+        }
+        self.phone.generated = true;
+        let fresh = phone::new_topic(uuid::Uuid::new_v4().as_u128());
+        self.phone.input(Field::Topic).update(cx, |i, cx| i.set_value(fresh.expose().to_owned(), window, cx));
+        self.typed(Field::Topic, cx);
     }
 
     fn typed(&mut self, field: Field, cx: &mut Context<Self>) {
@@ -394,7 +413,11 @@ impl SettingsView {
             }
             Service::Ntfy => {
                 rows.push(self.field_row(Field::Server, tr("Server"), None, sheet::note(Some(tr("Nur ändern, wenn du einen eigenen ntfy-Server hast.")), None, t), t, cx));
-                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.")), None, t), t, cx));
+                rows.push(self.field_row(Field::Topic, tr("Thema"), None, sheet::note(Some(if self.phone.generated { tr("Manycraft hat ein langes, zufälliges Thema gewählt. Wer es kennt, liest mit.") } else { tr("Abonniere dieses Thema in der ntfy-App. Wer es kennt, liest mit, also wähle etwas Langes.") }), None, t), t, cx));
+                let topic = self.phone.value(Field::Topic, cx);
+                if let Some(code) = (!topic.is_empty()).then(|| qr(phone::ntfy_link(&self.phone.value(Field::Server, cx), &topic).expose(), t)).flatten() {
+                    rows.push(row(tr("Handy verbinden"), Some(tr("Mit der Handy-Kamera scannen und das Thema in ntfy abonnieren.")), code, t));
+                }
             }
         }
         let testing = self.phone.testing;
@@ -532,7 +555,32 @@ fn group(title: String, rows: Vec<Row>, footer: Option<String>, t: &Theme) -> Di
         .children(footer.map(|f| div().px(px(space::XS)).text_size(px(font::CAPTION)).text_color(t.tertiary).child(f)))
 }
 
-fn keycap(text: String, t: &Theme) -> Div {
+/// `text` as a QR code: dark modules on a light tile with a quiet zone, in both appearances, so every camera reads it.
+fn qr(text: &str, t: &Theme) -> Option<Div> {
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let n = code.width();
+    let dark: Vec<bool> = code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect();
+    let paint = canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let scale = window.scale_factor();
+            let cells = (n + 2 * phone_qr::QUIET) as f32;
+            let cell = (f32::from(bounds.size.width) * scale / cells).floor().max(1.) / scale;
+            let inset = (f32::from(bounds.size.width) - cell * n as f32) / 2.;
+            for (i, on) in dark.iter().enumerate() {
+                if *on {
+                    let at = point(bounds.origin.x + px(inset + (i % n) as f32 * cell), bounds.origin.y + px(inset + (i / n) as f32 * cell));
+                    window.paint_quad(fill(Bounds::new(at, size(px(cell), px(cell))), phone_qr::DARK));
+                }
+            }
+        },
+    )
+    .size_full();
+    Some(div().size(px(phone_qr::SIZE)).flex_none().rounded(px(radius::SMALL)).border_1().border_color(t.separator).bg(phone_qr::LIGHT).child(paint))
+}
+
+/// One key as a cap, as the keyboard prints it.
+pub(super) fn keycap(text: String, t: &Theme) -> Div {
     div()
         .h(px(control::S))
         .min_w(px(control::S))
@@ -549,7 +597,7 @@ fn keycap(text: String, t: &Theme) -> Div {
 }
 
 /// The keys of a chord like `ctrl+alt+right` as they are printed on this system's keyboard.
-fn chord_keys(chord: &str) -> Vec<String> {
+pub(super) fn chord_keys(chord: &str) -> Vec<String> {
     let mac = cfg!(target_os = "macos");
     chord
         .split('+')
@@ -572,6 +620,7 @@ fn chord_keys(chord: &str) -> Vec<String> {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.fill_topic(window, cx);
         super::perf::frame_start();
         super::theme::follow_focus(window, cx);
         let t = Theme::get(cx);

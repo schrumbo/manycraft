@@ -7,7 +7,7 @@ use gpui_kit::*;
 
 use super::actions::{
     AddAccount, ClearSelection, ImportBatch, ImportPrismAccounts, MessageSelected, ImportFromLauncher, NextAttention, NextInstance, OpenChat, OpenPalette, PickColor, PreviousInstance, ReconnectMany, ReconnectSelected, RestartMany, RestartSelected, SelectAll, ShowAccounts, Undo, ShowAll, ShowBatch, ShowInstance, NewInstance, NewInstanceToPlay, StartMany, StartSelected, StopMany, StopSelected,
-    ToggleFullscreen, ToggleSidebar, Quit, EditShownBatch, EditBatch, StartBatch, StopBatch,
+    ToggleFullscreen, ToggleSidebar, Quit, EditShownBatch, EditBatch, StartBatch, StopBatch, ShowShortcuts,
 };
 use super::drive::Mark;
 use super::grid::Grid;
@@ -67,6 +67,8 @@ pub struct MainWindow {
     pub(super) query: String,
     pub(super) grid: Grid,
     pub(super) palette: Option<super::palette::Palette>,
+    /// Whether the overview of every shortcut is open.
+    pub(super) shortcuts: bool,
     fit: Option<(FitScope, Option<String>)>,
     saved: Saved,
     restoring: Option<Page>,
@@ -173,6 +175,7 @@ impl MainWindow {
             writing: None,
             filter: Filter::All,
             overlay: false,
+            shortcuts: false,
             narrow_now: false,
             seen_offer: None,
             search,
@@ -516,6 +519,7 @@ impl Render for MainWindow {
         };
         let show_sidebar = self.sidebar && !narrow;
         let palette = super::palette::render(self, window, cx);
+        let shortcuts = super::shortcuts::render(self, window, cx);
         let dropping = cx.has_active_drag().then(|| drop_hint(&t));
         let root = div()
             .id("main")
@@ -523,7 +527,11 @@ impl Render for MainWindow {
             .track_focus(&self.focus)
             .capture_any_mouse_down(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
             .capture_any_mouse_up(|_, window, cx| window.defer(cx, |window, cx| super::theme::focus_moved(window, false, cx)))
-            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if this.shortcuts && e.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    return super::shortcuts::close(this, window, cx);
+                }
                 if !this.overlay || this.palette.is_some() {
                     return;
                 }
@@ -565,6 +573,7 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| super::palette::toggle(this, window, cx)))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| super::shortcuts::toggle(this, window, cx)))
             .on_action(cx.listener(|this, a: &PickColor, window, cx| super::palette::colors(this, &a.0, window, cx)))
             .on_drag_move::<ExternalPaths>(|_, window, cx| {
                 if window.last_input_was_keyboard() {
@@ -667,7 +676,8 @@ impl Render for MainWindow {
             })
             .when(narrow && self.overlay, |d| d.child(super::toolbar::toggle(self, &t, cx)))
             .children(dropping)
-            .children(palette);
+            .children(palette)
+            .children(shortcuts);
         let root = super::perf::frame_end(root);
         super::chrome::frame("Manycraft", root, window.is_fullscreen(), &t)
     }
@@ -698,6 +708,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(k("shift-g"), ShowAll, Some("MainWindow")),
         KeyBinding::new(k("shift-u"), ShowAccounts, Some("MainWindow")),
         KeyBinding::new(k("k"), OpenPalette, Some("MainWindow")),
+        KeyBinding::new(k("/"), ShowShortcuts, Some("MainWindow")),
         KeyBinding::new(k("o"), ImportBatch, Some("MainWindow")),
         KeyBinding::new(k("shift-n"), NewInstance, Some("MainWindow")),
         KeyBinding::new(k("e"), EditShownBatch, Some("MainWindow")),

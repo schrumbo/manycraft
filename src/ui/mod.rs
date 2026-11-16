@@ -34,6 +34,7 @@ pub mod perf;
 mod project_page;
 pub mod remote;
 pub mod settings_window;
+pub mod shortcuts;
 pub mod sheet;
 pub mod sidebar;
 pub mod skin_sheet;
