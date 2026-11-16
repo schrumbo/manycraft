@@ -1702,5 +1702,7 @@
   "Gilt, wenn du diese Instanz allein spielst. Batches haben eigene Accounts.": "Applies when you play this instance on its own. Batches have their own accounts.",
   "%@ h": "%@ h",
   "Beendet sich nicht": "Not quitting",
-  "Nicht Gespeichertes geht verloren (%@)": "Unsaved progress is lost (%@)"
+  "Nicht Gespeichertes geht verloren (%@)": "Unsaved progress is lost (%@)",
+  "Anmelden als %@": "Sign in as %@",
+  "Die Anmeldung ist abgelaufen.": "The sign-in has expired."
 }

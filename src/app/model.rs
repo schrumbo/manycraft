@@ -439,6 +439,11 @@ impl Model {
         }
     }
 
+    /// Whether a game of `account` waits for it to sign in again.
+    pub fn sign_in_expired(&self, account: Uuid) -> bool {
+        self.games.values().any(|g| g.account_id == account && g.phase == Phase::LoginNeeded)
+    }
+
     /// Games of `instance` played alone.
     pub fn solo_games(&self, instance: &str) -> impl Iterator<Item = &Game> {
         let owner = fleet::solo_owner(instance);

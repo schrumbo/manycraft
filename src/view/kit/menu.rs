@@ -34,6 +34,7 @@ pub enum Item {
         danger: bool,
         disabled: bool,
         face: Option<Face>,
+        keep: bool,
         run: EventHandler<()>,
     },
     Separator,
@@ -42,7 +43,7 @@ pub enum Item {
 impl Item {
     /// An entry named `id` that runs `run`.
     pub fn new(id: impl Into<String>, label: impl Into<String>, run: impl FnMut(()) + 'static) -> Self {
-        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, run: EventHandler::new(run) }
+        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, keep: false, run: EventHandler::new(run) }
     }
 
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
@@ -63,6 +64,14 @@ impl Item {
     pub fn face(mut self, account: Face) -> Self {
         if let Self::Action { face, .. } = &mut self {
             *face = Some(account);
+        }
+        self
+    }
+
+    /// Stays in the list while it is filtered, below what matches.
+    pub fn kept(mut self) -> Self {
+        if let Self::Action { keep, .. } = &mut self {
+            *keep = true;
         }
         self
     }
@@ -126,6 +135,19 @@ pub fn open(mut ui: Ui, mut menu: Menu) {
     ui.menu.set(Some(menu));
 }
 
+fn fits(item: &Item) -> f32 {
+    let Item::Action { label, shortcut, face, .. } = item else { return 0. };
+    let glyphs = |text: &str, size: f32| text.chars().count() as f32 * size * control::RENAME_GLYPH;
+    let mut w = space::XS + iconsize::S + space::XS + glyphs(label, font::BODY) + space::S;
+    if face.is_some() {
+        w += frame::FACE + space::XS;
+    }
+    if let Some(keys) = shortcut {
+        w += space::XL + glyphs(keys, font::CALLOUT);
+    }
+    w
+}
+
 fn height(item: &Item) -> f32 {
     if matches!(item, Item::Separator) { space::S + 1. } else { frame::MENU_ROW }
 }
@@ -139,7 +161,17 @@ fn filtered(items: &[Item], query: &str) -> Vec<Item> {
     if query.is_empty() {
         return items.to_vec();
     }
-    items.iter().filter(|i| matches!(i, Item::Action { label, .. } if label.to_lowercase().contains(&query))).cloned().collect()
+    let mut found: Vec<Item> = items.iter().filter(|i| matches!(i, Item::Action { label, keep: false, .. } if label.to_lowercase().contains(&query))).cloned().collect();
+    let kept: Vec<Item> = items.iter().filter(|i| kept(i)).cloned().collect();
+    if !found.is_empty() && !kept.is_empty() {
+        found.push(Item::Separator);
+    }
+    found.extend(kept);
+    found
+}
+
+fn kept(item: &Item) -> bool {
+    matches!(item, Item::Action { keep: true, .. })
 }
 
 fn step(items: &[Item], from: Option<usize>, down: bool) -> Option<usize> {
@@ -204,19 +236,22 @@ impl Component for Panel {
             }
         });
         let items = filtered(&menu.items, &q);
+        let none_found = !q.trim().is_empty() && items.iter().all(|i| kept(i) || matches!(i, Item::Separator));
         let chosen = match &*hot.read() {
             (at, i) if *at == q => *i,
             _ if q.trim().is_empty() => None,
-            _ => step(&items, None, true),
+            _ => step(&items, None, true).filter(|i| !kept(&items[*i])),
         };
         let searching = menu.search.is_some();
         let field_h = if searching { control::M + space::XS } else { 0. };
-        let rows = items.iter().map(height).sum::<f32>();
-        let list_h = if searching { list_max } else { rows.min(list_max) };
+        let rows = items.iter().map(height).sum::<f32>() + if none_found { frame::MENU_ROW } else { 0. };
+        let list_h = rows.min(list_max);
         let panel_h = list_h + field_h + space::XS * 2.;
-        let width = menu.width.min(w - space::S * 2.);
+        let tallest = menu.items.iter().map(height).sum::<f32>().min(list_max) + field_h + space::XS * 2.;
+        let fit = menu.items.iter().map(fits).fold(0., f32::max) + space::XS * 2. + 2.;
+        let width = menu.width.max(fit).min(w - space::S * 2.);
         let x = menu.at.0.min(w - width - space::S).max(space::S);
-        let y = if menu.at.1 + panel_h > h - space::S { (menu.at.1 - panel_h).max(space::S) } else { menu.at.1 };
+        let y = if menu.at.1 + tallest > h - space::S { (menu.at.1 - tallest).max(space::S) } else { menu.at.1 };
         let run = {
             let items = items.clone();
             move |i: usize, mut ui: Ui| {
@@ -238,7 +273,7 @@ impl Component for Panel {
                 scroll.scroll_to_y(-((at + row - list_h).ceil() as i32));
             }
         };
-        let entries: Vec<Element> = items
+        let mut entries: Vec<Element> = items
             .iter()
             .enumerate()
             .map(|(i, item)| match item {
@@ -290,8 +325,8 @@ impl Component for Panel {
         if let Some(placeholder) = &menu.search {
             panel = panel.child(rect().width(Size::fill()).padding((0., 0., space::XS, 0.)).child(Field::new("menu.search", query).placeholder(placeholder.clone()).glyph(Icon::Search).auto_focus()));
         }
-        if items.is_empty() {
-            return panel.child(rect().width(Size::fill()).height(Size::px(list_h)).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3))).into_element();
+        if none_found {
+            entries.insert(0, rect().width(Size::fill()).height(Size::px(frame::MENU_ROW)).padding((0., space::S, 0., space::XS + iconsize::S + space::XS)).cross_align(Alignment::Center).main_align(Alignment::Center).child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)).into_element());
         }
         if rows <= list_h {
             return panel.children(entries).into_element();

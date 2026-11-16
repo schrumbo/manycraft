@@ -9,7 +9,7 @@ use crate::core::install;
 use crate::core::instance::{Instance, Loader};
 use crate::ui::forms;
 use crate::ui::remote;
-use crate::view::commands::Shortcut;
+use crate::view::commands::{Shortcut, Want, want_blocked};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::badge::dot;
@@ -85,6 +85,8 @@ fn play_menu(store: Store, f: &Facts) -> Vec<Item> {
         let (instance, account_id) = (f.made.id.clone(), *account);
         let mut item = if f.playing.contains(account) {
             Item::new(format!("instance.play.as.{account}"), name.clone(), |_| {}).shortcut(tr("Läuft")).disabled(true)
+        } else if f.expired.contains(account) {
+            Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![account_id])).shortcut(tr("Anmelden"))
         } else {
             let item = Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: Some(account_id) }));
             if f.pinned && f.solo == Some(*account) { item.shortcut(tr("Standard")) } else { item }
@@ -140,8 +142,18 @@ impl Component for PlayControl {
         } else {
             let name = f.solo.and_then(|a| f.accounts.iter().find(|(id, _)| *id == a)).map(|(_, n)| n.clone());
             let (instance, solo) = (f.made.id.clone(), f.solo);
-            let label = name.map_or_else(|| tr("Spielen"), |n| trf("Spielen als %@", &[&n]));
-            Button::new("instance.play", label).glyph(Icon::Play).primary().tip(Shortcut::primary(Code::KeyR).label()).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: solo }))
+            match (name, solo.filter(|a| f.expired.contains(a))) {
+                (Some(n), Some(account)) => Button::new("instance.play", trf("Anmelden als %@", &[&n]))
+                    .glyph(Icon::LogIn)
+                    .primary()
+                    .tip(tr("Die Anmeldung ist abgelaufen."))
+                    .disabled(want_blocked(&Want::SignInAgain(Vec::new())))
+                    .on_press(move |_| crate::view::accounts::sign_in(store, vec![account])),
+                (name, _) => {
+                    let label = name.map_or_else(|| tr("Spielen"), |n| trf("Spielen als %@", &[&n]));
+                    Button::new("instance.play", label).glyph(Icon::Play).primary().tip(Shortcut::primary(Code::KeyR).label()).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: solo }))
+                }
+            }
         };
         let menu_facts = f.clone();
         let items = play_menu(store, f);

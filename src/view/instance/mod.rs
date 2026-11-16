@@ -163,6 +163,8 @@ pub struct Facts {
     pub stopping: Option<(String, bool)>,
     /// What went wrong with its last game played alone, while none runs.
     pub trouble: Option<String>,
+    /// Accounts that have to sign in again before they can play.
+    pub expired: Vec<Uuid>,
 }
 
 /// The facts of instance `id`, when it exists.
@@ -185,7 +187,8 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
         None
     };
     let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble })
+    let expired = m.accounts.iter().filter(|a| m.sign_in_expired(a.id)).map(|a| a.id).collect();
+    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, expired })
 }
 
 /// Why changes to the instance wait: work on it, or games that run.
@@ -404,7 +407,11 @@ pub fn extras(store: Store) -> Vec<Extra> {
     for (n, (account, who)) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a)).enumerate() {
         let (instance, account) = (id.clone(), *account);
         let first = f.playing.is_empty() && (f.solo == Some(account) || (f.solo.is_none() && n == 0));
-        push(&format!("play.{account}"), trf("Spielen als %@", &[who]), Icon::Play, play_key.filter(|_| first), EventHandler::new(move |_| store.dispatch(Event::PlayInstance { instance: instance.clone(), account: Some(account) })));
+        if f.expired.contains(&account) {
+            push(&format!("play.{account}"), trf("Anmelden als %@", &[who]), Icon::LogIn, play_key.filter(|_| first), EventHandler::new(move |_| crate::view::accounts::sign_in(store, vec![account])));
+        } else {
+            push(&format!("play.{account}"), trf("Spielen als %@", &[who]), Icon::Play, play_key.filter(|_| first), EventHandler::new(move |_| store.dispatch(Event::PlayInstance { instance: instance.clone(), account: Some(account) })));
+        }
     }
     if let Some(solo) = f.solo.filter(|_| f.accounts.len() > 1) {
         let instance = id.clone();

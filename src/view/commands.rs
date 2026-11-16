@@ -383,7 +383,7 @@ impl Command {
             Command::CancelStart | Command::StartAnyway => m.run(None).is_some_and(|r| self == Command::CancelStart || r.memory > 0),
             Command::ReconnectDropped => m.batches.iter().any(|b| m.outage(&b.id).is_some()),
             Command::StartAll => m.games.values().any(|g| !g.phase.is_active()),
-            Command::StopAll => m.games.values().any(|g| g.phase.is_active()),
+            Command::StopAll => m.games.values().any(|g| g.phase.is_active() && !g.alone()),
             Command::NextInstance | Command::PreviousInstance => m.games.values().filter(|g| g.phase.is_running()).count() > 0,
             Command::NextAttention | Command::ShowAttention => m.attention_count(None) > 0,
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),

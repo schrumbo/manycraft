@@ -133,7 +133,8 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
     for whisper in fx.whispers {
         notify::queue_whisper(m, env, whisper, out);
     }
-    notify::queue_phone(m, env, fx.phone, out);
+    let phone: Vec<_> = fx.phone.into_iter().filter(|(batch, _)| fleets::solo_instance(batch).is_none()).collect();
+    notify::queue_phone(m, env, phone, out);
     for key in fx.placed {
         out.push(Effect::Place(key));
     }
