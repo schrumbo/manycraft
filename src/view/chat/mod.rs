@@ -1,55 +1,58 @@
-//! The Chat page: the chat of every game in one list, whispers marked, and a line that goes to one game or a whole
-//! batch.
+//! The Chat page: the chat of every game as one stream, and a composer that always says who sends and switches that
+//! with one key.
 
+mod picker;
+mod target;
+
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use freya::prelude::*;
 
-use super::commands::Command;
+use self::picker::{List, Step, face, mark, step};
+pub use self::target::Target;
+use self::target::{Choice, at_query, at_word, batches_of, choices, exists, filter, name, reached, remember, resolve_at};
+use super::commands::{Command, Extra, Shortcut};
+use super::drive::use_spot;
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::field::Field;
-use super::kit::segmented::{Segment, Segmented};
 use super::kit::select::Select;
 use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
-use super::kit::use_theme;
-use super::drive::use_spot;
+use super::kit::{Bounds, ring, use_theme};
 use super::store::{Store, use_store};
-use super::theme::{Theme, control, font, iconsize, space};
+use super::theme::{Theme, color, control, font, frame, iconsize, space};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{ChatLine, Model};
 use crate::core::batch::MAX_CHAT_CHARS;
+use crate::core::chat_text::{self, Run};
 use crate::core::i18n::{tr, trf};
 use crate::core::settings;
+use crate::core::themes::Rgba;
 
 const KEPT_HISTORY: usize = 100;
 const SHOWN_CHARS: usize = 600;
 const PAGE: usize = 200;
 const TIME_W: f32 = 44.;
-const LABEL_W: f32 = 148.;
 const PICKER_W: f32 = 200.;
-const TARGET_W: f32 = 240.;
-const BAR: f32 = 2.;
-const WASH: f32 = 0.1;
+const PICKER_NARROW: f32 = 150.;
+const CHIP_MAX: f32 = 220.;
+const POPUP_W: f32 = 320.;
+const POPUP_ROWS: f32 = 10.;
+const TAG_MAX: f32 = 180.;
+const MENTION_MIN: usize = 3;
+const HEARD_MAX: usize = 3;
 const READING: f32 = control::READING;
 
-/// Who a line goes to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Target {
-    Batch(String),
-    Instance(String),
-}
-
-/// The page's state, kept while other pages show so the draft and the history survive.
+/// The page's state, kept while other pages show so the draft, the history and the recipient survive.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Shared {
-    pub whispers: State<bool>,
     pub batch: State<Option<String>>,
+    /// The recipient the person picked; `None` follows the batch shown, else everyone.
     pub target: State<Option<Target>>,
-    /// Whether the person picked the recipient, so changing the batch shown leaves it alone.
-    pub manual: State<bool>,
+    pub recent: State<Vec<Target>>,
     pub draft: State<String>,
     pub history: State<Vec<String>>,
     pub recall: State<Option<usize>>,
@@ -60,16 +63,27 @@ pub struct Shared {
     /// How many of the newest lines the list holds.
     pub shown: State<usize>,
     pub focus: State<Option<Instant>>,
+    /// Whether the recipient pop-up is open, its filter and the entry lit in it.
+    pub picker: State<bool>,
+    pub query: State<String>,
+    pub hot: State<Option<usize>>,
+    /// The entry lit under an `@name`, and the draft whose suggestions Esc closed.
+    pub at_hot: State<Option<usize>>,
+    pub at_closed: State<Option<String>>,
+    /// Where the recipient control and the message field are, for the pop-ups above them.
+    pub chip_at: State<Bounds>,
+    pub field_at: State<Bounds>,
+    /// The sequence number of the first line that arrived after the page was left.
+    pub left_at: State<Option<u64>>,
 }
 
 impl Shared {
-    /// Empty state: everything shown, nobody picked.
+    /// Empty state: everything shown, everyone gets the next line.
     pub fn create() -> Self {
         Self {
-            whispers: State::create(false),
             batch: State::create(None),
             target: State::create(None),
-            manual: State::create(false),
+            recent: State::create(Vec::new()),
             draft: State::create(String::new()),
             history: State::create(Vec::new()),
             recall: State::create(None),
@@ -78,18 +92,16 @@ impl Shared {
             rejected: State::create(None),
             shown: State::create(PAGE),
             focus: State::create(None),
+            picker: State::create(false),
+            query: State::create(String::new()),
+            hot: State::create(None),
+            at_hot: State::create(None),
+            at_closed: State::create(None),
+            chip_at: State::create(Bounds::default()),
+            field_at: State::create(Bounds::default()),
+            left_at: State::create(None),
         }
     }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Scope {
-    batch: Option<String>,
-    whispers: bool,
-}
-
-fn scope(shared: Shared) -> Scope {
-    Scope { batch: shared.batch.read().clone(), whispers: *shared.whispers.read() }
 }
 
 /// The batch picker's entries: all batches, then each by name.
@@ -100,58 +112,32 @@ fn batch_choices(m: &Model) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// The recipient picker's entries: every batch with how many of it run, then every game, running ones first.
-fn target_choices(m: &Model) -> Vec<(String, Target)> {
-    let labels = unique(
-        m.batches
-            .iter()
-            .map(|b| {
-                let total = m.games.values().filter(|i| i.batch_id == b.id).count();
-                let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.on_server()).count();
-                trf("Alle in %@ · %lld von %lld laufen", &[&b.name, &running, &total])
-            })
-            .collect(),
-    );
-    let mut out: Vec<(String, Target)> = m.batches.iter().zip(labels).map(|(b, label)| (label, Target::Batch(b.id.clone()))).collect();
-    let mut games: Vec<_> = m.games.values().collect();
-    games.sort_by_cached_key(|i| (!i.phase.on_server(), i.name.to_lowercase(), i.key.clone()));
-    let labels = unique(
-        games
-            .iter()
-            .map(|i| {
-                let label = match m.batch(&i.batch_id) {
-                    Some(b) => format!("{} · {}", i.name, b.name),
-                    None => i.name.clone(),
-                };
-                if i.phase.on_server() { label } else { format!("{label} · {}", tr("aus")) }
-            })
-            .collect(),
-    );
-    out.extend(games.iter().zip(labels).map(|(i, label)| (label, Target::Instance(i.key.clone()))));
-    out
-}
-
-/// The recipient in use: the one picked while it still exists, else the batch shown, else the only batch.
+/// The recipient in use: the one picked while it still exists, else the batch shown, else everyone. A picked one that
+/// is gone gives nobody, so a line never goes to more games than the person chose.
 fn target_of(m: &Model, shared: Shared) -> Option<Target> {
-    let valid = |t: &Target| match t {
-        Target::Batch(id) => m.batch(id).is_some(),
-        Target::Instance(key) => m.games.contains_key(key),
-    };
-    if let Some(t) = shared.target.read().clone().filter(valid) {
-        return Some(t);
+    match shared.target.read().clone() {
+        Some(t) if exists(m, &t) => Some(t),
+        Some(_) => None,
+        None => Some(shared.batch.read().clone().filter(|b| m.batch(b).is_some()).map_or(Target::All, Target::Batch)),
     }
-    if *shared.manual.read() && shared.target.read().is_some() {
-        return None;
-    }
-    shared.batch.read().clone().filter(|b| m.batch(b).is_some()).or_else(|| (m.batches.len() == 1).then(|| m.batches[0].id.clone())).map(Target::Batch)
 }
 
-fn reached(m: &Model, target: Option<&Target>) -> usize {
-    match target {
-        Some(Target::Batch(id)) => m.games.values().filter(|i| i.batch_id == *id && i.phase.on_server()).count(),
-        Some(Target::Instance(key)) => usize::from(m.games.get(key).is_some_and(|i| i.phase.on_server())),
-        None => 0,
-    }
+/// Makes `target` the recipient and gives the message field the keyboard.
+fn pick(store: Store, target: Target) {
+    let mut shared = store.ui.chat;
+    shared.target.set(Some(target));
+    shared.picker.set_if_modified(false);
+    shared.sent.set(None);
+    shared.rejected.set(None);
+    shared.focus.set(Some(Instant::now()));
+}
+
+/// Opens the recipient pop-up with an empty filter.
+fn open_picker(store: Store) {
+    let mut shared = store.ui.chat;
+    shared.query.set(String::new());
+    shared.hot.set(None);
+    shared.picker.set(true);
 }
 
 fn send(store: Store) {
@@ -160,22 +146,51 @@ fn send(store: Store) {
     if text.is_empty() || !settings::active().broadcast {
         return;
     }
-    let (target, reach) = {
+    let named = {
+        let m = store.model.peek();
+        resolve_at(&text, &choices(&m, &shared.recent.peek()))
+    };
+    let text = match named {
+        Some((target, rest)) => {
+            shared.target.set(Some(target));
+            rest
+        }
+        None => text,
+    };
+    if let Some((word, _)) = at_word(&text) {
+        let problem = trf("„@%@“ passt nicht zu genau einem Account. Wähle den Absender links.", &[&word]);
+        shared.rejected.set(Some((text.clone(), problem)));
+        shared.sent.set(None);
+        return;
+    }
+    if text.is_empty() {
+        return;
+    }
+    let (target, reach, batches) = {
         let m = store.model.peek();
         let target = target_of(&m, shared);
-        let reach = reached(&m, target.as_ref());
-        (target, reach)
+        let reach = target.as_ref().map_or(0, |t| reached(&m, t));
+        let batches = target.as_ref().map(|t| batches_of(&m, t)).unwrap_or_default();
+        (target, reach, batches)
     };
-    let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer die Nachricht bekommt."))).or_else(|| (reach == 0).then(|| tr("Dort läuft gerade keine Instanz.")));
+    let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer sendet."))).or_else(|| (reach == 0).then(|| tr("Dort ist gerade niemand im Spiel.")));
     if let Some(problem) = problem {
         shared.rejected.set(Some((text, problem)));
         shared.sent.set(None);
         return;
     }
     let Some(target) = target else { return };
-    match target {
-        Target::Batch(batch) => store.dispatch(AppEvent::Broadcast { batch, text: text.clone() }),
-        Target::Instance(key) => store.dispatch(AppEvent::SendChat { key, text: text.clone() }),
+    match &target {
+        Target::Instance(key) => store.dispatch(AppEvent::SendChat { key: key.clone(), text: text.clone() }),
+        _ => {
+            for batch in batches {
+                store.dispatch(AppEvent::Broadcast { batch, text: text.clone() });
+            }
+        }
+    }
+    if target != Target::All {
+        let recent = remember(&shared.recent.peek(), &target);
+        shared.recent.set(recent);
     }
     let mut history = shared.history.peek().clone();
     if history.last() != Some(&text) {
@@ -188,7 +203,7 @@ fn send(store: Store) {
     shared.recall.set(None);
     shared.typed.set(String::new());
     shared.rejected.set(None);
-    shared.sent.set(Some(if reach == 1 { tr("An 1 Instanz gesendet.") } else { trf("An %lld Instanzen gesendet.", &[&reach]) }));
+    shared.sent.set(Some(if reach == 1 { tr("An 1 Account gesendet.") } else { trf("An %lld Accounts gesendet.", &[&reach]) }));
     shared.draft.set(String::new());
 }
 
@@ -204,19 +219,30 @@ fn step_history(store: Store, delta: isize) {
     shared.draft.set(text);
 }
 
-/// Picks the batch the page shows; the recipient follows unless the person picked one.
+/// Puts the newest sent line back into the message field, as the up arrow in the field does.
+fn recall_last(store: Store) {
+    let mut shared = store.ui.chat;
+    let newest = shared.history.peek().last().cloned();
+    let recalling = shared.recall.peek().is_some();
+    match newest.filter(|_| recalling) {
+        Some(text) => {
+            let last = shared.history.peek().len() - 1;
+            shared.recall.set(Some(last));
+            shared.draft.set(text);
+        }
+        None => step_history(store, -1),
+    }
+    shared.focus.set(Some(Instant::now()));
+}
+
+/// Picks the batch the page shows; a recipient the person picked stays.
 fn set_batch(store: Store, batch: Option<String>) {
     let mut shared = store.ui.chat;
     if *shared.batch.peek() == batch {
         return;
     }
-    shared.batch.set(batch.clone());
+    shared.batch.set(batch);
     shared.shown.set(PAGE);
-    if !*shared.manual.peek() {
-        shared.target.set(batch.map(Target::Batch));
-        shared.sent.set(None);
-        shared.rejected.set(None);
-    }
 }
 
 /// Opens the page with the message field focused.
@@ -229,7 +255,27 @@ pub fn focus(store: Store) {
     at.set(Some(Instant::now()));
 }
 
-/// The page's controls in the toolbar: everything or only whispers, and the batch shown.
+fn can_send() -> bool {
+    let s = settings::active();
+    s.merged_chat && s.broadcast
+}
+
+/// The page's commands for the palette: pick who sends, or send to everyone again.
+pub fn extras(store: Store) -> Vec<Extra> {
+    if !can_send() {
+        return Vec::new();
+    }
+    let mut out = vec![Extra { id: "chat.sendas".into(), label: tr("Senden als …"), glyph: Icon::Users, shortcut: Some(Shortcut::primary(Code::KeyE)), run: EventHandler::new(move |_| open_picker(store)) }];
+    if !store.ui.chat.history.peek().is_empty() {
+        out.push(Extra { id: "chat.recall".into(), label: tr("Letzte Nachricht zurückholen"), glyph: Icon::Message, shortcut: None, run: EventHandler::new(move |_| recall_last(store)) });
+    }
+    if store.ui.chat.target.peek().as_ref().is_some_and(|t| *t != Target::All) {
+        out.push(Extra { id: "chat.toall".into(), label: tr("An alle senden"), glyph: Icon::Send, shortcut: None, run: EventHandler::new(move |_| pick(store, Target::All)) });
+    }
+    out
+}
+
+/// The page's control in the toolbar: the batch shown, when there are several.
 #[derive(PartialEq)]
 pub struct Tools {
     pub room: f32,
@@ -239,20 +285,15 @@ impl Component for Tools {
     fn render(&self) -> impl IntoElement {
         let store = use_store();
         let shared = store.ui.chat;
-        let mut whispers = shared.whispers;
-        if !settings::active().merged_chat {
+        let m = store.model.read();
+        if !settings::active().merged_chat || m.batches.len() < 2 {
             return rect().into_element();
         }
-        let m = store.model.read();
         let choices = batch_choices(&m);
         let chosen = choices.iter().position(|(_, id)| *id == *shared.batch.read()).unwrap_or(0);
-        let items = vec![Segment { id: "chat.scope.all".into(), label: tr("Alles"), tip: None }, Segment { id: "chat.scope.whispers".into(), label: tr("Nur Flüstern"), tip: Some(tr("Nur Nachrichten, die jemand deinen Accounts zuflüstert")) }];
-        let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(Segmented::new(tr("Zeigen"), items, usize::from(*whispers.read())).on_choose(move |i| whispers.set(i == 1)));
-        if m.batches.len() > 1 && self.room >= super::theme::frame::TOOLBAR_SEARCH {
-            let ids: Vec<Option<String>> = choices.iter().map(|(_, id)| id.clone()).collect();
-            row = row.child(Select::new("chat.batch", tr("Batch"), choices.into_iter().map(|(l, _)| l).collect(), chosen).width(PICKER_W).on_choose(move |i| set_batch(store, ids.get(i).cloned().flatten())));
-        }
-        row.into_element()
+        let ids: Vec<Option<String>> = choices.iter().map(|(_, id)| id.clone()).collect();
+        let width = if self.room >= frame::TOOLBAR_SEARCH { PICKER_W } else { PICKER_NARROW };
+        Select::new("chat.batch", tr("Batch"), choices.into_iter().map(|(l, _)| l).collect(), chosen).width(width).on_choose(move |i| set_batch(store, ids.get(i).cloned().flatten())).into_element()
     }
 }
 
@@ -265,19 +306,18 @@ impl Component for ChatPage {
         let t = use_theme();
         let store = use_store();
         let shared = store.ui.chat;
-        let m = store.model.read();
-        let mut s = scope(shared);
-        s.batch = s.batch.filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
-        let seen = *Platform::get().current_window().is_app_focused.read() || crate::core::drive::on();
-        let unread = seen && m.games.values().any(|i| i.unread_whispers > 0 && s.batch.as_deref().is_none_or(|b| i.batch_id == b));
-        use_side_effect_with_deps(&(unread, s.batch.clone()), move |(unread, batch)| {
-            if *unread {
-                store.dispatch(AppEvent::ClearWhispers(batch.clone()));
-            }
+        let mark_at = use_hook(|| *shared.left_at.peek());
+        use_drop(move || {
+            let m = store.model.peek();
+            let mut left = store.ui.chat.left_at;
+            left.set(Some(m.chat_base() + m.chat.len() as u64));
         });
+        let _ = store.chat.read();
+        let m = store.model.read();
+        let batch = shared.batch.read().clone().filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
         let merged = settings::active().merged_chat;
         let broadcast = settings::active().broadcast;
-        let mut page = rect().width(Size::fill()).height(Size::fill());
+        let page = rect().width(Size::fill()).height(Size::fill());
         if !m.loaded {
             return page.center().child(secondary(&t, tr("Lädt …"))).into_element();
         }
@@ -285,28 +325,40 @@ impl Component for ChatPage {
             return page.child(empty(&t, Icon::Message, tr("Der gemeinsame Chat ist aus"), tr("Manycraft sammelt keine Chatzeilen. In den Einstellungen schaltest du ihn wieder ein."), Some(Button::new("chat.off.settings", tr("Einstellungen öffnen")).glyph(Icon::Settings).tall().on_press(move |_| Command::OpenSettings.run(store)).into_element()))).into_element();
         }
         let base = m.chat_base();
-        let ids: Vec<u64> = m.chat.iter().enumerate().filter(|(_, l)| in_scope(l, &s)).map(|(i, _)| base + i as u64).collect();
+        let ids: Vec<u64> = m.chat.iter().enumerate().filter(|(_, l)| in_scope(l, batch.as_deref())).map(|(i, _)| base + i as u64).collect();
         let body = if ids.is_empty() {
-            let mut whispers = shared.whispers;
-            if s.whispers {
-                empty(&t, Icon::Message, tr("Niemand hat geflüstert"), tr("Flüsternachrichten an deine Accounts erscheinen hier."), Some(Button::new("chat.show.all", tr("Alles zeigen")).tall().on_press(move |_| whispers.set(false)).into_element()))
-            } else if s.batch.is_some() && !m.chat.is_empty() {
-                empty(&t, Icon::Search, tr("Keine Treffer"), tr("In diesem Batch gibt es noch keine Chatzeilen."), Some(Button::new("chat.filter.reset", tr("Filter zurücksetzen")).tall().on_press(move |_| set_batch(store, None)).into_element()))
+            if batch.is_some() && !m.chat.is_empty() {
+                empty(&t, Icon::Search, tr("Keine Treffer"), tr("In diesem Batch gibt es noch keine Chatzeilen."), Some(Button::new("chat.filter.reset", tr("Alle Batches zeigen")).tall().on_press(move |_| set_batch(store, None)).into_element()))
             } else {
-                empty(&t, Icon::Message, tr("Noch redet keiner"), tr("Sobald eine Instanz läuft, erscheint ihr Chat hier."), None)
+                empty(&t, Icon::Message, tr("Noch redet keiner"), tr("Sobald ein Account auf einem Server ist, erscheint der Chat hier."), None)
             }
         } else {
             let shown = (*shared.shown.read()).min(ids.len());
             let older = ids.len() - shown;
             let window: Vec<ChatLine> = ids[older..].iter().filter_map(|id| m.chat.get((id - base) as usize).cloned()).collect();
-            let names = if m.batches.len() > 1 { m.batches.iter().map(|b| (b.id.clone(), b.name.clone())).collect() } else { Vec::new() };
-            Lines { lines: window, ids: ids[older..].to_vec(), older, names }.into_element()
+            let names = if m.batches.len() > 1 && batch.is_none() { m.batches.iter().map(|b| (b.id.clone(), b.name.clone())).collect() } else { Vec::new() };
+            let running = running_by_batch(&m);
+            let own = own_names(&m);
+            let rows: Vec<Line> = window
+                .into_iter()
+                .zip(ids[older..].iter().copied())
+                .map(|(l, id)| {
+                    let tag = names.iter().find(|(b, _)| *b == l.batch).map(|(_, n)| n.clone());
+                    let mentions = marks(&l, &own);
+                    let about_own = l.from.is_none() && !mentions.is_empty();
+                    let heard = if about_own { None } else { heard_by(&m, &l, &running) };
+                    let seen = 1 + l.also.len();
+                    Line { line: l, id, batch: tag, heard, seen, mentions }
+                })
+                .collect();
+            let mark = mark_at.and_then(|at| ids[older..].iter().skip(1).find(|id| **id >= at).copied());
+            Lines { rows, older, mark }.into_element()
         };
-        page = page.child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
+        let mut main = rect().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
         if broadcast {
-            page = page.child(Composer);
+            main = main.child(Composer);
         } else {
-            page = page.child(
+            main = main.child(
                 rect()
                     .width(Size::fill())
                     .padding((space::M, space::L))
@@ -319,8 +371,73 @@ impl Component for ChatPage {
                     .child(Button::new("chat.send.off", tr("Einstellungen öffnen")).glyph(Icon::Settings).on_press(move |_| Command::OpenSettings.run(store))),
             );
         }
-        page.into_element()
+        main.into_element()
     }
+}
+
+fn running_by_batch(m: &Model) -> HashMap<String, usize> {
+    let mut out = HashMap::new();
+    for g in m.games.values().filter(|g| g.phase.can_chat()) {
+        *out.entry(g.batch_id.clone()).or_insert(0) += 1;
+    }
+    out
+}
+
+/// Which of the person's accounts got `l`, for a line only a few of those on its server got: their names
+/// and the game to answer from.
+fn heard_by(m: &Model, l: &ChatLine, running: &HashMap<String, usize>) -> Option<Heard> {
+    let got = 1 + l.also.iter().filter(|(_, _, b)| *b == l.batch).count();
+    let on = running.get(&l.batch).copied().unwrap_or(0);
+    if got >= on || 1 + l.also.len() > HEARD_MAX {
+        return None;
+    }
+    let names: Vec<&str> = std::iter::once(l.account.as_str()).chain(l.also.iter().map(|(_, n, _)| n.as_str())).collect();
+    Some(Heard { names: names.join(", ") })
+}
+
+fn own_names(m: &Model) -> HashSet<String> {
+    m.accounts.iter().map(|a| a.name.to_lowercase()).filter(|n| n.chars().count() >= MENTION_MIN).collect()
+}
+
+/// The text a line shows: the whole line as the game styled it, else its words.
+fn shown(l: &ChatLine) -> Cow<'_, str> {
+    if l.runs.is_empty() { Cow::Borrowed(l.text.as_str()) } else { Cow::Owned(chat_text::plain(&l.runs)) }
+}
+
+/// Where the person's account names stand in what `l` shows, leaving out the sender's own name.
+fn marks(l: &ChatLine, own: &HashSet<String>) -> Vec<(usize, usize)> {
+    let text = shown(l);
+    let mut out = mentions(&text, own);
+    if !l.runs.is_empty()
+        && let Some(from) = l.from.as_deref()
+        && let Some(i) = out.iter().position(|&(s, e)| text[s..e].eq_ignore_ascii_case(from))
+    {
+        out.remove(i);
+    }
+    out
+}
+
+/// Byte ranges of the person's account names in `text`, as whole words.
+fn mentions(text: &str, own: &HashSet<String>) -> Vec<(usize, usize)> {
+    if own.is_empty() {
+        return Vec::new();
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+        match (start, word(c)) {
+            (None, true) => start = Some(i),
+            (Some(s), false) => {
+                if text.get(s..i).is_some_and(|w| own.contains(&w.to_lowercase())) {
+                    out.push((s, i));
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn empty(t: &Theme, glyph: Icon, title: String, text: String, action: Option<Element>) -> Element {
@@ -339,13 +456,29 @@ fn empty(t: &Theme, glyph: Icon, title: String, text: String, action: Option<Ele
     col.into_element()
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct Heard {
+    names: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Line {
+    line: ChatLine,
+    id: u64,
+    batch: Option<String>,
+    heard: Option<Heard>,
+    /// How many of the person's accounts got the line.
+    seen: usize,
+    mentions: Vec<(usize, usize)>,
+}
+
 /// The newest lines in scope, following the newest while the list is at its end.
 #[derive(PartialEq)]
 struct Lines {
-    lines: Vec<ChatLine>,
-    ids: Vec<u64>,
+    rows: Vec<Line>,
     older: usize,
-    names: Vec<(String, String)>,
+    /// The first line that came while the page was away, marked as new.
+    mark: Option<u64>,
 }
 
 impl Component for Lines {
@@ -354,12 +487,13 @@ impl Component for Lines {
         let store = use_store();
         let mut scroll = use_scroll_controller(|| ScrollConfig { default_vertical_position: ScrollPosition::End, ..Default::default() });
         let mut follow = use_state(|| true);
-        let mut tall = use_state(|| 0f32);
+        let mut away = use_state(|| None::<u64>);
+        let mut tall = use_state(|| (0f32, 0f32));
         use_side_effect(move || {
             let Some((content, viewport)) = *scroll.bounds.read() else { return };
             let y = scroll.position().y;
-            if content.height != *tall.peek() {
-                tall.set(content.height);
+            if (content.height, viewport.height) != *tall.peek() {
+                tall.set((content.height, viewport.height));
                 if *follow.peek() {
                     scroll.scroll_to(ScrollPosition::End, Direction::Vertical);
                 }
@@ -368,9 +502,15 @@ impl Component for Lines {
             let at_end = -y >= content.height - viewport.height - space::S;
             if at_end != *follow.peek() {
                 follow.set(at_end);
+                let newest = {
+                    let m = store.model.peek();
+                    (m.chat_base() + m.chat.len() as u64).checked_sub(1)
+                };
+                away.set(if at_end { None } else { newest });
             }
         });
         let at_end = *follow.read();
+        let fresh = away.read().map_or(0, |from| self.rows.iter().filter(|r| r.id > from).count());
         let now = now();
         let mut list = rect().width(Size::fill()).padding((space::S, space::S, space::M, space::S));
         if self.older > 0 {
@@ -382,25 +522,36 @@ impl Component for Lines {
             })));
         }
         let mut before: Option<i64> = None;
-        for (i, l) in self.lines.iter().enumerate() {
-            if before.is_none_or(|b| !same_day(b, l.at)) {
-                list = list.child(day_separator(&t, day_title(l.at, now)));
+        for r in &self.rows {
+            let mut stamp = before.is_none_or(|b| b.div_euclid(60) != r.line.at.div_euclid(60));
+            if before.is_none_or(|b| !same_day(b, r.line.at)) {
+                list = list.child(separator(&t, day_title(r.line.at, now), t.text3, t.separator));
+                stamp = true;
             }
-            before = Some(l.at);
-            let batch = self.names.iter().find(|(id, _)| *id == l.batch).map(|(_, n)| n.clone());
-            list = list.child(Row { line: l.clone(), id: self.ids.get(i).copied().unwrap_or_default(), batch }.into_element());
+            if self.mark == Some(r.id) {
+                list = list.child(separator(&t, tr("Neue Zeilen"), t.accent_text, t.accent.with_af32(0.5)));
+                stamp = true;
+            }
+            before = Some(r.line.at);
+            list = list.child(Row { row: r.clone(), stamp }.into_element());
         }
         let mut wrap = rect().width(Size::fill()).height(Size::fill()).child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(list));
         if !at_end {
+            let label = match fresh {
+                0 => tr("Zu den neuesten"),
+                1 => tr("1 neue Zeile"),
+                n => trf("%lld neue Zeilen", &[&n]),
+            };
             wrap = wrap.child(
                 rect()
                     .position(Position::new_absolute().left(0.).bottom(space::M))
                     .width(Size::fill())
                     .main_align(Alignment::Center)
                     .horizontal()
-                    .child(Button::new("chat.newest", tr("Zu den neuesten")).glyph(Icon::ArrowDown).primary().on_press(move |_| {
+                    .child(Button::new("chat.newest", label).glyph(Icon::ArrowDown).primary().on_press(move |_| {
                         scroll.scroll_to(ScrollPosition::End, Direction::Vertical);
                         follow.set(true);
+                        away.set(None);
                     })),
             );
         }
@@ -410,57 +561,190 @@ impl Component for Lines {
 
 #[derive(PartialEq)]
 struct Row {
-    line: ChatLine,
-    id: u64,
-    batch: Option<String>,
+    row: Line,
+    /// Whether the line opens its minute and shows the time.
+    stamp: bool,
 }
 
 impl Component for Row {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        let l = &self.line;
-        let who = if l.also.is_empty() { l.account.clone() } else { format!("{} +{}", l.account, l.also.len()) };
-        let names = (!l.also.is_empty()).then(|| std::iter::once(l.account.as_str()).chain(l.also.iter().map(|(_, n, _)| n.as_str())).collect::<Vec<_>>().join(", "));
-        let mut label = rect().width(Size::px(LABEL_W)).child(WithTip::new(names, line(&t, who, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis)));
-        if let Some(b) = &self.batch {
-            label = label.child(caption(&t, b.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
-        }
-        let text = clip(&l.text);
-        let (prefix, color) = match (&l.from, l.whisper) {
-            (Some(from), true) => (Some(trf("%@ flüstert:", &[from])), t.accent_text),
-            (None, true) => (Some(tr("Flüstert:")), t.accent_text),
-            (Some(from), false) => (Some(format!("{from}:")), t.text2),
-            (None, false) => (None, t.text2),
+        let r = &self.row;
+        let l = &r.line;
+        let base = if l.from.is_none() { t.text2 } else { t.text1 };
+        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(base).line_height(frame::PARA_LINE);
+        let plain;
+        let runs = if l.runs.is_empty() {
+            if let Some(from) = &l.from {
+                body = body.span(Span::new(format!("{from}: ")).color(t.text2).font_weight(FontWeight::SEMI_BOLD));
+            }
+            plain = [Run { text: l.text.clone(), ..Run::default() }];
+            &plain[..]
+        } else {
+            &l.runs[..]
         };
-        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(t.text1);
-        if let Some(p) = prefix {
-            body = body.span(Span::new(format!("{p} ")).color(color).font_weight(FontWeight::SEMI_BOLD));
-        }
-        body = body.span(Span::new(text));
-        let wash = if l.whisper { t.accent.with_af32(WASH) } else { Color::TRANSPARENT };
-        let summary = format!("{}: {}", l.account, l.text);
-        let spot = use_spot(&format!("chat.line.{}", self.id), "chat-line", &summary, true);
-        rect()
+        body = body.spans_iter(spans(&t, runs, &r.mentions, base).into_iter());
+        let text = shown(l);
+        let summary = match &l.from {
+            Some(_) if !l.runs.is_empty() => text.into_owned(),
+            from => format!("{}: {text}", from.as_deref().unwrap_or(&l.account)),
+        };
+        let spot = use_spot(&format!("chat.line.{}", r.id), "chat-line", &summary, true);
+        let mut row = rect()
             .on_sized(spot)
             .a11y_role(AccessibilityRole::ListItem)
             .a11y_alt(summary)
             .width(Size::fill())
-            .padding((space::XS, space::M))
+            .padding((space::XXS + 1., space::M))
             .horizontal()
             .spacing(space::M)
-            .corner_radius(super::theme::radius::INNER)
-            .background(wash)
-            .border(Border::new().fill(if l.whisper { t.accent } else { Color::TRANSPARENT }).width(BorderWidth { top: 0., right: 0., bottom: 0., left: BAR }).alignment(BorderAlignment::Inner))
-            .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).child(caption(&t, clock(l.at))))
-            .child(label)
-            .child(body)
-            .content(Content::flex())
+            .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).maybe_child(self.stamp.then(|| caption(&t, clock(l.at)).font_tabular())))
+            .child(body);
+        if r.heard.is_some() || r.batch.is_some() {
+            let mut tags = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).max_width(Size::px(TAG_MAX * 2.));
+            if let Some(b) = &r.batch {
+                tags = tags.child(rect().max_width(Size::px(TAG_MAX)).child(caption(&t, b.clone())));
+            }
+            if let Some(h) = &r.heard {
+                let tip = trf("Nur bei %@ angekommen.", &[&h.names]);
+                let names = rect().max_width(Size::px(TAG_MAX)).a11y_alt(tip.clone()).child(caption(&t, h.names.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+                tags = tags.child(WithTip::new(Some(tip), names));
+            }
+            row = row.child(tags);
+        }
+        let tip = (r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
+        WithTip::new(tip, row.content(Content::flex()))
     }
 }
 
-fn day_separator(t: &Theme, day: String) -> Element {
-    let rule = || rect().width(Size::flex(1.)).height(Size::px(1.)).background(t.separator);
-    rect().width(Size::fill()).padding((space::S, space::M)).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rule()).child(caption(t, day)).child(rule()).content(Content::flex()).into_element()
+/// The spans for `runs` in their colours, each made readable on the page, with the person's names in `marks` in accent,
+/// cut after `SHOWN_CHARS` characters.
+fn spans(t: &Theme, runs: &[Run], marks: &[(usize, usize)], base: Color) -> Vec<Span<'static>> {
+    let back = Rgba { r: t.surface.r(), g: t.surface.g(), b: t.surface.b(), a: 255 };
+    let mut out = Vec::new();
+    let mut left = SHOWN_CHARS;
+    let mut start = 0;
+    for run in runs {
+        let end = start + run.text.len();
+        let ink = run.color.map_or(base, |c| color(Rgba::rgb(c).readable_on(back, 4.5)));
+        let mut cuts: Vec<usize> = marks.iter().flat_map(|&(s, e)| [s, e]).filter(|&b| b > start && b < end).map(|b| b - start).collect();
+        cuts.push(run.text.len());
+        let mut from = 0;
+        for to in cuts {
+            let Some(piece) = run.text.get(from..to).filter(|p| !p.is_empty()) else { continue };
+            let marked = marks.iter().any(|&(s, e)| s <= start + from && start + to <= e);
+            let n = piece.chars().count();
+            let cut = n > left;
+            let mut text: String = if cut { piece.chars().take(left).collect() } else { piece.to_owned() };
+            if cut {
+                text.push('…');
+            }
+            left = left.saturating_sub(n);
+            let mut span = Span::new(text).color(if marked { t.accent_text } else { ink });
+            if run.bold {
+                span = span.font_weight(FontWeight::BOLD);
+            } else if marked {
+                span = span.font_weight(FontWeight::SEMI_BOLD);
+            }
+            if run.italic {
+                span = span.font_slant(FontSlant::Italic);
+            }
+            if run.strike {
+                span = span.text_decoration(TextDecoration::LineThrough);
+            } else if run.underline {
+                span = span.text_decoration(TextDecoration::Underline);
+            }
+            out.push(span);
+            if cut {
+                return out;
+            }
+            from = to;
+        }
+        start = end;
+    }
+    out
+}
+
+fn separator(t: &Theme, text: String, ink: Color, rule: Color) -> Element {
+    let rule = move || rect().width(Size::flex(1.)).height(Size::px(1.)).background(rule);
+    rect().width(Size::fill()).padding((space::S, space::M)).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rule()).child(line(t, text, font::CAPTION, ink).font_weight(FontWeight::MEDIUM)).child(rule()).content(Content::flex()).into_element()
+}
+
+/// The control that says who gets the next line; a click or Ctrl+E opens the list.
+#[derive(PartialEq)]
+struct SendAs;
+
+impl Component for SendAs {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let mut shared = store.ui.chat;
+        let a11y = use_a11y();
+        let focus = use_focus(a11y);
+        let mut hovered = use_state(|| false);
+        let m = store.model.read();
+        let target = target_of(&m, shared);
+        let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
+        let label = target.as_ref().map_or_else(|| tr("Absender wählen"), |tg| name(&m, tg));
+        let account = match &target {
+            Some(Target::Instance(key)) => m.games.get(key).map(|g| g.account_id),
+            _ => None,
+        };
+        let count = match &target {
+            Some(Target::All | Target::Batch(_)) => Some(reach.to_string()),
+            Some(Target::Instance(key)) => m.games.get(key).and_then(|g| target::state(&g.phase)),
+            None => None,
+        };
+        let summary = match &count {
+            Some(c) => format!("{}: {label} · {c}", tr("Senden als")),
+            None => format!("{}: {label}", tr("Senden als")),
+        };
+        let mut spot = use_spot("chat.sendas", "button", &summary, true);
+        let open = *shared.picker.read();
+        let fill = if open { t.selection } else if *hovered.read() { t.hover } else { t.control };
+        let ink = if target.is_none() { t.text3 } else { t.text1 };
+        let mut chip = rect()
+            .a11y_id(a11y)
+            .a11y_focusable(true)
+            .a11y_role(AccessibilityRole::Button)
+            .a11y_alt(summary)
+            .on_sized(move |e: Event<SizedEventData>| {
+                shared.chip_at.set_if_modified(Bounds::of(&e));
+                spot(e);
+            })
+            .height(Size::px(control::M))
+            .max_width(Size::px(CHIP_MAX))
+            .padding((0., space::S))
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::XS + 2.)
+            .corner_radius(t.shape.field)
+            .background(fill)
+            .cursor(CursorIcon::Pointer)
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_press(move |_| if *store.ui.chat.picker.peek() { shared.picker.set(false) } else { open_picker(store) })
+            .on_key_down(move |e: Event<KeyboardEventData>| {
+                let opens = matches!(&e.key, Key::Named(NamedKey::Enter | NamedKey::ArrowUp | NamedKey::ArrowDown)) || matches!(&e.key, Key::Character(c) if c == " ");
+                if a11y.is_focused() && opens {
+                    e.stop_propagation();
+                    open_picker(store);
+                }
+            });
+        if let Some(tg) = &target {
+            chip = chip.child(mark(&t, store, tg, account, &label, t.text2));
+        }
+        chip = chip.child(line(&t, label, font::BODY, ink).font_weight(FontWeight::MEDIUM));
+        if let Some(c) = count {
+            chip = chip.child(line(&t, c, font::CALLOUT, t.text2).font_tabular());
+        }
+        chip = chip.child(icon(&t, Icon::ChevronUp, iconsize::XS, t.text3));
+        if let Some(border) = ring(&t, focus()) {
+            chip = chip.border(border);
+        }
+        let tip = Shortcut::primary(Code::KeyE).label();
+        WithTip::new(Some(trf("Wer sendet · %@ oder @Name", &[&tip])), chip)
+    }
 }
 
 /// The line under the list: who gets the message, the message, and what happened to the last one.
@@ -471,7 +755,7 @@ impl Component for Composer {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let shared = store.ui.chat;
+        let mut shared = store.ui.chat;
         let field = use_a11y();
         let focus_at = *shared.focus.read();
         use_side_effect_with_deps(&focus_at, move |at| {
@@ -493,74 +777,100 @@ impl Component for Composer {
             if !value.is_empty() && shared.sent.peek().is_some() {
                 shared.sent.set(None);
             }
+            shared.at_hot.set_if_modified(None);
+            if shared.at_closed.peek().as_ref().is_some_and(|c| c != value) && at_query(value).is_none() {
+                shared.at_closed.set(None);
+            }
+            let all = choices(&store.model.peek(), &shared.recent.peek());
+            if let Some((target, rest)) = resolve_at(value, &all) {
+                shared.target.set(Some(target));
+                shared.draft.set(rest);
+            }
         });
         let m = store.model.read();
         let target = target_of(&m, shared);
-        let reach = reached(&m, target.as_ref());
-        let choices = target_choices(&m);
-        let chosen = target.as_ref().and_then(|tg| choices.iter().position(|(_, c)| c == tg));
-        let name = match &target {
-            Some(Target::Batch(id)) => m.batch(id).map(|b| b.name.clone()),
-            Some(Target::Instance(key)) => m.games.get(key).map(|i| i.name.clone()),
-            None => None,
-        }
-        .unwrap_or_default();
-        let hint = match (&target, shared.sent.read().clone()) {
-            (_, Some(sent)) => sent,
-            (None, None) => tr("Wähle, wer die Nachricht bekommt."),
-            (Some(Target::Batch(_)), None) if reach == 0 => trf("In %@ läuft gerade keine Instanz.", &[&name]),
-            (Some(Target::Batch(_)), None) => {
-                let who = if reach == 1 { tr("1 laufende Instanz") } else { trf("%lld laufende Instanzen", &[&reach]) };
-                trf("An %@ in %@ · Enter sendet · ↑ letzte Eingabe", &[&who, &name])
-            }
-            (Some(Target::Instance(_)), None) => trf("An %@ · Enter sendet · ↑ letzte Eingabe", &[&name]),
+        let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
+        let all = choices(&m, &shared.recent.read());
+        let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
+        let absent = match &target {
+            None => Some(tr("Der gewählte Absender ist weg. Wähle, wer sendet.")),
+            Some(tg @ Target::Instance(_)) if reach == 0 => Some(trf("%@ ist gerade nicht im Spiel.", &[&name(&m, tg)])),
+            Some(tg) if reach == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
+            Some(_) => None,
         };
+        let hint = shared.sent.read().clone().or_else(|| absent.clone());
         let joins: Vec<String> = match &target {
             Some(Target::Batch(id)) => m.batch(id).map(|b| b.join_lines()).unwrap_or_default(),
             _ => Vec::new(),
         };
-        let mut labels: Vec<String> = choices.iter().map(|(l, _)| l.clone()).collect();
-        let targets: Vec<Target> = choices.into_iter().map(|(_, c)| c).collect();
-        let picker_at = match chosen {
-            Some(i) => i,
-            None => {
-                labels.insert(0, tr("Empfänger wählen"));
-                0
-            }
+        let blocked = if absent.is_some() {
+            absent
+        } else if draft.trim().is_empty() {
+            Some(tr("Schreib zuerst eine Nachricht."))
+        } else {
+            None
         };
-        let offset = usize::from(chosen.is_none());
-        let can_send = !draft.trim().is_empty();
-        let mut send = Button::new("chat.send", tr("Senden")).glyph(Icon::Send).disabled((!can_send).then(|| tr("Schreib zuerst eine Nachricht.")));
+        let can_send = blocked.is_none();
+        let mut send_button = Button::new("chat.send", tr("Senden")).glyph(Icon::Send).disabled(blocked);
         if can_send {
-            send = send.primary();
+            send_button = send_button.primary();
         }
+        let submit_list = suggest.as_ref().map(|(_, l)| l.clone());
         let row = rect()
             .width(Size::fill())
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
-            .child(Select::new("chat.target", tr("Empfänger"), labels, picker_at).width(TARGET_W).on_choose(move |i| {
-                let Some(t) = i.checked_sub(offset).and_then(|i| targets.get(i)).cloned() else { return };
-                let mut shared = store.ui.chat;
-                shared.target.set(Some(t));
-                shared.manual.set(true);
-                shared.sent.set(None);
-                shared.rejected.set(None);
-            }))
-            .child(rect().width(Size::flex(1.)).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl")).a11y(field).on_submit(move |_| send_now(store))))
+            .child(SendAs)
+            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl · @Name wechselt den Absender")).a11y(field).rows_through().on_submit(move |_| {
+                if let Some(list) = submit_list.as_ref() {
+                    if let Some(at) = list.len().checked_sub(1).map(|end| store.ui.chat.at_hot.peek().unwrap_or(0).min(end)) {
+                        pick_at(store, list[at].target.clone());
+                    }
+                    return;
+                }
+                send(store);
+            })))
             .content(Content::flex())
-            .child(send.on_press(move |_| send_now(store)));
+            .child(send_button.on_press(move |_| send(store)));
         let note = match shared.rejected.read().clone() {
-            Some((_, why)) => line(&t, why, font::CAPTION, t.danger_text),
-            None => caption(&t, hint),
+            Some((_, why)) => Some(line(&t, why, font::CAPTION, t.danger_text)),
+            None => hint.map(|h| caption(&t, h)),
         };
+        let keys_list = suggest.as_ref().map(|(_, l)| l.clone());
         let mut col = rect()
             .width(Size::fill())
             .padding((space::M, space::L, space::S, space::L))
             .spacing(space::XS)
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 1., right: 0., bottom: 0., left: 0. }).alignment(BorderAlignment::Inner))
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
-                if *Platform::get().current_window().focused_accessibility_id.peek() != field || !e.modifiers.is_empty() {
+                if *Platform::get().current_window().focused_accessibility_id.peek() != field {
+                    return;
+                }
+                if Shortcut::primary(Code::KeyE).matches(&e) {
+                    e.stop_propagation();
+                    open_picker(store);
+                    return;
+                }
+                if !e.modifiers.is_empty() {
+                    return;
+                }
+                if let Some(list) = &keys_list {
+                    let mut shared = store.ui.chat;
+                    if matches!(e.key, Key::Named(NamedKey::Enter)) {
+                        return;
+                    }
+                    let hot = shared.at_hot.peek().or(Some(0));
+                    match step(&e.key, list.len(), hot) {
+                        Some(Step::Move(i)) => shared.at_hot.set(Some(i)),
+                        Some(Step::Pick(i)) => pick_at(store, list[i].target.clone()),
+                        Some(Step::Close) => {
+                            let draft = shared.draft.peek().clone();
+                            shared.at_closed.set(Some(draft));
+                        }
+                        None => return,
+                    }
+                    e.stop_propagation();
                     return;
                 }
                 let delta = match e.key {
@@ -572,17 +882,157 @@ impl Component for Composer {
                 step_history(store, delta);
             })
             .child(row)
-            .child(note);
+            .maybe_child(note);
         if !joins.is_empty() {
             let names: Vec<&str> = joins.iter().map(|j| j.split_whitespace().next().unwrap_or_default()).collect();
-            col = col.child(caption(&t, trf("Beim Betreten sendet jede Instanz: %@", &[&names.join(", ")])).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+            col = col.child(caption(&t, trf("Beim Betreten sendet jeder Account: %@", &[&names.join(", ")])).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+        }
+        if *shared.picker.read() {
+            col = col.child(Popup { anchor: *shared.chip_at.read(), current: target.clone() });
+        } else if let Some((sections, list)) = suggest {
+            col = col.child(Suggestions { anchor: *shared.field_at.read(), list, sections, hot: *shared.at_hot.read(), current: target.clone() });
         }
         col
     }
 }
 
-fn send_now(store: Store) {
-    send(store);
+/// Picks the recipient an `@name` pointed at and takes the name out of the message.
+fn pick_at(store: Store, target: Target) {
+    let mut shared = store.ui.chat;
+    shared.draft.set(String::new());
+    shared.at_hot.set(None);
+    pick(store, target);
+}
+
+/// The recipient pop-up over the composer: a filter and the list.
+#[derive(PartialEq)]
+struct Popup {
+    anchor: Bounds,
+    current: Option<Target>,
+}
+
+impl Component for Popup {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let mut shared = store.ui.chat;
+        let (w, h) = *store.ui.window.read();
+        let m = store.model.read();
+        let q = shared.query.read().clone();
+        use_side_effect_with_deps(&q, move |_| shared.hot.set_if_modified(None));
+        let list = filter(&choices(&m, &shared.recent.read()), &q);
+        let sections = q.trim().is_empty();
+        let hot = (*shared.hot.read()).or_else(|| (!sections && !list.is_empty()).then_some(0)).or_else(|| self.current.as_ref().and_then(|c| list.iter().position(|x| x.target == *c)));
+        let list_h = List::height(&list, sections, picker::ROW * POPUP_ROWS).max(picker::ROW);
+        let panel_h = control::M + space::XS + list_h + space::XS * 2.;
+        let width = POPUP_W.min(w - space::S * 2.);
+        let x = self.anchor.x.min(w - width - space::S).max(space::S);
+        let y = (self.anchor.y - panel_h - space::XS).max(space::S);
+        let keys = list.clone();
+        let mut panel = rect()
+            .position(Position::new_absolute().left(x).top(y))
+            .a11y_role(AccessibilityRole::Dialog)
+            .a11y_alt(tr("Senden als"))
+            .width(Size::px(width))
+            .padding(space::XS)
+            .spacing(space::XS)
+            .background(t.raised)
+            .corner_radius(t.shape.control + 2.)
+            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Outer))
+            .shadow(t.elevation.float.clone())
+            .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
+            .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                let mut shared = store.ui.chat;
+                match step(&e.key, keys.len(), hot) {
+                    Some(Step::Move(i)) => shared.hot.set(Some(i)),
+                    Some(Step::Pick(i)) => pick(store, keys[i].target.clone()),
+                    Some(Step::Close) => {
+                        shared.picker.set(false);
+                        shared.focus.set(Some(Instant::now()));
+                    }
+                    None => return,
+                }
+                e.stop_propagation();
+            })
+            .child(Field::new("chat.sendas.search", shared.query).placeholder(tr("Account oder Batch suchen")).glyph(Icon::Search).auto_focus().rows_through());
+        panel = if list.is_empty() {
+            panel.child(rect().width(Size::fill()).height(Size::px(list_h)).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)))
+        } else {
+            panel.child(List {
+                id: "chat.sendas.option",
+                choices: list,
+                sections,
+                hot,
+                current: self.current.clone(),
+                max_h: Some(list_h),
+                on_pick: EventHandler::new(move |tg| pick(store, tg)),
+                on_hover: EventHandler::new(move |i| shared.hot.set(Some(i))),
+            })
+        };
+        rect()
+            .position(Position::new_global().left(0.).top(0.))
+            .layer(Layer::Overlay)
+            .width(Size::px(w))
+            .height(Size::px(h))
+            .on_mouse_down(move |_| {
+                shared.picker.set(false);
+                shared.focus.set(Some(Instant::now()));
+            })
+            .child(panel)
+    }
+}
+
+/// The recipients that fit an `@name` being typed, over the message field.
+#[derive(PartialEq)]
+struct Suggestions {
+    anchor: Bounds,
+    list: Vec<Choice>,
+    sections: bool,
+    hot: Option<usize>,
+    current: Option<Target>,
+}
+
+impl Component for Suggestions {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let mut shared = store.ui.chat;
+        let (w, _) = *store.ui.window.read();
+        let list_h = List::height(&self.list, self.sections, picker::ROW * POPUP_ROWS).max(picker::ROW);
+        let panel_h = list_h + space::XS * 2. + font::CAPTION * 1.4 + space::XS;
+        let width = POPUP_W.min(self.anchor.w).max(POPUP_W.min(w - space::S * 2.));
+        let x = self.anchor.x.min(w - width - space::S).max(space::S);
+        let y = (self.anchor.y - panel_h - space::XS).max(space::S);
+        let hot = self.hot.or_else(|| (!self.list.is_empty()).then_some(0));
+        let mut panel = rect()
+            .position(Position::new_global().left(x).top(y))
+            .layer(Layer::Overlay)
+            .a11y_role(AccessibilityRole::ListBox)
+            .a11y_alt(tr("Senden als"))
+            .width(Size::px(width))
+            .padding(space::XS)
+            .spacing(space::XS)
+            .background(t.raised)
+            .corner_radius(t.shape.control + 2.)
+            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Outer))
+            .shadow(t.elevation.float.clone())
+            .child(rect().padding((0., space::S)).child(caption(&t, tr("Senden als · Enter wählt · Esc schließt"))));
+        panel = if self.list.is_empty() {
+            panel.child(rect().width(Size::fill()).height(Size::px(list_h)).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)))
+        } else {
+            panel.child(List {
+                id: "chat.at.option",
+                choices: self.list.clone(),
+                sections: self.sections,
+                hot,
+                current: self.current.clone(),
+                max_h: Some(list_h),
+                on_pick: EventHandler::new(move |tg| pick_at(store, tg)),
+                on_hover: EventHandler::new(move |i| shared.at_hot.set(Some(i))),
+            })
+        };
+        panel
+    }
 }
 
 fn now() -> i64 {
@@ -622,8 +1072,8 @@ fn clip(text: &str) -> String {
     cut
 }
 
-fn in_scope(line: &ChatLine, scope: &Scope) -> bool {
-    scope.batch.as_ref().is_none_or(|b| line.batch == *b || line.also.iter().any(|(_, _, other)| other == b)) && (!scope.whispers || line.whisper)
+fn in_scope(line: &ChatLine, batch: Option<&str>) -> bool {
+    batch.is_none_or(|b| line.batch == b || line.also.iter().any(|(_, _, other)| other == b))
 }
 
 fn line_problem(text: &str) -> Option<String> {
@@ -675,25 +1125,48 @@ fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &st
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatLine, MAX_CHAT_CHARS, SHOWN_CHARS, Scope, clip, clock, day_title, in_scope, line_problem, now, recall_step, same_day, unique};
+    use std::collections::{HashMap, HashSet};
 
-    fn line(batch: &str, whisper: bool) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, whisper, from: None, text: "x".into() }
+    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clock, day_title, heard_by, in_scope, line_problem, mentions, now, recall_step, same_day, unique};
+
+    fn line(batch: &str) -> ChatLine {
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into(), runs: Vec::new() }
     }
 
     #[test]
-    fn scope_filters_by_batch_and_whispers() {
-        let all = Scope::default();
-        let farm = Scope { batch: Some("farm".into()), whispers: false };
-        let whispers = Scope { batch: None, whispers: true };
-        let farm_whispers = Scope { batch: Some("farm".into()), whispers: true };
-        assert!(in_scope(&line("a", false), &all));
-        assert!(in_scope(&line("farm", false), &farm) && !in_scope(&line("a", false), &farm));
-        let mut shared = line("a", false);
+    fn scope_filters_by_batch() {
+        assert!(in_scope(&line("a"), None));
+        assert!(in_scope(&line("farm"), Some("farm")) && !in_scope(&line("a"), Some("farm")));
+        let mut shared = line("a");
         shared.also.push(("k".into(), "n".into(), "farm".into()));
-        assert!(in_scope(&shared, &farm));
-        assert!(in_scope(&line("a", true), &whispers) && !in_scope(&line("a", false), &whispers));
-        assert!(in_scope(&line("farm", true), &farm_whispers) && !in_scope(&line("farm", false), &farm_whispers) && !in_scope(&line("a", true), &farm_whispers));
+        assert!(in_scope(&shared, Some("farm")));
+    }
+
+    #[test]
+    fn lines_only_some_accounts_saw_name_them() {
+        let m = Model::default();
+        let running: HashMap<String, usize> = [("farm".to_owned(), 3)].into();
+        let mut l = line("farm");
+        assert_eq!(heard_by(&m, &l, &running).map(|h| h.names), Some("Alex".into()));
+        l.also.push(("k2".into(), "Bert".into(), "farm".into()));
+        assert_eq!(heard_by(&m, &l, &running).map(|h| h.names), Some("Alex, Bert".into()));
+        l.also.push(("k3".into(), "Cara".into(), "farm".into()));
+        assert_eq!(heard_by(&m, &l, &running), None);
+        let crowd: HashMap<String, usize> = [("farm".to_owned(), 30)].into();
+        assert_eq!(heard_by(&m, &l, &crowd).map(|h| h.names), Some("Alex, Bert, Cara".into()));
+        l.also.push(("k4".into(), "Dora".into(), "farm".into()));
+        assert_eq!(heard_by(&m, &l, &crowd), None);
+        let alone: HashMap<String, usize> = [("farm".to_owned(), 1)].into();
+        assert_eq!(heard_by(&m, &line("farm"), &alone), None);
+    }
+
+    #[test]
+    fn own_names_are_found_as_whole_words() {
+        let own: HashSet<String> = ["alex".to_owned(), "bert_2".to_owned()].into();
+        assert_eq!(mentions("hi Alex, und alexander", &own), [(3, 7)]);
+        assert_eq!(mentions("bert_2!", &own), [(0, 6)]);
+        assert_eq!(mentions("Grüße alex", &own), [(8, 12)]);
+        assert!(mentions("nothing", &HashSet::new()).is_empty());
     }
 
     #[test]

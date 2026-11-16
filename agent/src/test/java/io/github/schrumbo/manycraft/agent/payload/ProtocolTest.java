@@ -43,11 +43,28 @@ class ProtocolTest {
 
 	@Test
 	void chatEncodesKindFromAndText() {
-		JsonObject o = json(Protocol.chat("whisper", "Rcon", "hi \"there\" <3"));
-		assertEquals("whisper", o.get("kind").getAsString());
+		JsonObject o = json(Protocol.chat("player", "Rcon", "hi \"there\" <3"));
+		assertEquals("player", o.get("kind").getAsString());
 		assertEquals("Rcon", o.get("from").getAsString());
 		assertEquals("hi \"there\" <3", o.get("text").getAsString());
 		assertTrue(json(Protocol.chat("system", null, "x")).get("from").isJsonNull());
+		assertFalse(o.has("runs"));
+	}
+
+	@Test
+	void chatCarriesStyledRuns() {
+		var runs = java.util.List.of(new Protocol.Run("<Rcon> ", 0xFFAA00, true, false, false, false), new Protocol.Run("hi", null, false, true, true, true));
+		JsonObject o = json(Protocol.chat("player", "Rcon", "hi", runs));
+		var list = o.getAsJsonArray("runs");
+		assertEquals(2, list.size());
+		JsonObject a = list.get(0).getAsJsonObject();
+		assertEquals("<Rcon> ", a.get("t").getAsString());
+		assertEquals(0xFFAA00, a.get("c").getAsInt());
+		assertTrue(a.get("b").getAsBoolean());
+		assertFalse(a.has("i"));
+		JsonObject b = list.get(1).getAsJsonObject();
+		assertFalse(b.has("c"));
+		assertTrue(b.get("i").getAsBoolean() && b.get("u").getAsBoolean() && b.get("s").getAsBoolean());
 	}
 
 	@Test

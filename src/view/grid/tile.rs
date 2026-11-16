@@ -208,23 +208,6 @@ fn progress(g: &Game, m: &Model) -> Option<Option<f32>> {
     Some(m.preparing.get(&g.batch_id).filter(|_| g.memory_wait.is_none()).map(|p| f32::from(*p) / 100.))
 }
 
-fn whisper_badge(t: &Theme, n: u32) -> Option<Rect> {
-    (n > 0).then(|| {
-        let alt = if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) };
-        rect()
-            .a11y_alt(alt)
-            .height(Size::px(frame::BADGE))
-            .padding((0., space::XS + space::XXS))
-            .horizontal()
-            .center()
-            .spacing(space::XXS)
-            .corner_radius(radius::FULL)
-            .background(t.accent)
-            .child(icon(t, Icon::Message, iconsize::XS, t.on_accent))
-            .child(label().text(n.to_string()).font_size(font::CAPTION2).font_weight(FontWeight::BOLD).color(t.on_accent))
-    })
-}
-
 impl Component for Tile {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
@@ -299,9 +282,6 @@ impl Component for Tile {
                 bar = bar.child(rect().width(Size::px((w * done.clamp(0., 1.)).round())).height(Size::fill()).background(t.accent));
             }
             pic = pic.child(bar);
-        }
-        if let Some(b) = whisper_badge(&t, game.unread_whispers) {
-            pic = pic.child(rect().position(Position::new_absolute().right(space::S).top(space::S)).child(b));
         }
         if preview.is_none() {
             pic = pic.child(cover(w, h, Color::TRANSPARENT).corner_radius(r).border(Border::new().fill(t.elevation.rim.unwrap_or_else(|| t.separator.with_af32(0.6))).width(1.).alignment(BorderAlignment::Inner)));

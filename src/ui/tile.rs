@@ -41,7 +41,6 @@ pub struct TileData {
     pub stopping: bool,
     /// Whether the stop has run long enough that the tile offers to end the game at once.
     pub overdue: bool,
-    pub whispers: u32,
     pub preview: Option<Arc<RenderImage>>,
     /// Whether `preview` is the running game rather than the still of an earlier run.
     pub live: bool,
@@ -68,7 +67,6 @@ impl TileData {
             && self.history == other.history
             && self.stopping == other.stopping
             && self.overdue == other.overdue
-            && self.whispers == other.whispers
             && self.selected == other.selected
             && self.picked == other.picked
             && self.playing == other.playing
@@ -427,32 +425,6 @@ fn actions(d: &TileData, g: &Geometry, t: &Theme) -> Option<Div> {
     )
 }
 
-fn whispers(d: &TileData, t: &Theme) -> Option<Stateful<Div>> {
-    let n = d.whispers;
-    (n > 0).then(|| {
-        div()
-            .id(SharedString::from(format!("whispers-{}", d.key)))
-            .mark("badge", n.to_string())
-            .flex_none()
-            .min_w(px(tile::BADGE))
-            .h(px(tile::BADGE))
-            .px(px(space::XS))
-            .rounded(px(radius::FULL))
-            .bg(t.accent)
-            .shadow(super::widgets::badge_edge(t))
-            .text_color(t.on_accent)
-            .text_size(px(font::CAPTION2))
-            .font_weight(FontWeight::BOLD)
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(space::XXS))
-            .child(icon("message-square", iconsize::XS, t.on_accent))
-            .child(n.to_string())
-            .tooltip(tip(if n == 1 { tr("1 ungelesene Flüsternachricht") } else { trf("%lld ungelesene Flüsternachrichten", &[&n]) }))
-    })
-}
-
 fn strip(d: &TileData, g: &Geometry, t: &Theme) -> Div {
     let pictured = d.preview.is_some();
     let (ink, quiet) = if pictured { (white(), white().opacity(tint::OVERLAY_TEXT)) } else { (t.primary, t.secondary) };
@@ -515,7 +487,6 @@ fn strip(d: &TileData, g: &Geometry, t: &Theme) -> Div {
             .gap(px(space::XS + space::XXS))
             .child(identity::chip(&d.name, d.color, face, tile::CHIP, font::CAPTION2))
             .child(name)
-            .children(whispers(d, t))
             .child(status),
     )
     .children(because)

@@ -173,7 +173,6 @@ impl Component for SettingsPage {
             Some(tr("Benachrichtigungen")),
             vec![
                 toggle(p, "settings.notify.attention", tr("Bei Problemen"), tr("Eine Meldung pro Batch, wenn ein Account getrennt, gesperrt oder abgestürzt ist."), s.notifications.attention, |s, on| s.notifications.attention = on),
-                toggle(p, "settings.notify.whispers", tr("Bei Flüstern"), tr("Eine Meldung, wenn dir jemand flüstert und Manycraft nicht im Vordergrund ist."), s.notifications.whispers, |s, on| s.notifications.whispers = on),
             ],
             Some(tr("Meldungen kommen gesammelt und nie mit Ton.")),
         );

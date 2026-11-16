@@ -33,7 +33,7 @@ pub struct SelectionBar {}
 
 fn on_server(store: Store) -> Vec<String> {
     let m = store.model.peek();
-    store.ui.selection.peek().iter().filter(|k| m.games.get(*k).is_some_and(|g| g.phase.on_server())).cloned().collect()
+    store.ui.selection.peek().iter().filter(|k| m.games.get(*k).is_some_and(|g| g.phase.can_chat())).cloned().collect()
 }
 
 impl Component for SelectionBar {

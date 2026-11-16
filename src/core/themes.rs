@@ -100,6 +100,55 @@ impl Rgba {
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
 
+    /// This colour with its lightness moved just far enough to reach `min` contrast against `back`, keeping hue and
+    /// saturation.
+    pub fn readable_on(self, back: Self, min: f64) -> Self {
+        if self.contrast(back) >= min {
+            return self;
+        }
+        let (h, s, l) = self.hsl();
+        let toward = if back.luminance() < 0.18 { 1. } else { 0. };
+        let at = |x: f64| Self { a: self.a, ..Self::from_hsl(h, s, l + (toward - l) * x) };
+        if at(1.).contrast(back) < min {
+            return at(1.);
+        }
+        let (mut lo, mut hi) = (0., 1.);
+        for _ in 0..16 {
+            let mid = (lo + hi) / 2.;
+            if at(mid).contrast(back) >= min { hi = mid } else { lo = mid }
+        }
+        at(hi)
+    }
+
+    fn hsl(self) -> (f64, f64, f64) {
+        let [r, g, b] = [self.r, self.g, self.b].map(|v| f64::from(v) / 255.);
+        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        let l = (max + min) / 2.;
+        let d = max - min;
+        if d == 0. {
+            return (0., 0., l);
+        }
+        let s = d / (1. - (2. * l - 1.).abs());
+        let h = if max == r { ((g - b) / d).rem_euclid(6.) } else if max == g { (b - r) / d + 2. } else { (r - g) / d + 4. };
+        (h * 60., s, l)
+    }
+
+    fn from_hsl(h: f64, s: f64, l: f64) -> Self {
+        let c = (1. - (2. * l - 1.).abs()) * s;
+        let x = c * (1. - ((h / 60.).rem_euclid(2.) - 1.).abs());
+        let m = l - c / 2.;
+        let (r, g, b) = match (h / 60.) as u32 {
+            0 => (c, x, 0.),
+            1 => (x, c, 0.),
+            2 => (0., c, x),
+            3 => (0., x, c),
+            4 => (x, 0., c),
+            _ => (c, 0., x),
+        };
+        let byte = |v: f64| ((v + m) * 255.).round().clamp(0., 255.) as u8;
+        Self { r: byte(r), g: byte(g), b: byte(b), a: 255 }
+    }
+
     /// Black or white, whichever reads better on this colour.
     pub fn ink(self) -> Self {
         if Self::BLACK.contrast(self) >= Self::WHITE.contrast(self) { Self::BLACK } else { Self::WHITE }
@@ -632,6 +681,21 @@ fn palette(value: &Value, key: &str, dark: bool, identity: &[Rgba], errors: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readable_on_keeps_hue_and_reaches_contrast() {
+        let dark = Rgba::rgb(0x1C1C1E);
+        let light = Rgba::rgb(0xFFFFFF);
+        for c in [0x0000AA, 0xAA0000, 0x555555, 0x000000, 0x00AAAA] {
+            assert!(Rgba::rgb(c).readable_on(dark, 4.5).contrast(dark) >= 4.5, "{c:06x} on dark");
+        }
+        for c in [0xFFFF55, 0x55FF55, 0xFFFFFF, 0xFFAA00, 0x55FFFF] {
+            assert!(Rgba::rgb(c).readable_on(light, 4.5).contrast(light) >= 4.5, "{c:06x} on light");
+        }
+        assert_eq!(Rgba::rgb(0xFF5555).readable_on(dark, 4.5), Rgba::rgb(0xFF5555));
+        let gold = Rgba::rgb(0xFFAA00).readable_on(light, 4.5);
+        assert!(gold.r > gold.g && gold.g > gold.b);
+    }
 
     const MINIMAL: &str = r##"{
   "name": "Probe",

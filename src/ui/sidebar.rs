@@ -23,7 +23,6 @@ struct Row {
     label: String,
     trailing: Option<String>,
     attention: usize,
-    unread: u32,
     hint: Option<String>,
     running: bool,
     /// The batch whose bulk start the row can cancel.
@@ -72,23 +71,6 @@ fn row_body(r: Row, selected: bool, t: &Theme) -> Stateful<Div> {
                     .items_center()
                     .justify_center()
                     .child(r.attention.to_string()),
-            )
-        })
-        .when(r.unread > 0, |d| {
-            d.child(
-                div()
-                    .h(px(shell::BADGE))
-                    .min_w(px(shell::BADGE))
-                    .px(px(space::XS))
-                    .rounded(px(radius::FULL))
-                    .bg(t.accent)
-                    .text_color(t.on_accent)
-                    .text_size(px(font::CAPTION2))
-                    .font_weight(FontWeight::BOLD)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(r.unread.to_string()),
             )
         })
         .when_some(r.trailing, |d, text| d.child(div().flex_none().text_size(px(font::CAPTION)).font_features(tabular()).text_color(if selected { t.accent_text } else { t.tertiary }).child(text)))
@@ -442,7 +424,6 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
         label: tr("Alle"),
         trailing: None,
         attention: m.attention_count(None),
-        unread: 0,
         hint: None,
         running: false,
         cancel: None,
@@ -475,7 +456,7 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 None => format!("{fine}/{total}"),
             };
             let cancel = run.is_some().then(|| b.id.clone());
-            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, unread: 0, hint: Some(hint), running: false, cancel }, b.id.clone(), stoppable, stopped, exporting, run)
+            (Row { id: format!("nav-batch-{}", b.id), page: Page::Grid(Some(b.id.clone())), icon: "boxes", label: b.name.clone(), trailing: Some(trailing), attention, hint: Some(hint), running: false, cancel }, b.id.clone(), stoppable, stopped, exporting, run)
         })
         .collect();
     let mut instances: Vec<&Instance> = m.instances.iter().collect();
@@ -491,17 +472,16 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 label: made.name.clone(),
                 trailing: Some(made.loader.name().to_owned()),
                 attention: 0,
-                unread: 0,
-                hint: running.then(|| tr("Läuft gerade")),
+                        hint: running.then(|| tr("Läuft gerade")),
                 running,
                 cancel: None,
             };
             (r, made.id.clone())
         })
         .collect();
-    let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, unread: 0, hint: None, running: false, cancel: None };
+    let accounts = Row { id: "nav-accounts".into(), page: Page::Accounts, icon: "users", label: tr("Accounts"), trailing: Some(m.accounts.len().to_string()), attention: 0, hint: None, running: false, cancel: None };
     let updates = m.updates.clone();
-    let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, unread: m.unread_whispers_total(), hint: None, running: false, cancel: None };
+    let chat = Row { id: "nav-chat".into(), page: Page::Chat, icon: "messages-square", label: tr("Chat"), trailing: None, attention: 0, hint: None, running: false, cancel: None };
     let waiting = m.imports.len().saturating_sub(IMPORT_ROWS_MAX);
     let mut imports: Vec<AnyElement> = m.imports.iter().take(IMPORT_ROWS_MAX).map(|import| {
         let id = import.id;

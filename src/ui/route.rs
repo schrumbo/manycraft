@@ -1,4 +1,4 @@
-//! Places a menu, a notification or a link opens: a tile, what needs attention, the chat, an instance or a part of the settings.
+//! Places a menu, a notification or a link opens: a tile, what needs attention, an instance or a part of the settings.
 
 use gpui_kit::App;
 use schemars::JsonSchema;
@@ -21,8 +21,6 @@ pub enum Route {
     Tile { batch: String, key: String },
     /// The grid of a batch, filtered to what needs attention.
     Attention(String),
-    /// The chat, showing only whispers.
-    Whispers,
     /// The page of instance `id`.
     Instance(String),
     /// A part of the settings window.
@@ -53,10 +51,6 @@ pub fn go(route: Route, cx: &mut App) {
             super::state::show_grid(cx);
             super::main_window::select_batch(&batch, cx);
         }
-        Route::Whispers => {
-            super::state::show_grid(cx);
-            super::chat::show_whispers(cx);
-        }
         Route::Instance(id) => {
             super::state::show_grid(cx);
             super::main_window::show_instance(&id, cx);
@@ -64,11 +58,8 @@ pub fn go(route: Route, cx: &mut App) {
     }
 }
 
-/// Where a click on the notification `tag` about the games `keys` leads: the one tile, the batch's attention tiles, or the whispers.
+/// Where a click on the notification `tag` about the games `keys` leads: the one tile, or the batch's attention tiles.
 pub fn of_notification(tag: &str, keys: &[String]) -> Option<Route> {
-    if tag == crate::app::reduce::WHISPER_TAG {
-        return Some(Route::Whispers);
-    }
     let batch = crate::app::reduce::attention_batch(tag)?;
     Some(match keys {
         [key] => Route::Tile { batch: batch.to_owned(), key: key.clone() },
@@ -87,13 +78,12 @@ mod tests {
         assert_eq!(of_notification("attention-b1", &one), Some(Route::Tile { batch: "b1".into(), key: "a".into() }));
         assert_eq!(of_notification("attention-b1", &two), Some(Route::Attention("b1".into())));
         assert_eq!(of_notification("attention-b1", &[]), Some(Route::Attention("b1".into())));
-        assert_eq!(of_notification(crate::app::reduce::WHISPER_TAG, &one), Some(Route::Whispers));
         assert_eq!(of_notification("update", &one), None);
     }
 
     #[test]
     fn the_tags_of_the_notifications_the_core_raises_lead_back_to_their_route() {
-        use crate::app::reduce::{WHISPER_TAG, attention_tag};
+        use crate::app::reduce::attention_tag;
         let one = vec!["k".to_owned()];
         let many = vec!["k".to_owned(), "l".to_owned()];
         for batch in ["b1", "attention-x", "ü 1", ""] {
@@ -102,8 +92,6 @@ mod tests {
             assert_eq!(of_notification(&tag, &many), Some(Route::Attention(batch.into())), "{batch}");
         }
         assert_ne!(attention_tag("b1"), attention_tag("b2"));
-        assert_ne!(attention_tag("b1"), WHISPER_TAG);
-        assert_eq!(of_notification(WHISPER_TAG, &many), Some(Route::Whispers));
         assert_eq!(of_notification("", &one), None);
     }
 

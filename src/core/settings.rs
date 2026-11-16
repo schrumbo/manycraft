@@ -54,13 +54,11 @@ impl Default for CrashRestart {
 pub struct Notifications {
     /// One per batch when an account is disconnected, banned, crashed or needs to sign in.
     pub attention: bool,
-    /// One for whispers that arrive while the window is not in front.
-    pub whispers: bool,
 }
 
 impl Default for Notifications {
     fn default() -> Self {
-        Self { attention: true, whispers: true }
+        Self { attention: true }
     }
 }
 
@@ -277,10 +275,10 @@ mod tests {
         std::fs::write(dir.path().join(FILE), r#"{"reconnect":{"enabled":false}}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
         assert!(!s.reconnect.enabled);
-        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.notifications.whispers && s.auto_update && !s.prereleases && s.prevent_sleep);
-        std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false,"notifications":{"whispers":false}}"#).unwrap();
+        assert!(s.merged_chat && s.broadcast && s.notifications.attention && s.auto_update && !s.prereleases && s.prevent_sleep);
+        std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false,"notifications":{"whispers":true},"phone":{"whispers":true}}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
-        assert!(!s.merged_chat && !s.notifications.whispers && s.notifications.attention);
+        assert!(!s.merged_chat && s.notifications.attention && !s.phone.enabled);
         std::fs::write(dir.path().join(FILE), r#"{"update_check":false}"#).unwrap();
         assert!(!load_from(dir.path()).unwrap().auto_update);
         std::fs::write(dir.path().join(FILE), r#"{"appearance":"dark","theme":"tinte","preview_rate":"smooth"}"#).unwrap();

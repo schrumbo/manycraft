@@ -198,6 +198,16 @@ final class Companion implements Bridge {
 	}
 
 	@Override
+	public void overlayChat(Object message) {
+		chat.onOverlay((Component) message);
+	}
+
+	@Override
+	public void disguisedChat(Object message, Object bound) {
+		chat.onDisguised((Component) message, (ChatType.Bound) bound);
+	}
+
+	@Override
 	public void hud(Object graphics) {
 		identity.extractBadge((GuiGraphicsExtractor) graphics);
 	}

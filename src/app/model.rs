@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::core::account::Account;
 use crate::core::batch::Batch;
+use crate::core::chat_text;
 use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
 use crate::core::instance::Instance;
@@ -75,6 +76,11 @@ impl Phase {
     /// Whether the instance is on a server, where a chat line can go out.
     pub fn on_server(&self) -> bool {
         matches!(self, Phase::Queue { .. } | Phase::Playing { .. })
+    }
+
+    /// Whether a chat line can go out: on a server, or dead there, since the death screen keeps the connection.
+    pub fn can_chat(&self) -> bool {
+        self.on_server() || matches!(self, Phase::Dead { server: Some(_), .. })
     }
 
     /// Whether the game waits in line for its turn to start and has no process yet.
@@ -179,7 +185,6 @@ pub struct Game {
     pub name: String,
     pub phase: Phase,
     pub reconnect_attempts: u32,
-    pub unread_whispers: u32,
     pub stopping: bool,
     /// The stop has run for a while without the game ending; stopping it again ends it at once.
     pub overdue: bool,
@@ -196,7 +201,7 @@ impl Game {
 
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None }
     }
 }
 
@@ -215,9 +220,10 @@ pub struct ChatLine {
     pub also: Vec<(String, String, String)>,
     /// Seconds since the Unix epoch when the line arrived.
     pub at: i64,
-    pub whisper: bool,
     pub from: Option<String>,
     pub text: String,
+    /// The line as the game shows it, styled; empty when `from` and `text` say it all.
+    pub runs: Vec<chat_text::Run>,
 }
 
 /// Everything the views read. Only the reducer and the shell that runs its effects change it.
@@ -359,7 +365,7 @@ impl Model {
             n.force += usize::from(i.stopping && i.overdue && i.phase.stoppable());
             n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
             n.reconnect += usize::from(fresh && i.phase.reconnectable());
-            n.message += usize::from(i.phase.on_server());
+            n.message += usize::from(i.phase.can_chat());
         }
         n
     }
@@ -501,11 +507,6 @@ impl Model {
     /// Sequence number of the oldest line still in `chat`; line `n` is at index `n - chat_base()`.
     pub fn chat_base(&self) -> u64 {
         self.chat_seq - self.chat.len() as u64
-    }
-
-    /// Whispers not yet seen, over all instances.
-    pub fn unread_whispers_total(&self) -> u32 {
-        self.games.values().map(|i| i.unread_whispers).sum()
     }
 
     /// The recorded events of instance `key`, newest first.
@@ -827,7 +828,7 @@ mod tests {
     }
 
     fn line(n: u64) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), also: Vec::new(), at: 0, whisper: false, from: None, text: n.to_string() }
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: "b".into(), also: Vec::new(), at: 0, from: None, text: n.to_string(), runs: Vec::new() }
     }
 
     #[test]
@@ -844,17 +845,6 @@ mod tests {
     }
 
     #[test]
-    fn whispers_add_up_over_instances() {
-        let mut m = Model::default();
-        for (key, n) in [("1", 2), ("2", 0), ("3", 5)] {
-            let mut i = instance(key, key, "a", Phase::Stopped);
-            i.unread_whispers = n;
-            m.games.insert(key.into(), i);
-        }
-        assert_eq!(m.unread_whispers_total(), 7);
-    }
-
-    #[test]
     fn events_come_newest_first() {
         let mut m = Model::default();
         let log = m.history.entry("k".into()).or_default();
@@ -866,7 +856,7 @@ mod tests {
     }
 
     fn said(key: &str, account: &str, from: Option<&str>, text: &str) -> ChatLine {
-        ChatLine { instance: key.into(), account: account.into(), batch: "b".into(), also: Vec::new(), at: 0, whisper: false, from: from.map(Into::into), text: text.into() }
+        ChatLine { instance: key.into(), account: account.into(), batch: "b".into(), also: Vec::new(), at: 0, from: from.map(Into::into), text: text.into(), runs: Vec::new() }
     }
 
     #[test]

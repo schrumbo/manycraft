@@ -58,6 +58,7 @@ pub enum DisconnectCause {
 pub enum ChatKind {
     System,
     Player,
+    /// Read like `Player`; old agents still send it.
     Whisper,
 }
 
@@ -77,7 +78,8 @@ pub enum HotkeyAction {
 pub enum FromMod {
     Hello { instance: String, token: String, pid: u32, mod_version: String },
     State { kind: StateKind, server: Option<String>, reason: Option<String>, #[serde(default)] cause: Option<DisconnectCause> },
-    Chat { kind: ChatKind, from: Option<String>, text: String },
+    /// A chat line: its sender and words, and with a current agent the whole line as the game shows it.
+    Chat { kind: ChatKind, from: Option<String>, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] runs: Vec<crate::core::chat_text::Run> },
     Preview { seq: u32, w: u32, h: u32 },
     Hotkey { action: HotkeyAction },
     Window { visible: bool, focused: bool },
@@ -338,8 +340,9 @@ fn read_message<T: serde::de::DeserializeOwned>(lines: &mut BufReader<std::io::T
             Ok(_) if !line.ends_with('\n') => return None,
             Ok(_) => {}
         }
-        if let Ok(message) = serde_json::from_str(line.trim_end()) {
-            return Some(message);
+        match serde_json::from_str(line.trim_end()) {
+            Ok(message) => return Some(message),
+            Err(e) => super::drive::note(format!("ipc unreadable: {e}: {}", line.chars().take(200).collect::<String>())),
         }
     }
 }
@@ -496,6 +499,9 @@ mod tests {
         assert!(matches!(serde_json::from_str::<FromMod>(none).unwrap(), FromMod::State { cause: None, .. }));
         let chat = r#"{"t":"chat","kind":"whisper","from":"Alex","text":"hi"}"#;
         assert!(matches!(serde_json::from_str::<FromMod>(chat).unwrap(), FromMod::Chat { kind: ChatKind::Whisper, .. }));
+        let styled = r#"{"t":"chat","kind":"system","from":null,"text":"Dev001 was slain","runs":[{"t":"Dev001 was slain","c":16777045,"b":true}]}"#;
+        let FromMod::Chat { runs, .. } = serde_json::from_str::<FromMod>(styled).unwrap() else { panic!("not chat") };
+        assert_eq!(runs[0].color, Some(0xFFFF55));
         let hotkey = r#"{"t":"hotkey","action":"next_attention"}"#;
         assert_eq!(serde_json::from_str::<FromMod>(hotkey).unwrap(), FromMod::Hotkey { action: HotkeyAction::NextAttention });
         assert_eq!(serde_json::to_string(&ToMod::Hide).unwrap(), r#"{"t":"hide"}"#);

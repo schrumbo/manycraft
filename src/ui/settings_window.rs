@@ -466,7 +466,6 @@ impl SettingsView {
         };
         rows.push(Row { below: outcome.map(IntoElement::into_any_element), ..row(tr("Testnachricht"), Some(tr("Prüft, ob Meldungen auf dem Handy ankommen.")), send, t) });
         rows.push(self.toggle("set-phone-back", tr("Auch wenn sie zurück sind"), tr("Meldet auch, wenn getrennte Accounts wieder auf dem Server sind."), current.reconnected, |st, on| st.phone.reconnected = on, t, cx));
-        rows.push(self.toggle("set-phone-whispers", tr("Auch Flüsternachrichten"), tr("Schickt Flüsternachrichten aufs Handy weiter."), current.whispers, |st, on| st.phone.whispers = on, t, cx));
         outlined_group(tr("Aufs Handy"), rows, Some(tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems.")), outlined, t)
     }
 
@@ -722,7 +721,6 @@ impl Render for SettingsView {
             tr("Benachrichtigungen"),
             vec![
                 self.toggle("set-notify-attention", tr("Bei Problemen"), tr("Eine Meldung pro Batch, wenn ein Account getrennt, gesperrt oder abgestürzt ist."), s.notifications.attention, |st, on| st.notifications.attention = on, &t, cx),
-                self.toggle("set-notify-whispers", tr("Bei Flüstern"), tr("Eine Meldung, wenn dir jemand flüstert und Manycraft nicht im Vordergrund ist."), s.notifications.whispers, |st, on| st.notifications.whispers = on, &t, cx),
             ],
             Some(tr("Meldungen kommen gesammelt und nie mit Ton.")),
             &t,

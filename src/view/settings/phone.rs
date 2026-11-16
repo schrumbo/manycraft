@@ -415,7 +415,6 @@ impl Component for PhoneGroup {
         }
         rows.push(line.into_element());
         rows.push(toggle(p, "settings.phone.back", tr("Auch wenn sie zurück sind"), tr("Meldet auch, wenn getrennte Accounts wieder auf dem Server sind."), current.reconnected, |s, on| s.phone.reconnected = on));
-        rows.push(toggle(p, "settings.phone.whispers", tr("Auch Flüsternachrichten"), tr("Schickt Flüsternachrichten aufs Handy weiter."), current.whispers, |s, on| s.phone.whispers = on));
         group(&t, Some(tr("Aufs Handy")), rows, Some(tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems.")))
     }
 }

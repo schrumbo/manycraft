@@ -1,4 +1,4 @@
-//! The Chat page: the chat of every instance in one list, whispers highlighted, and a line that goes to one instance or a whole batch.
+//! The Chat page: the chat of every instance in one list, and a line that goes to one instance or a whole batch.
 
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
@@ -49,15 +49,6 @@ pub fn open(cx: &mut App) {
     }
 }
 
-/// Shows the Chat page with only the whispers, as a click on a whisper notification asks.
-pub fn show_whispers(cx: &mut App) {
-    cx.set_global(WhispersOnly);
-    show(cx);
-    if let Some(page) = cx.try_global::<Shared>().map(|s| s.0.clone()) {
-        page.update(cx, |_, cx| cx.notify());
-    }
-}
-
 /// The Chat page the main window shows.
 pub fn page(window: &mut Window, cx: &mut App) -> impl IntoElement {
     if let Some(page) = cx.try_global::<Shared>() {
@@ -90,10 +81,6 @@ struct FocusInput;
 
 impl Global for FocusInput {}
 
-struct WhispersOnly;
-
-impl Global for WhispersOnly {}
-
 impl Global for Shared {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,7 +92,6 @@ enum Target {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Scope {
     batch: Option<String>,
-    whispers: bool,
 }
 
 struct Synced {
@@ -315,8 +301,8 @@ impl ChatPage {
 
     fn running(&self, m: &Model) -> usize {
         match &self.target {
-            Some(Target::Batch(id)) => m.games.values().filter(|i| i.batch_id == *id && i.phase.on_server()).count(),
-            Some(Target::Instance(key)) => usize::from(m.games.get(key).is_some_and(|i| i.phase.on_server())),
+            Some(Target::Batch(id)) => m.games.values().filter(|i| i.batch_id == *id && i.phase.can_chat()).count(),
+            Some(Target::Instance(key)) => usize::from(m.games.get(key).is_some_and(|i| i.phase.can_chat())),
             None => 0,
         }
     }
@@ -369,14 +355,8 @@ impl ChatPage {
     }
 
     fn header(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
-        let whispers = self.scope.whispers;
         let on = settings::active().merged_chat;
         let title = tr("Chat");
-        let pick = cx.listener(|s, n: &usize, _, cx| {
-            s.scope.whispers = *n == 1;
-            cx.notify();
-        });
-        let segments = segmented("chat-scope", [segment("scope-all", tr("Alles"), !whispers, true, t), segment("scope-whispers", tr("Nur Flüstern"), whispers, true, t)], move |n, window, cx| pick(&n, window, cx), t);
         div()
             .h(px(shell::TOOLBAR))
             .flex_none()
@@ -390,7 +370,6 @@ impl ChatPage {
             .child(toolbar::slot())
             .child(div().id("chat-title").mark("heading", title.clone()).min_w_0().truncate().text_size(px(font::TITLE3)).font_weight(FontWeight::SEMIBOLD).text_color(t.primary).child(title))
             .child(div().w(px(space::S)).flex_none())
-            .children(on.then_some(segments))
             .child(div().flex_1().min_w(px(space::S)))
             .children(on.then(|| div().w(px(chat::PICKER)).flex_none().child(Select::new(&self.batch_select).small().menu_max_h(px(sheet::LIST_MAX)).search_placeholder(tr("Batch suchen")))))
     }
@@ -417,13 +396,6 @@ impl ChatPage {
             return self.empty("chat-off", "messages-square", tr("Der gemeinsame Chat ist aus"), tr("Manycraft sammelt keine Chatzeilen. In den Einstellungen schaltest du ihn wieder ein."), Some(open), t).into_any_element();
         }
         if self.shown.borrow().is_empty() {
-            if self.scope.whispers {
-                let all = sheet::button("chat-show-all", tr("Alles zeigen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, _, cx| {
-                    s.scope.whispers = false;
-                    cx.notify();
-                })).into_any_element();
-                return self.empty("chat-no-whispers", "message-circle", tr("Niemand hat geflüstert"), tr("Flüsternachrichten an deine Accounts erscheinen hier."), Some(all), t).into_any_element();
-            }
             if self.scope.batch.is_some() && any_lines {
                 let reset = sheet::button("chat-reset-filter", tr("Filter zurücksetzen"), None, Look::Secondary, false, false, t).on_click(cx.listener(|s, _, window, cx| s.set_batch(None, window, cx))).into_any_element();
                 return self.empty("chat-no-match", "search", tr("Keine Treffer"), tr("In diesem Batch gibt es noch keine Chatzeilen."), Some(reset), t).into_any_element();
@@ -539,10 +511,6 @@ impl ChatPage {
 
 impl Render for ChatPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if cx.has_global::<WhispersOnly>() {
-            cx.remove_global::<WhispersOnly>();
-            self.scope.whispers = true;
-        }
         let t = Theme::get(cx);
         let model = model::get(cx);
         let broadcast = settings::active().broadcast;
@@ -552,12 +520,6 @@ impl Render for ChatPage {
             self.choices(data, sig, window, cx);
         }
         self.sync(model.read(cx));
-        if window.is_window_active() || crate::core::drive::on() {
-            let scope = self.scope.batch.clone();
-            if model.read(cx).games.values().any(|i| i.unread_whispers > 0 && scope.as_deref().is_none_or(|b| i.batch_id == b)) {
-                cx.defer(move |cx| super::state::clear_whispers(scope.as_deref(), cx));
-            }
-        }
         let (any_lines, reached, target_name) = {
             let m = model.read(cx);
             let name = match &self.target {
@@ -615,16 +577,11 @@ fn line_row(id: u64, line: &ChatLine, batch: Option<String>, day: Option<String>
         )
         .children(batch.map(|batch| div().truncate().text_size(px(font::CAPTION)).text_color(t.tertiary).child(batch)));
     let text = clip(&line.text);
-    let (prefix, color) = match (&line.from, line.whisper) {
-        (Some(from), true) => (Some(trf("%@ flüstert:", &[from])), t.accent_text),
-        (None, true) => (Some(tr("Flüstert:")), t.accent_text),
-        (Some(from), false) => (Some(format!("{from}:")), t.secondary),
-        (None, false) => (None, t.secondary),
-    };
+    let prefix = line.from.as_ref().map(|from| format!("{from}:"));
     let body = match prefix {
         Some(prefix) => {
             let styled = format!("{prefix} {text}");
-            let mark = HighlightStyle { color: Some(color), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() };
+            let mark = HighlightStyle { color: Some(t.secondary), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() };
             StyledText::new(styled).with_highlights([(0..prefix.len(), mark)]).into_any_element()
         }
         None => div().text_color(t.secondary).child(text.clone()).into_any_element(),
@@ -641,9 +598,6 @@ fn line_row(id: u64, line: &ChatLine, batch: Option<String>, day: Option<String>
         .px(px(space::M))
         .py(px(space::XS))
         .rounded(px(radius::INNER))
-        .border_l(px(chat::BAR))
-        .border_color(if line.whisper { t.accent } else { gpui_kit::transparent_black() })
-        .when(line.whisper, |d| d.bg(with_alpha(t.accent, chat::WASH)))
         .child(time)
         .child(label)
         .child(div().flex_1().min_w_0().text_color(t.primary).child(body));
@@ -696,7 +650,7 @@ fn clip(text: &str) -> String {
 }
 
 fn in_scope(line: &ChatLine, scope: &Scope) -> bool {
-    scope.batch.as_ref().is_none_or(|b| line.batch == *b || line.also.iter().any(|(_, _, other)| other == b)) && (!scope.whispers || line.whisper)
+    scope.batch.as_ref().is_none_or(|b| line.batch == *b || line.also.iter().any(|(_, _, other)| other == b))
 }
 
 fn line_problem(text: &str) -> Option<String> {
@@ -722,20 +676,20 @@ impl Choices {
                 .iter()
                 .map(|b| {
                     let total = m.games.values().filter(|i| i.batch_id == b.id).count();
-                    let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.on_server()).count();
+                    let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.can_chat()).count();
                     trf("Alle in %@ · %lld von %lld laufen", &[&b.name, &running, &total])
                 })
                 .collect(),
         );
         let mut targets: Vec<(String, Target)> = m.batches.iter().zip(batch_labels).map(|(b, label)| (label, Target::Batch(b.id.clone()))).collect();
         let mut instances: Vec<_> = m.games.values().collect();
-        instances.sort_by_cached_key(|i| (!i.phase.on_server(), i.name.to_lowercase(), i.key.clone()));
+        instances.sort_by_cached_key(|i| (!i.phase.can_chat(), i.name.to_lowercase(), i.key.clone()));
         let instance_labels = unique(
             instances
                 .iter()
                 .map(|i| {
                     let label = instance_label(m, &i.name, &i.batch_id);
-                    if i.phase.on_server() { label } else { format!("{label} · {}", tr("aus")) }
+                    if i.phase.can_chat() { label } else { format!("{label} · {}", tr("aus")) }
                 })
                 .collect(),
         );
@@ -779,7 +733,7 @@ fn choices_signature(m: &Model) -> u64 {
     let mut total = 0u64;
     for i in m.games.values() {
         let mut h = DefaultHasher::new();
-        (&i.key, &i.name, &i.batch_id, i.phase.on_server()).hash(&mut h);
+        (&i.key, &i.name, &i.batch_id, i.phase.can_chat()).hash(&mut h);
         total ^= h.finish();
     }
     let mut h = DefaultHasher::new();
@@ -813,23 +767,19 @@ fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &st
 mod tests {
     use super::{ChatLine, MAX_CHAT_CHARS, Scope, chat, clip, clock, day_title, in_scope, line_problem, now, recall_step, same_day, unique};
 
-    fn line(batch: &str, whisper: bool) -> ChatLine {
-        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, whisper, from: None, text: "x".into() }
+    fn line(batch: &str) -> ChatLine {
+        ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into(), runs: Vec::new() }
     }
 
     #[test]
-    fn scope_filters_by_batch_and_whispers() {
+    fn scope_filters_by_batch() {
         let all = Scope::default();
-        let farm = Scope { batch: Some("farm".into()), whispers: false };
-        let whispers = Scope { batch: None, whispers: true };
-        let farm_whispers = Scope { batch: Some("farm".into()), whispers: true };
-        assert!(in_scope(&line("a", false), &all));
-        assert!(in_scope(&line("farm", false), &farm) && !in_scope(&line("a", false), &farm));
-        let mut shared = line("a", false);
+        let farm = Scope { batch: Some("farm".into()) };
+        assert!(in_scope(&line("a"), &all));
+        assert!(in_scope(&line("farm"), &farm) && !in_scope(&line("a"), &farm));
+        let mut shared = line("a");
         shared.also.push(("k".into(), "n".into(), "farm".into()));
         assert!(in_scope(&shared, &farm));
-        assert!(in_scope(&line("a", true), &whispers) && !in_scope(&line("a", false), &whispers));
-        assert!(in_scope(&line("farm", true), &farm_whispers) && !in_scope(&line("farm", false), &farm_whispers) && !in_scope(&line("a", true), &farm_whispers));
     }
 
     #[test]

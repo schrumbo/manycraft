@@ -25,8 +25,7 @@ pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
         return;
     }
     let s = &mut m.session;
-    let whispers = m.games.get(key).map_or(0, |i| i.unread_whispers);
-    let unshown = Unshown { playing: m.playing.clone(), reveal: s.reveal.clone(), whispers };
+    let unshown = Unshown { playing: m.playing.clone(), reveal: s.reveal.clone() };
     let before = m.playing.replace(key.to_owned());
     let mut skipped = None;
     let mut reveal = match s.reveal.take() {
@@ -39,20 +38,12 @@ pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
     };
     reveal.hide.retain(|k| k != key);
     s.reveal = Some(reveal);
-    if let Some(i) = m.games.get_mut(key) {
-        i.unread_whispers = 0;
-    }
     out.push(Effect::Redraw(Redraw::All));
     out.push(Effect::Show { key: key.to_owned(), before, skipped, unshown: Box::new(unshown) });
 }
 
 /// The game could not be shown because the manager has no place yet: what changed for it goes back.
 pub(super) fn not_shown(m: &mut Model, unshown: Unshown, out: &mut Vec<Effect>) {
-    if let Some(key) = m.playing.take()
-        && let Some(i) = m.games.get_mut(&key)
-    {
-        i.unread_whispers += unshown.whispers;
-    }
     m.playing = unshown.playing;
     m.session.reveal = unshown.reveal;
     out.push(Effect::Redraw(Redraw::All));
@@ -342,8 +333,6 @@ mod tests {
         m.games.get_mut(&key).unwrap().stopping = false;
         let fx = report(&mut m, &s, message(&key, FromMod::Hotkey { action: HotkeyAction::Grid }));
         assert!(!fx.iter().any(|e| matches!(e, Effect::Show { .. } | Effect::Send { .. } | Effect::ShowManager)), "its hotkeys switch and hide nothing");
-        let fx = report(&mut m, &s, message(&key, FromMod::Chat { kind: crate::core::ipc::ChatKind::Whisper, from: Some("Friend".into()), text: "hi".into() }));
-        assert!(m.games[&key].unread_whispers == 0 && m.session.whispers.is_empty(), "a whisper in a window the player looks at is not news");
         m.games.get_mut(&key).unwrap().phase = Phase::Menu;
         let fx = report(&mut m, &s, state(&key, crate::core::ipc::StateKind::Disconnected, Some("mc.example"), Some(crate::core::ipc::DisconnectCause::Banned)));
         assert!(m.session.alerts.is_empty() && m.session.phone.next_due().is_none(), "its trouble shows on its instance page, not as an alert or on the phone");
@@ -395,12 +384,9 @@ mod tests {
     fn a_show_that_finds_no_place_leaves_everything_as_it_was() {
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
-        m.games.get_mut(&key).unwrap().unread_whispers = 2;
         let fx = run(&mut m, &s, std::time::Instant::now(), super::super::super::event::Event::Play(key.clone()));
         let Some(Effect::Show { unshown, .. }) = fx.into_iter().find(|e| matches!(e, Effect::Show { .. })) else { panic!("no show") };
-        assert_eq!(m.games[&key].unread_whispers, 0);
         run(&mut m, &s, std::time::Instant::now(), super::super::super::event::Event::NotShown(unshown));
-        assert_eq!(m.games[&key].unread_whispers, 2);
         assert!(m.playing.is_none() && m.session.reveal.is_none());
     }
 }

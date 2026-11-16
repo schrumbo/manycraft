@@ -319,6 +319,30 @@ public final class Hooks {
 		}
 	}
 
+	public static void overlayChat(Object message) {
+		Bridge b = bridge;
+		if (b == null) {
+			return;
+		}
+		try {
+			b.overlayChat(message);
+		} catch (Throwable e) {
+			Agent.fault("chat", e);
+		}
+	}
+
+	public static void disguisedChat(Object message, Object bound) {
+		Bridge b = bridge;
+		if (b == null) {
+			return;
+		}
+		try {
+			b.disguisedChat(message, bound);
+		} catch (Throwable e) {
+			Agent.fault("chat", e);
+		}
+	}
+
 	public static void hud(Object graphics) {
 		Bridge b = bridge;
 		if (b == null) {

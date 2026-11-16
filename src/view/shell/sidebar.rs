@@ -226,7 +226,6 @@ impl Component for Sidebar {
         let up = store.ui.instance.up.read().clone();
         let m = store.model.read();
         let attention = m.attention_count(None);
-        let whispers = m.unread_whispers_total();
         let go = move |to: Page| move |_| page.set(to.clone());
 
         let mut top = rect().width(Size::fill()).spacing(1.);
@@ -237,11 +236,7 @@ impl Component for Sidebar {
         }
         top = top.child(need);
         top = top.child(Row::new("nav.accounts", tr("Accounts")).glyph(Icon::Users).height(frame::ROW).selected(now == Page::Accounts).trailing(count(&t, m.accounts.len().to_string(), now == Page::Accounts)).on_press(go(Page::Accounts)));
-        let mut chat = Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat));
-        if whispers > 0 {
-            chat = chat.trailing(badge(&t, whispers.to_string(), Tone::Accent));
-        }
-        top = top.child(chat);
+        top = top.child(Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat)));
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
         if !m.batches.is_empty() || !m.imports.is_empty() || can_want(&Want::NewBatch) {

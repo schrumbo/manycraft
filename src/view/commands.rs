@@ -565,6 +565,7 @@ pub struct Extra {
 pub fn extras(store: Store) -> Vec<Extra> {
     match &*store.ui.page.peek() {
         Page::Instance(_) => super::instance::extras(store),
+        Page::Chat => super::chat::extras(store),
         _ => Vec::new(),
     }
 }

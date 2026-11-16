@@ -44,7 +44,7 @@ pub mod tile {
     pub const GLYPH: f32 = 7.;
     /// Height of the shade that carries the actions at the bottom of a hovered preview.
     pub const SHADE: f32 = 56.;
-    /// Unread whispers badge.
+    /// Height of a count badge.
     pub const BADGE: f32 = 18.;
     /// Height of a batch heading in the grid of all batches.
     pub const HEADING: f32 = 40.;
@@ -144,10 +144,6 @@ pub mod selection {
 pub mod chat {
     /// Width of the column naming the account and batch of a line.
     pub const LABEL: f32 = 148.;
-    /// The wash behind a whisper.
-    pub const WASH: f32 = 0.1;
-    /// Width of the bar at the edge of a whisper.
-    pub const BAR: f32 = 2.;
     /// Width of the picker for the batch shown and for the one written to.
     pub const PICKER: f32 = 200.;
     /// Height of the composer under the lines, with its hint line.

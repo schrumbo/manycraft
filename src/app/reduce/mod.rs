@@ -19,7 +19,7 @@ use super::phase::{self, Why};
 use crate::core::ipc::{ChatKind, FromMod};
 use crate::core::settings::Settings;
 
-pub use notify::{WHISPER_TAG, attention_batch};
+pub use notify::attention_batch;
 #[cfg(test)]
 pub use notify::attention_tag;
 pub use show::{active_account, solo_account};
@@ -73,7 +73,6 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::AlertDue { batch } => notify::flush_alert(model, env, &batch, &mut out),
-        Event::WhispersDue => notify::flush_whispers(model, env, &mut out),
         Event::PhoneDue { due } => {
             if model.session.phone_at == Some(due) {
                 model.session.phone_at = None;
@@ -172,22 +171,13 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::ShowGrid => show::show_grid(model, &mut out),
         Event::Step(action) => show::step(model, action, &mut out),
         Event::SendChat { key, text } => {
-            if model.games.get(&key).is_some_and(|i| i.phase.on_server()) {
+            if model.games.get(&key).is_some_and(|i| i.phase.can_chat()) {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::ChatSend { text } });
             }
         }
         Event::Broadcast { batch, text } => {
-            for i in model.games.values().filter(|i| i.batch_id == batch && i.phase.on_server()) {
+            for i in model.games.values().filter(|i| i.batch_id == batch && i.phase.can_chat()) {
                 out.push(Effect::Send { key: i.key.clone(), message: crate::core::ipc::ToMod::ChatSend { text: text.clone() } });
-            }
-        }
-        Event::ClearWhispers(batch) => {
-            let batch = batch.as_deref();
-            if model.games.values().any(|i| i.unread_whispers > 0 && batch.is_none_or(|b| i.batch_id == b)) {
-                for i in model.games.values_mut().filter(|i| batch.is_none_or(|b| i.batch_id == b)) {
-                    i.unread_whispers = 0;
-                }
-                out.push(Effect::Redraw(Redraw::All));
             }
         }
         Event::Recolor { ids, color } => {
@@ -259,7 +249,7 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
     for report in reports {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
-            Report::Mod { key, message: FromMod::Chat { kind, .. } } if *kind != ChatKind::Whisper && !m.hint(key).link_lost => chat = true,
+            Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => chat = true,
             _ => return Redraw::All,
         }
     }
@@ -376,6 +366,32 @@ mod tests {
     }
 
     #[test]
+    fn dead_accounts_still_chat_and_a_line_naming_one_merges() {
+        use super::testing::{report, run, settings, setup};
+        use crate::core::account::AccountKind;
+
+        let s = settings();
+        let (mut m, dead) = setup(Phase::Dead { server: Some("srv".into()), reason: String::new() }, AccountKind::Offline, &[]);
+        let mut other = m.games[&dead].clone();
+        other.key = "other".into();
+        other.name = "AltTwo".into();
+        other.phase = Phase::Playing { server: "srv".into(), since: Instant::now() };
+        m.games.insert(other.key.clone(), other);
+        let line = |key: &str| Report::Mod { key: key.into(), message: FromMod::Chat { kind: ChatKind::System, from: None, text: "AltOne was slain".into(), runs: Vec::new() } };
+        report(&mut m, &s, line("other"));
+        report(&mut m, &s, line(&dead));
+        assert_eq!(m.chat.len(), 1);
+        assert_eq!(m.chat[0].also.len(), 1);
+        report(&mut m, &s, Report::Mod { key: "other".into(), message: FromMod::Chat { kind: ChatKind::Player, from: Some("Notch".into()), text: "§chi".into(), runs: Vec::new() } });
+        let styled = &m.chat.last().unwrap();
+        assert_eq!((styled.text.as_str(), styled.runs[0].text.as_str(), styled.runs[1].color), ("hi", "Notch: ", Some(0xFF5555)));
+        let fx = run(&mut m, &s, Instant::now(), Event::SendChat { key: dead.clone(), text: "hi".into() });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { key, .. } if *key == dead)));
+        m.games.get_mut(&dead).unwrap().phase = Phase::Dead { server: None, reason: String::new() };
+        assert!(run(&mut m, &s, Instant::now(), Event::SendChat { key: dead, text: "hi".into() }).is_empty());
+    }
+
+    #[test]
     fn preview_notices_and_public_chat_redraw_at_most_the_chat() {
         use super::testing::{setup, settings};
         use crate::core::account::AccountKind;
@@ -385,12 +401,11 @@ mod tests {
         let (mut m, lost) = setup(Phase::Menu, AccountKind::Offline, &[]);
         m.set_hint(&lost, |h| h.link_lost = true);
         let message = |instance: &str, message: FromMod| Report::Mod { key: instance.into(), message };
-        let chat = |instance: &str, kind: ChatKind| message(instance, FromMod::Chat { kind, from: None, text: "hi".into() });
+        let chat = |instance: &str, kind: ChatKind| message(instance, FromMod::Chat { kind, from: None, text: "hi".into(), runs: Vec::new() });
         let notice = |instance: &str| message(instance, FromMod::Preview { seq: 2, w: 1, h: 1 });
         let drawn = |reports: &[Report]| redraw(&m, &env, reports);
         assert_eq!(drawn(&[notice("redraw-a"), notice("redraw-b")]), Redraw::Nothing);
         assert_eq!(drawn(&[notice("redraw-a"), chat("redraw-b", ChatKind::Player), chat("redraw-a", ChatKind::System)]), Redraw::Chat);
-        assert_eq!(drawn(&[chat("redraw-a", ChatKind::Player), chat("redraw-a", ChatKind::Whisper)]), Redraw::All);
         let playing = message("redraw-a", FromMod::State { kind: crate::core::ipc::StateKind::Playing, server: None, reason: None, cause: None });
         assert_eq!(drawn(&[notice("redraw-a"), playing]), Redraw::All);
         assert_eq!(drawn(&[notice(&lost)]), Redraw::All);

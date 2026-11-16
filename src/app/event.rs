@@ -95,8 +95,6 @@ pub enum Event {
     LinkLostDue { key: String },
     /// The attention of `batch` collected for a moment goes out as one notification.
     AlertDue { batch: String },
-    /// The whispers collected for a moment go out as one notification.
-    WhispersDue,
     /// The phone messages due at `due` go out.
     PhoneDue { due: Instant },
     Loaded(Box<Loaded>),
@@ -156,7 +154,6 @@ pub enum Event {
     Step(HotkeyAction),
     SendChat { key: String, text: String },
     Broadcast { batch: String, text: String },
-    ClearWhispers(Option<String>),
     /// Gives the accounts `ids` the colour `color`.
     Recolor { ids: Vec<Uuid>, color: u8 },
     /// The tiles on screen changed.

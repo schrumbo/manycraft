@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -71,11 +72,41 @@ final class Protocol {
 		return GSON.toJson(o);
 	}
 
+	record Run(String text, Integer color, boolean bold, boolean italic, boolean underline, boolean strike) {}
+
 	static String chat(String kind, String from, String text) {
+		return chat(kind, from, text, List.of());
+	}
+
+	static String chat(String kind, String from, String text, List<Run> runs) {
 		JsonObject o = message("chat");
 		o.addProperty("kind", kind);
 		o.addProperty("from", from);
 		o.addProperty("text", text);
+		if (!runs.isEmpty()) {
+			JsonArray list = new JsonArray();
+			for (Run r : runs) {
+				JsonObject j = new JsonObject();
+				j.addProperty("t", r.text());
+				if (r.color() != null) {
+					j.addProperty("c", r.color());
+				}
+				if (r.bold()) {
+					j.addProperty("b", true);
+				}
+				if (r.italic()) {
+					j.addProperty("i", true);
+				}
+				if (r.underline()) {
+					j.addProperty("u", true);
+				}
+				if (r.strike()) {
+					j.addProperty("s", true);
+				}
+				list.add(j);
+			}
+			o.add("runs", list);
+		}
 		return GSON.toJson(o);
 	}
 
