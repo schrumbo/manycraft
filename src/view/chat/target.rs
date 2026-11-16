@@ -51,16 +51,16 @@ pub fn exists(m: &Model, target: &Target) -> bool {
 /// How many games on a server get a line sent to `target`.
 pub fn reached(m: &Model, target: &Target) -> usize {
     match target {
-        Target::All => m.games.values().filter(|g| g.phase.on_server()).count(),
-        Target::Batch(id) => m.games.values().filter(|g| g.batch_id == *id && g.phase.on_server()).count(),
-        Target::Instance(key) => usize::from(m.games.get(key).is_some_and(|g| g.phase.on_server())),
+        Target::All => m.games.values().filter(|g| g.phase.can_chat()).count(),
+        Target::Batch(id) => m.games.values().filter(|g| g.batch_id == *id && g.phase.can_chat()).count(),
+        Target::Instance(key) => usize::from(m.games.get(key).is_some_and(|g| g.phase.can_chat())),
     }
 }
 
 /// The batches a line to `target` goes out through, each with the games that get it.
 pub fn batches_of(m: &Model, target: &Target) -> Vec<String> {
     let mut out: Vec<String> = match target {
-        Target::All => m.games.values().filter(|g| g.phase.on_server()).map(|g| g.batch_id.clone()).collect(),
+        Target::All => m.games.values().filter(|g| g.phase.can_chat()).map(|g| g.batch_id.clone()).collect(),
         Target::Batch(id) => vec![id.clone()],
         Target::Instance(_) => Vec::new(),
     };
@@ -82,6 +82,7 @@ pub fn name(m: &Model, target: &Target) -> String {
 pub fn state(phase: &Phase) -> Option<String> {
     Some(match phase {
         Phase::Queue { .. } | Phase::Playing { .. } => return None,
+        Phase::Dead { server: Some(_), .. } => tr("gestorben"),
         Phase::Stopped => tr("aus"),
         Phase::Starting { .. } | Phase::Restarting { .. } => tr("startet"),
         Phase::Menu | Phase::Plain => tr("im Menü"),
@@ -106,7 +107,7 @@ fn group(m: &Model, target: Target, section: Section) -> Choice {
 fn game(m: &Model, key: &str, section: Section, many: bool) -> Option<Choice> {
     let g = m.games.get(key)?;
     let detail = if many { m.batch(&g.batch_id).map(|b| b.name.clone()).unwrap_or_default() } else { String::new() };
-    Some(Choice { target: Target::Instance(key.to_owned()), label: g.name.clone(), detail, state: state(&g.phase), reached: usize::from(g.phase.on_server()), account: Some(g.account_id), section })
+    Some(Choice { target: Target::Instance(key.to_owned()), label: g.name.clone(), detail, state: state(&g.phase), reached: usize::from(g.phase.can_chat()), account: Some(g.account_id), section })
 }
 
 fn entry(m: &Model, target: &Target, section: Section, many: bool) -> Option<Choice> {
@@ -126,7 +127,7 @@ pub fn choices(m: &Model, recent: &[Target]) -> Vec<Choice> {
         out.extend(m.batches.iter().map(|b| group(m, Target::Batch(b.id.clone()), Section::Groups)));
     }
     let mut games: Vec<_> = m.games.values().collect();
-    games.sort_by_cached_key(|g| (!g.phase.on_server(), g.name.to_lowercase(), g.key.clone()));
+    games.sort_by_cached_key(|g| (!g.phase.can_chat(), g.name.to_lowercase(), g.key.clone()));
     out.extend(games.iter().filter_map(|g| game(m, &g.key, Section::Accounts, many)));
     out
 }

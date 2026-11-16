@@ -105,7 +105,7 @@ final class ChatBridge {
 			}
 			String from = bound.name().getString();
 			String text = signed != null ? signed.signedContent() : plainContent(message.getString(), bound);
-			sink.accept(Protocol.chat("player", from.isEmpty() ? null : from, text, runs(bound.decorate(message))));
+			sink.accept(Protocol.chat("player", from.isEmpty() ? null : from, text, runs(message)));
 		} catch (RuntimeException e) {
 			LOGGER.warn("chat bridge failed", e);
 		}

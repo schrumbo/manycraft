@@ -312,6 +312,7 @@ impl Component for ChatPage {
             let mut left = store.ui.chat.left_at;
             left.set(Some(m.chat_base() + m.chat.len() as u64));
         });
+        let _ = store.chat.read();
         let m = store.model.read();
         let batch = shared.batch.read().clone().filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
         let merged = settings::active().merged_chat;
@@ -376,7 +377,7 @@ impl Component for ChatPage {
 
 fn running_by_batch(m: &Model) -> HashMap<String, usize> {
     let mut out = HashMap::new();
-    for g in m.games.values().filter(|g| g.phase.on_server()) {
+    for g in m.games.values().filter(|g| g.phase.can_chat()) {
         *out.entry(g.batch_id.clone()).or_insert(0) += 1;
     }
     out
@@ -821,7 +822,7 @@ impl Component for Composer {
             .cross_align(Alignment::Center)
             .spacing(space::S)
             .child(SendAs)
-            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl · @Name wechselt den Absender")).a11y(field).on_submit(move |_| {
+            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl · @Name wechselt den Absender")).a11y(field).rows_through().on_submit(move |_| {
                 if let Some(list) = submit_list.as_ref() {
                     if let Some(at) = list.len().checked_sub(1).map(|end| store.ui.chat.at_hot.peek().unwrap_or(0).min(end)) {
                         pick_at(store, list[at].target.clone());
@@ -953,7 +954,7 @@ impl Component for Popup {
                 }
                 e.stop_propagation();
             })
-            .child(Field::new("chat.sendas.search", shared.query).placeholder(tr("Account oder Batch suchen")).glyph(Icon::Search).auto_focus());
+            .child(Field::new("chat.sendas.search", shared.query).placeholder(tr("Account oder Batch suchen")).glyph(Icon::Search).auto_focus().rows_through());
         panel = if list.is_empty() {
             panel.child(rect().width(Size::fill()).height(Size::px(list_h)).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)))
         } else {

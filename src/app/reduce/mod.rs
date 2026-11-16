@@ -169,12 +169,12 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::ShowGrid => show::show_grid(model, &mut out),
         Event::Step(action) => show::step(model, action, &mut out),
         Event::SendChat { key, text } => {
-            if model.games.get(&key).is_some_and(|i| i.phase.on_server()) {
+            if model.games.get(&key).is_some_and(|i| i.phase.can_chat()) {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::ChatSend { text } });
             }
         }
         Event::Broadcast { batch, text } => {
-            for i in model.games.values().filter(|i| i.batch_id == batch && i.phase.on_server()) {
+            for i in model.games.values().filter(|i| i.batch_id == batch && i.phase.can_chat()) {
                 out.push(Effect::Send { key: i.key.clone(), message: crate::core::ipc::ToMod::ChatSend { text: text.clone() } });
             }
         }
@@ -361,6 +361,29 @@ mod tests {
         let stranger = Instance::new("x", "26.3", crate::core::instance::Loader::default());
         assert!(run(&mut m, &s, Instant::now(), Event::InstanceChanged(stranger)).is_empty());
         assert_eq!(m.instances.len(), 1);
+    }
+
+    #[test]
+    fn dead_accounts_still_chat_and_a_line_naming_one_merges() {
+        use super::testing::{report, run, settings, setup};
+        use crate::core::account::AccountKind;
+
+        let s = settings();
+        let (mut m, dead) = setup(Phase::Dead { server: Some("srv".into()), reason: String::new() }, AccountKind::Offline, &[]);
+        let mut other = m.games[&dead].clone();
+        other.key = "other".into();
+        other.name = "AltTwo".into();
+        other.phase = Phase::Playing { server: "srv".into(), since: Instant::now() };
+        m.games.insert(other.key.clone(), other);
+        let line = |key: &str| Report::Mod { key: key.into(), message: FromMod::Chat { kind: ChatKind::System, from: None, text: "AltOne was slain".into(), runs: Vec::new() } };
+        report(&mut m, &s, line("other"));
+        report(&mut m, &s, line(&dead));
+        assert_eq!(m.chat.len(), 1);
+        assert_eq!(m.chat[0].also.len(), 1);
+        let fx = run(&mut m, &s, Instant::now(), Event::SendChat { key: dead.clone(), text: "hi".into() });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { key, .. } if *key == dead)));
+        m.games.get_mut(&dead).unwrap().phase = Phase::Dead { server: None, reason: String::new() };
+        assert!(run(&mut m, &s, Instant::now(), Event::SendChat { key: dead, text: "hi".into() }).is_empty());
     }
 
     #[test]

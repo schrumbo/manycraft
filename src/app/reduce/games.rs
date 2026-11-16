@@ -567,8 +567,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
             if env.settings.merged_chat {
                 let server = m.games.get(&key).and_then(|i| i.phase.server().map(str::to_owned));
-                let shared = !(from.is_none() && text.contains(&account));
-                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text, runs }, server.as_deref(), shared, env.now, KEPT_CHAT);
+                m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text, runs }, server.as_deref(), true, env.now, KEPT_CHAT);
             }
         }
         FromMod::Preview { .. } => {

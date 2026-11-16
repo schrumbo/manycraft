@@ -301,8 +301,8 @@ impl ChatPage {
 
     fn running(&self, m: &Model) -> usize {
         match &self.target {
-            Some(Target::Batch(id)) => m.games.values().filter(|i| i.batch_id == *id && i.phase.on_server()).count(),
-            Some(Target::Instance(key)) => usize::from(m.games.get(key).is_some_and(|i| i.phase.on_server())),
+            Some(Target::Batch(id)) => m.games.values().filter(|i| i.batch_id == *id && i.phase.can_chat()).count(),
+            Some(Target::Instance(key)) => usize::from(m.games.get(key).is_some_and(|i| i.phase.can_chat())),
             None => 0,
         }
     }
@@ -676,20 +676,20 @@ impl Choices {
                 .iter()
                 .map(|b| {
                     let total = m.games.values().filter(|i| i.batch_id == b.id).count();
-                    let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.on_server()).count();
+                    let running = m.games.values().filter(|i| i.batch_id == b.id && i.phase.can_chat()).count();
                     trf("Alle in %@ · %lld von %lld laufen", &[&b.name, &running, &total])
                 })
                 .collect(),
         );
         let mut targets: Vec<(String, Target)> = m.batches.iter().zip(batch_labels).map(|(b, label)| (label, Target::Batch(b.id.clone()))).collect();
         let mut instances: Vec<_> = m.games.values().collect();
-        instances.sort_by_cached_key(|i| (!i.phase.on_server(), i.name.to_lowercase(), i.key.clone()));
+        instances.sort_by_cached_key(|i| (!i.phase.can_chat(), i.name.to_lowercase(), i.key.clone()));
         let instance_labels = unique(
             instances
                 .iter()
                 .map(|i| {
                     let label = instance_label(m, &i.name, &i.batch_id);
-                    if i.phase.on_server() { label } else { format!("{label} · {}", tr("aus")) }
+                    if i.phase.can_chat() { label } else { format!("{label} · {}", tr("aus")) }
                 })
                 .collect(),
         );
@@ -733,7 +733,7 @@ fn choices_signature(m: &Model) -> u64 {
     let mut total = 0u64;
     for i in m.games.values() {
         let mut h = DefaultHasher::new();
-        (&i.key, &i.name, &i.batch_id, i.phase.on_server()).hash(&mut h);
+        (&i.key, &i.name, &i.batch_id, i.phase.can_chat()).hash(&mut h);
         total ^= h.finish();
     }
     let mut h = DefaultHasher::new();

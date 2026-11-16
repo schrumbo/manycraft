@@ -78,6 +78,11 @@ impl Phase {
         matches!(self, Phase::Queue { .. } | Phase::Playing { .. })
     }
 
+    /// Whether a chat line can go out: on a server, or dead there, since the death screen keeps the connection.
+    pub fn can_chat(&self) -> bool {
+        self.on_server() || matches!(self, Phase::Dead { server: Some(_), .. })
+    }
+
     /// Whether the game waits in line for its turn to start and has no process yet.
     pub fn waiting(&self) -> bool {
         matches!(self, Phase::Starting { place, .. } if *place > 0)
@@ -359,7 +364,7 @@ impl Model {
             n.force += usize::from(i.stopping && i.overdue && i.phase.stoppable());
             n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
             n.reconnect += usize::from(fresh && i.phase.reconnectable());
-            n.message += usize::from(i.phase.on_server());
+            n.message += usize::from(i.phase.can_chat());
         }
         n
     }

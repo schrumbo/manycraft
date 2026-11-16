@@ -1097,7 +1097,7 @@ pub fn open_message(this: &mut MainWindow, window: &mut Window, cx: &mut Context
 
 fn on_server(this: &MainWindow, cx: &App) -> Vec<String> {
     let m = model::get(cx).read(cx);
-    this.grid.chosen().into_iter().filter(|k| m.games.get(k).is_some_and(|i| i.phase.on_server())).collect()
+    this.grid.chosen().into_iter().filter(|k| m.games.get(k).is_some_and(|i| i.phase.can_chat())).collect()
 }
 
 /// Sends what the user typed in the message field to the selected accounts that are on a server, and keeps the field open for the next one.
