@@ -2,7 +2,7 @@ pub mod accounts;
 #[allow(dead_code)]
 pub mod actions;
 pub mod batch_sheet;
-mod catalog;
+pub mod catalog;
 pub mod chat;
 pub mod chrome;
 pub mod drive;

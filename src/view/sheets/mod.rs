@@ -1,6 +1,7 @@
 //! The sheets: short tasks above the window, such as creating an instance, adding accounts or restarting for an update.
 
 pub mod account;
+pub mod browser;
 pub mod import;
 pub mod instance;
 pub mod skin;
@@ -18,7 +19,7 @@ pub fn answer() {
 }
 
 fn takes(want: &Want) -> bool {
-    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
+    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::AddMods(_) | Want::FindModpacks | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
 }
 
 fn run(store: Store, want: Want) {
@@ -36,6 +37,8 @@ fn run(store: Store, want: Want) {
         Want::ImportFile(path) => import::open_file(store, path),
         Want::NewInstance => instance::create(store, None),
         Want::EditMods(id) => instance::mods(store, id),
+        Want::AddMods(id) => browser::add_mods(store, id),
+        Want::FindModpacks => browser::find_modpacks(store),
         Want::RenameInstance(id) => actions::begin_rename(store, &id),
         Want::CloneInstance(id) => actions::clone(store, &id),
         Want::CreateShortcut(id) => actions::shortcut(store, &id),

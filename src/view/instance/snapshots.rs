@@ -81,8 +81,8 @@ fn start(store: Store, id: &str, reason: Reason, back: Back, then: impl FnOnce()
         let (skip, keep) = (then.clone(), then);
         let (dir_skip, dir_keep) = (dir.clone(), dir);
         let (back_skip, back_keep, back_esc) = (back.clone(), back.clone(), back.clone());
-        let (id_skip, id_esc) = (id.clone(), id.clone());
         let ui = store.ui;
+        release(store, &id);
         let card = Card::new("instance.snapshot.large", trf("Die Welten sind %@ groß", &[&bytes(size)]))
             .message(trf("Vor Updates und vor dem Zurücksetzen sichert Manycraft diese Instanz. Das braucht jedes Mal etwa %@ Platz.", &[&bytes(size)]))
             .secondary(Primary {
@@ -90,7 +90,6 @@ fn start(store: Store, id: &str, reason: Reason, back: Back, then: impl FnOnce()
                 disabled: None,
                 danger: false,
                 run: EventHandler::new(move |_| {
-                    release(store, &id_skip);
                     settle(ui, &back_skip);
                     let dir = dir_skip.clone();
                     std::thread::spawn(move || {
@@ -116,10 +115,7 @@ fn start(store: Store, id: &str, reason: Reason, back: Back, then: impl FnOnce()
                     take(store, id.clone(), reason.clone(), back_keep.clone(), keep.clone());
                 }),
             })
-            .on_escape(move |_| {
-                release(store, &id_esc);
-                settle(ui, &back_esc);
-            });
+            .on_escape(move |_| settle(ui, &back_esc));
         sheet::open(ui, card);
     });
 }

@@ -445,6 +445,10 @@ fn waiting(t: &Theme, text: String) -> Element {
     spinner::beside(para(t, text, font::CALLOUT, t.text2).width(Size::auto()))
 }
 
+fn waiting_long(t: &Theme, text: String) -> Element {
+    spinner::still(t, para(t, text, font::CALLOUT, t.text2).width(Size::auto()))
+}
+
 fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
     rect()
         .width(Size::fill())
@@ -860,7 +864,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
                 .width(Size::fill())
                 .spacing(spacing)
                 .child(para(t, instruction, font::BODY, t.text1))
-                .child(waiting(t, tr("Warte auf deine Anmeldung im Fenster …")))
+                .child(waiting_long(t, tr("Warte auf deine Anmeldung im Fenster …")))
                 .child(rect().horizontal().child(Button::new("account.add.browser", tr("Im Browser anmelden")).plain().glyph(Icon::External).on_press(move |_| flow.start(Via::Browser))))
                 .into_element();
         }
@@ -891,7 +895,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             let state = match copied {
                 Some(Copied::Code) => notice(t, Icon::Check, t.success_text, tr("Code kopiert. Auf der Seite einfügen.")),
                 Some(Copied::Link) => notice(t, Icon::Check, t.success_text, tr("Link kopiert. Der Code steckt schon darin.")),
-                None => waiting(t, tr("Warte auf deine Anmeldung im Browser …")),
+                None => waiting_long(t, tr("Warte auf deine Anmeldung im Browser …")),
             };
             let mut body = rect().width(Size::fill()).spacing(spacing);
             if code.fallback {

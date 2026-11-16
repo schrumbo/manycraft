@@ -60,6 +60,7 @@ pub enum Command {
     NewInstance,
     OpenTrash,
     Import,
+    FindModpacks,
 }
 
 /// A key combination; `primary` is Ctrl, or Cmd on macOS.
@@ -156,7 +157,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 43] = [
+    pub const ALL: [Command; 44] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -200,6 +201,7 @@ impl Command {
         Command::NewInstance,
         Command::OpenTrash,
         Command::Import,
+        Command::FindModpacks,
     ];
 
     /// The name the drive tool and the GPUI shell use for it.
@@ -390,7 +392,7 @@ impl Command {
             Command::FocusSearch => grid,
             Command::Undo => store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
             Command::Import => can_want(&Want::Import),
-            c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash) => c.page_available(store),
+            c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks) => c.page_available(store),
             _ => true,
         }
     }
@@ -575,6 +577,7 @@ pub enum Want {
     RestartToUpdate,
     DismissNews,
     Import,
+    FindModpacks,
     /// Imports the pack or Prism export at this path at once.
     ImportFile(std::path::PathBuf),
 }
@@ -628,6 +631,7 @@ impl Command {
             Command::NewBatch => "NewBatch",
             Command::NewInstance => "NewInstance",
             Command::OpenTrash => "OpenTrash",
+            Command::FindModpacks => "FindModpacks",
             _ => "",
         }
     }
@@ -643,6 +647,7 @@ impl Command {
             Command::NewBatch => tr("Neuer Batch"),
             Command::NewInstance => tr("Neue Instanz"),
             Command::OpenTrash => tr("Papierkorb öffnen"),
+            Command::FindModpacks => tr("Modpacks suchen…"),
             _ => String::new(),
         }
     }
@@ -657,6 +662,7 @@ impl Command {
             Command::ImportPrism => Icon::Download,
             Command::NewBatch => Icon::Layers,
             Command::NewInstance => Icon::Plus,
+            Command::FindModpacks => Icon::Search,
             _ => Icon::Help,
         }
     }
@@ -689,6 +695,7 @@ impl Command {
             Command::NewBatch => can_want(&Want::NewBatch),
             Command::NewInstance => can_want(&Want::NewInstance),
             Command::OpenTrash => can_want(&Want::OpenTrash),
+            Command::FindModpacks => can_want(&Want::FindModpacks),
             _ => true,
         }
     }
@@ -719,6 +726,9 @@ impl Command {
             }
             Command::OpenTrash => {
                 want(store, Want::OpenTrash);
+            }
+            Command::FindModpacks => {
+                want(store, Want::FindModpacks);
             }
             _ => {}
         }

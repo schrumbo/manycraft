@@ -38,3 +38,8 @@ pub fn waiting(t: &Theme, text: impl Into<String>) -> Element {
 pub fn beside(text: Label) -> Element {
     rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(Spinner).child(text).into_element()
 }
+
+/// `text` beside the arc standing still, for waits that may last minutes: nothing redraws while it is shown.
+pub fn still(t: &Theme, text: Label) -> Element {
+    rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(icon(t, Icon::Spinner, SIZE, t.text3)).child(text).into_element()
+}

@@ -1,9 +1,12 @@
 //! Where the instance page hands over to sheets other pages own: the mod browser, the batch sheet and the .mrpack export.
-//! Each hook says why it is unavailable until its sheet moved into the new interface.
+//! The export and batch hooks say why they are unavailable until their sheets moved into the new interface.
 
 use super::actions::Action;
 use crate::core::i18n::{tr, trf};
+use crate::core::modrinth::Kind;
+use crate::view::commands::{Want, want};
 use crate::view::icons::Icon;
+use crate::view::sheets::browser;
 use crate::view::store::Store;
 
 fn moving() -> Option<String> {
@@ -24,18 +27,20 @@ pub fn new_batch(store: Store, id: &str, name: &str) -> Action {
 
 /// Opens the mod browser to add mods to instance `id`.
 pub fn add_mods(store: Store, id: &str, name: &str) -> Action {
-    let _ = (store, id);
-    Action::new("mods.add", tr("Mods hinzufügen…"), trf("Mods zu %@ hinzufügen…", &[&name]), Icon::Plus, |_| {}).disabled(moving())
+    let id = id.to_owned();
+    Action::new("mods.add", tr("Mods hinzufügen…"), trf("Mods zu %@ hinzufügen…", &[&name]), Icon::Plus, move |_| {
+        want(store, Want::AddMods(id.clone()));
+    })
 }
 
 /// Opens the mod browser on resource packs for instance `id`.
 pub fn resource_packs(store: Store, id: &str) -> Action {
-    let _ = (store, id);
-    Action::new("packs", tr("Ressourcenpakete suchen…"), tr("Ressourcenpakete suchen…"), Icon::Search, |_| {}).disabled(moving())
+    let id = id.to_owned();
+    Action::new("packs", tr("Ressourcenpakete suchen…"), tr("Ressourcenpakete suchen…"), Icon::Search, move |_| browser::find(store, &id, Kind::ResourcePack))
 }
 
 /// Opens the mod browser on shaders for instance `id`.
 pub fn shaders(store: Store, id: &str) -> Action {
-    let _ = (store, id);
-    Action::new("shaders", tr("Shader suchen…"), tr("Shader suchen…"), Icon::Search, |_| {}).disabled(moving())
+    let id = id.to_owned();
+    Action::new("shaders", tr("Shader suchen…"), tr("Shader suchen…"), Icon::Search, move |_| browser::find(store, &id, Kind::Shader))
 }

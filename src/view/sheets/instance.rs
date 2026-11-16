@@ -13,7 +13,7 @@ use crate::core::fit::{self, Fit, Memory};
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
 use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
-use crate::core::modrinth::Update;
+use crate::core::modrinth::{Kind as ModKind, Update};
 use crate::core::snapshot::Reason;
 use crate::core::versions::{GameVersion, Kind, shown};
 use crate::ui::forms::{self, Problem};
@@ -32,6 +32,7 @@ use crate::view::kit::text::{caption, line, mono, para, strong};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{off_ui, ring, toast, use_theme};
 use crate::view::native;
+use crate::view::sheets::browser::{Browser, Scope};
 use crate::view::sheets::import;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
@@ -52,17 +53,27 @@ const BOX_EDGES: f32 = 2.;
 /// Opens the sheet that sets up a new instance; with `play`, it also starts the instance with that account (or the
 /// first one) once it is made.
 pub fn create(store: Store, play: Option<Option<String>>) {
-    sheet::open(store.ui, Create { play });
+    open_create(store, play, None);
 }
 
 /// Opens the mods of instance `id`.
 pub fn mods(store: Store, id: String) {
     let Some(made) = store.model.peek().instance(&id).cloned() else { return };
-    sheet::open(store.ui, Mods { made });
+    open_mods(store, made, None);
+}
+
+/// Opens the sheet that sets up a new instance, straight in the browser on `search` when given.
+pub(super) fn open_create(store: Store, play: Option<Option<String>>, search: Option<ModKind>) {
+    sheet::open(store.ui, Create { play, search });
+}
+
+/// Opens the mods of `made`, straight in the browser on `search` when given.
+pub(super) fn open_mods(store: Store, made: Instance, search: Option<ModKind>) {
+    sheet::open(store.ui, Mods { made, search });
 }
 
 #[derive(Clone)]
-enum Load<T> {
+pub(super) enum Load<T> {
     Loading,
     Ready(T),
     Failed(Problem),
@@ -125,7 +136,19 @@ fn unsaved_reason() -> String {
     tr("Sichere zuerst die Änderungen.")
 }
 
-fn body_max(store: Store) -> f32 {
+fn adding_reason(version: &str, lock: Option<String>) -> Option<String> {
+    if version.is_empty() { Some(tr("Wähle zuerst eine Version.")) } else { lock }
+}
+
+fn add_button(reason: Option<String>) -> Button {
+    Button::new("instance.sheet.mods.add", tr("Mod hinzufügen")).glyph(Icon::Plus).disabled(reason)
+}
+
+fn mods_header(t: &Theme, count: usize, add: Button) -> Element {
+    rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(rect().width(Size::flex(1.)).child(label(t, trf("Mods (%lld)", &[&count])))).child(add).into_element()
+}
+
+pub(super) fn body_max(store: Store) -> f32 {
     let (_, window_h) = *store.ui.window.read();
     (window_h - CHROME).clamp(BODY_MIN, BODY_MAX)
 }
@@ -149,7 +172,7 @@ fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
         .into_element()
 }
 
-fn problem_view(t: &Theme, key: &str, glyph: Icon, problem: &Problem, mut open: State<HashSet<String>>) -> Element {
+pub(super) fn problem_view(t: &Theme, key: &str, glyph: Icon, problem: &Problem, mut open: State<HashSet<String>>) -> Element {
     let shown = open.read().contains(key);
     let mut column = rect().width(Size::fill()).spacing(space::XXS).child(notice(t, glyph, t.danger_text, problem.text.clone()));
     if let Some(detail) = &problem.detail {
@@ -275,6 +298,10 @@ struct Make {
     picking: State<bool>,
     made: State<Option<Instance>>,
     details: State<HashSet<String>>,
+    searching: State<bool>,
+    direct: State<bool>,
+    adding: State<HashSet<String>>,
+    kind: State<ModKind>,
 }
 
 impl Make {
@@ -313,7 +340,7 @@ impl Make {
         if matches!(*self.versions.peek(), Load::Failed(_)) && self.list.peek().is_empty() {
             self.load_versions(true);
         }
-        if self.mods_error.peek().is_some() && self.busy.peek().is_none() && !*self.saving.peek() {
+        if self.mods_error.peek().is_some() && self.busy.peek().is_none() && !*self.saving.peek() && self.mods.peek().is_empty() {
             let version = self.version.peek().clone();
             self.load_mods(version);
         }
@@ -441,6 +468,20 @@ impl Make {
         }
     }
 
+    fn search(mut self, kind: ModKind) {
+        self.kind.set(kind);
+        self.searching.set(true);
+    }
+
+    fn leave_search(mut self) {
+        if *self.direct.peek() && !*self.touched.peek() && self.adding.peek().is_empty() {
+            sheet::close(self.store.ui);
+        } else {
+            self.searching.set(false);
+            self.direct.set(false);
+        }
+    }
+
     fn remove_mod(mut self, project_id: &str) {
         self.mods.write().retain(|m| m.project_id != project_id);
         self.touched.set(true);
@@ -529,6 +570,7 @@ impl Make {
 #[derive(PartialEq)]
 struct Create {
     play: Option<Option<String>>,
+    search: Option<ModKind>,
 }
 
 impl Component for Create {
@@ -564,6 +606,10 @@ impl Component for Create {
             picking: use_state(|| false),
             made: use_state(|| None),
             details: use_state(HashSet::new),
+            searching: use_state(|| self.search.is_some()),
+            direct: use_state(|| self.search.is_some()),
+            adding: use_state(HashSet::new),
+            kind: use_state(|| self.search.unwrap_or(ModKind::Mod)),
         };
         use_hook(move || {
             flow.load_versions(false);
@@ -575,7 +621,7 @@ impl Component for Create {
         use_side_effect_with_deps(&back, move |_| flow.retry_failed());
 
         if let Some(made) = flow.made.read().clone() {
-            return created(&t, flow, &made);
+            return created(&t, flow, &made).into_element();
         }
 
         let version = flow.version.read().clone();
@@ -589,6 +635,27 @@ impl Component for Create {
         let name_text = flow.name.read().clone();
         let play = flow.play.read().is_some();
         let blocked = busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …")));
+
+        if *flow.searching.read() {
+            let scope = Scope {
+                create: true,
+                made: None,
+                version: version.clone(),
+                loader: loader.clone(),
+                mods: flow.mods,
+                touched: Some(flow.touched),
+                adding: flow.adding,
+                updatable: HashSet::new(),
+                updating: HashSet::new(),
+                saving,
+                pending: false,
+                kind: *flow.kind.read(),
+                on_update: EventHandler::new(|_| {}),
+                back: EventHandler::new(move |_| flow.leave_search()),
+                done: EventHandler::new(move |_| flow.leave_search()),
+            };
+            return Browser { scope }.into_element();
+        }
 
         let version_control: Element = match &versions {
             Load::Failed(why) if list.is_empty() => rect()
@@ -652,7 +719,7 @@ impl Component for Create {
         });
         let reason = version_reason.or_else(|| flow.name_problem()).or_else(|| blocked.clone());
         let primary = Primary { label: if play { tr("Erstellen und spielen") } else { tr("Erstellen") }, disabled: reason, danger: false, run: EventHandler::new(move |_| flow.create()) };
-        Card::new("instance", tr("Instanz erstellen")).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(saving.then(|| tr("Wird gerade gesichert …")))
+        Card::new("instance", tr("Instanz erstellen")).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(saving.then(|| tr("Wird gerade gesichert …"))).into_element()
     }
 }
 
@@ -754,7 +821,10 @@ fn mods_section(t: &Theme, flow: Make, loader: &Loader) -> Element {
     let mods = flow.mods.read().clone();
     let busy = flow.busy.read().clone();
     let saving = *flow.saving.read();
-    let mut column = rect().width(Size::fill()).spacing(space::XS).child(label(t, trf("Mods (%lld)", &[&mods.len()])));
+    let version = flow.version.read().clone();
+    let reason = adding_reason(&version, busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …"))));
+    let add = add_button(reason).on_press(move |_| flow.search(ModKind::Mod));
+    let mut column = rect().width(Size::fill()).spacing(space::XS).child(mods_header(t, mods.len(), add));
     if let Some(text) = busy {
         return column.child(waiting(t, text, if mods.is_empty() { DEFAULT_ROWS } else { mods.len() })).into_element();
     }
@@ -1031,11 +1101,33 @@ struct Edit {
     saving: State<bool>,
     save_error: State<Option<Problem>>,
     details: State<HashSet<String>>,
+    searching: State<bool>,
+    direct: State<bool>,
+    adding: State<HashSet<String>>,
+    kind: State<ModKind>,
 }
 
 impl Edit {
     fn alive(self) -> bool {
         self.base.try_peek().is_some()
+    }
+
+    fn search(mut self, kind: ModKind) {
+        self.kind.set(kind);
+        self.searching.set(true);
+    }
+
+    fn leave_search(mut self) {
+        if *self.direct.peek() && !self.unsaved() && self.adding.peek().is_empty() {
+            sheet::close(self.store.ui);
+        } else {
+            self.searching.set(false);
+            self.direct.set(false);
+        }
+    }
+
+    fn updatable(self) -> HashSet<String> {
+        self.selection(&None).into_iter().map(|u| u.current.project_id).collect()
     }
 
     fn load_updates(mut self) {
@@ -1240,6 +1332,7 @@ impl Edit {
 #[derive(PartialEq)]
 struct Mods {
     made: Instance,
+    search: Option<ModKind>,
 }
 
 impl Component for Mods {
@@ -1259,6 +1352,10 @@ impl Component for Mods {
             saving: use_state(|| false),
             save_error: use_state(|| None),
             details: use_state(HashSet::new),
+            searching: use_state(|| self.search.is_some()),
+            direct: use_state(|| self.search.is_some()),
+            adding: use_state(HashSet::new),
+            kind: use_state(|| self.search.unwrap_or(ModKind::Mod)),
         };
         use_hook(move || flow.load_updates());
         let back = *store.back.read();
@@ -1279,11 +1376,35 @@ impl Component for Mods {
         let running = store.model.read().games.values().any(|g| g.instance_id == base.id && g.phase.is_active());
         let lock = waiting_reason(saving, held.clone(), updating);
 
+        if *flow.searching.read() {
+            let _ = flow.updates.read();
+            let _ = flow.applied.read();
+            let scope = Scope {
+                create: false,
+                made: Some(base.clone()),
+                version: base.game_version.clone(),
+                loader: base.loader.clone(),
+                mods: flow.mods,
+                touched: None,
+                adding: flow.adding,
+                updatable: flow.updatable(),
+                updating: flow.updating.read().clone(),
+                saving,
+                pending: mods != base.mods,
+                kind: *flow.kind.read(),
+                on_update: EventHandler::new(move |pid: String| flow.apply_updates(Some(pid))),
+                back: EventHandler::new(move |_| flow.leave_search()),
+                done: EventHandler::new(move |_| flow.leave_search()),
+            };
+            return Browser { scope }.into_element();
+        }
+
         let mut column = rect().width(Size::fill()).padding(frame::RING).spacing(space::S);
         if running {
             column = column.child(running_notice(&t));
         }
-        column = column.child(label(&t, trf("Mods (%lld)", &[&mods.len()])));
+        let add = add_button(adding_reason(&base.game_version, lock.clone())).on_press(move |_| flow.search(ModKind::Mod));
+        column = column.child(mods_header(&t, mods.len(), add));
         if mods.is_empty() {
             column = column.child(line(&t, trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&base.loader.name()]), font::CALLOUT, t.text2));
         } else {
@@ -1307,7 +1428,7 @@ impl Component for Mods {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
         let primary = Primary { label: tr("Sichern"), disabled: lock.clone(), danger: false, run: EventHandler::new(move |_| flow.save()) };
-        Card::new("instance", trf("Mods von %@", &[&base.name])).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(lock)
+        Card::new("instance", trf("Mods von %@", &[&base.name])).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(waiting_reason(saving, None, updating)).into_element()
     }
 }
 

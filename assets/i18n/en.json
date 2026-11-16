@@ -1771,5 +1771,9 @@
   "Ab dieser Version spart Manycraft Rechenzeit, solange die Instanz im Hintergrund läuft.": "From this version on, Manycraft saves processing time while the instance runs in the background.",
   "Arbeitsspeicher senken": "Lower memory",
   "Die Mods werden gerade gesichert. Starte das Update danach noch einmal.": "The mods are being saved. Start the update again afterwards.",
-  "1 Update vorgemerkt. Es gilt beim nächsten Start.": "1 update queued. It applies at the next start."
+  "1 Update vorgemerkt. Es gilt beim nächsten Start.": "1 update queued. It applies at the next start.",
+  "Inhalt": "Content",
+  "Kategorie": "Category",
+  "Sortierung": "Sort order",
+  "Wird gerade geändert.": "Being changed right now."
 }

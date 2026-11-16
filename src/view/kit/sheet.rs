@@ -56,11 +56,13 @@ pub struct Card {
     pub locked: Option<String>,
     /// What Esc does in place of closing the sheet.
     pub on_escape: Option<EventHandler<()>>,
+    /// What Enter does in place of the default action.
+    pub on_enter: Option<EventHandler<()>>,
 }
 
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, leading: None, primary_id: None, secondary_id: None, width: frame::SHEET, inform: false, locked: None, on_escape: None }
+        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, leading: None, primary_id: None, secondary_id: None, width: frame::SHEET, inform: false, locked: None, on_escape: None, on_enter: None }
     }
 
     pub fn message(mut self, message: impl Into<String>) -> Self {
@@ -123,6 +125,12 @@ impl Card {
         self.on_escape = Some(EventHandler::new(handler));
         self
     }
+
+    /// Runs `handler` on Enter instead of the default action, such as picking the highlighted row.
+    pub fn on_enter(mut self, handler: impl FnMut(()) + 'static) -> Self {
+        self.on_enter = Some(EventHandler::new(handler));
+        self
+    }
 }
 
 impl Component for Card {
@@ -134,6 +142,7 @@ impl Component for Card {
         let locked = self.locked.clone();
         let held = locked.clone();
         let escape = self.on_escape.clone();
+        let enter = self.on_enter.clone();
         let mut footer = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S);
         if let Some(l) = &self.leading {
             footer = footer.child(l.clone());
@@ -176,6 +185,15 @@ impl Component for Card {
                         (_, Some(h)) => h.call(()),
                         (Some(p), None) if inform => p.run.call(()),
                         _ => close(ui),
+                    }
+                }
+                Key::Named(NamedKey::Enter) if e.modifiers.is_empty() && enter.is_some() => {
+                    if held.is_none()
+                        && !*ui.palette.peek()
+                        && let Some(h) = &enter
+                    {
+                        e.stop_propagation();
+                        h.call(());
                     }
                 }
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() => {

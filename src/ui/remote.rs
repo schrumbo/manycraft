@@ -241,7 +241,7 @@ fn classify(e: &anyhow::Error) -> SignInError {
     SignInError::Other(forms::explain(e))
 }
 
-pub(super) fn is_network(e: &anyhow::Error) -> bool {
+pub fn is_network(e: &anyhow::Error) -> bool {
     e.chain().any(|c| match c.downcast_ref::<ureq::Error>() {
         Some(ureq::Error::StatusCode(code)) => *code >= 500 || *code == 429,
         Some(_) => true,
