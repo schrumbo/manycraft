@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 
 final class Companion implements Bridge {
 	private static final Logger LOGGER = LoggerFactory.getLogger("manycraft");
+	private static final long SMOKE_WINDOW = 5_000_000_000L;
 
 	record Hotkeys(KeyChord next, KeyChord prev, KeyChord nextAttention, KeyChord grid) {
 		static final Hotkeys DEFAULT = new Hotkeys(
@@ -57,6 +58,7 @@ final class Companion implements Bridge {
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 	private final Queue<Protocol.Incoming> early = new ConcurrentLinkedQueue<>();
 	private boolean previewDue;
+	private final FrameRate smoke = Boolean.getBoolean("manycraft.smoke") ? new FrameRate(SMOKE_WINDOW) : null;
 
 	private Companion(Config config, String version) {
 		this.config = config;
@@ -87,6 +89,10 @@ final class Companion implements Bridge {
 	public void frame(Object minecraft) {
 		if (background == null) {
 			started((Minecraft) minecraft);
+		}
+		if (smoke != null) {
+			BackgroundController bg = background;
+			smoke.count(System.nanoTime()).ifPresent(fps -> LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), bg != null && bg.hidden()));
 		}
 	}
 

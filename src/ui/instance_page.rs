@@ -1309,7 +1309,7 @@ impl Render for InstancePage {
             });
         }
         let header = self.header(&f, cx, &t);
-        let hint = super::instance_sheet::companion_hint(&f.made.loader, &f.made.game_version).map(|hint| sheet::status("info", t.secondary, hint));
+        let hint = super::instance_sheet::companion_hint(&f.made.game_version).map(|hint| div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(hint));
         let fresh = std::mem::take(&mut self.entered);
         let files = match self.tab {
             Tab::Worlds => Some(super::instance_worlds::view(&self.id, fresh, window, cx)),

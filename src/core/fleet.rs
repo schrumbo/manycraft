@@ -1325,7 +1325,7 @@ fn run_instance(args: &[String]) -> Result<i32> {
     }
 }
 
-fn flags<'a>(args: &[&'a str], allowed: &[&str]) -> Option<HashMap<&'a str, &'a str>> {
+pub(super) fn flags<'a>(args: &[&'a str], allowed: &[&str]) -> Option<HashMap<&'a str, &'a str>> {
     let mut found = HashMap::new();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -1357,12 +1357,12 @@ fn instance_of<'a>(instances: &'a [Instance], batch: &Batch) -> Result<&'a Insta
     instances.iter().find(|i| i.id == batch.instance_id).with_context(|| format!("the instance of {} is gone: manycraft batch instance {} <instance>", batch.name, batch.name))
 }
 
-fn parse_loader(text: &str) -> Result<Loader> {
+pub(super) fn parse_loader(text: &str) -> Result<Loader> {
     instance::LOADERS.into_iter().find(|l| l.name().eq_ignore_ascii_case(text)).with_context(|| format!("unknown loader {text}: vanilla, fabric, quilt, forge or neoforge"))
 }
 
 /// Saves a new instance named `name`, for the newest release unless `version` names one, with Manycraft's default mods for Fabric.
-fn new_instance(name: &str, version: Option<&str>, loader: Loader, memory: Option<u32>) -> Result<Instance> {
+pub(super) fn new_instance(name: &str, version: Option<&str>, loader: Loader, memory: Option<u32>) -> Result<Instance> {
     let version = match version {
         Some(v) => v.to_owned(),
         None => install::latest_release()?,

@@ -28,7 +28,7 @@ final class OptionSync {
 	private static final Field SERVER_LIST = Access.field(ServerList.class, "serverList");
 	private static final Field HIDDEN_SERVER_LIST = Access.field(ServerList.class, "hiddenServerList");
 	private static final Field OPTIONS_FILE = Access.field(Options.class, "optionsFile");
-	private static final Field STARTUP_BACKEND = Access.field(Options.class, "preferredGraphicsBackendFromStartup");
+	private static final Field STARTUP_BACKEND = Access.optional(Options.class, "preferredGraphicsBackendFromStartup");
 	private final WhenShown packReload = new WhenShown();
 	private boolean applying;
 	private WeakReference<JoinMultiplayerScreen> multiplayer = new WeakReference<>(null);

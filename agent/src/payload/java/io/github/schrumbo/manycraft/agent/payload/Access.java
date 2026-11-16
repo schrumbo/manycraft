@@ -11,13 +11,20 @@ final class Access {
 	private Access() {}
 
 	static Field field(Class<?> owner, String name) {
+		Field f = optional(owner, name);
+		if (f == null) {
+			LOGGER.warn("{}.{} not found, the companion leaves it alone", owner.getSimpleName(), name);
+		}
+		return f;
+	}
+
+	static Field optional(Class<?> owner, String name) {
 		try {
 			Field f = owner.getDeclaredField(name);
 			Agent.open(owner, Access.class.getModule());
 			f.setAccessible(true);
 			return f;
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-			LOGGER.warn("{}.{} not found, the companion leaves it alone: {}", owner.getSimpleName(), name, e.toString());
 			return null;
 		}
 	}
