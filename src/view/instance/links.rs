@@ -1,10 +1,10 @@
 //! Where the instance page hands over to sheets other pages own: the mod browser, the batch sheet and the .mrpack export.
-//! The export and batch hooks say why they are unavailable until their sheets moved into the new interface.
+//! The export hook says why it is unavailable until its sheet moved into the new interface.
 
 use super::actions::Action;
 use crate::core::i18n::{tr, trf};
 use crate::core::modrinth::Kind;
-use crate::view::commands::{Want, want};
+use crate::view::commands::{Want, want, want_blocked};
 use crate::view::icons::Icon;
 use crate::view::sheets::browser;
 use crate::view::store::Store;
@@ -21,8 +21,11 @@ pub fn export(store: Store, id: &str, name: &str) -> Action {
 
 /// Opens the batch sheet for a new batch that plays instance `id`.
 pub fn new_batch(store: Store, id: &str, name: &str) -> Action {
-    let _ = (store, id);
-    Action::new("batch.new", tr("Neuer Batch mit dieser Instanz…"), trf("Neuer Batch mit %@…", &[&name]), Icon::Layers, |_| {}).disabled(moving())
+    let id = id.to_owned();
+    Action::new("batch.new", tr("Neuer Batch mit dieser Instanz…"), trf("Neuer Batch mit %@…", &[&name]), Icon::Layers, move |_| {
+        want(store, Want::NewBatchFor(id.clone()));
+    })
+    .disabled(want_blocked(&Want::NewBatchFor(String::new())))
 }
 
 /// Opens the mod browser to add mods to instance `id`.

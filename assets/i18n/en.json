@@ -1775,5 +1775,8 @@
   "Inhalt": "Content",
   "Kategorie": "Category",
   "Sortierung": "Sort order",
-  "Wird gerade geändert.": "Being changed right now."
+  "Wird gerade geändert.": "Being changed right now.",
+  "Läuft in „%@“": "Running in “%@”",
+  "ausgewählt": "selected",
+  "nicht ausgewählt": "not selected"
 }

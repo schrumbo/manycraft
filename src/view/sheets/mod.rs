@@ -1,6 +1,7 @@
 //! The sheets: short tasks above the window, such as creating an instance, adding accounts or restarting for an update.
 
 pub mod account;
+pub mod batch;
 pub mod browser;
 pub mod import;
 pub mod instance;
@@ -19,7 +20,7 @@ pub fn answer() {
 }
 
 fn takes(want: &Want) -> bool {
-    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::AddMods(_) | Want::FindModpacks | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
+    matches!(want, Want::AddAccount | Want::AddMicrosoft | Want::SignInAgain(_) | Want::SignInNames(_) | Want::ChangeSkin(_) | Want::OpenTrash | Want::Import | Want::ImportFile(_) | Want::NewInstance | Want::EditMods(_) | Want::AddMods(_) | Want::FindModpacks | Want::RenameInstance(_) | Want::CloneInstance(_) | Want::CreateShortcut(_) | Want::UpdateLoader(_) | Want::ResetInstance(_) | Want::DeleteInstance(_) | Want::NewBatch | Want::NewBatchFor(_) | Want::EditBatch(_) | Want::DeleteBatch(_) | Want::FetchUpdate | Want::CancelUpdate | Want::RestartToUpdate | Want::DismissNews)
 }
 
 fn run(store: Store, want: Want) {
@@ -45,6 +46,10 @@ fn run(store: Store, want: Want) {
         Want::UpdateLoader(id) => actions::look_for_loader(store, &id),
         Want::ResetInstance(id) => actions::ask_reset(store, &id),
         Want::DeleteInstance(id) => actions::ask_delete(store, &id),
+        Want::NewBatch => batch::open_new(store, None, None),
+        Want::NewBatchFor(id) => batch::open_new(store, Some(id), None),
+        Want::EditBatch(id) => batch::open_edit(store, &id),
+        Want::DeleteBatch(id) => batch::ask_delete(store, &id),
         Want::FetchUpdate => crate::view::updates::fetch(store),
         Want::CancelUpdate => crate::view::updates::cancel(store),
         Want::RestartToUpdate => updates::restart(store),
@@ -53,10 +58,20 @@ fn run(store: Store, want: Want) {
     }
 }
 
-/// What follows the very first account: the instance to play with is set up next.
-pub fn after_first_account(store: Store, account: Option<String>) {
-    if store.model.peek().instances.is_empty() {
-        instance::create(store, Some(account));
+/// What follows the very first accounts, `added` by id: the instance to play with is set up next; with an instance but no
+/// batch yet, the first batch is offered for several accounts.
+pub fn after_first_account(store: Store, added: Vec<String>) {
+    let (no_instance, no_batch) = {
+        let model = store.model.peek();
+        (model.instances.is_empty(), model.batches.is_empty())
+    };
+    if no_instance {
+        instance::create(store, Some(match added.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }));
+    } else if no_batch && added.len() > 1 {
+        batch::open_new(store, None, Some(added.iter().filter_map(|id| uuid::Uuid::parse_str(id).ok()).collect()));
     } else {
         sheet::close(store.ui);
     }
