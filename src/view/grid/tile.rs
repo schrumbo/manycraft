@@ -183,6 +183,8 @@ const STATUS_ROW: f32 = 14.;
 const HOVER_LIFT: f32 = 0.04;
 const PRESS_SHADE: f32 = 0.08;
 const DOWN_DIM: f32 = 0.3;
+const LEAD: f32 = space::XS + space::XXS;
+const TRACK: f32 = 0.16;
 
 fn mix(a: Color, b: Color, share: f32) -> Color {
     let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * share).round() as u8;
@@ -197,21 +199,11 @@ fn dot(color: Color) -> Rect {
     rect().width(Size::px(STATUS_DOT)).height(Size::px(STATUS_DOT)).corner_radius(STATUS_DOT / 2.).background(color)
 }
 
-/// How far a start has come, from 0 to 1, or `None` while it runs without a measure.
 fn progress(g: &Game, m: &Model) -> Option<Option<f32>> {
-    let Phase::Starting { place, total } = g.phase else { return None };
-    if g.stopping {
+    if !matches!(g.phase, Phase::Starting { .. }) || g.stopping {
         return None;
     }
-    Some(if g.memory_wait.is_some() {
-        None
-    } else if let Some(p) = m.preparing.get(&g.batch_id) {
-        Some(f32::from(*p) / 100.)
-    } else if total > 1 && place > 0 {
-        Some(total.saturating_sub(place) as f32 / total as f32)
-    } else {
-        None
-    })
+    Some(m.preparing.get(&g.batch_id).filter(|_| g.memory_wait.is_none()).map(|p| f32::from(*p) / 100.))
 }
 
 fn whisper_badge(t: &Theme, n: u32) -> Option<Rect> {
@@ -270,7 +262,7 @@ impl Component for Tile {
             Some(t.danger)
         } else if attention {
             Some(t.attention)
-        } else if matches!(game.phase, Phase::Playing { .. }) && !game.stopping {
+        } else if matches!(game.phase, Phase::Playing { .. }) && !game.stopping && !game.hint.link_lost {
             Some(t.success)
         } else if stopped {
             None
@@ -291,13 +283,16 @@ impl Component for Tile {
         if let Some(mark) = placeholder(&t, &game.phase, if preview.is_none() { face.clone() } else { None }) {
             pic = pic.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(w)).height(Size::px(h)).center().child(mark));
         }
+        if keyboard && selected {
+            pic = pic.child(cover(w, h, Color::TRANSPARENT).corner_radius(r).border(Border::new().fill(t.accent).width(frame::RING).alignment(BorderAlignment::Inner)));
+        }
         if *pressed.read() {
             pic = pic.child(cover(w, h, Color::BLACK.with_af32(PRESS_SHADE)));
         } else if hover {
             pic = pic.child(cover(w, h, Color::WHITE.with_af32(HOVER_LIFT)));
         }
         if let Some(done) = progress(game, &m) {
-            let mut bar = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(w)).height(Size::px(frame::RING)).background(t.text1.with_af32(0.16));
+            let mut bar = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(w)).height(Size::px(frame::HAIRLINE)).background(t.text1.with_af32(TRACK));
             if let Some(done) = done {
                 bar = bar.child(rect().width(Size::px((w * done.clamp(0., 1.)).round())).height(Size::fill()).background(t.accent));
             }
@@ -311,10 +306,12 @@ impl Component for Tile {
         }
         if let Some(p) = action.filter(|_| hover || keyboard) {
             let k = key.clone();
-            pic = pic.child(rect().position(Position::new_absolute().right(space::S).bottom(space::S)).child(pill(&t, p, !two).on_press(move |e: Event<PressEventData>| {
+            let button = pill(&t, p, !two).on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation()).on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
                 run(store, &k, p);
-            })));
+            });
+            let tip = (!two).then(|| p.label());
+            pic = pic.child(rect().position(Position::new_absolute().right(space::S).bottom(space::S)).child(WithTip::new(tip, button)));
         }
 
         let head = face_chip(&t, m.account(game.account_id), face, HEAD);
@@ -324,17 +321,18 @@ impl Component for Tile {
             if let Some(c) = signal.map(|c| if tinted { t.text3 } else { c }) {
                 lead = lead.child(dot(c));
             }
+            let tip = (said != line2).then(|| line2.clone());
             let words = line(&t, said, font::CAPTION, tone).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
             rect()
                 .width(Size::fill())
                 .padding((space::S, 0., 0., 0.))
                 .spacing(space::XXS)
-                .child(rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(head).child(name).content(Content::flex()))
-                .child(rect().width(Size::fill()).height(Size::px(STATUS_ROW)).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(lead).child(words).content(Content::flex()))
+                .child(rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(LEAD).child(head).child(name).content(Content::flex()))
+                .child(WithTip::new(tip, rect().width(Size::fill()).height(Size::px(STATUS_ROW)).horizontal().cross_align(Alignment::Center).spacing(LEAD).child(lead).child(words).content(Content::flex())))
                 .into_element()
         } else {
             let name = line(&t, self.name.clone(), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
-            let mut row = rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(head).child(name).content(Content::flex());
+            let mut row = rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(LEAD).child(head).child(name).content(Content::flex());
             if let Some(c) = signal.filter(|_| !stopped) {
                 row = row.child(dot(c));
             }
@@ -343,7 +341,7 @@ impl Component for Tile {
                 Some(r) if *r != line2 => format!("{detail}\n{r}"),
                 _ => line2.clone(),
             };
-            rect().width(Size::fill()).padding((space::S - space::XXS, 0., 0., 0.)).child(WithTip::new(Some(tip), row)).into_element()
+            rect().width(Size::fill()).padding((LEAD, 0., 0., 0.)).child(WithTip::new(Some(tip), row)).into_element()
         };
 
         let (over_key, leave_key) = (self.key.clone(), self.key.clone());
@@ -509,7 +507,8 @@ fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<El
         Phase::LoginNeeded => Some((Icon::LogIn, t.text2)),
         Phase::Banned { .. } => Some((Icon::Ban, t.text2)),
         Phase::Crashed { .. } => Some((Icon::Crash, t.text2)),
-        Phase::Disconnected { .. } | Phase::Dead { .. } => Some((Icon::Wifi, t.text2)),
+        Phase::Disconnected { .. } => Some((Icon::Wifi, t.text2)),
+        Phase::Dead { .. } => Some((Icon::Alert, t.text2)),
         Phase::Failed { .. } => Some((Icon::Alert, t.text2)),
         Phase::NetworkLost { .. } | Phase::NoNetwork => Some((Icon::Wifi, t.text3)),
         _ => None,

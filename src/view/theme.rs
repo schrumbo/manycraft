@@ -18,6 +18,8 @@ pub mod frame {
     /// The content width below which the search field narrows.
     pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
+    /// A thin line that shows progress along an edge.
+    pub const HAIRLINE: f32 = 2.;
     pub const SHEET: f32 = 560.;
     pub const SHEET_TOP: f32 = 72.;
     pub const PALETTE: f32 = 560.;
