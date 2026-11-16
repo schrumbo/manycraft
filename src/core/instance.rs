@@ -113,6 +113,9 @@ pub struct Instance {
     /// The account that last played this instance alone.
     #[serde(default)]
     pub last_account: Option<Uuid>,
+    /// The account this instance always plays with alone; the active account when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_account: Option<Uuid>,
 }
 
 fn default_memory() -> u32 {
@@ -135,6 +138,7 @@ impl Instance {
             jvm_args: Vec::new(),
             options: LaunchOptions::default(),
             last_account: None,
+            default_account: None,
         }
     }
 

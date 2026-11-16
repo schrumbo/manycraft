@@ -189,6 +189,11 @@ pub struct Game {
 }
 
 impl Game {
+    /// Whether the game plays its instance alone, as a normal window the manager never swaps, hides or previews.
+    pub fn alone(&self) -> bool {
+        fleet::solo_instance(&self.batch_id).is_some()
+    }
+
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
         Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None }
@@ -251,6 +256,8 @@ pub struct Model {
     pub frames: HashMap<String, Frame>,
     /// The memory one game of each batch was last measured to hold, in MB, by batch id.
     pub measured: HashMap<String, u32>,
+    /// The account chosen to play instances alone that name none, as the settings keep it.
+    pub active_account: Option<Uuid>,
     pub session: Session,
 }
 
@@ -329,13 +336,13 @@ impl Model {
 
     /// How many instances of `batch_id` (all when `None`) need attention.
     pub fn attention_count(&self, batch_id: Option<&str>) -> usize {
-        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && i.phase.needs_attention()).count()
+        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone() && i.phase.needs_attention()).count()
     }
 
     /// How many instances of `batch_id` (all when `None`) need each kind of work, in the grid's order, leaving out kinds nobody needs.
     pub fn needs(&self, batch_id: Option<&str>) -> Vec<(Need, usize)> {
         let mut counts: HashMap<Need, usize> = HashMap::new();
-        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b)).filter_map(|i| i.phase.need()) {
+        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone()).filter_map(|i| i.phase.need()) {
             *counts.entry(need).or_default() += 1;
         }
         Need::ALL.into_iter().filter_map(|n| counts.get(&n).map(|c| (n, *c))).collect()

@@ -10,6 +10,7 @@ use super::chat;
 use super::grid::layout::TileSize;
 use super::grid::table::Column;
 use super::instance::Nav;
+use super::kit::Bounds;
 use super::kit::menu::Menu;
 use super::kit::sheet::Sheet;
 use super::kit::toast::Toast;
@@ -81,6 +82,8 @@ pub struct Ui {
     pub palette: State<bool>,
     pub sheet: State<Option<Sheet>>,
     pub menu: State<Option<Menu>>,
+    /// Where the sidebar shows the active account, for the switcher opened from the keyboard.
+    pub account_at: State<Option<Bounds>>,
     pub toasts: State<Vec<Toast>>,
     pub tip: State<Option<Tip>>,
     /// When the last tooltip went away, so the next one shows at once.
@@ -115,6 +118,7 @@ impl Ui {
             palette: State::create(false),
             sheet: State::create(None),
             menu: State::create(None),
+            account_at: State::create(None),
             toasts: State::create(Vec::new()),
             tip: State::create(None),
             tip_seen: State::create(None),

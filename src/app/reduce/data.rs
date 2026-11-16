@@ -29,6 +29,7 @@ pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Eff
             m.accounts = accounts;
             m.batches = batches;
             m.instances = instances;
+            m.active_account = env.settings.active_account;
             m.loaded = true;
             m.error = if keep { notice.or(m.error.take()) } else { notice };
         }
@@ -51,7 +52,7 @@ pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Eff
     games::tell_games(m, env, out);
     if m.loaded {
         for (instance, account) in std::mem::take(&mut m.session.waiting_plays) {
-            show::request_play(m, env, instance, account, out);
+            show::request_play(m, instance, account, out);
         }
     }
     for (batch, since) in std::mem::take(&mut m.session.waiting_starts) {
@@ -109,13 +110,14 @@ fn adopt(m: &mut Model, env: &Env, adopted: Vec<Adoption>, out: &mut Vec<Effect>
             continue;
         };
         i.hint.link_lost = true;
+        let alone = i.alone();
         let s = &mut m.session;
         s.pids.insert(a.key.clone(), a.pid);
         s.joined.insert(a.key.clone());
         s.started.insert(a.key.clone(), env.now);
         s.adopted.insert(a.key.clone());
         s.foreign.insert(a.key.clone());
-        if env.place_windows {
+        if env.place_windows && !alone {
             s.unplaced.insert(a.key.clone());
         }
         go(m, &a.key, Phase::Menu, Why::Adopt, out);

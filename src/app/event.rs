@@ -144,7 +144,12 @@ pub enum Event {
     ReconnectMany(Vec<String>),
     Respawn(String),
     Play(String),
+    /// Plays `instance` alone as a normal game window, with `account` or the one it plays with by default.
     PlayInstance { instance: String, account: Option<Uuid> },
+    /// Makes this the account that plays instances alone that name none.
+    ChooseAccount(Uuid),
+    /// Makes `account` the one `instance` always plays with alone; `None` leaves it to the active account.
+    SetDefaultAccount { instance: String, account: Option<Uuid> },
     /// Plays `instance` for another start or a shortcut, waiting for the first load, and shows it once it can be shown.
     RequestPlay { instance: String, account: Option<String> },
     ShowGrid,

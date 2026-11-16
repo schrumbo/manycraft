@@ -11,8 +11,17 @@ use super::{Bounds, use_theme};
 use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
+use crate::view::store::use_store;
 use crate::view::theme::{control, font, frame, iconsize, space};
 use crate::view::ui::Ui;
+
+/// An account's face in front of a menu entry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Face {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub color: u8,
+}
 
 /// One entry of a menu.
 #[derive(Clone, PartialEq)]
@@ -24,6 +33,7 @@ pub enum Item {
         checked: bool,
         danger: bool,
         disabled: bool,
+        face: Option<Face>,
         run: EventHandler<()>,
     },
     Separator,
@@ -32,7 +42,7 @@ pub enum Item {
 impl Item {
     /// An entry named `id` that runs `run`.
     pub fn new(id: impl Into<String>, label: impl Into<String>, run: impl FnMut(()) + 'static) -> Self {
-        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, run: EventHandler::new(run) }
+        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, run: EventHandler::new(run) }
     }
 
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
@@ -45,6 +55,14 @@ impl Item {
     pub fn checked(mut self, on: bool) -> Self {
         if let Self::Action { checked, .. } = &mut self {
             *checked = on;
+        }
+        self
+    }
+
+    /// Shows the account's face in front of the label.
+    pub fn face(mut self, account: Face) -> Self {
+        if let Self::Action { face, .. } = &mut self {
+            *face = Some(account);
         }
         self
     }
@@ -225,10 +243,10 @@ impl Component for Panel {
             .enumerate()
             .map(|(i, item)| match item {
                 Item::Separator => rect().width(Size::fill()).padding((space::XS, space::S)).child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator)).into_element(),
-                Item::Action { id, label, shortcut, checked, danger, disabled, .. } => {
+                Item::Action { id, label, shortcut, checked, danger, disabled, face, .. } => {
                     let mut run = run.clone();
                     let at = q.clone();
-                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, danger: *danger, disabled: *disabled, hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
+                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, danger: *danger, disabled: *disabled, face: face.clone(), hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
                 }
             })
             .collect();
@@ -290,6 +308,7 @@ struct Entry {
     checked: bool,
     danger: bool,
     disabled: bool,
+    face: Option<Face>,
     hot: bool,
     on_hover: EventHandler<()>,
     on_press: EventHandler<()>,
@@ -298,6 +317,7 @@ struct Entry {
 impl Component for Entry {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
+        let store = use_store();
         let spot = use_spot(&self.id, "menuitem", &self.label, !self.disabled);
         let ink = if self.disabled {
             t.text3
@@ -322,7 +342,11 @@ impl Component for Entry {
             .corner_radius(t.shape.small)
             .on_sized(spot)
             .on_pointer_enter(move |_| hover.call(()))
-            .child(rect().width(Size::px(iconsize::S)).child(if self.checked { icon(&t, Icon::Check, iconsize::S, ink) } else { rect().into_element() }))
+            .child(rect().width(Size::px(iconsize::S)).child(if self.checked { icon(&t, Icon::Check, iconsize::S, ink) } else { rect().into_element() }));
+        if let Some(f) = &self.face {
+            e = e.child(rect().opacity(if self.disabled { 0.5 } else { 1. }).child(crate::view::accounts::head(&t, store, f.id, &f.name, f.color, frame::FACE)));
+        }
+        let mut e = e
             .child(line(&t, self.label.clone(), font::BODY, ink))
             .child(spacer())
             .content(Content::flex());
