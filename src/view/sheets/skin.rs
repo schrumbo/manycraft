@@ -819,7 +819,7 @@ impl Component for SkinSheet {
             Load::Loading => (tr("Übernehmen"), Some(tr("Das Profil wird noch geladen.")), "skin.apply", Box::new(|| {})),
             Load::Ready(_) => (tr("Übernehmen"), (!can_apply).then(|| tr("Ändere zuerst Skin, Modell oder Umhang.")), "skin.apply", Box::new(move || ctl.apply())),
         };
-        let primary = Primary { label, disabled: reason, danger: false, busy: false, run: EventHandler::new(move |_| run()) };
+        let primary = Primary { label, disabled: reason, danger: false, busy: applying, run: EventHandler::new(move |_| run()) };
         Card::new("skin", tr("Skin ändern")).message(self.account.name.clone()).body(content).primary(primary).primary_id(id).width(frame::SHEET)
     }
 }

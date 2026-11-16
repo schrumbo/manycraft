@@ -237,7 +237,7 @@ impl Component for Updates {
                     None
                 };
                 card.secondary(Primary { label: tr("Abbrechen"), disabled: busy.then(|| tr("Wird aktualisiert …")), danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) })
-                    .primary(Primary { label, disabled: why, danger: false, busy: false, run: EventHandler::new(move |_| apply()) })
+                    .primary(Primary { label, disabled: why, danger: false, busy, run: EventHandler::new(move |_| apply()) })
             }
         };
         card

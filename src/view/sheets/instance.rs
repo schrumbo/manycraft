@@ -729,7 +729,7 @@ impl Component for Create {
             Load::Ready(()) => tr("Wähle eine Version."),
         });
         let reason = version_reason.or_else(|| flow.name_problem()).or_else(|| blocked.clone());
-        let primary = Primary { label: if play { tr("Erstellen und spielen") } else { tr("Erstellen") }, disabled: reason, danger: false, busy: false, run: EventHandler::new(move |_| flow.create()) };
+        let primary = Primary { label: if play { tr("Erstellen und spielen") } else { tr("Erstellen") }, disabled: reason, danger: false, busy: saving, run: EventHandler::new(move |_| flow.create()) };
         Card::new("instance", tr("Instanz erstellen")).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(saving.then(|| tr("Wird gerade gesichert …"))).into_element()
     }
 }
@@ -1442,7 +1442,7 @@ impl Component for Mods {
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
-        let primary = Primary { label: tr("Sichern"), disabled: lock.clone().or_else(|| adding.then(adding_wait)), danger: false, busy: false, run: EventHandler::new(move |_| flow.save()) };
+        let primary = Primary { label: tr("Sichern"), disabled: lock.clone().or_else(|| adding.then(adding_wait)), danger: false, busy: saving, run: EventHandler::new(move |_| flow.save()) };
         Card::new("instance", trf("Mods von %@", &[&base.name])).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(waiting_reason(saving, None, updating)).into_element()
     }
 }

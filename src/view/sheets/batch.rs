@@ -277,6 +277,7 @@ struct Flow {
     accounts: State<HashSet<Uuid>>,
     cursor: State<Option<Uuid>>,
     saving: State<bool>,
+    by_primary: State<bool>,
     save_error: State<Option<Problem>>,
     tried: State<bool>,
     asking: State<bool>,
@@ -458,9 +459,9 @@ impl Flow {
         self.clear_error();
     }
 
-    fn save(mut self, start: bool) {
+    fn save(mut self, primary: bool) {
         self.tried.set(true);
-        let start = start && !self.editing() && self.picked() > 0;
+        let start = primary && !self.editing() && self.picked() > 0;
         let (name, server, version) = self.problems();
         if *self.saving.peek() || name.is_some() || server.is_some() || version.is_some() {
             return;
@@ -480,6 +481,7 @@ impl Flow {
         };
         let id = self.original.peek().as_ref().map(|b| b.id.clone());
         let store = self.store;
+        self.by_primary.set(primary);
         self.saving.set(true);
         self.save_error.set(None);
         spawn_in_window(async move {
@@ -558,6 +560,7 @@ impl Component for BatchSheet {
             accounts: use_state(|| seed.accounts.clone()),
             cursor: use_state(|| None),
             saving: use_state(|| false),
+            by_primary: use_state(|| false),
             save_error: use_state(|| None),
             tried: use_state(|| false),
             asking: use_state(|| false),
@@ -580,6 +583,7 @@ impl Component for BatchSheet {
 
         let editing = self.original.is_some();
         let saving = *flow.saving.read();
+        let by_primary = *flow.by_primary.read();
         let tried = *flow.tried.read();
         let instance = flow.instance.read().clone();
         let versions = flow.versions.read().clone();
@@ -696,7 +700,7 @@ impl Component for BatchSheet {
         });
         let (title, subtitle) = if editing { (tr("Batch bearbeiten"), None) } else { (tr("Batch erstellen"), Some(tr("Ein Batch schickt mehrere Accounts mit derselben Instanz los."))) };
         let action = if editing { tr("Sichern") } else if starts { tr("Erstellen und starten") } else { tr("Erstellen") };
-        let primary = Primary { label: action, disabled: invalid.clone(), danger: false, busy: saving, run: EventHandler::new(move |_| flow.save(true)) };
+        let primary = Primary { label: action, disabled: invalid.clone(), danger: false, busy: saving && by_primary, run: EventHandler::new(move |_| flow.save(true)) };
         let mut card = Card::new("batch", title).width(frame::SHEET).body(body).primary(primary).primary_id("batch.save").locked(lock.clone()).on_enter(move |_| {
             if typing() {
                 flow.save(true);
@@ -711,7 +715,7 @@ impl Component for BatchSheet {
             card = card.leading(Button::new("batch.delete", tr("Batch löschen…")).danger().disabled(why).on_press(move |_| asking.set(true)));
         } else if starts {
             card = card
-                .secondary(Primary { label: tr("Nur erstellen"), disabled: invalid, danger: false, busy: false, run: EventHandler::new(move |_| flow.save(false)) })
+                .secondary(Primary { label: tr("Nur erstellen"), disabled: invalid, danger: false, busy: saving && !by_primary, run: EventHandler::new(move |_| flow.save(false)) })
                 .secondary_id("batch.create-only")
                 .keep_cancel();
         }
@@ -1021,7 +1025,8 @@ impl Component for PickList {
         let a11y = use_a11y();
         use_arrows(a11y);
         let focus = use_focus(a11y);
-        let keyboard = focus() == Focus::Keyboard;
+        let mut keyed = use_state(|| false);
+        let keyboard = focus() == Focus::Keyboard || focus() != Focus::Not && *keyed.read();
         let scroll = use_scroll_controller(ScrollConfig::default);
         let mut viewport = use_state(|| 0f32);
         let (picked, cursor, locked) = (self.picked, self.cursor, self.locked.is_some());
@@ -1059,6 +1064,7 @@ impl Component for PickList {
                 let c = &rows[item.index];
                 let id = c.id;
                 let press = EventHandler::new(move |_| {
+                    keyed.set_if_modified(false);
                     a11y.request_focus();
                     let mut cursor = cursor;
                     cursor.set(Some(id));
@@ -1093,6 +1099,7 @@ impl Component for PickList {
                 if !a11y.is_focused() || n == 0 {
                     return;
                 }
+                keyed.set_if_modified(true);
                 let at = cursor.peek().and_then(|c| ids.iter().position(|i| *i == c));
                 let go = |to: usize| {
                     let mut cursor = cursor;
@@ -1123,7 +1130,7 @@ impl Component for PickList {
                 e.stop_propagation();
             })
             .child(items);
-        list = match ring(&t, focus()) {
+        list = match ring(&t, if keyboard { Focus::Keyboard } else { Focus::Not }) {
             Some(border) => list.border(border),
             None => list.border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner)),
         };

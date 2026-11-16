@@ -755,7 +755,7 @@ impl Component for Import {
                 let stopping = run.stopping;
                 card = card
                     .body(running_body(&t, run))
-                    .primary(Primary { label: tr("Importieren"), disabled: Some(tr("Wird importiert …")), danger: false, busy: false, run: EventHandler::new(|_| {}) })
+                    .primary(Primary { label: tr("Importieren"), disabled: Some(tr("Wird importiert …")), danger: false, busy: !stopping, run: EventHandler::new(|_| {}) })
                     .primary_id("import.start")
                     .secondary(Primary { label: tr("Abbrechen"), disabled: stopping.then(|| tr("Bricht ab …")), danger: false, busy: false, run: EventHandler::new(move |_| flow.stop()) })
                     .secondary_id("import.cancel")
