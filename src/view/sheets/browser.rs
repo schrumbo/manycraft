@@ -20,7 +20,7 @@ use crate::core::batch::ModRef;
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::core::modicons;
-use crate::core::modrinth::{Filter, Hit, Kind, Page, Search, Sort, Support, Update};
+use crate::core::modrinth::{self, Filter, Hit, Kind, Page, Search, Sort, Support, Update, Version};
 use crate::core::packs::{self, Installed};
 use crate::core::worlds::{self, World};
 use crate::ui::catalog;
@@ -170,29 +170,86 @@ enum Notice {
 }
 
 #[derive(Clone, Debug)]
+enum Back {
+    Mod(ModRef, usize),
+    Pack { kind: Kind, dir: PathBuf, entry: String, current: String, previous: String },
+}
+
+#[derive(Clone, Debug)]
 enum Undo {
     Removed(ModRef, usize),
     Trashed { pid: String, title: String, dir: PathBuf, entry: String },
+    Switched { pid: String, title: String, number: String, back: Back },
 }
 
 impl Undo {
     fn pid(&self) -> &str {
         match self {
             Undo::Removed(m, _) => &m.project_id,
-            Undo::Trashed { pid, .. } => pid,
+            Undo::Trashed { pid, .. } | Undo::Switched { pid, .. } => pid,
         }
     }
 
     fn title(&self) -> &str {
         match self {
             Undo::Removed(m, _) => &m.title,
-            Undo::Trashed { title, .. } => title,
+            Undo::Trashed { title, .. } | Undo::Switched { title, .. } => title,
         }
     }
 
     fn label(&self) -> String {
-        trf("Entfernen von %@ rückgängig", &[&self.title()])
+        match self {
+            Undo::Switched { number, .. } => trf("Wechsel zu Version %@ rückgängig", &[number]),
+            _ => trf("Entfernen von %@ rückgängig", &[&self.title()]),
+        }
     }
+}
+
+struct Merged {
+    previous: Option<(ModRef, usize)>,
+    extra: Vec<String>,
+    put: Vec<String>,
+}
+
+fn merge_version(list: &mut Vec<ModRef>, found: Vec<ModRef>, id: &str) -> Merged {
+    let mut merged = Merged { previous: None, extra: Vec::new(), put: Vec::new() };
+    for m in found {
+        match list.iter().position(|have| have.project_id == m.project_id) {
+            Some(at) if m.project_id == id => {
+                merged.previous = Some((list[at].clone(), at));
+                merged.put.push(m.project_id.clone());
+                list[at] = m;
+            }
+            Some(_) => {}
+            None => {
+                if m.project_id != id {
+                    merged.extra.push(m.title.clone());
+                }
+                merged.put.push(m.project_id.clone());
+                list.push(m);
+            }
+        }
+    }
+    merged
+}
+
+fn stepped(at: Option<usize>, count: usize, delta: i32) -> usize {
+    match at {
+        None if delta == 1 || delta == -1 => 0,
+        None => clamp_step(0, count, delta),
+        Some(at) => clamp_step(at, count, delta),
+    }
+}
+
+fn version_blocked(f: &Facts) -> Option<String> {
+    if f.kind == Kind::Mod && !f.takes_mods {
+        return Some(trf("%@ lädt keine Mods", &[&f.loader]));
+    }
+    f.install_blocked().or_else(|| (f.kind == Kind::Mod && (!f.updating.is_empty() || f.saving)).then(|| tr("Eine andere Änderung läuft noch.")))
+}
+
+fn fit_name(f: &Facts) -> String {
+    format!("Minecraft {} · {}", f.version, f.loader)
 }
 
 fn keep_undo(list: &mut Vec<Undo>, next: Undo) {
@@ -730,6 +787,7 @@ struct Flow {
     notice: State<Option<Notice>>,
     undos: State<Vec<Undo>>,
     restoring: State<HashSet<String>>,
+    versioning: State<HashMap<String, String>>,
     shelves: State<HashMap<PathBuf, Shelf>>,
     worlds: State<Option<Vec<World>>>,
     target: State<Option<PathBuf>>,
@@ -1165,6 +1223,120 @@ impl Flow {
         true
     }
 
+    fn set_version_busy(&self, pid: &str, version: Option<&str>) {
+        let mut state = self.versioning;
+        let Some(mut map) = state.try_write() else { return };
+        match version {
+            Some(v) => map.insert(pid.to_owned(), v.to_owned()),
+            None => map.remove(pid),
+        };
+    }
+
+    fn add_version(&self, hit: &Hit, version: &Version) {
+        let f = self.facts(false);
+        let pid = &hit.project_id;
+        if f.kind == Kind::Modpack || version.project_id != *pid || f.adding.contains(pid) || !modrinth::version_fits(version, &f.filter) || version_blocked(&f).is_some() {
+            return;
+        }
+        if self.installed_version(pid, false).as_deref() == Some(version.id.as_str()) {
+            return;
+        }
+        if f.kind == Kind::Mod { self.mod_version(hit, version.clone()) } else { self.pack_version(hit, version.clone()) }
+    }
+
+    fn mod_version(&self, hit: &Hit, version: Version) {
+        let (id, title) = (hit.project_id.clone(), hit.title.clone());
+        self.mark(&id, true);
+        self.set_version_busy(&id, Some(&version.id));
+        self.clear_error();
+        let mut notice = self.notice;
+        if matches!(notice.peek().as_ref(), Some(Notice::Added(_) | Notice::NeedsShaderMod { .. })) {
+            notice.set(None);
+        }
+        let flow = self.clone();
+        let (game, loader) = {
+            let live = self.live.peek();
+            (live.version.clone(), live.loader.clone())
+        };
+        spawn_in_window(async move {
+            let (asked_game, asked_loader, name, number) = (game.clone(), loader.clone(), title.clone(), version.version_number.clone());
+            let result = off_ui(move || remote::resolve_version(&version, &name, &asked_game, &asked_loader)).await;
+            flow.set_version_busy(&id, None);
+            if !flow.mark(&id, false) {
+                return;
+            }
+            let mut mods = flow.scope.mods;
+            if mods.try_peek().is_none() {
+                return;
+            }
+            let moved = flow.scope.follow.as_ref().is_some_and(|(v, l)| v.try_peek().is_none_or(|v| *v != game) || l.try_peek().is_none_or(|l| *l != loader));
+            if moved {
+                return;
+            }
+            match result {
+                Some(Ok(found)) => {
+                    let merged = merge_version(&mut mods.write(), found, &id);
+                    if let Some(mut touched) = flow.scope.touched.filter(|t| t.try_peek().is_some()) {
+                        touched.set(true);
+                    }
+                    if flow.alive() {
+                        flow.forget_undo(&merged.put);
+                        if let Some((previous, at)) = merged.previous {
+                            flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, back: Back::Mod(previous, at) });
+                        }
+                        if !merged.extra.is_empty() && !flow.undoable() {
+                            notice.set(Some(Notice::Added(merged.extra)));
+                        }
+                    }
+                }
+                other => {
+                    if flow.alive() {
+                        flow.fail::<Vec<ModRef>>(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), other);
+                    }
+                }
+            }
+        });
+    }
+
+    fn pack_version(&self, hit: &Hit, version: Version) {
+        let (Some(dir), Some(instance_dir)) = (self.pack_dir(false), self.instance_dir()) else { return };
+        let (id, title) = (hit.project_id.clone(), hit.title.clone());
+        let kind = self.core.peek().kind;
+        let have = self.installed_in(&dir, &id);
+        let filter = self.filter();
+        self.mark(&id, true);
+        self.set_version_busy(&id, Some(&version.id));
+        self.clear_error();
+        let flow = self.clone();
+        spawn_in_window(async move {
+            let (asked, name, number) = (dir.clone(), title.clone(), version.version_number.clone());
+            let replacing = have.as_ref().map(|i| i.file.clone());
+            let result = off_ui(move || catalog::install_version(&instance_dir, &asked, &name, &version, replacing.as_deref(), &filter)).await;
+            flow.set_version_busy(&id, None);
+            flow.mark(&id, false);
+            if !flow.alive() {
+                return;
+            }
+            let Some((placed, entry)) = flow.fail(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), result) else { return };
+            flow.forget_undo(std::slice::from_ref(&id));
+            let replaced = have.is_some();
+            if let (Some(have), Some(entry)) = (have, entry) {
+                flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, back: Back::Pack { kind, dir: dir.clone(), entry, current: placed.file.clone(), previous: have.file } });
+            }
+            let mut shelves = flow.shelves;
+            if let Some(shelf) = shelves.write().get_mut(&dir) {
+                if let Load::Ready(files) = &mut shelf.files {
+                    files.retain(|i| i.found.project_id != id);
+                    files.push(placed);
+                }
+                shelf.updates.retain(|u| u.current.project_id != id);
+            }
+            if kind == Kind::Shader && !replaced {
+                flow.offer_shader_mod();
+            }
+        });
+    }
+
     fn clear_error(&self) {
         let mut error = self.error;
         error.set(None);
@@ -1425,6 +1597,42 @@ impl Flow {
                     list.insert(at, m);
                 }
             }
+            Undo::Switched { pid, back: Back::Mod(previous, at), .. } => {
+                undos.write().pop();
+                let mut mods = self.scope.mods;
+                if mods.try_peek().is_some() {
+                    let mut list = mods.write();
+                    match list.iter().position(|m| m.project_id == pid) {
+                        Some(i) => list[i] = previous,
+                        None => {
+                            let at = at.min(list.len());
+                            list.insert(at, previous);
+                        }
+                    }
+                }
+            }
+            Undo::Switched { pid, title, back: Back::Pack { kind, dir, entry, current, previous }, .. } => {
+                let Some(instance_dir) = self.instance_dir() else { return };
+                undos.write().pop();
+                self.mark(&pid, true);
+                let mut restoring = self.restoring;
+                restoring.write().insert(pid.clone());
+                let flow = self.clone();
+                spawn_in_window(async move {
+                    let asked = dir.clone();
+                    let result = off_ui(move || catalog::switch_back(&instance_dir, &asked, kind, &current, &entry, &previous)).await;
+                    flow.mark(&pid, false);
+                    if !flow.alive() {
+                        return;
+                    }
+                    let mut restoring = flow.restoring;
+                    restoring.write().remove(&pid);
+                    let mut shelves = flow.shelves;
+                    shelves.write().remove(&dir);
+                    flow.shelf();
+                    flow.fail(trf("„%@“ ließ sich nicht zurückholen.", &[&title]), result);
+                });
+            }
             Undo::Trashed { pid, title, dir, entry } => {
                 let Some(instance_dir) = self.instance_dir() else { return };
                 undos.write().pop();
@@ -1550,6 +1758,7 @@ impl Component for Browser {
             notice: use_state(|| None),
             undos: use_state(Vec::new),
             restoring: use_state(HashSet::new),
+            versioning: use_state(HashMap::new),
             shelves: use_state(HashMap::new),
             worlds: use_state(|| None),
             target: use_state(|| None),
@@ -1921,6 +2130,7 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
         return match top {
             Undo::Removed(m, _) => row().child(note(Icon::Check, t.text2, trf("„%@“ entfernt.", &[&m.title]))).child(undo(flow)).into_element(),
             Undo::Trashed { title, .. } => row().child(note(Icon::Trash, t.text2, trf("„%@“ liegt im Papierkorb der Instanz.", &[title]))).child(undo(flow)).into_element(),
+            Undo::Switched { title, number, .. } => row().child(note(Icon::Check, t.text2, trf("„%@“ ist jetzt Version %@.", &[title, number]))).child(undo(flow)).into_element(),
         };
     }
     if notice.is_none()
@@ -2620,6 +2830,66 @@ mod tests {
     fn the_undo_label_names_what_it_undoes() {
         assert_eq!(removed("Sodium").label(), trf("Entfernen von %@ rückgängig", &[&"Sodium"]));
         assert_eq!(trashed("Fresh").label(), trf("Entfernen von %@ rückgängig", &[&"Fresh"]));
+    }
+
+    fn mod_ref(project: &str, version: &str) -> ModRef {
+        ModRef { project_id: project.into(), version_id: version.into(), title: project.into(), file_name: String::new(), url: String::new(), sha1: String::new() }
+    }
+
+    #[test]
+    fn switching_replaces_the_mod_in_place_and_adds_only_missing_dependencies() {
+        let mut list = vec![mod_ref("lib", "l1"), mod_ref("a", "a1"), mod_ref("z", "z1")];
+        let found = vec![mod_ref("a", "a2"), mod_ref("lib", "l2"), mod_ref("new", "n1")];
+        let merged = merge_version(&mut list, found, "a");
+        assert_eq!(list.iter().map(|m| m.version_id.as_str()).collect::<Vec<_>>(), ["l1", "a2", "z1", "n1"]);
+        assert_eq!(merged.previous.map(|(m, at)| (m.version_id, at)), Some(("a1".to_owned(), 1)));
+        assert_eq!(merged.extra, ["new"]);
+        assert_eq!(merged.put, ["a", "new"]);
+    }
+
+    #[test]
+    fn a_plain_add_of_a_version_keeps_no_previous_one() {
+        let mut list = vec![mod_ref("z", "z1")];
+        let merged = merge_version(&mut list, vec![mod_ref("a", "a2"), mod_ref("lib", "l1")], "a");
+        assert!(merged.previous.is_none());
+        assert_eq!(merged.extra, ["lib"]);
+        assert_eq!(list.len(), 3);
+    }
+
+    #[test]
+    fn the_switch_undo_names_the_version_switched_to() {
+        let switched = Undo::Switched { pid: "a".into(), title: "Sodium".into(), number: "2.0".into(), back: Back::Mod(mod_ref("a", "a1"), 0) };
+        assert_eq!(switched.label(), trf("Wechsel zu Version %@ rückgängig", &[&"2.0"]));
+        assert_eq!((switched.pid(), switched.title()), ("a", "Sodium"));
+        let mut list = vec![switched];
+        forget_undo(&mut list, &["a".to_owned()]);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn the_version_cursor_starts_on_the_first_row_and_stays_inside() {
+        assert_eq!(stepped(None, 5, 1), 0);
+        assert_eq!(stepped(None, 5, -1), 0);
+        assert_eq!(stepped(None, 5, i32::MAX), 4);
+        assert_eq!(stepped(Some(2), 5, 1), 3);
+        assert_eq!(stepped(Some(2), 5, -9), 0);
+        assert_eq!(stepped(Some(4), 5, 1), 4);
+        assert_eq!(stepped(None, 0, i32::MAX), 0);
+    }
+
+    #[test]
+    fn a_version_waits_for_what_blocks_installing() {
+        let mut f = facts(Kind::Mod);
+        assert_eq!(version_blocked(&f), None);
+        f.saving = true;
+        assert_eq!(version_blocked(&f), Some(tr("Eine andere Änderung läuft noch.")));
+        f.saving = false;
+        f.takes_mods = false;
+        assert_eq!(version_blocked(&f), Some(trf("%@ lädt keine Mods", &[&"Fabric"])));
+        assert_eq!(fit_name(&f), "Minecraft 1.21 · Fabric");
+        let mut packs = facts(Kind::ResourcePack);
+        packs.pack = Pack::Loading;
+        assert!(version_blocked(&packs).is_some());
     }
 
     #[test]

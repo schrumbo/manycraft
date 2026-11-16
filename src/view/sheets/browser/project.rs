@@ -9,7 +9,7 @@ use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
-use super::{Face, Facts, Flow, act_of, run_hint, saved_when, status_line, trail_of, trail_view};
+use super::{Face, Facts, Flow, act_of, fit_name, run_hint, saved_when, status_line, stepped, trail_of, trail_view, version_blocked};
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::modrinth::{self, Details, Hit, Kind, Version};
 use crate::core::packs;
@@ -25,7 +25,8 @@ use crate::view::kit::markdown::{self, Block};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, hairline, line, para, strong};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::{off_ui, open_external, use_theme};
+use crate::view::kit::spinner;
+use crate::view::kit::{off_ui, open_external, ring, use_arrows, use_theme};
 use crate::view::sheets::instance::{Load, problem_view};
 use crate::view::theme::{Theme, control, faces, font, frame, iconsize, space};
 
@@ -34,6 +35,7 @@ const SHOTS_AT_ONCE: usize = 2;
 const MAX_VERSIONS: usize = 60;
 const GAME_VERSIONS_SHOWN: usize = 4;
 const SKELETON_LINES: usize = 4;
+const VERSION_STEP: f32 = frame::VERSION_ROW + frame::HAIRLINE;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Section {
@@ -80,6 +82,52 @@ fn mark_of(have: Option<&str>, chosen: Option<&str>, id: &str) -> Option<Mark> {
     } else {
         None
     }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum Tail {
+    Busy,
+    Added,
+    Add { replacing: bool },
+    Blocked(String),
+    Mark(Mark),
+    Nothing,
+}
+
+struct Side<'a> {
+    id: &'a str,
+    interactive: bool,
+    have: Option<&'a str>,
+    chosen: Option<&'a str>,
+    busy: bool,
+    pointed: bool,
+    fits: bool,
+    blocked: Option<String>,
+}
+
+fn tail_of(side: &Side, fit: &str) -> Tail {
+    let mark = || mark_of(side.have, side.chosen, side.id).map_or(Tail::Nothing, Tail::Mark);
+    if !side.interactive {
+        mark()
+    } else if side.busy {
+        Tail::Busy
+    } else if side.have == Some(side.id) {
+        Tail::Added
+    } else if side.pointed {
+        if !side.fits {
+            Tail::Blocked(trf("Passt nicht zu %@.", &[&fit]))
+        } else if let Some(why) = &side.blocked {
+            Tail::Blocked(why.clone())
+        } else {
+            Tail::Add { replacing: side.have.is_some() }
+        }
+    } else {
+        mark()
+    }
+}
+
+fn shown_number(v: &Version) -> &str {
+    [v.version_number.as_str(), v.name.as_str()].into_iter().find(|n| !n.trim().is_empty()).unwrap_or(&v.id)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -536,38 +584,8 @@ fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
     if list.is_empty() {
         return nothing(t, pg, tr("Von diesem Projekt gibt es keine Versionen."), "browser.project.versions.web", true);
     }
-    let chosen = modrinth::newest_for(&list, &page.facts.filter).map(|v| v.id.clone());
     let rest = list.len().saturating_sub(MAX_VERSIONS);
-    let mut column = rect().width(Size::fill());
-    for (i, v) in list.iter().take(MAX_VERSIONS).enumerate() {
-        if i > 0 {
-            column = column.child(hairline(t));
-        }
-        let mut name = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(line(t, v.version_number.clone(), font::BODY, t.text1).font_weight(FontWeight::MEDIUM));
-        match v.version_type.as_str() {
-            "beta" => name = name.child(badge(t, tr("Beta"), Tone::Quiet)),
-            "alpha" => name = name.child(badge(t, tr("Alpha"), Tone::Quiet)),
-            _ => {}
-        }
-        let mut games: Vec<String> = v.game_versions.iter().rev().take(GAME_VERSIONS_SHOWN).cloned().collect();
-        if v.game_versions.len() > GAME_VERSIONS_SHOWN {
-            games.push("…".to_owned());
-        }
-        let detail = format!("{} · {} · {}", day(&v.date_published), games.join(", "), v.loaders.join(", "));
-        let mut row = rect()
-            .key(v.id.clone())
-            .width(Size::fill())
-            .height(Size::px(frame::VERSION_ROW))
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::S)
-            .content(Content::flex())
-            .child(rect().width(Size::flex(1.)).child(name).child(caption(t, detail).width(Size::fill())));
-        if let Some(mark) = mark_of(page.have.as_deref(), chosen.as_deref(), &v.id) {
-            row = row.child(mark_view(t, mark));
-        }
-        column = column.child(row);
-    }
+    let mut column = rect().width(Size::fill()).child(VersionList { flow: page.flow.clone(), hit: page.hit.clone(), kind: page.kind, facts: page.facts.clone(), have: page.have.clone(), list });
     if rest > 0 {
         let link = web_page(pg, true);
         column = column.child(
@@ -583,6 +601,253 @@ fn versions(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
         );
     }
     column.into_element()
+}
+
+#[derive(PartialEq)]
+struct VersionList {
+    flow: Flow,
+    hit: Hit,
+    kind: Kind,
+    facts: Rc<Facts>,
+    have: Option<String>,
+    list: Rc<Vec<Version>>,
+}
+
+impl Component for VersionList {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let a11y = use_a11y();
+        use_arrows(a11y);
+        let focus = use_focus(a11y);
+        let mut keyed = use_state(|| false);
+        let keyboard = focus() == Focus::Keyboard || focus() != Focus::Not && *keyed.read();
+        let mut cursor = use_state(|| None::<String>);
+        let interactive = self.kind != Kind::Modpack;
+        let label = tr("Versionen");
+        let spot = use_spot("browser.project.versions", "list", &label, interactive);
+        let ids: Vec<String> = self.list.iter().take(MAX_VERSIONS).map(|v| v.id.clone()).collect();
+        let n = ids.len();
+        let at = cursor.read().as_ref().and_then(|c| ids.iter().position(|i| i == c));
+        let body = self.flow.body;
+        use_side_effect_with_deps(&at, move |at| {
+            let Some(at) = *at else { return };
+            let mut body = body;
+            let top = space::M + at as f32 * VERSION_STEP;
+            let bottom = top + frame::VERSION_ROW;
+            let shown = -body.position().y;
+            let h = body.bounds.peek().map_or(0., |(_, viewport)| viewport.height);
+            if top < shown {
+                body.scroll_to_y(-((top - space::M).max(0.) as i32));
+            } else if h > 0. && bottom + space::M > shown + h {
+                body.scroll_to_y(-((bottom + space::M - h) as i32));
+            }
+        });
+
+        let pid = &self.hit.project_id;
+        let chosen = modrinth::newest_for(&self.list, &self.facts.filter).map(|v| v.id.clone());
+        let adding = self.facts.adding.contains(pid);
+        let picked = self.flow.versioning.read().get(pid).cloned();
+        let busy_id = if adding && !self.facts.restoring.contains(pid) { picked.or_else(|| chosen.clone()) } else { None };
+        let blocked = if adding { Some(tr("Wird hinzugefügt …")) } else { version_blocked(&self.facts) };
+        let fit = fit_name(&self.facts);
+
+        let mut column = rect().width(Size::fill());
+        for (i, v) in self.list.iter().take(MAX_VERSIONS).enumerate() {
+            let (id, ix) = (v.id.clone(), i);
+            let press = EventHandler::new({
+                let id = id.clone();
+                move |_| {
+                    keyed.set_if_modified(false);
+                    a11y.request_focus();
+                    let mut cursor = cursor;
+                    cursor.set(Some(id.clone()));
+                }
+            });
+            let add = EventHandler::new({
+                let (flow, hit, list, id) = (self.flow.clone(), self.hit.clone(), self.list.clone(), id.clone());
+                move |_| {
+                    keyed.set_if_modified(false);
+                    let mut cursor = cursor;
+                    cursor.set(Some(id.clone()));
+                    if let Some(version) = list.get(ix) {
+                        flow.add_version(&hit, version);
+                    }
+                    a11y.request_focus();
+                }
+            });
+            let row = VersionRow {
+                list: self.list.clone(),
+                ix,
+                interactive,
+                have: self.have.clone(),
+                chosen: chosen.clone(),
+                busy: busy_id.as_deref() == Some(v.id.as_str()),
+                fits: modrinth::version_fits(v, &self.facts.filter),
+                blocked: blocked.clone(),
+                fit: fit.clone(),
+                current: keyboard && at == Some(i),
+                on_press: press,
+                on_add: add,
+            };
+            let mut keyed_row = rect().key(id).width(Size::fill());
+            if i > 0 {
+                keyed_row = keyed_row.child(hairline(&t));
+            }
+            column = column.child(keyed_row.child(row));
+        }
+
+        let (flow, hit, list) = (self.flow.clone(), self.hit.clone(), self.list.clone());
+        let mut list_box = rect()
+            .a11y_id(a11y)
+            .a11y_focusable(interactive)
+            .a11y_role(AccessibilityRole::ListBox)
+            .a11y_alt(label)
+            .width(Size::fill())
+            .corner_radius(t.shape.control)
+            .on_sized(spot)
+            .on_key_down(move |e: Event<KeyboardEventData>| {
+                if !interactive || !a11y.is_focused() || n == 0 || !e.modifiers.is_empty() {
+                    return;
+                }
+                keyed.set_if_modified(true);
+                let at = cursor.peek().as_ref().and_then(|c| ids.iter().position(|i| i == c));
+                let page = body.bounds.peek().map_or(1, |(_, viewport)| (viewport.height / VERSION_STEP) as i32).max(1);
+                let go = |to: usize| {
+                    let mut cursor = cursor;
+                    cursor.set(ids.get(to).cloned());
+                };
+                match &e.key {
+                    Key::Named(NamedKey::ArrowDown) => go(stepped(at, n, 1)),
+                    Key::Named(NamedKey::ArrowUp) => go(stepped(at, n, -1)),
+                    Key::Named(NamedKey::PageDown) => go(stepped(at, n, page)),
+                    Key::Named(NamedKey::PageUp) => go(stepped(at, n, -page)),
+                    Key::Named(NamedKey::Home) => go(stepped(at, n, i32::MIN)),
+                    Key::Named(NamedKey::End) => go(stepped(at, n, i32::MAX)),
+                    Key::Named(NamedKey::Enter) => {
+                        e.prevent_default();
+                        let to = at.unwrap_or(0);
+                        go(to);
+                        if let Some(version) = list.get(to) {
+                            flow.add_version(&hit, version);
+                        }
+                    }
+                    _ => return,
+                }
+                e.stop_propagation();
+            });
+        if let Some(border) = ring(&t, if keyboard { Focus::Keyboard } else { Focus::Not }) {
+            list_box = list_box.border(border);
+        }
+        list_box.child(column)
+    }
+}
+
+#[derive(PartialEq)]
+struct VersionRow {
+    list: Rc<Vec<Version>>,
+    ix: usize,
+    interactive: bool,
+    have: Option<String>,
+    chosen: Option<String>,
+    busy: bool,
+    fits: bool,
+    blocked: Option<String>,
+    fit: String,
+    current: bool,
+    on_press: EventHandler<()>,
+    on_add: EventHandler<()>,
+}
+
+impl Component for VersionRow {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
+        let Some(v) = self.list.get(self.ix) else { return rect().into_element() };
+        let number = shown_number(v);
+        let mut name = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(line(&t, v.version_number.clone(), font::BODY, t.text1).font_weight(FontWeight::MEDIUM));
+        match v.version_type.as_str() {
+            "beta" => name = name.child(badge(&t, tr("Beta"), Tone::Quiet)),
+            "alpha" => name = name.child(badge(&t, tr("Alpha"), Tone::Quiet)),
+            _ => {}
+        }
+        let mut games: Vec<String> = v.game_versions.iter().rev().take(GAME_VERSIONS_SHOWN).cloned().collect();
+        if v.game_versions.len() > GAME_VERSIONS_SHOWN {
+            games.push("…".to_owned());
+        }
+        let detail = format!("{} · {} · {}", day(&v.date_published), games.join(", "), v.loaders.join(", "));
+        let side = Side {
+            id: &v.id,
+            interactive: self.interactive,
+            have: self.have.as_deref(),
+            chosen: self.chosen.as_deref(),
+            busy: self.busy,
+            pointed: *hovered.read() || self.current,
+            fits: self.fits,
+            blocked: self.blocked.clone(),
+        };
+        let tail = tail_of(&side, &self.fit);
+        let replaces = self.have.as_deref().and_then(|have| self.list.iter().find(|o| o.id == have)).map(|o| shown_number(o).to_owned());
+        let fill = if !self.interactive {
+            Color::TRANSPARENT
+        } else if *pressed.read() {
+            t.press
+        } else if *hovered.read() {
+            t.hover
+        } else {
+            Color::TRANSPARENT
+        };
+        let mut row = rect()
+            .width(Size::fill())
+            .height(Size::px(frame::VERSION_ROW))
+            .padding((0., space::S))
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .corner_radius(t.shape.control)
+            .background(fill)
+            .content(Content::flex())
+            .child(rect().width(Size::flex(1.)).child(name).child(caption(&t, detail).width(Size::fill())));
+        if self.interactive {
+            let press = self.on_press.clone();
+            row = row
+                .cursor(CursorIcon::Pointer)
+                .on_pointer_enter(move |_| hovered.set(true))
+                .on_pointer_leave(move |_| {
+                    hovered.set_if_modified(false);
+                    pressed.set_if_modified(false);
+                })
+                .on_mouse_down(move |_| pressed.set(true))
+                .on_mouse_up(move |_| pressed.set_if_modified(false))
+                .on_press(move |_| press.call(()));
+        }
+        if self.current {
+            row = row.border(Border::new().fill(t.focus).width(frame::RING).alignment(BorderAlignment::Inner));
+        }
+        match tail_view(&t, tail, &v.id, number, replaces, &self.on_add) {
+            Some(tail) => row.child(tail).into_element(),
+            None => row.into_element(),
+        }
+    }
+}
+
+fn tail_view(t: &Theme, tail: Tail, id: &str, number: &str, replaces: Option<String>, add: &EventHandler<()>) -> Option<Element> {
+    let button = || Button::new(format!("browser.project.version.{id}.add"), trf("Version %@ hinzufügen", &[&number])).glyph(Icon::Plus);
+    match tail {
+        Tail::Busy => Some(spinner::waiting(t, tr("Wird hinzugefügt …"))),
+        Tail::Added => Some(status_line(t, Icon::Check, t.success_text, tr("Hinzugefügt"))),
+        Tail::Add { .. } => {
+            let add = add.clone();
+            let mut b = button().on_press(move |_| add.call(()));
+            if let Some(old) = replaces {
+                b = b.tip(trf("Ersetzt Version %@.", &[&old]));
+            }
+            Some(b.into_element())
+        }
+        Tail::Blocked(why) => Some(button().disabled(Some(why)).into_element()),
+        Tail::Mark(mark) => Some(mark_view(t, mark)),
+        Tail::Nothing => None,
+    }
 }
 
 fn needs(t: &Theme, page: &ProjectPage, pg: &Pg) -> Element {
@@ -647,6 +912,61 @@ mod tests {
         assert_eq!(mark_of(None, Some("b"), "b"), Some(Mark::Adding));
         assert_eq!(mark_of(Some("a"), Some("b"), "c"), None);
         assert_eq!(mark_of(None, None, "a"), None);
+    }
+
+    fn side<'a>(id: &'a str) -> Side<'a> {
+        Side { id, interactive: true, have: None, chosen: Some("new"), busy: false, pointed: false, fits: true, blocked: None }
+    }
+
+    #[test]
+    fn a_row_at_rest_shows_the_same_marks_as_before() {
+        assert_eq!(tail_of(&side("new"), "x"), Tail::Mark(Mark::Adding));
+        assert_eq!(tail_of(&side("old"), "x"), Tail::Nothing);
+        assert_eq!(tail_of(&Side { have: Some("old"), ..side("new") }, "x"), Tail::Mark(Mark::Newest));
+    }
+
+    #[test]
+    fn the_installed_row_says_added_even_under_the_pointer_and_busy_beats_everything() {
+        assert_eq!(tail_of(&Side { have: Some("old"), ..side("old") }, "x"), Tail::Added);
+        assert_eq!(tail_of(&Side { have: Some("old"), pointed: true, ..side("old") }, "x"), Tail::Added);
+        assert_eq!(tail_of(&Side { have: Some("old"), busy: true, pointed: true, ..side("old") }, "x"), Tail::Busy);
+        assert_eq!(tail_of(&Side { busy: true, ..side("new") }, "x"), Tail::Busy);
+    }
+
+    #[test]
+    fn the_pointer_or_cursor_brings_the_button_for_a_version_that_fits() {
+        assert_eq!(tail_of(&Side { pointed: true, ..side("old") }, "x"), Tail::Add { replacing: false });
+        assert_eq!(tail_of(&Side { pointed: true, have: Some("other"), ..side("old") }, "x"), Tail::Add { replacing: true });
+        assert_eq!(tail_of(&Side { pointed: true, ..side("new") }, "x"), Tail::Add { replacing: false });
+    }
+
+    #[test]
+    fn a_version_that_does_not_fit_or_is_blocked_shows_the_reason_on_a_disabled_button() {
+        let misfit = Side { pointed: true, fits: false, blocked: Some("busy".into()), ..side("old") };
+        assert_eq!(tail_of(&misfit, "Minecraft 1.21 · Fabric"), Tail::Blocked(trf("Passt nicht zu %@.", &[&"Minecraft 1.21 · Fabric"])));
+        let blocked = Side { pointed: true, blocked: Some("busy".into()), ..side("old") };
+        assert_eq!(tail_of(&blocked, "x"), Tail::Blocked("busy".into()));
+        assert_eq!(tail_of(&Side { fits: false, ..side("old") }, "x"), Tail::Nothing);
+    }
+
+    #[test]
+    fn modpack_rows_stay_read_only() {
+        assert_eq!(tail_of(&Side { interactive: false, pointed: true, busy: true, ..side("old") }, "x"), Tail::Nothing);
+        assert_eq!(tail_of(&Side { interactive: false, pointed: true, ..side("new") }, "x"), Tail::Mark(Mark::Adding));
+    }
+
+    #[test]
+    fn a_version_is_named_by_its_number_then_its_name_then_its_id() {
+        let mut v = canned_version();
+        assert_eq!(shown_number(&v), "1.0");
+        v.version_number.clear();
+        assert_eq!(shown_number(&v), "Name");
+        v.name = " ".into();
+        assert_eq!(shown_number(&v), "id");
+    }
+
+    fn canned_version() -> Version {
+        Version { id: "id".into(), project_id: "p".into(), name: "Name".into(), version_number: "1.0".into(), version_type: "release".into(), date_published: String::new(), game_versions: Vec::new(), loaders: Vec::new(), files: Vec::new(), dependencies: Vec::new(), changelog: None }
     }
 
     #[test]

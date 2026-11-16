@@ -1807,5 +1807,10 @@
   "Wird hinzugefügt": "Will be added",
   "Wird mit hinzugefügt": "Added along with it",
   "Auf Modrinth ansehen": "View on Modrinth",
-  "Bild ließ sich nicht laden.": "The image didn't load."
+  "Bild ließ sich nicht laden.": "The image didn't load.",
+  "Wechsel zu Version %@ rückgängig": "Undo switching to version %@",
+  "„%@“ ist jetzt Version %@.": "“%@” is now version %@.",
+  "Passt nicht zu %@.": "Doesn't fit %@.",
+  "Version %@ hinzufügen": "Add version %@",
+  "Ersetzt Version %@.": "Replaces version %@."
 }

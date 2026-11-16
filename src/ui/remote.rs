@@ -639,6 +639,24 @@ pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> R
     modrinth::resolve_with_dependencies(project_ids, game_version, loader)
 }
 
+/// `version` of the mod `title` for `game_version` and `loader`, whatever newer ones exist, with its required dependencies.
+pub fn resolve_version(version: &modrinth::Version, title: &str, game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+    if drive::fenced("modrinth resolve version", &version.id) && !drive::live() {
+        let needs: Vec<String> = version.dependencies.iter().filter(|d| d.dependency_type == "required").filter_map(|d| d.project_id.clone()).collect();
+        if needs.is_empty() {
+            std::thread::sleep(CANNED_DELAY);
+        }
+        let mut out = vec![modrinth::version_ref(title, version)?];
+        if !needs.is_empty() {
+            out.extend(resolve(&needs, game_version, loader)?);
+        }
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|m| seen.insert(m.project_id.clone()));
+        return Ok(out);
+    }
+    modrinth::resolve_version(&version.id, game_version, loader)
+}
+
 /// The mods every new batch starts with, and why any is missing for `game_version`.
 pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
     if drive::fenced("modrinth defaults", game_version) && !drive::live() {

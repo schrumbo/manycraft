@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::core::batch::ModRef;
 use crate::core::packs::{self, Catalog, Installed, Modrinth};
-use crate::core::modrinth::{Dependency, Details, File, Filter, Hashes, Hit, Kind, Page, Search, Shot, Sort, Support, Update, Version};
+use crate::core::modrinth::{self, Dependency, Details, File, Filter, Hashes, Hit, Kind, Page, Search, Shot, Sort, Support, Update, Version};
 use crate::core::{drive, paths};
 
 use super::remote::{CANNED_DELAY, canned_hits};
@@ -95,6 +95,44 @@ pub fn install(instance_dir: &Path, dir: &Path, project_id: &str, title: &str, f
         packs::rename_selected(instance_dir, filter.kind, old, &file)?;
     }
     Ok(Installed { file, found })
+}
+
+/// Installs `version` of a project into `dir`. With `replacing`, the file of the version it replaces goes to the
+/// instance's trash first, the selection follows to the new file, and the trash entry comes back with what is
+/// installed now. A failure puts the old file back.
+pub fn install_version(instance_dir: &Path, dir: &Path, title: &str, version: &Version, replacing: Option<&str>, filter: &Filter) -> Result<(Installed, Option<String>)> {
+    let found = modrinth::version_ref(title, version)?;
+    let entry = replacing.map(|old| packs::remove(instance_dir, dir, old)).transpose()?;
+    let placed = if drive::fenced("pack install", &found.file_name) {
+        std::thread::sleep(CANNED_DELAY);
+        packs::place(&found, dir, None, |_, path| Ok(std::fs::write(path, b"canned")?))
+    } else {
+        packs::place(&found, dir, None, packs::download)
+    };
+    let file = match placed {
+        Ok(file) => file,
+        Err(e) => {
+            if let Some(entry) = &entry {
+                let _ = packs::put_back(instance_dir, entry);
+            }
+            return Err(e);
+        }
+    };
+    if let Some(old) = replacing {
+        packs::rename_selected(instance_dir, filter.kind, old, &file)?;
+    }
+    Ok((Installed { file, found }, entry))
+}
+
+/// Undoes [`install_version`]: the installed `current` file goes to the trash, the `entry` of the old file comes back
+/// as `previous` and the selection follows. A failure puts `current` back.
+pub fn switch_back(instance_dir: &Path, dir: &Path, kind: Kind, current: &str, entry: &str, previous: &str) -> Result<()> {
+    let gone = packs::remove(instance_dir, dir, current)?;
+    if let Err(e) = packs::put_back(instance_dir, entry) {
+        let _ = packs::put_back(instance_dir, &gone);
+        return Err(e);
+    }
+    packs::rename_selected(instance_dir, kind, current, previous)
 }
 
 /// Moves a pack to the instance's trash and returns the entry to take it back.
