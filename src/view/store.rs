@@ -94,10 +94,6 @@ impl Store {
     pub fn start(self) {
         std::thread::spawn(purge_trash);
         if self.boot() {
-            if let Err(e) = settings::activate() {
-                eprintln!("settings: {e:#}");
-                self.dispatch(Event::Notice(runner::untouched(&e).unwrap_or_else(|| format!("{e:#}"))));
-            }
             self.reload(false);
         }
     }
@@ -110,6 +106,10 @@ impl Store {
             Ok(backend) => {
                 self.runtime.set(Some(Rc::new(RefCell::new(Runtime::new(backend, visible)))));
                 spawn_in_window(self.pump(updates));
+                if let Err(e) = settings::activate() {
+                    eprintln!("settings: {e:#}");
+                    self.dispatch(Event::Notice(runner::untouched(&e).unwrap_or_else(|| format!("{e:#}"))));
+                }
                 true
             }
             Err(e) => {
@@ -494,12 +494,19 @@ impl Store {
             }
             Route::Tile { batch, .. } | Route::Attention(batch) => {
                 let needs: BTreeSet<_> = self.model.peek().games.values().filter(|g| g.batch_id == batch && g.phase.needs_attention()).filter_map(|g| g.phase.need()).collect();
-                if let (1, Some(need)) = (needs.len(), needs.first()) {
-                    ui.page.set(Page::Grid(Filter::Batch(batch)));
-                    ui.show.set(Show::Need(*need));
-                } else {
-                    ui.page.set(Page::Grid(Filter::Attention));
-                    ui.show.set_if_modified(Show::All);
+                match (needs.len(), needs.first()) {
+                    (1, Some(need)) => {
+                        ui.page.set(Page::Grid(Filter::Batch(batch)));
+                        ui.show.set(Show::Need(*need));
+                    }
+                    (0, _) => {
+                        ui.page.set(Page::Grid(Filter::Batch(batch)));
+                        ui.show.set_if_modified(Show::All);
+                    }
+                    _ => {
+                        ui.page.set(Page::Grid(Filter::Attention));
+                        ui.show.set_if_modified(Show::All);
+                    }
                 }
             }
             Route::Whispers => {
@@ -515,10 +522,7 @@ impl Store {
 
     /// Brings the manager window to the front, out of the notification area when it waits there.
     fn front(self) {
-        if !self.unstow_quietly() {
-            native::show(None);
-            return;
-        }
+        self.unstow_quietly();
         native::unstow();
     }
 

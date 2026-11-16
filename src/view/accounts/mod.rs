@@ -507,7 +507,7 @@ impl Component for AccountsPage {
                     .center()
                     .spacing(space::M)
                     .child(rect().max_width(Size::px(PAGE_MAX * 0.6)).child(para(&t, why, font::BODY, t.text2).text_align(TextAlign::Center)))
-                    .child(Button::new("accounts.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| store.retry()))
+                    .child(Button::new("accounts.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).primary().tall().on_press(move |_| store.retry()))
                     .into_element(),
             };
         }

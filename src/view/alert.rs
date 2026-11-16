@@ -3,6 +3,7 @@
 use crate::core::drive;
 
 /// The name the notifications go out under.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const AUMID: &str = "io.github.schrumbo.manycraft";
 
 /// Shows a notification with `title` and `body` that replaces the one of the same `tag`; a click on it sends `tag` to `clicks`.
@@ -87,18 +88,36 @@ mod os {
 
 #[cfg(not(target_os = "windows"))]
 mod os {
+    #[cfg(not(target_os = "macos"))]
+    static SHOWN: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> = std::sync::Mutex::new(None);
+
     pub fn show(tag: &str, title: &str, body: &str, clicks: &async_channel::Sender<String>) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            static APP: std::sync::Once = std::sync::Once::new();
+            APP.call_once(|| {
+                let _ = notify_rust::set_application(super::AUMID);
+            });
+        }
         let mut note = notify_rust::Notification::new();
         note.appname("Manycraft").summary(title).body(body).action("default", "default");
+        #[cfg(not(target_os = "macos"))]
+        if let Some(id) = SHOWN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().get(tag) {
+            note.id(*id);
+        }
         let (tag, clicks) = (tag.to_owned(), clicks.clone());
         std::thread::Builder::new()
             .name("notification".into())
             .spawn(move || match note.show() {
-                Ok(shown) => shown.wait_for_action(|action| {
-                    if action == "default" {
-                        let _ = clicks.try_send(tag);
-                    }
-                }),
+                Ok(shown) => {
+                    #[cfg(not(target_os = "macos"))]
+                    SHOWN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().insert(tag.clone(), shown.id());
+                    shown.wait_for_action(|action| {
+                        if action == "default" {
+                            let _ = clicks.try_send(tag);
+                        }
+                    })
+                }
                 Err(e) => eprintln!("notification: {e}"),
             })
             .map(drop)

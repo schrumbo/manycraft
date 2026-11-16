@@ -111,15 +111,27 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     let many = ui.selection.peek().len() > 1;
     let mut items = Vec::new();
     let m = store.model.peek();
-    if !many
-        && let Some(g) = m.games.get(key)
-        && let Some(p) = action_of(g, &m)
-    {
+    let primary = if many { None } else { m.games.get(key).and_then(|g| action_of(g, &m)) };
+    if let Some(p) = primary {
         let k = key.to_owned();
-        items.push(Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p)));
+        let mut item = Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p));
+        let same = match p {
+            Primary::Start | Primary::TakeOver => Some(Command::StartSelected),
+            Primary::Reconnect => Some(Command::ReconnectSelected),
+            _ => None,
+        };
+        if let Some(s) = same.and_then(Command::shortcut) {
+            item = item.shortcut(s.label());
+        }
+        items.push(item);
     }
     for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected] {
-        if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| !matches!(action_of(g, &m), Some(Primary::Start | Primary::TakeOver))) {
+        let doubled = match c {
+            Command::StartSelected => matches!(primary, Some(Primary::Start | Primary::TakeOver)),
+            Command::ReconnectSelected => matches!(primary, Some(Primary::Reconnect)),
+            _ => false,
+        };
+        if !doubled {
             let label = if many { c.label() } else { single(c) };
             if !c.available(store) {
                 continue;
@@ -223,6 +235,7 @@ impl Component for Tile {
             text.into_element()
         } else {
             let tip = match &reason {
+                Some(r) if detail.contains(r.as_str()) => detail.clone(),
                 Some(r) if *r != line2 => format!("{detail}
 {r}"),
                 _ => line2.clone(),

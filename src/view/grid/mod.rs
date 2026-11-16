@@ -23,7 +23,7 @@ use self::tile::{History, Tile};
 use super::commands::{self, Command};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
-use super::kit::text::{body, heading, line, secondary};
+use super::kit::text::{body, heading, line, para, secondary};
 use super::kit::{Bounds, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{control, font, iconsize, space};
@@ -328,8 +328,8 @@ impl Component for GridPage {
                 .spacing(space::M)
                 .child(icon(&t, Icon::Alert, iconsize::L * 2., t.text3))
                 .child(heading(&t, tr("Manycraft konnte nicht starten")))
-                .child(secondary(&t, reason))
-                .child(Button::new("grid.failed.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).tall().on_press(move |_| store.retry()));
+                .child(rect().max_width(Size::px(456.)).child(para(&t, reason, font::BODY, t.text2).text_align(TextAlign::Center)))
+                .child(Button::new("grid.failed.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).primary().tall().on_press(move |_| store.retry()));
             return column.child(page.child(col)).into_element();
         }
         if !m.loaded {
