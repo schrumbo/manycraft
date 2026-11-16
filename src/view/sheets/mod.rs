@@ -58,21 +58,51 @@ fn run(store: Store, want: Want) {
     }
 }
 
-/// What follows the very first accounts, `added` by id: the instance to play with is set up next; with an instance but no
-/// batch yet, the first batch is offered for several accounts.
+#[derive(Debug, PartialEq, Eq)]
+enum Onward {
+    Batch,
+    Instance,
+    Close,
+}
+
+fn onward(no_instance: bool, no_batch: bool, added: usize) -> Onward {
+    if no_batch && added > 1 {
+        Onward::Batch
+    } else if no_instance {
+        Onward::Instance
+    } else {
+        Onward::Close
+    }
+}
+
+/// What follows the very first accounts, `added` by id: several accounts without a batch yet open the first batch, with a new
+/// instance preselected when there is none; one account sets up the instance to play with.
 pub fn after_first_account(store: Store, added: Vec<String>) {
     let (no_instance, no_batch) = {
         let model = store.model.peek();
         (model.instances.is_empty(), model.batches.is_empty())
     };
-    if no_instance {
-        instance::create(store, Some(match added.as_slice() {
+    match onward(no_instance, no_batch, added.len()) {
+        Onward::Batch => batch::open_new(store, None, Some(added.iter().filter_map(|id| uuid::Uuid::parse_str(id).ok()).collect())),
+        Onward::Instance => instance::create(store, Some(match added.as_slice() {
             [only] => Some(only.clone()),
             _ => None,
-        }));
-    } else if no_batch && added.len() > 1 {
-        batch::open_new(store, None, Some(added.iter().filter_map(|id| uuid::Uuid::parse_str(id).ok()).collect()));
-    } else {
-        sheet::close(store.ui);
+        })),
+        Onward::Close => sheet::close(store.ui),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Onward, onward};
+
+    #[test]
+    fn several_first_accounts_open_the_batch_and_one_sets_up_the_instance() {
+        assert_eq!(onward(true, true, 3), Onward::Batch);
+        assert_eq!(onward(false, true, 2), Onward::Batch);
+        assert_eq!(onward(true, true, 1), Onward::Instance);
+        assert_eq!(onward(true, false, 2), Onward::Instance);
+        assert_eq!(onward(false, true, 1), Onward::Close);
+        assert_eq!(onward(false, false, 4), Onward::Close);
     }
 }

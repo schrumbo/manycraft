@@ -89,6 +89,7 @@ fn start(store: Store, id: &str, reason: Reason, back: Back, then: impl FnOnce()
                 label: tr("Nicht sichern"),
                 disabled: None,
                 danger: false,
+                busy: false,
                 run: EventHandler::new(move |_| {
                     settle(ui, &back_skip);
                     let dir = dir_skip.clone();
@@ -104,6 +105,7 @@ fn start(store: Store, id: &str, reason: Reason, back: Back, then: impl FnOnce()
                 label: tr("Sichern"),
                 disabled: None,
                 danger: false,
+                busy: false,
                 run: EventHandler::new(move |_| {
                     settle(ui, &back_keep);
                     let dir = dir_keep.clone();
@@ -156,12 +158,13 @@ fn take(store: Store, id: String, reason: Reason, back: Back, then: Then) {
                 let card = Card::new("instance.snapshot.failed", tr("Sicherung fehlgeschlagen"))
                     .message(trf("%@ Ohne Sicherung lässt sich die Änderung an den Welten nicht zurücknehmen.", &[&text]))
                     .width(frame::SHEET_NARROW)
-                    .secondary(Primary { label: tr("Abbrechen"), disabled: None, danger: false, run: EventHandler::new(move |_| settle(ui, &stop)) })
+                    .secondary(Primary { label: tr("Abbrechen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| settle(ui, &stop)) })
                     .secondary_id("instance.snapshot.failed.cancel")
                     .primary(Primary {
                         label: tr("Ohne Sicherung fortfahren"),
                         disabled: None,
                         danger: true,
+                        busy: false,
                         run: EventHandler::new(move |_| {
                             settle(ui, &go);
                             run(&then);

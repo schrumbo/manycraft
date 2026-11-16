@@ -3,6 +3,7 @@
 use freya::prelude::*;
 
 use super::text::{caption, line};
+use super::tooltip::WithTip;
 use super::{ring, use_theme};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
@@ -30,6 +31,7 @@ pub struct Field {
     glyph: Option<Icon>,
     width: Size,
     auto_focus: bool,
+    disabled: Option<String>,
     secret: bool,
     lines: usize,
     on_submit: Option<EventHandler<String>>,
@@ -51,6 +53,7 @@ impl Field {
             glyph: None,
             width: Size::fill(),
             auto_focus: false,
+            disabled: None,
             secret: false,
             lines: 1,
             on_submit: None,
@@ -94,6 +97,12 @@ impl Field {
 
     pub fn auto_focus(mut self) -> Self {
         self.auto_focus = true;
+        self
+    }
+
+    /// Greys the field out and shows `reason` as its tooltip.
+    pub fn disabled(mut self, reason: Option<String>) -> Self {
+        self.disabled = reason;
         self
     }
 
@@ -159,11 +168,12 @@ impl Component for Field {
             FIELDS.with(|f| f.borrow_mut().remove(&a11y));
         });
         let focus = use_focus(a11y);
-        let spot = use_spot(&self.id, "field", self.label.as_deref().unwrap_or(&self.placeholder), true);
+        let spot = use_spot(&self.id, "field", self.label.as_deref().unwrap_or(&self.placeholder), self.disabled.is_none());
         let mut input = Input::new(self.value)
             .a11y_id(a11y)
             .placeholder(self.placeholder.clone())
             .auto_focus(self.auto_focus)
+            .enabled(self.disabled.is_none())
             .width(Size::fill())
             .theme_colors(colors(&t, self.error.is_some()))
             .theme_layout(InputLayoutThemePartial {
@@ -229,7 +239,7 @@ impl Component for Field {
         if let Some(l) = &self.label {
             column = column.child(line(&t, l.clone(), font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM));
         }
-        column = column.child(boxed);
+        column = column.child(WithTip::new(self.disabled.clone(), boxed).fill());
         if let Some(e) = &self.error {
             column = column.child(line(&t, e.clone(), font::CAPTION, t.danger_text));
         } else if let Some(h) = &self.hint {

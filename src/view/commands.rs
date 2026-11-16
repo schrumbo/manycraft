@@ -392,7 +392,7 @@ impl Command {
             Command::NextAttention | Command::ShowAttention => m.attention_count(None) > 0,
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
             Command::FocusSearch => grid,
-            Command::Undo => store.ui.browser_undo.peek().is_some() || store.ui.toasts.peek().iter().any(|t| t.undo.is_some()),
+            Command::Undo => store.ui.browser_undo.peek().is_some() || store.ui.toasts.peek().iter().any(|t| t.undo.is_some()) || !store.ui.session_undo.peek().is_empty(),
             Command::Import => can_want(&Want::Import),
             c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks | Command::AddMods) => c.page_available(store),
             _ => true,
@@ -424,7 +424,12 @@ impl Command {
                 match browser {
                     Some(undo) => undo.run.call(()),
                     None => {
-                        toast::undo_last(ui);
+                        if !toast::undo_last(ui) {
+                            let newest = ui.session_undo.peek().first().cloned();
+                            if let Some(undo) = newest {
+                                undo.run.call(());
+                            }
+                        }
                     }
                 }
             }
@@ -525,6 +530,17 @@ pub fn for_menu(store: Store, command: Command) -> Option<Command> {
     let ready = |c: Command| c.available(store) || free(c) || c == Command::ToggleSidebar;
     let keys = command.shortcut();
     keys.and_then(|keys| Command::ALL.into_iter().find(|c| c.shortcut() == Some(keys) && ready(*c))).or_else(|| ready(command).then_some(command))
+}
+
+/// What the palette calls Rückgängig: the open browser's removal, or the newest deletion no toast offers any more.
+pub fn undo_label(store: Store) -> Option<String> {
+    if let Some(u) = store.ui.browser_undo.peek().as_ref() {
+        return Some(u.label.clone());
+    }
+    if store.ui.toasts.peek().iter().any(|t| t.undo.is_some()) {
+        return None;
+    }
+    store.ui.session_undo.peek().first().map(|u| u.label.clone())
 }
 
 /// A command the shown page offers beyond the window's: in the palette, and through its shortcut while the page is shown.

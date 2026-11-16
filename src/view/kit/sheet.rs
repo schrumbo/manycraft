@@ -27,12 +27,13 @@ pub fn close(mut ui: Ui) {
     ui.sheet.set_if_modified(None);
 }
 
-/// The default action of a sheet: its label, why it is unavailable, and what it does.
+/// The default action of a sheet: its label, why it is unavailable, whether it shows the waiting arc, and what it does.
 #[derive(Clone, PartialEq)]
 pub struct Primary {
     pub label: String,
     pub disabled: Option<String>,
     pub danger: bool,
+    pub busy: bool,
     pub run: EventHandler<()>,
 }
 
@@ -50,6 +51,8 @@ pub struct Card {
     pub primary_id: Option<String>,
     pub secondary_id: Option<String>,
     pub width: f32,
+    /// Keeps Abbrechen before the second action instead of being replaced by it.
+    pub keep_cancel: bool,
     /// Only tells something: no Abbrechen, and Esc also runs the default action.
     pub inform: bool,
     /// Why the sheet cannot be left or finished now, while work runs.
@@ -62,7 +65,7 @@ pub struct Card {
 
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, leading: None, primary_id: None, secondary_id: None, width: frame::SHEET, inform: false, locked: None, on_escape: None, on_enter: None }
+        Self { id: id.into(), title: title.into(), message: None, body: None, primary: None, secondary: None, leading: None, primary_id: None, secondary_id: None, width: frame::SHEET, keep_cancel: false, inform: false, locked: None, on_escape: None, on_enter: None }
     }
 
     pub fn message(mut self, message: impl Into<String>) -> Self {
@@ -109,6 +112,12 @@ impl Card {
         self
     }
 
+    /// Shows Abbrechen before the second action rather than in its place.
+    pub fn keep_cancel(mut self) -> Self {
+        self.keep_cancel = true;
+        self
+    }
+
     pub fn inform(mut self) -> Self {
         self.inform = true;
         self
@@ -148,19 +157,23 @@ impl Component for Card {
             footer = footer.child(l.clone());
         }
         footer = footer.child(spacer()).content(Content::flex());
+        let cancel = Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).disabled(locked.clone()).on_press(move |_| close(ui));
         match &self.secondary {
             Some(s) => {
+                if self.keep_cancel {
+                    footer = footer.child(cancel);
+                }
                 let run = s.run.clone();
-                let b = Button::new(self.secondary_id.clone().unwrap_or_else(|| format!("{}.other", self.id)), s.label.clone()).disabled(locked.clone().or_else(|| s.disabled.clone())).on_press(move |_| run.call(()));
+                let b = Button::new(self.secondary_id.clone().unwrap_or_else(|| format!("{}.other", self.id)), s.label.clone()).disabled(locked.clone().or_else(|| s.disabled.clone())).busy(s.busy).on_press(move |_| run.call(()));
                 footer = footer.child(if s.danger { b.danger() } else { b });
             }
             None if self.inform => {}
-            None => footer = footer.child(Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).disabled(locked.clone()).on_press(move |_| close(ui))),
+            None => footer = footer.child(cancel),
         }
         let inform = self.inform;
         if let Some(p) = primary {
             let run = p.run.clone();
-            let mut b = Button::new(self.primary_id.clone().unwrap_or_else(|| format!("{}.ok", self.id)), p.label.clone()).disabled(locked.clone().or_else(|| p.disabled.clone())).on_press(move |_| run.call(()));
+            let mut b = Button::new(self.primary_id.clone().unwrap_or_else(|| format!("{}.ok", self.id)), p.label.clone()).disabled(locked.clone().or_else(|| p.disabled.clone())).busy(p.busy).on_press(move |_| run.call(()));
             b = if p.danger { b.danger() } else { b.primary() };
             footer = footer.child(b);
         }
@@ -263,7 +276,7 @@ impl Component for Host {
 /// A sheet that only asks whether to go ahead.
 pub fn confirm(ui: Ui, id: &str, heading: String, message: String, action: String, danger: bool, run: impl FnMut(()) + 'static) {
     let mut run = run;
-    let primary = Primary { label: action, disabled: None, danger, run: EventHandler::new(move |_| {
+    let primary = Primary { label: action, disabled: None, danger, busy: false, run: EventHandler::new(move |_| {
         close(ui);
         run(());
     }) };

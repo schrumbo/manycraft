@@ -1788,5 +1788,9 @@
   "Auch hinzugefügt: %@.": "Also added: %@.",
   "Shader brauchen Iris, und Iris braucht Fabric oder Quilt. %@ ist keins von beiden.": "Shaders need Iris, and Iris needs Fabric or Quilt. %@ is neither.",
   "Einen Moment, die Mods werden hinzugefügt …": "One moment, the mods are being added …",
-  "Einen Moment, die Mods werden geladen …": "One moment, the mods are being loaded …"
+  "Einen Moment, die Mods werden geladen …": "One moment, the mods are being loaded …",
+  "Löschen von „%@“ rückgängig": "Undo deleting “%@”",
+  "Ein Spiel nach dem anderen": "One game after the other",
+  "%lld Spiele gleichzeitig": "%lld games at once",
+  "Noch keine Accounts.": "No accounts yet."
 }

@@ -25,12 +25,12 @@ use freya::prelude::*;
 
 use super::theme::{Theme, frame};
 
-/// The theme of the window, shared by every component below the root.
 /// Keeps `child` at least `height` tall, centred; torin adds `min_height` to the content instead of clamping, so it cannot do this.
 pub fn at_least(height: f32, child: impl IntoElement) -> Rect {
     rect().horizontal().cross_align(Alignment::Center).child(rect().width(Size::px(0.)).height(Size::px(height))).child(child)
 }
 
+/// The theme of the window, shared by every component below the root.
 pub fn use_theme() -> Rc<Theme> {
     use_consume::<State<Rc<Theme>>>().read().clone()
 }

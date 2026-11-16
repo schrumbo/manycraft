@@ -220,7 +220,7 @@ pub(crate) fn ask_delete(store: Store, id: &str) {
     drop(m);
     let ui = store.ui;
     if !users.is_empty() {
-        let done = Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(ui)) };
+        let done = Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) };
         sheet::open(ui, Card::new("instance.delete.used", trf("„%@“ lässt sich nicht löschen.", &[&name])).message(crate::core::fleet::used_by(&users)).primary(done).width(frame::SHEET * 0.8));
         return;
     }

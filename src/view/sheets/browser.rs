@@ -1492,7 +1492,7 @@ impl Component for Browser {
             tr("Von Modrinth hinzufügen")
         };
         let subtitle = trf("Von Modrinth für Minecraft %@ · %@", &[&self.scope.version, &self.scope.loader.name()]);
-        let primary = Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| done.call(())) };
+        let primary = Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| done.call(())) };
         let (esc, enter) = (flow.clone(), flow.clone());
         Card::new("browser", title)
             .message(subtitle)

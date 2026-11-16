@@ -695,7 +695,7 @@ impl Store {
             return;
         }
         let text = if cfg!(target_os = "windows") { tr("Solange Spiele laufen, findest du Manycraft im Infobereich der Taskleiste.") } else { tr("Solange Spiele laufen, findest du Manycraft im Infobereich.") };
-        let ok = sheet::Primary { label: tr("Verstanden"), disabled: None, danger: false, run: EventHandler::new(move |_| {
+        let ok = sheet::Primary { label: tr("Verstanden"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| {
             self.side().borrow_mut().explaining = None;
             sheet::close(self.ui);
             self.dispatch(Event::TrayExplained);
@@ -709,11 +709,11 @@ impl Store {
         self.unstow();
         let title = if running == 1 { tr("1 Spiel läuft noch") } else { trf("%lld Spiele laufen noch", &[&running]) };
         let message = if running == 1 { tr("Beim nächsten Start findet Manycraft es wieder.") } else { tr("Beim nächsten Start findet Manycraft sie wieder.") };
-        let end = sheet::Primary { label: tr("Alle beenden"), disabled: None, danger: true, run: EventHandler::new(move |_| {
+        let end = sheet::Primary { label: tr("Alle beenden"), disabled: None, danger: true, busy: false, run: EventHandler::new(move |_| {
             sheet::close(self.ui);
             self.dispatch(Event::QuitChosen { keep: false });
         }) };
-        let keep = sheet::Primary { label: tr("Weiterlaufen lassen"), disabled: None, danger: false, run: EventHandler::new(move |_| {
+        let keep = sheet::Primary { label: tr("Weiterlaufen lassen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| {
             sheet::close(self.ui);
             self.dispatch(Event::QuitChosen { keep: true });
         }) };

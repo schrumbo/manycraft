@@ -748,26 +748,26 @@ impl Component for Import {
                     .message(tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."))
                     .body(pick_body(flow, &t, &list, scroll, viewport, list_max, loading))
                     .leading(folder)
-                    .primary(Primary { label, disabled: blocked, danger: false, run: EventHandler::new(move |_| flow.start()) })
+                    .primary(Primary { label, disabled: blocked, danger: false, busy: false, run: EventHandler::new(move |_| flow.start()) })
                     .primary_id("import.start");
             }
             Phase::Running(run) => {
                 let stopping = run.stopping;
                 card = card
                     .body(running_body(&t, run))
-                    .primary(Primary { label: tr("Importieren"), disabled: Some(tr("Wird importiert …")), danger: false, run: EventHandler::new(|_| {}) })
+                    .primary(Primary { label: tr("Importieren"), disabled: Some(tr("Wird importiert …")), danger: false, busy: false, run: EventHandler::new(|_| {}) })
                     .primary_id("import.start")
-                    .secondary(Primary { label: tr("Abbrechen"), disabled: stopping.then(|| tr("Bricht ab …")), danger: false, run: EventHandler::new(move |_| flow.stop()) })
+                    .secondary(Primary { label: tr("Abbrechen"), disabled: stopping.then(|| tr("Bricht ab …")), danger: false, busy: false, run: EventHandler::new(move |_| flow.stop()) })
                     .secondary_id("import.cancel")
                     .on_escape(move |_| flow.stop());
             }
             Phase::Done(summary) => {
                 let jobs = summary.again();
-                card = card.body(done_body(&t, summary)).primary(Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(store.ui)) });
+                card = card.body(done_body(&t, summary)).primary(Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(store.ui)) });
                 card = if jobs.is_empty() {
                     card.inform()
                 } else {
-                    card.secondary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, run: EventHandler::new(move |_| flow.retry(jobs.clone())) }).secondary_id("import.retry")
+                    card.secondary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| flow.retry(jobs.clone())) }).secondary_id("import.retry")
                 };
             }
         }

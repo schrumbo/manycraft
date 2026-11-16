@@ -19,18 +19,19 @@ use crate::view::commands::{Want, want};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
-use crate::view::kit::field::Field;
+use crate::view::kit::field::{Field, typing};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, figure, line, para, strong};
+use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{at_least, off_ui, ring, toast, use_arrows, use_theme};
 use crate::view::sheets::instance::{Load, problem_view};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
-use crate::view::ui::{Filter, Page, Show};
+use crate::view::ui::{Filter, Page, SessionUndo, Show, remember};
 
 const FIELD_W: f32 = frame::SHEET - space::XL * 2. - frame::RING * 2.;
 const FILTER_FROM: usize = 12;
@@ -41,10 +42,10 @@ const LIST_MIN: f32 = 96.;
 const LIST_MAX: f32 = 220.;
 const LIST_SHARE: f32 = 0.5;
 const PICK_ROW: f32 = control::M + space::XS;
-const BOX_EDGES: f32 = 2.;
+const BOX_EDGES: f32 = frame::HAIRLINE * 2.;
 const FACE: f32 = iconsize::L;
+const FACE_INSET: f32 = FACE / 12.;
 const BOX: f32 = iconsize::M;
-const LINE: f32 = 1.35;
 const HINT_LINES: f32 = 2.;
 const LAUNCH_CHOICES: [u32; 5] = [0, 1, 2, 4, 8];
 const BACKGROUND_NAMES: [&str; 4] = ["saving", "balanced", "full", "custom"];
@@ -114,7 +115,8 @@ fn leave(store: Store, id: &str) {
 }
 
 fn delete(store: Store, batch: Batch) {
-    if delete_blocked(store, &batch.id).is_some() {
+    if let Some(why) = delete_blocked(store, &batch.id) {
+        toast::show(store.ui, why, None);
         return;
     }
     spawn_in_window(async move {
@@ -136,10 +138,24 @@ fn delete(store: Store, batch: Batch) {
 }
 
 fn offer_restore(store: Store, batch: Batch) {
-    toast::show_kept(store.ui, trf("„%@“ gelöscht.", &[&batch.name]), EventHandler::new(move |_| restore(store, batch.clone())));
+    let undo = EventHandler::new({
+        let batch = batch.clone();
+        move |_| restore(store, batch.clone())
+    });
+    let mut session = store.ui.session_undo;
+    remember(&mut session.write(), SessionUndo { key: batch.id.clone(), label: trf("Löschen von „%@“ rückgängig", &[&batch.name]), run: undo.clone() });
+    toast::show_kept(store.ui, trf("„%@“ gelöscht.", &[&batch.name]), undo);
+}
+
+fn forget_restore(store: Store, id: &str) {
+    let mut session = store.ui.session_undo;
+    if session.peek().iter().any(|u| u.key == id) {
+        session.write().retain(|u| u.key != id);
+    }
 }
 
 fn restore(store: Store, batch: Batch) {
+    forget_restore(store, &batch.id);
     spawn_in_window(async move {
         let back = batch.clone();
         match off_ui(move || remote::restore_batch(&back)).await {
@@ -184,7 +200,7 @@ fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
 }
 
 fn hint(t: &Theme, text: String) -> Element {
-    at_least(font::CAPTION * LINE * HINT_LINES, para(t, text, font::CAPTION, t.text3)).width(Size::fill()).into_element()
+    at_least(font::CAPTION * frame::PARA_LINE * HINT_LINES, para(t, text, font::CAPTION, t.text3)).width(Size::fill()).into_element()
 }
 
 fn field(t: &Theme, title: String, control: impl IntoElement, note: Option<String>, error: Option<String>) -> Element {
@@ -608,7 +624,7 @@ impl Component for BatchSheet {
 
         let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M);
         if running {
-            form = form.child(notice(&t, Icon::CircleAlert, t.accent_text, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
+            form = form.child(notice(&t, Icon::Info, t.accent_text, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
         }
 
         let instance_lock = if running { Some(tr("Stoppe zuerst die laufenden Spiele.")) } else { lock.clone() };
@@ -650,8 +666,8 @@ impl Component for BatchSheet {
             form = form.child(field(&t, tr("Minecraft-Version"), control, companion_hint(&version), version_problem.clone().filter(|_| tried)));
         }
 
-        let mut server_field = Field::new("batch.server", flow.server).label(tr("Server")).placeholder(tr("z. B. play.example.net")).hint(tr("Optional. Adresse mit oder ohne Port.")).error(server_problem.clone());
-        let mut name_field = Field::new("batch.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Farm")).error(name_shown);
+        let mut server_field = Field::new("batch.server", flow.server).label(tr("Server")).placeholder(tr("z. B. play.example.net")).hint(tr("Optional. Adresse mit oder ohne Port.")).error(server_problem.clone()).disabled(lock.clone());
+        let mut name_field = Field::new("batch.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Farm")).error(name_shown).disabled(lock.clone());
         if editing {
             name_field = name_field.auto_focus();
         } else {
@@ -659,17 +675,13 @@ impl Component for BatchSheet {
         }
         form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock));
 
-        let strain = |t: &Theme| fit_line(t, flow, picked);
-        if !open {
-            form = form.children(strain(&t));
-        }
         form = form
+            .children(fit_line(&t, flow, picked))
             .child(name_field)
             .child(background_section(&t, flow, background, running, &lock))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, running, picked, instance_memory }, &lock))
-            .children(if open { strain(&t) } else { None });
+            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, running, picked, instance_memory }, &lock));
 
-        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(form));
+        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "batch.save", Icon::CircleAlert, &problem, flow.details));
         }
@@ -684,8 +696,12 @@ impl Component for BatchSheet {
         });
         let (title, subtitle) = if editing { (tr("Batch bearbeiten"), None) } else { (tr("Batch erstellen"), Some(tr("Ein Batch schickt mehrere Accounts mit derselben Instanz los."))) };
         let action = if editing { tr("Sichern") } else if starts { tr("Erstellen und starten") } else { tr("Erstellen") };
-        let primary = Primary { label: action, disabled: invalid.clone(), danger: false, run: EventHandler::new(move |_| flow.save(true)) };
-        let mut card = Card::new("batch", title).width(frame::SHEET).body(body).primary(primary).primary_id("batch.save").locked(lock.clone());
+        let primary = Primary { label: action, disabled: invalid.clone(), danger: false, busy: saving, run: EventHandler::new(move |_| flow.save(true)) };
+        let mut card = Card::new("batch", title).width(frame::SHEET).body(body).primary(primary).primary_id("batch.save").locked(lock.clone()).on_enter(move |_| {
+            if typing() {
+                flow.save(true);
+            }
+        });
         if let Some(s) = subtitle {
             card = card.message(s);
         }
@@ -695,9 +711,9 @@ impl Component for BatchSheet {
             card = card.leading(Button::new("batch.delete", tr("Batch löschen…")).danger().disabled(why).on_press(move |_| asking.set(true)));
         } else if starts {
             card = card
-                .secondary(Primary { label: tr("Nur erstellen"), disabled: invalid, danger: false, run: EventHandler::new(move |_| flow.save(false)) })
+                .secondary(Primary { label: tr("Nur erstellen"), disabled: invalid, danger: false, busy: false, run: EventHandler::new(move |_| flow.save(false)) })
                 .secondary_id("batch.create-only")
-                .leading(Button::new("batch.cancel", tr("Abbrechen")).disabled(lock).on_press(move |_| sheet::close(store.ui)));
+                .keep_cancel();
         }
         card.into_element()
     }
@@ -712,12 +728,13 @@ fn confirm_card(flow: Flow, batch: Batch, running: bool) -> Element {
         label: tr("Löschen"),
         disabled: running.then(blocked_text),
         danger: true,
+        busy: false,
         run: EventHandler::new(move |_| {
             sheet::close(store.ui);
             delete(store, doomed.clone());
         }),
     };
-    let secondary = Primary { label: tr("Behalten"), disabled: None, danger: false, run: EventHandler::new(move |_| keep.set(false)) };
+    let secondary = Primary { label: tr("Behalten"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| keep.set(false)) };
     Card::new("batch", ask_title(&batch))
         .width(frame::SHEET_NARROW)
         .message(ask_message())
@@ -838,8 +855,17 @@ fn advanced_section(t: &Theme, flow: Flow, view: AdvancedView, lock: &Option<Str
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(space::S)
-        .child(Switch::new("batch.memory.inherit", like.clone(), inherit).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_inherit()))
+        .cursor(if lock.is_some() { CursorIcon::NotAllowed } else { CursorIcon::Pointer })
+        .on_pointer_press(move |e: Event<PointerEventData>| {
+            if let PointerEventData::Mouse(m) = &*e
+                && m.button == Some(MouseButton::Left)
+            {
+                flow.toggle_inherit();
+            }
+        })
+        .child(rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation()).child(Switch::new("batch.memory.inherit", like.clone(), inherit).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_inherit())))
         .child(line(t, like, font::CALLOUT, t.text2));
+    let inherit_row = WithTip::new(lock.clone(), inherit_row).fill();
     let mut block = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::XS).child(inherit_row);
     if !inherit {
         let less = lock.clone().or_else(|| (memory <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
@@ -867,7 +893,18 @@ fn pace_section(t: &Theme, flow: Flow, pace: u32, running: bool, lock: &Option<S
         n => trf("Höchstens %lld Spiele starten gleichzeitig. Mehr geht schneller, der Rechner reagiert dann aber träger. Die übrigen warten.", &[&n]),
     };
     let text = if running { format!("{text} {}", tr("Gilt beim nächsten Start.")) } else { text };
-    let segments = LAUNCH_CHOICES.iter().map(|n| Segment { id: format!("batch.parallel.{n}"), label: if *n == 0 { tr("Automatisch") } else { n.to_string() }, tip: None }).collect();
+    let segments = LAUNCH_CHOICES
+        .iter()
+        .map(|n| Segment {
+            id: format!("batch.parallel.{n}"),
+            label: if *n == 0 { tr("Automatisch") } else { n.to_string() },
+            tip: match n {
+                0 => None,
+                1 => Some(tr("Ein Spiel nach dem anderen")),
+                n => Some(trf("%lld Spiele gleichzeitig", &[n])),
+            },
+        })
+        .collect();
     let chosen = LAUNCH_CHOICES.iter().position(|n| *n == pace).unwrap_or(0);
     let control = Segmented::new(tr("Gleichzeitig starten"), segments, chosen).disabled(lock.clone()).on_choose(move |n| flow.pick_pace(n));
     rect()
@@ -912,7 +949,7 @@ fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: u
                     .cross_align(Alignment::Center)
                     .spacing(space::S)
                     .content(Content::flex())
-                    .child(para(t, tr("Noch keine Accounts. Du kannst sie später hinzufügen."), font::CALLOUT, t.text2).width(Size::flex(1.)))
+                    .child(para(t, tr("Noch keine Accounts."), font::CALLOUT, t.text2).width(Size::flex(1.)))
                     .child(add),
             )
             .into_element();
@@ -941,14 +978,14 @@ fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: u
             .width(Size::fill())
             .padding((space::S, space::M))
             .corner_radius(t.shape.control)
-            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
+            .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
             .child(para(t, trf("Kein Account passt zu „%@“.", &[&raw]), font::CALLOUT, t.text2))
             .into_element()
     } else {
         let height = (shown.len() as f32 * PICK_ROW + BOX_EDGES).min(list_max(store));
-        PickList { rows: shown, picked: flow.accounts, cursor: flow.cursor, height, locked: lock.clone() }.into_element()
+        WithTip::new(lock.clone(), PickList { rows: shown, picked: flow.accounts, cursor: flow.cursor, height, locked: lock.clone() }).fill().into_element()
     };
-    column.child(list).child(caption(t, tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieser Instanz mit, auch in anderen Batches."))).into_element()
+    column.child(list).child(para(t, tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieser Instanz mit, auch in anderen Batches."), font::CAPTION, t.text3)).into_element()
 }
 
 #[derive(Clone, Copy)]
@@ -984,6 +1021,7 @@ impl Component for PickList {
         let a11y = use_a11y();
         use_arrows(a11y);
         let focus = use_focus(a11y);
+        let keyboard = focus() == Focus::Keyboard;
         let scroll = use_scroll_controller(ScrollConfig::default);
         let mut viewport = use_state(|| 0f32);
         let (picked, cursor, locked) = (self.picked, self.cursor, self.locked.is_some());
@@ -1030,7 +1068,7 @@ impl Component for PickList {
                     .key(id)
                     .width(Size::fill())
                     .height(Size::px(item.size))
-                    .child(PickRow { index: item.index, candidate: c.clone(), on: picked.read().contains(&id), current: cursor.read().is_some_and(|x| x == id), locked, on_press: press })
+                    .child(PickRow { index: item.index, candidate: c.clone(), on: picked.read().contains(&id), current: keyboard && cursor.read().is_some_and(|x| x == id), locked, on_press: press })
                     .into_element()
             },
             scroll,
@@ -1065,6 +1103,14 @@ impl Component for PickList {
                     Key::Named(NamedKey::ArrowUp) => go(moved(at, n, Step::Previous)),
                     Key::Named(NamedKey::Home) => go(moved(at, n, Step::First)),
                     Key::Named(NamedKey::End) => go(moved(at, n, Step::Last)),
+                    Key::Named(NamedKey::Enter) => {
+                        e.prevent_default();
+                        let to = at.unwrap_or(0);
+                        go(to);
+                        if let Some(id) = ids.get(to) {
+                            keys(*id);
+                        }
+                    }
                     Key::Character(c) if c == " " => {
                         let to = at.unwrap_or(0);
                         go(to);
@@ -1079,7 +1125,7 @@ impl Component for PickList {
             .child(items);
         list = match ring(&t, focus()) {
             Some(border) => list.border(border),
-            None => list.border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner)),
+            None => list.border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner)),
         };
         list
     }
@@ -1100,10 +1146,19 @@ impl Component for PickRow {
         let t = use_theme();
         let store = use_store();
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let c = &self.candidate;
         let spot = use_spot(&format!("batch.accounts.{}", self.index), "row", &c.name, !self.locked);
         let press = self.on_press.clone();
-        let fill = if self.on { t.selection } else if *hovered.read() || self.current { t.hover } else { Color::TRANSPARENT };
+        let fill = if self.locked {
+            Color::TRANSPARENT
+        } else if *pressed.read() {
+            t.press
+        } else if *hovered.read() {
+            t.hover
+        } else {
+            Color::TRANSPARENT
+        };
         let side = match &c.elsewhere {
             Some(batch) => format!("{} · {}", c.kind, trf("Läuft in „%@“", &[batch])),
             None => c.kind.clone(),
@@ -1111,9 +1166,9 @@ impl Component for PickRow {
         let mark = if self.on {
             rect().width(Size::px(BOX)).height(Size::px(BOX)).center().corner_radius(t.shape.small).background(t.accent).child(icon(&t, Icon::Check, iconsize::XS, t.on_accent))
         } else {
-            rect().width(Size::px(BOX)).height(Size::px(BOX)).corner_radius(t.shape.small).border(Border::new().fill(t.text3).width(1.5).alignment(BorderAlignment::Inner))
+            rect().width(Size::px(BOX)).height(Size::px(BOX)).corner_radius(t.shape.small).border(Border::new().fill(t.text3).width(frame::BOX_EDGE).alignment(BorderAlignment::Inner))
         };
-        rect()
+        let mut row = rect()
             .a11y_alt(format!("{}, {}", c.name, if self.on { tr("ausgewählt") } else { tr("nicht ausgewählt") }))
             .width(Size::fill())
             .height(Size::fill())
@@ -1126,12 +1181,21 @@ impl Component for PickRow {
             .content(Content::flex())
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |_| pressed.set(true))
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_press(move |_| press.call(()))
             .child(mark)
             .child(face(&t, store, c))
             .child(line(&t, c.name.clone(), font::BODY, if self.locked { t.text3 } else { t.text1 }).width(Size::flex(1.)))
-            .child(caption(&t, side))
+            .child(caption(&t, side));
+        if self.current {
+            row = row.border(Border::new().fill(t.focus).width(frame::RING).alignment(BorderAlignment::Inner));
+        }
+        row
     }
 }
 
@@ -1139,7 +1203,7 @@ fn face(t: &Theme, store: Store, c: &Candidate) -> Element {
     let fill = t.identity(usize::from(c.color));
     let chip = rect().width(Size::px(FACE)).height(Size::px(FACE)).corner_radius(t.shape.small).background(fill).center().overflow(Overflow::Clip);
     match store.faces.read().get(&c.id).cloned() {
-        Some(handle) => chip.padding(FACE / 12.).child(image(handle).width(Size::fill()).height(Size::fill()).corner_radius(t.shape.small / 2.)).into_element(),
+        Some(handle) => chip.padding(FACE_INSET).child(image(handle).width(Size::fill()).height(Size::fill()).corner_radius(t.shape.small / 2.)).into_element(),
         None => chip.child(label().text(c.name.chars().next().map(|ch| ch.to_uppercase().collect::<String>()).unwrap_or_default()).font_size(font::CAPTION).font_weight(FontWeight::BOLD).color(t.ink_on(fill))).into_element(),
     }
 }

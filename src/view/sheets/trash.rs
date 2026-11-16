@@ -279,7 +279,7 @@ impl Component for Trash {
                     .content(Content::flex()),
             );
         }
-        let done = Primary { label: tr("Fertig"), disabled: None, danger: false, run: EventHandler::new(move |_| sheet::close(store.ui)) };
+        let done = Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(store.ui)) };
         let busy = *emptying.read();
         let mut card = Card::new("trash", tr("Papierkorb")).body(content).primary(done).primary_id("trash.done").inform().locked(busy.then(|| tr("Wird geleert …"))).width(frame::SHEET);
         if let Some(s) = subtitle {
@@ -290,6 +290,7 @@ impl Component for Trash {
                 label: tr("Papierkorb leeren…"),
                 disabled: busy.then(|| tr("Wird geleert …")),
                 danger: true,
+                busy: false,
                 run: EventHandler::new(move |_| asking.set(true)),
             });
         }

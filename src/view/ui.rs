@@ -58,6 +58,20 @@ pub struct BrowserUndo {
     pub run: EventHandler<()>,
 }
 
+/// A deletion that can be taken back for as long as the window is open: what it undoes and how.
+#[derive(Clone, PartialEq)]
+pub struct SessionUndo {
+    pub key: String,
+    pub label: String,
+    pub run: EventHandler<()>,
+}
+
+/// Puts `entry` first in `list`, in place of an older one with its key.
+pub fn remember(list: &mut Vec<SessionUndo>, entry: SessionUndo) {
+    list.retain(|u| u.key != entry.key);
+    list.insert(0, entry);
+}
+
 /// The view state every component reaches through the context.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ui {
@@ -92,6 +106,8 @@ pub struct Ui {
     pub tip: State<Option<Tip>>,
     /// The removal the open content browser would undo next; the palette and Ctrl or Cmd+Z reach it from here.
     pub browser_undo: State<Option<BrowserUndo>>,
+    /// The deletions still to undo, newest first; the palette and Ctrl or Cmd+Z reach them after their toasts are gone.
+    pub session_undo: State<Vec<SessionUndo>>,
     /// When the last tooltip went away, so the next one shows at once.
     pub tip_seen: State<Option<Instant>>,
     /// What the Accounts page shows and has picked.
@@ -127,6 +143,7 @@ impl Ui {
             toasts: State::create(Vec::new()),
             tip: State::create(None),
             browser_undo: State::create(None),
+            session_undo: State::create(Vec::new()),
             tip_seen: State::create(None),
             accounts: accounts::Shared::create(),
             chat: chat::Shared::create(),
@@ -137,5 +154,24 @@ impl Ui {
     /// Whether a layer above the content takes the keyboard: a sheet, the palette or a menu.
     pub fn layered(&self) -> bool {
         self.sheet.peek().is_some() || *self.palette.peek() || self.menu.peek().is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(key: &str, label: &str) -> SessionUndo {
+        SessionUndo { key: key.into(), label: label.into(), run: EventHandler::new(|_| {}) }
+    }
+
+    #[test]
+    fn the_newest_undo_comes_first_and_a_repeat_replaces_the_old_one() {
+        let mut list = Vec::new();
+        remember(&mut list, entry("a", "A"));
+        remember(&mut list, entry("b", "B"));
+        remember(&mut list, entry("a", "A again"));
+        let labels: Vec<&str> = list.iter().map(|u| u.label.as_str()).collect();
+        assert_eq!(labels, ["A again", "B"]);
     }
 }

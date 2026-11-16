@@ -56,7 +56,7 @@ impl Component for Ask {
                 ("update.back", trf("Zu Version %@ zurückkehren?", &[&previous]), message, tr("Zurückkehren"), running > 0)
             }
         };
-        let primary = Primary { label: action, disabled: blocked.clone(), danger, run: EventHandler::new(move |_| {
+        let primary = Primary { label: action, disabled: blocked.clone(), danger, busy: false, run: EventHandler::new(move |_| {
             sheet::close(store.ui);
             updates::quit(store, how);
         }) };

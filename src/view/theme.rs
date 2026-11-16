@@ -68,6 +68,10 @@ pub mod frame {
     pub const TILE_WASH: f32 = 0.14;
     /// How long the waiting arc takes for one turn, in milliseconds.
     pub const SPIN_MS: u64 = 900;
+    /// The line height of wrapped paragraphs, as a multiple of the font size.
+    pub const PARA_LINE: f32 = 1.35;
+    /// The outline of an empty checkbox.
+    pub const BOX_EDGE: f32 = 1.5;
 }
 
 /// The fonts the UI asks for, tried in order before the system's own.

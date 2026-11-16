@@ -438,7 +438,7 @@ struct Parts {
 }
 
 fn act(label: String, disabled: Option<String>, mut run: impl FnMut() + 'static) -> Primary {
-    Primary { label, disabled, danger: false, run: EventHandler::new(move |_| run()) }
+    Primary { label, disabled, danger: false, busy: false, run: EventHandler::new(move |_| run()) }
 }
 
 fn waiting(t: &Theme, text: String) -> Element {
@@ -914,7 +914,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
                         .child(Button::new("account.add.copy-link", tr("Link kopieren")).plain().glyph(Icon::Link).on_press(move |_| flow.copy_link())),
                 )
                 .into_element();
-            parts.primary = Some(("account.add.open-link", Primary { label: tr("Seite öffnen"), disabled: None, danger: false, run: EventHandler::new(move |_| flow.open_page()) }));
+            parts.primary = Some(("account.add.open-link", Primary { label: tr("Seite öffnen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| flow.open_page()) }));
         }
         Ms::Added(name) => {
             let next = pending.queue.first().cloned();
