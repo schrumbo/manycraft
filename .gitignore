@@ -7,3 +7,5 @@ mod/**/build/
 mod/**/run/
 mod/**/logs/
 /mutants.out*/
+agent/.gradle/
+agent/build/
