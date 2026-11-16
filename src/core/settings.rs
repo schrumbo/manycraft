@@ -64,6 +64,39 @@ impl Default for Notifications {
     }
 }
 
+/// Whether the window is light, dark, or follows the system.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// How often visible previews refresh, against the normal rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewRate {
+    Saving,
+    #[default]
+    Normal,
+    Smooth,
+}
+
+impl PreviewRate {
+    pub const ALL: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
+
+    /// The factor on the normal preview rate.
+    pub fn factor(self) -> f32 {
+        match self {
+            PreviewRate::Saving => 0.5,
+            PreviewRate::Normal => 1.,
+            PreviewRate::Smooth => 2.,
+        }
+    }
+}
+
 /// Everything configurable app-wide.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -88,11 +121,15 @@ pub struct Settings {
     pub prevent_sleep: bool,
     /// Whether the hint that closing the window keeps Manycraft in the notification area was seen.
     pub tray_explained: bool,
+    pub appearance: Appearance,
+    /// The id of the chosen theme; none or a theme that is gone means the default.
+    pub theme: Option<String>,
+    pub preview_rate: PreviewRate,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal }
     }
 }
 
@@ -226,6 +263,10 @@ mod tests {
         assert!(!s.merged_chat && !s.notifications.whispers && s.notifications.attention);
         std::fs::write(dir.path().join(FILE), r#"{"update_check":false}"#).unwrap();
         assert!(!load_from(dir.path()).unwrap().auto_update);
+        std::fs::write(dir.path().join(FILE), r#"{"appearance":"dark","theme":"tinte","preview_rate":"smooth"}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert_eq!((s.appearance, s.theme.as_deref(), s.preview_rate), (Appearance::Dark, Some("tinte"), PreviewRate::Smooth));
+        assert_eq!(load_from(tempfile::tempdir().unwrap().path()).unwrap().appearance, Appearance::System);
     }
 
     #[test]

@@ -35,7 +35,7 @@ impl Component for Shell {
             Page::Instance(_) => pending(&t, Icon::Folder, tr("Instanz")),
             Page::Accounts => pending(&t, Icon::Users, tr("Accounts")),
             Page::Chat => pending(&t, Icon::Message, tr("Chat")),
-            Page::Settings => pending(&t, Icon::Settings, tr("Einstellungen")),
+            Page::Settings => super::settings::SettingsPage.into_element(),
         };
         let mut row = rect().width(Size::fill()).height(Size::fill()).horizontal();
         if *ui.sidebar.read() {

@@ -18,12 +18,13 @@ pub struct Stepper {
     max: i64,
     step: i64,
     unit: String,
+    disabled: bool,
     on_change: Option<EventHandler<i64>>,
 }
 
 impl Stepper {
     pub fn new(id: impl Into<String>, label: impl Into<String>, value: i64, min: i64, max: i64) -> Self {
-        Self { id: id.into(), label: label.into(), value, min, max, step: 1, unit: String::new(), on_change: None }
+        Self { id: id.into(), label: label.into(), value, min, max, step: 1, unit: String::new(), disabled: false, on_change: None }
     }
 
     pub fn step(mut self, step: i64) -> Self {
@@ -34,6 +35,12 @@ impl Stepper {
     /// Text after the number, such as "GB".
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = unit.into();
+        self
+    }
+
+    /// Greys the stepper out and ignores clicks and keys.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -48,8 +55,9 @@ impl Component for Stepper {
         let t = use_theme();
         let a11y = use_a11y();
         let focus = use_focus(a11y);
-        let spot = use_spot(&self.id, "stepper", &self.label, true);
+        let spot = use_spot(&self.id, "stepper", &self.label, !self.disabled);
         let (value, min, max, step) = (self.value, self.min, self.max, self.step);
+        let live = !self.disabled;
         let change = self.on_change.clone();
         let set = move |v: i64| {
             let v = v.clamp(min, max);
@@ -79,7 +87,7 @@ impl Component for Stepper {
         let mut keys = set.clone();
         let mut s = rect()
             .a11y_id(a11y)
-            .a11y_focusable(true)
+            .a11y_focusable(live)
             .a11y_role(AccessibilityRole::SpinButton)
             .a11y_alt(format!("{}: {text}", self.label))
             .horizontal()
@@ -91,7 +99,7 @@ impl Component for Stepper {
             .corner_radius(t.shape.control)
             .on_sized(spot)
             .on_key_down(move |e: Event<KeyboardEventData>| {
-                if !a11y.is_focused() {
+                if !live || !a11y.is_focused() {
                     return;
                 }
                 match e.key {
@@ -101,9 +109,9 @@ impl Component for Stepper {
                 }
                 e.stop_propagation();
             })
-            .child(side(Icon::Minus, value > min, value - step))
-            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(figure(&t, text, font::BODY, t.text1)))
-            .child(side(Icon::Plus, value < max, value + step));
+            .child(side(Icon::Minus, live && value > min, value - step))
+            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(figure(&t, text, font::BODY, if live { t.text1 } else { t.text3 })))
+            .child(side(Icon::Plus, live && value < max, value + step));
         if let Some(border) = ring(&t, focus()) {
             s = s.border(border);
         }

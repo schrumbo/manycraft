@@ -5,6 +5,7 @@ pub mod badge;
 pub mod button;
 pub mod chip;
 pub mod field;
+pub mod group;
 pub mod menu;
 pub mod row;
 pub mod segmented;
@@ -31,6 +32,25 @@ pub fn use_theme() -> Rc<Theme> {
 /// Waits `duration` without blocking the UI thread.
 pub async fn after(duration: Duration) {
     timer(duration).await;
+}
+
+/// Runs `work` on a named thread; the receiver gets its result, or nothing when the thread could not start.
+pub fn off_thread<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send + 'static) -> Option<async_channel::Receiver<T>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = tx.send_blocking(work());
+        })
+        .ok()
+        .map(|_| rx)
+}
+
+/// Opens `target`, a web address or a folder, with the system; a driven run only notes it as `what`.
+pub fn open_external(what: &str, target: String) {
+    if !crate::core::drive::fenced(what, &target) {
+        Platform::get().open_url(target);
+    }
 }
 
 /// The keyboard focus ring drawn around a focused control.

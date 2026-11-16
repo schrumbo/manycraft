@@ -141,6 +141,13 @@ impl Store {
         for effect in effects {
             self.run(effect, &mut images);
         }
+        self.keep_awake();
+    }
+
+    /// Holds the computer awake while a game is active and the setting asks for it.
+    pub fn keep_awake(self) {
+        let busy = self.model.peek().games.values().any(|g| g.phase.is_active());
+        crate::core::awake::set(crate::core::awake::wanted(settings::active().prevent_sleep, busy));
     }
 
     fn run(mut self, effect: Effect, images: &mut [Option<Raw>]) {
