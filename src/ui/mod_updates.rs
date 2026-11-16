@@ -292,10 +292,10 @@ impl Render for ModUpdates {
         let main = match &self.load {
             Load::Failed(_) => sheet::button("updates-retry", tr("Erneut versuchen"), None, Look::Primary, false, false, &t).on_click(cx.listener(|s, _, _, cx| s.reload(cx))),
             Load::Ready(list) if list.is_empty() => sheet::button("updates-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed))),
-            _ => match snapshots::progress(&self.id, cx) {
-                Some(done) => sheet::button("updates-apply", trf("Wird gesichert … %lld %", &[&((done * 100.).round() as u32)]), None, Look::Primary, true, true, &t),
-                None => sheet::button("updates-apply", if n == 0 { tr("Aktualisieren") } else if n == 1 { tr("1 Mod aktualisieren") } else { trf("%lld Mods aktualisieren", &[&n]) }, None, Look::Primary, n == 0, self.applying, &t).on_click(cx.listener(|s, _, _, cx| s.apply(cx))),
-            },
+            _ => {
+                let saving = snapshots::progress(&self.id, cx).is_some();
+                sheet::button("updates-apply", if n == 0 { tr("Aktualisieren") } else if n == 1 { tr("1 Mod aktualisieren") } else { trf("%lld Mods aktualisieren", &[&n]) }, None, Look::Primary, n == 0 || saving, self.applying || saving, &t).on_click(cx.listener(|s, _, _, cx| s.apply(cx)))
+            }
         };
         div()
             .id("updates-sheet")

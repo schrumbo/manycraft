@@ -1,6 +1,6 @@
 //! Snapshots before a change that may hurt an instance: asking once for large worlds, taking them, and putting one back.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::*;
@@ -14,6 +14,16 @@ use crate::core::worlds::Progress;
 struct Taking(HashMap<String, Arc<Progress>>);
 
 impl Global for Taking {}
+
+#[derive(Default)]
+struct Restoring(HashSet<String>);
+
+impl Global for Restoring {}
+
+/// Whether instance `id` is going back to a snapshot right now.
+pub fn restoring(id: &str, cx: &App) -> bool {
+    cx.try_global::<Restoring>().is_some_and(|r| r.0.contains(id))
+}
 
 /// How far the snapshot of instance `id` is, from 0 to 1, while one is taken.
 pub fn progress(id: &str, cx: &App) -> Option<f32> {
@@ -126,7 +136,7 @@ fn take(id: String, reason: Reason, cx: &mut App, then: impl FnOnce(&mut App) + 
 
 /// Asks whether instance `id` should go back to `snap`, then puts it back.
 pub fn ask_restore(id: &str, snap: Snapshot, window: &mut Window, cx: &mut App) {
-    if sheet::busy(window, cx) {
+    if sheet::busy(window, cx) || restoring(id, cx) {
         return;
     }
     let blocked_id = id.to_owned();
@@ -140,6 +150,10 @@ fn restore(id: &str, snap: &Snapshot, cx: &mut App) {
         undo::note(tr("Stoppe zuerst die laufenden Spiele."), cx);
         return;
     }
+    if !cx.default_global::<Restoring>().0.insert(id.to_owned()) {
+        return;
+    }
+    cx.refresh_windows();
     let (instance, snap_id) = (id.to_owned(), snap.id.clone());
     let task = cx.background_spawn(async move { snapshot::restore(&instance, &snap_id) });
     let id = id.to_owned();
@@ -147,6 +161,7 @@ fn restore(id: &str, snap: &Snapshot, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| {
+            cx.default_global::<Restoring>().0.remove(&id);
             match result {
                 Ok(done) => {
                     model::get(cx).update(cx, |m, cx| {

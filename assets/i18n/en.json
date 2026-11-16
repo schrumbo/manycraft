@@ -1389,5 +1389,7 @@
   "zuletzt gespielt heute": "last played today",
   "zuletzt gespielt gestern": "last played yesterday",
   "zuletzt gespielt am %@": "last played on %@",
-  "Absturzbericht…": "Crash Report…"
+  "Absturzbericht…": "Crash Report…",
+  "Der Papierkorb lässt sich nicht lesen.": "The Trash cannot be read.",
+  "Für diesen Account gibt es keinen Absturzbericht.": "There is no crash report for this account."
 }

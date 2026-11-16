@@ -328,6 +328,9 @@ impl Logs {
                 s.files = found;
                 s.scanned = true;
                 let newest = crash.filter(|c| Some(*c) == s.account).and_then(|_| s.files.iter().find(|f| f.kind == Kind::Crash).map(|f| f.path.clone()));
+                if crash.is_some() && newest.is_none() {
+                    super::undo::note(tr("Für diesen Account gibt es keinen Absturzbericht."), cx);
+                }
                 if crash.is_some() && cx.try_global::<WantsCrash>().is_some_and(|w| w.0 == s.id && Some(w.1) == crash) {
                     cx.remove_global::<WantsCrash>();
                 }

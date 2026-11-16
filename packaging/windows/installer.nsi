@@ -52,6 +52,8 @@ Section "Uninstall"
 SectionEnd
 
 Function un.RemoveData
+  StrCmp $LOCALAPPDATA "" done
   IfFileExists "$LOCALAPPDATA\Manycraft\*.*" 0 +2
   nsExec::Exec '"$SYSDIR\cmd.exe" /c rmdir /s /q "$LOCALAPPDATA\Manycraft"'
+  done:
 FunctionEnd

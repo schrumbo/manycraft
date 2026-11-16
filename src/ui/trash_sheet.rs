@@ -55,7 +55,10 @@ impl TrashSheet {
             let _ = this.update(cx, |s, cx| {
                 if s.ticket == ticket {
                     s.taken.clear();
-                    s.load = Load::Ready(items);
+                    s.load = match items {
+                        Ok(items) => Load::Ready(items),
+                        Err(e) => Load::Failed(forms::explain_as(tr("Der Papierkorb lässt sich nicht lesen."), &e)),
+                    };
                     cx.notify();
                 }
             });
@@ -129,7 +132,7 @@ impl TrashSheet {
             .items_center()
             .gap(px(space::M))
             .child(icon(symbol, iconsize::M, t.tertiary))
-            .child(div().flex_1().min_w_0().flex().flex_col().child(div().truncate().text_size(px(font::BODY)).child(title)).child(div().truncate().text_size(px(font::CAPTION)).font_features(super::toolbar::tabular()).text_color(t.tertiary).child(line.join(" · "))))
+            .child(div().flex_1().min_w_0().flex().flex_col().child(div().truncate().text_size(px(font::BODY)).child(title)).child(div().truncate().text_size(px(font::CAPTION)).font_features(super::toolbar::tabular()).text_color(t.secondary).child(line.join(" · "))))
             .children(button)
     }
 }
@@ -147,7 +150,7 @@ fn look(item: &Item) -> (&'static str, String) {
             let n = t.as_ref().map_or(0, |t| t.files.len());
             ("puzzle", if n == 0 { tr("Mods") } else { trf("%lld Mods", &[&n]) })
         }
-        What::File { origin } => {
+        What::File { origin, .. } => {
             let parts: Vec<&str> = origin.split('/').collect();
             let last = parts.last().copied().unwrap_or_default().to_owned();
             match parts.as_slice() {
@@ -173,6 +176,10 @@ fn undo_kind(item: &Item, cx: &App) -> Option<Kind> {
             Some(Kind::Reset { instance_id: item.instance.clone(), name, entry: item.entry.clone(), before: meta.before.clone(), after: meta.after.clone() })
         }
         What::Mods(Some(trashed)) => Some(Kind::ModsTrashed { instance_id: item.instance.clone(), trashed: trashed.clone(), label: title }),
+        What::File { origin, taken: true } => {
+            let world = files::instance_dir(&item.instance, cx)?.join(origin);
+            Some(Kind::Files { name: title, undo: FileUndo::Restored { instance: item.instance.clone(), world, replaced: Some(item.entry.clone()) } })
+        }
         What::File { .. } => Some(Kind::Files { name: title, undo: FileUndo::Deleted { instance: item.instance.clone(), entry: item.entry.clone() } }),
         What::Reset(None) | What::Mods(None) => None,
     }
@@ -201,7 +208,15 @@ impl Render for TrashSheet {
                 (div().child(rows), Some(trf("Bleibt 7 Tage, dann wird es gelöscht · %@", &[&files::bytes(size)])), true)
             }
         };
-        let empty = any.then(|| sheet::button("trash-empty", tr("Papierkorb leeren…"), None, Look::Danger, self.emptying, self.emptying, &t).on_click(cx.listener(|s, _, window, cx| s.ask_empty(window, cx))).into_any_element());
+        let empty = if matches!(self.load, Load::Failed(_)) {
+            Some(sheet::button("trash-retry", tr("Erneut versuchen"), None, Look::Secondary, false, false, &t).on_click(cx.listener(|s, _, _, cx| {
+                s.load = Load::Loading;
+                s.reload(cx);
+                cx.notify();
+            })).into_any_element())
+        } else {
+            any.then(|| sheet::button("trash-empty", tr("Papierkorb leeren…"), None, Look::Danger, self.emptying, self.emptying, &t).on_click(cx.listener(|s, _, window, cx| s.ask_empty(window, cx))).into_any_element())
+        };
         let done = sheet::button("trash-done", tr("Fertig"), None, Look::Primary, false, false, &t).on_click(cx.listener(|_, _, _, cx| cx.emit(Dismissed)));
         div()
             .id("trash-sheet")

@@ -76,7 +76,6 @@ pub fn worlds_changed(id: &str, cx: &mut App) {
     });
 }
 
-/// "zuletzt gespielt gestern", from unix milliseconds.
 fn played(ms: i64) -> Option<String> {
     let at = chrono::DateTime::from_timestamp_millis(ms)?.with_timezone(&chrono::Local);
     let today = chrono::Local::now().date_naive();
@@ -95,7 +94,7 @@ struct Uptime(std::collections::HashMap<String, Instant>);
 impl Global for Uptime {}
 
 fn track_uptime(cx: &mut App) {
-    let running: Vec<String> = model::get(cx).read(cx).games.values().filter(|g| g.phase.is_running()).map(|g| g.key.clone()).collect();
+    let running: HashSet<String> = model::get(cx).read(cx).games.values().filter(|g| g.phase.is_running()).map(|g| g.key.clone()).collect();
     let now = Instant::now();
     let up = cx.default_global::<Uptime>();
     up.0.retain(|key, _| running.contains(key));
@@ -104,7 +103,6 @@ fn track_uptime(cx: &mut App) {
     }
 }
 
-/// "12 Min." or "1 Std. 24 Min." since `since`.
 fn uptime_text(since: Instant) -> String {
     let minutes = since.elapsed().as_secs() / 60;
     match (minutes / 60, minutes % 60) {
@@ -344,7 +342,6 @@ struct Facts {
     shown: Option<String>,
     running: bool,
     plain: Vec<Uuid>,
-    /// Games of this instance played alone that can be stopped, by key and account name.
     stoppable: Vec<(String, String)>,
 }
 
@@ -1018,7 +1015,8 @@ impl InstancePage {
                     };
                     div().id("instance-rename-error").mark("notice", e.text.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(said)).child(e.text.clone())
                 }
-                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).tooltip(tip(made.version_line())).child(self.subtitle(made)),
+                None => div().id("instance-version").truncate().text_size(px(font::CALLOUT)).text_color(t.secondary).tooltip(tip(format!("{}
+{}", made.version_line(), self.subtitle(made)))).child(self.subtitle(made)),
             });
         div()
             .h(px(shell::TOOLBAR))
@@ -1098,6 +1096,7 @@ impl InstancePage {
         let rings = super::theme::rings(cx);
         let several = f.accounts.len() > 1;
         let (instance, accounts, current, plain, stoppable) = (made.id.clone(), f.accounts.clone(), f.solo, f.plain.clone(), f.stoppable.clone());
+        let stop_keys = super::palette::shortcut(&StopCurrent, cx);
         let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let mut menu = menu.scrollable(true);
             for (account, name) in accounts.iter().filter(|_| several) {
@@ -1113,7 +1112,7 @@ impl InstancePage {
             }
             match stoppable.as_slice() {
                 [] => {}
-                [(key, _)] => menu = menu.menu(tr("Stoppen"), Box::new(Stop(key.clone()))),
+                [(key, _)] => menu = menu.menu_element_with_disabled(Box::new(Stop(key.clone())), false, super::palette::menu_row(tr("Stoppen"), stop_keys.clone(), false)),
                 many => {
                     for (key, name) in many {
                         menu = menu.menu(trf("„%@“ stoppen", &[name]), Box::new(Stop(key.clone())));

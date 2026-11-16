@@ -347,7 +347,6 @@ fn undo_offer(id: u64, cx: &mut App) {
     run(offer.kind, offer.at, cx);
 }
 
-/// Puts back what `kind` took away, as its Rückgängig button would, for a place outside the notices like the Papierkorb.
 pub(super) fn take_back(kind: Kind, cx: &mut App) {
     let pending = toasts(cx).update(cx, |t, cx| {
         let at = t.items.items.iter().find(|(_, o)| same(&o.kind, &kind)).map(|(id, _)| *id);

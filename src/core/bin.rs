@@ -8,8 +8,8 @@ use anyhow::{Result, bail};
 
 use super::content::{TRASHED, Trashed};
 use super::instance::{self, Instance};
-use super::origin::{KEEP, RESET_META, ResetMeta};
-use super::{store, worlds};
+use super::origin::{KEEP, MODS_LOCK, RESET_META, ResetMeta};
+use super::{lock, store, worlds};
 
 /// How long anything stays in the Papierkorb.
 pub const KEPT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -26,8 +26,8 @@ pub enum What {
     Reset(Option<Box<ResetMeta>>),
     /// Deleted mods, with what puts them back when it was recorded.
     Mods(Option<Trashed>),
-    /// A world, screenshot or folder put away from `origin`, a `/` path inside the instance.
-    File { origin: String },
+    /// A world, screenshot or folder put away from `origin`, a `/` path inside the instance; `taken` when something is there now.
+    File { origin: String, taken: bool },
 }
 
 /// One Papierkorb entry.
@@ -46,15 +46,23 @@ pub struct Item {
     pub size: u64,
 }
 
-/// Everything in the Papierkorb, newest first.
-pub fn list() -> Vec<Item> {
+/// Everything in the Papierkorb, newest first; an error when the instances folder cannot be read.
+pub fn list() -> Result<Vec<Item>> {
     list_in(&instance::instances_dir())
 }
 
-pub(super) fn list_in(root: &Path) -> Vec<Item> {
+fn read(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("cannot read {}", dir.display()))),
+    }
+}
+
+pub(super) fn list_in(root: &Path) -> Result<Vec<Item>> {
     let mut out = Vec::new();
     let names = |id: &str| name_of(&root.join(id).join(instance::FILE));
-    if let Ok(entries) = std::fs::read_dir(root.join(TRASH)) {
+    if let Some(entries) = read(&root.join(TRASH))? {
         for e in entries.filter_map(Result::ok) {
             let Some(entry) = e.file_name().to_str().map(str::to_owned) else { continue };
             let path = e.path();
@@ -71,7 +79,7 @@ pub(super) fn list_in(root: &Path) -> Vec<Item> {
             }
         }
     }
-    if let Ok(folders) = std::fs::read_dir(root) {
+    if let Some(folders) = read(root)? {
         for folder in folders.filter_map(Result::ok) {
             let Some(id) = folder.file_name().to_str().filter(|n| instance::valid_id(n)).map(str::to_owned) else { continue };
             let Ok(entries) = std::fs::read_dir(folder.path().join(TRASH)) else { continue };
@@ -89,7 +97,8 @@ pub(super) fn list_in(root: &Path) -> Vec<Item> {
                     && digits(b)
                     && let Ok(origin) = std::fs::read_to_string(path.join(ORIGIN))
                 {
-                    What::File { origin }
+                    let taken = origin.split('/').all(|part| !part.is_empty() && part != "." && part != "..") && std::fs::symlink_metadata(folder.path().join(&origin)).is_ok();
+                    What::File { origin, taken }
                 } else {
                     continue;
                 };
@@ -99,7 +108,7 @@ pub(super) fn list_in(root: &Path) -> Vec<Item> {
         }
     }
     out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.entry.cmp(&b.entry)));
-    out
+    Ok(out)
 }
 
 /// Deletes `item` for good; not being there is fine.
@@ -109,6 +118,8 @@ pub fn delete(item: &Item) -> Result<()> {
 
 pub(super) fn delete_in(root: &Path, item: &Item) -> Result<()> {
     let path = path_in(root, item)?;
+    let dir = root.join(&item.instance);
+    let _held = if matches!(item.what, What::Instance) || !dir.is_dir() { None } else { Some(lock::exclusive(&dir.join(MODS_LOCK))?) };
     if path.join(KEEP).exists() {
         bail!("{} is kept", path.display());
     }
@@ -120,7 +131,11 @@ pub fn empty() -> (usize, Result<()>) {
     let root = instance::instances_dir();
     let mut first = Ok(());
     let mut gone = 0;
-    for item in list_in(&root) {
+    let items = match list_in(&root) {
+        Ok(items) => items,
+        Err(e) => return (0, Err(e)),
+    };
+    for item in items {
         match delete_in(&root, &item) {
             Ok(()) => gone += 1,
             Err(e) if first.is_ok() => first = Err(e),
@@ -178,22 +193,24 @@ mod tests {
         std::fs::create_dir_all(root.join(TRASH).join(format!("{}-5000{SUFFIX}", made.id)).join("mods")).unwrap();
         std::fs::write(root.join(TRASH).join(format!("{}-5000{SUFFIX}", made.id)).join(KEEP), b"").unwrap();
         std::fs::create_dir_all(dir.join(TRASH).join("not-an-entry")).unwrap();
-        let items = list_in(root);
+        let items = list_in(root).unwrap();
         let ats: Vec<u64> = items.iter().map(|i| i.at).collect();
         assert_eq!(ats, [4000, 3000, 2000, 1000]);
         assert!(matches!(items[0].what, What::Reset(None)) && items[0].name == "Farm");
-        assert!(matches!(&items[1].what, What::File { origin } if origin == "games/a/saves/Welt"));
+        assert!(matches!(&items[1].what, What::File { origin, taken: false } if origin == "games/a/saves/Welt"));
         assert!(matches!(items[2].what, What::Mods(None)) && items[2].size == 3);
         assert!(matches!(items[3].what, What::Instance) && items[3].name == "Alt" && items[3].entry == entry);
+        std::fs::create_dir_all(dir.join("games/a/saves/Welt")).unwrap();
+        assert!(list_in(root).unwrap().iter().any(|i| matches!(&i.what, What::File { taken: true, .. })));
         delete_in(root, &items[1]).unwrap();
         assert!(!dir.join(TRASH).join("3000-0").exists());
-        assert_eq!(list_in(root).len(), 3);
+        assert_eq!(list_in(root).unwrap().len(), 3);
     }
 
     #[test]
     fn deleting_refuses_a_foreign_path() {
         let root = tempfile::tempdir().unwrap();
-        let item = Item { what: What::File { origin: String::new() }, instance: "..".into(), name: String::new(), entry: "1-0".into(), at: 1, size: 0 };
+        let item = Item { what: What::File { origin: String::new(), taken: false }, instance: "..".into(), name: String::new(), entry: "1-0".into(), at: 1, size: 0 };
         assert!(delete_in(root.path(), &item).is_err());
         let item = Item { what: What::Mods(None), instance: "abc".into(), name: String::new(), entry: "..".into(), at: 1, size: 0 };
         assert!(delete_in(root.path(), &item).is_err());

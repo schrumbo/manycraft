@@ -190,11 +190,14 @@ fn sources(instance_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
         }
     }
     for (_, game) in worlds::game_dirs(instance_dir) {
-        let saves = game.join(SAVES);
-        if std::fs::symlink_metadata(&saves).is_ok_and(|m| m.is_dir())
-            && let Ok(rel) = saves.strip_prefix(instance_dir)
-        {
-            out.push((rel.to_path_buf(), saves));
+        let Ok(entries) = std::fs::read_dir(game.join(SAVES)) else { continue };
+        for world in entries.filter_map(Result::ok).map(|e| e.path()) {
+            if std::fs::symlink_metadata(&world).is_ok_and(|m| m.is_dir())
+                && !worlds::is_open(&world)
+                && let Ok(rel) = world.strip_prefix(instance_dir)
+            {
+                out.push((rel.to_path_buf(), world));
+            }
         }
     }
     out
@@ -279,7 +282,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
         return Err(fail(anyhow::Error::new(Final(tr("Die Sicherung gehört zu einer anderen Instanz.")))));
     }
     let mut swapped: Vec<PathBuf> = PARTS.iter().map(PathBuf::from).collect();
-    swapped.extend(staged_saves(&staging));
+    swapped.extend(staged_worlds(&staging));
     let mut trashed: Vec<(PathBuf, String)> = Vec::new();
     let mut placed: Vec<PathBuf> = Vec::new();
     let undo = |trashed: &[(PathBuf, String)], placed: &[PathBuf]| {
@@ -323,13 +326,14 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
     Ok(Restored { instance: next, trashed: trashed.into_iter().map(|(_, entry)| entry).collect() })
 }
 
-fn staged_saves(staging: &Path) -> Vec<PathBuf> {
-    let games = instance::games_dir(staging);
-    let Ok(entries) = std::fs::read_dir(&games) else { return Vec::new() };
-    entries
+fn staged_worlds(staging: &Path) -> Vec<PathBuf> {
+    let Ok(games) = std::fs::read_dir(instance::games_dir(staging)) else { return Vec::new() };
+    games
         .filter_map(Result::ok)
-        .filter(|e| e.path().join(SAVES).is_dir())
-        .filter_map(|e| e.path().join(SAVES).strip_prefix(staging).ok().map(Path::to_path_buf))
+        .filter_map(|game| std::fs::read_dir(game.path().join(SAVES)).ok())
+        .flat_map(|worlds| worlds.filter_map(Result::ok).map(|w| w.path()))
+        .filter(|w| w.is_dir())
+        .filter_map(|w| w.strip_prefix(staging).ok().map(Path::to_path_buf))
         .collect()
 }
 
@@ -403,7 +407,11 @@ mod tests {
         std::fs::write(dir.join("mods").join("a.jar"), b"a2").unwrap();
         std::fs::write(dir.join("config").join("a.toml"), b"new").unwrap();
         std::fs::write(world.join("region").join("r.0.0.mca"), b"upgraded").unwrap();
+        let later = world.with_file_name("Neu");
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(later.join("level.dat"), b"new world").unwrap();
         let done = restore_in(root.path(), &made.id, &snap.id, 20).unwrap();
+        assert_eq!(std::fs::read(later.join("level.dat")).unwrap(), b"new world", "a world made after the snapshot stays where it is");
         assert_eq!(done.instance.game_version, "26.3");
         assert_eq!(done.instance.name, "Farm neu");
         assert_eq!(std::fs::read(dir.join("mods").join("a.jar")).unwrap(), b"a1");
@@ -412,6 +420,19 @@ mod tests {
         assert!(!done.trashed.is_empty() && done.trashed.iter().all(|e| trash::holds(&dir, e)));
         assert!(!dir.join(".restore-20").exists());
         assert_eq!(list(&dir).len(), 1);
+    }
+
+    #[test]
+    fn a_world_open_in_a_game_is_left_out_and_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let (made, dir, world) = setup(root.path());
+        let lock = std::fs::File::create(world.join("session.lock")).unwrap();
+        lock.lock().unwrap();
+        let snap = take_at(&dir, &made, Reason::ModUpdates(1), 10, 10, &Progress::default()).unwrap().unwrap();
+        std::fs::write(world.join("region").join("r.0.0.mca"), b"played on").unwrap();
+        drop(lock);
+        restore_in(root.path(), &made.id, &snap.id, 20).unwrap();
+        assert_eq!(std::fs::read(world.join("region").join("r.0.0.mca")).unwrap(), b"played on");
     }
 
     #[test]
