@@ -74,6 +74,7 @@ fn main() {
         ui::mod_list::init(cx);
         ui::instance_files::init(cx);
         ui::maintenance::init(cx);
+        ui::trash_sheet::init(cx);
         ui::transfer::init(cx);
         ui::settings_window::init(cx);
         ui::main_window::open(cx);

@@ -4,7 +4,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{CancelStart, StartAnyway, EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, StartBatch, StopBatch};
+use super::actions::{CancelStart, StartAnyway, EditMods, AddMods, ResetInstance, UpdateLoader, CancelImport, CancelUpdate, CloneInstance, DeleteInstance, DismissNews, EditBatch, ExportBatch, ExportInstance, NewBatch, NewBatchFor, NewInstance, OpenBatchFolder, OpenInstanceFolder, OpenSettings, OpenTrash, PlayInstance, RenameInstance, RestartToUpdate, CreateShortcut, StartBatch, StopBatch};
 use super::drive::Mark;
 use super::main_window::{MainWindow, Page};
 use super::model::{self, UpdateStatus, Updates};
@@ -562,24 +562,36 @@ pub fn render(this: &MainWindow, _window: &mut Window, cx: &mut Context<MainWind
                 .child(row(this, chat, &t, cx)),
         )
         .child(
-            div().flex_none().px(px(space::S)).pb(px(space::S)).children(news).children(update).child(
-                div()
-                    .id("nav-settings")
-                    .mark("button", settings.clone())
-                    .h(px(shell::ROW))
-                    .px(px(space::S))
-                    .rounded(px(radius::INNER))
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S))
-                    .cursor_pointer()
-                    .key_nav()
-                    .soft(t.ink.opacity(tint::HOVER), radius::INNER)
-                    .child(icon("settings", iconsize::M, t.secondary))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.primary).child(settings))
-                    .tooltip(tip(shortcut))
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
-            ),
+            div()
+                .flex_none()
+                .px(px(space::S))
+                .pb(px(space::S))
+                .children(news)
+                .children(update)
+                .child(footer_row("nav-trash", "trash", tr("Papierkorb"), None, Box::new(OpenTrash), &t))
+                .child(footer_row("nav-settings", "settings", settings, Some(shortcut), Box::new(OpenSettings), &t)),
         )
         .into_any_element()
+}
+
+fn footer_row(id: &'static str, symbol: &'static str, label: String, keys: Option<String>, action: Box<dyn Action>, t: &Theme) -> Stateful<Div> {
+    let row = div()
+        .id(id)
+        .mark("button", label.clone())
+        .h(px(shell::ROW))
+        .px(px(space::S))
+        .rounded(px(radius::INNER))
+        .flex()
+        .items_center()
+        .gap(px(space::S))
+        .cursor_pointer()
+        .key_nav()
+        .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+        .child(icon(symbol, iconsize::M, t.secondary))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(font::BODY)).text_color(t.primary).child(label))
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx));
+    match keys {
+        Some(keys) => row.tooltip(tip(keys)),
+        None => row,
+    }
 }

@@ -46,9 +46,9 @@ fn ask_reset(id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let message = if origin::is_kept(&made) {
-        tr("Mods, Konfiguration, Ressourcen- und Shader-Pakete gehen auf den Stand von der Erstellung zurück. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+        tr("Mods, Konfiguration, Ressourcen- und Shader-Pakete gehen auf den Stand von der Erstellung zurück. Welten, Screenshots, Serverliste und Optionen bleiben. Der jetzige Stand bleibt 7 Tage im Papierkorb.")
     } else {
-        tr("Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+        tr("Der Anfangszustand dieser Instanz ist nicht gespeichert: Mods, Konfiguration, Ressourcen- und Shader-Pakete werden geleert. Welten, Screenshots, Serverliste und Optionen bleiben. Der jetzige Stand bleibt 7 Tage im Papierkorb.")
     };
     let (id, blocked_id) = (id.to_owned(), id.to_owned());
     sheet::ask_blocked(

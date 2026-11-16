@@ -344,8 +344,30 @@ fn undo_offer(id: u64, cx: &mut App) {
         t.items.take(id)
     });
     let Some(offer) = taken else { return };
-    let at = offer.at;
-    match offer.kind {
+    run(offer.kind, offer.at, cx);
+}
+
+/// Puts back what `kind` took away, as its Rückgängig button would, for a place outside the notices like the Papierkorb.
+pub(super) fn take_back(kind: Kind, cx: &mut App) {
+    let pending = toasts(cx).update(cx, |t, cx| {
+        let at = t.items.items.iter().find(|(_, o)| same(&o.kind, &kind)).map(|(id, _)| *id);
+        cx.notify();
+        at.and_then(|id| t.items.take(id))
+    });
+    run(kind, pending.map_or_else(Instant::now, |o| o.at), cx);
+}
+
+fn same(a: &Kind, b: &Kind) -> bool {
+    match (a, b) {
+        (Kind::Deleted { entry: x, .. }, Kind::Deleted { entry: y, .. }) | (Kind::Reset { entry: x, .. }, Kind::Reset { entry: y, .. }) => x == y,
+        (Kind::ModsTrashed { instance_id: i, trashed: x, .. }, Kind::ModsTrashed { instance_id: j, trashed: y, .. }) => i == j && x.entry == y.entry,
+        (Kind::Files { undo: super::instance_files::FileUndo::Deleted { instance: i, entry: x }, .. }, Kind::Files { undo: super::instance_files::FileUndo::Deleted { instance: j, entry: y }, .. }) => i == j && x == y,
+        _ => false,
+    }
+}
+
+fn run(kind: Kind, at: Instant, cx: &mut App) {
+    match kind {
         Kind::Deleted { id, name, entry } => restore(id, name, entry, at, cx),
         Kind::Cloned { id, name, source } => discard(id, name, source, at, cx),
         Kind::ModsSwitched { instance_id, files, on, label } => super::mod_list::undo_switch(instance_id, files, on, label, at, cx),

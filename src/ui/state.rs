@@ -38,7 +38,7 @@ const COALESCE: Duration = Duration::from_millis(40);
 const EXIT_POLL: Duration = Duration::from_millis(500);
 const STAGGER_STEP: Duration = Duration::from_millis(100);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
-const TRASH_KEPT: Duration = Duration::from_secs(600);
+const TRASH_KEPT: Duration = crate::core::bin::KEPT;
 
 enum PreviewJob {
     Read(String, PathBuf),

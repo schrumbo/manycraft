@@ -43,6 +43,7 @@ pub mod stills;
 pub mod tile;
 pub mod toolbar;
 pub mod transfer;
+pub mod trash_sheet;
 pub mod tray;
 pub mod undo;
 pub mod updates;

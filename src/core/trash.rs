@@ -1,4 +1,4 @@
-//! The trash of one instance folder: worlds and screenshots deleted or replaced there, kept until Manycraft starts again.
+//! The trash of one instance folder: worlds, screenshots and folders deleted or replaced there, kept for [`super::bin::KEPT`].
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;

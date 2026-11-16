@@ -22,6 +22,8 @@ use super::{modicons, net, paths, store};
 
 const ICONS: &str = "jar-icons";
 const TRASH: &str = ".trash";
+/// What a mod trash entry took away, kept inside it so it can be put back after a restart.
+pub(super) const TRASHED: &str = "trashed.json";
 const STATE: &str = "bisect.json";
 const PRE_RELEASE: [&str; 4] = ["-alpha", "-beta", "-rc", "-pre"];
 const MANYCRAFT: &str = "Manycraft";
@@ -641,8 +643,9 @@ fn add_files_in(root: &Path, id: &str, paths: &[PathBuf]) -> Result<(Instance, V
 }
 
 /// What `trash` took away, for `untrash`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trashed {
+    #[serde(skip)]
     pub entry: String,
     pub files: Vec<String>,
     pub refs: Vec<(usize, ModRef)>,
@@ -706,6 +709,9 @@ fn trash_in(root: &Path, id: &str, files: &[String], millis: u64) -> Result<(Ins
             local: made.local_mods.iter().filter(|n| taken(n)).cloned().collect(),
             disabled: made.disabled.iter().filter(|n| taken(n)).cloned().collect(),
         };
+        if let Err(e) = serde_json::to_vec(&trashed).map_err(anyhow::Error::from).and_then(|bytes| std::fs::write(entry.join(TRASHED), bytes).map_err(Into::into)) {
+            eprintln!("mod trash {}: {e:#}", entry.display());
+        }
         Ok((next, trashed))
     })
 }
@@ -770,6 +776,7 @@ fn untrash_in(root: &Path, id: &str, trashed: &Trashed) -> Result<Instance> {
             moves.undo();
             return Err(e);
         }
+        let _ = std::fs::remove_file(entry.join(TRASHED));
         let _ = std::fs::remove_dir(&entry);
         Ok(next)
     })
@@ -1219,7 +1226,10 @@ mod tests {
         assert_eq!(mods_of(&root, &made), ["keep.jar.disabled"]);
         let held = root.join(&made.id).join(".trash").join("1000");
         assert_eq!(std::fs::read(held.join("b.jar.disabled")).unwrap(), b"b.jar.disabled");
-        let back = untrash_in(&root, &made.id, &trashed).unwrap();
+        let mut kept: Trashed = serde_json::from_slice(&std::fs::read(held.join(TRASHED)).unwrap()).unwrap();
+        kept.entry = "1000".into();
+        assert_eq!(kept, trashed);
+        let back = untrash_in(&root, &made.id, &kept).unwrap();
         assert_eq!(back, before);
         assert_eq!(saved(&root, &made), before);
         assert_eq!(mods_of(&root, &made), ["a.jar", "b.jar.disabled", "c.jar", "keep.jar.disabled", "mine.jar.disabled"]);

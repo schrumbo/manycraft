@@ -440,6 +440,7 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         ("panel-left", tr("Seitenleiste ein- oder ausblenden"), Box::new(ToggleSidebar), true),
         ("maximize", tr("Vollbild ein- oder ausschalten"), Box::new(ToggleFullscreen), true),
         ("settings", tr("Einstellungen"), Box::new(OpenSettings), true),
+        ("trash", tr("Papierkorb öffnen"), Box::new(super::actions::OpenTrash), true),
         ("refresh-cw", tr("Nach Updates suchen"), Box::new(CheckForUpdates), true),
         ("x", tr("Laden abbrechen"), Box::new(CancelUpdate), super::updates::cancellable(&m.updates)),
         ("download", tr("Neu starten und Update installieren"), Box::new(RestartToUpdate), ready),

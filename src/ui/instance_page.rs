@@ -153,7 +153,7 @@ fn ask_delete(id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let id = id.to_owned();
-    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Mods, Welten und Screenshots dieser Instanz werden gelöscht. Solange Manycraft offen ist, kannst du das rückgängig machen."), tr("Löschen"), |_| None, move |window, cx| {
+    sheet::confirm_danger(window, cx, trf("„%@“ löschen?", &[&name]), tr("Die Instanz mit Mods, Welten und Screenshots kommt in den Papierkorb und bleibt dort 7 Tage."), tr("Löschen"), |_| None, move |window, cx| {
         let next = after(&model::get(cx).read(cx).instances, &id);
         match next {
             Some(next) => window.dispatch_action(Box::new(ShowInstance(next)), cx),

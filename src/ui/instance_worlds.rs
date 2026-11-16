@@ -581,7 +581,7 @@ impl Worlds {
         }
         let view = cx.entity();
         let title = trf("„%@“ löschen?", &[&world.name()]);
-        sheet::confirm_danger(window, cx, title, tr("Die Welt kommt in den Papierkorb. Solange Manycraft läuft, holst du sie mit „Rückgängig“ zurück."), tr("Löschen"), |_| None, move |_, cx| {
+        sheet::confirm_danger(window, cx, title, tr("Die Welt kommt in den Papierkorb und bleibt dort 7 Tage."), tr("Löschen"), |_| None, move |_, cx| {
             let world = world.clone();
             view.update(cx, |s, cx| s.delete(world, cx));
         });
