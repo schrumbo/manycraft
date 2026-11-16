@@ -272,7 +272,7 @@ pub(super) fn unrestore_in(root: &Path, before: &Instance, trashed: &[String]) -
     for entry in trashed {
         trash::swap_back(&dir, entry)?;
     }
-    let next = Instance { game_version: before.game_version.clone(), loader: before.loader.clone(), mods: before.mods.clone(), local_mods: before.local_mods.clone(), disabled: before.disabled.clone(), ..now };
+    let next = Instance { game_version: before.game_version.clone(), loader: before.loader.clone(), mods: before.mods.clone(), local_mods: before.local_mods.clone(), disabled: before.disabled.clone(), ..latest(&dir, now) };
     instance::save_in(root, &next)?;
     let _ = super::content::drop_state(&dir);
     Ok(next)
@@ -344,7 +344,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
         return Err(fail(e));
     }
     let before = now.clone();
-    let next = Instance { game_version: then.game_version, loader: then.loader, mods: then.mods, local_mods: then.local_mods, disabled: then.disabled, ..now };
+    let next = Instance { game_version: then.game_version, loader: then.loader, mods: then.mods, local_mods: then.local_mods, disabled: then.disabled, ..latest(&dir, now) };
     if let Err(e) = instance::save_in(root, &next) {
         undo(&trashed, &placed);
         return Err(fail(e));
@@ -352,6 +352,13 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
     let _ = std::fs::remove_dir_all(&staging);
     let _ = super::content::drop_state(&dir);
     Ok(Restored { instance: next, before, trashed: trashed.into_iter().map(|(_, entry)| entry).collect() })
+}
+
+fn latest(dir: &Path, read: Instance) -> Instance {
+    match store::load::<Instance>(&dir.join(instance::FILE)) {
+        Ok(Some(now)) if now.id == read.id => now,
+        _ => read,
+    }
 }
 
 fn staged_worlds(staging: &Path) -> Vec<PathBuf> {
@@ -455,6 +462,18 @@ mod tests {
         assert_eq!(std::fs::read(world.join("region").join("r.0.0.mca")).unwrap(), b"upgraded");
         assert_eq!(std::fs::read(later.join("level.dat")).unwrap(), b"new world");
         assert!(unrestore_in(root.path(), &done.before, &done.trashed).is_err(), "a second undo finds nothing to put back");
+    }
+
+    #[test]
+    fn a_restore_keeps_what_was_saved_to_the_instance_while_it_ran() {
+        let root = tempfile::tempdir().unwrap();
+        let (made, dir, _) = setup(root.path());
+        let chosen = Instance { default_account: Some(uuid::Uuid::from_u128(7)), name: "Farm neu".into(), ..made.clone() };
+        save_in(root.path(), &chosen).unwrap();
+        let kept = latest(&dir, made.clone());
+        assert_eq!((kept.default_account, kept.name.as_str()), (chosen.default_account, "Farm neu"));
+        std::fs::remove_file(dir.join(instance::FILE)).unwrap();
+        assert_eq!(latest(&dir, made.clone()), made, "without a readable file the copy read at the start stands");
     }
 
     #[test]
