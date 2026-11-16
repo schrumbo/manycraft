@@ -25,6 +25,8 @@ final class BackgroundController {
 	private static final String MASTER_VOLUME = "soundCategory_" + SoundSource.MASTER.getName();
 	static final Set<String> USER_KEYS = Set.of("renderDistance", "simulationDistance", "particles", "renderClouds", MASTER_VOLUME, "maxFps");
 
+	static final int PREVIEW_FPS_MAX = 10;
+
 	record Profile(int fps, int renderDistance, int previewIntervalMs, int previewWidth) {
 		static final Profile DEFAULT = new Profile(3, 2, 3000, 320);
 
@@ -126,12 +128,18 @@ final class BackgroundController {
 	}
 
 	int hiddenFramerate() {
-		return switch (level) {
+		int base = switch (level) {
 			case SAVING -> profile.fps();
 			case BALANCED -> Math.min(BackgroundLevel.BALANCED_FPS, mc.options.framerateLimit().get());
 			case FULL -> mc.options.framerateLimit().get();
 			case CUSTOM -> Math.min(custom.fps(), mc.options.framerateLimit().get());
 		};
+		return level.skipsRender(custom) ? Math.max(base, previewFramerate(profile.previewIntervalMs())) : base;
+	}
+
+	/** Frames a game that only draws for previews needs to keep up with {@code intervalMs}: one to capture, one to read back. */
+	static int previewFramerate(int intervalMs) {
+		return Math.min(PREVIEW_FPS_MAX, (2000 + intervalMs - 1) / Math.max(1, intervalMs));
 	}
 
 	void applyLevel(BackgroundLevel next, BackgroundLevel.Custom nextCustom) {

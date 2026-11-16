@@ -76,6 +76,7 @@ fn main() {
         ui::maintenance::init(cx);
         ui::transfer::init(cx);
         ui::settings_window::init(cx);
+        ui::route::init(cx);
         ui::main_window::open(cx);
         ui::drive::init(cx);
         ui::updates::init(cx);

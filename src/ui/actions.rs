@@ -173,6 +173,11 @@ pub struct CancelImport(pub u64);
 #[action(namespace = manycraft)]
 pub struct NewInstance;
 
+/// Opens the settings window at one part of it.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = manycraft)]
+pub struct OpenSettingsAt(pub super::route::Section);
+
 /// Shows the page of one instance (id).
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = manycraft)]

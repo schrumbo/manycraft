@@ -74,8 +74,8 @@ pub enum Effect {
     Settle { placed: Vec<String>, dropped: Vec<String> },
     /// Puts the window of a game that came up hidden in the manager's place.
     Place(String),
-    /// Shows an OS notification, unless the manager is in front with no game played.
-    Notify { tag: String, title: String, body: String },
+    /// Shows an OS notification about the games `keys`, unless the manager is in front with no game played.
+    Notify { tag: String, title: String, body: String, keys: Vec<String> },
     Phone(String),
     /// Follows the window of the game `key` to where the player put it, as the manager's place.
     Follow(Option<String>),

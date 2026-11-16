@@ -8,9 +8,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use uuid::Uuid;
 
-use super::actions::{EditBatch, OpenGameFolder, Play, Reconnect, ReconnectMany, ReconnectSelected, Respawn, RestartMany, RestartSelected, ShowHistory, ShowInstance, SignInAgain, Start, StartMany, StartSelected, Stop, StopMany, StopSelected};
+use super::actions::{EditBatch, OpenGameFolder, OpenSettingsAt, Play, Reconnect, ReconnectMany, ReconnectSelected, Respawn, RestartMany, RestartSelected, ShowHistory, ShowInstance, SignInAgain, Start, StartMany, StartSelected, Stop, StopMany, StopSelected};
 use super::drive::Mark;
 use super::main_window::MainWindow;
+use super::route::Section;
 use super::model::{self, Phase};
 use super::motion::Soft;
 use super::identity;
@@ -599,6 +600,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
     let (can_play, running, stopping) = (playable(&d.phase), d.phase.is_running(), d.stopping);
     let dead = matches!(d.phase, Phase::Dead { .. }) && !stopping;
     let reconnectable = running && !matches!(d.phase, Phase::Starting { .. } | Phase::Plain) && !stopping;
+    let dropped = matches!(d.phase, Phase::Disconnected { .. });
     let banned = matches!(d.phase, Phase::Banned { .. });
     let tile = super::drive::marked(div().id(SharedString::from(format!("tile-{}", d.key))), "clickable")
         .mark("tile", name)
@@ -687,6 +689,7 @@ pub fn render(d: &TileData, g: &Geometry, offset: (f32, f32), hovered: bool, hov
         let restart = stopping || login;
         let menu = menu.menu_element_with_disabled(Box::new(RestartMany(vec![menu_key.clone()])), restart, row(tr("Neu starten"), &RestartSelected, restart));
         let menu = if banned { menu } else { menu.menu_element_with_disabled(Box::new(Reconnect(menu_key.clone())), !reconnectable, row(tr("Neu verbinden"), &ReconnectSelected, !reconnectable)) };
+        let menu = if dropped { menu.menu(tr("Automatisch neu verbinden …"), Box::new(OpenSettingsAt(Section::Reconnect))) } else { menu };
         menu.separator().submenu(tr("Farbe"), window, cx, move |m, _, _| identity::colors(m, ids.clone(), current)).map(|menu| match crate::core::fleet::solo_instance(&menu_batch) {
             Some(instance) => menu.menu(tr("Instanz öffnen"), Box::new(ShowInstance(instance.to_owned()))),
             None => menu.menu(tr("Batch bearbeiten"), Box::new(EditBatch(menu_batch.clone()))),

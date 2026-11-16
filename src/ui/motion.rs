@@ -10,6 +10,8 @@ pub const FAST: Duration = Duration::from_millis(120);
 pub const MEDIUM: Duration = Duration::from_millis(180);
 /// Elements travelling across the window.
 pub const SLOW: Duration = Duration::from_millis(240);
+/// How long a part a link opened stays outlined.
+pub const POINT_OUT: Duration = Duration::from_millis(1600);
 
 /// A duration for `with_animation`, which does not look at the reduced-motion setting by itself.
 pub fn timed(duration: Duration, cx: &App) -> Duration {

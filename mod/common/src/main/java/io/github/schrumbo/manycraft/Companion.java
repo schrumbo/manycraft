@@ -143,7 +143,7 @@ final class Companion {
 			return;
 		}
 		BackgroundController.Profile p = bg.profile();
-		boolean due = preview != null && preview.due(p.previewIntervalMs());
+		boolean due = preview != null && preview.due(p.previewIntervalMs(), bg.hidden() ? 1000 / Math.max(1, bg.hiddenFramerate()) : 0);
 		if (bg.skipsRender() && !due) {
 			return;
 		}

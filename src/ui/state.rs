@@ -35,6 +35,7 @@ use crate::core::{adopt, content, drive, install, ipc, net, online};
 pub use crate::app::reduce::solo_account;
 
 const COALESCE: Duration = Duration::from_millis(40);
+const PRESENT_EVERY: Duration = Duration::from_millis(100);
 const EXIT_POLL: Duration = Duration::from_millis(500);
 const STAGGER_STEP: Duration = Duration::from_millis(100);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
@@ -132,6 +133,12 @@ impl Real {
                 if let Event::Message { instance, message: FromMod::State { .. } } = &event {
                     loading.loaded(instance);
                 }
+                if let Event::Message { instance, message: FromMod::Chat { text, .. } } = &event
+                    && drive::on()
+                {
+                    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                    drive::note(format!("chat {at} {instance} {text}"));
+                }
                 if forward.send_blocking(Update::Ipc(event)).is_err() {
                     return;
                 }
@@ -142,7 +149,10 @@ impl Real {
         std::thread::Builder::new().name("previews".into()).spawn(move || {
             let mut reader = ipc::PreviewReader::default();
             let mut changes = ipc::PreviewChanges::default();
+            let mut presented = Instant::now();
             while let Ok(first) = wanted.recv() {
+                std::thread::sleep(PRESENT_EVERY.saturating_sub(presented.elapsed()));
+                presented = Instant::now();
                 let mut batch: HashMap<String, PathBuf> = HashMap::new();
                 for job in std::iter::once(first).chain(wanted.try_iter()) {
                     match job {
@@ -409,6 +419,8 @@ struct Runtime {
     outbox: Option<phone::Outbox>,
     /// Whether the games keep running when Manycraft quits now; true unless the user chose to end them, so a quit from outside keeps them.
     keep_games: bool,
+    /// The games each shown notification is about, by tag, so a click opens them.
+    notified: HashMap<String, Vec<String>>,
 }
 
 impl Global for Runtime {}
@@ -433,7 +445,7 @@ pub fn init(cx: &mut App) {
             }
         }
     };
-    cx.set_global(Runtime { backend, cancel: HashMap::new(), shared_visible, history: history::Writer::start().ok(), place: None, insets: HashMap::new(), spread: None, badge: 0, outbox: None, keep_games: true });
+    cx.set_global(Runtime { backend, cancel: HashMap::new(), shared_visible, history: history::Writer::start().ok(), place: None, insets: HashMap::new(), spread: None, badge: 0, outbox: None, keep_games: true, notified: HashMap::new() });
     if let Err(e) = settings::activate() {
         eprintln!("settings: {e:#}");
         dispatch(AppEvent::Notice(super::forms::untouched(&e).unwrap_or_else(|| format!("{e:#}"))), cx);
@@ -518,17 +530,8 @@ pub fn init(cx: &mut App) {
         }
     });
     cx.on_system_notification_response(|response, cx| {
-        let batch = response.tag.strip_prefix("attention-").map(str::to_owned);
-        let whisper = response.tag.as_ref() == WHISPER_TAG;
-        cx.defer(move |cx| {
-            show_grid(cx);
-            if let Some(batch) = batch {
-                super::main_window::select_batch(&batch, cx);
-            }
-            if whisper {
-                super::chat::show(cx);
-            }
-        });
+        let tag = response.tag.to_string();
+        cx.defer(move |cx| notification_clicked(&tag, cx));
     });
     cx.on_app_quit(|cx| {
         awake::set(false);
@@ -762,9 +765,12 @@ fn run(effect: Effect, images: &mut [Option<Arc<RenderImage>>], cx: &mut App) {
             }
         }
         Effect::Place(key) => place_new(&key, cx),
-        Effect::Notify { tag, title, body } => {
+        Effect::Notify { tag, title, body, keys } => {
             if super::main_window::is_active(cx) && model::get(cx).read(cx).playing.is_none() {
                 return;
+            }
+            if let Some(rt) = runtime(cx) {
+                rt.notified.insert(tag.clone(), keys.clone());
             }
             if drive::fenced("notify", format!("{title} | {body}")) {
                 return;
@@ -1119,6 +1125,14 @@ fn show(key: &str, before: Option<&str>, skipped: Option<String>, unshown: Unsho
         }
     }
     spread(cx);
+}
+
+/// Opens what the notification `tag` was about: its one tile, the attention tiles of its batch, or the chat.
+pub fn notification_clicked(tag: &str, cx: &mut App) {
+    let keys = cx.try_global::<Runtime>().and_then(|rt| rt.notified.get(tag).cloned()).unwrap_or_default();
+    if let Some(route) = super::route::of_notification(tag, &keys) {
+        super::route::go(route, cx);
+    }
 }
 
 /// Hides the game that is played and brings the manager back in its place.

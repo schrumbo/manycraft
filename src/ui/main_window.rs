@@ -914,6 +914,23 @@ pub fn select_batch(batch: &str, cx: &mut App) {
     });
 }
 
+/// Shows the grid of `batch` with every tile and selects the tile `key`, scrolled into view.
+pub fn reveal_tile(batch: &str, key: String, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let batch = batch.to_owned();
+    let _ = h.update(cx, |view, window, cx| {
+        let Ok(root) = view.downcast::<gpui_kit::base::Root>() else { return };
+        let content = root.read(cx).view().clone();
+        if let Ok(view) = content.downcast::<MainWindow>() {
+            view.update(cx, |this, cx| {
+                this.filter = Filter::All;
+                this.go(Page::Grid(Some(batch)), window, cx);
+                this.grid.reveal(key);
+            });
+        }
+    });
+}
+
 /// Shows the page of instance `id`, as after creating or importing it; stays put while the palette or a sheet is open.
 /// Returns whether the page is shown now.
 pub fn show_instance(id: &str, cx: &mut App) -> bool {

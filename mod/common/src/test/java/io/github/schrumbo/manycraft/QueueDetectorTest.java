@@ -1,5 +1,6 @@
 package io.github.schrumbo.manycraft;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -27,6 +28,17 @@ class QueueDetectorTest {
 		s.mark(0);
 		assertFalse(s.due(2_999_000_000L, 3000));
 		assertTrue(s.due(3_000_000_000L, 3000));
+	}
+
+	@Test
+	void previewScheduleTakesTheFrameNearestTheInterval() {
+		PreviewSchedule s = new PreviewSchedule();
+		s.mark(0);
+		assertFalse(s.due(833_000_000L, 1000, 333));
+		assertTrue(s.due(999_000_000L, 1000, 333));
+		assertEquals(8, BackgroundController.previewFramerate(250));
+		assertEquals(2, BackgroundController.previewFramerate(1000));
+		assertEquals(BackgroundController.PREVIEW_FPS_MAX, BackgroundController.previewFramerate(50));
 	}
 
 	@Test

@@ -33,6 +33,7 @@ pub mod palette;
 pub mod perf;
 mod project_page;
 pub mod remote;
+pub mod route;
 pub mod settings_window;
 pub mod shortcuts;
 pub mod sheet;
