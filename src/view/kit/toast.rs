@@ -92,7 +92,6 @@ impl Component for Host {
                 .a11y_role(AccessibilityRole::Alert)
                 .a11y_alt(toast.text.clone())
                 .width(Size::fill())
-                .min_height(Size::px(40. - space::XS * 2.))
                 .padding((space::XS, space::XS, space::XS, space::M))
                 .horizontal()
                 .cross_align(Alignment::Center)
@@ -100,7 +99,7 @@ impl Component for Host {
                 .background(t.raised)
                 .corner_radius(t.shape.control + 2.)
                 .shadow(t.elevation.float.clone())
-                .child(line(&t, toast.text.clone(), font::BODY, t.text1))
+                .child(super::at_least(40. - space::XS * 2., line(&t, toast.text.clone(), font::BODY, t.text1)))
                 .child(spacer())
                 .content(Content::flex());
             if let Some(rim) = t.elevation.rim {

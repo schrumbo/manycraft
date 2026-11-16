@@ -1017,7 +1017,7 @@ fn done_body(t: &Theme, summary: &Summary) -> Element {
                 .into_element()
         })
         .collect();
-    column.child(ScrollView::new().width(Size::fill()).max_height(Size::px(FAILED_MAX)).child(group(t, Some(tr("Nicht importiert")), rows, None))).into_element()
+    column.child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(FAILED_MAX)).child(group(t, Some(tr("Nicht importiert")), rows, None))).into_element()
 }
 
 #[derive(PartialEq)]

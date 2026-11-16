@@ -101,7 +101,7 @@ impl Component for Line {
             }
             top = top.child(held.child(c.clone()));
         }
-        let mut r = rect().width(Size::fill()).min_height(Size::px(control::L - space::M)).padding((space::M, space::L)).main_align(Alignment::Center).spacing(space::S).on_sized(spot).child(top);
+        let mut r = rect().width(Size::fill()).padding((space::M, space::L)).main_align(Alignment::Center).spacing(space::S).on_sized(spot).child(super::at_least(control::L - space::M, top).width(Size::fill()));
         if let Some(b) = &self.below {
             r = r.child(b.clone());
         }

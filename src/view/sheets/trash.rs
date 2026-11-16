@@ -15,7 +15,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::group::status;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::text::{caption, line, para, spacer};
-use crate::view::kit::{after, off_thread, toast, use_theme};
+use crate::view::kit::{after, at_least, off_thread, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{font, frame, iconsize, space};
 
@@ -307,12 +307,11 @@ fn row(t: &crate::view::theme::Theme, item: &Item, button: Element) -> Element {
     parts.push(bytes(item.size));
     rect()
         .width(Size::fill())
-        .min_height(Size::px(ROW - space::XS * 2.))
         .padding((space::XS, space::M))
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(space::M)
-        .child(icon(t, glyph, iconsize::M, t.text3))
+        .child(at_least(ROW - space::XS * 2., icon(t, glyph, iconsize::M, t.text3)))
         .child(rect().width(Size::flex(1.)).spacing(TEXT_GAP).child(line(t, title, font::BODY, t.text1)).child(line(t, parts.join(" · "), font::CAPTION, t.text2).font_tabular()))
         .child(spacer())
         .child(button)

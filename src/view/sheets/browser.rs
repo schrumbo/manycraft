@@ -33,7 +33,7 @@ use crate::view::kit::sheet::{Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
-use crate::view::kit::{after, off_ui, use_theme};
+use crate::view::kit::{after, at_least, off_ui, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
@@ -1321,7 +1321,7 @@ impl Component for Browser {
             .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
             .child(results(&t, &flow, &facts, kind, &typed, category.is_some(), all, status, more, sel, epoch, has_more, page, visible, fresh));
         column = column.child(region);
-        column = column.child(notice_row(&t, &flow, saved));
+        column = column.child(at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill()));
 
         let (done, back_press) = (self.scope.done.clone(), self.scope.back.clone());
         let title = if kind == Kind::Modpack {
@@ -1390,7 +1390,7 @@ fn target_row(t: &Theme, flow: &Flow, facts: &Facts) -> Element {
             pick.choose_target(dir.clone());
         }
     });
-    let mut row = rect().width(Size::fill()).min_height(Size::px(control::M)).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(line(t, tr("Installieren in"), font::CALLOUT, t.text2)).child(select);
+    let mut row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(at_least(control::M, line(t, tr("Installieren in"), font::CALLOUT, t.text2))).child(select);
     if facts.global_needed {
         let takes = flow.scope.loader.takes_mods();
         let text = if takes { tr("Dafür braucht es den Mod Global Packs.") } else { tr("Vanilla lädt Datenpakete nur pro Welt.") };
@@ -1543,7 +1543,7 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
 }
 
 fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
-    let row = || rect().width(Size::fill()).min_height(Size::px(control::M)).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex());
+    let row = || rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex());
     let fill = |e: Element| rect().width(Size::flex(1.)).child(e);
     let note = |glyph: Icon, color: Color, text: String| fill(status_line(t, glyph, color, text));
     let undo = |flow: &Flow| {

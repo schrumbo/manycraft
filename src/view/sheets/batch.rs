@@ -26,7 +26,7 @@ use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, figure, line, para, strong};
-use crate::view::kit::{off_ui, ring, toast, use_arrows, use_theme};
+use crate::view::kit::{at_least, off_ui, ring, toast, use_arrows, use_theme};
 use crate::view::sheets::instance::{Load, problem_view};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
@@ -184,7 +184,7 @@ fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
 }
 
 fn hint(t: &Theme, text: String) -> Element {
-    rect().width(Size::fill()).min_height(Size::px(font::CAPTION * LINE * HINT_LINES)).child(para(t, text, font::CAPTION, t.text3)).into_element()
+    at_least(font::CAPTION * LINE * HINT_LINES, para(t, text, font::CAPTION, t.text3)).width(Size::fill()).into_element()
 }
 
 fn field(t: &Theme, title: String, control: impl IntoElement, note: Option<String>, error: Option<String>) -> Element {
@@ -669,7 +669,7 @@ impl Component for BatchSheet {
             .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, running, picked, instance_memory }, &lock))
             .children(if open { strain(&t) } else { None });
 
-        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).max_height(Size::px(body_max(store))).child(form));
+        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "batch.save", Icon::CircleAlert, &problem, flow.details));
         }

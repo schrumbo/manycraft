@@ -23,7 +23,7 @@ use crate::view::kit::group::note;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::text::{line, mono, para, strong};
-use crate::view::kit::{after, off_thread, open_external, ring, toast, use_theme};
+use crate::view::kit::{after, at_least, off_thread, open_external, ring, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, iconsize, space};
 
@@ -933,7 +933,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             }
             let all = flow.added.read().clone();
             let before: Vec<&String> = all.iter().filter(|n| *n != name).collect();
-            let mut lines = rect().width(Size::fill()).min_height(Size::px(ADDED_NOTES)).spacing(space::XS);
+            let mut lines = rect().width(Size::fill()).spacing(space::XS);
             if !before.is_empty() {
                 lines = lines.child(line(t, trf("Schon hinzugefügt: %@", &[&capped(&before.iter().map(|n| n.as_str()).collect::<Vec<_>>(), ADDED_SHOWN)]), font::CAPTION, t.text3));
             }
@@ -953,7 +953,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             {
                 lines = lines.child(line(t, trf("Der nächste Account nutzt wieder den Proxy %@.", &[&forms::proxy_display(&proxy)]), font::CAPTION, t.text3));
             }
-            parts.body = rect().width(Size::fill()).spacing(space::S).padding((space::S, 0.)).child(notice(t, Icon::CircleCheck, t.success_text, trf("Angemeldet als %@.", &[name]))).child(lines).into_element();
+            parts.body = rect().width(Size::fill()).spacing(space::S).padding((space::S, 0.)).child(notice(t, Icon::CircleCheck, t.success_text, trf("Angemeldet als %@.", &[name]))).child(at_least(ADDED_NOTES, lines).width(Size::fill())).into_element();
         }
         Ms::Failed(e) => {
             let (heading, detail, retry, to_offline) = failure_text(e, pending.again.as_ref());

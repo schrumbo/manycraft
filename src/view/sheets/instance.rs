@@ -30,7 +30,7 @@ use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, mono, para, strong};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::{off_ui, ring, toast, use_theme};
+use crate::view::kit::{at_least, off_ui, ring, toast, use_theme};
 use crate::view::native;
 use crate::view::sheets::browser::{Browser, Scope};
 use crate::view::sheets::import;
@@ -708,7 +708,7 @@ impl Component for Create {
         }
         form = form.child(imports(flow, blocked.clone()));
 
-        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).max_height(Size::px(body_max(store))).child(form));
+        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
@@ -1423,7 +1423,7 @@ impl Component for Mods {
             column = column.child(updates);
         }
 
-        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).max_height(Size::px(body_max(store))).child(column));
+        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(column));
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
@@ -1451,9 +1451,8 @@ fn updates_view(t: &Theme, flow: Edit, running: bool, held: Option<String>) -> O
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(space::S)
-        .min_height(Size::px(control::M))
         .content(Content::flex())
-        .child(rect().width(Size::flex(1.)).child(label(t, if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") })));
+        .child(at_least(control::M, label(t, if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") })).width(Size::flex(1.)));
     if count > 1 {
         header = header.child(Button::new("instance.update.all", tr("Alle aktualisieren")).glyph(Icon::Refresh).disabled(reason.clone()).on_press(move |_| flow.apply_updates(None)));
     }
