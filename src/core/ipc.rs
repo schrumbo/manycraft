@@ -338,8 +338,9 @@ fn read_message<T: serde::de::DeserializeOwned>(lines: &mut BufReader<std::io::T
             Ok(_) if !line.ends_with('\n') => return None,
             Ok(_) => {}
         }
-        if let Ok(message) = serde_json::from_str(line.trim_end()) {
-            return Some(message);
+        match serde_json::from_str(line.trim_end()) {
+            Ok(message) => return Some(message),
+            Err(e) => super::drive::note(format!("ipc unreadable: {e}: {}", line.chars().take(200).collect::<String>())),
         }
     }
 }

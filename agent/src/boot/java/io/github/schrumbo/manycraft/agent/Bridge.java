@@ -43,5 +43,9 @@ public interface Bridge {
 
 	void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt);
 
+	void disguisedChat(Object message, Object bound);
+
+	void overlayChat(Object message);
+
 	void hud(Object graphics);
 }
