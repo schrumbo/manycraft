@@ -207,7 +207,7 @@ impl Component for FitLine {
                         crate::ui::model::fit_line(count, each, &f)
                     } else {
                         let label = |mb: u64| crate::ui::forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX));
-                        trf("%lld Accounts brauchen %@, dein PC hat %@ frei", &[&count, &label(f.needed_mb), &label(f.free_mb)])
+                        trf("%lld Accounts brauchen %@, dein PC hat %@ frei", &[&count, &label(f.needed_mb), &crate::ui::forms::free_memory_label(f.free_mb)])
                     }
                 });
                 let _ = tx.send_blocking(line);

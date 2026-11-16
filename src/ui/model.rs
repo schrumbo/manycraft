@@ -69,10 +69,11 @@ pub fn run_line(run: &Run) -> String {
 /// What `count` instances of `each_mb` need against the memory that is free, as one German line.
 pub fn fit_line(count: u32, each_mb: u32, fit: &Fit) -> String {
     let label = |mb: u64| forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX));
+    let free = forms::free_memory_label(fit.free_mb);
     if count == 1 {
-        return trf("Ein Account braucht %@, dein PC hat %@ frei", &[&label(fit.needed_mb), &label(fit.free_mb)]);
+        return trf("Ein Account braucht %@, dein PC hat %@ frei", &[&label(fit.needed_mb), &free]);
     }
-    trf("%lld Accounts × %@ = %@, dein PC hat %@ frei", &[&count, &label(u64::from(each_mb)), &label(fit.needed_mb), &label(fit.free_mb)])
+    trf("%lld Accounts × %@ = %@, dein PC hat %@ frei", &[&count, &label(u64::from(each_mb)), &label(fit.needed_mb), &free])
 }
 
 struct Shared(Entity<Model>);
@@ -101,5 +102,7 @@ mod tests {
         assert_eq!(fit_line(50, 2048, &fit(102_400, 32_768)), "50 Accounts × 2 GB = 100 GB, dein PC hat 32 GB frei");
         assert_eq!(fit_line(3, 2560, &fit(7680, 4096)), "3 Accounts × 2,5 GB = 7,5 GB, dein PC hat 4 GB frei");
         assert_eq!(fit_line(1, 8192, &fit(8192, 4096)), "Ein Account braucht 8 GB, dein PC hat 4 GB frei");
+        assert_eq!(fit_line(1, 2048, &fit(2048, 2040)), "Ein Account braucht 2 GB, dein PC hat 1,9 GB frei");
+        assert_eq!(fit_line(2, 2048, &fit(4096, 2047)), "2 Accounts × 2 GB = 4 GB, dein PC hat 1,9 GB frei");
     }
 }

@@ -271,6 +271,11 @@ pub fn memory_label(mb: u32) -> String {
     format!("{text} GB")
 }
 
+/// `mb` of free memory as [`memory_label`] shows it, rounded down so that it never reads as more than there is.
+pub fn free_memory_label(mb: u64) -> String {
+    memory_label(u32::try_from(mb * 10 / 1024 * 1024 / 10).unwrap_or(u32::MAX))
+}
+
 /// What `count` games of `each_mb` need together and what a machine with `total_mb` can give them beside the system,
 /// when they need more than that.
 pub fn memory_need(count: usize, each_mb: u32, total_mb: u64) -> Option<(u32, u32)> {
