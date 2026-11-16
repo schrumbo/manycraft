@@ -318,7 +318,7 @@ pub fn label(text: impl Into<SharedString>, t: &Theme) -> Div {
 
 /// The line under a field: the hint, or the problem in red. It always takes its height, so nothing moves when it changes.
 pub fn note(hint: Option<String>, problem: Option<String>, t: &Theme) -> Div {
-    let line = div().min_h(px(font::CAPTION * font::LINE)).text_size(px(font::CAPTION));
+    let line = div().min_h(px(font::CAPTION * font::LINE)).line_height(px(font::CAPTION * font::LINE)).text_size(px(font::CAPTION));
     match problem {
         Some(p) => line.flex().items_start().gap(px(space::XS)).text_color(t.danger_text).child(div().pt(px(space::XXS)).child(icon("circle-alert", iconsize::XS, t.danger_text))).child(div().min_w_0().child(p)),
         None => line.text_color(t.tertiary).children(hint),

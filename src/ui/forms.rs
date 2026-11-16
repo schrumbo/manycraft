@@ -203,12 +203,86 @@ pub fn next_batch_name(taken: &[&str]) -> String {
     (1..).map(|n| trf("Batch %lld", &[&n])).find(|name| !taken.iter().any(|t| t.eq_ignore_ascii_case(name))).unwrap_or_default()
 }
 
+/// The name a new batch takes from its server: the host's own label (`play.example.net` gives `example`), an IP as
+/// typed, made unique among `taken`; the first free `Batch N` without a usable server.
+pub fn batch_name_for(server: &str, taken: &[&str]) -> String {
+    let server = server.trim();
+    if server.is_empty() || server_problem(server).is_some() {
+        return next_batch_name(taken);
+    }
+    let host = match server.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').map_or(v6, |(host, _)| host),
+        None => server.rsplit_once(':').map_or(server, |(host, _)| host),
+    };
+    let ip = host.parse::<std::net::IpAddr>().is_ok();
+    let mut labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    if !ip && labels.len() > 1 {
+        labels.pop();
+        if labels.len() > 1 && labels.last().is_some_and(|l| SECOND_LEVEL.contains(&l.to_ascii_lowercase().as_str())) {
+            labels.pop();
+        }
+    }
+    let base: String = if ip { host } else { labels.last().copied().unwrap_or(host) }.chars().take(NAME_MAX - 5).collect();
+    unique_name(&base, taken)
+}
+
+const SECOND_LEVEL: [&str; 7] = ["co", "com", "net", "org", "ac", "edu", "gov"];
+
+/// What keeps a name of a pasted list from becoming an offline account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Listed {
+    Fine,
+    /// An account of that name exists already.
+    Taken,
+    /// The list names it further up already.
+    Twice,
+    Invalid(String),
+}
+
+/// The names in `text`, one per line; commas, semicolons and spaces separate them too.
+pub fn split_names(text: &str) -> Vec<&str> {
+    text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|n| !n.is_empty()).collect()
+}
+
+/// Every name of a pasted list in order, checked against `accounts` and the names above it.
+pub fn check_names(text: &str, accounts: &[Account]) -> Vec<(String, Listed)> {
+    let mut seen: Vec<&str> = Vec::new();
+    split_names(text)
+        .into_iter()
+        .map(|name| {
+            let verdict = if seen.iter().any(|s| s.eq_ignore_ascii_case(name)) {
+                Listed::Twice
+            } else if accounts.iter().any(|a| a.name.eq_ignore_ascii_case(name)) {
+                Listed::Taken
+            } else {
+                offline_name_problem(name, accounts).map_or(Listed::Fine, Listed::Invalid)
+            };
+            seen.push(name);
+            (name.to_owned(), verdict)
+        })
+        .collect()
+}
+
 /// Memory in MB as people read it: `1 GB`, `2,5 GB`.
 pub fn memory_label(mb: u32) -> String {
     let tenths = (u64::from(mb) * 10 + 512) / 1024;
     let text = if tenths % 10 == 0 { format!("{}", tenths / 10) } else { format!("{}.{}", tenths / 10, tenths % 10) };
     let text = if crate::core::i18n::lang() == crate::core::i18n::Lang::De { text.replace('.', ",") } else { text };
     format!("{text} GB")
+}
+
+/// What `count` games of `each_mb` need together and what a machine with `total_mb` can give them beside the system,
+/// when they need more than that.
+pub fn memory_need(count: usize, each_mb: u32, total_mb: u64) -> Option<(u32, u32)> {
+    let budget = memory_max(total_mb);
+    let total = u64::from(each_mb).saturating_mul(count as u64);
+    (total > u64::from(budget)).then(|| (u32::try_from(total).unwrap_or(u32::MAX), budget))
+}
+
+/// The most memory per game, in whole steps and at least the minimum, that lets `count` games share `budget_mb`.
+pub fn memory_fit(count: usize, budget_mb: u32) -> Option<u32> {
+    let each = u64::from(budget_mb) / (count.max(1) as u64) / u64::from(MEMORY_STEP) * u64::from(MEMORY_STEP);
+    u32::try_from(each).ok().filter(|each| *each >= MEMORY_MIN)
 }
 
 /// The most memory one instance may get on a machine with `total_mb`: all but 2 GB for the system, in whole steps.
@@ -323,6 +397,48 @@ fn meminfo_mb(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::core::account::Account;
+
+    #[test]
+    fn games_over_the_memory_budget_get_a_per_game_size_that_fits() {
+        let total = 16 * 1024;
+        assert_eq!(memory_need(3, 4096, total), None, "12 GB fit in 14 GB");
+        assert_eq!(memory_need(4, 4096, total), Some((16384, 14336)));
+        assert_eq!(memory_fit(4, 14336), Some(3584));
+        assert_eq!(memory_fit(14, 14336), Some(1024));
+        assert_eq!(memory_fit(15, 14336), None, "below the minimum each");
+        assert_eq!(memory_need(0, 4096, total), None);
+    }
+
+    #[test]
+    fn a_batch_takes_its_name_from_the_server_host() {
+        assert_eq!(batch_name_for("play.example.net", &[]), "example");
+        assert_eq!(batch_name_for("mc.example.net:25570", &[]), "example");
+        assert_eq!(batch_name_for("play.example.co.uk", &[]), "example");
+        assert_eq!(batch_name_for("localhost", &[]), "localhost");
+        assert_eq!(batch_name_for("127.0.0.1:25565", &[]), "127.0.0.1");
+        assert_eq!(batch_name_for("[::1]:25565", &[]), "::1");
+        assert_eq!(batch_name_for("play.example.net", &["Example"]), "example (2)");
+        assert_eq!(batch_name_for("", &["Batch 1"]), next_batch_name(&["Batch 1"]));
+        assert_eq!(batch_name_for("bad host!", &[]), next_batch_name(&[]));
+    }
+
+    #[test]
+    fn a_pasted_list_checks_every_name_once() {
+        let mine = Account::offline("Steve").unwrap();
+        let checked = check_names("Alex
+steve, Bob;bob  x
+
+No-Dash
+", &[mine]);
+        let verdicts: Vec<(&str, &Listed)> = checked.iter().map(|(n, v)| (n.as_str(), v)).collect();
+        assert_eq!(verdicts[0], ("Alex", &Listed::Fine));
+        assert_eq!(verdicts[1], ("steve", &Listed::Taken));
+        assert_eq!(verdicts[2], ("Bob", &Listed::Fine));
+        assert_eq!(verdicts[3], ("bob", &Listed::Twice));
+        assert!(matches!(verdicts[4], ("x", Listed::Invalid(_))));
+        assert!(matches!(verdicts[5], ("No-Dash", Listed::Invalid(_))));
+        assert_eq!(verdicts.len(), 6);
+    }
 
     #[test]
     fn a_file_from_a_newer_version_reads_as_plain_german_for_each_kind() {

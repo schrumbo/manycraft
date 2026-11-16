@@ -152,12 +152,12 @@ def tests():
     return out
 
 
-def mod_build():
-    gradlew = str(Path("mod", "gradlew.bat").resolve()) if os.name == "nt" else "./gradlew"
-    run = subprocess.run([gradlew, "build", "-q", "--console=plain", "--no-daemon"], cwd="mod", capture_output=True, text=True, encoding="utf-8", errors="replace", shell=os.name == "nt")
+def gradle_build(module):
+    gradlew = str(Path(module, "gradlew.bat").resolve()) if os.name == "nt" else "./gradlew"
+    run = subprocess.run([gradlew, "build", "-q", "--console=plain", "--no-daemon"], cwd=module, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=os.name == "nt")
     if run.returncode == 0:
         return []
-    return ["mod: " + r for r in (run.stdout + run.stderr).strip().splitlines()[-20:]]
+    return [module + ": " + r for r in (run.stdout + run.stderr).strip().splitlines()[-20:]]
 
 
 def is_ui(path):
@@ -345,11 +345,12 @@ def hook(data):
         return
     if tree != state.get("seen"):
         state["seen"] = tree
-        if churn(state["green"], tree, "mod"):
-            failed = mod_build()
-            if failed:
-                save(session, state)
-                emit(decision="block", reason="Mod build failed. Fix the cause:\n" + cap(failed))
+        for module in ("mod", "agent"):
+            if churn(state["green"], tree, module):
+                failed = gradle_build(module)
+                if failed:
+                    save(session, state)
+                    emit(decision="block", reason=module.capitalize() + " build failed. Fix the cause:\n" + cap(failed))
         if churn(state["green"], tree, "*.rs", "Cargo.toml", "Cargo.lock"):
             scope = changed_lines(state["green"], tree)
             with heavy():
@@ -401,7 +402,7 @@ def cli(args):
         failed = list(errors)
         if not errors:
             failed += tests()
-        failed += mod_build()
+        failed += gradle_build("mod") + gradle_build("agent")
         findings = warnings + ui_lint(scope)
         if args.deep:
             findings += deep()

@@ -104,6 +104,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             let keys = fleet::signed_in(model, &keys);
             fleet::start_keys(model, &keys, &mut out);
         }
+        Event::StartBatch(batch) if !startable(model, &batch) => model.session.waiting_starts.push((batch, env.now)),
         Event::StartBatch(batch) => fleet::launch(model, &batch, None, fleet::Kick::Plain, &mut out),
         Event::StartAll => {
             for id in batch_ids(model) {
@@ -111,6 +112,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::Stop(keys) => fleet::stop_keys(model, keys, &mut out),
+        Event::TakeOver(key) => fleet::take_over(model, &key, env.now, &mut out),
         Event::StopBatch(batch) => {
             let stopped = fleet::stoppable(model, Some(&batch));
             fleet::stop_batch(model, &batch, &mut out);
@@ -142,12 +144,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             fleet::restart_keys(model, &keys, &mut out);
         }
         Event::Reconnect(key) => fleet::reconnect(model, &key, &mut out),
-        Event::ReconnectMany(keys) => {
-            let keys: Vec<String> = keys.into_iter().filter(|k| !model.games.get(k).is_some_and(|i| matches!(i.phase, Phase::Banned { .. }))).collect();
-            for key in &keys {
-                fleet::reconnect(model, key, &mut out);
-            }
-        }
+        Event::ReconnectMany(keys) => fleet::reconnect_each(model, &keys, &mut out),
         Event::Respawn(key) => {
             if model.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. })) {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::Respawn });
@@ -197,6 +194,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::QuitChosen { keep } => out.push(Effect::Quit { keep }),
         Event::RestartForUpdate => quit::restart_for_update(model, &mut out),
     }
+    fleet::finish_take_overs(model, env.now, &mut out);
     if !model.session.runs.is_empty() {
         let games = &model.games;
         model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));
@@ -230,6 +228,11 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
         }
     }
     if chat && env.settings.merged_chat { Redraw::Chat } else { Redraw::Nothing }
+}
+
+/// Whether a start of `owner` can run now: it is known and, when it has accounts, its games are built.
+pub(super) fn startable(m: &Model, owner: &str) -> bool {
+    m.target(owner).is_some() && (m.batch(owner).is_none_or(|b| b.accounts.is_empty()) || m.games.values().any(|g| g.batch_id == owner))
 }
 
 #[cfg(test)]

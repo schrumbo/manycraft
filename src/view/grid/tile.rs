@@ -6,7 +6,7 @@ use freya::prelude::*;
 
 use super::layout::{TWO_LINES, strip};
 use crate::app::event::Event as AppEvent;
-use crate::app::model::{Phase, Primary, primary, status, stopped_ban};
+use crate::app::model::{Game, Model, Phase, Primary, main_action, status, stopped_ban};
 use crate::core::account::Account;
 use crate::core::i18n::tr;
 use crate::view::commands::Command;
@@ -38,6 +38,7 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::Reconnect => store.dispatch(AppEvent::Reconnect(key)),
         Primary::Respawn => store.dispatch(AppEvent::Respawn(key)),
         Primary::Start | Primary::Retry => store.dispatch(AppEvent::Start(vec![key])),
+        Primary::TakeOver => store.dispatch(AppEvent::TakeOver(key)),
         Primary::SignIn => {
             let mut page = store.ui.page;
             page.set(Page::Accounts);
@@ -48,9 +49,14 @@ fn run(store: Store, key: &str, p: Primary) {
 fn glyph(p: Primary) -> Icon {
     match p {
         Primary::Play | Primary::Start => Icon::Play,
-        Primary::Reconnect | Primary::Retry | Primary::Respawn => Icon::Refresh,
+        Primary::Reconnect | Primary::Retry | Primary::Respawn | Primary::TakeOver => Icon::Refresh,
         Primary::SignIn => Icon::LogIn,
     }
+}
+
+fn action_of(g: &Game, m: &Model) -> Option<Primary> {
+    let busy = !g.phase.is_active() && m.playing_elsewhere(&g.instance_id, g.account_id, &g.key).is_some();
+    main_action(&g.phase, g.stopping, busy)
 }
 
 fn pick(store: Store, key: &str, index: usize) {
@@ -94,13 +100,13 @@ fn context(store: Store, key: &str) -> Vec<Item> {
     let m = store.model.peek();
     if !many
         && let Some(g) = m.games.get(key)
-        && let Some(p) = primary(&g.phase, g.stopping)
+        && let Some(p) = action_of(g, &m)
     {
         let k = key.to_owned();
         items.push(Item::new(format!("menu.{key}.primary"), p.label(), move |_| run(store, &k, p)));
     }
     for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected] {
-        if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| primary(&g.phase, g.stopping) != Some(Primary::Start)) {
+        if many || c != Command::StartSelected || m.games.get(key).is_some_and(|g| action_of(g, &m) != Some(Primary::Start)) {
             let label = if many { c.label() } else { single(c) };
             let mut item = Item::new(format!("menu.{}", c.name()), label, move |_| c.run(store)).disabled(!c.available(store));
             if let Some(s) = c.shortcut() {
@@ -148,7 +154,7 @@ impl Component for Tile {
         let attention = game.phase.needs_attention();
         let severe = matches!(game.phase, Phase::LoginNeeded | Phase::Banned { .. });
         let line2 = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
-        let action = primary(&game.phase, game.stopping);
+        let action = action_of(game, &m);
         let spot = use_spot(&format!("tile.{}", self.key), "tile", &format!("{} · {line2}", self.name), true);
         let preview_h = self.height - strip(self.width);
         let two = self.width >= TWO_LINES;
@@ -241,7 +247,7 @@ impl Component for Tile {
 fn primary_of(store: Store, key: &str) -> Option<Primary> {
     let m = store.model.peek();
     let g = m.games.get(key)?;
-    primary(&g.phase, g.stopping)
+    action_of(g, &m)
 }
 
 fn frame_image(handle: ImageHandle, w: f32, h: f32, opacity: f32) -> impl IntoElement {

@@ -6,6 +6,7 @@ use super::super::effect::{Effect, Redraw, Unshown};
 use super::super::model::{Game, Model, Phase};
 use super::super::session::Reveal;
 use super::{Env, fleet};
+use crate::core::account::AccountKind;
 use crate::core::fleet as fleets;
 use crate::core::i18n::trf;
 use crate::core::instance::Instance;
@@ -119,11 +120,15 @@ fn on_the_way(phase: &Phase) -> bool {
     (phase.is_active() && !matches!(phase, Phase::Banned { .. })) || matches!(phase, Phase::NoNetwork)
 }
 
-/// The account `made` is played with alone when none is named: the one that played it last, else the only one.
+/// The account `made` is played with alone when none is named: the one that played it last, else the only Microsoft
+/// account, else the one added last.
 pub fn solo_account(m: &Model, made: &Instance) -> Option<Uuid> {
-    made.last_account.filter(|id| m.account(*id).is_some()).or_else(|| match m.accounts.as_slice() {
-        [only] => Some(only.id),
-        _ => None,
+    made.last_account.filter(|id| m.account(*id).is_some()).or_else(|| {
+        let mut microsoft = m.accounts.iter().filter(|a| a.kind == AccountKind::Microsoft);
+        match (microsoft.next(), microsoft.next()) {
+            (Some(only), None) => Some(only.id),
+            _ => m.accounts.last().map(|a| a.id),
+        }
     })
 }
 
@@ -261,6 +266,27 @@ mod tests {
         let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
         let fx = report(&mut m, &s, Report::Reopen);
         assert!(fx.iter().any(|e| matches!(e, Effect::ShowManager)));
+    }
+
+    #[test]
+    fn an_instance_never_played_plays_with_the_only_microsoft_account_else_the_newest() {
+        use crate::core::account::Account;
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let made = m.instances[0].clone();
+        let add = |m: &mut super::super::super::model::Model, n: u128, kind: AccountKind| m.accounts.push(Account { id: uuid::Uuid::from_u128(n), name: format!("A{n}"), kind, proxy: None, color: None });
+        assert_eq!(super::solo_account(&m, &made), Some(m.accounts[0].id), "the only account");
+        add(&mut m, 20, AccountKind::Offline);
+        assert_eq!(super::solo_account(&m, &made), Some(uuid::Uuid::from_u128(20)), "the account added last");
+        add(&mut m, 30, AccountKind::Microsoft);
+        add(&mut m, 40, AccountKind::Offline);
+        assert_eq!(super::solo_account(&m, &made), Some(uuid::Uuid::from_u128(30)), "the only Microsoft account beats newer offline ones");
+        add(&mut m, 50, AccountKind::Microsoft);
+        assert_eq!(super::solo_account(&m, &made), Some(uuid::Uuid::from_u128(50)), "with two Microsoft accounts the newest");
+        let mut played = made.clone();
+        played.last_account = Some(uuid::Uuid::from_u128(20));
+        assert_eq!(super::solo_account(&m, &played), Some(uuid::Uuid::from_u128(20)), "the account that played it last wins");
+        played.last_account = Some(uuid::Uuid::from_u128(99));
+        assert_eq!(super::solo_account(&m, &played), Some(uuid::Uuid::from_u128(50)), "a removed last account falls back");
     }
 
     #[test]

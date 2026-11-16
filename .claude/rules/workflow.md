@@ -5,7 +5,7 @@ Standing instruction from the owner: use the agents below without being asked, a
 - Any change beyond a few lines follows the `ship` skill. Questions, reading and one-line fixes do not.
 - Commit at stable points yourself: stage by name, terse message, no co-author. Run `.claude/bin/sync` before each commit.
 - Push only at milestones (end of M1, M2, …) and release only then, by bumping `version` in `Cargo.toml` in the milestone's last commit. Every push costs GitHub CI minutes; never push work in progress.
-- A Stop hook runs `.claude/bin/gate` (clippy, tests, UI lint, and the mod build when `mod/` changed) and asks for missing reviews. Treat its message as a task. If a finding is a false positive or a review does not apply, say why in one line and stop again.
+- A Stop hook runs `.claude/bin/gate` (clippy, tests, UI lint, and the mod or agent build when `mod/` or `agent/` changed) and asks for missing reviews. Treat its message as a task. If a finding is a false positive or a review does not apply, say why in one line and stop again.
 - At most two review rounds per feature. Round two only checks round-one fixes; new findings go to the backlog, except data loss (accounts, tokens, worlds, configs).
 
 | Work | Who | Model |

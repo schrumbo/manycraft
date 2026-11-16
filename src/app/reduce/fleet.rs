@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -13,6 +13,9 @@ use crate::core::fleet::Target;
 use crate::core::fit::{self, Memory};
 use crate::core::i18n::trf;
 use crate::core::ipc::ToMod;
+
+/// Time between the reconnects of one action on many games.
+const RECONNECT_STAGGER: Duration = Duration::from_secs(1);
 
 /// Why games start: on their own, as part of one action on many, or again after a crash.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -251,6 +254,46 @@ pub(super) fn start_again(m: &mut Model, keys: &[String], out: &mut Vec<Effect>)
     start_keys(m, &start, out);
 }
 
+/// How long a game waits for the game that holds its account to go down before it gives up starting.
+const TAKE_OVER_WAIT: Duration = Duration::from_secs(60);
+
+/// Stops the game that plays the account of `key` elsewhere in the same instance and starts `key` once it is down.
+pub(super) fn take_over(m: &mut Model, key: &str, now: Instant, out: &mut Vec<Effect>) {
+    let Some(game) = m.games.get(key).filter(|g| !g.phase.is_active() && g.phase != Phase::LoginNeeded) else { return };
+    let (account, instance) = (game.account_id, game.instance_id.clone());
+    let others: Vec<String> = m.games.values().filter(|g| g.key != key && g.account_id == account && g.instance_id == instance && g.phase.is_active()).map(|g| g.key.clone()).collect();
+    for other in &others {
+        m.session.take_overs.insert(other.clone(), (key.to_owned(), now + TAKE_OVER_WAIT));
+    }
+    if others.is_empty() {
+        start_keys(m, &[key.to_owned()], out);
+    } else {
+        stop_keys(m, others, out);
+    }
+}
+
+/// Starts the games whose account is free again after [`take_over`], and drops those that waited too long.
+pub(super) fn finish_take_overs(m: &mut Model, now: Instant, out: &mut Vec<Effect>) {
+    if m.session.take_overs.is_empty() {
+        return;
+    }
+    let games = &m.games;
+    let down: Vec<String> = m.session.take_overs.iter().filter(|(other, _)| games.get(*other).is_none_or(|g| !g.phase.is_active())).map(|(other, _)| other.clone()).collect();
+    let mut start = Vec::new();
+    for other in down {
+        if let Some((key, _)) = m.session.take_overs.remove(&other)
+            && !m.session.take_overs.values().any(|(k, _)| *k == key)
+            && !start.contains(&key)
+        {
+            start.push(key);
+        }
+    }
+    m.session.take_overs.retain(|_, (_, until)| *until > now);
+    if !start.is_empty() {
+        start_keys(m, &start, out);
+    }
+}
+
 /// `keys` without the accounts that need to sign in again, which a bulk start would only fail.
 pub(super) fn signed_in(m: &Model, keys: &[String]) -> Vec<String> {
     keys.iter().filter(|k| m.games.get(*k).is_some_and(|i| i.phase != Phase::LoginNeeded)).cloned().collect()
@@ -338,19 +381,42 @@ pub(super) fn stop_batch(m: &mut Model, batch: &str, out: &mut Vec<Effect>) {
 
 pub(super) fn reconnect(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
     out.push(Effect::Redraw(Redraw::All));
+    reconnect_after(m, key, Duration::ZERO, out);
+}
+
+/// Reconnects those of `keys` that can reconnect, one after another, so a server that just came back is not hit by all at once.
+/// Banned games, games without a process and games that are being stopped are left out.
+pub(super) fn reconnect_each(m: &mut Model, keys: &[String], out: &mut Vec<Effect>) {
+    let able: Vec<&String> = keys.iter().filter(|k| m.games.get(*k).is_some_and(|i| i.phase.reconnectable() && !i.stopping)).collect();
+    if able.is_empty() {
+        return;
+    }
+    out.push(Effect::Redraw(Redraw::All));
+    for (nth, key) in able.into_iter().enumerate() {
+        reconnect_after(m, key, RECONNECT_STAGGER * u32::try_from(nth).unwrap_or(u32::MAX), out);
+    }
+}
+
+fn reconnect_after(m: &mut Model, key: &str, delay: Duration, out: &mut Vec<Effect>) {
     let Some(i) = m.games.get(key) else { return };
     if !i.phase.is_running() || matches!(i.phase, Phase::Plain) {
         return;
     }
     let server = super::games::server_of(&i.phase).unwrap_or_default();
-    *m.session.reconnects.entry(key.to_owned()).or_default() += 1;
+    let generation = m.session.reconnects.entry(key.to_owned()).or_default();
+    *generation += 1;
+    let generation = *generation;
     *m.session.joins.entry(key.to_owned()).or_default() += 1;
     if let Some(i) = m.games.get_mut(key) {
         i.reconnect_attempts = 0;
     }
     go(m, key, Phase::Connecting { server }, Why::Reconnect, out);
     m.order_seq += 1;
-    out.push(Effect::Send { key: key.to_owned(), message: ToMod::Reconnect });
+    if delay.is_zero() {
+        out.push(Effect::Send { key: key.to_owned(), message: ToMod::Reconnect });
+    } else {
+        out.push(Effect::After { delay, event: Box::new(Event::ReconnectDue { key: key.to_owned(), generation }) });
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +433,32 @@ mod tests {
     use crate::core::fit::Memory;
 
     #[test]
+    fn reconnecting_many_goes_one_after_another_and_skips_banned_and_signed_out() {
+        let s = settings();
+        let (mut m, first) = setup(Phase::Disconnected { server: Some("s".into()), reason: String::new() }, AccountKind::Offline, &[]);
+        let template = m.games[&first].clone();
+        let mut add = |key: &str, phase: Phase, attempts: u32| {
+            m.games.insert(key.into(), Game { key: key.into(), phase, reconnect_attempts: attempts, ..template.clone() });
+        };
+        add("waits", Phase::Connecting { server: "s".into() }, 3);
+        add("banned", Phase::Banned { server: Some("s".into()), reason: String::new() }, 0);
+        add("login", Phase::LoginNeeded, 0);
+        add("stopped", Phase::Stopped, 0);
+        let keys: Vec<String> = [first.as_str(), "banned", "login", "stopped", "waits"].map(str::to_owned).to_vec();
+        let fx = run(&mut m, &s, Instant::now(), Event::ReconnectMany(keys));
+        let sent: Vec<&String> = fx.iter().filter_map(|e| if let Effect::Send { key, .. } = e { Some(key) } else { None }).collect();
+        assert_eq!(sent, [&first], "the first goes at once");
+        let due = later(&fx);
+        let [(delay, Event::ReconnectDue { key, generation })] = due.as_slice() else { panic!("{} timers", due.len()) };
+        assert_eq!((key.as_str(), *delay), ("waits", super::RECONNECT_STAGGER));
+        assert_eq!(m.games["waits"].phase, Phase::Connecting { server: "s".into() });
+        assert_eq!(m.games["waits"].reconnect_attempts, 0, "a fresh start of the retry budget");
+        assert!(matches!(m.games["banned"].phase, Phase::Banned { .. }) && m.games["login"].phase == Phase::LoginNeeded && m.games["stopped"].phase == Phase::Stopped);
+        let fx = run(&mut m, &s, Instant::now(), Event::ReconnectDue { key: "waits".into(), generation: *generation });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { key, .. } if key == "waits")));
+    }
+
+    #[test]
     fn a_requested_restart_starts_again_only_after_a_stop_exit() {
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
@@ -378,6 +470,41 @@ mod tests {
         let fx = report(&mut m, &s, super::super::super::event::Report::Exited { key: key.clone(), code: Some(0) });
         assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1)));
         assert_eq!(m.games[&key].phase, Phase::Starting { place: 1, total: 1 });
+    }
+
+    #[test]
+    fn taking_over_stops_the_game_elsewhere_and_starts_here_once_it_is_down() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Failed { reason: "Spielt schon in b · allein".into() }, AccountKind::Offline, &[]);
+        let game = m.games[&key].clone();
+        let solo = crate::core::fleet::solo_owner(&game.instance_id);
+        let other = format!("{solo}:{}", game.account_id.simple());
+        m.games.insert(other.clone(), Game { phase: Phase::Menu, ..Game::new(other.clone(), solo, game.instance_id.clone(), game.account_id, game.name.clone()) });
+        m.session.pids.insert(other.clone(), 2);
+        let fx = run(&mut m, &s, Instant::now(), Event::TakeOver(key.clone()));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Stop(k) if *k == [other.clone()])));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })), "not before the other game is down");
+        let fx = report(&mut m, &s, Report::Exited { key: other.clone(), code: Some(0) });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1)));
+        assert!(matches!(m.games[&key].phase, Phase::Starting { .. }));
+        assert!(m.session.take_overs.is_empty());
+    }
+
+    #[test]
+    fn a_take_over_gives_up_when_the_other_game_stays_up() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let game = m.games[&key].clone();
+        let solo = crate::core::fleet::solo_owner(&game.instance_id);
+        let other = format!("{solo}:{}", game.account_id.simple());
+        m.games.insert(other.clone(), Game { phase: Phase::Menu, ..Game::new(other.clone(), solo, game.instance_id.clone(), game.account_id, game.name.clone()) });
+        m.session.pids.insert(other.clone(), 2);
+        let start = Instant::now();
+        run(&mut m, &s, start, Event::TakeOver(key.clone()));
+        run(&mut m, &s, start + super::TAKE_OVER_WAIT + std::time::Duration::from_secs(1), Event::ShowGrid);
+        assert!(m.session.take_overs.is_empty());
+        let fx = report(&mut m, &s, Report::Exited { key: other, code: Some(0) });
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })), "a late exit starts nothing");
     }
 
     #[test]

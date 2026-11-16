@@ -10,14 +10,14 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{AddMods, EditMods, FindModpacks, FindResourcePacks, FindShaders, ImportFromLauncher, NewInstance, Reload};
+use super::actions::{AddMods, EditMods, FindModpacks, FindResourcePacks, FindShaders, ImportFromLauncher, NewInstance, NewInstanceToPlay, PlayInstance, Reload};
 use super::batch_sheet::{Load, body_max, list_max};
 use super::drive::Mark;
 use super::forms::{self, Problem};
 use super::loader_version::{self, LoaderVersion, Picked};
 use super::mod_browser::Browser;
 use super::motion::Soft;
-use super::remote;
+use super::{remote, snapshots};
 use super::sheet::{self, Dismissed, Look};
 use super::theme::{Theme, control, font, iconsize, radius, space, tint, with_alpha};
 use super::versions::{self as picker, VersionItem};
@@ -27,9 +27,9 @@ use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
 use crate::core::modrinth::{self, Update};
+use crate::core::snapshot::Reason;
 use crate::core::versions::{GameVersion, Kind};
 
-const DEFAULT_TITLES: [(&str, &str); 6] = [("fabric-api", "Fabric API"), ("lithium", "Lithium"), ("ferrite-core", "FerriteCore"), ("modernfix", "ModernFix"), ("krypton", "Krypton"), ("sodium", "Sodium")];
 const VERSION_WIDTH: f32 = 232.;
 const SNUG_PERCENT: u64 = 80;
 const SAVE_ERROR_MAX: f32 = 220.;
@@ -39,6 +39,20 @@ const NOTE_LINE: &str = "\u{a0}";
 /// Registers the instance sheet actions.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &NewInstance, cx| open(Mode::Create, None, cx));
+    cx.on_action(|action: &NewInstanceToPlay, cx| {
+        let account = action.0.clone();
+        sheet::in_window(cx, move |window, cx| {
+            if sheet::busy(window, cx) {
+                return;
+            }
+            let view = cx.new(|cx| {
+                let mut sheet = InstanceSheet::new(Mode::Create, window, cx);
+                sheet.play = Some(account);
+                sheet
+            });
+            sheet::show(view, sheet::WIDE, window, cx);
+        });
+    });
     cx.on_action(|_: &FindModpacks, cx| open(Mode::Create, Some(modrinth::Kind::Modpack), cx));
     cx.on_action(|action: &FindResourcePacks, cx| find(&action.0, modrinth::Kind::ResourcePack, cx));
     cx.on_action(|action: &FindShaders, cx| find(&action.0, modrinth::Kind::Shader, cx));
@@ -87,6 +101,7 @@ pub(super) enum Mode {
 
 pub(super) struct InstanceSheet {
     pub(super) mode: Mode,
+    play: Option<Option<String>>,
     pub(super) setup: Option<setup::Instance>,
     name: Entity<InputState>,
     loader_version: Entity<LoaderVersion>,
@@ -207,6 +222,7 @@ impl InstanceSheet {
             mods: setup.as_ref().map(|i| i.mods.clone()).unwrap_or_default(),
             mods_touched: editing,
             mode,
+            play: None,
             setup,
             name,
             loader_version,
@@ -358,6 +374,19 @@ impl InstanceSheet {
     pub(super) fn apply_updates(&mut self, only: Option<String>, cx: &mut Context<Self>) {
         let Some(Load::Ready(list)) = &self.updates else { return };
         let Some(id) = self.setup.as_ref().map(|i| i.id.clone()) else { return };
+        let n = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).count();
+        if n == 0 || !self.updating.is_empty() || self.saving {
+            return;
+        }
+        let sheet = cx.entity().downgrade();
+        snapshots::before(&id, Reason::ModUpdates(n), cx, move |cx| {
+            let _ = sheet.update(cx, |s, cx| s.apply_updates_now(only, cx));
+        });
+    }
+
+    fn apply_updates_now(&mut self, only: Option<String>, cx: &mut Context<Self>) {
+        let Some(Load::Ready(list)) = &self.updates else { return };
+        let Some(id) = self.setup.as_ref().map(|i| i.id.clone()) else { return };
         let selection: Vec<Update> = list.iter().filter(|u| !self.applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect();
         if selection.is_empty() || !self.updating.is_empty() || self.saving {
             return;
@@ -486,7 +515,10 @@ impl InstanceSheet {
             if touched {
                 remote::move_mods(&mods, &v, &wanted).map(|(mods, missing)| (mods, missing.into_iter().map(|m| trf("„%@“ gibt es nicht für %@ und wurde entfernt.", &[&m, &v])).collect::<Vec<_>>()))
             } else {
-                remote::defaults(&v, &wanted).map(|d| (d.mods, d.notes.iter().map(|n| default_note(n, &v)).collect()))
+                remote::defaults(&v, &wanted).map(|d| {
+                    let note = default_gaps(d.mods.len(), &d.notes, &v);
+                    (d.mods, note.into_iter().collect())
+                })
             }
         });
         cx.spawn(async move |this, cx| {
@@ -646,8 +678,12 @@ impl InstanceSheet {
 
     fn finish(&mut self, id: String, cx: &mut Context<Self>) {
         cx.emit(Dismissed);
+        let play = self.play.take();
         cx.defer(move |cx| {
             super::main_window::show_instance(&id, cx);
+            if let Some(account) = play {
+                cx.dispatch_action(&PlayInstance { instance: id, account });
+            }
         });
     }
 
@@ -738,7 +774,7 @@ impl InstanceSheet {
                     .flex()
                     .gap(px(space::M))
                     .child(div().flex_1().min_w_0().child(div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Name"), t)).child(Input::new(&self.name)).child(sheet::note(None, name_problem, t).min_h(px(font::CAPTION * font::LINE * 2.)))))
-                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, None, version_problem, t))),
+                    .child(div().w(px(VERSION_WIDTH)).flex_none().child(sheet::field(tr("Minecraft-Version"), version_control, companion_hint(&self.version), version_problem, t))),
             )
             .child(self.render_loader(cx, t));
         if self.has_mods() {
@@ -758,11 +794,7 @@ impl InstanceSheet {
             Some(why) => sheet::unavailable_over("instance-loaders-locked", control, why).into_any_element(),
             None => control.into_any_element(),
         };
-        let mut col = div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Loader"), t)).child(div().flex().child(control));
-        if let Some(hint) = companion_hint(&self.loader, &self.version) {
-            col = col.child(sheet::status("info", t.secondary, hint));
-        }
-        col
+        div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Loader"), t)).child(div().flex().child(control))
     }
 
     fn render_advanced(&mut self, cx: &mut Context<Self>, t: &Theme) -> Div {
@@ -958,7 +990,7 @@ impl InstanceSheet {
         if self.version != original.game_version {
             return Some(col.child(div().text_size(px(font::CAPTION)).text_color(t.tertiary).child(tr("Updates gibt es nach dem Sichern der neuen Version."))));
         }
-        let busy = !self.updating.is_empty();
+        let busy = !self.updating.is_empty() || snapshots::progress(&original.id, cx).is_some();
         let count = match &self.updates {
             Some(Load::Ready(list)) => list.iter().filter(|u| !self.applied.contains(&u.current.project_id)).count(),
             _ => 0,
@@ -1124,15 +1156,9 @@ fn name_problem(name: &str, taken: &[&str]) -> Option<String> {
     taken.iter().any(|t| t.trim().to_lowercase() == lower).then(|| trf("Es gibt schon eine Instanz „%@“. Wähle einen anderen Namen.", &[&name]))
 }
 
-/// Why games of `loader` on `game` run without Manycraft's mod, or nothing when they have it.
-pub(super) fn companion_hint(loader: &Loader, game: &str) -> Option<String> {
-    if game.is_empty() || companion::available(loader, game) {
-        return None;
-    }
-    Some(match loader {
-        Loader::Vanilla => trf("Für %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&loader.name()]),
-        _ => trf("Für %@ mit Minecraft %@ gibt es Manycrafts Mod noch nicht: keine Vorschau, kein Sparen im Hintergrund, kein Chat.", &[&loader.name(), &game]),
-    })
+/// The quiet line under a version the companion does not reach, or nothing when games of `game` have it.
+pub(super) fn companion_hint(game: &str) -> Option<String> {
+    (!game.is_empty() && !companion::available(game)).then(|| trf("Hintergrundmodus ab %@", &[&companion::first()]))
 }
 
 fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> remote::InstanceEdit {
@@ -1155,11 +1181,9 @@ fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, max: f
     div().contain_scroll(scroll).child(list)
 }
 
-fn default_note(note: &str, version: &str) -> String {
-    let Some(rest) = note.strip_prefix("skipped ") else { return note.to_owned() };
-    let slug = rest.split(':').next().unwrap_or(rest);
-    let title = DEFAULT_TITLES.iter().find(|(s, _)| *s == slug).map_or(slug, |(_, t)| t);
-    trf("Den Mod „%@“ gibt es nicht für %@.", &[&title, &version])
+fn default_gaps(found: usize, notes: &[String], version: &str) -> Option<String> {
+    let skipped = notes.iter().filter(|n| n.starts_with("skipped ")).count();
+    (skipped > 0).then(|| trf("%1$lld von %2$lld Performance-Mods für %3$@ verfügbar", &[&found, &(found + skipped), &version]))
 }
 
 impl Render for InstanceSheet {
@@ -1206,7 +1230,7 @@ impl Render for InstanceSheet {
                 trailing.push(div().max_w(px(SAVE_ERROR_MAX)).child(self.problem("save-error", "circle-alert", t.danger_text, e, cx, &t)).into_any_element());
             }
             trailing.push(sheet::button_unless("instance-cancel", tr("Abbrechen"), None, Look::Secondary, (!self.closable()).then(|| if self.saving { tr("Wird gerade gesichert …") } else { tr("Warte, bis die Updates fertig sind.") }.into()), false, &t).on_click(cx.listener(|s, _, _, cx| if s.closable() { cx.emit(Dismissed) })).into_any_element());
-            trailing.push(sheet::button_unless("instance-save", if creating { tr("Erstellen") } else { tr("Sichern") }, None, Look::Primary, wait.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
+            trailing.push(sheet::button_unless("instance-save", if !creating { tr("Sichern") } else if self.play.is_some() { tr("Erstellen und spielen") } else { tr("Erstellen") }, None, Look::Primary, wait.map(Into::into), self.saving, &t).on_click(cx.listener(|s, _, _, cx| s.save(cx))).into_any_element());
             (Vec::new(), trailing)
         };
         let me = cx.entity().downgrade();

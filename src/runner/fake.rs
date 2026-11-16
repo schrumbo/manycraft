@@ -11,7 +11,7 @@ use super::backend::{Backend, Pixels, Update};
 use crate::app::model::Phase;
 use crate::core::account::Account;
 use crate::core::fleet::Target;
-use crate::core::ipc::{ChatKind, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
+use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
 
 const PREVIEW_W: u32 = 192;
 const PREVIEW_H: u32 = 108;
@@ -96,6 +96,8 @@ struct Sim<P> {
     chat_n: u64,
     still: bool,
     changes: PreviewChanges,
+    outage: Option<(Instant, Instant)>,
+    dropped: bool,
 }
 
 fn hash(text: &str) -> u64 {
@@ -106,13 +108,22 @@ fn state<P>(instance: &str, kind: StateKind, reason: Option<&str>) -> Update<P> 
     Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned), cause: None } })
 }
 
+fn server_down<P>(instance: &str) -> Update<P> {
+    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind: StateKind::Disconnected, server: Some(SERVER.to_owned()), reason: Some("Server closed".to_owned()), cause: Some(DisconnectCause::ServerDown) } })
+}
+
+/// Seconds from an environment variable.
+fn secs(name: &str) -> Option<Duration> {
+    std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok()).map(Duration::from_secs)
+}
+
 fn connected<P>(instance: &str) -> Update<P> {
     Update::Ipc(Event::Connected { instance: instance.to_owned(), pid: 0, mod_version: "fake".into() })
 }
 
 impl<P: Pixels> Sim<P> {
     fn new(out: async_channel::Sender<Update<P>>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
-        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default() }
+        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default(), outage: None, dropped: false }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Cmd>) {
@@ -156,7 +167,7 @@ impl<P: Pixels> Sim<P> {
                 }
             }
             Cmd::Start(target, accounts, cancel) => {
-                let plain = !crate::core::companion::available(&target.instance.loader, &target.instance.game_version);
+                let plain = !crate::core::companion::available(&target.instance.game_version);
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
                     let after = STAGGER * n as u32;
@@ -182,7 +193,9 @@ impl<P: Pixels> Sim<P> {
             ToMod::Reconnect => {
                 self.reconnects += 1;
                 self.at(Duration::from_millis(500), None, state(key, StateKind::Connecting, None));
-                if self.reconnects.is_multiple_of(4) {
+                if self.outage.is_some_and(|(from, to)| (from..to).contains(&(Instant::now() + Duration::from_secs(2)))) {
+                    self.at(Duration::from_secs(2), None, server_down(key));
+                } else if self.reconnects.is_multiple_of(4) {
                     self.at(Duration::from_secs(2), None, state(key, StateKind::Disconnected, Some("Zeitüberschreitung")));
                 } else {
                     self.at(Duration::from_secs(2), None, state(key, StateKind::Playing, None));
@@ -234,6 +247,10 @@ impl<P: Pixels> Sim<P> {
 
     fn seed(&mut self) {
         self.backlog();
+        if let Some(after) = secs("MANYCRAFT_FAKE_OUTAGE") {
+            let from = Instant::now() + after;
+            self.outage = Some((from, from + secs("MANYCRAFT_FAKE_OUTAGE_FOR").unwrap_or(Duration::from_secs(90))));
+        }
         let mut keys: Vec<String> = self.names.keys().cloned().collect();
         keys.sort();
         for key in keys {
@@ -274,6 +291,14 @@ impl<P: Pixels> Sim<P> {
 
     fn tick(&mut self) -> bool {
         let now = Instant::now();
+        if !self.dropped && self.outage.is_some_and(|(from, _)| from <= now) {
+            self.dropped = true;
+            let mut keys: Vec<String> = self.running.keys().cloned().collect();
+            keys.sort();
+            for key in keys {
+                self.at(Duration::ZERO, None, server_down(&key));
+            }
+        }
         let mut due = Vec::new();
         let mut i = 0;
         while i < self.queue.len() {

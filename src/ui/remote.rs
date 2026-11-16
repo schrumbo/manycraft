@@ -370,6 +370,24 @@ pub fn add_offline(name: &str, proxy: Option<String>) -> Result<Account> {
     })
 }
 
+/// Adds an offline account for each of `names` with `proxy`, skipping names that are taken or invalid by now; the accounts added.
+pub fn add_offline_many(names: &[String], proxy: Option<String>) -> Result<Vec<Account>> {
+    saved(|| {
+        let mut accounts = account::load()?;
+        let mut added = Vec::new();
+        for name in names {
+            if forms::offline_name_problem(name, &accounts).is_some() {
+                continue;
+            }
+            let mut account = Account::offline(name)?;
+            account.proxy.clone_from(&proxy);
+            added.push(account::upsert(&mut accounts, account));
+        }
+        account::save(&accounts)?;
+        Ok(added)
+    })
+}
+
 /// Replaces the proxy of account `id`; `None` removes it.
 pub fn set_proxy(id: Uuid, proxy: Option<String>) -> Result<()> {
     saved(|| {
@@ -888,6 +906,16 @@ pub fn remember_account(id: &str, account: Uuid) -> Result<()> {
 /// Deletes a batch; its instance with worlds, mods and settings stays.
 pub fn delete_batch(b: &Batch) -> Result<()> {
     saved(|| fleet::delete_batch(b))
+}
+
+/// Brings a deleted batch back as it was; refuses plainly when its instance is gone.
+pub fn restore_batch(b: &Batch) -> Result<()> {
+    saved(|| {
+        if !setup::load_all()?.iter().any(|i| i.id == b.instance_id) {
+            return Err(gone(tr("Die Instanz dieses Batches gibt es nicht mehr.")));
+        }
+        batch::restore(b)
+    })
 }
 
 /// The other launchers on this machine with their instances. A driven instance reads only `MANYCRAFT_LAUNCHERS`, and shows made-up ones without it.

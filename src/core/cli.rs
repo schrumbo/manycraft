@@ -15,7 +15,9 @@ pub fn run(args: &[String]) -> Option<i32> {
         "launchers" => super::launchers::cli,
         "mrpack" => super::mrpack::cli,
         "clean" => super::install::clean::cli,
+        "smoke" => super::smoke::cli,
         "apply-update" => super::updater::install::cli,
+        "help" | "--help" | "-h" => help,
         _ => return None,
     };
     attach_console();
@@ -25,6 +27,13 @@ pub fn run(args: &[String]) -> Option<i32> {
         }
     }
     Some(run(rest))
+}
+
+fn help(_: &[String]) -> i32 {
+    println!("manycraft [--play <instance> [--account <id>]] [file.mrpack]
+
+commands: login, launch, batch, instance, mods, prism, launchers, mrpack, clean, smoke, help");
+    0
 }
 
 #[cfg(windows)]
