@@ -22,7 +22,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         _ => return None,
     };
     attach_console();
-    if !matches!(cmd.as_str(), "apply-update" | "folders" | "help" | "--help" | "-h") {
+    let asks_help = rest.iter().any(|a| matches!(a.as_str(), "help" | "--help" | "-h"));
+    if !asks_help && !matches!(cmd.as_str(), "apply-update" | "folders" | "help" | "--help" | "-h") {
         for problem in super::migrate::run().problems {
             eprintln!("{problem}");
         }
