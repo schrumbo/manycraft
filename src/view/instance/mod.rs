@@ -493,7 +493,7 @@ pub fn extras(store: Store) -> Vec<Extra> {
     }
     if let Some(solo) = f.solo.filter(|_| f.accounts.len() > 1) {
         let instance = id.clone();
-        let (key, label, account) = if f.pinned { ("default.clear", tr("Standard-Account verwenden"), None) } else { ("default.set", tr("Als Standard für diese Instanz"), Some(solo)) };
+        let (key, label, account) = if f.pinned { ("default.clear", tr("Standard-Account verwenden"), None) } else { ("default.set", trf("%@ für diese Instanz festlegen", &[&f.name_of(solo).unwrap_or_default()]), Some(solo)) };
         push(key, label, Icon::Users, None, EventHandler::new(move |_| store.dispatch(Event::SetDefaultAccount { instance: instance.clone(), account })));
     }
     let new = links::new_batch(store, &id, &name);

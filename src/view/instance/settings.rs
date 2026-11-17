@@ -646,7 +646,7 @@ fn account_setting(t: &Theme, store: Store, f: &Facts) -> Option<Element> {
     }
     let m = store.model.read();
     let active = crate::app::reduce::active_account(&m).and_then(|a| m.account(a)).map(|a| a.name.clone());
-    let mut labels = vec![active.map_or_else(|| tr("Aktiver Account"), |n| trf("Aktiver Account (%@)", &[&n]))];
+    let mut labels = vec![active.map_or_else(|| tr("Standard-Account"), |n| trf("Standard-Account (%@)", &[&n]))];
     labels.extend(f.accounts.iter().map(|(_, n)| n.clone()));
     let own = f.made.default_account.and_then(|d| f.accounts.iter().position(|(a, _)| *a == d));
     let at = own.map_or(0, |n| n + 1);
@@ -657,7 +657,7 @@ fn account_setting(t: &Theme, store: Store, f: &Facts) -> Option<Element> {
         store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account });
     });
     let reset_id = f.made.id.clone();
-    let clear = own.map(|_| reset("account", tr("Spielen als"), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: reset_id.clone(), account: None })));
+    let clear = own.map(|_| Button::new("instance.settings.account.reset", tr("Standard-Account verwenden")).plain().on_press(move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: reset_id.clone(), account: None })).into_element());
     Some(setting(t, tr("Spielen als"), clear, select.into_element(), Some(tr("Gilt, wenn du diese Instanz allein spielst. Batches haben eigene Accounts.")), None))
 }
 

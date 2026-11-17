@@ -49,6 +49,7 @@ fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
     let up = store.ui.instance.up.read();
     let since = f.stoppable.iter().filter_map(|(key, _)| up.get(key)).min().copied();
     match (f.stoppable.len(), since.and_then(uptime_text)) {
+        (0, _) if f.running => (t.success, f.busy.first().map_or_else(|| tr("Läuft im Batch"), |(_, place)| trf("Läuft in %@", &[place]))),
         (0, _) => (t.text3, tr("Gestoppt")),
         (1, None) => (t.success, tr("Läuft")),
         (1, Some(up)) => (t.success, trf("Läuft · %@", &[&up])),

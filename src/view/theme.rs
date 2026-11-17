@@ -44,6 +44,8 @@ pub mod frame {
     pub const PALETTE_ROWS: usize = 9;
     /// The widest the account name on the chip beside Play gets.
     pub const CHIP_NAME: f32 = 160.;
+    /// Width kept for Play and its neighbours at the end of an instance's toolbar, so the tabs stay put when they change.
+    pub const HERO: f32 = 400.;
     pub const MENU: f32 = 220.;
     pub const MENU_ROW: f32 = 26.;
     /// Rows a long menu shows before it scrolls.
