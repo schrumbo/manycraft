@@ -98,6 +98,9 @@ pub fn init(cx: &mut App) {
         if let Err(e) = instance::purge_stale(TRASH_KEPT) {
             eprintln!("trash: {e:#}");
         }
+        if let Err(e) = crate::core::batch::purge_stale(TRASH_KEPT) {
+            eprintln!("trash: {e:#}");
+        }
         if let Err(e) = content::purge_stale(TRASH_KEPT) {
             eprintln!("mod trash: {e:#}");
         }

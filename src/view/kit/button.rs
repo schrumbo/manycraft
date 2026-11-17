@@ -19,6 +19,8 @@ pub enum Look {
     Danger,
     /// Plain, in the danger color: a destructive action in a list of plain ones.
     PlainDanger,
+    /// A toggle that is on.
+    On,
 }
 
 /// A button with a label, an optional icon in front and an optional tooltip; disabled with the reason as its tooltip.
@@ -75,6 +77,14 @@ impl Button {
     }
 
     /// Shows the turning arc in place of the glyph while a short wait runs.
+    /// Shows the button as a toggle that is on while `on`.
+    pub fn on(mut self, on: bool) -> Self {
+        if on {
+            self.look = Look::On;
+        }
+        self
+    }
+
     pub fn busy(mut self, busy: bool) -> Self {
         self.busy = busy;
         self
@@ -125,6 +135,7 @@ fn colors(t: &Theme, look: Look, enabled: bool) -> (Color, Color) {
         Look::Plain => (Color::TRANSPARENT, t.accent_text),
         Look::Danger => (t.danger, t.on_danger),
         Look::PlainDanger => (Color::TRANSPARENT, t.danger_text),
+        Look::On => (t.selection, t.accent_text),
     }
 }
 

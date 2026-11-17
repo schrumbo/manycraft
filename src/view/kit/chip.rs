@@ -46,8 +46,11 @@ impl Component for Chip {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let spot = use_spot(&self.id, "chip", &self.label, true);
-        let (fill, ink) = if self.on { (t.selection, t.accent_text) } else if *hovered.read() { (t.hover, t.text1) } else { (t.control, t.text1) };
+        let ink = if self.on { t.accent_text } else { t.text1 };
+        let fill = if self.on { t.selection } else { t.control };
+        let wash = if *pressed.read() { Some(t.press) } else if *hovered.read() { Some(t.hover) } else { None };
         let press = self.on_press.clone();
         let remove = self.on_remove.clone();
         let keys = remove.clone();
@@ -62,11 +65,19 @@ impl Component for Chip {
             .padding((0., if remove.is_some() { space::XS } else { space::S }, 0., space::S))
             .spacing(space::XS)
             .corner_radius(t.shape.chip)
-            .background(fill)
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                if e.button == Some(MouseButton::Left) {
+                    pressed.set(true);
+                }
+            })
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_all_press(move |e: Event<PressEventData>| {
                 if let PressEventData::Mouse(m) = &*e
                     && m.button != Some(MouseButton::Left)
@@ -97,6 +108,9 @@ impl Component for Chip {
         if let Some(border) = ring(&t, focus()) {
             c = c.border(border);
         }
-        c
+        match wash {
+            Some(wash) => rect().corner_radius(t.shape.chip).background(fill).child(c.background(wash)).into_element(),
+            None => c.background(fill).into_element(),
+        }
     }
 }

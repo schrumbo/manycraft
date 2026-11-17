@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use freya::prelude::*;
 use uuid::Uuid;
 
-use super::logs_lines::{Line, capped, longest, option_label, ordered, scan, search, split};
+use super::logs_lines::{Line, capped, first_row, longest, option_label, ordered, scan, search, split};
 use super::logs_viewer::{Hits, Viewer, row};
 use super::shots_parts::{Same, centered};
 use super::{Facts, use_extras};
@@ -90,6 +90,8 @@ struct Ctx {
     stick: State<bool>,
     found: State<Found>,
     controller: ScrollController,
+    wrap: State<bool>,
+    cols: State<usize>,
 }
 
 fn at_end(c: ScrollController) -> bool {
@@ -102,8 +104,30 @@ fn at_end(c: ScrollController) -> bool {
 fn reveal(ctx: Ctx, line: usize) {
     let mut c = ctx.controller;
     let view = c.bounds.peek().map_or(0., |(_, view)| view.height);
-    let top = (line as f32 * row() - (view - row()) / 2.).max(0.);
+    let shown = if *ctx.wrap.peek() && *ctx.cols.peek() > 0 { first_row(&ctx.doc.peek().lines.0, line, *ctx.cols.peek()) } else { line };
+    let top = (shown as f32 * row() - (view - row()) / 2.).max(0.);
     c.scroll_to_y(-(top as i32));
+}
+
+fn scroll_by_key(mut c: ScrollController, key: &Key) {
+    let view = c.bounds.peek().map_or(0., |(_, view)| view.height);
+    let page = ((view / row()).floor() - 1.).max(1.) * row();
+    let y = c.position().y;
+    match key {
+        Key::Named(NamedKey::PageUp) => {
+            c.scroll_to_y((y + page) as i32);
+        }
+        Key::Named(NamedKey::PageDown) => {
+            c.scroll_to_y((y - page) as i32);
+        }
+        Key::Named(NamedKey::Home) => {
+            c.scroll_to_y(0);
+        }
+        Key::Named(NamedKey::End) => {
+            c.scroll_to(ScrollPosition::End, Direction::Vertical);
+        }
+        _ => {}
+    }
 }
 
 fn jump(ctx: Ctx, by: isize) {
@@ -228,13 +252,15 @@ struct Follow {
     stick: State<bool>,
     found: State<Found>,
     controller: ScrollController,
+    wrap: State<bool>,
+    cols: State<usize>,
     load: u64,
     path: PathBuf,
 }
 
 impl Component for Follow {
     fn render(&self) -> impl IntoElement {
-        let ctx = Ctx { doc: self.doc, stick: self.stick, found: self.found, controller: self.controller };
+        let ctx = Ctx { doc: self.doc, stick: self.stick, found: self.found, controller: self.controller, wrap: self.wrap, cols: self.cols };
         let (load, path) = (self.load, self.path.clone());
         use_hook(move || {
             spawn(async move {
@@ -302,7 +328,9 @@ impl Component for Logs {
         let mut upload_ask = use_state(|| 0u32);
         let mut reload = use_state(|| 0u32);
         let controller = use_scroll_controller(ScrollConfig::default);
-        let ctx = Ctx { doc, stick, found, controller };
+        let mut wrap = use_state(|| true);
+        let cols = use_state(|| 0usize);
+        let ctx = Ctx { doc, stick, found, controller, wrap, cols };
 
         let (account_now, pick_now) = (scanned.read().account, *pick.read());
         let _ = account_now;
@@ -483,6 +511,10 @@ impl Component for Logs {
         use_extras(extras);
 
         let on_keys = move |e: Event<KeyboardEventData>| {
+            if !field::typing() && store.ui.sheet.peek().is_none() && store.ui.menu.peek().is_none() && e.modifiers.is_empty() {
+                scroll_by_key(controller, &e.key);
+                return;
+            }
             if !field::typing() || !*find_open.peek() {
                 return;
             }
@@ -535,6 +567,12 @@ impl Component for Logs {
         }
         bar = bar.child(spacer());
         if has {
+            let wrapped = *wrap.read();
+            let label = if wrapped { tr("Lange Zeilen abschneiden") } else { tr("Lange Zeilen umbrechen") };
+            bar = bar.child(Button::icon("instance.logs.wrap", Icon::Wrap, label).on(wrapped).on_press(move |_| {
+                let next = !*wrap.peek();
+                wrap.set(next);
+            }));
             let (find, all) = (open_find, copy_all);
             bar = bar
                 .child(Button::new("instance.logs.find", tr("Suchen")).glyph(Icon::Search).tip(Shortcut::primary(Code::KeyF).label()).on_press(move |_| find()))
@@ -657,6 +695,8 @@ impl Component for Logs {
             Status::Ready if !has => rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Das Protokoll ist leer."))).into_element(),
             Status::Ready => Viewer {
                 lines: state.lines.clone(),
+                wrap: *wrap.read(),
+                cols,
                 version: state.version,
                 longest: state.longest,
                 hits: if *find_open.read() { hits.list.clone() } else { Same(Arc::new(Vec::new())) },

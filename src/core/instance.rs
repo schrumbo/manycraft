@@ -197,6 +197,11 @@ impl Instance {
         self.games_dir().join(account.simple().to_string())
     }
 
+    /// When a game of this instance last started, read from the newest game log; None when none ever did.
+    pub fn last_played(&self) -> Option<std::time::SystemTime> {
+        std::fs::read_dir(self.games_dir()).ok()?.filter_map(Result::ok).filter_map(|e| std::fs::metadata(e.path().join("logs").join("latest.log")).and_then(|m| m.modified()).ok()).max()
+    }
+
     /// Game folders that exist, other than the one of `account`.
     pub fn other_games(&self, account: Uuid) -> Vec<PathBuf> {
         let own = account.simple().to_string();

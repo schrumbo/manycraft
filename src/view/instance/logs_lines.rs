@@ -92,6 +92,29 @@ pub fn longest(lines: &[Line]) -> usize {
     lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0)
 }
 
+/// The rows `lines` take wrapped at `cols` characters, in order: the line each row shows and the byte range of it.
+pub fn wrap_rows(lines: &[Line], cols: usize) -> Vec<(usize, Range<usize>)> {
+    let cols = cols.max(1);
+    let mut rows = Vec::with_capacity(lines.len());
+    for (at, line) in lines.iter().enumerate() {
+        let text = &*line.text;
+        let mut start = 0;
+        let mut cuts = text.char_indices().map(|(i, _)| i).skip(cols).step_by(cols).peekable();
+        while let Some(end) = cuts.next() {
+            rows.push((at, start..end));
+            start = end;
+        }
+        rows.push((at, start..text.len()));
+    }
+    rows
+}
+
+/// The first row of line `at` when every line before it wraps at `cols` characters.
+pub fn first_row(lines: &[Line], at: usize, cols: usize) -> usize {
+    let cols = cols.max(1);
+    lines.iter().take(at).map(|l| l.text.chars().count().div_ceil(cols).max(1)).sum()
+}
+
 /// `text` cut to `chars` characters with an ellipsis.
 pub fn clip(text: &str, chars: usize) -> String {
     match text.char_indices().nth(chars) {

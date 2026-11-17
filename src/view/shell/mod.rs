@@ -70,6 +70,7 @@ impl Component for Shell {
             Page::Accounts => AccountsPage.into_element(),
             Page::Chat => ChatPage.into_element(),
             Page::Settings => super::settings::SettingsPage.into_element(),
+            Page::Trash => crate::view::sheets::trash::TrashPage.into_element(),
         };
         let mut row = rect().width(Size::fill()).height(Size::fill()).horizontal();
         if *ui.sidebar.read() {

@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -29,6 +30,8 @@ const SAMPLES: usize = 3;
 const POLL: Duration = Duration::from_millis(250);
 const CHAT_RETRY: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: u64 = 900;
+
+static STOPPED: AtomicBool = AtomicBool::new(false);
 const FPS_LINE: &str = "manycraft smoke fps ";
 const SAVED_LINE: &str = "manycraft smoke saved options while hidden";
 const HOOKS_LINE: &str = " ms, hooks ";
@@ -51,6 +54,7 @@ const FAULTS: [&str; 9] = [
 
 /// Runs `manycraft smoke`, returning the exit code: 0 when every check passed.
 pub fn cli(args: &[String]) -> i32 {
+    tie_games();
     match run(args) {
         Ok(code) => code,
         Err(e) => {
@@ -89,6 +93,35 @@ struct Progress {
     saved: bool,
     playing: bool,
     chat: bool,
+}
+
+/// Ends the game with this process however it ends: on Windows every child shares a job that closes with it, elsewhere
+/// an interrupt or termination stops the watch so the game is killed before the process exits.
+fn tie_games() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let size = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).unwrap_or(0);
+        if SetInformationJobObject(job, JobObjectExtendedLimitInformation, std::ptr::from_ref(&info).cast(), size) != 0 {
+            AssignProcessToJobObject(job, GetCurrentProcess());
+        }
+    }
+    #[cfg(unix)]
+    unsafe {
+        extern "C" fn stop(_: libc::c_int) {
+            STOPPED.store(true, Ordering::SeqCst);
+        }
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            libc::signal(signal, stop as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        }
+    }
 }
 
 fn run(args: &[String]) -> Result<i32> {
@@ -140,8 +173,12 @@ fn run(args: &[String]) -> Result<i32> {
     let launch_log = game_dir.join("logs").join("manycraft-launch.log");
     let mut progress = Progress::default();
     let outcome = watch(&fleet, &events, &key, &launch_log, server.is_some(), Duration::from_secs(timeout), &mut progress);
-    let _ = fleet.send(&key, &ToMod::Quit);
-    fleet.stop_all(std::slice::from_ref(&key));
+    if STOPPED.load(Ordering::SeqCst) {
+        fleet.kill(std::slice::from_ref(&key));
+    } else {
+        let _ = fleet.send(&key, &ToMod::Quit);
+        fleet.stop_all(std::slice::from_ref(&key));
+    }
     let log = read_log(&launch_log);
     for line in log.lines().filter(|l| l.contains("[manycraft-agent]")) {
         println!("{line}");
@@ -245,6 +282,9 @@ fn watch(fleet: &Fleet, events: &std::sync::mpsc::Receiver<ipc::Event>, key: &st
     let mut chat_sent: Option<Instant> = None;
     let nonce = format!("{CHAT_LINE} {}", std::process::id());
     while Instant::now() < deadline {
+        if STOPPED.load(Ordering::SeqCst) {
+            bail!("stopped before the checks finished");
+        }
         match events.recv_timeout(POLL) {
             Ok(ipc::Event::Connected { instance, mod_version, .. }) if instance == key => {
                 println!("connected, companion {mod_version}");

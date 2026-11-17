@@ -520,8 +520,8 @@ fn sync_mods(instance: &Instance) -> Result<()> {
 }
 
 /// Deletes `target`; its instance with mods, configs, packs, templates and game folders stays.
-pub fn delete_batch(target: &Batch) -> Result<()> {
-    batch::delete(target)
+pub fn delete_batch(target: &Batch) -> Result<String> {
+    batch::trash(target)
 }
 
 /// The window icon the game of `account` in `instance` shows, written at each launch.

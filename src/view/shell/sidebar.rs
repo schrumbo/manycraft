@@ -329,7 +329,7 @@ impl Component for Sidebar {
             foot = foot.child(update);
         }
         if can_want(&Want::OpenTrash) {
-            foot = foot.child(WithTip::new(Some(Command::OpenTrash.tip()), Row::new("nav.trash", tr("Papierkorb")).glyph(Icon::Trash).height(frame::ROW).on_press(move |_| {
+            foot = foot.child(WithTip::new(Some(Command::OpenTrash.tip()), Row::new("nav.trash", tr("Papierkorb")).glyph(Icon::Trash).height(frame::ROW).selected(now == Page::Trash).on_press(move |_| {
                 want(store, Want::OpenTrash);
             })));
         }

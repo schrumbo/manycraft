@@ -86,7 +86,7 @@ fn ask_title(batch: &Batch) -> String {
 }
 
 fn ask_message() -> String {
-    tr("Der Batch verschwindet aus der Liste. Instanz, Welten und Einstellungen bleiben erhalten. Solange Manycraft offen ist, kannst du das rückgängig machen.")
+    tr("Der Batch kommt 7 Tage in den Papierkorb. Instanz, Welten und Einstellungen bleiben erhalten.")
 }
 
 fn saving_text() -> String {
@@ -95,6 +95,24 @@ fn saving_text() -> String {
 
 fn is_running(model: &Model, id: &str) -> bool {
     model.games.values().any(|g| g.batch_id == id && g.phase.is_active())
+}
+
+/// The instance a new batch starts with: one in play now, else the one played last, else the first by name.
+fn recent(model: &Model) -> Option<String> {
+    if let Some(g) = model.games.values().find(|g| g.phase.is_active() && model.instance(&g.instance_id).is_some()) {
+        return Some(g.instance_id.clone());
+    }
+    let played = model.instances.iter().filter_map(|i| i.last_played().map(|at| (at, i))).max_by_key(|(at, _)| *at).map(|(_, i)| i.id.clone());
+    played.or_else(|| sorted(model).first().map(|i| i.id.clone()))
+}
+
+/// The name a new batch takes from its instance, made unique among the batches.
+fn name_for(model: &Model, instance: Option<&str>) -> String {
+    let taken: Vec<&str> = model.batches.iter().map(|b| b.name.as_str()).collect();
+    match instance.and_then(|id| model.instance(id)) {
+        Some(i) => forms::unique_name(&i.name, &taken),
+        None => forms::next_batch_name(&taken),
+    }
 }
 
 fn sorted(model: &Model) -> Vec<&Instance> {
@@ -122,7 +140,7 @@ fn delete(store: Store, batch: Batch) {
     spawn_in_window(async move {
         let doomed = batch.clone();
         match off_ui(move || remote::delete_batch(&doomed)).await {
-            Some(Ok(())) => {
+            Some(Ok(_)) => {
                 leave(store, &batch.id);
                 offer_restore(store, batch);
             }
@@ -228,22 +246,22 @@ struct Seed {
 impl Seed {
     fn new(store: Store, original: Option<&Batch>, preselect: Option<&String>, picked: Option<&HashSet<Uuid>>, memory_max: u32) -> Self {
         let model = store.model.peek();
-        let first = sorted(&model).first().map(|i| i.id.clone());
+        let first = recent(&model);
         let instance = match (original, preselect) {
             (Some(b), _) => Some(b.instance_id.clone()),
             (None, Some(id)) => Some(id.clone()).filter(|id| model.instance(id).is_some()).or(first),
             (None, None) => first,
         };
-        let taken: Vec<&str> = model.batches.iter().map(|b| b.name.as_str()).collect();
         let accounts = match (original, picked) {
             (Some(b), _) => b.accounts.iter().copied().collect(),
             (None, Some(picked)) => picked.clone(),
             (None, None) => model.accounts.iter().map(|a| a.id).collect(),
         };
         let own = instance.as_deref().and_then(|id| model.instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory_mb);
+        let name = original.map_or_else(|| name_for(&model, instance.as_deref()), |b| b.name.clone());
         Self {
             instance,
-            name: original.map_or_else(|| forms::next_batch_name(&taken), |b| b.name.clone()),
+            name,
             server: original.and_then(|b| b.server.clone()).unwrap_or_default(),
             accounts,
             memory: forms::memory_step(original.and_then(|b| b.memory_override).unwrap_or(own), 0, memory_max),
@@ -328,16 +346,11 @@ impl Flow {
         (name, server, version)
     }
 
-    fn follow_server(mut self, server: &str) {
-        self.clear_error();
+    fn follow_instance(mut self, instance: Option<&str>) {
         if self.name_auto.peek().is_none() {
             return;
         }
-        let next = {
-            let model = self.store.model.peek();
-            let taken: Vec<&str> = model.batches.iter().map(|b| b.name.as_str()).collect();
-            forms::batch_name_for(server, &taken)
-        };
+        let next = name_for(&self.store.model.peek(), instance);
         self.name_auto.set(Some(next.clone()));
         if *self.name.peek() != next {
             self.name.set(next);
@@ -357,6 +370,7 @@ impl Flow {
         }
         self.instance.set(id.clone());
         self.clear_error();
+        self.follow_instance(id.as_deref());
         if id.is_none() && !*self.asked.peek() {
             self.load_versions(true);
         }
@@ -577,7 +591,7 @@ impl Component for BatchSheet {
         let back = *store.back.read();
         use_side_effect_with_deps(&back, move |_| flow.retry_failed());
         let server_text = flow.server.read().clone();
-        use_side_effect_with_deps(&server_text, move |s| flow.follow_server(s));
+        use_side_effect_with_deps(&server_text, move |_| flow.clear_error());
         let name_text = flow.name.read().clone();
         use_side_effect_with_deps(&name_text, move |n| flow.name_typed(n));
 
@@ -598,7 +612,7 @@ impl Component for BatchSheet {
         let (choices, candidates, running, picked, instance_memory, caption_text, own_game) = {
             let model = store.model.read();
             let running = self.original.as_ref().is_some_and(|b| is_running(&model, &b.id));
-            let choices: Vec<(Option<String>, String)> = sorted(&model).into_iter().map(|i| (Some(i.id.clone()), format!("{} · {}", i.name, i.version_line()))).chain([(None, tr("Neue Instanz…"))]).collect();
+            let choices: Vec<(Option<String>, String)> = sorted(&model).into_iter().map(|i| (Some(i.id.clone()), i.name.clone())).chain([(None, tr("Neue Instanz…"))]).collect();
             let elsewhere: HashMap<Uuid, String> = model
                 .games
                 .values()

@@ -65,6 +65,7 @@ impl Component for Toolbar {
             Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
             Page::Settings => (tr("Einstellungen"), None),
+            Page::Trash => (tr("Papierkorb"), None),
         };
 
         let heading_col = match &page {

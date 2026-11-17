@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use super::content::{TRASHED, Trashed};
 use super::instance::{self, Instance};
 use super::origin::{KEEP, MODS_LOCK, RESET_META, ResetMeta};
-use super::{lock, store, worlds};
+use super::{batch, lock, store, worlds};
 
 /// How long anything stays in the Papierkorb.
 pub const KEPT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -28,6 +28,8 @@ pub enum What {
     Mods(Option<Trashed>),
     /// A world, screenshot or folder put away from `origin`, a `/` path inside the instance; `taken` when something is there now.
     File { origin: String, taken: bool },
+    /// A deleted batch, named by `name`; its instance is `instance`.
+    Batch,
 }
 
 /// One Papierkorb entry.
@@ -46,9 +48,20 @@ pub struct Item {
     pub size: u64,
 }
 
-/// Everything in the Papierkorb, newest first; an error when the instances folder cannot be read.
+/// Everything in the Papierkorb, newest first; an error when the instances or batches folder cannot be read.
 pub fn list() -> Result<Vec<Item>> {
-    list_in(&instance::instances_dir())
+    let mut out = list_in(&instance::instances_dir())?;
+    out.extend(batch::trashed()?.into_iter().map(|t| Item { what: What::Batch, instance: t.batch.instance_id, name: t.batch.name, entry: t.entry, at: t.at, size: t.size }));
+    out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.entry.cmp(&b.entry)));
+    Ok(out)
+}
+
+/// Deletes `item` for good.
+pub fn delete(item: &Item) -> Result<()> {
+    match item.what {
+        What::Batch => batch::purge(&item.entry),
+        _ => delete_in(&instance::instances_dir(), item),
+    }
 }
 
 fn read(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
@@ -123,15 +136,14 @@ pub(super) fn delete_in(root: &Path, item: &Item) -> Result<()> {
 
 /// Deletes everything in the Papierkorb; returns how many entries went and the first failure, if any.
 pub fn empty() -> (usize, Result<()>) {
-    let root = instance::instances_dir();
     let mut first = Ok(());
     let mut gone = 0;
-    let items = match list_in(&root) {
+    let items = match list() {
         Ok(items) => items,
         Err(e) => return (0, Err(e)),
     };
     for item in items {
-        match delete_in(&root, &item) {
+        match delete(&item) {
             Ok(()) => gone += 1,
             Err(e) if first.is_ok() => first = Err(e),
             Err(_) => {}
@@ -146,13 +158,14 @@ fn path_in(root: &Path, item: &Item) -> Result<PathBuf> {
         What::Reset(_) => item.entry.strip_suffix(SUFFIX).and_then(instance::parse_entry).is_some_and(|(id, _)| id == item.instance),
         What::Mods(_) => digits(&item.entry),
         What::File { .. } => item.entry.split_once('-').is_some_and(|(a, b)| digits(a) && digits(b)),
+        What::Batch => false,
     };
     if !valid || !instance::valid_id(&item.instance) {
         bail!("invalid trash entry {:?}", item.entry);
     }
     Ok(match item.what {
         What::Instance | What::Reset(_) => root.join(TRASH).join(&item.entry),
-        What::Mods(_) | What::File { .. } => root.join(&item.instance).join(TRASH).join(&item.entry),
+        What::Mods(_) | What::File { .. } | What::Batch => root.join(&item.instance).join(TRASH).join(&item.entry),
     })
 }
 

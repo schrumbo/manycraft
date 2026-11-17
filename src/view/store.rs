@@ -781,6 +781,9 @@ fn purge_trash() {
     if let Err(e) = instance::purge_stale(bin::KEPT) {
         eprintln!("trash: {e:#}");
     }
+    if let Err(e) = crate::core::batch::purge_stale(bin::KEPT) {
+        eprintln!("trash: {e:#}");
+    }
     if let Err(e) = content::purge_stale(bin::KEPT) {
         eprintln!("mod trash: {e:#}");
     }

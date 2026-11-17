@@ -148,6 +148,7 @@ fn key(item: &Item) -> String {
 fn look(item: &Item) -> (&'static str, String) {
     match &item.what {
         What::Instance => ("package", if item.name.is_empty() { tr("Instanz") } else { item.name.clone() }),
+        What::Batch => ("layers", if item.name.is_empty() { tr("Batch") } else { item.name.clone() }),
         What::Reset(_) => ("rotate-ccw", tr("Stand vor dem Zurücksetzen")),
         What::Mods(Some(t)) if t.files.len() == 1 => ("puzzle", t.files[0].trim_end_matches(".disabled").to_owned()),
         What::Mods(t) => {
@@ -185,7 +186,7 @@ fn undo_kind(item: &Item, cx: &App) -> Option<Kind> {
             Some(Kind::Files { name: title, undo: FileUndo::Restored { instance: item.instance.clone(), world, replaced: Some(item.entry.clone()) } })
         }
         What::File { .. } => Some(Kind::Files { name: title, undo: FileUndo::Deleted { instance: item.instance.clone(), entry: item.entry.clone() } }),
-        What::Reset(None) | What::Mods(None) => None,
+        What::Reset(None) | What::Mods(None) | What::Batch => None,
     }
 }
 

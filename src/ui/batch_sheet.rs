@@ -110,7 +110,7 @@ fn confirm_delete(batch: Batch, window: &mut Window, cx: &mut App, deleted: impl
         window,
         cx,
         trf("„%@“ löschen?", &[&batch.name]),
-        tr("Der Batch verschwindet aus der Liste. Instanz, Welten und Einstellungen bleiben erhalten. Solange Manycraft offen ist, kannst du das rückgängig machen."),
+        tr("Der Batch kommt 7 Tage in den Papierkorb. Instanz, Welten und Einstellungen bleiben erhalten."),
         tr("Löschen"),
         move |cx| delete_blocked(&blocked_id, cx),
         move |window, cx| {
@@ -126,7 +126,7 @@ fn delete(batch: Batch, cx: &mut App) {
     }
     let task = cx.background_spawn({
         let batch = batch.clone();
-        async move { remote::delete_batch(&batch) }
+        async move { remote::delete_batch(&batch).map(|_| ()) }
     });
     cx.spawn(async move |cx| {
         let result = task.await;

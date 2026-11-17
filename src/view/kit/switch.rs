@@ -42,9 +42,12 @@ impl Component for Switch {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let spot = use_spot(&self.id, "switch", &self.label, !self.disabled);
+        let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let on = self.on;
         let knob = frame::SWITCH_H - space::XXS * 2.;
-        let travel = frame::SWITCH_W - frame::SWITCH_H;
+        let stretch = if *pressed.read() { space::XS } else { 0. };
+        let travel = frame::SWITCH_W - frame::SWITCH_H - stretch;
         let slide = use_animation_with_dependencies(&on, |conf, on| {
             conf.on_creation(OnCreation::Finish);
             conf.on_change(OnChange::Rerun);
@@ -65,18 +68,35 @@ impl Component for Switch {
             .corner_radius(frame::SWITCH_H / 2.)
             .background(track)
             .opacity(if self.disabled { 0.45 } else { 1. })
-            .on_sized(spot)
-            .child(
+            .on_sized(spot);
+        let wash = if self.disabled { None } else if *pressed.read() { Some(t.press) } else if *hovered.read() { Some(t.hover) } else { None };
+        if let Some(wash) = wash {
+            s = s.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(frame::SWITCH_W)).height(Size::px(frame::SWITCH_H)).corner_radius(frame::SWITCH_H / 2.).background(wash));
+        }
+        s = s.child(
                 rect()
                     .position(Position::new_absolute().left(space::XXS + travel * at).top(space::XXS))
-                    .width(Size::px(knob))
+                    .width(Size::px(knob + stretch))
                     .height(Size::px(knob))
                     .corner_radius(knob / 2.)
                     .background(Color::WHITE)
                     .shadow(Shadow::from((0., 1., 2., 0., Color::BLACK.with_af32(0.25)))),
             );
         if !self.disabled {
-            s = s.cursor(CursorIcon::Pointer).on_all_press(move |e: Event<PressEventData>| {
+            s = s
+                .cursor(CursorIcon::Pointer)
+                .on_pointer_enter(move |_| hovered.set(true))
+                .on_pointer_leave(move |_| {
+                    hovered.set_if_modified(false);
+                    pressed.set_if_modified(false);
+                })
+                .on_mouse_down(move |e: Event<MouseEventData>| {
+                    if e.button == Some(MouseButton::Left) {
+                        pressed.set(true);
+                    }
+                })
+                .on_mouse_up(move |_| pressed.set_if_modified(false))
+                .on_all_press(move |e: Event<PressEventData>| {
                 if let PressEventData::Mouse(m) = &*e
                     && m.button != Some(MouseButton::Left)
                 {

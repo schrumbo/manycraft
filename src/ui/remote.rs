@@ -958,18 +958,31 @@ pub fn set_default_account(id: &str, account: Option<Uuid>) -> Result<()> {
     })
 }
 
-/// Deletes a batch; its instance with worlds, mods and settings stays.
-pub fn delete_batch(b: &Batch) -> Result<()> {
+/// Moves a batch to the Papierkorb; its instance with worlds, mods and settings stays. Returns its entry there.
+pub fn delete_batch(b: &Batch) -> Result<String> {
     saved(|| fleet::delete_batch(b))
 }
 
-/// Brings a deleted batch back as it was; refuses plainly when its instance is gone.
+/// Brings a deleted batch back as it was, from the Papierkorb when it lies there; refuses plainly when its instance is gone.
 pub fn restore_batch(b: &Batch) -> Result<()> {
     saved(|| {
         if !setup::load_all()?.iter().any(|i| i.id == b.instance_id) {
             return Err(gone(tr("Die Instanz dieses Batches gibt es nicht mehr.")));
         }
-        batch::restore(b)
+        match batch::trashed()?.into_iter().find(|t| t.batch.id == b.id) {
+            Some(t) => batch::untrash(&t.entry).map(|_| ()),
+            None => batch::restore(b),
+        }
+    })
+}
+
+/// Puts the batch of Papierkorb entry `entry` back; refuses plainly when its instance is gone.
+pub fn restore_trashed_batch(entry: &str, instance: &str) -> Result<()> {
+    saved(|| {
+        if !setup::load_all()?.iter().any(|i| i.id == instance) {
+            return Err(gone(tr("Die Instanz dieses Batches gibt es nicht mehr.")));
+        }
+        batch::untrash(entry).map(|_| ())
     })
 }
 

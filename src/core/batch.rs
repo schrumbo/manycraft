@@ -9,6 +9,7 @@ use uuid::Uuid;
 use super::{paths, store};
 
 const FILE: &str = "batch.json";
+const TRASH: &str = ".trash";
 const DEFAULT_JOIN_DELAY_MS: u32 = 2000;
 const MAX_JOIN_LINES: usize = 20;
 /// Longest line a chat message can hold.
@@ -218,6 +219,133 @@ pub(super) fn delete_in(root: &Path, batch: &Batch) -> Result<()> {
     Ok(())
 }
 
+/// A batch in the Papierkorb.
+#[derive(Clone, Debug)]
+pub struct Trashed {
+    pub batch: Batch,
+    /// Its folder name in the Papierkorb.
+    pub entry: String,
+    /// Unix milliseconds when it went there.
+    pub at: u64,
+    /// Bytes on disk.
+    pub size: u64,
+}
+
+/// Moves the batch's folder, with its file and the options its games share, to the Papierkorb; returns its entry there.
+pub fn trash(batch: &Batch) -> Result<String> {
+    trash_in(&batches_dir(), batch, super::instance::now_millis())
+}
+
+/// Puts the batch of Papierkorb entry `entry` back and returns it; refuses while a batch of its id exists.
+pub fn untrash(entry: &str) -> Result<Batch> {
+    untrash_in(&batches_dir(), entry)
+}
+
+/// The batches in the Papierkorb, newest first.
+pub fn trashed() -> Result<Vec<Trashed>> {
+    trashed_in(&batches_dir())
+}
+
+/// Deletes the batch of Papierkorb entry `entry` for good.
+pub fn purge(entry: &str) -> Result<()> {
+    purge_in(&batches_dir(), entry)
+}
+
+/// Deletes the batches in the Papierkorb older than `older_than` or stamped more than a day ahead of now.
+pub fn purge_stale(older_than: std::time::Duration) -> Result<()> {
+    purge_stale_in(&batches_dir(), super::instance::now_millis(), older_than)
+}
+
+fn entry_of(entry: &str) -> Result<&str> {
+    super::instance::parse_entry(entry).map(|(id, _)| id).with_context(|| format!("invalid trash entry {entry:?}"))
+}
+
+pub(super) fn trash_in(root: &Path, batch: &Batch, millis: u64) -> Result<String> {
+    if !super::instance::valid_id(&batch.id) {
+        bail!("invalid batch id {:?}", batch.id);
+    }
+    let entry = format!("{}-{millis}", batch.id);
+    let trash = root.join(TRASH);
+    let (from, to) = (root.join(&batch.id), trash.join(&entry));
+    if !store::exists(&from.join(FILE)) {
+        bail!(super::instance::Final(super::i18n::tr("Diesen Batch gibt es nicht mehr.")));
+    }
+    if std::fs::symlink_metadata(&to).is_ok() {
+        bail!("trash entry {entry} exists already");
+    }
+    std::fs::create_dir_all(&trash).with_context(|| format!("cannot create {}", trash.display()))?;
+    let _ = std::fs::remove_file(from.join(format!("{FILE}.lock")));
+    std::fs::rename(&from, &to).with_context(|| format!("cannot move {} to the trash", from.display()))?;
+    let _ = store::load::<Batch>(&from.join(FILE));
+    Ok(entry)
+}
+
+pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Batch> {
+    let id = entry_of(entry)?;
+    let from = root.join(TRASH).join(entry);
+    let Some(batch) = store::load::<Batch>(&from.join(FILE))?.filter(|b| b.id == id) else {
+        bail!(super::instance::Final(super::i18n::tr("Das liegt nicht mehr im Papierkorb.")));
+    };
+    let to = root.join(id);
+    if store::exists(&to.join(FILE)) {
+        bail!(super::instance::Final(super::i18n::tr("Diesen Batch gibt es schon wieder.")));
+    }
+    if std::fs::symlink_metadata(&to).is_ok() {
+        std::fs::remove_dir(&to).with_context(|| format!("{} is in the way", to.display()))?;
+    }
+    std::fs::rename(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
+    Ok(store::load::<Batch>(&to.join(FILE)).ok().flatten().unwrap_or(batch))
+}
+
+pub(super) fn trashed_in(root: &Path) -> Result<Vec<Trashed>> {
+    let trash = root.join(TRASH);
+    let entries = match std::fs::read_dir(&trash) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", trash.display())),
+    };
+    let mut out = Vec::new();
+    for e in entries.filter_map(Result::ok) {
+        let Some(entry) = e.file_name().to_str().map(str::to_owned) else { continue };
+        let Some((id, at)) = super::instance::parse_entry(&entry) else { continue };
+        let path = e.path();
+        let Ok(Some(batch)) = store::load::<Batch>(&path.join(FILE)) else { continue };
+        if batch.id != id {
+            continue;
+        }
+        out.push(Trashed { batch, at, size: super::worlds::size(&path), entry });
+    }
+    out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.entry.cmp(&b.entry)));
+    Ok(out)
+}
+
+pub(super) fn purge_in(root: &Path, entry: &str) -> Result<()> {
+    entry_of(entry)?;
+    super::instance::remove_dir(&root.join(TRASH).join(entry))
+}
+
+pub(super) fn purge_stale_in(root: &Path, now: u64, older_than: std::time::Duration) -> Result<()> {
+    let trash = root.join(TRASH);
+    let entries = match std::fs::read_dir(&trash) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", trash.display())),
+    };
+    let cutoff = now.saturating_sub(u64::try_from(older_than.as_millis()).unwrap_or(u64::MAX));
+    let ahead = now.saturating_add(super::instance::FUTURE_MILLIS);
+    let mut first = Ok(());
+    for e in entries.filter_map(Result::ok) {
+        let Some(at) = e.file_name().to_str().and_then(super::instance::parse_entry).map(|(_, at)| at) else { continue };
+        if (at < cutoff || at > ahead)
+            && let Err(err) = super::instance::remove_dir(&e.path())
+            && first.is_ok()
+        {
+            first = Err(err);
+        }
+    }
+    first
+}
+
 pub(super) fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
@@ -269,6 +397,53 @@ mod tests {
         save_in(dir.path(), &newer).unwrap();
         restore_in(dir.path(), &b).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![newer]);
+    }
+
+    #[test]
+    fn a_trashed_batch_keeps_its_folder_comes_back_whole_and_goes_after_a_week() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut b = Batch::new("Farm", "i1");
+        b.accounts = vec![Uuid::from_u128(1)];
+        save_in(root, &b).unwrap();
+        std::fs::write(root.join(&b.id).join("options.txt"), b"soundCategory_master:0.0").unwrap();
+        let entry = trash_in(root, &b, 1_000).unwrap();
+        assert!(load_all_in(root).unwrap().is_empty(), "the Papierkorb is no batch");
+        assert!(!root.join(&b.id).exists());
+        let listed = trashed_in(root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].entry == entry && listed[0].at == 1_000 && listed[0].batch == b && listed[0].size > 0);
+        assert!(trash_in(root, &b, 2_000).is_err(), "gone already");
+        assert_eq!(untrash_in(root, &entry).unwrap(), b);
+        assert_eq!(load_all_in(root).unwrap(), vec![b.clone()]);
+        assert_eq!(std::fs::read(root.join(&b.id).join("options.txt")).unwrap(), b"soundCategory_master:0.0");
+        assert!(trashed_in(root).unwrap().is_empty());
+        assert!(untrash_in(root, &entry).is_err());
+
+        let entry = trash_in(root, &b, 3_000).unwrap();
+        save_in(root, &Batch { name: "Neu".into(), ..b.clone() }).unwrap();
+        assert!(untrash_in(root, &entry).is_err(), "never over a batch of the same id");
+        assert_eq!(load_all_in(root).unwrap()[0].name, "Neu");
+        assert_eq!(trashed_in(root).unwrap().len(), 1, "the refused one stays in the Papierkorb");
+
+        let week = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+        purge_stale_in(root, 3_000 + 1_000, week).unwrap();
+        assert_eq!(trashed_in(root).unwrap().len(), 1);
+        purge_stale_in(root, 3_000 + 8 * 24 * 60 * 60 * 1000, week).unwrap();
+        assert!(trashed_in(root).unwrap().is_empty());
+        assert_eq!(load_all_in(root).unwrap().len(), 1, "purging leaves live batches alone");
+    }
+
+    #[test]
+    fn purging_one_entry_refuses_a_foreign_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(purge_in(dir.path(), "..").is_err());
+        assert!(purge_in(dir.path(), "../x-1").is_err());
+        let b = Batch::new("A", "i1");
+        save_in(dir.path(), &b).unwrap();
+        let entry = trash_in(dir.path(), &b, 5).unwrap();
+        purge_in(dir.path(), &entry).unwrap();
+        assert!(trashed_in(dir.path()).unwrap().is_empty());
     }
 
     #[test]
