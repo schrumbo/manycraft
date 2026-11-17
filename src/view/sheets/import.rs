@@ -24,6 +24,7 @@ use crate::view::kit::text::{line, para};
 use crate::view::install::{self, Source};
 use crate::view::kit::{fades, off_thread, off_ui, ring, use_arrows, use_theme};
 use crate::view::native;
+use crate::view::sheets::instance::Origin;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
@@ -39,12 +40,9 @@ const BLOCK_INNER: f32 = space::XS;
 const BOX: f32 = iconsize::M;
 const LOOKED_FOR: [Launcher; 7] = [Launcher::Prism, Launcher::MultiMc, Launcher::Modrinth, Launcher::CurseForge, Launcher::AtLauncher, Launcher::GdLauncher, Launcher::Vanilla];
 
-/// Opens the import sheet.
+/// Opens the new-instance sheet on Importieren.
 pub fn open(store: Store) {
-    if store.ui.sheet.peek().is_some() {
-        return;
-    }
-    sheet::open(store.ui, Import);
+    super::instance::import(store);
 }
 
 /// Installs the pack or Prism export at `path` as a new instance, with its progress on the instance's page.
@@ -222,9 +220,7 @@ impl Flow {
             match found {
                 Ok((libs, known)) => {
                     let all: Vec<String> = libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable()).map(Found::key).collect();
-                    if let [only] = all.as_slice() {
-                        self.chosen.write().insert(only.clone());
-                    }
+                    self.chosen.write().extend(all);
                     self.known.set(known);
                     self.libs.set(Some(libs));
                 }
@@ -386,8 +382,11 @@ fn primary_held(m: Modifiers) -> bool {
     m.contains(if cfg!(target_os = "macos") { Modifiers::META } else { Modifiers::CONTROL }) && !m.contains(Modifiers::SHIFT) && !m.contains(Modifiers::ALT)
 }
 
+/// The Importieren view of the new-instance sheet.
 #[derive(PartialEq)]
-struct Import;
+pub(super) struct Import {
+    pub origin: State<Origin>,
+}
 
 impl Component for Import {
     fn render(&self) -> impl IntoElement {
@@ -461,10 +460,15 @@ impl Component for Import {
         };
         let waiting = if loading { Some(tr("Suche Launcher …")) } else { scanning.then(|| tr("Der Ordner wird gerade durchsucht.")) };
         let folder = Button::new("import.folder", if scanning { tr("Suche …") } else { tr("Ordner wählen…") }).glyph(Icon::Folder).disabled(waiting).on_press(move |_| flow.choose_folder());
-        Card::new("import", tr("Aus anderem Launcher importieren"))
+        let body = rect()
+            .width(Size::fill())
+            .spacing(space::M)
+            .child(super::instance::origins(self.origin, None))
+            .child(para(&t, tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."), font::CALLOUT, t.text2))
+            .child(pick_body(flow, &t, &list, (scroll, viewport, content), list_max, loading));
+        Card::new("import", tr("Instanz erstellen"))
             .width(frame::SHEET)
-            .message(tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."))
-            .body(pick_body(flow, &t, &list, (scroll, viewport, content), list_max, loading))
+            .body(body)
             .leading(folder)
             .primary(Primary { label, disabled: blocked, danger: false, busy: false, run: EventHandler::new(move |_| flow.start()) })
             .primary_id("import.start")
@@ -665,7 +669,7 @@ fn options(flow: Flow, t: &Theme) -> Element {
         w.set(on);
     });
     if worlds {
-        worlds_line = worlds_line.hint(tr("Die Welten landen im Spielordner des Accounts, der die Instanz zuerst startet."));
+        worlds_line = worlds_line.hint(tr("Welten kommen mit und erscheinen nach dem ersten Start unter Welten."));
     }
     group(
         t,

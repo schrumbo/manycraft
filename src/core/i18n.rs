@@ -36,6 +36,14 @@ pub fn tr(key: &str) -> String {
     trf(key, &[])
 }
 
+/// Translates a German source string whose English text depends on `context`, kept in the English file as `key (context)`.
+pub fn trc(context: &str, key: &str) -> String {
+    match lang() {
+        Lang::En => tr(&format!("{key} ({context})")),
+        Lang::De => key.to_string(),
+    }
+}
+
 /// Translates and fills `%@` / `%lld` / `%1$@` placeholders in order.
 pub fn trf(key: &str, args: &[&dyn std::fmt::Display]) -> String {
     let args: Vec<String> = args.iter().map(ToString::to_string).collect();
@@ -105,6 +113,17 @@ mod tests {
     }
 
     fn keys_in(source: &str, found: &mut Vec<String>) {
+        let mut from = 0;
+        while let Some(at) = source[from..].find("trc(\"") {
+            from += at + "trc(\"".len();
+            let Some((context, end)) = literal_after(source, from) else { continue };
+            from = end;
+            let Some(open) = source[from..].find('"').filter(|i| source[from..from + i].trim_start_matches(',').trim().is_empty()) else { continue };
+            if let Some((key, end)) = literal_after(source, from + open + 1) {
+                found.push(format!("{key} ({context})"));
+                from = end;
+            }
+        }
         for call in ["tr(\"", "trf(\""] {
             let mut from = 0;
             while let Some(at) = source[from..].find(call) {
@@ -156,8 +175,8 @@ mod tests {
     #[test]
     fn scanner_reads_escaped_keys() {
         let mut found = Vec::new();
-        keys_in("a(tr(\"Sag \\\"Hallo\\\"\")); mytr(\"nein\"); trf(\"%@ Konten\", &[&1])", &mut found);
-        assert_eq!(found, ["Sag \"Hallo\"", "%@ Konten"]);
+        keys_in("a(tr(\"Sag \\\"Hallo\\\"\")); mytr(\"nein\"); trf(\"%@ Konten\", &[&1]); trc(\"Ort\", \"Neu\")", &mut found);
+        assert_eq!(found, ["Neu (Ort)", "Sag \"Hallo\"", "%@ Konten"]);
     }
 
     #[test]
