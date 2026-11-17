@@ -93,14 +93,22 @@ pub fn move_to(store: Store, to: String, keys: Vec<String>) {
     let name = store.model.peek().batch(&to).map(|b| b.name.clone()).unwrap_or_default();
     let target = to.clone();
     off("move-batch", move || {
-        let ids: Vec<Uuid> = groups.iter().flat_map(|(_, ids)| ids.iter().copied()).collect();
+        let mut ids: Vec<Uuid> = groups.iter().flat_map(|(_, ids)| ids.iter().copied()).collect();
+        ids.sort();
+        ids.dedup();
         let added = remote::join_batch(&target, &ids)?;
         let mut left = Vec::new();
         for (from, ids) in &groups {
             match remote::leave_batch(from, ids) {
                 Ok(places) if places.is_empty() => {}
                 Ok(places) => left.push((from.clone(), places)),
-                Err(e) => return Err(e),
+                Err(e) => {
+                    let back = remote::leave_batch(&target, &added).and_then(|_| left.iter().try_for_each(|(from, places)| remote::rejoin_batch(from, places)));
+                    return Err(match back {
+                        Ok(()) => e,
+                        Err(b) => b.context(tr("Ein Teil wurde verschoben und ließ sich nicht zurücknehmen. Prüfe die Batches.")),
+                    });
+                }
             }
         }
         Ok((added, left))

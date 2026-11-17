@@ -397,16 +397,6 @@ impl Component for GridPage {
                         .child(shelf::Shelf { width: (w - t.grid_pad * 2.).max(0.), gap }),
                 );
             }
-            for (i, key) in keys.iter().enumerate().take(last).skip(first) {
-                let Some(game) = m.games.get(key) else { continue };
-                let (x, y) = place(i);
-                page = page.child(
-                    rect()
-                        .key(key)
-                        .position(Position::new_absolute().left(x).top(y + shelf_h - at))
-                        .child(Tile { key: key.clone(), name: game.name.clone(), width: grid.tile_w, height: grid.tile_h, index: i }),
-                );
-            }
             if let (Some(groups), Some(s)) = (&groups, &sections) {
                 let band_w = grid.columns.max(1) as f32 * (grid.tile_w + gap) - gap;
                 for (g, group) in groups.iter().enumerate() {
@@ -429,6 +419,16 @@ impl Component for GridPage {
                         }),
                     );
                 }
+            }
+            for (i, key) in keys.iter().enumerate().take(last).skip(first) {
+                let Some(game) = m.games.get(key) else { continue };
+                let (x, y) = place(i);
+                page = page.child(
+                    rect()
+                        .key(key)
+                        .position(Position::new_absolute().left(x).top(y + shelf_h - at))
+                        .child(Tile { key: key.clone(), name: game.name.clone(), width: grid.tile_w, height: grid.tile_h, index: i }),
+                );
             }
             let open = ui.history.read().clone();
             if let Some((key, i)) = open.and_then(|k| keys.iter().position(|x| *x == k).map(|i| (k, i))) {
@@ -469,7 +469,7 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
     } else if *filter == Filter::Attention {
         (Icon::Check, tr("Alles läuft"), tr("Kein Account braucht dich gerade."))
     } else if let Some((_, name)) = &empty_batch {
-        (Icon::Layers, trf("„%@“ ist leer", &[name]), tr("Nimm Accounts auf, die in diesem Batch spielen sollen."))
+        (Icon::Layers, trf("„%@“ ist leer", &[name]), tr("Wähle Accounts, die in diesem Batch spielen sollen."))
     } else if unstarted {
         (Icon::Grid, tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."))
     } else {

@@ -109,7 +109,7 @@ impl Component for Header {
                 a11y.request_focus();
                 toggle();
             });
-        r = r.background(if self.stuck { t.surface } else if *hovered.read() { t.hover } else { Color::TRANSPARENT });
+        r = r.background(if *hovered.read() { t.hover } else if self.stuck { t.surface } else { Color::TRANSPARENT });
         if let Some(border) = ring(&t, focus()) {
             r = r.border(border);
         }

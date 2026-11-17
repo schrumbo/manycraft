@@ -208,11 +208,11 @@ impl Component for Card {
         }
         let text = rect()
             .width(Size::flex(1.))
-            .spacing(2.)
+            .spacing(space::XXS)
             .child(body(&t, e.name.clone()).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis))
             .child(secondary(&t, status).max_lines(1).text_overflow(TextOverflow::Ellipsis));
         c = c.child(InstanceIcon { id: e.id.clone(), name: e.name.clone(), picture: e.picture.clone(), side }).child(text).content(Content::flex());
-        if *hovered.read() || focus() == Focus::Keyboard {
+        if *hovered.read() {
             let id = e.id.clone();
             let action = match e.running.clone() {
                 Some(key) => Button::icon(format!("shelf.{id}.stop"), Icon::Stop, tr("Stoppen")).not_focusable().tip(trf("„%@“ stoppen", &[&e.name])).on_press(move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))),

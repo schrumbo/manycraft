@@ -93,7 +93,7 @@ pub fn forget(store: Store, id: Option<u64>) {
 pub fn ends(event: &Event) -> bool {
     matches!(
         event,
-        Event::Start(_) | Event::StartMany(_) | Event::StartBatch(_) | Event::StartAll | Event::Restart(_) | Event::Play(_) | Event::PlayInstance { .. } | Event::ReconnectMany(_) | Event::StartAnyway(_)
+        Event::Start(_) | Event::StartMany(_) | Event::StartBatch(_) | Event::StartAll | Event::Restart(_) | Event::PlayInstance { .. } | Event::QuickPlay { .. } | Event::ReconnectMany(_) | Event::StartAnyway(_)
     )
 }
 

@@ -152,9 +152,17 @@ impl Component for SelectionBar {
                         more.push(Item::Separator);
                     }
                     if several {
-                        more.push(Item::new("selection.more.move", tr("In Batch verschieben…"), move |_| super::moves::ask_move(store, move_keys.clone(), None)));
+                        let mut item = Item::new("selection.more.move", tr("In Batch verschieben…"), move |_| super::moves::ask_move(store, move_keys.clone(), None));
+                        if let Some(s) = Command::MoveSelected.shortcut() {
+                            item = item.shortcut(s.label());
+                        }
+                        more.push(item);
                     }
-                    more.push(Item::new("selection.more.leave", tr("Aus Batch nehmen"), move |_| super::moves::leave(store, leave_keys.clone())));
+                    let mut item = Item::new("selection.more.leave", tr("Aus Batch nehmen"), move |_| super::moves::leave(store, leave_keys.clone()));
+                    if let Some(s) = Command::LeaveSelected.shortcut() {
+                        item = item.shortcut(s.label());
+                    }
+                    more.push(item);
                 }
             }
             if !more.is_empty() {
