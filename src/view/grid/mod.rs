@@ -415,14 +415,17 @@ impl Component for GridPage {
                         continue;
                     }
                     let y = head.max(0.).min(end - groups::HEADER);
+                    let stuck = y > head;
+                    let (left, width, inset) = if stuck { (0., w, grid.left) } else { (grid.left, band_w, 0.) };
                     page = page.child(
-                        rect().key(&format!("group.{}", group.id)).position(Position::new_absolute().left(grid.left).top(y)).layer(Layer::Relative(4)).child(groups::Header {
+                        rect().key(&format!("group.{}", group.id)).position(Position::new_absolute().left(left).top(y)).layer(Layer::Relative(super::theme::frame::FADE_LAYER)).child(groups::Header {
                             id: group.id.clone(),
                             name: group.name.clone(),
                             line: count_line(&m, &group.keys),
                             folded: group.folded,
-                            width: band_w,
-                            stuck: y > head,
+                            width,
+                            inset,
+                            stuck,
                         }),
                     );
                 }
@@ -432,7 +435,7 @@ impl Component for GridPage {
                 let (x, y) = place(i);
                 let tile_top = y + shelf_h - at;
                 let below = tile_top + grid.tile_h + space::XS;
-                let left = x.min((w - HISTORY_ROOM * 1.25).max(0.));
+                let left = x.min((w - tile::HISTORY_W - space::M).max(0.));
                 let at_y = if h - below >= HISTORY_ROOM || tile_top < HISTORY_ROOM { Position::new_absolute().left(left).top(below) } else { Position::new_absolute().left(left).bottom(h - tile_top + space::XS) };
                 page = page.child(rect().position(at_y).child(History { key }));
             }
@@ -452,6 +455,10 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
     if *filter == Filter::All && show == Show::All && !searching && welcome::due(m) {
         return welcome::Welcome.into_element();
     }
+    let empty_batch = match filter {
+        Filter::Batch(id) if !m.accounts.is_empty() => m.batch(id).map(|b| (b.id.clone(), b.name.clone())),
+        _ => None,
+    };
     let unstarted = *filter == Filter::All && m.batches.is_empty() && !m.accounts.is_empty() && !m.games.values().any(|g| g.alone() && g.phase.is_active());
     let (glyph, title, text) = if searching {
         (Icon::Search, tr("Nichts gefunden"), trf("Zu „%@“ passt keiner.", &[&search.trim()]))
@@ -461,6 +468,8 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
         (Icon::Check, tr("Nichts gestoppt"), tr("Alle sind wach."))
     } else if *filter == Filter::Attention {
         (Icon::Check, tr("Alles läuft"), tr("Kein Account braucht dich gerade."))
+    } else if let Some((_, name)) = &empty_batch {
+        (Icon::Layers, trf("„%@“ ist leer", &[name]), tr("Nimm Accounts auf, die in diesem Batch spielen sollen."))
     } else if unstarted {
         (Icon::Grid, tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."))
     } else {
@@ -474,6 +483,11 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
         col.child(Button::new("grid.empty.every", tr("Alle anzeigen")).tall().on_press(move |_| ui.show.set(Show::All)))
     } else if *filter == Filter::Attention {
         col.child(Button::new("grid.empty.all", tr("Alle anzeigen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+    } else if let Some((id, _)) = empty_batch {
+        let want = commands::Want::EditBatch(id);
+        col.child(Button::new("grid.empty.pick", tr("Accounts wählen…")).glyph(Icon::UserPlus).primary().tall().disabled(commands::want_blocked(&want)).on_press(move |_| {
+            commands::want(store, want.clone());
+        }))
     } else if unstarted {
         let (label, want, command) = if m.instances.is_empty() { (tr("Neue Instanz"), commands::Want::NewInstance, commands::Command::NewInstance) } else { (tr("Neuer Batch…"), commands::Want::NewBatch, commands::Command::NewBatch) };
         col.child(Button::new("grid.empty.start", label).glyph(Icon::Plus).primary().tall().disabled(commands::want_blocked(&want)).tip(command.tip()).on_press(move |_| {

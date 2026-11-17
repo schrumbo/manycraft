@@ -376,6 +376,7 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
             _ => {}
         }
     }
+    super::data::drop_left(m);
     m.order_seq += 1;
     out.push(Effect::Redraw(Redraw::All));
     ready.retain(|k| !keys.contains(k));

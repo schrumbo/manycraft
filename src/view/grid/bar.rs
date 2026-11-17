@@ -13,10 +13,15 @@ use crate::view::icons::Icon;
 use crate::view::kit::Bounds;
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
+use crate::view::kit::menu::Item;
+use crate::view::kit::more::More;
 use crate::view::kit::text::line;
 use crate::view::kit::use_theme;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{font, frame, space};
+
+const WIDE: f32 = 1180.;
+const MID: f32 = 860.;
 
 thread_local! {
     static MESSAGE: std::cell::Cell<Option<AccessibilityId>> = const { std::cell::Cell::new(None) };
@@ -97,9 +102,23 @@ impl Component for SelectionBar {
                 )
                 .child(Button::icon("selection.message.close", Icon::Close, tr("Nachricht schließen")).plain().on_press(move |_| ui.message.set(false)));
         } else {
-            for o in offers {
+            let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR } else { 0. };
+            let inline = if room >= WIDE { usize::MAX } else if room >= MID { offers.len() } else { 2 };
+            let mut more = Vec::new();
+            for (i, o) in offers.into_iter().enumerate() {
                 let id = o.id;
                 let label = if o.id == "message" { o.name.clone() } else { o.label.clone() };
+                let run = move |_| match id {
+                    "start" => Command::StartSelected.run(store),
+                    "stop" => Command::StopSelected.run(store),
+                    "restart" => Command::RestartSelected.run(store),
+                    "reconnect" => Command::ReconnectSelected.run(store),
+                    _ => Command::MessageSelected.run(store),
+                };
+                if i >= inline {
+                    more.push(Item::new(format!("selection.more.{id}"), label, run).disabled(o.able == 0));
+                    continue;
+                }
                 let mut b = Button::new(format!("selection.{id}"), label).plain();
                 if o.able == 0 {
                     b = b.disabled(Some(match id {
@@ -113,28 +132,34 @@ impl Component for SelectionBar {
                 if let Some(note) = o.note.clone() {
                     b = b.tip(note);
                 }
-                row = row.child(b.on_press(move |_| match id {
-                    "start" => Command::StartSelected.run(store),
-                    "stop" => Command::StopSelected.run(store),
-                    "restart" => Command::RestartSelected.run(store),
-                    "reconnect" => Command::ReconnectSelected.run(store),
-                    _ => Command::MessageSelected.run(store),
-                }));
+                row = row.child(b.on_press(run));
             }
-        }
-        if !open && super::moves::batched(store, &keys) {
-            let several = store.model.peek().batches.len() > 1;
-            row = row.child(rect().width(Size::px(1.)).height(Size::px(space::L)).background(t.separator));
-            if several {
-                let move_keys = keys.clone();
-                row = row.child(
-                    rect()
-                        .on_sized(move |e: Event<SizedEventData>| move_at.set_if_modified(Bounds::of(&e)))
-                        .child(Button::new("selection.move", tr("In Batch verschieben…")).plain().tip(Command::MoveSelected.tip()).on_press(move |_| super::moves::ask_move(store, move_keys.clone(), Some(*move_at.peek())))),
-                );
+            if super::moves::batched(store, &keys) {
+                let several = store.model.peek().batches.len() > 1;
+                let (move_keys, leave_keys) = (keys.clone(), keys.clone());
+                if inline == usize::MAX {
+                    row = row.child(rect().width(Size::px(1.)).height(Size::px(space::L)).background(t.separator));
+                    if several {
+                        row = row.child(
+                            rect()
+                                .on_sized(move |e: Event<SizedEventData>| move_at.set_if_modified(Bounds::of(&e)))
+                                .child(Button::new("selection.move", tr("In Batch verschieben…")).plain().tip(Command::MoveSelected.tip()).on_press(move |_| super::moves::ask_move(store, move_keys.clone(), Some(*move_at.peek())))),
+                        );
+                    }
+                    row = row.child(Button::new("selection.leave", tr("Aus Batch nehmen")).plain().tip(Command::LeaveSelected.tip()).on_press(move |_| super::moves::leave(store, leave_keys.clone())));
+                } else {
+                    if !more.is_empty() {
+                        more.push(Item::Separator);
+                    }
+                    if several {
+                        more.push(Item::new("selection.more.move", tr("In Batch verschieben…"), move |_| super::moves::ask_move(store, move_keys.clone(), None)));
+                    }
+                    more.push(Item::new("selection.more.leave", tr("Aus Batch nehmen"), move |_| super::moves::leave(store, leave_keys.clone())));
+                }
             }
-            let leave_keys = keys.clone();
-            row = row.child(Button::new("selection.leave", tr("Aus Batch nehmen")).plain().tip(Command::LeaveSelected.tip()).on_press(move |_| super::moves::leave(store, leave_keys.clone())));
+            if !more.is_empty() {
+                row = row.child(More { id: "selection.more".into(), items: more });
+            }
         }
         row = row.child(rect().width(Size::px(1.)).height(Size::px(space::L)).background(t.separator)).child(
             Button::icon("selection.clear", Icon::Close, tr("Auswahl aufheben")).plain().on_press(move |_| ui.selection.set(BTreeSet::new())),

@@ -97,9 +97,9 @@ fn is_running(model: &Model, id: &str) -> bool {
     model.games.values().any(|g| g.batch_id == id && g.phase.is_active())
 }
 
-/// The instance a new batch starts with: one in play now, else the one played last, else the first by name.
+/// The instance a new batch starts with: one played alone now, else the one played last, else the first by name.
 fn recent(model: &Model) -> Option<String> {
-    if let Some(g) = model.games.values().find(|g| g.phase.is_active() && model.instance(&g.instance_id).is_some()) {
+    if let Some(g) = model.games.values().find(|g| g.alone() && g.phase.is_active() && model.instance(&g.instance_id).is_some()) {
         return Some(g.instance_id.clone());
     }
     let played = model.instances.iter().filter_map(|i| i.last_played().map(|at| (at, i))).max_by_key(|(at, _)| *at).map(|(_, i)| i.id.clone());
@@ -786,7 +786,7 @@ fn confirm_card(flow: Flow, batch: Batch, running: bool) -> Element {
 
 fn preset_line(t: &Theme, mut flow: Flow, picked: usize, free: usize, lock: &Option<String>) -> Element {
     let text = trf("%1$lld von %2$lld vorgewählt, mehr passen nicht in den Arbeitsspeicher.", &[&picked, &free]);
-    let all = Button::new("batch.preset.all", tr("Alle wählen")).plain().disabled(lock.clone()).on_press(move |_| {
+    let all = Button::new("batch.preset.all", trf("Alle %lld wählen", &[&free])).plain().disabled(lock.clone()).on_press(move |_| {
         let m = flow.store.model.peek();
         let ids: HashSet<Uuid> = m.accounts.iter().map(|a| a.id).filter(|id| !m.batches.iter().any(|b| b.accounts.contains(id))).collect();
         drop(m);

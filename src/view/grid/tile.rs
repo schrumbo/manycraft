@@ -467,7 +467,7 @@ impl Component for History {
                     .child(line(&t, words::when(mass.at), font::CALLOUT, t.text3).width(Size::px(HISTORY_WHEN)).max_lines(1))
                     .child(line(&t, tr("Gestoppt"), font::CALLOUT, t.text1).font_weight(FontWeight::MEDIUM).max_lines(1))
                     .child(line(&t, with, font::CALLOUT, t.text2).width(Size::flex(1.)).max_lines(1).text_overflow(TextOverflow::Ellipsis))
-                    .child(Button::new(format!("history.{}.undo", self.key), tr("Rückgängig")).plain().glyph(Icon::Undo).tip(trf("Rückgängig: %@", &[&mass.what])).on_press(move |_| super::mass::undo(store)))
+                    .child(Button::new(format!("history.{}.undo", self.key), tr("Rückgängig")).plain().tip(trf("Rückgängig: %@", &[&mass.what])).on_press(move |_| super::mass::undo(store)))
                     .content(Content::flex()),
             );
         }
@@ -499,7 +499,7 @@ impl Component for History {
     }
 }
 
-const HISTORY_W: f32 = 320.;
+pub(super) const HISTORY_W: f32 = 360.;
 const HISTORY_WHEN: f32 = 72.;
 
 fn primary_of(store: Store, key: &str) -> Option<Primary> {

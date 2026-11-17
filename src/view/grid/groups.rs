@@ -56,6 +56,8 @@ pub struct Header {
     pub line: Option<String>,
     pub folded: bool,
     pub width: f32,
+    /// How far the header's content starts in, so a stuck header spanning the page lines up with the tiles.
+    pub inset: f32,
     pub stuck: bool,
 }
 
@@ -91,8 +93,8 @@ impl Component for Header {
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::XS)
-            .padding((0., space::XS))
-            .corner_radius(t.shape.small + 2.)
+            .padding((0., space::XS, 0., space::XS + self.inset))
+            .corner_radius(if self.stuck { 0. } else { t.shape.small + 2. })
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
             .on_pointer_enter(move |_| hovered.set(true))

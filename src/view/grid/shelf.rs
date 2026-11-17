@@ -1,14 +1,18 @@
 //! The "Zuletzt gespielt" shelf over the grid: one card per instance played alone, running first, then the most recently
 //! played. A card opens its instance, offers play or stop while hovered or focused, and its instance menu on right-click.
 
-use std::time::Duration;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use freya::prelude::*;
+use uuid::Uuid;
 
 use super::words;
 use crate::app::event::Event as AppEvent;
 use crate::app::model::Model;
 use crate::core::i18n::{tr, trf};
+use crate::core::instance::Instance;
 use crate::view::drive::use_spot;
 use crate::view::icons::Icon;
 use crate::view::instance::InstanceIcon;
@@ -37,21 +41,42 @@ struct Entry {
     at: Option<u64>,
 }
 
+thread_local! {
+    static PLAYED: RefCell<HashMap<(String, Uuid), (Instant, Option<u64>)>> = RefCell::new(HashMap::new());
+}
+
+/// When `account` last played `instance`, from its game log, read at most once a minute.
+fn played(instance: &Instance, account: Uuid) -> Option<u64> {
+    let key = (instance.id.clone(), account);
+    PLAYED.with(|p| {
+        if let Some((read, at)) = p.borrow().get(&key)
+            && read.elapsed() < Duration::from_secs(60)
+        {
+            return *at;
+        }
+        let at = std::fs::metadata(instance.game_dir(account).join("logs").join("latest.log")).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+        p.borrow_mut().insert(key, (Instant::now(), at));
+        at
+    })
+}
+
 fn entries(m: &Model) -> Vec<Entry> {
     let mut list: Vec<Entry> = m
         .instances
         .iter()
         .filter_map(|i| {
-            let last = m.solo_games(&i.id).max_by_key(|g| (g.phase.is_active(), words::last_change(&g.key, m).map_or(0, |e| e.at)))?;
-            let active = last.phase.is_active();
+            let last = m.solo_games(&i.id).max_by_key(|g| (g.phase.is_active(), words::last_change(&g.key, m).map_or(0, |e| e.at)));
+            let account = last.map(|g| g.account_id).or(i.last_account)?;
+            let name = m.account(account)?.name.clone();
+            let active = last.is_some_and(|g| g.phase.is_active());
             Some(Entry {
                 id: i.id.clone(),
                 name: i.name.clone(),
                 picture: i.icon_path(),
-                running: active.then(|| last.key.clone()),
-                starting: active && last.phase.waiting(),
-                account: Some(last.name.clone()),
-                at: words::last_change(&last.key, m).map(|e| e.at),
+                running: last.filter(|_| active).map(|g| g.key.clone()),
+                starting: last.is_some_and(|g| active && g.phase.waiting()),
+                account: Some(name),
+                at: last.and_then(|g| words::last_change(&g.key, m)).map(|e| e.at).or_else(|| played(i, account)),
             })
         })
         .collect();
@@ -59,9 +84,9 @@ fn entries(m: &Model) -> Vec<Entry> {
     list
 }
 
-/// How many instances the shelf shows.
+/// How many instances the shelf shows: those played alone, now or before.
 pub fn count(m: &Model) -> usize {
-    m.instances.iter().filter(|i| m.solo_games(&i.id).next().is_some()).count()
+    m.instances.iter().filter(|i| m.solo_games(&i.id).next().map(|g| g.account_id).or(i.last_account).is_some_and(|a| m.account(a).is_some())).count()
 }
 
 /// The height the shelf takes over the grid with `count` cards, its title and the gap under it included.
@@ -156,8 +181,8 @@ impl Component for Card {
             .corner_radius(t.shape.tile)
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_all_press(move |ev: Event<PressEventData>| {
                 if let PressEventData::Mouse(m) = &*ev
