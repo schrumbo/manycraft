@@ -147,7 +147,11 @@ impl Component for Toolbar {
         if page == Page::Chat {
             bar = bar.child(crate::view::chat::Tools { room });
         }
-        bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)))
+        bar = bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)));
+        if let Page::Instance(id) = &page {
+            bar = bar.child(instance::Hero { id: id.clone(), room });
+        }
+        bar
     }
 }
 

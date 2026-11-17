@@ -50,6 +50,8 @@ pub struct LaunchSpec {
     pub offline_name: String,
     pub memory_mb: u32,
     pub server: Option<String>,
+    /// The folder of a world in `saves` the game opens right away.
+    pub world: Option<String>,
     pub extra_jvm: Vec<String>,
     pub extra_game: Vec<String>,
     pub env: SecretEnv,
@@ -90,7 +92,11 @@ impl fmt::Debug for Arguments {
 
 impl LaunchSpec {
     fn features(&self) -> Vec<&'static str> {
-        if self.server.is_some() { vec!["has_quick_plays_support", "is_quick_play_multiplayer"] } else { Vec::new() }
+        match (&self.server, &self.world) {
+            (Some(_), _) => vec!["has_quick_plays_support", "is_quick_play_multiplayer"],
+            (None, Some(_)) => vec!["has_quick_plays_support", "is_quick_play_singleplayer"],
+            (None, None) => Vec::new(),
+        }
     }
 
     fn variables(&self) -> HashMap<&'static str, String> {
@@ -129,6 +135,7 @@ impl LaunchSpec {
             ("launcher_version", env!("CARGO_PKG_VERSION").to_owned()),
             ("quickPlayPath", self.game_dir.join("quickPlay").join("java").join("manycraft.json").to_string_lossy().into_owned()),
             ("quickPlayMultiplayer", self.server.clone().unwrap_or_default()),
+            ("quickPlaySingleplayer", self.world.clone().unwrap_or_default()),
         ])
     }
 
@@ -279,6 +286,7 @@ fn run(args: &[String]) -> Result<i32> {
         offline_name,
         memory_mb: 4096,
         server: options.server,
+        world: None,
         extra_jvm: Vec::new(),
         extra_game: Vec::new(),
         env: SecretEnv::default(),
@@ -331,6 +339,7 @@ mod tests {
             offline_name: "Dev".into(),
             memory_mb: 3072,
             server: server.map(str::to_owned),
+            world: None,
             extra_jvm: vec!["-Dextra=1".into()],
             extra_game: vec!["--extra".into()],
             env: SecretEnv(vec![("MANYCRAFT_TOKEN".into(), TOKEN.into())]),
@@ -422,6 +431,16 @@ mod tests {
         assert_eq!(after(with.as_slice(), "--quickPlayMultiplayer"), "example.org:25565");
         assert!(after(with.as_slice(), "--quickPlayPath").ends_with("manycraft.json"));
         assert!(!without.as_slice().contains(&"--quickPlayPath".to_owned()));
+        assert!(!with.as_slice().contains(&"--quickPlaySingleplayer".to_owned()));
+    }
+
+    #[test]
+    fn a_world_opens_by_quick_play() {
+        let mut world = spec(None, None);
+        world.world = Some("New World".into());
+        let args = world.arguments().unwrap();
+        assert_eq!(after(args.as_slice(), "--quickPlaySingleplayer"), "New World");
+        assert!(!args.as_slice().contains(&"--quickPlayMultiplayer".to_owned()));
     }
 
     #[test]

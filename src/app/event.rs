@@ -11,7 +11,7 @@ use super::model::Phase;
 use crate::core::account::Account;
 use crate::core::batch::Batch;
 use crate::core::fit::Memory;
-use crate::core::fleet::Adoption;
+use crate::core::fleet::{Adoption, Quick};
 use crate::core::history::Log;
 use crate::core::instance::Instance;
 use crate::core::ipc::{FromMod, HotkeyAction};
@@ -144,6 +144,10 @@ pub enum Event {
     Play(String),
     /// Plays `instance` alone as a normal game window, with `account` or the one it plays with by default.
     PlayInstance { instance: String, account: Option<Uuid> },
+    /// Plays `instance` alone with `account` and opens `quick`, a world or server, right away.
+    QuickPlay { instance: String, account: Uuid, quick: Quick },
+    /// Brings the window of game `key`, played alone, to the front.
+    Raise(String),
     /// Makes this the account that plays instances alone that name none.
     ChooseAccount(Uuid),
     /// Makes `account` the one `instance` always plays with alone; `None` leaves it to the active account.

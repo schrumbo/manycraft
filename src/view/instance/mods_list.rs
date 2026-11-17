@@ -251,9 +251,9 @@ pub fn count_mods(n: usize) -> String {
 }
 
 /// The line above the list: how many, how many are off, how many are doubled.
-pub fn count_text(data: &Data, shown: usize, filtering: bool) -> String {
+pub fn count_text(data: &Data, shown: usize, filtering: bool, started: bool) -> String {
     let total = data.entries().len();
-    let coming = if data.scanned { data.entries().iter().filter(|e| !e.on_disk && e.enabled).count() } else { 0 };
+    let coming = if data.scanned && started { data.entries().iter().filter(|e| !e.on_disk && e.enabled).count() } else { 0 };
     if filtering {
         trf("%lld von %@", &[&shown, &count_mods(total)])
     } else if coming > 0 && coming == total {
@@ -275,17 +275,16 @@ pub fn count_text(data: &Data, shown: usize, filtering: bool) -> String {
     }
 }
 
-/// The second line of a row and whether it warns.
+/// The second line of a row, its version or else its file, and whether it warns.
 pub fn caption(data: &Data, e: &Entry) -> (String, bool) {
     if let Some(twin) = data.analysis.twin.get(&e.file).and_then(|f| data.entry(f)) {
         let shown = twin.version().map_or_else(|| twin.file.clone(), str::to_owned);
         (trf("Doppelt: auch %@ ist da.", &[&shown]), true)
     } else if let Some(missing) = data.analysis.needs.get(&e.file) {
         (trf("Braucht %@, ist aus.", &[&listing(&data.names(missing))]), true)
-    } else if !e.enabled {
-        (trf("Aus · %@", &[&e.file]), false)
     } else {
-        (e.file.clone(), false)
+        let what = e.version().map_or_else(|| e.file.clone(), str::to_owned);
+        (if e.enabled { what } else { trf("Aus · %@", &[&what]) }, false)
     }
 }
 
@@ -398,7 +397,7 @@ mod tests {
         let (text, warn) = caption(&d, d.entry("mod-1.jar").unwrap());
         assert!(warn);
         assert_eq!(text, "Doppelt: auch 2.0 ist da.");
-        assert_eq!(count_text(&d, 3, false), "3 Mods · 1 doppelt");
+        assert_eq!(count_text(&d, 3, false, true), "3 Mods · 1 doppelt");
     }
 
     #[test]
@@ -441,8 +440,8 @@ mod tests {
         let mut off = listed("b.jar", "B");
         off.enabled = false;
         let d = data(vec![listed("a.jar", "A"), off]);
-        assert_eq!(count_text(&d, 2, false), "2 Mods · 1 aus");
-        assert_eq!(count_text(&d, 1, true), "1 von 2 Mods");
+        assert_eq!(count_text(&d, 2, false, true), "2 Mods · 1 aus");
+        assert_eq!(count_text(&d, 1, true, true), "1 von 2 Mods");
     }
 
     #[test]
@@ -450,9 +449,10 @@ mod tests {
         let mut missing = listed("a.jar", "A");
         missing.on_disk = false;
         let d = data(vec![missing.clone()]);
-        assert_eq!(count_text(&d, 1, false), "1 Mod kommt beim nächsten Start dazu");
+        assert_eq!(count_text(&d, 1, false, true), "1 Mod kommt beim nächsten Start dazu");
+        assert_eq!(count_text(&d, 1, false, false), "1 Mod", "nothing to say before the first start");
         let d = data(vec![missing, listed("b.jar", "B")]);
-        assert_eq!(count_text(&d, 2, false), "2 Mods · 1 kommt beim nächsten Start dazu");
+        assert_eq!(count_text(&d, 2, false, true), "2 Mods · 1 kommt beim nächsten Start dazu");
     }
 
     #[test]

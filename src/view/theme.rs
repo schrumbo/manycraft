@@ -42,6 +42,8 @@ pub mod frame {
     pub const PALETTE: f32 = 560.;
     pub const PALETTE_ROW: f32 = 36.;
     pub const PALETTE_ROWS: usize = 9;
+    /// The widest the account name on the chip beside Play gets.
+    pub const CHIP_NAME: f32 = 160.;
     pub const MENU: f32 = 220.;
     pub const MENU_ROW: f32 = 26.;
     /// Rows a long menu shows before it scrolls.

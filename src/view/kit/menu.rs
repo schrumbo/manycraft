@@ -126,6 +126,8 @@ impl Menu {
     }
 }
 
+const WIDE_GLYPH: f32 = 0.8;
+
 static OPENED: AtomicU64 = AtomicU64::new(0);
 
 /// Opens `menu`, closing any other.
@@ -135,10 +137,13 @@ pub fn open(mut ui: Ui, mut menu: Menu) {
     ui.menu.set(Some(menu));
 }
 
+fn glyphs(text: &str, size: f32) -> f32 {
+    text.chars().map(|c| if c.is_uppercase() || matches!(c, 'm' | 'w' | '…' | '%') { WIDE_GLYPH } else { control::RENAME_GLYPH }).sum::<f32>() * size
+}
+
 fn fits(item: &Item) -> f32 {
     let Item::Action { label, shortcut, face, .. } = item else { return 0. };
-    let glyphs = |text: &str, size: f32| text.chars().count() as f32 * size * control::RENAME_GLYPH;
-    let mut w = space::XS + iconsize::S + space::XS + glyphs(label, font::BODY) + space::S;
+    let mut w = space::XS + iconsize::S + space::XS + glyphs(label, font::BODY) + space::XS + space::S;
     if face.is_some() {
         w += frame::FACE + space::XS;
     }

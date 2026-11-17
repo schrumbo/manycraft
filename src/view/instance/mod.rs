@@ -1,11 +1,13 @@
 //! The page of one instance: its tabs on the left, and on the right what runs, how to play it and what to do with it.
 
 pub(crate) mod actions;
+mod icon;
 mod inspector;
 mod logs;
 mod logs_lines;
 mod logs_viewer;
 mod mods;
+mod play;
 mod shots;
 mod shots_parts;
 mod shots_thumbs;
@@ -22,6 +24,8 @@ use std::time::{Duration, Instant};
 use freya::prelude::*;
 use uuid::Uuid;
 
+pub use self::icon::InstanceIcon;
+pub use self::play::Hero;
 pub use self::title::{Tabs, Title};
 use self::inspector::{Inspector, Strip};
 use super::commands::{Extra, Shortcut};
@@ -97,6 +101,9 @@ pub struct Busy {
 #[derive(Clone, Copy, PartialEq)]
 pub struct Nav {
     pub tab: State<Tab>,
+    /// The instance `tab` belongs to, and the tab each instance showed last.
+    tab_for: State<Option<String>>,
+    tabs: State<HashMap<String, Tab>>,
     /// The instance whose name is being edited.
     pub renaming: State<Option<String>>,
     pub rename: State<String>,
@@ -125,6 +132,8 @@ impl Nav {
     pub fn create() -> Self {
         Self {
             tab: State::create(Tab::Mods),
+            tab_for: State::create(None),
+            tabs: State::create(HashMap::new()),
             renaming: State::create(None),
             rename: State::create(String::new()),
             rename_error: State::create(None),
@@ -165,6 +174,27 @@ pub struct Facts {
     pub trouble: Option<String>,
     /// Accounts that have to sign in again before they can play.
     pub expired: Vec<Uuid>,
+    /// Accounts whose game of it runs in a batch, with the batch's name; they cannot play it alone now.
+    pub busy: Vec<(Uuid, String)>,
+    /// The account Play starts: `solo`, or the first free one while `solo` is busy.
+    pub pick: Option<Uuid>,
+}
+
+impl Facts {
+    /// Where `account` plays this instance in a batch, if it does.
+    pub fn busy_in(&self, account: Uuid) -> Option<&str> {
+        self.busy.iter().find(|(a, _)| *a == account).map(|(_, place)| place.as_str())
+    }
+
+    /// The name of `account`.
+    pub fn name_of(&self, account: Uuid) -> Option<&str> {
+        self.accounts.iter().find(|(a, _)| *a == account).map(|(_, n)| n.as_str())
+    }
+
+    /// Whether every account is busy or already plays it alone, so none can start it.
+    pub fn none_free(&self) -> bool {
+        !self.accounts.is_empty() && self.accounts.iter().all(|(a, _)| self.busy_in(*a).is_some() || self.playing.contains(a))
+    }
 }
 
 /// The facts of instance `id`, when it exists.
@@ -187,8 +217,17 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
         None
     };
     let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
-    let expired = m.accounts.iter().filter(|a| m.sign_in_expired(a.id)).map(|a| a.id).collect();
-    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, expired })
+    let expired: Vec<Uuid> = m.accounts.iter().filter(|a| m.sign_in_expired(a.id)).map(|a| a.id).collect();
+    let busy: Vec<(Uuid, String)> = m.accounts.iter().filter_map(|a| m.playing_elsewhere(&made.id, a.id, &crate::core::fleet::solo_key(&made, a.id)).map(|place| (a.id, place))).collect();
+    let free = |a: &Uuid| !busy.iter().any(|(b, _)| b == a) && !playing.contains(a);
+    let pick = match solo {
+        Some(s) if busy.iter().any(|(b, _)| *b == s) => {
+            let ids: Vec<Uuid> = m.accounts.iter().map(|a| a.id).filter(|a| free(a)).collect();
+            ids.iter().find(|a| !expired.contains(a)).or(ids.first()).copied()
+        }
+        other => other,
+    };
+    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, expired, busy, pick })
 }
 
 /// Why changes to the instance wait: work on it, or games that run.
@@ -298,11 +337,12 @@ impl Component for InstancePage {
         let t = use_theme();
         let store = use_store();
         let ui = store.ui;
+        let takes_mods = store.model.read().instance(&self.id).is_some_and(|i| i.loader.takes_mods());
+        let tab = use_remembered_tab(store, &self.id, takes_mods);
         let m = store.model.read();
         let Some(f) = facts(&m, &self.id) else {
             return gone(&t, store, m.loaded).into_element();
         };
-        let tab = *ui.instance.tab.read();
         let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
         let wide = room >= SPLIT;
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
@@ -390,6 +430,30 @@ fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement
 }
 
 /// The instance the page shows, if it shows one.
+/// The tab the page of instance `id` shows: the one it showed last, at first Mods when it takes mods and Worlds when not.
+pub fn shown_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
+    let nav = store.ui.instance;
+    let now = *nav.tab.read();
+    if nav.tab_for.read().as_deref() == Some(id) {
+        return now;
+    }
+    nav.tabs.peek().get(id).copied().unwrap_or(if takes_mods { Tab::Mods } else { Tab::Worlds })
+}
+
+fn use_remembered_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
+    let tab = shown_tab(store, id, takes_mods);
+    let nav = store.ui.instance;
+    use_side_effect_with_deps(&(id.to_owned(), tab), move |(id, tab)| {
+        let (mut now, mut tab_for, mut tabs) = (nav.tab, nav.tab_for, nav.tabs);
+        if tab_for.peek().as_deref() != Some(id.as_str()) {
+            tab_for.set(Some(id.clone()));
+            now.set_if_modified(*tab);
+        }
+        tabs.write().insert(id.clone(), *tab);
+    });
+    tab
+}
+
 pub fn current(store: Store) -> Option<String> {
     match &*store.ui.page.peek() {
         Page::Instance(id) => store.model.peek().instance(id).map(|i| i.id.clone()),
@@ -414,9 +478,13 @@ pub fn extras(store: Store) -> Vec<Extra> {
     let rename_id = id.clone();
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
     let play_key = Some(Shortcut::primary(Code::KeyR));
-    for (n, (account, who)) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a)).enumerate() {
+    let pick = play::pick(&f).filter(|_| f.stoppable.is_empty() && f.stopping.is_none());
+    if let Some((key, _)) = f.stoppable.first().cloned() {
+        push("raise", tr("Zum Spiel wechseln"), Icon::External, play_key, EventHandler::new(move |_| store.dispatch(Event::Raise(key.clone()))));
+    }
+    for (account, who) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a) && f.busy_in(*a).is_none()) {
         let (instance, account) = (id.clone(), *account);
-        let first = f.playing.is_empty() && (f.solo == Some(account) || (f.solo.is_none() && n == 0));
+        let first = pick == Some(account);
         if f.expired.contains(&account) {
             push(&format!("play.{account}"), trf("Anmelden als %@", &[who]), Icon::LogIn, play_key.filter(|_| first), EventHandler::new(move |_| crate::view::accounts::sign_in(store, vec![account])));
         } else {
@@ -425,8 +493,12 @@ pub fn extras(store: Store) -> Vec<Extra> {
     }
     if let Some(solo) = f.solo.filter(|_| f.accounts.len() > 1) {
         let instance = id.clone();
-        let (key, label, account) = if f.pinned { ("default.clear", tr("Standard-Account entfernen"), None) } else { ("default.set", tr("Als Standard für diese Instanz"), Some(solo)) };
+        let (key, label, account) = if f.pinned { ("default.clear", tr("Standard-Account verwenden"), None) } else { ("default.set", tr("Als Standard für diese Instanz"), Some(solo)) };
         push(key, label, Icon::Users, None, EventHandler::new(move |_| store.dispatch(Event::SetDefaultAccount { instance: instance.clone(), account })));
+    }
+    let new = links::new_batch(store, &id, &name);
+    if new.disabled.is_none() {
+        push(new.key, new.long, new.glyph, None, new.run);
     }
     for (batch, label) in &f.batches {
         let batch = batch.clone();

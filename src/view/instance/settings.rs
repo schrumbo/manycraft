@@ -35,6 +35,7 @@ use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, iconsize, space};
 
 const TYPING: Duration = Duration::from_millis(800);
+const ICON: f32 = 64.;
 
 #[derive(Clone)]
 enum Load<T> {
@@ -158,6 +159,72 @@ fn use_typed(value: State<String>, saved: String, id: String, problem: State<Opt
     })
 }
 
+fn save_name(store: Store, id: &str, text: &str) -> Option<String> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Some(tr("Der Name darf nicht leer sein."));
+    }
+    if store.model.peek().instance(id).is_some_and(|m| m.name != name) {
+        save::enqueue(store, id, Job::Save(Change::Name(name.to_owned())));
+    }
+    None
+}
+
+fn choose_icon(store: Store, id: String) {
+    spawn_in_window(async move {
+        let title = tr("Bild wählen");
+        let Some(picked) = off_ui(move || native::pick_files(&title, "Bilder", &["png", "jpg", "jpeg", "webp", "gif"], false)).await else { return };
+        let Some(path) = picked.into_iter().next() else { return };
+        set_icon(store, id, Some(path)).await;
+    });
+}
+
+async fn set_icon(store: Store, id: String, path: Option<PathBuf>) {
+    let at = id.clone();
+    let mut error = store.ui.instance.error;
+    match off_ui(move || crate::core::instance::set_icon(&at, path.as_deref())).await {
+        Some(Ok(saved)) => {
+            error.write().remove(&id);
+            store.dispatch(AppEvent::InstanceChanged(saved));
+        }
+        Some(Err(e)) => {
+            error.write().insert(id, forms::explain_as(tr("Das Bild wurde nicht übernommen."), &e).text);
+        }
+        None => {}
+    }
+}
+
+/// The name and the picture of the instance, at the top of its settings.
+#[derive(PartialEq)]
+struct Identity {
+    made: Instance,
+}
+
+impl Component for Identity {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let made = &self.made;
+        let id = made.id.clone();
+        let name = use_state(String::new);
+        let problem = use_state(|| None::<String>);
+        let draft = use_hook(Draft::default);
+        let submit = use_typed(name, made.name.clone(), id.clone(), problem, draft, move |id, text| save_name(store, id, text));
+        let field = Field::new("instance.settings.name", name).placeholder(tr("Name")).on_submit(move |s| submit.call(s));
+        let (pick, clear) = (id.clone(), id.clone());
+        let mut buttons = rect().horizontal().spacing(space::XS).child(Button::new("instance.settings.icon.pick", tr("Bild wählen…")).glyph(Icon::Image).on_press(move |_| choose_icon(store, pick.clone())));
+        if made.icon.is_some() {
+            buttons = buttons.child(Button::new("instance.settings.icon.clear", tr("Entfernen")).plain().on_press(move |_| {
+                let id = clear.clone();
+                spawn_in_window(async move { set_icon(store, id, None).await });
+            }));
+        }
+        let picture = super::InstanceIcon { id: made.id.clone(), name: made.name.clone(), picture: made.icon_path(), side: ICON };
+        let side = rect().width(Size::flex(1.)).spacing(space::S).child(setting(&t, tr("Name"), None, field.into_element(), None, problem.read().clone())).child(buttons);
+        rect().width(Size::fill()).horizontal().spacing(space::L).child(picture).child(side).content(Content::flex())
+    }
+}
+
 fn save_jvm(store: Store, id: &str, text: &str) -> Option<String> {
     let args = split_args(text);
     if let Err(problem) = options::check_jvm_args(&args) {
@@ -237,7 +304,7 @@ impl Component for Settings {
             });
         });
 
-        let mut col = rect().width(Size::fill()).padding(space::XL).spacing(space::XL);
+        let mut col = rect().width(Size::fill()).padding(space::XL).spacing(space::XL).child(Identity { made: made.clone() });
 
         let version_control: Element = {
             let all = *store.ui.all_versions.read();

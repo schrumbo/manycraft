@@ -196,7 +196,7 @@ impl Ctx {
         if *self.bisecting.read() || self.bisect.read().as_ref().is_some_and(|b| b.outcome.is_none()) {
             return Some(tr("Beende zuerst die Fehlersuche."));
         }
-        self.running().then(|| tr("Stoppe zuerst die laufenden Spiele."))
+        self.running().then(|| tr("Erst nach dem Beenden änderbar"))
     }
 
     fn rows(&self) -> Vec<Row> {
@@ -743,7 +743,7 @@ impl Ctx {
         push("enable", tr("Ausgewählte Mods einschalten"), Icon::Check, None, Ctx::why_none, Box::new(|c: &Ctx| c.switch(c.targets(), true)));
         push("disable", tr("Ausgewählte Mods ausschalten"), Icon::Minus, None, Ctx::why_none, Box::new(|c: &Ctx| c.switch(c.targets(), false)));
         push("delete", tr("Ausgewählte Mods löschen"), Icon::Close, None, Ctx::why_none, Box::new(|c: &Ctx| c.delete(c.targets())));
-        push("updates", tr("Mod-Updates prüfen…"), Icon::Refresh, None, Ctx::why_updates, Box::new(Ctx::check_updates));
+        push("updates", tr("Mod-Updates prüfen"), Icon::Refresh, None, Ctx::why_updates, Box::new(Ctx::check_updates));
         push("copy", tr("Modliste kopieren"), Icon::Copy, None, Ctx::why_empty, Box::new(Ctx::copy_list));
         push("bisect", tr("Fehlerhaften Mod finden…"), Icon::Alert, None, Ctx::why_bisect, Box::new(Ctx::ask_bisect));
         if dups > 0 {
@@ -758,7 +758,7 @@ impl Ctx {
     }
 
     pub(super) fn check_updates(&self) {
-        super::updates::open(self.store, &self.id);
+        super::updates::check(self);
     }
 }
 

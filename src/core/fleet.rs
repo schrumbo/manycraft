@@ -71,17 +71,28 @@ const SOLO: &str = "solo";
 pub struct Target {
     pub instance: Instance,
     pub batch: Option<Batch>,
+    /// Where a game played alone goes right after it starts.
+    pub quick: Option<Quick>,
+}
+
+/// A world or server a game opens right away, as Minecraft's quick play does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Quick {
+    /// The folder of a world in the game's `saves`.
+    World(String),
+    /// A server address, as the server list keeps it.
+    Server(String),
 }
 
 impl Target {
     /// `batch` playing `instance`.
     pub fn of_batch(batch: &Batch, instance: &Instance) -> Self {
-        Self { instance: instance.clone(), batch: Some(batch.clone()) }
+        Self { instance: instance.clone(), batch: Some(batch.clone()), quick: None }
     }
 
     /// `instance` played alone.
     pub fn solo(instance: &Instance) -> Self {
-        Self { instance: instance.clone(), batch: None }
+        Self { instance: instance.clone(), batch: None, quick: None }
     }
 
     /// Key of the game of `account`.
@@ -1076,6 +1087,13 @@ impl Fleet {
         let _ = std::thread::Builder::new().name("bring-home".into()).spawn(move || super::game_window::bring_home(pid, home, HOME_WAIT, HOME_SETTLE));
     }
 
+    /// Brings the window of the game `key` to the front, restored when it was minimized.
+    pub fn raise(&self, key: &str) {
+        if let Some(pid) = lock(&self.running).get(key).map(|r| r.pid) {
+            super::game_window::raise(pid);
+        }
+    }
+
     pub fn is_running(&self, key: &str) -> bool {
         lock(&self.running).get_mut(key).is_some_and(RunningInstance::poll)
     }
@@ -1200,7 +1218,14 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         session,
         offline_name: account.name.clone(),
         memory_mb: target.memory_mb(),
-        server: target.server().map(str::to_owned),
+        server: target.server().map(str::to_owned).or_else(|| match &target.quick {
+            Some(Quick::Server(address)) => Some(address.clone()),
+            _ => None,
+        }),
+        world: match &target.quick {
+            Some(Quick::World(folder)) if target.server().is_none() => Some(folder.clone()),
+            _ => None,
+        },
         extra_jvm: extra.jvm,
         extra_game: extra.game,
         env: launch::SecretEnv(extra.secrets),

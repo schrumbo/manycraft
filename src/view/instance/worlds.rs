@@ -11,10 +11,12 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 use super::{Facts, actions, use_extras};
+use crate::app::event::Event as AppEvent;
+use crate::core::fleet::Quick;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Final, Instance, games_dir};
 use crate::core::snapshot::{self, Snapshot};
-use crate::core::worlds::{self, Backup, Mode, Progress, World};
+use crate::core::worlds::{self, Backup, Mode, Progress, Server, World};
 use crate::ui::forms::{self, Problem};
 use crate::ui::instance_files::{FileUndo, bytes, stamp, when};
 use crate::ui::theme::files;
@@ -34,6 +36,7 @@ use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 const TICK: Duration = Duration::from_millis(120);
 const DOUBLE: Duration = Duration::from_millis(400);
 const SNAPSHOTS_SHOWN: usize = 4;
+const SERVERS_SHOWN: usize = 4;
 
 thread_local! {
     static BACK: RefCell<Option<(String, PathBuf)>> = const { RefCell::new(None) };
@@ -45,6 +48,7 @@ enum Doing {
     Restore,
     Copy,
     Delete,
+    Import,
 }
 
 #[derive(Clone)]
@@ -81,6 +85,7 @@ struct Read {
     backups: Vec<Backup>,
     snaps: Vec<Snapshot>,
     icons: Vec<Pixels>,
+    servers: Vec<Server>,
 }
 
 fn read(dir: &Path) -> Read {
@@ -96,7 +101,8 @@ fn read(dir: &Path) -> Read {
         })
         .collect();
     let snaps = snapshot::list(dir);
-    Read { worlds, backups, snaps, icons }
+    let servers = worlds::servers(&dir.join("servers.dat"));
+    Read { worlds, backups, snaps, icons, servers }
 }
 
 #[derive(Clone)]
@@ -107,6 +113,7 @@ struct Scan {
     snaps: Vec<Snapshot>,
     icons: HashMap<PathBuf, ImageHandle>,
     sizes: HashMap<PathBuf, u64>,
+    servers: Vec<Server>,
 }
 
 impl Scan {
@@ -164,12 +171,23 @@ fn reveal(mut scroll: ScrollController, at: usize, view: f32) {
     }
 }
 
+/// Whether a row can be played now, and how.
+#[derive(Clone)]
+enum Go {
+    Ready(EventHandler<()>),
+    Off(String),
+}
+
 #[derive(Clone)]
 struct Page {
     store: Store,
     id: String,
     dir: PathBuf,
     accounts: Vec<(Uuid, String)>,
+    busy: Vec<(Uuid, String)>,
+    expired: Vec<Uuid>,
+    pick: Option<Uuid>,
+    target: Option<Uuid>,
     scan: State<Option<Rc<Scan>>>,
     view: State<f32>,
     scroll: ScrollController,
@@ -228,6 +246,93 @@ impl Page {
 
     fn playing(&self, account: Uuid) -> bool {
         self.store.model.peek().games.values().any(|g| g.instance_id == self.id && g.account_id == account && g.phase.is_active())
+    }
+
+    fn quick(&self, account: Uuid, quick: Quick) -> EventHandler<()> {
+        let (store, instance) = (self.store, self.id.clone());
+        EventHandler::new(move |_| store.dispatch(AppEvent::QuickPlay { instance: instance.clone(), account, quick: quick.clone() }))
+    }
+
+    fn blocked(&self, account: Uuid) -> Option<String> {
+        if let Some((_, place)) = self.busy.iter().find(|(a, _)| *a == account) {
+            return Some(trf("Läuft in %@", &[place]));
+        }
+        self.expired.contains(&account).then(|| tr("Die Anmeldung ist abgelaufen."))
+    }
+
+    /// How world `w` opens in its own account's game, or None while that game runs or the account is gone.
+    fn play_world(&self, w: &World, working: bool) -> Option<Go> {
+        if !self.accounts.iter().any(|(a, _)| *a == w.account) || self.playing(w.account) {
+            return None;
+        }
+        if working {
+            return Some(Go::Off(tr("Warte, bis das fertig ist.")));
+        }
+        Some(match self.blocked(w.account) {
+            Some(why) => Go::Off(why),
+            None => Go::Ready(self.quick(w.account, Quick::World(w.folder.clone()))),
+        })
+    }
+
+    /// How server `address` opens, with the account Play starts.
+    fn play_server(&self, address: &str) -> Go {
+        let Some(account) = self.pick else { return Go::Off(tr("Alle Accounts beschäftigt")) };
+        if self.playing(account) {
+            return Go::Off(tr("Spiel läuft"));
+        }
+        match self.blocked(account) {
+            Some(why) => Go::Off(why),
+            None => Go::Ready(self.quick(account, Quick::Server(address.to_owned()))),
+        }
+    }
+
+    fn ask_import(&self) {
+        let page = self.clone();
+        spawn_in_window(async move {
+            let title = tr("Welt hinzufügen");
+            let Some(picked) = off_ui(move || native::pick_files(&title, "Welten", &["zip"], true)).await else { return };
+            page.import(picked);
+        });
+    }
+
+    /// Copies each world folder or .zip in `paths` into the game folder of the account Play starts.
+    fn import(&self, paths: Vec<PathBuf>) {
+        let Some(account) = self.target else {
+            self.refuse(tr("Füge zuerst einen Account hinzu."));
+            return;
+        };
+        let game = games_dir(&self.dir).join(account.simple().to_string());
+        for source in paths {
+            if self.working(&source) {
+                continue;
+            }
+            let progress = self.begin(source.clone(), Doing::Import);
+            let (page, game, id) = (self.clone(), game.clone(), self.id.clone());
+            let name = source.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            spawn_in_window(async move {
+                let from = source.clone();
+                let result = off_ui(move || worlds::import(&from, &game, &progress)).await;
+                let what = trf("„%@“ wurde nicht hinzugefügt.", &[&name]);
+                match result {
+                    Some(Ok(world)) => {
+                        let shown = world.file_name().map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
+                        BACK.with(|b| *b.borrow_mut() = Some((id.clone(), world.clone())));
+                        toast::show(page.store.ui, trf("„%@“ hinzugefügt.", &[&shown]), Some(EventHandler::new({
+                            let (store, id, world) = (page.store, id.clone(), world.clone());
+                            move |_| undo(store, shown.clone(), FileUndo::Copied { instance: id.clone(), world: world.clone() })
+                        })));
+                        page.end(&source, None);
+                    }
+                    Some(Err(e)) => page.end(&source, Some(Outcome::Failed(forms::explain_as(what, &e)))),
+                    None => page.end(&source, Some(Outcome::Failed(Problem::plain(what)))),
+                }
+            });
+        }
+    }
+
+    fn importing(&self) -> Option<String> {
+        let work = self.work.try_peek()?;
+        work.values().find(|w| w.doing == Doing::Import).map(work_text)
     }
 
     fn copy_targets(&self, account: Uuid) -> Vec<(Uuid, String)> {
@@ -666,6 +771,18 @@ impl Page {
             let label = format!("{} · {}", trf("Stand „%@“ wiederherstellen", &[&snap.reason.label()]), stamp(snap.at));
             push(format!("snapshot.{}", snap.id), label, Icon::Undo, None, EventHandler::new(move |_| page.restore_snapshot(chosen.clone())));
         }
+        if let Some(Slot::World(w)) = at.and_then(|at| slots.get(at))
+            && let Some(Go::Ready(run)) = self.play_world(w, false)
+        {
+            push("play".into(), trf("„%@“ spielen", &[&w.name()]), Icon::Play, None, run);
+        }
+        for (n, server) in self.with_scan(|s| s.servers.clone()).unwrap_or_default().into_iter().enumerate() {
+            if let Go::Ready(run) = self.play_server(&server.address) {
+                push(format!("server.{n}"), trf("Auf „%@“ spielen", &[&server.name]), Icon::Globe, None, run);
+            }
+        }
+        let adder = page.clone();
+        push("add".into(), tr("Welt hinzufügen…"), Icon::Plus, None, EventHandler::new(move |_| adder.ask_import()));
         let page = page.clone();
         push("backups".into(), tr("Ordner mit den Sicherungen öffnen"), Icon::Folder, None, EventHandler::new(move |_| page.open_backups()));
         list
@@ -803,11 +920,11 @@ fn use_page(store: Store, f: &Facts) -> Page {
             if latest.get() != stamp {
                 return;
             }
-            let found = found.unwrap_or(Read { worlds: Vec::new(), backups: Vec::new(), snaps: Vec::new(), icons: Vec::new() });
+            let found = found.unwrap_or(Read { worlds: Vec::new(), backups: Vec::new(), snaps: Vec::new(), icons: Vec::new(), servers: Vec::new() });
             let icons = found.icons.into_iter().filter_map(|(d, w, h, rgba)| Some((d, ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul)?))).collect();
             let dirs: Vec<PathBuf> = found.worlds.iter().map(|w| w.dir.clone()).collect();
             let sizes = kept_sizes(scan, &id);
-            let next = Scan { id: id.clone(), worlds: found.worlds, backups: found.backups, snaps: found.snaps, icons, sizes };
+            let next = Scan { id: id.clone(), worlds: found.worlds, backups: found.backups, snaps: found.snaps, icons, sizes, servers: found.servers };
             let slots = next.slots();
             scan.set(Some(Rc::new(next)));
             let back = BACK.with(|b| {
@@ -834,7 +951,8 @@ fn use_page(store: Store, f: &Facts) -> Page {
             }
         });
     });
-    Page { store, id, dir, accounts: f.accounts.clone(), scan, view, scroll, selected, work, outcome, details, tick, last }
+    let target = f.pick.or(f.solo).or_else(|| f.accounts.first().map(|(a, _)| *a));
+    Page { store, id, dir, accounts: f.accounts.clone(), busy: f.busy.clone(), expired: f.expired.clone(), pick: super::play::pick(f), target, scan, view, scroll, selected, work, outcome, details, tick, last }
 }
 
 struct Listing {
@@ -847,6 +965,7 @@ impl PartialEq for Listing {
     }
 }
 
+#[derive(Clone)]
 struct Entry {
     key: PathBuf,
     title: String,
@@ -856,6 +975,7 @@ struct Entry {
     picture: Option<ImageHandle>,
     working: Option<String>,
     playing: bool,
+    play: Option<Go>,
 }
 
 fn thumb(t: &Theme, entry: &Entry) -> Element {
@@ -868,12 +988,25 @@ fn thumb(t: &Theme, entry: &Entry) -> Element {
     if entry.lone { rect().opacity(crate::ui::theme::tile::DIMMED).child(well).into_element() } else { well.into_element() }
 }
 
-fn row(t: &Theme, page: &Page, at: usize, entry: &Entry) -> Element {
+fn play_button(id: String, go: &Go) -> Button {
+    let b = Button::new(id, tr("Spielen")).glyph(Icon::Play);
+    match go {
+        Go::Ready(run) => {
+            let run = run.clone();
+            b.on_press(move |_| run.call(()))
+        }
+        Go::Off(why) => b.disabled(Some(why.clone())),
+    }
+}
+
+fn row(t: &Theme, page: &Page, at: usize, entry: &Entry, hovered: bool) -> Element {
     let mut row = Row::new(format!("instance.worlds.row.{at}"), entry.title.clone()).detail(entry.detail.clone()).height(files::WORLD_ROW).leading(thumb(t, entry)).selected(entry.selected);
     if let Some(text) = &entry.working {
         row = row.trailing(figure(t, text.clone(), font::CALLOUT, if entry.selected { t.accent_text } else { t.text2 }));
     } else if entry.playing {
         row = row.trailing(line(t, tr("Spiel läuft"), font::CAPTION, if entry.selected { t.accent_text } else { t.success_text }));
+    } else if let Some(go) = entry.play.as_ref().filter(|_| hovered || entry.selected) {
+        row = row.trailing(play_button(format!("instance.worlds.play.{at}"), go));
     }
     let (press, menu) = (page.clone(), page.clone());
     let (press_key, menu_key) = (entry.key.clone(), entry.key.clone());
@@ -886,6 +1019,75 @@ fn row(t: &Theme, page: &Page, at: usize, entry: &Entry) -> Element {
         .into_element()
 }
 
+/// A world row that offers Spielen while the pointer rests on it or it is selected.
+struct WorldLine {
+    page: Page,
+    at: usize,
+    entry: Entry,
+}
+
+impl PartialEq for WorldLine {
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
+}
+
+impl Component for WorldLine {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let mut hovered = use_state(|| false);
+        rect()
+            .width(Size::fill())
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .child(row(&t, &self.page, self.at, &self.entry, *hovered.read()))
+    }
+}
+
+/// A server of the instance's list, with Spielen while the pointer rests on it.
+struct ServerLine {
+    at: usize,
+    server: Server,
+    go: Go,
+}
+
+impl PartialEq for ServerLine {
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
+}
+
+impl Component for ServerLine {
+    fn render(&self) -> impl IntoElement {
+        let mut hovered = use_state(|| false);
+        let mut r = Row::new(format!("instance.servers.row.{}", self.at), self.server.name.clone()).glyph(Icon::Globe).height(frame::PALETTE_ROW);
+        if self.server.name != self.server.address {
+            r = r.detail(self.server.address.clone());
+        }
+        if *hovered.read() {
+            r = r.trailing(play_button(format!("instance.servers.play.{}", self.at), &self.go));
+        }
+        rect().width(Size::fill()).on_pointer_enter(move |_| hovered.set(true)).on_pointer_leave(move |_| hovered.set_if_modified(false)).child(r)
+    }
+}
+
+fn servers_section(t: &Theme, page: &Page, servers: &[Server]) -> Option<Element> {
+    if servers.is_empty() {
+        return None;
+    }
+    let rows: Vec<Element> = servers.iter().enumerate().map(|(at, s)| ServerLine { at, server: s.clone(), go: page.play_server(&s.address) }.into_element()).collect();
+    let shown = servers.len().min(SERVERS_SHOWN) as f32;
+    Some(
+        rect()
+            .width(Size::fill())
+            .padding((space::S, space::L, space::L, space::L))
+            .spacing(space::XS)
+            .child(strong(t, tr("Server"), font::CALLOUT, t.text2))
+            .child(ScrollView::new().width(Size::fill()).max_height(Size::px(frame::PALETTE_ROW * shown)).height(Size::auto()).child(rect().width(Size::fill()).children(rows)))
+            .into_element(),
+    )
+}
+
 fn work_text(work: &Work) -> String {
     let percent = (work.progress.fraction() * 100.).round() as u32;
     match work.doing {
@@ -893,6 +1095,7 @@ fn work_text(work: &Work) -> String {
         Doing::Restore => trf("Wird wiederhergestellt … %lld %", &[&percent]),
         Doing::Copy => trf("Wird kopiert … %lld %", &[&percent]),
         Doing::Delete => tr("Wird gelöscht …"),
+        Doing::Import => trf("Welt wird hinzugefügt … %lld %", &[&percent]),
     }
 }
 
@@ -987,6 +1190,7 @@ impl Component for Worlds {
         let (mut view, scroll) = (page.view, page.scroll);
         let restore_at = use_state(Bounds::default);
         let copy_at = use_state(Bounds::default);
+        let mut dropping = use_state(|| false);
         let _ = page.tick.read();
         let current = page.scan.read().clone().filter(|s| s.id == page.id);
         let selected = page.selected.read().clone();
@@ -1000,7 +1204,9 @@ impl Component for Worlds {
         let taking = store.ui.instance.busy.read().get(&page.id).and_then(|b| b.progress);
         let outcome = page.outcome.read().clone().map(|o| outcome_view(&t, &o, page.details));
         let saved = snapshot_section(&t, &page, &snaps, taking);
+        let servers = servers_section(&t, &page, &scan.servers);
         let key_page = page.clone();
+        let drop_page = page.clone();
         let mut root = rect()
             .width(Size::fill())
             .height(Size::fill())
@@ -1009,8 +1215,29 @@ impl Component for Worlds {
                 if key_page.key(&e, scroll, *view.peek()) {
                     e.stop_propagation();
                 }
+            })
+            .on_global_file_hover(move |_| dropping.set_if_modified(true))
+            .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
+            .on_file_drop(move |e: Event<FileEventData>| {
+                dropping.set_if_modified(false);
+                drop_page.import(e.file_paths.clone());
             });
+        let wash = (*dropping.read()).then(|| {
+            rect()
+                .position(Position::new_absolute().left(0.).top(0.))
+                .width(Size::fill())
+                .height(Size::fill())
+                .corner_radius(t.shape.tile)
+                .background(t.accent.with_a((frame::NOTICE_WASH * 255.) as u8))
+                .into_element()
+        });
         if slots.is_empty() {
+            let adder = page.clone();
+            let adding = page.importing();
+            let mut add = Button::new("instance.worlds.empty.add", adding.clone().unwrap_or_else(|| tr("Welt hinzufügen…"))).primary().glyph(Icon::Plus).on_press(move |_| adder.ask_import());
+            if adding.is_some() {
+                add = add.busy(true).disabled(Some(tr("Warte, bis das fertig ist.")));
+            }
             root = root.child(
                 rect()
                     .width(Size::fill())
@@ -1020,13 +1247,20 @@ impl Component for Worlds {
                     .padding((0., space::XL))
                     .child(icon(&t, Icon::Grid, iconsize::HERO, t.text3))
                     .child(heading(&t, tr("Noch keine Welten")))
-                    .child(rect().max_width(Size::px(control::READING)).child(para(&t, tr("Sobald ein Account in dieser Instanz eine Welt anlegt, erscheint sie hier."), font::CALLOUT, t.text2).text_align(TextAlign::Center))),
+                    .child(rect().max_width(Size::px(control::READING)).child(para(&t, tr("Sobald ein Account hier eine Welt anlegt, erscheint sie. Einen Weltordner oder eine .zip kannst du auch hinzufügen oder hierher ziehen."), font::CALLOUT, t.text2).text_align(TextAlign::Center)))
+                    .child(add),
             );
             if let Some(o) = outcome {
                 root = root.child(o);
             }
+            if let Some(s) = servers {
+                root = root.child(s);
+            }
             if let Some(s) = saved {
                 root = root.child(s);
+            }
+            if let Some(w) = wash {
+                root = root.child(w);
             }
             return root.into_element();
         }
@@ -1047,6 +1281,10 @@ impl Component for Worlds {
                     Slot::World(w) => (w.name().to_owned(), scan.icons.get(&w.dir).cloned(), false, Some(w.account)),
                     Slot::Lone(b) => (b.name.clone(), None, true, None),
                 };
+                let play = match slot {
+                    Slot::World(w) => page.play_world(w, busy.is_some()),
+                    Slot::Lone(_) => None,
+                };
                 Entry {
                     key: slot.key().to_path_buf(),
                     title,
@@ -1056,15 +1294,16 @@ impl Component for Worlds {
                     picture,
                     playing: busy.is_none() && account.is_some_and(|a| playing.contains(&a)),
                     working: busy.as_ref().map(work_text),
+                    play,
                 }
             })
             .collect();
         let count = lines.len();
-        let (list_t, list_page) = (t.clone(), page.clone());
+        let list_page = page.clone();
         let list = VirtualScrollView::new_with_data_controlled(
             Listing { lines },
             move |item, data: &Listing| match data.lines.get(item.index) {
-                Some(entry) => rect().key(item.index).width(Size::fill()).height(Size::px(item.size)).child(row(&list_t, &list_page, item.index, entry)).into_element(),
+                Some(entry) => rect().key(item.index).width(Size::fill()).height(Size::px(item.size)).child(WorldLine { page: list_page.clone(), at: item.index, entry: entry.clone() }).into_element(),
                 None => rect().into_element(),
             },
             scroll,
@@ -1074,8 +1313,14 @@ impl Component for Worlds {
         .scroll_with_arrows(false)
         .on_sized(move |e: Event<SizedEventData>| view.set_if_modified(Bounds::of(&e).h));
         root = root.child(rect().width(Size::fill()).height(Size::flex(1.)).padding((0., space::S)).child(list));
+        if let Some(s) = servers {
+            root = root.child(s);
+        }
         if let Some(s) = saved {
             root = root.child(s);
+        }
+        if let Some(w) = wash {
+            root = root.child(w);
         }
         root.into_element()
     }
@@ -1089,6 +1334,7 @@ fn toolbar(t: &Theme, page: &Page, scan: &Scan, slots: &[Slot], at: Option<usize
         1 => count = format!("{count} · {}", tr("1 Sicherung")),
         n => count = format!("{count} · {}", trf("%lld Sicherungen", &[&n])),
     }
+    let count = page.importing().unwrap_or(count);
     let mut bar = rect().width(Size::fill()).padding(space::L).horizontal().cross_align(Alignment::Center).spacing(space::XS).content(Content::flex()).child(rect().width(Size::flex(1.)).child(secondary(t, count)));
     if let Some(slot) = at.and_then(|at| slots.get(at)) {
         let busy = page.busy(slot).is_some();
@@ -1139,5 +1385,7 @@ fn toolbar(t: &Theme, page: &Page, scan: &Scan, slots: &[Slot], at: Option<usize
             bar = bar.child(Button::icon("instance.worlds.delete", Icon::Close, label).disabled(wait).on_press(move |_| remover.ask_delete(&path)));
         }
     }
+    let adder = page.clone();
+    bar = bar.child(Button::icon("instance.worlds.add", Icon::Plus, tr("Welt hinzufügen…")).disabled(page.importing().map(|_| tr("Warte, bis das fertig ist."))).on_press(move |_| adder.ask_import()));
     bar.into_element()
 }

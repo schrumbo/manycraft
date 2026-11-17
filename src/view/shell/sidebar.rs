@@ -283,19 +283,19 @@ impl Component for Sidebar {
                 if running {
                     end = end.child(dot(t.success));
                 }
-                let alone = m.solo_games(&i.id).any(|g| g.phase.is_active());
-                match since.and_then(crate::view::instance::uptime_text) {
-                    Some(up) => end = end.child(count(&t, up, selected)),
-                    None if alone => {}
-                    None => end = end.child(count(&t, i.loader.name().to_owned(), selected)),
+                if let Some(up) = since.and_then(crate::view::instance::uptime_text) {
+                    end = end.child(count(&t, up, selected));
                 }
+                let what = crate::view::instance::subtitle(i);
                 let tip = match since.and_then(crate::view::instance::uptime_text) {
-                    Some(up) => Some(trf("Läuft · %@", &[&up])),
-                    None => running.then(|| tr("Läuft gerade")),
+                    Some(up) => trf("%1$@ · Läuft · %2$@", &[&what, &up]),
+                    None if running => trf("%@ · Läuft gerade", &[&what]),
+                    None => what,
                 };
                 let id = i.id.clone();
-                let row = Row::new(format!("nav.instance.{}", i.id), i.name.clone()).glyph(Icon::Package).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(instance_items(store, &id), at)));
-                list = list.child(WithTip::new(tip, row));
+                let picture = crate::view::instance::InstanceIcon { id: i.id.clone(), name: i.name.clone(), picture: i.icon_path(), side: frame::FACE };
+                let row = Row::new(format!("nav.instance.{}", i.id), i.name.clone()).leading(picture).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(instance_items(store, &id), at)));
+                list = list.child(WithTip::new(Some(tip), row));
             }
             if can_want(&Want::NewInstance) {
                 list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {

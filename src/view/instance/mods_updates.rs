@@ -22,6 +22,104 @@ use crate::view::theme::{Theme, control, faces, font, frame, iconsize, space};
 const NOTES_MAX: usize = 40;
 const LIST_MAX: f32 = frame::PALETTE_ROW * 10.;
 
+/// What the tab knows about updates of its mods.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(in crate::view::instance) enum Found {
+    #[default]
+    Idle,
+    Checking,
+    Ready(Vec<Update>),
+    Failed(String),
+    Applying(Vec<Update>),
+}
+
+/// Looks for updates of the tab's mods and shows what it found above the list.
+pub(super) fn check(ctx: &super::Ctx) {
+    let mut found = ctx.found;
+    if matches!(*found.peek(), Found::Checking | Found::Applying(_)) {
+        return;
+    }
+    let Some(made) = ctx.store.model.peek().instance(&ctx.id).cloned() else { return };
+    found.set(Found::Checking);
+    spawn_in_window(async move {
+        let result = off_ui(move || remote::mod_updates(&made)).await;
+        if found.try_peek().is_none() {
+            return;
+        }
+        found.set(match result {
+            Some(Ok(list)) => Found::Ready(list),
+            Some(Err(e)) => Found::Failed(forms::explain_as(tr("Updates nicht geladen."), &e).text),
+            None => Found::Failed(forms::unexplained()),
+        });
+    });
+}
+
+fn apply_all(store: Store, id: String, list: Vec<Update>, mut found: State<Found>) {
+    found.set(Found::Applying(list.clone()));
+    spawn_in_window(async move {
+        let running = is_running(store, &id);
+        let (work_id, sent) = (id.clone(), list.clone());
+        let result = off_ui(move || remote::apply_updates(&work_id, &sent, running)).await;
+        let alive = found.try_peek().is_some();
+        match result {
+            Some(Ok(made)) => {
+                changed(store, made);
+                offer_updated(store, id, list.clone(), label_of(&list));
+                if alive {
+                    found.set(Found::Idle);
+                }
+            }
+            Some(Err(e)) if alive => found.set(Found::Failed(forms::explain_as(tr("Nicht aktualisiert."), &e).text)),
+            Some(Err(e)) => note(store, forms::explain_as(tr("Nicht aktualisiert."), &e).text),
+            None if alive => found.set(Found::Ready(list)),
+            None => {}
+        }
+    });
+}
+
+/// The line above the list with what the last look for updates found; `locked` says why nothing can change now.
+pub(super) fn inline(t: &Theme, ctx: &super::Ctx, locked: Option<String>) -> Option<Element> {
+    let state = ctx.found.read().clone();
+    let (store, id) = (ctx.store, ctx.id.to_string());
+    let mut found = ctx.found;
+    let bar = |glyph: Icon, color: Color, text: String| {
+        rect()
+            .width(Size::fill())
+            .height(Size::px(control::L))
+            .padding((0., space::S, 0., space::M))
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .corner_radius(t.shape.control)
+            .background(t.raised)
+            .child(icon(t, glyph, iconsize::S, color))
+            .child(line(t, text, font::CALLOUT, t.text1).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.)))
+            .content(Content::flex())
+    };
+    let close = Button::icon("instance.mods.updates.close", Icon::Close, tr("Hinweis ausblenden")).plain().on_press(move |_| found.set(Found::Idle));
+    let row = match state {
+        Found::Idle | Found::Checking => return None,
+        Found::Ready(list) if list.is_empty() => bar(Icon::Check, t.success_text, tr("Alle Mods sind aktuell.")).child(close),
+        Found::Failed(text) => {
+            let again = ctx.clone();
+            bar(Icon::Alert, t.danger_text, text).child(Button::new("instance.mods.updates.retry", tr("Erneut versuchen")).plain().on_press(move |_| again.check_updates())).child(close)
+        }
+        Found::Ready(list) => {
+            let count = if list.len() == 1 { trf("Update für „%@“", &[&list[0].current.title]) } else { trf("%lld Updates verfügbar", &[&list.len()]) };
+            let pick_id = id.clone();
+            bar(Icon::Download, t.accent_text, count)
+                .child(Button::new("instance.mods.updates.pick", tr("Auswählen…")).plain().on_press(move |_| {
+                    found.set(Found::Idle);
+                    open(store, &pick_id);
+                }))
+                .child(Button::new("instance.mods.updates.all", tr("Alle aktualisieren")).primary().disabled(locked).on_press(move |_| apply_all(store, id.clone(), list.clone(), found)))
+                .child(close)
+        }
+        Found::Applying(list) => bar(Icon::Download, t.accent_text, trf("%@ wird aktualisiert …", &[&label_of(&list)])).child(Button::new("instance.mods.updates.all", tr("Alle aktualisieren")).primary().busy(true).disabled(Some(tr("Wird aktualisiert …")))),
+    };
+    Some(row.into_element())
+}
+
 /// Opens the sheet that looks for updates of the mods of instance `id`.
 pub(super) fn open(store: Store, id: &str) {
     sheet::open(store.ui, Updates { store, id: id.to_owned() });
@@ -188,7 +286,7 @@ impl Component for Updates {
                     .spacing(space::S)
                     .child(rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(strong(&t, count, font::CALLOUT, t.text2).width(Size::flex(1.))).child(toggle))
                     .child(
-                        rect().width(Size::fill()).corner_radius(t.shape.tile).border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner)).overflow(Overflow::Clip).child(ScrollView::new().max_height(Size::px(LIST_MAX)).child(rows)),
+                        rect().width(Size::fill()).corner_radius(t.shape.tile).border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner)).overflow(Overflow::Clip).child(ScrollView::new().max_height(Size::px(LIST_MAX)).height(Size::auto()).child(rows)),
                     );
                 if running {
                     column = column.child(caption(&t, tr("Gilt beim nächsten Start.")));

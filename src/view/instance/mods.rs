@@ -14,7 +14,7 @@ use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Menu};
 use crate::view::kit::select::Select;
 use crate::view::kit::text::{caption, heading, line, mono, secondary, spacer};
-use crate::view::kit::{Bounds, use_theme};
+use crate::view::kit::{Bounds, off_ui, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use list::{Data, Row, Sort};
@@ -25,7 +25,7 @@ mod list;
 #[path = "mods_ops.rs"]
 mod ops;
 #[path = "mods_row.rs"]
-mod row;
+pub(super) mod row;
 #[path = "mods_trouble.rs"]
 mod trouble;
 #[path = "mods_updates.rs"]
@@ -83,6 +83,8 @@ pub(super) struct Ctx {
     pub bounds: State<Bounds>,
     pub list_focus: AccessibilityId,
     pub filter_focus: AccessibilityId,
+    /// What the last look for updates found, shown above the list.
+    pub found: State<updates::Found>,
 }
 
 /// A problem with its cause one click away.
@@ -155,11 +157,13 @@ impl View {
                         ctx: self.ctx.clone(),
                         file: e.file.clone(),
                         name: e.name(),
-                        version: e.version().map(str::to_owned),
                         caption,
                         warn,
                         enabled: e.enabled,
-                        icon: e.icon.clone(),
+                        icon: e.icon.clone().or_else(|| match &e.source {
+                            crate::core::content::Source::Modrinth { project_id, .. } => crate::core::modicons::icon(project_id),
+                            crate::core::content::Source::Own => None,
+                        }),
                         selected,
                         cursor,
                         locked: self.locked.clone(),
@@ -223,7 +227,8 @@ impl Component for Mods {
         let seen = use_state(|| u64::MAX);
         let cache = use_hook(|| Rc::new(RefCell::new(Cache::default())));
 
-        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, cursor, bisect, busy, bisecting, reveal, ticket, key, scroll, viewport, bounds, list_focus, filter_focus };
+        let found = use_state(|| updates::Found::Idle);
+        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, cursor, bisect, busy, bisecting, reveal, ticket, key, scroll, viewport, bounds, list_focus, filter_focus, found };
 
         let changed = *ui.instance.changed.read();
         let rescan = ctx.clone();
@@ -233,6 +238,20 @@ impl Component for Mods {
                 seen.set(*changed);
                 rescan.rescan();
             }
+        });
+        let mut started = use_state(|| false);
+        let after_run = ctx.clone();
+        let games = crate::core::instance::games_dir(&made.dir());
+        use_side_effect_with_deps(&(made.id.clone(), self.facts.running), move |(_, running)| {
+            if !*running && *started.peek() {
+                after_run.rescan();
+            }
+            let games = games.clone();
+            spawn(async move {
+                if let Some(found) = off_ui(move || std::fs::read_dir(&games).is_ok_and(|mut d| d.next().is_some())).await {
+                    started.set_if_modified(found);
+                }
+            });
         });
 
         let scan = ctx.data.read().clone();
@@ -318,9 +337,10 @@ impl Component for Mods {
         };
 
         let updates_why = made.mods.is_empty().then(|| tr("Keine Mods von Modrinth."));
+        let checking = matches!(*found.read(), updates::Found::Checking);
         let check = {
             let ctx = ctx.clone();
-            Button::new("instance.mods.updates", tr("Updates prüfen…")).glyph(Icon::Refresh).disabled(updates_why).on_press(move |_| ctx.check_updates())
+            Button::new("instance.mods.updates", if checking { tr("Wird geprüft …") } else { tr("Updates prüfen") }).glyph(Icon::Refresh).busy(checking).disabled(updates_why).on_press(move |_| ctx.check_updates())
         };
 
         let mut more_bounds = use_state(Bounds::default);
@@ -332,14 +352,13 @@ impl Component for Mods {
         };
 
         let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(check).child(more);
-        let add_button = {
+        if !scan.entries().is_empty() || loading {
             let run = add.run.clone();
-            Button::new("instance.mods.add", add.label.clone()).primary().glyph(add.glyph).disabled(add.disabled.clone()).on_press(move |_| run.call(()))
-        };
-        bar = bar.child(add_button);
+            bar = bar.child(Button::new("instance.mods.add", add.label.clone()).primary().glyph(add.glyph).disabled(add.disabled.clone()).on_press(move |_| run.call(())));
+        }
 
         let mut counts = rect().width(Size::fill()).height(Size::px(control::S)).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex());
-        counts = counts.child(caption(&t, list::count_text(&scan, mods_shown, filtering)).width(Size::flex(1.)).max_lines(1));
+        counts = counts.child(caption(&t, list::count_text(&scan, mods_shown, filtering, *started.read())).width(Size::flex(1.)).max_lines(1));
         if picked > 1 {
             let (on, off, del) = (ctx.clone(), ctx.clone(), ctx.clone());
             counts = counts
@@ -418,7 +437,11 @@ impl Component for Mods {
             }
             root = root.child(col);
         }
-        root = root.child(bar).child(counts).child(list);
+        root = root.child(bar);
+        if let Some(inline) = updates::inline(&t, &ctx, lock.clone()) {
+            root = root.child(inline);
+        }
+        root = root.child(counts).child(list);
         if *dropping.read() {
             root = root.child(
                 rect()
