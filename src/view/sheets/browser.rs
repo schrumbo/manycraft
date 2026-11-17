@@ -12,6 +12,7 @@ use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
+mod content;
 mod project;
 
 use super::instance::{self, Load, body_max, problem_view};
@@ -41,6 +42,7 @@ use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
 use crate::view::ui::BrowserUndo;
 
+pub use content::{ContentPage, content_line};
 use project::ProjectPage;
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
@@ -57,20 +59,23 @@ const UNDO_KEPT: usize = 20;
 const AUTHOR_MAX: f32 = 120.;
 const CATEGORY_W: f32 = 168.;
 const SORT_W: f32 = 120.;
+const SPLIT_AT: f32 = 1100.;
+const PANE_LIST: f32 = 500.;
+const PANE_MAX: f32 = 1240.;
 const OTHERS: f32 = control::M * 4. + space::XS * 7. + font::CAPTION * font::LINE + font::BODY * font::LINE;
 
-/// Opens the Mods sheet of instance `id` straight in the browser: on Mods, or on Ressourcenpakete when the loader takes
-/// no mods.
+/// Shows the Mods page of instance `id`: on Mods, or on Ressourcenpakete when the loader takes no mods.
 pub fn add_mods(store: Store, id: String) {
     let Some(made) = store.model.peek().instance(&id).cloned() else { return };
     let tab = if made.loader.takes_mods() { Kind::Mod } else { Kind::ResourcePack };
-    instance::open_mods(store, made, Some(tab));
+    content::show(store, &id, tab);
 }
 
-/// Opens the Mods sheet of instance `id` straight in the browser on the tab of `kind`.
+/// Shows the Mods page of instance `id` on the tab of `kind`.
 pub fn find(store: Store, id: &str, kind: Kind) {
-    let Some(made) = store.model.peek().instance(id).cloned() else { return };
-    instance::open_mods(store, made, Some(kind));
+    if store.model.peek().instance(id).is_some() {
+        content::show(store, id, kind);
+    }
 }
 
 /// Shows the Modpacks page, where every pack installs as a new instance.
@@ -107,8 +112,12 @@ pub(super) struct Scope {
 }
 
 impl Scope {
+    fn packs(&self) -> bool {
+        self.page && self.made.is_none()
+    }
+
     fn kinds(&self) -> &'static [Kind] {
-        if self.page {
+        if self.packs() {
             &[Kind::Modpack]
         } else if self.create {
             &[Kind::Mod]
@@ -1121,6 +1130,10 @@ impl Flow {
         self.open.peek().is_some()
     }
 
+    fn paned(&self) -> bool {
+        self.scope.page && self.store.ui.window.peek().0 >= SPLIT_AT
+    }
+
     fn open_page(&self, hit: Hit) {
         let kind = self.core.peek().kind;
         let mut body = self.body;
@@ -1785,12 +1798,13 @@ impl Component for Browser {
         let search = use_hook(AccessibilityId::new_unique);
         let kind = self.scope.kind;
         let paged = self.scope.page;
+        let packs = self.scope.packs();
         let live = use_reactive(&Live { version: self.scope.version.clone(), loader: self.scope.loader.clone(), held: self.scope.held.clone(), dirty: self.scope.dirty });
         let flow = Flow {
             store,
             scope: Rc::new(self.scope.clone()),
             live,
-            core: use_state(move || Core { all: paged, ..Core::new(kind) }),
+            core: use_state(move || Core { all: packs, ..Core::new(kind) }),
             query,
             error: use_state(|| None),
             notice: use_state(|| None),
@@ -1832,7 +1846,9 @@ impl Component for Browser {
         };
         let facts = Rc::new(flow.facts(true));
         let open = flow.open.read().clone();
-        let selected = flow.selected_view(&facts, fresh, sel, &page, &visible, open.is_some());
+        let pane = paged && store.ui.window.read().0 >= SPLIT_AT;
+        let detail = open.is_some() && !pane;
+        let selected = flow.selected_view(&facts, fresh, sel, &page, &visible, detail);
 
         let mut column = rect().width(Size::fill()).spacing(space::XS).on_global_key_down({
             let flow = flow.clone();
@@ -1860,12 +1876,23 @@ impl Component for Browser {
         let claimer = flow.clone();
         let field = Field::new("browser.search", query).placeholder(placeholder_text(kind)).glyph(Icon::Search).auto_focus().a11y(search).claim(move |key, modifiers| drive_rows(&claimer, key, modifiers));
         column = column.child(field);
-        column = column.child(rect().width(Size::fill()).height(Size::px(font::CAPTION * font::LINE)).child(caption(&t, selected.unwrap_or_default())));
-        if kind == Kind::DataPack {
-            column = column.child(target_row(&t, &flow, &facts));
+        if open.is_none() {
+            column = column.child(rect().width(Size::fill()).height(Size::px(font::CAPTION * font::LINE)).child(caption(&t, selected.unwrap_or_default())));
+            if kind == Kind::DataPack {
+                column = column.child(target_row(&t, &flow, &facts));
+            }
+            column = column.child(controls(&t, &flow, kind, &typed, category.as_deref(), sort, all, if fresh { total } else { None }));
         }
-        column = column.child(controls(&t, &flow, kind, &typed, category.as_deref(), sort, all, if fresh { total } else { None }));
         let mut room = flow.room;
+        let (listed, aside) = if pane { (None, open) } else { (open, None) };
+        let project = |open: Open, pane: bool| {
+            let pid = open.hit.project_id.clone();
+            let have = flow.installed_version(&pid, true);
+            let mods: HashSet<String> = val(flow.scope.mods, true).iter().map(|m| m.project_id.clone()).collect();
+            rect().key(pid).width(Size::fill()).height(Size::fill()).child(ProjectPage { flow: flow.clone(), hit: open.hit, kind: open.kind, facts: facts.clone(), have, mods: Rc::new(mods), pane }).into_element()
+        };
+        let well = |t: &Theme| rect().corner_radius(t.shape.tile).overflow(Overflow::Clip).border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner));
+        let aside = aside.map(|open| well(&t).width(Size::flex(1.)).height(Size::fill()).child(project(open, true)).into_element());
         let region = rect()
             .width(Size::fill())
             .height(if paged { Size::flex(1.) } else { Size::px(results_height(store, kind)) })
@@ -1877,13 +1904,8 @@ impl Component for Browser {
             .corner_radius(t.shape.tile)
             .overflow(Overflow::Clip)
             .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
-            .child(match open {
-                Some(open) => {
-                    let pid = open.hit.project_id.clone();
-                    let have = flow.installed_version(&pid, true);
-                    let mods: HashSet<String> = val(flow.scope.mods, true).iter().map(|m| m.project_id.clone()).collect();
-                    rect().key(pid).width(Size::fill()).height(Size::fill()).child(ProjectPage { flow: flow.clone(), hit: open.hit, kind: open.kind, facts: facts.clone(), have, mods: Rc::new(mods) }).into_element()
-                }
+            .child(match listed {
+                Some(open) => project(open, false),
                 None => results(&t, &flow, &facts, kind, &typed, category.is_some(), all, status, more, sel, epoch, has_more, page, visible, fresh),
             });
         column = column.child(region);
@@ -1908,7 +1930,7 @@ impl Component for Browser {
                         return;
                     }
                     match &e.key {
-                        Key::Named(NamedKey::Escape) if esc.page_open() || !esc.query.peek().is_empty() => {
+                        Key::Named(NamedKey::Escape) if esc.page_open() || !esc.query.peek().is_empty() || !esc.scope.packs() => {
                             e.stop_propagation();
                             esc.cancel();
                         }
@@ -1924,11 +1946,23 @@ impl Component for Browser {
                         _ => {}
                     }
                 })
-                .child(column.max_width(Size::px(frame::CONTENT_MAX)).height(Size::fill()).content(Content::flex()))
+                .child(match aside {
+                    Some(aside) => rect()
+                        .width(Size::fill())
+                        .max_width(Size::px(PANE_MAX))
+                        .height(Size::fill())
+                        .horizontal()
+                        .spacing(space::M)
+                        .content(Content::flex())
+                        .child(column.width(Size::px(PANE_LIST)).height(Size::fill()).content(Content::flex()))
+                        .child(aside)
+                        .into_element(),
+                    None => column.max_width(Size::px(frame::CONTENT_MAX)).height(Size::fill()).content(Content::flex()).into_element(),
+                })
                 .into_element();
         }
 
-        let (done, back_press) = (self.scope.done.clone(), self.scope.back.clone());
+        let done = self.scope.done.clone();
         let title = if kind == Kind::Modpack {
             tr("Neue Instanz aus Modpack")
         } else if let Some(made) = self.scope.made.as_ref().filter(|_| !self.scope.create) {
@@ -1943,7 +1977,6 @@ impl Component for Browser {
             .message(subtitle)
             .width(frame::SHEET)
             .body(column)
-            .leading(Button::new("browser.back", tr("Zurück")).glyph(Icon::Back).on_press(move |_| back_press.call(())))
             .primary(primary)
             .primary_id("browser.done")
             .inform()
@@ -1962,6 +1995,11 @@ fn drive_rows(flow: &Flow, key: &Key, modifiers: Modifiers) -> bool {
     let page = flow.page_open();
     match key {
         Key::Named(named @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::PageUp | NamedKey::PageDown)) if modifiers.is_empty() && !crate::view::kit::vertical_arrows() => {
+            if page && flow.paned() && matches!(named, NamedKey::ArrowUp | NamedKey::ArrowDown) {
+                flow.step(if *named == NamedKey::ArrowUp { -1 } else { 1 });
+                flow.open_selected();
+                return true;
+            }
             if page {
                 match named {
                     NamedKey::ArrowUp => flow.scroll_page(-1., 0.),
@@ -2092,7 +2130,7 @@ fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&s
         .child(rect().width(Size::flex(1.)).child(line(t, caption_text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)))
         .child(category_select)
         .child(sort_select);
-    if widens(kind) && !flow.scope.page {
+    if widens(kind) && !flow.scope.packs() {
         let (flip, label) = (flow.clone(), flow.clone());
         row = row.child(
             rect()

@@ -453,6 +453,17 @@ fn use_remembered_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
     tab
 }
 
+/// Shows the page of instance `id` on `tab`.
+pub fn show_on(store: Store, id: &str, tab: Tab) {
+    let nav = store.ui.instance;
+    let (mut now, mut tab_for, mut tabs) = (nav.tab, nav.tab_for, nav.tabs);
+    tabs.write().insert(id.to_owned(), tab);
+    tab_for.set(Some(id.to_owned()));
+    now.set(tab);
+    let mut page = store.ui.page;
+    page.set(Page::Instance(id.to_owned()));
+}
+
 /// The instance the page shows, if it shows one.
 pub fn current(store: Store) -> Option<String> {
     match &*store.ui.page.peek() {

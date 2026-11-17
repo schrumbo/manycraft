@@ -62,6 +62,10 @@ impl Component for Toolbar {
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
             Page::Installing(id) => ui.installs.read().iter().find(|i| i.id == *id).map_or_else(|| (tr("Instanz"), None), |i| (i.name.clone(), matches!(i.stage, crate::view::install::Stage::Failed(_)).then(|| i.state()))),
             Page::Modpacks => (tr("Modpacks"), Some(tr("Von Modrinth, jedes wird eine eigene Instanz"))),
+            Page::Browse(id, _) => match m.instance(id) {
+                Some(i) => (trf("Mods für %@", &[&i.name]), Some(crate::view::sheets::browser::content_line(i, m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active())))),
+                None => (tr("Mods"), None),
+            },
             Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
             Page::Settings => (tr("Einstellungen"), None),

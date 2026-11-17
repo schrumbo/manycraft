@@ -284,7 +284,7 @@ impl Component for Sidebar {
             made.sort_by_cached_key(|i| i.name.to_lowercase());
             for i in made {
                 let to = Page::Instance(i.id.clone());
-                let selected = now == to;
+                let selected = now == to || matches!(&now, Page::Browse(id, _) if *id == i.id);
                 let running = m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active());
                 let since = m.solo_games(&i.id).filter(|g| g.phase.is_active()).filter_map(|g| up.get(&g.key)).min().copied();
                 let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);

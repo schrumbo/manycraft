@@ -1,5 +1,4 @@
-//! The new-instance sheet, which sets up an instance with version, loader, mods and memory, and the mods sheet, which
-//! changes, updates and removes the mods of an existing one.
+//! The new-instance sheet, which sets up an instance with version, loader, mods and memory.
 
 use std::collections::HashSet;
 
@@ -54,18 +53,53 @@ const MOD_LOADERS: [Loader; 4] = [Loader::Fabric(None), Loader::Quilt(None), Loa
 /// Opens the sheet that sets up a new instance; with `play`, it also starts the instance with that account (or the
 /// first one) once it is made.
 pub fn create(store: Store, play: Option<Option<String>>) {
-    sheet::open(store.ui, Create { play });
+    sheet::open(store.ui, Create { play, origin: Origin::New });
 }
 
-/// Opens the mods of instance `id`.
+/// Opens the new-instance sheet on Importieren.
+pub fn import(store: Store) {
+    if store.ui.sheet.peek().is_none() {
+        sheet::open(store.ui, Create { play: None, origin: Origin::Import });
+    }
+}
+
+/// Where a new instance comes from: set up by hand, a modpack, or another launcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Origin {
+    New,
+    Pack,
+    Import,
+}
+
+const ORIGINS: [Origin; 3] = [Origin::New, Origin::Pack, Origin::Import];
+
+/// The segmented control that switches the new-instance sheet between its origins.
+pub(super) fn origins(mut origin: State<Origin>, disabled: Option<String>) -> Element {
+    let segments = ORIGINS
+        .iter()
+        .map(|o| {
+            let (id, label) = match o {
+                Origin::New => ("instance.origin.new", tr("Neu")),
+                Origin::Pack => ("instance.origin.pack", tr("Modpack")),
+                Origin::Import => ("instance.origin.import", tr("Importieren")),
+            };
+            Segment { id: id.into(), label, tip: None }
+        })
+        .collect();
+    let at = ORIGINS.iter().position(|o| *o == *origin.read()).unwrap_or(0);
+    let choose = Segmented::new(tr("Herkunft"), segments, at).disabled(disabled).on_choose(move |i| {
+        if let Some(o) = ORIGINS.get(i) {
+            origin.set(*o);
+        }
+    });
+    rect().width(Size::fill()).horizontal().main_align(Alignment::Center).child(choose).into_element()
+}
+
+/// Shows the Mods tab of instance `id`.
 pub fn mods(store: Store, id: String) {
-    let Some(made) = store.model.peek().instance(&id).cloned() else { return };
-    open_mods(store, made, None);
-}
-
-/// Opens the mods of `made`, straight in the browser on `search` when given.
-pub(super) fn open_mods(store: Store, made: Instance, search: Option<ModKind>) {
-    sheet::open(store.ui, Mods { made, search });
+    if store.model.peek().instance(&id).is_some() {
+        crate::view::instance::show_on(store, &id, crate::view::instance::Tab::Mods);
+    }
 }
 
 #[derive(Clone)]
@@ -552,6 +586,7 @@ impl Make {
 #[derive(PartialEq)]
 struct Create {
     play: Option<Option<String>>,
+    origin: Origin,
 }
 
 impl Component for Create {
@@ -560,6 +595,8 @@ impl Component for Create {
         let store = use_store();
         let total = use_hook(forms::total_ram_mb);
         let memory_max = forms::memory_max(total);
+        let start = self.origin;
+        let origin = use_state(move || start);
         let flow = Make {
             store,
             play: use_state(|| self.play.clone()),
@@ -618,6 +655,16 @@ impl Component for Create {
         let adding = !flow.adding.read().is_empty();
         let blocked = busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …"))).or_else(|| adding.then(adding_wait));
 
+        match *origin.read() {
+            Origin::Import => return import::Import { origin }.into_element(),
+            Origin::Pack => {
+                let primary = Primary { label: tr("Modpacks durchsuchen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| crate::view::sheets::browser::find_modpacks(store)) };
+                let body = rect().width(Size::fill()).spacing(space::M).child(origins(origin, None)).child(PackDrop);
+                return Card::new("instance", tr("Instanz erstellen")).width(WIDE).body(body).primary(primary).primary_id("instance.pack.find").into_element();
+            }
+            Origin::New => {}
+        }
+
         if *flow.searching.read() {
             let scope = Scope {
                 create: true,
@@ -663,7 +710,7 @@ impl Component for Create {
                 });
                 let row = SwitchLabel {
                     id: "instance.everything",
-                    text: tr("Snapshots und alte Versionen zeigen"),
+                    text: tr("Snapshots zeigen"),
                     on: everything,
                     disabled: blocked.clone(),
                     on_toggle: EventHandler::new(move |on: bool| remember_all_versions(store, on)),
@@ -684,15 +731,7 @@ impl Component for Create {
         let loader_column = loader_section(flow, &loader, blocked.clone());
 
         let press = pressure(*flow.memory.read(), total, *flow.free.read(), memory_max);
-        let pack = Entry {
-            id: "instance.pack",
-            glyph: Icon::Package,
-            title: tr("Aus Modpack…"),
-            subtitle: tr("Fertige Modpacks von Modrinth, jedes wird eine eigene Instanz"),
-            disabled: saving.then(|| tr("Wird gerade gesichert …")),
-            on_press: EventHandler::new(move |_| crate::view::sheets::browser::find_modpacks(store)),
-        };
-        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M).child(pack).child(top);
+        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M).child(top);
         if !*flow.advanced.read()
             && let Some(text) = strain_text(&press, *flow.memory.read(), total)
         {
@@ -702,9 +741,9 @@ impl Component for Create {
         if loader.takes_mods() {
             form = form.child(mods_section(&t, flow, &loader));
         }
-        form = form.child(advanced(&t, flow, &loader, &version, blocked.clone(), total, memory_max, &press)).child(imports(flow, blocked.clone()));
+        form = form.child(advanced(&t, flow, &loader, &version, blocked.clone(), total, memory_max, &press));
 
-        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(form));
+        let mut body = rect().width(Size::fill()).spacing(space::M).child(origins(origin, blocked.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …"))))).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
             body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
         }
@@ -828,7 +867,7 @@ fn loader_section(flow: Make, loader: &Loader, blocked: Option<String>) -> Eleme
     }
     let open = *flow.others.read() || !loader.same_kind(&Loader::default());
     let mut others = flow.others;
-    let toggle = Button::new("instance.loader.others", tr("Andere Loader…")).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| others.set(!open));
+    let toggle = Button::new("instance.loader.others", tr("Andere Loader")).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| others.set(!open));
     column = column.child(rect().horizontal().child(toggle));
     if open {
         let chosen = MOD_LOADERS.iter().position(|l| loader.same_kind(l)).unwrap_or(0);
@@ -892,80 +931,85 @@ fn mods_section(t: &Theme, flow: Make, loader: &Loader) -> Element {
     column.child(inner.child(rect().horizontal().child(more))).into_element()
 }
 
-fn imports(flow: Make, blocked: Option<String>) -> Element {
-    let store = flow.store;
-    rect()
-        .width(Size::fill())
-        .child(Entry {
-            id: "instance.import",
-            glyph: Icon::Download,
-            title: tr("Aus anderem Launcher oder Datei…"),
-            subtitle: tr("Prism, Modrinth App, CurseForge, ATLauncher oder eine Modpack-Datei"),
-            disabled: blocked,
-            on_press: EventHandler::new(move |_| {
-                sheet::close(store.ui);
-                import::open(store);
-            }),
-        })
-        .into_element()
+const DROP_H: f32 = 180.;
+const PACK_FILES: [&str; 2] = ["mrpack", "zip"];
+
+fn pack_files(paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    paths.into_iter().filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| PACK_FILES.iter().any(|x| e.eq_ignore_ascii_case(x)))).collect()
+}
+
+fn install_packs(store: Store, paths: Vec<std::path::PathBuf>) {
+    sheet::close(store.ui);
+    crate::view::install::start(store, paths.into_iter().map(crate::view::install::Source::File).collect());
 }
 
 #[derive(PartialEq)]
-struct Entry {
-    id: &'static str,
-    glyph: Icon,
-    title: String,
-    subtitle: String,
-    disabled: Option<String>,
-    on_press: EventHandler<()>,
-}
+struct PackDrop;
 
-impl Component for Entry {
+impl Component for PackDrop {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        let a11y = use_a11y();
-        let focus = use_focus(a11y);
-        let mut hovered = use_state(|| false);
-        let mut pressed = use_state(|| false);
-        let enabled = self.disabled.is_none();
-        let spot = use_spot(self.id, "button", &self.title, enabled);
-        let press = self.on_press.clone();
-        let (ink, quiet) = if enabled { (t.text1, t.text2) } else { (t.text3, t.text3) };
-        let mut card = rect()
-            .a11y_id(a11y)
-            .a11y_focusable(enabled)
-            .a11y_role(AccessibilityRole::Button)
-            .a11y_alt(self.title.clone())
-            .width(Size::fill())
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::M)
-            .padding(space::M)
-            .corner_radius(t.shape.tile)
-            .background(if enabled && *pressed.read() { t.press } else if enabled && *hovered.read() { t.hover } else { Color::TRANSPARENT })
-            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
-            .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed })
-            .content(Content::flex())
-            .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| {
-                hovered.set_if_modified(false);
-                pressed.set_if_modified(false);
-            })
-            .on_mouse_down(move |_| pressed.set(true))
-            .on_mouse_up(move |_| pressed.set_if_modified(false));
-        if enabled {
-            card = card.on_all_press(move |_| {
-                a11y.request_focus();
-                press.call(());
+        let store = use_store();
+        let mut dropping = use_state(|| false);
+        let mut wrong = use_state(|| false);
+        let mut picking = use_state(|| false);
+        let spot = use_spot("instance.pack.drop", "group", "drop", true);
+        let pick = move |_| {
+            if *picking.peek() {
+                return;
+            }
+            picking.set(true);
+            spawn_in_window(async move {
+                let (title, filter) = (tr("Modpack wählen"), tr("Modpack"));
+                let paths = off_ui(move || crate::view::native::pick_files(&title, &filter, &PACK_FILES, true)).await.unwrap_or_default();
+                if picking.try_peek().is_none() {
+                    return;
+                }
+                picking.set(false);
+                let packs = pack_files(paths);
+                if !packs.is_empty() {
+                    install_packs(store, packs);
+                }
             });
+        };
+        let (note, tint) = if *wrong.read() { (tr("Nur .mrpack- und .zip-Dateien lassen sich installieren."), t.danger_text) } else { (tr(".mrpack von Modrinth oder ein Export als .zip"), t.text3) };
+        let mut zone = rect()
+            .width(Size::fill())
+            .height(Size::px(DROP_H))
+            .center()
+            .spacing(space::S)
+            .corner_radius(t.shape.tile)
+            .background(t.well)
+            .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
+            .on_sized(spot)
+            .on_global_file_hover(move |_| dropping.set_if_modified(true))
+            .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
+            .on_file_drop(move |e: Event<FileEventData>| {
+                dropping.set_if_modified(false);
+                let packs = pack_files(e.file_paths.clone());
+                if packs.is_empty() {
+                    wrong.set(true);
+                } else {
+                    install_packs(store, packs);
+                }
+            })
+            .child(icon(&t, Icon::Package, iconsize::L, t.text3))
+            .child(strong(&t, tr("Modpack-Datei hierher ziehen"), font::BODY, t.text1))
+            .child(line(&t, note, font::CAPTION, tint))
+            .child(Button::new("instance.pack.file", tr("Datei wählen…")).glyph(Icon::Folder).busy(*picking.read()).on_press(pick));
+        if *dropping.read() {
+            zone = zone.child(
+                rect()
+                    .position(Position::new_absolute().left(0.).top(0.))
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .corner_radius(t.shape.tile)
+                    .background(t.accent.with_a((frame::NOTICE_WASH * 255.) as u8))
+                    .center()
+                    .child(strong(&t, tr("Zum Installieren loslassen"), font::BODY, t.accent_text)),
+            );
         }
-        if let Some(border) = ring(&t, focus()) {
-            card = card.border(border);
-        }
-        let tile = rect().width(Size::px(control::L)).height(Size::px(control::L)).center().corner_radius(t.shape.control).background(if enabled { t.accent.with_af32(frame::TILE_WASH) } else { t.control }).child(icon(&t, self.glyph, iconsize::L, if enabled { t.accent_text } else { t.text3 }));
-        let text = rect().width(Size::flex(1.)).spacing(space::XXS).child(strong(&t, self.title.clone(), font::BODY, ink)).child(para(&t, self.subtitle.clone(), font::CALLOUT, quiet));
-        WithTip::new(self.disabled.clone(), card.child(tile).child(text).child(icon(&t, Icon::ChevronRight, iconsize::M, t.text3)))
+        zone
     }
 }
 
@@ -1053,467 +1097,6 @@ impl Component for LoaderVersion {
         }
         column
     }
-}
-
-fn is_active(store: Store, id: &str) -> bool {
-    store.model.peek().games.values().any(|g| g.instance_id == id && g.phase.is_active())
-}
-
-fn snapshotting(store: Store, id: &str) -> bool {
-    store.ui.instance.busy.peek().contains_key(id)
-}
-
-fn offer_updated(store: Store, id: String, updates: Vec<Update>, text: String) {
-    toast::show(store.ui, trf("%@ aktualisiert.", &[&text]), Some(EventHandler::new(move |_| undo_updates(store, id.clone(), updates.clone(), text.clone()))));
-}
-
-fn undo_updates(store: Store, id: String, updates: Vec<Update>, text: String) {
-    let back: Vec<Update> = updates.iter().map(|u| Update { current: u.latest.clone(), latest: u.current.clone(), changelog: Vec::new() }).collect();
-    spawn_in_window(async move {
-        let running = is_active(store, &id);
-        let work = id.clone();
-        match off_ui(move || remote::apply_updates(&work, &back, running)).await {
-            Some(Ok(made)) => {
-                store.dispatch(AppEvent::InstanceChanged(made));
-                store.reload(true);
-            }
-            Some(Err(e)) => {
-                toast::show(store.ui, forms::explain_as(tr("Nicht zurückgestellt."), &e).text, None);
-                if !crate::view::instance::actions::permanent(&e) {
-                    offer_updated(store, id, updates, text);
-                }
-            }
-            None => offer_updated(store, id, updates, text),
-        }
-    });
-}
-
-#[derive(Clone, Copy)]
-struct Edit {
-    store: Store,
-    base: State<Instance>,
-    mods: State<Vec<ModRef>>,
-    updates: State<Option<Load<Vec<Update>>>>,
-    ticket: State<u64>,
-    updating: State<HashSet<String>>,
-    applied: State<HashSet<String>>,
-    update_error: State<Option<Problem>>,
-    note: State<Option<String>>,
-    saving: State<bool>,
-    save_error: State<Option<Problem>>,
-    details: State<HashSet<String>>,
-    searching: State<bool>,
-    direct: State<bool>,
-    adding: State<HashSet<String>>,
-    kind: State<ModKind>,
-}
-
-impl Edit {
-    fn alive(self) -> bool {
-        self.base.try_peek().is_some()
-    }
-
-    fn search(mut self, kind: ModKind) {
-        self.kind.set(kind);
-        self.searching.set(true);
-    }
-
-    fn leave_search(mut self) {
-        if *self.direct.peek() && !self.unsaved() && self.adding.peek().is_empty() {
-            sheet::close(self.store.ui);
-        } else {
-            self.searching.set(false);
-            self.direct.set(false);
-        }
-    }
-
-    fn updatable(self) -> HashSet<String> {
-        self.selection(&None).into_iter().map(|u| u.current.project_id).collect()
-    }
-
-    fn load_updates(mut self) {
-        let original = self.base.peek().clone();
-        if original.mods.is_empty() {
-            self.updates.set(None);
-            return;
-        }
-        self.updates.set(Some(Load::Loading));
-        self.applied.set(HashSet::new());
-        let ticket = *self.ticket.peek() + 1;
-        self.ticket.set(ticket);
-        spawn_in_window(async move {
-            let result = off_ui(move || remote::mod_updates(&original)).await;
-            if !self.alive() || *self.ticket.peek() != ticket {
-                return;
-            }
-            self.updates.set(Some(match result {
-                Some(Ok(list)) => Load::Ready(list),
-                Some(Err(e)) => Load::Failed(forms::explain_as(tr("Updates nicht geladen."), &e)),
-                None => Load::Failed(Problem::plain(forms::unexplained())),
-            }));
-        });
-    }
-
-    fn retry_updates(self) {
-        if matches!(self.updates.peek().as_ref(), Some(Load::Failed(_))) {
-            self.load_updates();
-        }
-    }
-
-    fn unsaved(self) -> bool {
-        *self.mods.peek() != self.base.peek().mods
-    }
-
-    fn follow(mut self, now: Instance) {
-        if !self.alive() || *self.saving.peek() || !self.updating.peek().is_empty() {
-            return;
-        }
-        let base = self.base.peek().clone();
-        if now.mods != base.mods && *self.mods.peek() == base.mods {
-            self.mods.set(now.mods.clone());
-            self.base.set(now);
-            self.applied.set(HashSet::new());
-            self.note.set(None);
-            self.load_updates();
-        }
-    }
-
-    fn selection(self, only: &Option<String>) -> Vec<Update> {
-        match self.updates.peek().as_ref() {
-            Some(Load::Ready(list)) => {
-                let applied = self.applied.peek();
-                list.iter().filter(|u| !applied.contains(&u.current.project_id) && only.as_ref().is_none_or(|p| *p == u.current.project_id)).cloned().collect()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn apply_updates(self, only: Option<String>) {
-        let selection = self.selection(&only);
-        let id = self.base.peek().id.clone();
-        if selection.is_empty() || !self.updating.peek().is_empty() || *self.saving.peek() {
-            return;
-        }
-        if self.unsaved() {
-            toast::show(self.store.ui, unsaved_reason(), None);
-            return;
-        }
-        let reason = Reason::ModUpdates(selection.len());
-        let (work, back, store) = (id.clone(), id.clone(), self.store);
-        snapshots::before_returning(store, &id, reason, move || mods(store, back.clone()), move || self.apply_now(work, selection));
-    }
-
-    fn apply_now(mut self, id: String, selection: Vec<Update>) {
-        let store = self.store;
-        let shown = self.alive();
-        if shown {
-            if *self.saving.peek() {
-                toast::show(store.ui, tr("Die Mods werden gerade gesichert. Starte das Update danach noch einmal."), None);
-                return;
-            }
-            if !self.updating.peek().is_empty() {
-                toast::show(store.ui, tr("Warte, bis die Updates fertig sind."), None);
-                return;
-            }
-            self.updating.write().extend(selection.iter().map(|u| u.current.project_id.clone()));
-            self.update_error.set(None);
-            self.note.set(None);
-        } else {
-            let mut busy = store.ui.instance.busy;
-            busy.write().insert(id.clone(), Busy { text: tr("Wird aktualisiert …"), progress: None });
-        }
-        let running = is_active(store, &id);
-        spawn_in_window(async move {
-            let (work, sent) = (id.clone(), selection.clone());
-            let result = off_ui(move || remote::apply_updates(&work, &sent, running)).await;
-            let alive = self.alive();
-            if alive {
-                self.updating.set(HashSet::new());
-            }
-            if !shown {
-                let mut busy = store.ui.instance.busy;
-                busy.write().remove(&id);
-            }
-            let n = selection.len();
-            match result {
-                Some(Ok(made)) => {
-                    if alive {
-                        {
-                            let mut mods = self.mods.write();
-                            for u in &selection {
-                                if let Some(slot) = mods.iter_mut().find(|m| m.project_id == u.current.project_id && m.version_id == u.current.version_id) {
-                                    *slot = u.latest.clone();
-                                }
-                            }
-                        }
-                        self.applied.write().extend(selection.iter().map(|u| u.current.project_id.clone()));
-                        self.note.set(Some(if running && n == 1 {
-                            tr("1 Update vorgemerkt. Es gilt beim nächsten Start.")
-                        } else if running {
-                            trf("%lld Updates vorgemerkt. Sie gelten beim nächsten Start.", &[&n])
-                        } else if n == 1 {
-                            tr("1 Mod aktualisiert.")
-                        } else {
-                            trf("%lld Mods aktualisiert.", &[&n])
-                        }));
-                        self.base.set(made.clone());
-                    }
-                    store.dispatch(AppEvent::InstanceChanged(made));
-                    store.reload(true);
-                    let text = match selection.as_slice() {
-                        [one] => trf("„%@“", &[&one.current.title]),
-                        many => trf("%lld Mods", &[&many.len()]),
-                    };
-                    offer_updated(store, id, selection, text);
-                }
-                other => {
-                    let problem = match other {
-                        Some(Err(e)) => forms::explain_as(tr("Nicht aktualisiert."), &e),
-                        _ => Problem::plain(forms::unexplained()),
-                    };
-                    if alive {
-                        self.update_error.set(Some(problem));
-                    } else {
-                        toast::show(store.ui, problem.text, None);
-                    }
-                }
-            }
-        });
-    }
-
-    fn save(mut self) {
-        let base = self.base.peek().clone();
-        let store = self.store;
-        if *self.saving.peek() || !self.updating.peek().is_empty() || !self.adding.peek().is_empty() || snapshotting(store, &base.id) {
-            return;
-        }
-        if *self.mods.peek() == base.mods {
-            sheet::close(store.ui);
-            return;
-        }
-        if store.model.peek().instance(&base.id).is_none() {
-            self.save_error.set(Some(Problem::plain(tr("Diese Instanz gibt es nicht mehr."))));
-            return;
-        }
-        let before = InstanceEdit::of(&base);
-        let edit = InstanceEdit { mods: self.mods.peek().clone(), ..before.clone() };
-        self.saving.set(true);
-        self.save_error.set(None);
-        spawn_in_window(async move {
-            let id = base.id.clone();
-            let result = off_ui(move || remote::save_instance(&id, &before, edit)).await;
-            let alive = self.alive();
-            if alive {
-                self.saving.set(false);
-            }
-            match result {
-                Some(Ok(made)) => {
-                    store.dispatch(AppEvent::InstanceChanged(made));
-                    store.reload(true);
-                    if alive {
-                        sheet::close(store.ui);
-                    }
-                }
-                other => {
-                    let problem = match other {
-                        Some(Err(e)) => forms::explain_as(tr("Nicht gespeichert."), &e),
-                        _ => Problem::plain(forms::unexplained()),
-                    };
-                    if alive {
-                        self.save_error.set(Some(problem));
-                    } else {
-                        toast::show(store.ui, problem.text, None);
-                    }
-                }
-            }
-        });
-    }
-}
-
-#[derive(PartialEq)]
-struct Mods {
-    made: Instance,
-    search: Option<ModKind>,
-}
-
-impl Component for Mods {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = use_store();
-        let flow = Edit {
-            store,
-            base: use_state(|| self.made.clone()),
-            mods: use_state(|| self.made.mods.clone()),
-            updates: use_state(|| None),
-            ticket: use_state(|| 0),
-            updating: use_state(HashSet::new),
-            applied: use_state(HashSet::new),
-            update_error: use_state(|| None),
-            note: use_state(|| None),
-            saving: use_state(|| false),
-            save_error: use_state(|| None),
-            details: use_state(HashSet::new),
-            searching: use_state(|| self.search.is_some()),
-            direct: use_state(|| self.search.is_some()),
-            adding: use_state(HashSet::new),
-            kind: use_state(|| self.search.unwrap_or(ModKind::Mod)),
-        };
-        use_hook(move || flow.load_updates());
-        let back = *store.back.read();
-        use_side_effect_with_deps(&back, move |_| flow.retry_updates());
-        let watched = self.made.id.clone();
-        use_side_effect(move || {
-            let now = store.model.read().instance(&watched).cloned();
-            if let Some(now) = now {
-                flow.follow(now);
-            }
-        });
-
-        let base = flow.base.read().clone();
-        let mods = flow.mods.read().clone();
-        let saving = *flow.saving.read();
-        let updating = !flow.updating.read().is_empty();
-        let held = crate::view::instance::held(store, &base.id);
-        let running = store.model.read().games.values().any(|g| g.instance_id == base.id && g.phase.is_active());
-        let adding = !flow.adding.read().is_empty();
-        let lock = waiting_reason(saving, held.clone(), updating);
-
-        if *flow.searching.read() {
-            let _ = flow.updates.read();
-            let _ = flow.applied.read();
-            let scope = Scope {
-                create: false,
-                page: false,
-                made: Some(base.clone()),
-                version: base.game_version.clone(),
-                loader: base.loader.clone(),
-                mods: flow.mods,
-                touched: None,
-                adding: flow.adding,
-                updatable: flow.updatable(),
-                updating: flow.updating.read().clone(),
-                saving,
-                held: held.clone(),
-                pending: mods != base.mods,
-                dirty: mods != base.mods,
-                follow: None,
-                kind: *flow.kind.read(),
-                on_update: EventHandler::new(move |pid: String| flow.apply_updates(Some(pid))),
-                back: EventHandler::new(move |_| flow.leave_search()),
-                done: EventHandler::new(move |_| flow.leave_search()),
-            };
-            return Browser { scope }.into_element();
-        }
-
-        let mut column = rect().width(Size::fill()).padding(frame::RING).spacing(space::S);
-        if running {
-            column = column.child(running_notice(&t));
-        }
-        let add = add_button(adding_reason(&base.game_version, lock.clone())).on_press(move |_| flow.search(ModKind::Mod));
-        column = column.child(mods_header(&t, mods.len(), add));
-        if mods.is_empty() {
-            column = column.child(line(&t, trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&base.loader.name()]), font::CALLOUT, t.text2));
-        } else {
-            column = column.child(mod_list(&t, &mods, lock.clone(), move |pid| {
-                let mut mods = flow.mods;
-                mods.write().retain(|m| m.project_id != pid);
-            }));
-        }
-        if !base.local_mods.is_empty() {
-            column = column
-                .child(rect().padding((space::S, 0., 0., 0.)).child(label(&t, trf("Eigene Dateien (%lld)", &[&base.local_mods.len()]))))
-                .child(local_files(&t, &base.local_mods))
-                .child(para(&t, tr("Diese Dateien bleiben unverändert in der Instanz und werden nicht aktualisiert."), font::CAPTION, t.text3));
-        }
-        if let Some(updates) = updates_view(&t, flow, running, held) {
-            column = column.child(updates);
-        }
-
-        let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(column));
-        if let Some(problem) = flow.save_error.read().clone() {
-            body = body.child(problem_view(&t, "instance.save", Icon::CircleAlert, &problem, flow.details));
-        }
-        let primary = Primary { label: tr("Sichern"), disabled: lock.clone().or_else(|| adding.then(adding_wait)), danger: false, busy: saving, run: EventHandler::new(move |_| flow.save()) };
-        Card::new("instance", trf("Mods von %@", &[&base.name])).width(WIDE).body(body).primary(primary).primary_id("instance.save").locked(waiting_reason(saving, None, updating)).into_element()
-    }
-}
-
-fn updates_view(t: &Theme, flow: Edit, running: bool, held: Option<String>) -> Option<Element> {
-    let note = flow.note.read().clone();
-    if flow.mods.read().is_empty() && note.is_none() {
-        return None;
-    }
-    let updating = flow.updating.read().clone();
-    let applied = flow.applied.read().clone();
-    let saving = *flow.saving.read();
-    let reason = waiting_reason(saving, held, !updating.is_empty()).or_else(|| (*flow.mods.read() != flow.base.read().mods).then(|| unsaved_reason()));
-    let updates = flow.updates.read().clone();
-    let count = match &updates {
-        Some(Load::Ready(list)) => list.iter().filter(|u| !applied.contains(&u.current.project_id)).count(),
-        _ => 0,
-    };
-    let mut header = rect()
-        .width(Size::fill())
-        .horizontal()
-        .cross_align(Alignment::Center)
-        .spacing(space::S)
-        .content(Content::flex())
-        .child(at_least(control::M, label(t, if count > 0 { trf("Updates (%lld)", &[&count]) } else { tr("Updates") })).width(Size::flex(1.)));
-    if count > 1 {
-        header = header.child(Button::new("instance.update.all", tr("Alle aktualisieren")).glyph(Icon::Refresh).disabled(reason.clone()).on_press(move |_| flow.apply_updates(None)));
-    }
-    let mut column = rect().width(Size::fill()).spacing(space::XS).padding((space::S, 0., 0., 0.)).child(header);
-    if let Some(problem) = flow.update_error.read().clone() {
-        column = column.child(problem_view(t, "instance.update", Icon::CircleAlert, &problem, flow.details));
-    }
-    match updates {
-        None => {}
-        Some(Load::Loading) => column = column.child(spinner::waiting(t, tr("Suche nach Updates …"))),
-        Some(Load::Failed(why)) => {
-            column = column.child(problem_view(t, "instance.updates", Icon::WifiOff, &why, flow.details)).child(rect().horizontal().child(Button::new("instance.updates.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.load_updates())));
-        }
-        Some(Load::Ready(list)) if list.is_empty() => {
-            column = column.child(notice(t, Icon::CircleCheck, t.success_text, note.unwrap_or_else(|| tr("Alle Mods sind aktuell."))));
-        }
-        Some(Load::Ready(list)) => {
-            let rows = list
-                .iter()
-                .map(|u| {
-                    let pid = u.current.project_id.clone();
-                    let done = applied.contains(&pid);
-                    let action: Element = if done {
-                        rect().horizontal().cross_align(Alignment::Center).spacing(space::XS).child(icon(t, Icon::Check, iconsize::S, t.success_text)).child(line(t, tr("Aktualisiert"), font::CALLOUT, t.success_text)).into_element()
-                    } else {
-                        let why = if updating.contains(&pid) { Some(tr("Wird aktualisiert …")) } else { reason.clone() };
-                        let only = pid.clone();
-                        Button::new(format!("instance.update.{pid}"), tr("Aktualisieren")).plain().disabled(why).on_press(move |_| flow.apply_updates(Some(only.clone()))).into_element()
-                    };
-                    let versions = if done { u.latest.file_name.clone() } else { format!("{} → {}", u.current.file_name, u.latest.file_name) };
-                    rect()
-                        .key(u.current.project_id.clone())
-                        .width(Size::fill())
-                        .padding((space::XS, space::XS, space::XS, space::M))
-                        .horizontal()
-                        .cross_align(Alignment::Center)
-                        .spacing(space::S)
-                        .content(Content::flex())
-                        .child(icon(t, Icon::Package, iconsize::S, t.text3))
-                        .child(rect().width(Size::flex(1.)).spacing(1.).child(line(t, u.current.title.clone(), font::BODY, t.text1)).child(caption(t, versions)))
-                        .child(action)
-                        .into_element()
-                })
-                .collect::<Vec<_>>();
-            let height = rows_height(rows.len()) + rows.len() as f32 * (font::CAPTION * font::LINE);
-            column = column.child(rows_box(t, rows, height));
-            if let Some(note) = note {
-                column = column.child(notice(t, Icon::CircleCheck, t.success_text, note));
-            }
-            if running {
-                column = column.child(caption(t, tr("Gilt beim nächsten Start.")));
-            }
-        }
-    }
-    Some(column.into_element())
 }
 
 #[cfg(test)]

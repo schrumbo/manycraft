@@ -17,6 +17,7 @@ use super::kit::toast::Toast;
 use super::kit::tooltip::Tip;
 use super::theme::frame;
 use crate::app::model::Need;
+use crate::core::modrinth::Kind;
 use crate::core::winstate;
 
 /// The pages the sidebar leads to.
@@ -29,6 +30,8 @@ pub enum Page {
     Installing(u64),
     /// Modpacks from Modrinth, each installable as a new instance.
     Modpacks,
+    /// Mods and other content from Modrinth for one instance, by instance id, on the tab of a kind.
+    Browse(String, Kind),
     Accounts,
     Chat,
     Settings,
@@ -222,7 +225,7 @@ pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
     match page {
         Page::Grid(Filter::Batch(b)) => Some((winstate::Page::Grid, Some(b.clone()))),
         Page::Grid(_) => Some((winstate::Page::Grid, None)),
-        Page::Instance(id) => Some((winstate::Page::Instance, Some(id.clone()))),
+        Page::Instance(id) | Page::Browse(id, _) => Some((winstate::Page::Instance, Some(id.clone()))),
         Page::Accounts => Some((winstate::Page::Accounts, None)),
         Page::Chat => Some((winstate::Page::Chat, None)),
         Page::Settings | Page::Installing(_) | Page::Modpacks | Page::Trash => None,
