@@ -880,6 +880,7 @@ impl Fleet {
     /// built-in companion agent for the instance's game.
     pub fn prepare_launch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         let instance = &target.instance;
+        let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
         }

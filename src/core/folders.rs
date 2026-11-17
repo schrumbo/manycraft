@@ -92,7 +92,12 @@ fn fold(name: &OsStr) -> String {
 
 /// `base` when no entry under `root` other than `except` has that name in any case, else "`base` 2", "`base` 3", … cut to fit.
 pub(super) fn free_in(root: &Path, base: &str, except: Option<&OsStr>) -> String {
-    let taken: HashSet<String> = fs::read_dir(root).map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).filter(|n| Some(n.as_os_str()) != except).map(|n| fold(&n)).collect()).unwrap_or_default();
+    free_among(root, base, except, &HashSet::new())
+}
+
+fn free_among(root: &Path, base: &str, except: Option<&OsStr>, refused: &HashSet<String>) -> String {
+    let mut taken: HashSet<String> = fs::read_dir(root).map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).filter(|n| Some(n.as_os_str()) != except).map(|n| fold(&n)).collect()).unwrap_or_default();
+    taken.extend(refused.iter().cloned());
     let free = |n: &str| !taken.contains(&n.to_lowercase());
     if free(base) {
         return base.to_owned();
@@ -270,11 +275,15 @@ pub(super) fn claim(root: &Path, name: &str) -> PathBuf {
 pub(super) fn create(root: &Path, name: &str) -> Result<PathBuf> {
     fs::create_dir_all(root).with_context(|| format!("cannot create {}", root.display()))?;
     let _naming = naming(root)?;
+    let mut refused = HashSet::new();
     for _ in 0..CREATE_ATTEMPTS {
-        let dir = claim(root, name);
+        let picked = free_among(root, &sanitize(name), None, &refused);
+        let dir = root.join(&picked);
         match fs::create_dir(&dir) {
             Ok(()) => return Ok(dir),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                refused.insert(picked.to_lowercase());
+            }
             Err(e) => return Err(e).with_context(|| format!("cannot create {}", dir.display())),
         }
     }
