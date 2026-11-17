@@ -129,6 +129,7 @@ fn drawer(t: &super::theme::Theme, ui: super::ui::Ui) -> Element {
         .width(Size::px(w))
         .height(Size::px(h))
         .horizontal()
+        .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
         .child(rect().height(Size::fill()).shadow(t.elevation.float.clone()).child(Sidebar))
         .child(rect().width(Size::flex(1.)).height(Size::fill()).background(t.scrim.with_a(t.scrim.a() / 2)).on_press(move |_| open.set(false)))
         .content(Content::flex())

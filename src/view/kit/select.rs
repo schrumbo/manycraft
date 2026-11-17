@@ -77,10 +77,11 @@ impl Component for Select {
                 })
                 .collect();
             let anchor = *bounds.peek();
-            let menu = if options.len() > frame::MENU_ROWS { Menu::under(items, anchor).searchable(tr("Suchen")) } else { Menu::over(items, anchor, space::S) };
+            let menu = if options.len() > frame::MENU_ROWS { Menu::under(items, anchor).searchable(tr("Suchen")) } else { Menu::over(items, anchor, space::S).dragged() };
             menu::open(ui, menu);
         };
         let mut click = open.clone();
+        let mut tap = open.clone();
         let mut keys = open;
         let value = self.options.get(chosen).cloned().unwrap_or_default();
         let mut s = rect()
@@ -102,10 +103,16 @@ impl Component for Select {
             })
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
-            .on_press(move |_| {
-                if enabled {
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                if enabled && e.button == Some(MouseButton::Left) {
                     a11y.request_focus();
                     click();
+                }
+            })
+            .on_all_press(move |e: Event<PressEventData>| {
+                if enabled && !matches!(&*e, PressEventData::Mouse(_)) {
+                    a11y.request_focus();
+                    tap();
                 }
             })
             .on_key_down(move |e: Event<KeyboardEventData>| {
@@ -123,7 +130,7 @@ impl Component for Select {
                 }
             })
             .child(line(&t, value, font::BODY, if enabled { t.text1 } else { t.text3 }).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.)))
-            .child(icon(&t, Icon::ChevronDown, iconsize::S, if enabled { t.text2 } else { t.text3 }))
+            .child(icon(&t, if self.options.len() > frame::MENU_ROWS { Icon::ChevronDown } else { Icon::ChevronsUpDown }, iconsize::S, if enabled { t.text2 } else { t.text3 }))
             .content(Content::flex());
         if let Some(border) = ring(&t, focus()) {
             s = s.border(border);

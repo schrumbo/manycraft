@@ -207,6 +207,7 @@ impl Component for Gallery {
             .width(Size::px(w))
             .height(Size::px(h))
             .on_mouse_down(move |_| close.call(()))
+            .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 if e.key == Key::Named(NamedKey::Escape) {
                     e.stop_propagation();

@@ -19,6 +19,7 @@ use crate::view::commands::{Want, want};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
+use crate::view::kit::check;
 use crate::view::kit::field::{Field, typing};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
@@ -45,7 +46,6 @@ const PICK_ROW: f32 = control::M + space::XS;
 const BOX_EDGES: f32 = frame::HAIRLINE * 2.;
 const FACE: f32 = iconsize::L;
 const FACE_INSET: f32 = FACE / 12.;
-const BOX: f32 = iconsize::M;
 const HINT_LINES: f32 = 2.;
 const LAUNCH_CHOICES: [u32; 5] = [0, 1, 2, 4, 8];
 const BACKGROUND_NAMES: [&str; 4] = ["saving", "balanced", "full", "custom"];
@@ -1223,11 +1223,7 @@ impl Component for PickRow {
             Some(batch) => format!("{} · {}", c.kind, trf("Läuft in „%@“", &[batch])),
             None => c.kind.clone(),
         };
-        let mark = if self.on {
-            rect().width(Size::px(BOX)).height(Size::px(BOX)).center().corner_radius(t.shape.small).background(t.accent).child(icon(&t, Icon::Check, iconsize::XS, t.on_accent))
-        } else {
-            rect().width(Size::px(BOX)).height(Size::px(BOX)).corner_radius(t.shape.small).border(Border::new().fill(t.text3).width(frame::BOX_EDGE).alignment(BorderAlignment::Inner))
-        };
+        let mark = check::mark(&t, self.on);
         let mut row = rect()
             .a11y_alt(format!("{}, {}", c.name, if self.on { tr("ausgewählt") } else { tr("nicht ausgewählt") }))
             .width(Size::fill())

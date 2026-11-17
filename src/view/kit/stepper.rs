@@ -1,4 +1,4 @@
-//! A stepper: a number with minus and plus, changed by clicks or the arrow keys.
+//! A stepper: a number with minus and plus, changed by clicks or the arrow keys, ten steps at a time with Shift.
 
 use freya::prelude::*;
 
@@ -106,9 +106,10 @@ impl Component for Stepper {
                 if !live || !a11y.is_focused() {
                     return;
                 }
+                let jump = if e.modifiers.contains(Modifiers::SHIFT) { step * 10 } else { step };
                 match e.key {
-                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowRight) => keys(value + step),
-                    Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowLeft) => keys(value - step),
+                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowRight) => keys(value + jump),
+                    Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowLeft) => keys(value - jump),
                     _ => return,
                 }
                 e.stop_propagation();
