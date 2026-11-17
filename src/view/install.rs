@@ -404,7 +404,24 @@ impl Component for Slot {
     }
 }
 
-/// The page of an installing instance: what comes in, its progress where Spielen will be, and why it failed when it did.
+/// The toolbar's Play slot while install `id` runs; empty once it failed.
+#[derive(PartialEq)]
+pub struct PlaySlot {
+    pub id: u64,
+}
+
+impl Component for PlaySlot {
+    fn render(&self) -> impl IntoElement {
+        let store = use_store();
+        let entry = store.ui.installs.read().iter().find(|i| i.id == self.id && !matches!(i.stage, Stage::Failed(_))).cloned();
+        match entry {
+            Some(entry) => Slot { entry }.into_element(),
+            None => rect().into_element(),
+        }
+    }
+}
+
+/// The page of an installing instance: what comes in, and why it failed when it did; its progress sits where Spielen will be.
 #[derive(PartialEq)]
 pub struct InstallPage {
     pub id: u64,
@@ -424,8 +441,6 @@ impl Component for InstallPage {
         });
         let entry = store.ui.installs.read().iter().find(|i| i.id == id).cloned();
         let Some(entry) = entry else { return rect().into_element() };
-        let room = store.ui.window.read().0 - if *store.ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
-        let wide = room >= frame::INSPECTOR_SPLIT;
         let tile = rect().width(Size::px(frame::HERO_TILE)).height(Size::px(frame::HERO_TILE)).center().corner_radius(t.shape.tile).background(t.accent.with_af32(frame::TILE_WASH)).child(icon(&t, Icon::Package, iconsize::HERO, t.accent_text));
         let mut hero = rect().width(Size::fill()).max_width(Size::px(frame::SHEET)).cross_align(Alignment::Center).spacing(space::M).child(tile).child(strong(&t, entry.name.clone(), font::TITLE2, t.text1).width(Size::fill()).max_lines(2).text_align(TextAlign::Center));
         let failed = match &entry.stage {
@@ -440,22 +455,9 @@ impl Component for InstallPage {
             }
             None => {
                 hero = hero.child(para(&t, tr("Wird als Instanz installiert. Du kannst solange weiterarbeiten."), font::BODY, t.text2).text_align(TextAlign::Center));
-                if !wide {
-                    hero = hero.child(rect().width(Size::px(frame::SHEET / 2.)).child(Slot { entry: entry.clone() }));
-                }
             }
         }
-        let left = rect().width(Size::flex(1.)).height(Size::fill()).center().padding(space::XL).child(hero);
-        let mut page = rect().width(Size::fill()).height(Size::fill()).horizontal().content(Content::flex()).child(left);
-        if wide {
-            let side = rect().width(Size::fill()).padding(space::L).child(if failed.is_some() {
-                rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(ring(&t, &entry.stage, iconsize::M)).child(line(&t, entry.state(), font::CALLOUT, t.danger_text).max_lines(1)).into_element()
-            } else {
-                Slot { entry }.into_element()
-            });
-            page = page.child(rect().width(Size::px(1.)).height(Size::fill()).background(t.separator)).child(rect().width(Size::px(frame::INSPECTOR)).height(Size::fill()).background(t.sidebar).child(side));
-        }
-        page.into_element()
+        rect().width(Size::fill()).height(Size::fill()).center().padding(space::XL).child(hero).into_element()
     }
 }
 
