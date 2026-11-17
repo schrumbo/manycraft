@@ -7,6 +7,7 @@ pub mod layout;
 mod strips;
 pub mod table;
 mod tile;
+mod welcome;
 mod words;
 
 use std::cell::RefCell;
@@ -418,8 +419,11 @@ fn card(t: &super::theme::Theme, store: Store, id: String, name: String, running
         .child(action)
 }
 
-fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, store: Store, m: &Model) -> impl IntoElement {
+fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, store: Store, m: &Model) -> Element {
     let searching = !search.trim().is_empty();
+    if *filter == Filter::All && show == Show::All && !searching && welcome::due(m) {
+        return welcome::Welcome.into_element();
+    }
     let unstarted = *filter == Filter::All && m.batches.is_empty() && !m.accounts.is_empty() && !m.games.values().any(|g| g.alone() && g.phase.is_active());
     let (glyph, title, text) = if searching {
         (Icon::Search, tr("Nichts gefunden"), trf("Zu „%@“ passt keiner.", &[&search.trim()]))
@@ -452,7 +456,7 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
             commands::want(store, commands::Want::AddAccount);
         }))
     };
-    col
+    col.into_element()
 }
 
 /// The word for how many games the page shows, for the toolbar; `shelf` counts the running games played alone on the shelf

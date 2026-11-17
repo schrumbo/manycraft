@@ -154,9 +154,8 @@ impl App for Root {
             let s = *root.peek();
             Ui::create((s.width, s.height))
         });
-        let mut window = ui.window;
         let s = *root.read();
-        window.set_if_modified((s.width, s.height));
+        ui.resize((s.width, s.height));
         let play = self.play.clone();
         let hears = self.hears.clone();
         let store = use_provide_context(move || {

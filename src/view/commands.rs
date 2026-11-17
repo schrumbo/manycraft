@@ -11,7 +11,7 @@ use super::kit::toast;
 use super::store::Store;
 use super::ui::{Filter, Page, Show, View};
 use crate::app::event::Event;
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::core::ipc::HotkeyAction;
 
 /// What a command does.
@@ -81,6 +81,10 @@ const fn k(code: Code) -> Shortcut {
 
 const fn ks(code: Code) -> Shortcut {
     Shortcut { code, primary: true, shift: true, alt: false, ctrl: false }
+}
+
+const fn ka(code: Code) -> Shortcut {
+    Shortcut { code, primary: true, shift: false, alt: true, ctrl: false }
 }
 
 const fn ca(code: Code) -> Shortcut {
@@ -354,9 +358,9 @@ impl Command {
             Command::ShowTable => k(Code::Digit2),
             Command::Quit => k(Code::KeyQ),
             Command::Import => k(Code::KeyO),
+            Command::StartAll => ks(Code::Enter),
+            Command::StopAll => ks(Code::Period),
             Command::ShowAttention
-            | Command::StartAll
-            | Command::StopAll
             | Command::MessageSelected
             | Command::ShowHistory
             | Command::ShowRunning
@@ -392,7 +396,7 @@ impl Command {
             Command::ShowStopped => grid && !matches!(*store.ui.page.peek(), Page::Grid(Filter::Attention)) && *store.ui.show.peek() != Show::Stopped,
             Command::CancelStart | Command::StartAnyway => m.run(None).is_some_and(|r| self == Command::CancelStart || r.memory > 0),
             Command::ReconnectDropped => m.batches.iter().any(|b| m.outage(&b.id).is_some()),
-            Command::StartAll => m.games.values().any(|g| !g.phase.is_active()),
+            Command::StartAll => m.games.values().any(|g| !g.phase.is_active() && !g.alone()),
             Command::StopAll => m.games.values().any(|g| g.phase.is_active() && !g.alone()),
             Command::NextInstance | Command::PreviousInstance => m.games.values().filter(|g| g.phase.is_running()).count() > 0,
             Command::NextAttention | Command::ShowAttention => m.attention_count(None) > 0,
@@ -422,10 +426,7 @@ impl Command {
                 ui.menu.set_if_modified(None);
                 ui.palette.set(open);
             }
-            Command::ToggleSidebar => {
-                let shown = !*ui.sidebar.peek();
-                ui.sidebar.set(shown);
-            }
+            Command::ToggleSidebar => ui.toggle_sidebar(),
             Command::Undo => {
                 let browser = ui.browser_undo.peek().clone();
                 match browser {
@@ -540,13 +541,27 @@ pub fn for_menu(store: Store, command: Command) -> Option<Command> {
     keys.and_then(|keys| Command::ALL.into_iter().find(|c| c.shortcut() == Some(keys) && ready(*c))).or_else(|| ready(command).then_some(command))
 }
 
-/// What the palette calls Rückgängig: the open browser's removal, or the newest deletion no toast offers any more.
+thread_local! {
+    static UNDO_NAMES: std::cell::RefCell<Vec<(u64, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Names what the Rückgängig of toast `id` takes back, such as „184 stoppen“, for the palette and the menu bar.
+pub fn name_undo(store: Store, id: u64, what: String) {
+    let live: HashSet<u64> = store.ui.toasts.peek().iter().map(|t| t.id).collect();
+    UNDO_NAMES.with_borrow_mut(|names| {
+        names.retain(|(n, _)| live.contains(n));
+        names.push((id, what));
+    });
+}
+
+/// What the palette calls Rückgängig: the open browser's removal, what the newest toast takes back when it is named, or
+/// the newest deletion no toast offers any more.
 pub fn undo_label(store: Store) -> Option<String> {
     if let Some(u) = store.ui.browser_undo.peek().as_ref() {
         return Some(u.label.clone());
     }
-    if store.ui.toasts.peek().iter().any(|t| t.undo.is_some()) {
-        return None;
+    if let Some(id) = store.ui.toasts.peek().iter().rev().find(|t| t.undo.is_some()).map(|t| t.id) {
+        return UNDO_NAMES.with_borrow(|names| names.iter().find(|(n, _)| *n == id).map(|(_, what)| trf("Rückgängig: %@", &[what])));
     }
     store.ui.session_undo.peek().first().map(|u| u.label.clone())
 }
@@ -647,6 +662,11 @@ pub fn want(store: Store, want: Want) -> bool {
     }
 }
 
+/// Why signing in cannot start now: nobody takes it, or another sheet is open.
+pub fn sign_in_blocked(store: Store) -> Option<String> {
+    (!can_want(&Want::SignInAgain(Vec::new())) || store.ui.sheet.peek().is_some()).then(|| tr("Anmeldung gerade nicht möglich"))
+}
+
 /// The reason a control that asks for `want` is off, while nobody takes it.
 pub fn want_blocked(want: &Want) -> Option<String> {
     (!can_want(want)).then(|| tr("Zieht noch in die neue Oberfläche um."))
@@ -711,6 +731,9 @@ impl Command {
             Command::AccountsAsList => k(Code::Digit1),
             Command::AccountsAsTable => k(Code::Digit2),
             Command::AddMods => ks(Code::KeyM),
+            Command::NewBatch => ka(Code::KeyN),
+            Command::FindModpacks => ks(Code::KeyO),
+            Command::OpenTrash => ks(Code::KeyT),
             _ => return None,
         })
     }
@@ -787,6 +810,30 @@ impl Command {
         match self.shortcut() {
             Some(s) => format!("{} ({})", self.label(), s.label()),
             None => self.label(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_two_commands_share_a_chord_unless_their_pages_differ() {
+        let paged = [(Command::ShowTiles, Command::AccountsAsList), (Command::ShowTable, Command::AccountsAsTable)];
+        for (i, a) in Command::ALL.into_iter().enumerate() {
+            for b in Command::ALL.into_iter().skip(i + 1) {
+                if a.shortcut().is_some() && a.shortcut() == b.shortcut() {
+                    assert!(paged.contains(&(a, b)) || paged.contains(&(b, a)), "{} and {} share a chord", a.name(), b.name());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_wide_commands_of_the_shell_have_keys() {
+        for c in [Command::StartAll, Command::StopAll, Command::NewBatch, Command::OpenTrash, Command::FindModpacks] {
+            assert!(c.shortcut().is_some(), "{} has no key", c.name());
         }
     }
 }

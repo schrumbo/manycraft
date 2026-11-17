@@ -86,7 +86,8 @@ fn play_menu(store: Store, f: &Facts) -> Vec<Item> {
         let mut item = if f.playing.contains(account) {
             Item::new(format!("instance.play.as.{account}"), name.clone(), |_| {}).shortcut(tr("Läuft")).disabled(true)
         } else if f.expired.contains(account) {
-            Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![account_id])).shortcut(tr("Anmelden"))
+            let blocked = crate::view::commands::sign_in_blocked(store);
+            Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![account_id])).disabled(blocked.is_some()).shortcut(blocked.unwrap_or_else(|| tr("Anmelden")))
         } else {
             let item = Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: Some(account_id) }));
             if f.pinned && f.solo == Some(*account) { item.shortcut(tr("Standard")) } else { item }

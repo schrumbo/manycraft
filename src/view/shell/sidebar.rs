@@ -7,7 +7,7 @@ use crate::app::model::{Import, Model, Phase, UpdateStatus, Updates};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::view::accounts::off;
-use crate::view::commands::{Command, Want, can_want, want, want_blocked};
+use crate::view::commands::{self, Command, Want, can_want, want, want_blocked};
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::badge::{Tone, badge, dot};
 use crate::view::kit::button::Button;
@@ -123,7 +123,14 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
     let mut items = vec![if alone.is_empty() {
         let who = crate::app::reduce::solo_account(&m, made).and_then(|a| m.account(a)).map(|a| (a.id, a.name.clone()));
         match who {
-            Some((account, name)) if m.sign_in_expired(account) => Item::new("instance.play", trf("Anmelden als %@", &[&name]), move |_| crate::view::accounts::sign_in(store, vec![account])),
+            Some((account, name)) if m.sign_in_expired(account) => {
+                let blocked = commands::sign_in_blocked(store);
+                let item = Item::new("instance.play", trf("Anmelden als %@", &[&name]), move |_| crate::view::accounts::sign_in(store, vec![account])).disabled(blocked.is_some());
+                match blocked {
+                    Some(why) => item.shortcut(why),
+                    None => item,
+                }
+            }
             who => {
                 let label = who.map_or_else(|| tr("Spielen"), |(_, n)| trf("Spielen als %@", &[&n]));
                 Item::new("instance.play", label, move |_| store.dispatch(AppEvent::PlayInstance { instance: i.clone(), account: None }))
@@ -255,7 +262,7 @@ impl Component for Sidebar {
                 }
                 let id = b.id.clone();
                 let row = Row::new(format!("nav.batch.{}", b.id), b.name).glyph(Icon::Layers).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
-                list = list.child(WithTip::new(Some(b.hint), row));
+                list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(b.hint), row)));
             }
             for import in m.imports.iter().take(IMPORT_ROWS_MAX) {
                 list = list.child(ImportRow { import: import.clone() });
@@ -295,7 +302,7 @@ impl Component for Sidebar {
                 };
                 let id = i.id.clone();
                 let row = Row::new(format!("nav.instance.{}", i.id), i.name.clone()).glyph(Icon::Package).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(instance_items(store, &id), at)));
-                list = list.child(WithTip::new(tip, row));
+                list = list.child(rect().key(&i.id).width(Size::fill()).child(WithTip::new(tip, row)));
             }
             if can_want(&Want::NewInstance) {
                 list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {
@@ -313,9 +320,9 @@ impl Component for Sidebar {
             foot = foot.child(update);
         }
         if can_want(&Want::OpenTrash) {
-            foot = foot.child(Row::new("nav.trash", tr("Papierkorb")).glyph(Icon::Trash).height(frame::ROW).on_press(move |_| {
+            foot = foot.child(WithTip::new(Some(Command::OpenTrash.tip()), Row::new("nav.trash", tr("Papierkorb")).glyph(Icon::Trash).height(frame::ROW).on_press(move |_| {
                 want(store, Want::OpenTrash);
-            }));
+            })));
         }
         foot = foot.child(WithTip::new(Some(Command::OpenSettings.tip()), Row::new("nav.settings", tr("Einstellungen")).glyph(Icon::Settings).height(frame::ROW).selected(now == Page::Settings).on_press(go(Page::Settings))));
         foot = foot.child(super::account::AccountSwitch);

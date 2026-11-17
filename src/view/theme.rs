@@ -8,6 +8,7 @@ use crate::core::themes::{self, Density, Library, Rgba, Signature, Token};
 
 /// Paint levels of the window-wide overlays; Freya paints nodes that share a level in no fixed order.
 pub mod level {
+    pub const DRAWER: u8 = 1;
     pub const SHEET: u8 = 2;
     pub const PALETTE: u8 = 3;
     pub const MENU: u8 = 4;
@@ -18,6 +19,8 @@ pub mod level {
 /// Fixed sizes of the window's frame around the content.
 pub mod frame {
     pub const SIDEBAR: f32 = 232.;
+    /// Below this window width the sidebar gives up its column and opens above the page instead.
+    pub const SIDEBAR_FOLD: f32 = 900.;
     pub const TOOLBAR: f32 = 56.;
     pub const ROW: f32 = 30.;
     pub const SEARCH: f32 = 220.;
@@ -42,6 +45,8 @@ pub mod frame {
     pub const PALETTE: f32 = 560.;
     pub const PALETTE_ROW: f32 = 36.;
     pub const PALETTE_ROWS: usize = 9;
+    /// The widest an instance's name shows in front of the palette's field while its actions are listed.
+    pub const PALETTE_CRUMB: f32 = 180.;
     pub const MENU: f32 = 220.;
     pub const MENU_ROW: f32 = 26.;
     /// Rows a long menu shows before it scrolls.
@@ -51,6 +56,8 @@ pub mod frame {
     pub const INSPECTOR: f32 = 300.;
     /// The widest the content of an instance tab grows.
     pub const CONTENT_MAX: f32 = 760.;
+    /// The width of the welcome card on the first run.
+    pub const WELCOME: f32 = 440.;
     pub const TOAST: f32 = 420.;
     pub const TOASTS: usize = 3;
     pub const TOOLTIP: f32 = 280.;
@@ -161,6 +168,22 @@ pub fn color(c: Rgba) -> Color {
     Color::from(u32::from_be_bytes([c.a, c.r, c.g, c.b]))
 }
 
+const FOCUS_APART: f32 = 60.;
+const FOCUS_SHIFT: f32 = 0.55;
+
+fn apart(a: Color, b: Color) -> f32 {
+    let d = |x: u8, y: u8| f32::from(x) - f32::from(y);
+    (d(a.r(), b.r()).powi(2) + d(a.g(), b.g()).powi(2) + d(a.b(), b.b()).powi(2)).sqrt()
+}
+
+fn focus_ring(focus: Color, accent: Color, text: Color) -> Color {
+    if apart(focus, accent) >= FOCUS_APART {
+        return focus;
+    }
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * FOCUS_SHIFT).round() as u8;
+    Color::from_argb(255, m(accent.r(), text.r()), m(accent.g(), text.g()), m(accent.b(), text.b()))
+}
+
 fn shadow(x: f32, y: f32, blur: f32, spread: f32, color: Color) -> Shadow {
     Shadow::from((x, y, blur, spread, color))
 }
@@ -179,6 +202,7 @@ impl Theme {
         };
         let text1 = get(Token::Text1);
         let attention = get(Token::Attention);
+        let accent = get(Token::Accent);
         Self {
             dark,
             surface: get(Token::Surface),
@@ -190,7 +214,7 @@ impl Theme {
             text2: get(Token::Text2),
             text3: get(Token::Text3),
             separator: get(Token::Separator),
-            accent: get(Token::Accent),
+            accent,
             accent_text: get(Token::AccentText),
             on_accent: get(Token::OnAccent),
             attention,
@@ -201,7 +225,7 @@ impl Theme {
             on_danger: get(Token::OnDanger),
             success: get(Token::Success),
             success_text: get(Token::SuccessText),
-            focus: get(Token::FocusRing),
+            focus: focus_ring(get(Token::FocusRing), accent, text1),
             tile_ring: get(Token::TileRing),
             selection: get(Token::Selection),
             scrim: get(Token::Scrim),
@@ -254,5 +278,20 @@ impl Theme {
     pub fn ink_on(&self, fill: Color) -> Color {
         let luma = 0.299 * f32::from(fill.r()) + 0.587 * f32::from(fill.g()) + 0.114 * f32::from(fill.b());
         if luma > 150. { Color::from(0xFF15_130F) } else { Color::WHITE }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_focus_ring_stands_apart_from_the_accent() {
+        let accent = Color::from_rgb(0x0B, 0x7A, 0x74);
+        let text = Color::from_rgb(0x1C, 0x1B, 0x18);
+        assert!(apart(focus_ring(accent, accent, text), accent) >= FOCUS_APART);
+        assert!(apart(focus_ring(Color::from_rgb(0x82, 0xD9, 0xD2), Color::from_rgb(0x5E, 0xC9, 0xC1), Color::from_rgb(0xEE, 0xEE, 0xEE)), Color::from_rgb(0x5E, 0xC9, 0xC1)) >= FOCUS_APART);
+        let own = Color::from_rgb(0xFF, 0xB0, 0x00);
+        assert_eq!(focus_ring(own, accent, text), own);
     }
 }

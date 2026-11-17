@@ -465,6 +465,12 @@ impl Component for Tools {
                 Segment { id: "accounts.view.table".into(), label: tr("Tabelle"), tip: Some(tr("Kompakte Zeilen zum Sortieren und Auswählen")) },
             ];
             row = row.child(Segmented::new(tr("Ansicht"), items, usize::from(view == View::Table)).on_choose(move |i| shared.view.set(Some(if i == 1 { View::Table } else { View::List }))));
+        } else if count > 0 {
+            let items = vec![
+                Item::new("accounts.more.list", tr("Liste"), move |_| shared.view.set(Some(View::List))).checked(view == View::List),
+                Item::new("accounts.more.table", tr("Tabelle"), move |_| shared.view.set(Some(View::Table))).checked(view == View::Table),
+            ];
+            row = row.child(crate::view::kit::more::More { id: "accounts.more".into(), items });
         }
         if prism.found > 0 && count > 0 {
             row = row.child(Button::new("accounts.prism", tr("Aus Prism übernehmen")).glyph(Icon::Download).disabled(prism.busy.then(|| tr("Wird übernommen …"))).on_press(move |_| import_prism(store)));
@@ -537,10 +543,7 @@ impl Component for AccountsPage {
             let p = shared.picked.read();
             shown.iter().filter(|l| p.contains(&l.id)).count()
         };
-        if picked > 1 {
-            strips = strips.child(SelectionBar { count: picked, all: shown.len() });
-            any = true;
-        }
+        let all = shown.len();
         let mut column = rect().width(Size::fill()).height(Size::fill()).cross_align(Alignment::Center);
         if m.accounts.is_empty() {
             return page.child(empty(&t, store)).into_element();
@@ -560,8 +563,18 @@ impl Component for AccountsPage {
         } else {
             inner = inner.child(list::List { lines: shown });
         }
+        if picked > 1 {
+            inner = inner.child(rect().width(Size::fill()).height(Size::px(frame::NOTICE + space::S + space::L * 2.)));
+        }
         column = column.child(inner);
         page = page.child(column);
+        if picked > 1 {
+            let mut floating = rect().width(Size::fill()).corner_radius(t.shape.control).background(t.raised).shadow(t.elevation.float.clone()).child(SelectionBar { count: picked, all });
+            if !wide {
+                floating = floating.max_width(Size::px(PAGE_MAX));
+            }
+            page = page.child(rect().position(Position::new_absolute().left(0.).bottom(space::L)).width(Size::fill()).padding((0., pad)).cross_align(Alignment::Center).child(floating));
+        }
         page.into_element()
     }
 }

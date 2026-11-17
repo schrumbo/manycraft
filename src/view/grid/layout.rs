@@ -1,5 +1,6 @@
 //! Where the tiles go: one uniform 16:9 size for every tile, S, M, L or the largest that fits the window without
-//! scrolling, rows filled from the left and the whole block centred in the leftover space.
+//! scrolling, rows filled from the left and the whole block centred in the leftover space. Fit also stretches its
+//! rows to the full width where that costs no scrolling.
 
 /// The tile size the person chose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -131,6 +132,9 @@ pub fn layout(count: usize, size: TileSize, width: f32, height: f32, gap: f32, p
     let columns = (((inner + gap) / (tile_w + gap)).floor() as usize).max(1);
     let columns = if count == 0 { columns } else { columns.min(count) };
     let rows = count.div_ceil(columns.max(1));
+    let tall = |w: f32| pad * 2. + rows as f32 * tile_height(w) + rows.saturating_sub(1) as f32 * gap;
+    let wide = ((inner - columns.saturating_sub(1) as f32 * gap) / columns.max(1) as f32).min(LARGE).floor();
+    let tile_w = if size == TileSize::Fit && count > 0 && wide > tile_w && (tall(wide) <= height || tall(tile_w) > height) { wide } else { tile_w };
     let tile_h = tile_height(tile_w);
     let block = columns as f32 * tile_w + columns.saturating_sub(1) as f32 * gap;
     let left = pad + ((inner - block) / 2.).max(0.).floor();
@@ -196,6 +200,23 @@ mod tests {
         let g = layout(400, TileSize::Fit, 1200., 800., 8., 16.);
         assert_eq!(g.tile_w, SMALL);
         assert!(g.content_h > 800.);
+    }
+
+    #[test]
+    fn fit_fills_the_width_when_it_scrolls_anyway() {
+        let g = layout(400, TileSize::Fit, 1250., 800., 8., 16.);
+        assert!(g.tile_w > SMALL);
+        assert_eq!(g.left, 16.);
+        let block = g.columns as f32 * g.tile_w + (g.columns - 1) as f32 * 8.;
+        assert!(1250. - 32. - block < g.columns as f32);
+    }
+
+    #[test]
+    fn fit_fills_the_width_only_while_nothing_starts_to_scroll() {
+        for count in [2, 3, 7, 12, 30] {
+            let g = layout(count, TileSize::Fit, 1208., 844., 12., 16.);
+            assert!(g.content_h <= 844., "{count}: {} > box", g.content_h);
+        }
     }
 
     #[test]

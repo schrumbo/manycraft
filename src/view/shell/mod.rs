@@ -20,9 +20,10 @@ use super::kit::button::Button;
 use super::kit::text::{heading, line, secondary};
 use super::kit::{menu, note_held, sheet, toast, tooltip, use_theme};
 use super::store::use_store;
-use super::theme::{font, frame, iconsize, space};
-use super::ui::Page;
+use super::theme::{font, frame, iconsize, level, space};
+use super::ui::{Filter, Page};
 use crate::core::i18n::tr;
+use crate::core::winstate;
 
 /// The whole window.
 #[derive(PartialEq)]
@@ -32,8 +33,27 @@ impl Component for Shell {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let ui = store.ui;
+        let mut ui = store.ui;
         let page = ui.page.read().clone();
+        let missing = {
+            let m = store.model.read();
+            m.loaded
+                && match &page {
+                    Page::Grid(Filter::Batch(b)) => m.batch(b).is_none(),
+                    Page::Instance(id) => m.instance(id).is_none(),
+                    _ => false,
+                }
+        };
+        use_side_effect_with_deps(&missing, move |missing| {
+            if *missing {
+                ui.page.set(Page::Grid(Filter::All));
+            }
+        });
+        let wanted = *ui.sidebar_wanted.read();
+        use_side_effect_with_deps(&(page.clone(), wanted), move |(page, wanted)| {
+            remember(page, *wanted);
+            ui.drawer.set_if_modified(false);
+        });
         let shown_inline = store.failed() && matches!(page, Page::Grid(_) | Page::Accounts);
         let content = match page {
             Page::Grid(filter) => GridPage { filter }.into_element(),
@@ -60,18 +80,54 @@ impl Component for Shell {
             .font_size(super::theme::font::BODY)
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 note_held(e.modifiers);
+                if e.key == Key::Named(NamedKey::Escape) && *ui.drawer.peek() && !ui.layered() {
+                    ui.drawer.set(false);
+                    e.stop_propagation();
+                    return;
+                }
                 if super::grid::key(store, &e) || commands::shortcut(store, &e) {
                     e.stop_propagation();
                 }
             })
             .on_global_key_up(move |e: Event<KeyboardEventData>| note_held(e.modifiers))
             .child(row)
+            .child(drawer(&t, ui))
             .child(Uptime)
             .child(Palette)
             .child(sheet::Host)
             .child(menu::Host)
             .child(toast::Host)
             .child(tooltip::host(ui))
+    }
+}
+
+fn drawer(t: &super::theme::Theme, ui: super::ui::Ui) -> Element {
+    if !*ui.drawer.read() || *ui.sidebar.read() {
+        return rect().into_element();
+    }
+    let (w, h) = *ui.window.read();
+    let mut open = ui.drawer;
+    rect()
+        .position(Position::new_global().left(0.).top(0.))
+        .layer(Layer::OverlayLevel(level::DRAWER))
+        .width(Size::px(w))
+        .height(Size::px(h))
+        .horizontal()
+        .child(rect().height(Size::fill()).shadow(t.elevation.float.clone()).child(Sidebar))
+        .child(rect().width(Size::flex(1.)).height(Size::fill()).background(t.scrim.with_a(t.scrim.a() / 2)).on_press(move |_| open.set(false)))
+        .content(Content::flex())
+        .into_element()
+}
+
+fn remember(page: &Page, sidebar: bool) {
+    let mut saved = winstate::load();
+    let (kind, batch) = super::ui::kept(page).unwrap_or_else(|| (saved.page, saved.batch.clone()));
+    if (saved.page, &saved.batch, saved.sidebar) == (kind, &batch, sidebar) {
+        return;
+    }
+    (saved.page, saved.batch, saved.sidebar) = (kind, batch, sidebar);
+    if let Err(e) = winstate::save(&saved) {
+        eprintln!("window state: {e:#}");
     }
 }
 
