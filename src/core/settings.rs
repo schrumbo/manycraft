@@ -103,11 +103,14 @@ pub struct Settings {
     /// Whether the first game shown in the manager's place showed how to close it and get back.
     pub swap_explained: bool,
     pub preview_rate: PreviewRate,
+    /// Fields a newer version wrote that this one does not know, written back unchanged.
+    #[serde(flatten)]
+    pub kept: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, preview_rate: PreviewRate::Normal }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, preview_rate: PreviewRate::Normal, kept: serde_json::Map::new() }
     }
 }
 

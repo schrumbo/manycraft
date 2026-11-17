@@ -38,6 +38,9 @@ jobs:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          case "$VERSION" in
+            *-*) echo "::error::$VERSION is a pre-release; betas are released by release-beta.yml from a v*-beta.* tag."; exit 1 ;;
+          esac
           SHA=$(git rev-parse HEAD)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"

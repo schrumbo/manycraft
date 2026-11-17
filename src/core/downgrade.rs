@@ -4,6 +4,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::account::{Account, AccountKind};
@@ -78,4 +81,25 @@ fn window_and_measured_memory_written_by_the_beta_read_whole() {
     assert!(saved.maximized && saved.page == Page::Instance && saved.batch.as_deref() == Some("a1b2") && !saved.sidebar && saved.frame.is_some());
     let measured: HashMap<String, u32> = serde_json::from_slice(&std::fs::read(fixture("measured.json")).unwrap()).unwrap();
     assert_eq!((measured.get("b1"), measured.get("b1+full")), (Some(&1400), Some(&1900)));
+}
+
+fn written_back<T: DeserializeOwned + Serialize>(name: &str) -> (Value, Value) {
+    let raw: Value = serde_json::from_slice(&std::fs::read(fixture(name)).unwrap()).unwrap();
+    let typed: T = serde_json::from_value(raw.clone()).unwrap();
+    (serde_json::to_value(&typed).unwrap(), raw)
+}
+
+#[test]
+fn saving_here_keeps_what_only_the_beta_knows() {
+    let pairs = [
+        ("settings", written_back::<Settings>("settings.json")),
+        ("accounts", written_back::<Vec<Account>>("accounts.json")),
+        ("instance", written_back::<instance::Instance>("instance.json")),
+        ("plain instance", written_back::<instance::Instance>("instance-follows-default.json")),
+        ("batch", written_back::<batch::Batch>("batch.json")),
+        ("window", written_back::<Saved>("window.json")),
+    ];
+    for (name, (written, fixture)) in pairs {
+        assert_eq!(written, fixture, "{name}");
+    }
 }
