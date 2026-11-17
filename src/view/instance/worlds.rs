@@ -1055,7 +1055,7 @@ impl Component for WorldLine {
     }
 }
 
-/// A server of the instance's list, with Spielen while the pointer rests on it.
+/// A server of the instance's list, with Spielen while the pointer rests on it or it is selected.
 struct ServerLine {
     at: usize,
     server: Server,

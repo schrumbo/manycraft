@@ -94,7 +94,7 @@ impl Component for AccountChip {
         } else if *hovered.read() {
             t.hover
         } else {
-            t.control
+            Color::TRANSPARENT
         };
         let m = store.model.read();
         let face = pick.and_then(|a| m.account(a)).map(|a| crate::view::accounts::head(&t, store, a.id, &a.name, a.color(), frame::FACE));
@@ -146,7 +146,7 @@ impl Component for AccountChip {
         if let Some(border) = ring(&t, focus()) {
             chip = chip.border(border);
         }
-        let chip = rect().on_sized(spot).child(chip);
+        let chip = rect().corner_radius(t.shape.control).background(t.control).on_sized(spot).child(chip);
         WithTip::new(Some(tip), chip)
     }
 }
