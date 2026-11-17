@@ -768,7 +768,7 @@ impl Command {
             Command::ImportPrism => Icon::Download,
             Command::NewBatch => Icon::Layers,
             Command::NewInstance => Icon::Plus,
-            Command::FindModpacks => Icon::Search,
+            Command::FindModpacks => Icon::Package,
             Command::AddMods => Icon::Plus,
             _ => Icon::Help,
         }

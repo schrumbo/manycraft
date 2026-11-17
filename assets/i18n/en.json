@@ -2036,5 +2036,9 @@
   "vor %lld Min.": "%lld min ago",
   "vor %lld Std.": "%lld h ago",
   "eingeklappt": "collapsed",
-  "ausgeklappt": "expanded"
+  "ausgeklappt": "expanded",
+  "Alle Loader": "All loaders",
+  "Alle Versionen": "All versions",
+  "Keine Modpacks mit diesen Filtern gefunden.": "No modpacks found with these filters.",
+  "Keine Modpacks zu „%@“ mit diesen Filtern gefunden. Versuche einen anderen Suchbegriff.": "No modpacks found for “%@” with these filters. Try another search."
 }

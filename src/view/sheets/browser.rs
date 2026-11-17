@@ -22,6 +22,7 @@ use crate::core::instance::{Instance, Loader};
 use crate::core::modicons;
 use crate::core::modrinth::{self, Filter, Hit, Kind, Page, Search, Sort, Support, Update, Version};
 use crate::core::packs::{self, Installed};
+use crate::core::versions::{GameVersion, shown};
 use crate::core::worlds::{self, World};
 use crate::ui::catalog;
 use crate::ui::forms::{self, Problem, downloads_short};
@@ -49,6 +50,7 @@ const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const RESULTS_HEIGHT: f32 = 372.;
 const RESULTS_MIN: f32 = 216.;
 const ROW_H: f32 = control::L + space::M + space::S;
+const PACK_ROW_H: f32 = (font::BODY + font::CALLOUT + font::CAPTION) * font::LINE + space::XXS * 2. + space::M + space::S;
 const SKELETON_ROWS: usize = 7;
 const MORE_AHEAD: usize = 4;
 const KEPT_SEARCHES: usize = 200;
@@ -59,6 +61,8 @@ const UNDO_KEPT: usize = 20;
 const AUTHOR_MAX: f32 = 120.;
 const CATEGORY_W: f32 = 168.;
 const SORT_W: f32 = 120.;
+const LOADER_W: f32 = 124.;
+const VERSION_W: f32 = 132.;
 const SPLIT_AT: f32 = 1100.;
 const PANE_LIST: f32 = 0.8;
 const PANE_MAX: f32 = 1240.;
@@ -78,11 +82,23 @@ pub fn find(store: Store, id: &str, kind: Kind) {
     }
 }
 
+fn row_h(kind: Kind) -> f32 {
+    if kind == Kind::Modpack { PACK_ROW_H } else { ROW_H }
+}
+
 /// Shows the Modpacks page, where every pack installs as a new instance.
 pub fn find_modpacks(store: Store) {
     crate::view::kit::sheet::close(store.ui);
     let mut page = store.ui.page;
     page.set(crate::view::ui::Page::Modpacks);
+}
+
+/// What the Modpacks page filters by, held by the page so the browser searches again when it changes.
+#[derive(Clone, PartialEq)]
+pub(super) struct PackFilters {
+    pub version: State<String>,
+    pub loader: State<Loader>,
+    pub catalog: State<Vec<GameVersion>>,
 }
 
 /// What the sheet or page around the browser shares with it: the instance and what is picked, the work in flight, and
@@ -106,6 +122,7 @@ pub(super) struct Scope {
     pub dirty: bool,
     pub follow: Option<(State<String>, State<Loader>)>,
     pub kind: Kind,
+    pub filters: Option<PackFilters>,
     pub on_update: EventHandler<String>,
     pub back: EventHandler<()>,
     pub done: EventHandler<()>,
@@ -685,6 +702,7 @@ struct Facts {
     pack: Pack,
     global_needed: bool,
     pending: bool,
+    made: HashMap<String, String>,
 }
 
 impl Facts {
@@ -711,6 +729,9 @@ impl Facts {
 fn act_of(hit: &Hit, f: &Facts) -> Act {
     let pid = &hit.project_id;
     if f.adding.contains(pid) {
+        return Act::Nothing;
+    }
+    if f.kind == Kind::Modpack && f.made.contains_key(pid) {
         return Act::Nothing;
     }
     let fits = hit.fits(&f.filter) == Support::Fits;
@@ -747,6 +768,7 @@ enum Trail {
     Present { update: Option<Refresh>, remove: Option<String> },
     Note(String),
     Install { label: String, blocked: Option<String> },
+    Open(String),
 }
 
 fn trail_of(hit: &Hit, f: &Facts) -> Trail {
@@ -770,6 +792,11 @@ fn trail_of(hit: &Hit, f: &Facts) -> Trail {
             f.held.clone()
         };
         return Trail::Present { update, remove };
+    }
+    if f.kind == Kind::Modpack
+        && let Some(instance) = f.made.get(pid)
+    {
+        return Trail::Open(instance.clone());
     }
     let support = hit.fits(&f.filter);
     if support != Support::Fits {
@@ -845,7 +872,7 @@ impl Flow {
     fn rows(&self) -> i32 {
         let kind = self.core.peek().kind;
         let height = if self.scope.page { *self.room.peek() } else { results_height(self.store, kind) };
-        ((height / ROW_H) as i32).max(1)
+        ((height / row_h(kind)) as i32).max(1)
     }
 
     fn undoable(&self) -> bool {
@@ -902,6 +929,12 @@ impl Flow {
                 }
             },
         };
+        let made = if kind == Kind::Modpack {
+            let m = if subscribe { self.store.model.read() } else { self.store.model.peek() };
+            m.instances.iter().filter_map(|i| i.pack.as_ref().map(|p| (p.clone(), i.id.clone()))).collect()
+        } else {
+            HashMap::new()
+        };
         let global_needed = kind == Kind::DataPack && val(self.target, subscribe).is_none() && !self.global_packs(subscribe);
         Facts {
             kind,
@@ -919,6 +952,7 @@ impl Flow {
             pack,
             global_needed,
             pending: self.scope.pending,
+            made,
         }
     }
 
@@ -1104,6 +1138,21 @@ impl Flow {
     fn sort(&self, sort: Sort) {
         let mut core = self.core;
         core.write().sort = sort;
+        self.refresh(false);
+        self.focus();
+    }
+
+    fn pack_filtered(&self) -> bool {
+        self.scope.filters.as_ref().is_some_and(|f| !f.version.peek().is_empty() || *f.loader.peek() != Loader::Vanilla)
+    }
+
+    fn reset_pack_filters(&self) {
+        if let Some(mut f) = self.scope.filters.clone() {
+            f.version.set(String::new());
+            f.loader.set(Loader::Vanilla);
+        }
+        let mut core = self.core;
+        core.write().category = None;
         self.refresh(false);
         self.focus();
     }
@@ -1765,12 +1814,24 @@ impl Component for PacksPage {
     fn render(&self) -> impl IntoElement {
         let mods = use_state(Vec::new);
         let adding = use_state(HashSet::new);
+        let filters = PackFilters { version: use_state(String::new), loader: use_state(|| Loader::Vanilla), catalog: use_state(Vec::new) };
+        let mut catalog = filters.catalog;
+        use_hook(move || {
+            spawn_in_window(async move {
+                if let Some(Ok(list)) = off_ui(remote::catalog).await
+                    && catalog.try_peek().is_some()
+                {
+                    catalog.set(list);
+                }
+            });
+        });
+        let (version, loader) = (filters.version.read().clone(), filters.loader.read().clone());
         let scope = Scope {
             create: false,
             page: true,
             made: None,
-            version: String::new(),
-            loader: Loader::Vanilla,
+            version,
+            loader,
             mods,
             touched: None,
             adding,
@@ -1782,6 +1843,7 @@ impl Component for PacksPage {
             dirty: false,
             follow: None,
             kind: Kind::Modpack,
+            filters: Some(filters),
             on_update: EventHandler::new(|_| {}),
             back: EventHandler::new(|_| {}),
             done: EventHandler::new(|_| {}),
@@ -1804,7 +1866,7 @@ impl Component for Browser {
             store,
             scope: Rc::new(self.scope.clone()),
             live,
-            core: use_state(move || Core { all: packs, ..Core::new(kind) }),
+            core: use_state(move || Core::new(kind)),
             query,
             error: use_state(|| None),
             notice: use_state(|| None),
@@ -2127,9 +2189,11 @@ fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&s
         .cross_align(Alignment::Center)
         .spacing(space::S)
         .content(Content::flex())
-        .child(rect().width(Size::flex(1.)).child(line(t, caption_text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)))
-        .child(category_select)
-        .child(sort_select);
+        .child(rect().width(Size::flex(1.)).child(line(t, caption_text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)));
+    if let Some(filters) = flow.scope.filters.clone() {
+        row = row.child(loader_select(flow, &filters)).child(version_select(flow, &filters));
+    }
+    row = row.child(category_select).child(sort_select);
     if widens(kind) && !flow.scope.packs() {
         let (flip, label) = (flow.clone(), flow.clone());
         row = row.child(
@@ -2144,11 +2208,39 @@ fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&s
     row.into_element()
 }
 
-fn skeleton(t: &Theme) -> Element {
+fn loader_select(flow: &Flow, filters: &PackFilters) -> Element {
+    let all = [Loader::Vanilla, Loader::Fabric(None), Loader::Quilt(None), Loader::Forge(None), Loader::NeoForge(None)];
+    let options: Vec<String> = all.iter().map(|l| if *l == Loader::Vanilla { tr("Alle Loader") } else { l.name().to_owned() }).collect();
+    let chosen = all.iter().position(|l| *l == filters.loader.read().with_version(None)).unwrap_or(0);
+    let (flow, mut loader) = (flow.clone(), filters.loader);
+    Select::new("browser.pack.loader", tr("Loader"), options, chosen).width(LOADER_W).on_choose(move |i| {
+        if let Some(next) = all.get(i) {
+            loader.set(next.clone());
+            flow.focus();
+        }
+    })
+    .into_element()
+}
+
+fn version_select(flow: &Flow, filters: &PackFilters) -> Element {
+    let current = filters.version.read().clone();
+    let offered = shown(&filters.catalog.read(), false, None, &current);
+    let mut options = vec![tr("Alle Versionen")];
+    options.extend(offered.iter().map(|v| v.id.clone()));
+    let chosen = offered.iter().position(|v| v.id == current).map_or(0, |i| i + 1);
+    let (flow, mut version) = (flow.clone(), filters.version);
+    Select::new("browser.pack.version", tr("Minecraft-Version"), options, chosen).width(VERSION_W).on_choose(move |i| {
+        version.set(if i == 0 { String::new() } else { offered.get(i - 1).map(|v| v.id.clone()).unwrap_or_default() });
+        flow.focus();
+    })
+    .into_element()
+}
+
+fn skeleton(t: &Theme, kind: Kind) -> Element {
     let bar = |w: f32| rect().width(Size::px(w)).height(Size::px(frame::BAR_H)).corner_radius(t.shape.small).background(t.hover);
     rect()
         .width(Size::fill())
-        .height(Size::px(ROW_H))
+        .height(Size::px(row_h(kind)))
         .padding((0., space::M))
         .horizontal()
         .cross_align(Alignment::Center)
@@ -2184,7 +2276,7 @@ fn results(t: &Theme, flow: &Flow, facts: &Rc<Facts>, kind: Kind, typed: &str, c
                     .into_element()
             }
             (Shown::Empty, _) => empty(t, flow, facts, typed, categorised, all),
-            _ => rect().width(Size::fill()).children((0..SKELETON_ROWS).map(|_| skeleton(t))).into_element(),
+            _ => rect().width(Size::fill()).children((0..SKELETON_ROWS).map(|_| skeleton(t, kind))).into_element(),
         };
     };
     let list = ResultList { view: View { flow: flow.clone(), facts: facts.clone(), page, visible, sel, more, has_more, epoch } };
@@ -2196,6 +2288,8 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
     let all = all && widens(facts.kind);
     let text = if facts.kind == Kind::Mod && !facts.takes_mods {
         trf("%@ lädt keine Mods. Ressourcenpakete, Shader und Datenpakete gehen trotzdem.", &[&facts.loader])
+    } else if facts.kind == Kind::Modpack {
+        if typed.is_empty() { tr("Keine Modpacks mit diesen Filtern gefunden.") } else { trf("Keine Modpacks zu „%@“ mit diesen Filtern gefunden. Versuche einen anderen Suchbegriff.", &[&typed]) }
     } else if categorised {
         trf("Keine %@ in dieser Kategorie. Wähle „Alle Kategorien“.", &[&what])
     } else {
@@ -2217,6 +2311,10 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
     if !all && widens(facts.kind) && !categorised && facts.takes_mods {
         let widen = flow.clone();
         column = column.child(Button::new("browser.all.show", tr("Alle zeigen")).on_press(move |_| widen.all(true)));
+    }
+    if facts.kind == Kind::Modpack && (categorised || flow.pack_filtered()) {
+        let reset = flow.clone();
+        column = column.child(Button::new("browser.filters.reset", tr("Filter zurücksetzen")).on_press(move |_| reset.reset_pack_filters()));
     }
     if !widens(facts.kind) && typed.is_empty() {
         if categorised {
@@ -2326,15 +2424,15 @@ impl View {
     fn item(&self, index: usize) -> Element {
         let count = self.visible.len();
         if index >= count {
-            return rect().key("more").width(Size::fill()).height(Size::px(ROW_H)).child(Footer { flow: self.flow.clone(), failed: self.more == More::Failed }).into_element();
+            return rect().key("more").width(Size::fill()).height(Size::px(row_h(self.facts.kind))).child(Footer { flow: self.flow.clone(), failed: self.more == More::Failed }).into_element();
         }
         let Some(hit) = self.visible.get(index).and_then(|at| self.page.hits.get(*at)) else {
-            return rect().height(Size::px(ROW_H)).into_element();
+            return rect().height(Size::px(row_h(self.facts.kind))).into_element();
         };
         rect()
             .key(hit.project_id.clone())
             .width(Size::fill())
-            .height(Size::px(ROW_H))
+            .height(Size::px(row_h(self.facts.kind)))
             .child(ResultRow { flow: self.flow.clone(), facts: self.facts.clone(), hit: hit.clone(), ix: index, selected: index == self.sel })
             .into_element()
     }
@@ -2348,6 +2446,7 @@ struct ResultList {
 impl Component for ResultList {
     fn render(&self) -> impl IntoElement {
         let scroll = self.view.flow.list;
+        let row = row_h(self.view.facts.kind);
         let mut seen = self.view.flow.list_epoch;
         let mut viewport = use_state(|| 0f32);
         let (sel, epoch) = (self.view.sel, self.view.epoch);
@@ -2360,8 +2459,8 @@ impl Component for ResultList {
         });
         use_side_effect_with_deps(&sel, move |at| {
             let mut scroll = scroll;
-            let top = *at as f32 * ROW_H;
-            let bottom = top + ROW_H;
+            let top = *at as f32 * row;
+            let bottom = top + row;
             let shown = -scroll.position().y;
             let h = *viewport.peek();
             if top < shown {
@@ -2377,7 +2476,7 @@ impl Component for ResultList {
             if h <= 0. || !flow.alive() {
                 return;
             }
-            let last = ((shown + h) / ROW_H).ceil().max(0.) as usize;
+            let last = ((shown + h) / row).ceil().max(0.) as usize;
             if wants_more(*count, last, *has_more, *more) {
                 flow.more();
             }
@@ -2385,7 +2484,7 @@ impl Component for ResultList {
         let items = count + usize::from(self.view.has_more);
         VirtualScrollView::new_with_data_controlled(self.view.clone(), |item: VirtualItem, view: &View| view.item(item.index), scroll)
             .length(items)
-            .item_size(ROW_H)
+            .item_size(row)
             .scroll_with_arrows(false)
             .width(Size::fill())
             .height(Size::fill())
@@ -2403,6 +2502,7 @@ impl Component for Footer {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let flow = self.flow.clone();
+        let kind = self.flow.core.peek().kind;
         use_hook(move || {
             spawn_in_window(async move {
                 if flow.alive() {
@@ -2411,12 +2511,12 @@ impl Component for Footer {
             });
         });
         if !self.failed {
-            return skeleton(&t);
+            return skeleton(&t, kind);
         }
         let retry = self.flow.clone();
         rect()
             .width(Size::fill())
-            .height(Size::px(ROW_H))
+            .height(Size::px(row_h(kind)))
             .padding((0., space::M))
             .horizontal()
             .cross_align(Alignment::Center)
@@ -2463,7 +2563,8 @@ impl Component for ResultRow {
             .spacing(space::XXS)
             .opacity(if dim { t.hidden_dim } else { 1. })
             .child(head)
-            .child(line(&t, hit.description.clone(), font::CALLOUT, t.text2).width(Size::fill()));
+            .child(line(&t, hit.description.clone(), font::CALLOUT, t.text2).width(Size::fill()))
+            .children((self.facts.kind == Kind::Modpack).then(|| caption(&t, pack_meta(hit)).width(Size::fill()).max_lines(1).text_overflow(TextOverflow::Ellipsis)));
 
         let flow = self.flow.clone();
         let (ix, press_hit) = (self.ix, hit.clone());
@@ -2486,7 +2587,7 @@ impl Component for ResultRow {
         let click = on_row.clone();
         let row = rect()
             .width(Size::fill())
-            .height(Size::px(ROW_H))
+            .height(Size::px(row_h(self.facts.kind)))
             .padding((0., space::M))
             .horizontal()
             .cross_align(Alignment::Center)
@@ -2511,6 +2612,29 @@ impl Component for ResultRow {
     }
 }
 
+fn release_key(version: &str) -> Option<Vec<u32>> {
+    let parts: Vec<u32> = version.split('.').map(str::parse).collect::<Result<_, _>>().ok()?;
+    (2..=3).contains(&parts.len()).then_some(parts)
+}
+
+/// The loaders and Minecraft releases a pack has files for, as one line.
+fn pack_meta(hit: &Hit) -> String {
+    let loaders: Vec<&str> = [("fabric", "Fabric"), ("quilt", "Quilt"), ("forge", "Forge"), ("neoforge", "NeoForge")].iter().filter(|(slug, _)| hit.categories.iter().any(|c| c == slug)).map(|(_, name)| *name).collect();
+    let mut releases: Vec<(Vec<u32>, &String)> = hit.versions.iter().filter_map(|v| release_key(v).map(|k| (k, v))).collect();
+    releases.sort();
+    let range = match (releases.first(), releases.last()) {
+        (Some((_, a)), Some((_, b))) if a != b => Some(format!("Minecraft {a} – {b}")),
+        (Some((_, a)), _) => Some(format!("Minecraft {a}")),
+        _ => None,
+    };
+    let mut parts = Vec::new();
+    if !loaders.is_empty() {
+        parts.push(loaders.join(", "));
+    }
+    parts.extend(range);
+    parts.join(" · ")
+}
+
 fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize>, hint: Option<String>) -> Element {
     let pid = hit.project_id.clone();
     let act = {
@@ -2526,6 +2650,12 @@ fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize
     match trail {
         Trail::Busy { label, reason } => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).busy(true).disabled(Some(reason.clone()))).into_element(),
         Trail::Note(text) => row.child(line(t, text.clone(), font::CALLOUT, t.text3)).into_element(),
+        Trail::Open(instance) => {
+            let (mut page, id) = (flow.store.ui.page, instance.clone());
+            row.child(status_line(t, Icon::Check, t.success_text, tr("Installiert")))
+                .child(Button::new(format!("browser.open.{pid}"), tr("Öffnen")).on_press(move |_| page.set(crate::view::ui::Page::Instance(id.clone()))))
+                .into_element()
+        }
         Trail::Install { label, blocked } => {
             let mut add = Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).disabled(blocked.clone()).on_press(move |_| act());
             if let Some(hint) = hint {
@@ -2605,6 +2735,7 @@ mod tests {
             pack: Pack::Ready,
             global_needed: false,
             pending: false,
+            made: HashMap::new(),
         }
     }
 

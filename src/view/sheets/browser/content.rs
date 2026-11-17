@@ -399,6 +399,7 @@ impl Component for ContentPage {
             dirty: false,
             follow: None,
             kind: self.kind,
+            filters: None,
             on_update: EventHandler::new(move |pid: String| keep.update(pid)),
             back: EventHandler::new(move |_| {
                 let mut page = store.ui.page;

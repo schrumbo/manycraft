@@ -166,11 +166,12 @@ pub struct Filter {
 }
 
 impl Filter {
-    /// What fits an instance on `game_version` with `loader`: mods and modpacks for its loader, resource packs and data
+    /// What fits an instance on `game_version` with `loader`: mods for its loader, modpacks for exactly that loader, resource packs and data
     /// packs as such, shader packs for `shader_loader` (Iris when it has none yet).
     pub fn of(kind: Kind, game_version: &str, loader: &Loader, shader_loader: Option<&str>) -> Self {
         let loaders: Vec<String> = match kind {
-            Kind::Mod | Kind::Modpack => keys(loader).iter().map(|k| (*k).to_owned()).collect(),
+            Kind::Mod => keys(loader).iter().map(|k| (*k).to_owned()).collect(),
+            Kind::Modpack => keys(loader).iter().take(1).map(|k| (*k).to_owned()).collect(),
             Kind::ResourcePack => vec!["minecraft".into()],
             Kind::Shader => vec![shader_loader.unwrap_or("iris").to_owned()],
             Kind::DataPack => vec!["datapack".into()],
@@ -1804,7 +1805,8 @@ Connection: close
         assert_eq!(facets(&search(Kind::Shader, None, &Loader::Vanilla)), [vec!["project_type:shader".to_owned()], vec!["categories:iris".into()], v()]);
         assert_eq!(facets(&search(Kind::Shader, Some("optifine"), &fabric())), [vec!["project_type:shader".to_owned()], vec!["categories:optifine".into()], v()]);
         assert_eq!(facets(&search(Kind::DataPack, None, &fabric())), [vec!["project_type:datapack".to_owned()], vec!["categories:datapack".into()], v()]);
-        assert_eq!(facets(&search(Kind::Modpack, None, &Loader::Quilt(None)))[1], ["categories:quilt", "categories:fabric"]);
+        assert_eq!(facets(&search(Kind::Modpack, None, &Loader::Quilt(None)))[1], ["categories:quilt"]);
+        assert_eq!(facets(&search(Kind::Mod, None, &Loader::Quilt(None)))[1], ["categories:quilt", "categories:fabric"]);
         let url = search_url_for(&search(Kind::ResourcePack, None, &fabric()), 20);
         assert!(url.contains("query=fresh&") && url.ends_with("&index=updated&offset=20&limit=20"), "{url}");
         let newest = Search { sort: Sort::Newest, category: Some("vanilla-like".into()), ..search(Kind::Shader, None, &fabric()) };

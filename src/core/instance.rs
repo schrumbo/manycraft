@@ -120,6 +120,9 @@ pub struct Instance {
     /// The account this instance always plays with alone; the active account when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<Uuid>,
+    /// The Modrinth project of the modpack this instance was installed from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
 }
 
 fn default_memory() -> u32 {
@@ -160,6 +163,7 @@ impl Instance {
             options: LaunchOptions::default(),
             last_account: None,
             default_account: None,
+            pack: None,
         }
     }
 
@@ -353,6 +357,18 @@ pub(super) fn set_icon_in(root: &Path, id: &str, source: Option<&Path>) -> Resul
     if let Some(old) = old.filter(|o| made.icon.as_deref() != Some(o.as_str())) {
         let _ = std::fs::remove_file(dir.join(old));
     }
+    Ok(made)
+}
+
+/// Remembers that instance `id` came from the Modrinth project `project`, and returns the instance as saved.
+pub fn set_pack(id: &str, project: &str) -> Result<Instance> {
+    set_pack_in(&instances_dir(), id, project)
+}
+
+pub(super) fn set_pack_in(root: &Path, id: &str, project: &str) -> Result<Instance> {
+    let mut made = load_all_in(root)?.into_iter().find(|i| i.id == id).ok_or_else(|| Final(super::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
+    made.pack = Some(project.to_owned());
+    save_in(root, &made)?;
     Ok(made)
 }
 

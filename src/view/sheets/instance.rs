@@ -683,6 +683,7 @@ impl Component for Create {
                 dirty: form_dirty(*flow.touched.read(), &name_text, &flow.name_auto.read()),
                 follow: Some((flow.version, flow.loader)),
                 kind: ModKind::Mod,
+                filters: None,
                 on_update: EventHandler::new(|_| {}),
                 back: EventHandler::new(move |_| flow.leave_search()),
                 done: EventHandler::new(move |_| flow.leave_search()),

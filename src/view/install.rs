@@ -221,6 +221,7 @@ async fn run(store: Store, id: u64) {
                     anyhow::bail!(Refused::Cancelled);
                 }
                 let made = remote::import_instance(&path, &stop, &progress)?;
+                let made = crate::core::instance::set_pack(&made.id, project).unwrap_or(made);
                 let pictured = icon.as_deref().filter(|_| !stop.load(Ordering::SeqCst)).and_then(|url| catalog::shot(url).and_then(|file| crate::core::instance::set_icon(&made.id, Some(&file))).ok());
                 Ok(pictured.unwrap_or(made))
             }),
