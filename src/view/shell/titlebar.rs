@@ -17,7 +17,7 @@ use crate::view::kit::{Bounds, ring, use_theme};
 use crate::view::drive::use_spot;
 use crate::view::native::frame::{self, Cover, Heard, Zone};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{WAITING, font, frame as size, iconsize, space};
+use crate::view::theme::{WAITING, font, frame as size, iconsize, level, space};
 use crate::view::ui::{Filter, Page, Pane};
 
 use super::controls::{Controls, Edges};
@@ -133,6 +133,7 @@ impl Component for TitleBar {
         let sheet = ui.sheet.read().is_some();
         let menu = ui.menu.read().is_some();
         frame::set_cover(if menu { Cover::Menu } else if sheet { Cover::Sheet } else { Cover::None });
+        let shut = menu.then_some(ui.menu);
         let mut bar_zone = frame::use_zone(Zone::Bar);
         let mut left_zone = frame::use_zone(Zone::Control);
 
@@ -159,8 +160,8 @@ impl Component for TitleBar {
         if own && buttons_left {
             start = start.child(Controls { chrome });
         }
-        start = start.child(waiting(left, sheet)).child(rect().width(Size::flex(1.)).child(waiting(trail_row, sheet))).content(Content::flex());
-        let mut end = rect().width(Size::flex(1.)).height(Size::fill()).horizontal().cross_align(Alignment::Center).child(rect().width(Size::flex(1.)).child(waiting(right, sheet))).content(Content::flex());
+        start = start.child(waiting(left, sheet, shut)).child(rect().width(Size::flex(1.)).child(waiting(trail_row, sheet, shut))).content(Content::flex());
+        let mut end = rect().width(Size::flex(1.)).height(Size::fill()).horizontal().cross_align(Alignment::Center).child(rect().width(Size::flex(1.)).child(waiting(right, sheet, shut))).content(Content::flex());
         if own && !buttons_left {
             end = end.child(Controls { chrome });
         }
@@ -180,7 +181,7 @@ impl Component for TitleBar {
                 }
             })
             .child(start.content(Content::flex()))
-            .child(waiting(Palette, sheet))
+            .child(waiting(Palette, sheet, shut))
             .child(end.content(Content::flex()))
             .child(Edges { chrome })
             .content(Content::flex());
@@ -191,16 +192,29 @@ impl Component for TitleBar {
     }
 }
 
-/// `child` while a sheet waits for an answer: dimmed, and its clicks only move the window.
-fn waiting(child: impl IntoElement, sheet: bool) -> Element {
-    if !sheet {
-        return child.into_element();
-    }
-    let mut cover = rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::fill()).height(Size::fill());
-    if frame::draws_drag() {
-        cover = cover.window_drag();
-    }
-    rect().opacity(WAITING).child(child).child(cover).into_element()
+/// `child` while a sheet waits for an answer: dimmed, and its clicks only move the window; while a menu is open its
+/// first click only closes the menu.
+fn waiting(child: impl IntoElement, sheet: bool, menu: Option<State<Option<Menu>>>) -> Element {
+    let cover = |at: u8| {
+        rect()
+            .position(Position::new_absolute().left(0.).top(0.))
+            .layer(Layer::OverlayLevel(at))
+            .width(Size::fill())
+            .height(Size::fill())
+            .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
+    };
+    let cover = if sheet {
+        let c = cover(level::SHEET).on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation());
+        Some(if frame::draws_drag() { c.window_drag() } else { c })
+    } else {
+        menu.map(|mut menu| {
+            cover(level::MENU).on_pointer_press(move |e: Event<PointerEventData>| {
+                e.stop_propagation();
+                menu.set(None);
+            })
+        })
+    };
+    rect().opacity(if sheet { WAITING } else { 1. }).child(child).maybe_child(cover).into_element()
 }
 
 #[derive(PartialEq)]

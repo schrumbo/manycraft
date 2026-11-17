@@ -316,9 +316,9 @@ impl Component for Panel {
         .min(w - width - space::S)
         .max(space::S);
         let y = if menu.pop {
-            menu.at.1.min(h - space::S - panel_h).max(space::S)
+            menu.at.1.min(h - space::S - panel_h).max(frame::CHROME + space::S)
         } else if menu.at.1 + tallest > h - space::S {
-            (menu.at.1 - tallest).max(space::S)
+            (menu.at.1 - tallest).max(frame::CHROME + space::S)
         } else {
             menu.at.1
         };
