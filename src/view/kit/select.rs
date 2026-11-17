@@ -1,5 +1,7 @@
 //! A pop-up button that picks one value from a list.
 
+use std::time::{Duration, Instant};
+
 use freya::prelude::*;
 
 use super::menu::{self, Item, Menu};
@@ -22,11 +24,12 @@ pub struct Select {
     width: f32,
     disabled: Option<String>,
     on_choose: Option<EventHandler<usize>>,
+    focus: Option<State<Option<Instant>>>,
 }
 
 impl Select {
     pub fn new(id: impl Into<String>, label: impl Into<String>, options: Vec<String>, chosen: usize) -> Self {
-        Self { id: id.into(), label: label.into(), options, chosen, width: 200., disabled: None, on_choose: None }
+        Self { id: id.into(), label: label.into(), options, chosen, width: 200., disabled: None, on_choose: None, focus: None }
     }
 
     pub fn width(mut self, width: f32) -> Self {
@@ -37,6 +40,12 @@ impl Select {
     /// Greys the control out and shows `reason` as its tooltip.
     pub fn disabled(mut self, reason: Option<String>) -> Self {
         self.disabled = reason;
+        self
+    }
+
+    /// Takes the keyboard once when `at` is set to a moment within the last ten seconds, as soon as the select is enabled.
+    pub fn focus_on(mut self, at: State<Option<Instant>>) -> Self {
+        self.focus = Some(at);
         self
     }
 
@@ -53,6 +62,17 @@ impl Component for Select {
         let a11y = use_a11y();
         super::use_arrows(a11y);
         let focus = use_focus(a11y);
+        let focus_at = self.focus.and_then(|at| *at.read());
+        let ready = self.disabled.is_none();
+        let focus_state = self.focus;
+        use_side_effect_with_deps(&(focus_at, ready), move |(at, ready)| {
+            if *ready && at.is_some_and(|at| at.elapsed() < Duration::from_secs(10)) {
+                a11y.request_focus();
+                if let Some(mut state) = focus_state {
+                    state.set(None);
+                }
+            }
+        });
         let mut bounds = use_state(Bounds::default);
         let mut hovered = use_state(|| false);
         let enabled = self.disabled.is_none();

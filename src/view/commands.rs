@@ -75,6 +75,9 @@ pub enum Command {
     FindModpacks,
     AddMods,
     ShowShortcuts,
+    Minimize,
+    ToggleMaximize,
+    QuickPlay,
 }
 
 /// A key combination; `primary` is Ctrl, or Cmd on macOS.
@@ -184,7 +187,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 58] = [
+    pub const ALL: [Command; 61] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -243,6 +246,9 @@ impl Command {
         Command::FindModpacks,
         Command::AddMods,
         Command::ShowShortcuts,
+        Command::QuickPlay,
+        Command::Minimize,
+        Command::ToggleMaximize,
     ];
 
     /// The name the drive tool and the GPUI shell use for it.
@@ -295,6 +301,9 @@ impl Command {
             Command::Quit => "Quit",
             Command::Import => "Import",
             Command::ShowShortcuts => "ShowShortcuts",
+            Command::Minimize => "Minimize",
+            Command::ToggleMaximize => "ToggleMaximize",
+            Command::QuickPlay => "QuickPlay",
             c => c.page_name(),
         }
     }
@@ -355,6 +364,10 @@ impl Command {
             Command::Quit => tr("Manycraft beenden"),
             Command::Import => tr("Instanz importieren…"),
             Command::ShowShortcuts => tr("Tastenkürzel anzeigen"),
+            Command::Minimize => tr("Minimieren"),
+            Command::ToggleMaximize if super::native::frame::chrome().maximized => tr("Wiederherstellen"),
+            Command::ToggleMaximize => tr("Maximieren"),
+            Command::QuickPlay => tr("Schnell spielen"),
             c => c.page_label(),
         }
     }
@@ -394,6 +407,10 @@ impl Command {
             Command::OpenPalette => Icon::Keyboard,
             Command::Import => Icon::Download,
             Command::ShowShortcuts => Icon::Keyboard,
+            Command::Minimize => Icon::Minus,
+            Command::ToggleMaximize if super::native::frame::chrome().maximized => Icon::Copy,
+            Command::ToggleMaximize => Icon::Square,
+            Command::QuickPlay => Icon::Play,
             c => c.page_glyph(),
         }
     }
@@ -438,6 +455,9 @@ impl Command {
             Command::StartAll => ks(Code::Enter),
             Command::StopAll => ks(Code::Period),
             Command::ShowShortcuts => bare(Code::F1),
+            Command::Minimize => k(Code::KeyM),
+            Command::ToggleMaximize => ka(Code::KeyM),
+            Command::QuickPlay => ks(Code::KeyP),
             Command::ShowAttention
             | Command::MessageSelected
             | Command::ShowHistory
@@ -492,6 +512,7 @@ impl Command {
             Command::Undo => store.ui.browser_undo.peek().is_some() || store.ui.toasts.peek().iter().any(|t| t.undo.is_some()) || !store.ui.session_undo.peek().is_empty(),
             Command::SwitchAccount => store.model.peek().loaded,
             Command::Import => can_want(&Want::Import),
+            Command::QuickPlay => !m.instances.is_empty(),
             c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks | Command::AddMods) => c.page_available(store),
             _ => true,
         }
@@ -515,6 +536,12 @@ impl Command {
             }
             Command::ToggleSidebar => ui.toggle_sidebar(),
             Command::ShowShortcuts => super::shell::shortcuts::open(ui),
+            Command::Minimize => super::native::frame::minimize(),
+            Command::ToggleMaximize => super::native::frame::toggle_maximize(),
+            Command::QuickPlay => {
+                ui.page.set(Page::Start);
+                ui.focus_quick.set(Some(std::time::Instant::now()));
+            }
             Command::Undo => {
                 let browser = ui.browser_undo.peek().clone();
                 match browser {

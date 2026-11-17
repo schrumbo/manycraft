@@ -256,6 +256,7 @@ struct Seed {
     inherit: bool,
     background: Background,
     launch_parallel: u32,
+    full_speed: bool,
 }
 
 impl Seed {
@@ -283,6 +284,7 @@ impl Seed {
             inherit: original.is_none_or(|b| b.memory_override.is_none()),
             background: original.map_or_else(Background::default, |b| b.background),
             launch_parallel: original.map_or(0, |b| b.launch_parallel),
+            full_speed: original.is_some_and(|b| b.full_speed),
         }
     }
 }
@@ -305,6 +307,7 @@ struct Flow {
     background: State<Background>,
     kept_custom: State<Option<Background>>,
     launch_parallel: State<u32>,
+    full_speed: State<bool>,
     advanced: State<bool>,
     free: State<Option<u64>>,
     accounts: State<HashSet<Uuid>>,
@@ -480,6 +483,16 @@ impl Flow {
         self.clear_error();
     }
 
+    fn toggle_full_speed(mut self) {
+        if *self.saving.peek() {
+            return;
+        }
+        let on = !*self.full_speed.peek();
+        self.full_speed.set(on);
+        self.advanced.set(true);
+        self.clear_error();
+    }
+
     fn pick_pace(mut self, n: usize) {
         if *self.saving.peek() {
             return;
@@ -507,7 +520,7 @@ impl Flow {
             accounts: self.store.model.peek().accounts.iter().map(|a| a.id).filter(|id| chosen.contains(id)).collect(),
             background: *self.background.peek(),
             launch_parallel: *self.launch_parallel.peek(),
-            full_speed: self.original.peek().as_ref().is_some_and(|b| b.full_speed),
+            full_speed: *self.full_speed.peek(),
         };
         let id = self.original.peek().as_ref().map(|b| b.id.clone());
         let store = self.store;
@@ -585,6 +598,7 @@ impl Component for BatchSheet {
             background: use_state(|| seed.background),
             kept_custom: use_state(|| None),
             launch_parallel: use_state(|| seed.launch_parallel),
+            full_speed: use_state(|| seed.full_speed),
             advanced: use_state(|| false),
             free: use_state(|| None),
             accounts: use_state(|| seed.accounts.clone()),
@@ -626,7 +640,8 @@ impl Component for BatchSheet {
         let background = *flow.background.read();
         let pace = *flow.launch_parallel.read();
         let inherit = *flow.inherit.read();
-        let open = *flow.advanced.read() || !inherit || pace != 0;
+        let full_speed = *flow.full_speed.read();
+        let open = *flow.advanced.read() || !inherit || pace != 0 || full_speed;
 
         let (choices, candidates, running, picked, instance_memory, caption_text, own_game) = {
             let model = store.model.read();
@@ -718,7 +733,7 @@ impl Component for BatchSheet {
             .children(fit_line(&t, flow, picked))
             .child(name_field)
             .child(background_section(&t, flow, background, running, &lock))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, running, picked, instance_memory }, &lock));
+            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory }, &lock));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
@@ -890,13 +905,14 @@ struct AdvancedView {
     inherit: bool,
     memory: u32,
     pace: u32,
+    full_speed: bool,
     running: bool,
     picked: usize,
     instance_memory: u32,
 }
 
 fn advanced_section(t: &Theme, flow: Flow, view: AdvancedView, lock: &Option<String>) -> Element {
-    let AdvancedView { open, inherit, memory, pace, running, picked, instance_memory } = view;
+    let AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory } = view;
     let each = if inherit { instance_memory } else { memory };
     let title = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
     let mut advanced = flow.advanced;
@@ -939,7 +955,29 @@ fn advanced_section(t: &Theme, flow: Flow, view: AdvancedView, lock: &Option<Str
     }
     let note = if count > 1 { trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]) } else { tr("Pro Account.") };
     column = column.child(block.child(hint(t, note)));
-    column.child(pace_section(t, flow, pace, running, lock)).into_element()
+    column.child(speed_section(t, flow, full_speed, running, lock)).child(pace_section(t, flow, pace, running, lock)).into_element()
+}
+
+fn speed_section(t: &Theme, flow: Flow, on: bool, running: bool, lock: &Option<String>) -> Element {
+    let label = tr("Schneller beim Spielen (mehr Arbeitsspeicher)");
+    let text = tr("Spiele im Hintergrund brauchen dann mehr Arbeitsspeicher.");
+    let text = if running { format!("{text} {}", tr("Gilt beim nächsten Start.")) } else { text };
+    let row = rect()
+        .width(Size::fill())
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(space::S)
+        .cursor(if lock.is_some() { CursorIcon::NotAllowed } else { CursorIcon::Pointer })
+        .on_pointer_press(move |e: Event<PointerEventData>| {
+            if let PointerEventData::Mouse(m) = &*e
+                && m.button == Some(MouseButton::Left)
+            {
+                flow.toggle_full_speed();
+            }
+        })
+        .child(rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation()).child(Switch::new("batch.speed", label.clone(), on).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_full_speed())))
+        .child(line(t, label, font::CALLOUT, t.text2));
+    rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::XS).child(WithTip::new(lock.clone(), row).fill()).child(hint(t, text)).into_element()
 }
 
 fn pace_section(t: &Theme, flow: Flow, pace: u32, running: bool, lock: &Option<String>) -> Element {

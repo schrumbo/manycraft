@@ -114,6 +114,13 @@ impl Component for StartPage {
         let ui = store.ui;
         use_infos(store);
         let infos = ui.infos.read().clone();
+        let mut at = use_scroll_controller(ScrollConfig::default);
+        let quick_at = *ui.focus_quick.read();
+        use_side_effect_with_deps(&quick_at, move |when| {
+            if when.is_some_and(|when| when.elapsed() < std::time::Duration::from_secs(1)) {
+                at.scroll_to(ScrollPosition::End, Direction::Vertical);
+            }
+        });
         let m = store.model.read();
         if !m.loaded {
             return rect().into_element();
@@ -124,7 +131,7 @@ impl Component for StartPage {
         let mut page = rect().width(Size::fill()).max_width(Size::px(frame::START)).padding(space::XL).spacing(space::XL);
         if list.is_empty() && ui.installs.read().is_empty() {
             drop(m);
-            return scroll(page.child(Welcome { bare: accounts == 0 }));
+            return scroll(at, page.child(Welcome { bare: accounts == 0 }));
         }
         drop(m);
         if let Some(i) = resume(&list, &infos) {
@@ -161,12 +168,12 @@ impl Component for StartPage {
         drop(m);
         page = page.child(QuickPlay { infos });
         page = page.child(footer(store));
-        scroll(page)
+        scroll(at, page)
     }
 }
 
-fn scroll(page: Rect) -> Element {
-    ScrollView::new().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).cross_align(Alignment::Center).child(page)).into_element()
+fn scroll(controller: ScrollController, page: Rect) -> Element {
+    ScrollView::new_controlled(controller).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).cross_align(Alignment::Center).child(page)).into_element()
 }
 
 #[derive(PartialEq)]

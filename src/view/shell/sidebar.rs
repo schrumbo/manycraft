@@ -10,7 +10,7 @@ use crate::view::accounts::off;
 use crate::view::commands::{self, Command, Want, can_want, want, want_blocked};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
-use crate::view::kit::badge::dot;
+use crate::view::kit::badge::{Tone, badge, dot};
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::row::Row;
@@ -23,6 +23,17 @@ use crate::view::ui::{Filter, Page};
 
 fn count(t: &Theme, text: String, selected: bool) -> Element {
     line(t, text, font::CAPTION, if selected { t.accent_text } else { t.text3 }).into_element()
+}
+
+/// How many chat lines from players other than the person's own accounts arrived after sequence number `read`.
+pub fn unread(m: &Model, read: u64) -> usize {
+    let from = read.max(m.chat_base()) - m.chat_base();
+    let own: Vec<String> = m.accounts.iter().map(|a| a.name.to_lowercase()).collect();
+    m.chat.iter().skip(from as usize).filter(|l| l.from.as_ref().is_some_and(|f| !own.contains(&f.to_lowercase()))).count()
+}
+
+fn unread_label(n: usize) -> String {
+    if n > 99 { "99+".to_owned() } else { n.to_string() }
 }
 
 fn open_with_system(target: &std::ffi::OsStr) -> std::io::Result<()> {
@@ -229,7 +240,7 @@ pub fn swatch(t: &Theme, id: &str, side: f32) -> Element {
     rect().width(Size::px(side)).height(Size::px(side)).corner_radius(t.shape.small).background(t.identity(at)).into_element()
 }
 
-/// The sidebar: Start, the library and Entdecken, then the batches, chat, the settings and the account that plays.
+/// The sidebar: Start, the library and Entdecken, then the batches and chat, the settings and the account that plays.
 #[derive(PartialEq)]
 pub struct Sidebar {
     /// Shown above the page in a narrow window, so never folded to the rail.
@@ -247,6 +258,7 @@ impl Component for Sidebar {
         let width = if rail { frame::RAIL } else { *ui.sidebar_w.read() };
         let m = store.model.read();
         let mut drawer = ui.drawer;
+        let in_chat = now == Page::Chat;
         let go = move |to: Page| {
             move |_| {
                 drawer.set_if_modified(false);
@@ -273,8 +285,9 @@ impl Component for Sidebar {
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
         let can_batch = can_want(&Want::NewBatch);
+        let people = !m.accounts.is_empty();
         if rail {
-            if !batches.is_empty() || can_batch {
+            if !batches.is_empty() || can_batch || people {
                 list = list.child(rect().width(Size::fill()).padding((space::S, space::M)).child(hairline(&t)));
             }
         } else if !batches.is_empty() || can_batch {
@@ -335,6 +348,17 @@ impl Component for Sidebar {
             });
             list = list.child(WithTip::new(blocked.or_else(|| Some(Command::NewBatch.tip())), r));
         }
+        if people {
+            let (r, tip) = row("nav.chat", tr("Chat"), Icon::Message, now == Page::Chat, Some(Command::OpenChat));
+            let new = if in_chat { 0 } else { unread(&m, ui.chat.left_at.read().unwrap_or(0)) };
+            let r = if new > 0 {
+                if rail { r.compact(true, Some(dot(t.accent))) } else { r.trailing(badge(&t, unread_label(new), Tone::Accent)) }
+            } else {
+                r
+            };
+            let tip = if new > 0 { Some(format!("{} · {}", tip.unwrap_or_else(|| tr("Chat")), trf("%lld ungelesen", &[&new]))) } else { tip };
+            list = list.child(WithTip::new(tip, r.on_press(go(Page::Chat))));
+        }
 
         let mut foot = rect().width(Size::fill()).spacing(1.);
         if !rail {
@@ -345,11 +369,6 @@ impl Component for Sidebar {
             if let Some(update) = update_row(&t, store, &m.updates, launching) {
                 foot = foot.child(update);
             }
-        }
-        let people = !m.accounts.is_empty();
-        if people {
-            let (r, tip) = row("nav.chat", tr("Chat"), Icon::Message, now == Page::Chat, Some(Command::OpenChat));
-            foot = foot.child(WithTip::new(tip, r.on_press(go(Page::Chat))));
         }
         let (r, tip) = row("nav.settings", tr("Einstellungen"), Icon::Settings, matches!(now, Page::Settings(_)), Some(Command::OpenSettings));
         foot = foot.child(WithTip::new(tip, r.on_press(go(Page::Settings(Default::default())))));
@@ -506,6 +525,25 @@ fn update_row(t: &Theme, store: Store, updates: &Updates, launching: bool) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn line(from: Option<&str>) -> crate::app::model::ChatLine {
+        crate::app::model::ChatLine { instance: "i".into(), account: "a".into(), batch: "b".into(), also: Vec::new(), at: 0, from: from.map(str::to_owned), text: "hi".into(), runs: Vec::new() }
+    }
+
+    #[test]
+    fn only_player_lines_after_the_last_seen_one_are_unread() {
+        let mut m = Model::default();
+        for from in [Some("x"), None, Some("y"), Some("z")] {
+            m.push_chat(line(from), 100);
+        }
+        assert_eq!(unread(&m, 0), 3);
+        assert_eq!(unread(&m, 2), 2);
+        assert_eq!(unread(&m, 4), 0);
+        assert_eq!(unread(&m, 9), 0);
+        m.push_chat(line(Some("w")), 4);
+        assert_eq!(unread(&m, 2), 3);
+        assert_eq!(unread(&m, 0), m.chat.iter().filter(|l| l.from.is_some()).count());
+    }
 
     #[test]
     fn dragging_the_edge_clamps_the_width_to_its_range() {

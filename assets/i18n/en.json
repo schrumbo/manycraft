@@ -2156,5 +2156,6 @@
   "Start fehlgeschlagen": "Start failed",
   "„%@“ erneut spielen": "Play “%@” again",
   "%1$lld laufen seit %2$@": "%1$lld running for %2$@",
-  "„%@“ sofort beenden · Nicht Gespeichertes geht verloren": "Force quit “%@” · Unsaved progress is lost"
+  "„%@“ sofort beenden · Nicht Gespeichertes geht verloren": "Force quit “%@” · Unsaved progress is lost",
+  "%lld ungelesen": "%lld unread"
 }
