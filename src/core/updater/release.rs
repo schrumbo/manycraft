@@ -77,7 +77,7 @@ pub fn newest(list: serde_json::Value, current: &str, prerelease: bool, skipped:
     .context("unexpected answer from the release list")?;
     let best = list
         .into_iter()
-        .filter(|r| !r.draft && (prerelease || !(r.prerelease || is_prerelease(&r.tag_name))) && is_newer(&r.tag_name, current) && skipped.is_none_or(|s| !same(&r.tag_name, s)))
+        .filter(|r| !r.draft && (prerelease || !(r.prerelease || is_prerelease(&r.tag_name))) && is_newer(&r.tag_name, current) && !passed_over(&r.tag_name, skipped))
         .max_by(|a, b| order(&a.tag_name, &b.tag_name));
     Ok(best.map(|r| Release {
         version: r.tag_name.trim().trim_start_matches(['v', 'V']).to_owned(),
@@ -174,6 +174,11 @@ pub fn same(a: &str, b: &str) -> bool {
     matches!((parse(a), parse(b)), (Some(a), Some(b)) if compare(&a, &b).is_eq())
 }
 
+/// Whether `version` stays unoffered after going back from `skipped`: that version itself, and any pre-release not above it.
+pub fn passed_over(version: &str, skipped: Option<&str>) -> bool {
+    skipped.is_some_and(|s| same(version, s) || (is_prerelease(version) && !is_newer(version, s)))
+}
+
 /// Whether `version` carries a pre-release tag, like `0.10.0-beta.2`.
 pub fn is_prerelease(version: &str) -> bool {
     parse(version).is_some_and(|v| v.pre.is_some())
@@ -258,6 +263,17 @@ mod tests {
         assert_eq!(newest(unflagged.clone(), "0.9.3", false, None).unwrap().unwrap().version, "0.9.4", "a pre-release version counts even without the flag");
         assert_eq!(newest(unflagged, "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.3");
         assert_eq!(newest(json!([beta(2), raw("v0.9.4", false, false)]), "0.9.4", true, Some("0.10.0-beta.2")).unwrap(), None, "a version gone back from stays skipped");
+    }
+
+    #[test]
+    fn going_back_from_a_beta_passes_over_the_older_betas_too() {
+        let beta = |n: u32| raw(&format!("v0.10.0-beta.{n}"), false, true);
+        let list = json!([beta(2), beta(1), raw("v0.9.4", false, false)]);
+        assert_eq!(newest(list, "0.9.4", true, Some("0.10.0-beta.2")).unwrap(), None, "beta.1 is not offered after leaving beta.2");
+        let later = json!([raw("v0.10.0", false, false), beta(3), beta(1)]);
+        assert_eq!(newest(later.clone(), "0.9.4", true, Some("0.10.0-beta.2")).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(json!([beta(3), beta(1)]), "0.9.4", true, Some("0.10.0-beta.2")).unwrap().unwrap().version, "0.10.0-beta.3", "a newer beta is offered again");
+        assert!(passed_over("0.10.0-beta.1", Some("0.10.0-beta.1")) && !passed_over("0.9.5", Some("0.10.0-beta.2")) && !passed_over("0.10.0-beta.1", None));
     }
 
     #[test]

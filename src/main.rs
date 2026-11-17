@@ -40,7 +40,9 @@ fn main() {
     if args.first().is_none_or(|a| a != "apply-update")
         && let Err(e) = core::backup::before_first_start(env!("CARGO_PKG_VERSION"))
     {
-        refuse_start(&e, args.first().is_none_or(|a| a.starts_with("--")));
+        if !core::updater::install::boot(env!("CARGO_PKG_VERSION")) {
+            refuse_start(&e, !args.first().is_some_and(|a| core::cli::is_command(a)));
+        }
         std::process::exit(1);
     }
     if let Some(code) = core::cli::run(&args) {
@@ -111,6 +113,7 @@ fn gpui(args: &[String]) {
 }
 
 fn refuse_start(error: &anyhow::Error, window: bool) {
+    core::cli::attach_console();
     eprintln!("backup before the first start: {error:#}");
     #[cfg(feature = "freya")]
     if window {

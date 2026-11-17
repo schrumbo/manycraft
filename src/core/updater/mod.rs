@@ -139,8 +139,7 @@ pub fn check(current: &str, prereleases: bool, force: bool) -> Result<Option<Rel
 fn check_in(dir: &Path, current: &str, prereleases: bool, force: bool, now: u64, fetch: impl FnOnce() -> Result<serde_json::Value>) -> Result<Option<Release>> {
     let state = load(dir);
     if !force && state.checked_prereleases == prereleases && within_a_day(state.checked_at, now) {
-        let skipped = state.skipped.as_deref();
-        return Ok(state.newest.filter(|r| release::is_newer(&r.version, current) && skipped.is_none_or(|s| !release::same(&r.version, s))));
+        return Ok(state.newest.filter(|r| release::is_newer(&r.version, current) && !release::passed_over(&r.version, state.skipped.as_deref())));
     }
     let newest = release::newest(fetch()?, current, prereleases, state.skipped.as_deref())?;
     let saved = edit(dir, |s| {

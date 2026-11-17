@@ -29,6 +29,10 @@ pub(super) fn write_in(root: &Path, version: &str) -> Result<bool> {
     if done.is_dir() || !root.is_dir() {
         return Ok(false);
     }
+    let _alone = super::lock::exclusive(&root.join("backup.lock"))?;
+    if done.is_dir() {
+        return Ok(false);
+    }
     let part = root.join(format!("{}.part", folder(version)));
     if std::fs::symlink_metadata(&part).is_ok() {
         std::fs::remove_dir_all(&part).with_context(|| format!("cannot clear {}", part.display()))?;
@@ -116,6 +120,24 @@ mod tests {
         assert!(write_in(root, "0.10.0-beta.3").unwrap());
         assert_eq!(std::fs::read(root.join("backup-before-0.10.0-beta.3/accounts.json")).unwrap(), b"[2]");
         assert!(!root.join("backup-before-0.10.0-beta.3.part").exists());
+    }
+
+    #[test]
+    fn two_first_starts_at_once_leave_one_whole_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        for i in 0..40 {
+            put(&root.join(format!("instances/i{i}/instance.json")), b"{}");
+        }
+        let both: Vec<bool> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..2).map(|_| s.spawn(|| write_in(&root, "0.10.0-beta.2").unwrap())).collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert_eq!(both.iter().filter(|w| **w).count(), 1);
+        for i in 0..40 {
+            assert!(root.join(format!("backup-before-0.10.0-beta.2/instances/i{i}/instance.json")).is_file());
+        }
+        assert!(!root.join("backup-before-0.10.0-beta.2.part").exists());
     }
 
     #[test]
