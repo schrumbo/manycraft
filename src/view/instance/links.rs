@@ -1,5 +1,4 @@
 //! Where the instance page hands over to sheets other pages own: the mod browser, the batch sheet and the .mrpack export.
-//! The export hook says why it is unavailable until its sheet moved into the new interface.
 
 use super::{actions::Action, held};
 use crate::core::i18n::{tr, trf};
@@ -9,14 +8,14 @@ use crate::view::icons::Icon;
 use crate::view::sheets::browser;
 use crate::view::store::Store;
 
-fn moving() -> Option<String> {
-    Some(tr("Zieht noch in die neue Oberfläche um."))
-}
-
 /// Exports instance `id` as a .mrpack.
 pub fn export(store: Store, id: &str, name: &str) -> Action {
-    let _ = (store, id);
-    Action::new("export", tr("Als .mrpack exportieren…"), trf("%@ als .mrpack exportieren…", &[&name]), Icon::FileDown, |_| {}).disabled(moving())
+    let busy = store.model.peek().exporting.contains(id).then(|| tr("Wird exportiert…"));
+    let id = id.to_owned();
+    Action::new("export", tr("Exportieren…"), trf("%@ als Modpack-Datei exportieren…", &[&name]), Icon::FileDown, move |_| {
+        want(store, Want::ExportInstance(id.clone()));
+    })
+    .disabled(busy.or_else(|| want_blocked(&Want::ExportInstance(String::new()))))
 }
 
 /// Opens the batch sheet for a new batch that plays instance `id`.

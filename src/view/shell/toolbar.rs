@@ -169,7 +169,12 @@ impl Component for Toolbar {
         if page == Page::Chat {
             bar = bar.child(crate::view::chat::Tools { room });
         }
-        bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)))
+        bar = bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)));
+        if let Page::Instance(id) = &page {
+            let hero = instance::Hero { id: id.clone(), room };
+            bar = if room >= frame::TOOLBAR_FULL { bar.child(rect().width(Size::px(frame::HERO)).horizontal().main_align(Alignment::End).cross_align(Alignment::Center).child(hero)) } else { bar.child(hero) };
+        }
+        bar
     }
 }
 

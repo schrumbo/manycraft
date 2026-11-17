@@ -21,8 +21,6 @@ use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
-const ACCOUNTS_SEARCH_FROM: usize = 6;
-const PREVIEW_W: f32 = super::INSPECTOR - space::L * 2.;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Worlds {
@@ -51,7 +49,7 @@ fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
     let up = store.ui.instance.up.read();
     let since = f.stoppable.iter().filter_map(|(key, _)| up.get(key)).min().copied();
     match (f.stoppable.len(), since.and_then(uptime_text)) {
-        (0, _) if f.running => (t.success, tr("Läuft")),
+        (0, _) if f.running => (t.success, f.busy.first().map_or_else(|| tr("Läuft im Batch"), |(_, place)| trf("Läuft in %@", &[place]))),
         (0, _) => (t.text3, tr("Gestoppt")),
         (1, None) => (t.success, tr("Läuft")),
         (1, Some(up)) => (t.success, trf("Läuft · %@", &[&up])),
@@ -71,146 +69,6 @@ fn status_row(t: &Theme, store: Store, f: &Facts, color: Color, text: String) ->
     }
     let mut tab = store.ui.instance.tab;
     row.child(Button::new("instance.logs", tr("Protokoll ansehen")).plain().on_press(move |_| tab.set(super::Tab::Logs))).into_element()
-}
-
-fn face_of(m: &crate::app::model::Model, id: Uuid) -> Option<Face> {
-    m.account(id).map(|a| Face { id, name: a.name.clone(), color: a.color() })
-}
-
-fn play_menu(store: Store, f: &Facts) -> Vec<Item> {
-    let m = store.model.peek();
-    let several = f.accounts.len() > 1;
-    let mut items = Vec::new();
-    for (account, name) in f.accounts.iter().filter(|_| several) {
-        let (instance, account_id) = (f.made.id.clone(), *account);
-        let mut item = if f.playing.contains(account) {
-            Item::new(format!("instance.play.as.{account}"), name.clone(), |_| {}).shortcut(tr("Läuft")).disabled(true)
-        } else if f.expired.contains(account) {
-            let blocked = crate::view::commands::sign_in_blocked(store);
-            Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![account_id])).disabled(blocked.is_some()).shortcut(blocked.unwrap_or_else(|| tr("Anmelden")))
-        } else {
-            let item = Item::new(format!("instance.play.as.{account}"), name.clone(), move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: Some(account_id) }));
-            if f.pinned && f.solo == Some(*account) { item.shortcut(tr("Standard")) } else { item }
-        };
-        if let Some(face) = face_of(&m, *account) {
-            item = item.face(face);
-        }
-        items.push(item.checked(f.solo == Some(*account)));
-    }
-    if let Some(solo) = f.solo.filter(|_| several) {
-        let instance = f.made.id.clone();
-        items.push(Item::Separator);
-        items.push(if f.pinned {
-            Item::new("instance.play.default.clear", tr("Standard-Account entfernen"), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account: None }))
-        } else {
-            Item::new("instance.play.default.set", tr("Als Standard für diese Instanz"), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account: Some(solo) }))
-        });
-    }
-    if f.stoppable.len() > 1 {
-        items.push(Item::Separator);
-        for (key, name) in &f.stoppable {
-            let key = key.clone();
-            items.push(Item::new(format!("instance.play.stop.{key}"), trf("„%@“ stoppen", &[name]), move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))));
-        }
-    }
-    items
-}
-
-#[derive(PartialEq)]
-struct PlayControl {
-    facts: Facts,
-}
-
-impl Component for PlayControl {
-    fn render(&self) -> impl IntoElement {
-        let store = use_store();
-        let mut anchor = use_state(Bounds::default);
-        let f = &self.facts;
-        let mut ui = store.ui;
-        if f.accounts.is_empty() {
-            return rect().child(Button::new("instance.play", tr("Account hinzufügen")).glyph(Icon::Plus).primary().on_press(move |_| ui.page.set(Page::Accounts))).into_element();
-        }
-        let main = if let Some((key, overdue)) = f.stopping.clone() {
-            if overdue {
-                Button::new("instance.play", tr("Sofort beenden")).glyph(Icon::Stop).danger().tip(trf("Nicht Gespeichertes geht verloren (%@)", &[&Shortcut::primary(Code::Period).label()])).on_press(move |_| store.dispatch(AppEvent::Stop(vec![key.clone()])))
-            } else {
-                Button::new("instance.play", tr("Wird gestoppt…")).glyph(Icon::Stop).disabled(Some(tr("Das Spiel speichert und beendet sich.")))
-            }
-        } else if !f.stoppable.is_empty() {
-            let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();
-            let label = if keys.len() == 1 { tr("Stoppen") } else { tr("Alle stoppen") };
-            Button::new("instance.play", label).glyph(Icon::Stop).tip(Shortcut::primary(Code::Period).label()).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone())))
-        } else {
-            let name = f.solo.and_then(|a| f.accounts.iter().find(|(id, _)| *id == a)).map(|(_, n)| n.clone());
-            let (instance, solo) = (f.made.id.clone(), f.solo);
-            match (name, solo.filter(|a| f.expired.contains(a))) {
-                (Some(n), Some(account)) => Button::new("instance.play", trf("Anmelden als %@", &[&n]))
-                    .glyph(Icon::LogIn)
-                    .primary()
-                    .tip(tr("Die Anmeldung ist abgelaufen."))
-                    .disabled(want_blocked(&Want::SignInAgain(Vec::new())))
-                    .on_press(move |_| crate::view::accounts::sign_in(store, vec![account])),
-                (name, _) => {
-                    let label = name.map_or_else(|| tr("Spielen"), |n| trf("Spielen als %@", &[&n]));
-                    Button::new("instance.play", label).glyph(Icon::Play).primary().tip(Shortcut::primary(Code::KeyR).label()).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: solo }))
-                }
-            }
-        };
-        let menu_facts = f.clone();
-        let items = play_menu(store, f);
-        if items.is_empty() {
-            return rect().child(main).into_element();
-        }
-        let label = tr("Anderer Account");
-        let mut more = Button::icon("instance.play.more", Icon::ChevronDown, label.clone()).tip(label);
-        if f.stoppable.is_empty() && f.stopping.is_none() {
-            more = more.primary();
-        }
-        rect()
-            .horizontal()
-            .spacing(1.)
-            .on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e)))
-            .child(main)
-            .child(more.on_press(move |_| {
-                let menu = Menu::under(play_menu(store, &menu_facts), *anchor.peek());
-                menu::open(store.ui, if menu_facts.accounts.len() >= ACCOUNTS_SEARCH_FROM { menu.searchable(tr("Account suchen")) } else { menu });
-            }))
-            .into_element()
-    }
-}
-
-#[derive(PartialEq)]
-struct BatchControl {
-    id: String,
-    name: String,
-    batches: Vec<(String, String)>,
-}
-
-impl Component for BatchControl {
-    fn render(&self) -> impl IntoElement {
-        let store = use_store();
-        let mut anchor = use_state(Bounds::default);
-        let new = links::new_batch(store, &self.id, &self.name);
-        if self.batches.is_empty() {
-            let run = new.run.clone();
-            return rect().child(Button::new("instance.batch.new", tr("Neuer Batch…")).disabled(new.disabled).on_press(move |_| run.call(()))).into_element();
-        }
-        let batches = self.batches.clone();
-        let (new_label, new_off, new_run) = (new.label, new.disabled.is_some(), new.run);
-        rect()
-            .on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e)))
-            .child(Button::new("instance.batch.start", tr("Batch starten")).glyph(Icon::ChevronDown).on_press(move |_| {
-                let mut items: Vec<Item> = batches.iter().map(|(id, name)| {
-                    let id = id.clone();
-                    Item::new(format!("instance.batch.start.{id}"), name.clone(), move |_| store.dispatch(AppEvent::StartBatch(id.clone())))
-                }).collect();
-                let run = new_run.clone();
-                items.push(Item::Separator);
-                items.push(Item::new("instance.batch.new", new_label.clone(), move |_| run.call(())).disabled(new_off));
-                menu::open(store.ui, Menu::under(items, *anchor.peek()));
-            }))
-            .into_element()
-    }
 }
 
 fn batch_links(t: &Theme, batches: &[(String, String)]) -> Option<Element> {
@@ -332,32 +190,6 @@ fn use_worlds(store: Store, made: &Instance) -> Option<Worlds> {
     found.read().as_ref().filter(|(id, _)| *id == made.id).map(|(_, w)| *w)
 }
 
-#[derive(PartialEq)]
-struct Preview {
-    facts: Facts,
-    busy: Option<f32>,
-}
-
-impl Component for Preview {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let f = &self.facts;
-        let h = PREVIEW_W * 9. / 16.;
-        let (glyph, text) = if !f.playing.is_empty() {
-            (Icon::Play, tr("Läuft in eigenem Fenster"))
-        } else if f.running {
-            (Icon::Layers, tr("Läuft im Batch"))
-        } else {
-            (Icon::Moon, tr("Gestoppt"))
-        };
-        let mut pic = rect().width(Size::px(PREVIEW_W)).height(Size::px(h)).background(t.well).corner_radius(t.shape.tile).overflow(Overflow::Clip).center().spacing(space::XS).child(icon(&t, glyph, iconsize::L, t.text3)).child(caption(&t, text));
-        if let Some(done) = self.busy {
-            pic = pic.child(rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(PREVIEW_W * done)).height(Size::px(frame::PROGRESS)).background(t.accent));
-        }
-        pic
-    }
-}
-
 /// The page's notices for instance `id`: why its last change was not saved, with a button that hides it.
 pub fn notices(t: &Theme, store: Store, id: &str) -> Vec<Element> {
     let nav = store.ui.instance;
@@ -386,7 +218,64 @@ fn companion_hint(game: &str) -> Option<String> {
     (!game.is_empty() && !companion::available(game)).then(|| trf("Hintergrundmodus ab %@", &[&companion::first()]))
 }
 
-/// The column beside the tabs: the live picture, what runs, Play, the facts and what to do with the instance.
+/// Every action of the instance's "…" menu, with Rename first when `rename`; Open Folder and Clone too when `all`.
+fn more_items(store: Store, f: &Facts, rename: bool, all: bool) -> Vec<Item> {
+    let mut items = Vec::new();
+    if rename {
+        let id = f.made.id.clone();
+        items.push(Item::new("instance.more.rename", tr("Umbenennen"), move |_| actions::begin_rename(store, &id)).shortcut(Shortcut::bare(Code::F2).label()));
+        items.push(Item::Separator);
+    }
+    let new = links::new_batch(store, &f.made.id, &f.made.name);
+    let run = new.run.clone();
+    let mut acts = actions::all(store, f);
+    if !all {
+        acts.retain(|a| !matches!(a.key, "folder" | "clone"));
+    }
+    let split = acts.iter().position(|a| a.key == "reset").unwrap_or(acts.len());
+    let mut new = Some(because(Item::new("instance.more.batch.new", tr("Neuer Batch…"), move |_| run.call(())), new.disabled));
+    for (n, a) in acts.into_iter().enumerate() {
+        if n == split {
+            items.extend(new.take());
+            items.push(Item::Separator);
+        }
+        let run = a.run.clone();
+        let mut item = because(Item::new(format!("instance.more.{}", a.key), a.label, move |_| run.call(())), a.disabled);
+        if a.danger {
+            item = item.danger();
+        }
+        items.push(item);
+    }
+    items.extend(new);
+    items
+}
+
+fn because(item: Item, why: Option<String>) -> Item {
+    match why {
+        Some(why) => item.shortcut(why).disabled(true),
+        None => item,
+    }
+}
+
+#[derive(PartialEq)]
+struct More {
+    facts: Facts,
+    rename: bool,
+    all: bool,
+}
+
+impl Component for More {
+    fn render(&self) -> impl IntoElement {
+        let store = use_store();
+        let mut anchor = use_state(Bounds::default);
+        let (f, rename, all) = (self.facts.clone(), self.rename, self.all);
+        rect().on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e))).child(Button::icon("instance.more", Icon::More, tr("Weitere Aktionen")).plain().on_press(move |_| {
+            menu::open(store.ui, Menu::under(more_items(store, &f, rename, all), *anchor.peek()));
+        }))
+    }
+}
+
+/// The column beside the tabs: what runs, the facts and what to do with the instance.
 #[derive(PartialEq)]
 pub struct Inspector {
     pub id: String,
@@ -404,11 +293,9 @@ impl Component for Inspector {
         let worlds = use_worlds(store, &made);
         let Some(f) = f else { return rect().into_element() };
         let (color, text) = status(&t, store, &f, &self.id);
-        let busy = store.ui.instance.busy.read().get(&self.id).and_then(|b| b.progress);
 
         let mut col = rect().width(Size::fill()).padding(space::L).spacing(space::M);
-        col = col.child(Preview { facts: f.clone(), busy }).child(status_row(&t, store, &f, color, text));
-        col = col.child(PlayControl { facts: f.clone() }).child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() });
+        col = col.child(status_row(&t, store, &f, color, text));
         if let Some(links) = batch_links(&t, &f.batches) {
             col = col.child(links);
         }
@@ -447,26 +334,18 @@ impl Component for Inspector {
             col = col.child(caption(&t, hint));
         }
         col = col.child(hairline(&t));
-        let mut acts = rect().width(Size::fill()).spacing(space::XXS);
-        let all = actions::all(store, &f);
-        let split = all.iter().position(|a| a.key == "reset").unwrap_or(all.len());
-        for (n, a) in all.into_iter().enumerate() {
-            if n == split {
-                acts = acts.child(rect().height(Size::px(space::S)));
-            }
+        let mut acts = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS);
+        for a in actions::all(store, &f).into_iter().filter(|a| matches!(a.key, "folder" | "clone")) {
             let run = a.run.clone();
-            let mut b = Button::new(format!("instance.{}", a.key), a.label).glyph(a.glyph).plain().disabled(a.disabled);
-            if a.danger {
-                b = b.danger();
-            }
-            acts = acts.child(b.on_press(move |_| run.call(())));
+            acts = acts.child(Button::new(format!("instance.{}", a.key), a.label).glyph(a.glyph).plain().disabled(a.disabled).on_press(move |_| run.call(())));
         }
+        acts = acts.child(More { facts: f.clone(), rename: false, all: false });
         col = col.child(acts);
         ScrollView::new().width(Size::fill()).height(Size::fill()).drag_scrolling(false).child(col).into_element()
     }
 }
 
-/// The inspector folded into one line above the tabs, for narrow windows: status, Batch, Play and a menu of actions.
+/// The inspector folded into one line above the tabs, for narrow windows: status and a menu of actions.
 #[derive(PartialEq)]
 pub struct Strip {
     pub id: String,
@@ -476,12 +355,10 @@ impl Component for Strip {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let mut anchor = use_state(Bounds::default);
         use_minute(store, true);
         let Some(f) = super::facts(&store.model.read(), &self.id) else { return rect().into_element() };
         let (color, text) = status(&t, store, &f, &self.id);
-        let menu_facts = f.clone();
-        let mut bar = rect()
+        rect()
             .width(Size::fill())
             .height(Size::px(control::L + space::S * 2.))
             .padding((0., space::L))
@@ -491,26 +368,7 @@ impl Component for Strip {
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }).alignment(BorderAlignment::Inner))
             .child(rect().width(Size::flex(1.)).child(status_row(&t, store, &f, color, text)))
             .content(Content::flex())
-            .child(BatchControl { id: f.made.id.clone(), name: f.made.name.clone(), batches: f.batches.clone() })
-            .child(PlayControl { facts: f.clone() });
-        bar = bar.child(rect().on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e))).child(Button::icon("instance.more", Icon::More, tr("Weitere Aktionen")).plain().tip(tr("Weitere Aktionen")).on_press(move |_| {
-            let rename_id = menu_facts.made.id.clone();
-            let mut items = vec![Item::new("instance.more.rename", tr("Umbenennen"), move |_| actions::begin_rename(store, &rename_id)).shortcut(Shortcut::bare(Code::F2).label()), Item::Separator];
-            let all = actions::all(store, &menu_facts);
-            let split = all.iter().position(|a| a.key == "reset").unwrap_or(all.len());
-            for (n, a) in all.into_iter().enumerate() {
-                if n == split {
-                    items.push(Item::Separator);
-                }
-                let run = a.run.clone();
-                let mut item = Item::new(format!("instance.more.{}", a.key), a.label, move |_| run.call(())).disabled(a.disabled.is_some());
-                if a.danger {
-                    item = item.danger();
-                }
-                items.push(item);
-            }
-            menu::open(store.ui, Menu::under(items, *anchor.peek()));
-        })));
-        bar.into_element()
+            .child(More { facts: f.clone(), rename: true, all: true })
+            .into_element()
     }
 }

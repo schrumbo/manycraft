@@ -445,7 +445,7 @@ pub fn restore(instance_dir: &Path, backup: &Backup, game_dir: &Path, progress: 
     }
     std::fs::create_dir_all(&saves).with_context(|| format!("cannot create {}", saves.display()))?;
     let temp = fresh_temp(&saves, &backup.folder, "restoring")?;
-    if let Err(e) = unpack(&backup.path, &backup.folder, &temp, progress) {
+    if let Err(e) = unpack(&backup.path, Path::new(&backup.folder), &temp, progress) {
         let _ = std::fs::remove_dir_all(&temp);
         return Err(e);
     }
@@ -473,7 +473,7 @@ pub fn restore(instance_dir: &Path, backup: &Backup, game_dir: &Path, progress: 
     Ok(Restored { world: target, replaced })
 }
 
-fn unpack(zip_path: &Path, folder: &str, into: &Path, progress: &Progress) -> Result<()> {
+fn unpack(zip_path: &Path, folder: &Path, into: &Path, progress: &Progress) -> Result<()> {
     let file = std::fs::File::open(zip_path).with_context(|| format!("cannot read {}", zip_path.display()))?;
     let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).context("the backup is damaged")?;
     let total: u64 = (0..zip.len()).filter_map(|i| zip.by_index_raw(i).ok().map(|f| f.size())).sum();
@@ -529,6 +529,131 @@ pub fn copy_to(world: &World, game_dir: &Path, progress: &Progress) -> Result<Pa
         return Err(e);
     }
     Ok(target)
+}
+
+/// Copies the world `source`, a folder with a level.dat or a .zip that holds one, into the saves of the game folder
+/// `game_dir` under its name or "<name> (2)", … when that is taken, and returns the new folder. An import that fails
+/// halfway is removed again.
+pub fn import(source: &Path, game_dir: &Path, progress: &Progress) -> Result<PathBuf> {
+    let stem = |p: &Path| p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (name, root) = if source.is_dir() {
+        if !source.join(LEVEL).is_file() {
+            bail!(Final(tr("In diesem Ordner ist keine Welt.")));
+        }
+        (source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), None)
+    } else {
+        let root = zip_world(source)?;
+        let name = root.file_name().map_or_else(|| stem(source), |n| n.to_string_lossy().into_owned());
+        (name, Some(root))
+    };
+    let folder = if one_folder(&name) && !name.starts_with('.') { name } else { tr("Welt") };
+    let saves = game_dir.join(SAVES);
+    std::fs::create_dir_all(&saves).with_context(|| format!("cannot create {}", saves.display()))?;
+    let temp = fresh_temp(&saves, &folder, "importing")?;
+    let copied = match &root {
+        None => {
+            progress.total.store(size(source), Ordering::Relaxed);
+            copy_tree(source, &temp, progress)
+        }
+        Some(root) => unpack(source, root, &temp, progress),
+    }
+    .and_then(|()| place(&temp, &saves, &folder));
+    if copied.is_err() {
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+    copied
+}
+
+fn place(temp: &Path, saves: &Path, folder: &str) -> Result<PathBuf> {
+    let mut last = None;
+    for n in 1..100 {
+        let target = if n == 1 { saves.join(folder) } else { saves.join(format!("{folder} ({n})")) };
+        if std::fs::symlink_metadata(&target).is_ok() {
+            continue;
+        }
+        match std::fs::rename(temp, &target) {
+            Ok(()) => return Ok(target),
+            Err(e) => last = Some(anyhow::Error::new(e).context(format!("cannot finish {}", target.display()))),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no free world name")))
+}
+
+fn zip_world(path: &Path) -> Result<PathBuf> {
+    let file = std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let none = || Final(tr("In dieser Datei ist keine Welt."));
+    let Ok(mut zip) = zip::ZipArchive::new(std::io::BufReader::new(file)) else { bail!(none()) };
+    let mut best: Option<PathBuf> = None;
+    for i in 0..zip.len() {
+        let Ok(entry) = zip.by_index_raw(i) else { continue };
+        let Some(name) = entry.enclosed_name() else { continue };
+        if name.file_name().is_some_and(|n| n == LEVEL) {
+            let root = name.parent().map(Path::to_path_buf).unwrap_or_default();
+            if best.as_ref().is_none_or(|b| root.components().count() < b.components().count()) {
+                best = Some(root);
+            }
+        }
+    }
+    best.ok_or_else(|| none().into())
+}
+
+/// A server of the list the games of an instance start from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Server {
+    pub name: String,
+    pub address: String,
+}
+
+/// The servers of the list at `path`, a servers.dat, in its order; empty when it is missing or unreadable.
+pub fn servers(path: &Path) -> Vec<Server> {
+    std::fs::read(path).ok().and_then(|bytes| parse_servers(&bytes).ok()).unwrap_or_default()
+}
+
+fn parse_servers(bytes: &[u8]) -> Result<Vec<Server>> {
+    let mut r = Nbt { b: bytes, at: 0 };
+    if r.u8()? != 10 {
+        bail!("servers.dat does not start with a compound");
+    }
+    r.string()?;
+    let mut out = Vec::new();
+    loop {
+        let tag = r.u8()?;
+        if tag == 0 {
+            return Ok(out);
+        }
+        let name = r.string()?;
+        if tag != 9 || name != "servers" {
+            r.skip(tag, 0)?;
+            continue;
+        }
+        let item = r.u8()?;
+        let n = r.len()?;
+        if item != 10 {
+            for _ in 0..n {
+                r.skip(item, 1)?;
+            }
+            continue;
+        }
+        for _ in 0..n {
+            let (mut name, mut address, mut hidden) = (String::new(), String::new(), false);
+            loop {
+                let tag = r.u8()?;
+                if tag == 0 {
+                    break;
+                }
+                match (tag, r.string()?.as_str()) {
+                    (8, "name") => name = r.string()?,
+                    (8, "ip") => address = r.string()?,
+                    (1, "hidden") => hidden = r.u8()? != 0,
+                    (tag, _) => r.skip(tag, 2)?,
+                }
+            }
+            let address = address.trim().to_owned();
+            if !address.is_empty() && !hidden {
+                out.push(Server { name: if name.trim().is_empty() { address.clone() } else { name }, address });
+            }
+        }
+    }
 }
 
 fn one_folder(folder: &str) -> bool {
@@ -742,6 +867,61 @@ pub(crate) mod tests {
         let copied = copy_to(&world, &game, &Progress::default()).unwrap();
         assert_eq!(copied.file_name().unwrap(), "Basis (2)");
         assert_eq!(size(&copied), size(&world.dir) - 1);
+    }
+
+    #[test]
+    fn worlds_come_in_from_a_folder_or_a_zip_under_a_free_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = Uuid::from_u128(7);
+        let world = world_in(dir.path(), account, "Basis");
+        let game = instance::games_dir(dir.path()).join(account.simple().to_string());
+        let from_folder = import(&world.dir, &game, &Progress::default()).unwrap();
+        assert_eq!(from_folder.file_name().unwrap(), "Basis (2)");
+        assert!(from_folder.join(LEVEL).is_file());
+        let zipped = dir.path().join("download.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&zipped).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("Insel/level.dat", options).unwrap();
+        zip.write_all(&level_dat("Insel", 1, 0, false)).unwrap();
+        zip.start_file("Insel/region/r.0.0.mca", options).unwrap();
+        zip.write_all(b"r").unwrap();
+        zip.start_file("readme.txt", options).unwrap();
+        zip.finish().unwrap();
+        let from_zip = import(&zipped, &game, &Progress::default()).unwrap();
+        assert_eq!(from_zip.file_name().unwrap(), "Insel");
+        assert!(from_zip.join("region").join("r.0.0.mca").is_file() && !from_zip.join("readme.txt").exists());
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(import(&empty, &game, &Progress::default()).is_err());
+        assert!(import(&dir.path().join("readme.txt"), &game, &Progress::default()).is_err());
+        assert!(std::fs::read_dir(game.join(SAVES)).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with('.')));
+    }
+
+    #[test]
+    fn the_server_list_gives_names_and_addresses_in_order() {
+        let mut b = Vec::new();
+        tag(&mut b, 10, "");
+        tag(&mut b, 9, "servers");
+        b.push(10);
+        b.extend_from_slice(&4i32.to_be_bytes());
+        for (name, ip, hidden) in [("Farm", "farm.example:25570", 0), ("Minecraft Server", "quick.example", 1), ("", "10.0.0.2", 0), ("Leer", "  ", 0)] {
+            tag(&mut b, 1, "hidden");
+            b.push(hidden);
+            tag(&mut b, 8, "name");
+            b.extend_from_slice(&(name.len() as u16).to_be_bytes());
+            b.extend_from_slice(name.as_bytes());
+            tag(&mut b, 8, "ip");
+            b.extend_from_slice(&(ip.len() as u16).to_be_bytes());
+            b.extend_from_slice(ip.as_bytes());
+            b.push(0);
+        }
+        b.push(0);
+        let list = parse_servers(&b).unwrap();
+        assert_eq!(list, vec![Server { name: "Farm".into(), address: "farm.example:25570".into() }, Server { name: "10.0.0.2".into(), address: "10.0.0.2".into() }]);
+        for cut in 0..b.len() {
+            assert!(parse_servers(&b[..cut]).is_err(), "{cut}");
+        }
+        assert!(servers(Path::new("missing/servers.dat")).is_empty());
     }
 
     #[test]
