@@ -498,7 +498,7 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], (scroll, mut viewport, mut c
         return body.child(nothing(t)).into_element();
     }
     if total > FILTER_FROM {
-        let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(Field::new("import.filter", flow.filter).placeholder(tr("Instanzen filtern")).glyph(Icon::Search).width(Size::flex(1.)));
+        let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(Field::new("import.filter", flow.filter).placeholder(tr("Instanzen filtern")).glyph(Icon::Search).rows_through().width(Size::flex(1.)));
         if !flow.filter.read().is_empty() {
             let mut filter = flow.filter;
             head = head.child(Button::icon("import.filter.clear", Icon::Close, tr("Filter löschen")).plain().on_press(move |_| filter.set(String::new())));

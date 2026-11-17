@@ -26,8 +26,6 @@ use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
 use crate::view::ui::{Filter as Shown, Page};
 
-const TILE: f32 = 72.;
-
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// Where a new instance comes from.
@@ -131,16 +129,27 @@ pub fn begin(store: Store, sources: Vec<Source>) -> Option<u64> {
     let from = store.ui.page.peek().clone();
     let from = if matches!(from, Page::Installing(_)) { Page::Grid(Shown::All) } else { from };
     let made: Vec<Install> = sources.into_iter().map(|source| Install { id: NEXT.fetch_add(1, Ordering::Relaxed), name: source.name(), stage: Stage::Queued, cancel: Arc::new(AtomicBool::new(false)), source, from: from.clone() }).collect();
-    let ids: Vec<u64> = made.iter().map(|i| i.id).collect();
+    let first = made[0].id;
     let mut installs = store.ui.installs;
     installs.write().extend(made);
-    let first = ids[0];
+    pump(store);
+    Some(first)
+}
+
+fn pump(store: Store) {
+    let mut busy = store.ui.installing;
+    if *busy.peek() {
+        return;
+    }
+    busy.set(true);
     spawn_in_window(async move {
-        for id in ids {
+        while let Some(id) = store.ui.installs.try_peek().and_then(|l| l.iter().find(|i| i.stage == Stage::Queued).map(|i| i.id)) {
             run(store, id).await;
         }
+        if let Some(mut done) = busy.try_write() {
+            *done = false;
+        }
     });
-    Some(first)
 }
 
 /// Stops install `id`; one that has not begun goes at once.
@@ -190,7 +199,7 @@ fn retry(store: Store, id: u64) {
         i.stage = Stage::Queued;
         i.cancel = Arc::new(AtomicBool::new(false));
     });
-    spawn_in_window(async move { run(store, id).await });
+    pump(store);
 }
 
 async fn run(store: Store, id: u64) {
@@ -275,8 +284,8 @@ async fn ended(store: Store, entry: &Install, result: anyhow::Result<Instance>) 
             let dropped = crate::view::kit::off_ui(move || remote::drop_import(&made)).await;
             if !matches!(dropped, Some(Ok(()))) {
                 toast::show(store.ui, trf("„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.", &[&label]), None);
-                store.reload(true);
             }
+            store.reload(true);
             close(store, id);
         }
         Ok(made) => {
@@ -301,12 +310,10 @@ async fn ended(store: Store, entry: &Install, result: anyhow::Result<Instance>) 
 }
 
 fn failed(store: Store, id: u64, why: String) {
-    if shown(store, id) {
-        update(store, id, |i| i.stage = Stage::Failed(why));
-    } else {
-        let mut installs = store.ui.installs;
-        installs.write().retain(|i| i.id != id);
-        toast::show(store.ui, why, None);
+    let here = shown(store, id);
+    update(store, id, |i| i.stage = Stage::Failed(why.clone()));
+    if !here {
+        toast::show_action(store.ui, why, tr("Erneut versuchen"), EventHandler::new(move |_| retry(store, id)));
     }
 }
 
@@ -417,7 +424,7 @@ impl Component for InstallPage {
         let Some(entry) = entry else { return rect().into_element() };
         let room = store.ui.window.read().0 - if *store.ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
         let wide = room >= frame::INSPECTOR_SPLIT;
-        let tile = rect().width(Size::px(TILE)).height(Size::px(TILE)).center().corner_radius(t.shape.tile).background(t.accent.with_af32(frame::TILE_WASH)).child(icon(&t, Icon::Package, iconsize::HERO, t.accent_text));
+        let tile = rect().width(Size::px(frame::HERO_TILE)).height(Size::px(frame::HERO_TILE)).center().corner_radius(t.shape.tile).background(t.accent.with_af32(frame::TILE_WASH)).child(icon(&t, Icon::Package, iconsize::HERO, t.accent_text));
         let mut hero = rect().width(Size::fill()).max_width(Size::px(frame::SHEET)).cross_align(Alignment::Center).spacing(space::M).child(tile).child(strong(&t, entry.name.clone(), font::TITLE2, t.text1).width(Size::fill()).max_lines(2).text_align(TextAlign::Center));
         let failed = match &entry.stage {
             Stage::Failed(why) => Some(why.clone()),
@@ -427,7 +434,7 @@ impl Component for InstallPage {
             Some(why) => {
                 let again = Button::new(format!("install.{id}.retry"), tr("Erneut versuchen")).glyph(Icon::Refresh).primary().on_press(move |_| retry(store, id));
                 let leave = Button::new(format!("install.{id}.close"), tr("Schließen")).on_press(move |_| close(store, id));
-                hero = hero.child(para(&t, why.clone(), font::BODY, t.text2).text_align(TextAlign::Center)).child(rect().horizontal().spacing(space::S).child(leave).child(again));
+                hero = hero.child(rect().horizontal().cross_align(Alignment::Center).spacing(space::XS).child(icon(&t, Icon::CircleAlert, iconsize::M, t.danger_text)).child(para(&t, why.clone(), font::BODY, t.text2).max_width(Size::px(frame::SHEET - iconsize::M - space::XS)))).child(rect().horizontal().spacing(space::S).child(leave).child(again));
             }
             None => {
                 hero = hero.child(para(&t, tr("Wird als Instanz installiert. Du kannst solange weiterarbeiten."), font::BODY, t.text2).text_align(TextAlign::Center));

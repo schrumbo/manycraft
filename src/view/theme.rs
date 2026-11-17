@@ -64,6 +64,8 @@ pub mod frame {
     pub const FADE_LAYER: i16 = 64;
     /// How strongly the track of a progress ring shows.
     pub const RING_TRACK: f32 = 0.25;
+    /// Side of the large icon tile atop an empty or progress page.
+    pub const HERO_TILE: f32 = 72.;
     /// The hairline that divides the rows of a group.
     pub const HAIRLINE: f32 = 1.;
     pub const FACE: f32 = 18.;

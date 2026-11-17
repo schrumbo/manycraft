@@ -296,8 +296,9 @@ impl Component for Sidebar {
                 list = list.child(InstallRow { selected: now == Page::Installing(entry.id), entry: entry.clone() });
             }
             let more = installs.len().saturating_sub(IMPORT_ROWS_MAX);
-            if more > 0 {
-                list = list.child(rect().height(Size::px(frame::ROW)).padding((0., space::S)).main_align(Alignment::Center).child(caption(&t, trf("und %lld weitere", &[&more]))));
+            if let Some(next) = installs.get(IMPORT_ROWS_MAX).map(|i| i.id) {
+                let mut page = store.ui.page;
+                list = list.child(Row::new("nav.install.more", trf("und %lld weitere", &[&more])).glyph(Icon::More).height(frame::ROW).on_press(move |_| page.set(Page::Installing(next))));
             }
             if can_want(&Want::NewInstance) {
                 list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {
@@ -356,7 +357,7 @@ impl Component for InstallRow {
         let id = entry.id;
         let short = match entry.stage {
             _ if entry.stopping() => tr("Bricht ab …"),
-            Stage::Queued => tr("Wartet"),
+            Stage::Queued => tr("Wartet …"),
             Stage::Running(Some(p)) => format!("{p} %"),
             Stage::Running(None) | Stage::Failed(_) => String::new(),
         };
@@ -368,7 +369,7 @@ impl Component for InstallRow {
             .selected(self.selected)
             .trailing(count(&t, short, self.selected))
             .on_press(move |_| page.set(Page::Installing(id)))
-            .on_secondary(move |at| menu::open(store.ui, Menu::at(vec![Item::new(format!("nav.install.{id}.cancel"), tr("Abbrechen"), move |_| install::cancel(store, id)).disabled(stopping)], at)));
+            .on_secondary(move |at| menu::open(store.ui, Menu::at(vec![Item::new(format!("nav.install.{id}.cancel"), tr("Installation abbrechen"), move |_| install::cancel(store, id)).disabled(stopping)], at)));
         WithTip::new(Some(entry.state()), row)
     }
 }

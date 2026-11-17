@@ -38,7 +38,7 @@ use crate::view::kit::text::{caption, line, para, strong};
 use crate::view::kit::{after, at_least, button_focused, off_ui, toast, use_theme};
 use crate::view::install::{self, Source};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, frame, iconsize, space};
+use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
 use crate::view::ui::BrowserUndo;
 
 use project::ProjectPage;
@@ -1889,7 +1889,15 @@ impl Component for Browser {
         column = column.child(region);
         column = column.child(at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill()));
         if paged {
-            let (esc, enter) = (flow.clone(), flow.clone());
+            let (esc, enter, arrive) = (flow.clone(), flow.clone(), flow.clone());
+            use_hook(move || {
+                spawn_in_window(async move {
+                    after(motion::FAST).await;
+                    if arrive.alive() {
+                        arrive.focus();
+                    }
+                });
+            });
             return rect()
                 .width(Size::fill())
                 .height(Size::fill())
@@ -1903,6 +1911,11 @@ impl Component for Browser {
                         Key::Named(NamedKey::Escape) if esc.page_open() || !esc.query.peek().is_empty() => {
                             e.stop_propagation();
                             esc.cancel();
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            e.stop_propagation();
+                            let mut page = esc.store.ui.page;
+                            page.set(crate::view::ui::Page::Grid(crate::view::ui::Filter::All));
                         }
                         Key::Named(NamedKey::Enter) if e.modifiers.is_empty() && (field::typing() || enter.page_open() && !enter.other_field_typing() && !button_focused()) => {
                             e.stop_propagation();

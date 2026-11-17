@@ -40,7 +40,7 @@ pub fn latest_loader(agent: &ureq::Agent, game: &str) -> Result<String> {
 
 /// Quilt's launcher profile for a game and loader version.
 pub fn profile(agent: &ureq::Agent, game: &str, loader: &str) -> Result<VersionJson> {
-    let profile: VersionJson = offered("Quilt", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json")))?;
+    let profile: VersionJson = net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json"))?;
     if profile.main_class.is_none() {
         bail!("Quilt returned a profile without a main class");
     }

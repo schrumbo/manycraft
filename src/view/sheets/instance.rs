@@ -900,7 +900,7 @@ fn imports(flow: Make, blocked: Option<String>) -> Element {
             id: "instance.import",
             glyph: Icon::Download,
             title: tr("Aus anderem Launcher oder Datei…"),
-            subtitle: tr("Prism, Modrinth App, CurseForge, ATLauncher oder eine .mrpack-Datei"),
+            subtitle: tr("Prism, Modrinth App, CurseForge, ATLauncher oder eine Modpack-Datei"),
             disabled: blocked,
             on_press: EventHandler::new(move |_| {
                 sheet::close(store.ui);

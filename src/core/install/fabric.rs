@@ -59,7 +59,7 @@ fn pick_loader(entries: Vec<Entry>) -> Option<String> {
 
 /// Fabric's launcher profile for a game and loader version.
 pub fn profile(agent: &ureq::Agent, game: &str, loader: &str) -> Result<VersionJson> {
-    let profile: VersionJson = offered("Fabric", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json")))?;
+    let profile: VersionJson = net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json"))?;
     if profile.id.is_empty() || profile.id.contains(['/', '\\']) || profile.id.starts_with('.') {
         bail!("Fabric returned an unusable profile id");
     }

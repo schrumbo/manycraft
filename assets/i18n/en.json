@@ -1856,7 +1856,7 @@
   "Ohne Mods": "Without mods",
   "Performance-Mods": "Performance mods",
   "Performance-Mods (%lld)": "Performance mods (%lld)",
-  "Prism, Modrinth App, CurseForge, ATLauncher oder eine .mrpack-Datei": "Prism, Modrinth App, CurseForge, ATLauncher or an .mrpack file",
+  "Prism, Modrinth App, CurseForge, ATLauncher oder eine Modpack-Datei": "Prism, Modrinth App, CurseForge, ATLauncher or a modpack file",
   "Von Modrinth, jedes wird eine eigene Instanz": "From Modrinth, each becomes its own instance",
   "Wartet …": "Waiting …",
   "Weitere Mods…": "More mods…",
@@ -1870,5 +1870,6 @@
   "„%@“ lädt Dateien von einer Seite, die Manycraft nicht kennt. Nichts wurde installiert.": "“%@” downloads files from a site Manycraft doesn’t know. Nothing was installed.",
   "„%@“ wurde nicht installiert.": "“%@” wasn’t installed.",
   "Mods zeigen": "Show mods",
-  "Mods ausblenden": "Hide mods"
+  "Mods ausblenden": "Hide mods",
+  "Installation abbrechen": "Cancel installation"
 }

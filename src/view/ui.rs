@@ -121,6 +121,8 @@ pub struct Ui {
     pub tip_seen: State<Option<Instant>>,
     /// Instances on their way in, oldest first.
     pub installs: State<Vec<crate::view::install::Install>>,
+    /// Whether the install runner is working through the queue.
+    pub installing: State<bool>,
     /// What the Accounts page shows and has picked.
     pub accounts: accounts::Shared,
     /// What the Chat page shows and is about to send.
@@ -159,6 +161,7 @@ impl Ui {
             session_undo: State::create(Vec::new()),
             tip_seen: State::create(None),
             installs: State::create(Vec::new()),
+            installing: State::create(false),
             accounts: accounts::Shared::create(),
             chat: chat::Shared::create(),
             instance: Nav::create(),

@@ -438,7 +438,7 @@ fn definition(line: &str) -> Option<(String, String)> {
     let (label, url) = rest.split_once("]:")?;
     let target = url.split_whitespace().next()?;
     let target = target.strip_prefix('<').and_then(|t| t.strip_suffix('>')).unwrap_or(target);
-    (!label.trim().is_empty() && !label.contains('[')).then(|| (label_key(label), target.to_owned()))
+    (!label.trim().is_empty() && !label.contains('[') && !label.starts_with('^')).then(|| (label_key(label), target.to_owned()))
 }
 
 fn closing(c: &[char], at: usize) -> Option<usize> {
