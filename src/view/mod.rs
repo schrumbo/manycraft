@@ -106,6 +106,7 @@ pub fn run(play: Option<Play>) {
         .with_size(size.0, size.1)
         .with_min_size(MIN.0, MIN.1)
         .with_title("Manycraft")
+        .with_icon(LaunchConfig::window_icon(include_bytes!("../../packaging/icons/manycraft-256.png")))
         .with_decorations(!cfg!(target_os = "linux") || native::frame::system_frame())
         .with_window_attributes(|attributes, _| native::frame::attributes(attributes))
         .with_shown(!away)
