@@ -31,8 +31,8 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// Where a new instance comes from.
 #[derive(Clone, PartialEq)]
 pub enum Source {
-    /// A modpack from Modrinth, by project id and title, in its newest version `filter` takes.
-    Pack { project: String, title: String, filter: Filter },
+    /// A modpack from Modrinth, by project id, title and icon, in its newest version `filter` takes.
+    Pack { project: String, title: String, icon: Option<String>, filter: Filter },
     /// A `.mrpack`, a Prism export or a Prism instance folder.
     File(PathBuf),
     /// An instance of another launcher, with what to take along.
@@ -216,11 +216,13 @@ async fn run(store: Store, id: u64) {
             let _ = tx.try_send(Report::Percent((done * 100).checked_div(total).unwrap_or(0).min(100) as u8));
         };
         let result = match &source {
-            Source::Pack { project, title, filter } => catalog::fetch_modpack(project, title, filter).and_then(|path| {
+            Source::Pack { project, title, icon, filter } => catalog::fetch_modpack(project, title, filter).and_then(|path| {
                 if stop.load(Ordering::SeqCst) {
                     anyhow::bail!(Refused::Cancelled);
                 }
-                remote::import_instance(&path, &stop, &progress)
+                let made = remote::import_instance(&path, &stop, &progress)?;
+                let pictured = icon.as_deref().filter(|_| !stop.load(Ordering::SeqCst)).and_then(|url| catalog::shot(url).and_then(|file| crate::core::instance::set_icon(&made.id, Some(&file))).ok());
+                Ok(pictured.unwrap_or(made))
             }),
             Source::File(path) => {
                 if let Ok(name) = mrpack::peek(path) {

@@ -1510,7 +1510,7 @@ impl Flow {
             return;
         }
         let filter = if self.core.peek().all { Filter::any(Kind::Modpack) } else { self.filter() };
-        let source = Source::Pack { project: hit.project_id.clone(), title: hit.title.clone(), filter };
+        let source = Source::Pack { project: hit.project_id.clone(), title: hit.title.clone(), icon: hit.icon_url.clone(), filter };
         if self.scope.page || !self.live.peek().dirty {
             crate::view::kit::sheet::close(self.store.ui);
             install::start(self.store, vec![source]);
