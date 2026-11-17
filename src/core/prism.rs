@@ -771,7 +771,7 @@ mod tests {
         assert_eq!((batch.name.as_str(), batch.game_version.as_str(), batch.loader.version()), ("Imported", "1.21.1", Some("0.16.5")));
         assert_eq!(batch.mods, known);
         assert_eq!(batch.local_mods, ["mine.jar"]);
-        let dest = out.path().join(&batch.id);
+        let dest = crate::core::instance::dir_in(out.path(), &batch.id);
         let mut mods: Vec<String> = fs::read_dir(dest.join("mods")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         mods.sort();
         assert_eq!(mods, ["mine.jar", "sodium-fabric-0.6.jar"]);
@@ -791,7 +791,7 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let inst = fabric(prism.path(), "bare", "Bare");
         let batch = import_to(&inst, "Bare", out.path(), &lookup_of(Vec::new())).unwrap();
-        let dest = out.path().join(&batch.id);
+        let dest = crate::core::instance::dir_in(out.path(), &batch.id);
         assert!(dest.join("mods").is_dir() && dest.join("config").is_dir());
         assert!(!dest.join(OPTIONS_FILE).exists());
         assert!(batch.mods.is_empty() && batch.local_mods.is_empty());
@@ -869,7 +869,7 @@ mod tests {
             Ok(HashMap::new())
         };
         assert!(import_to(&inst, "Broken", out.path(), &vanishing).is_err());
-        assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+        assert!(fs::read_dir(out.path()).unwrap().all(|e| e.unwrap().file_name().to_string_lossy().starts_with('.')));
     }
 
     #[test]
@@ -948,7 +948,7 @@ name=Farm
         assert_eq!((inst.name.as_str(), inst.unsupported.as_deref()), ("Farm", None));
         let batch = import_into(&inst, "Farm", out.path(), &lookup_of(Vec::new())).unwrap();
         assert_eq!(batch.local_mods, ["a.jar"]);
-        assert_eq!(fs::read(out.path().join(&batch.id).join(OPTIONS_FILE)).unwrap(), b"fov:1.0
+        assert_eq!(fs::read(crate::core::instance::dir_in(out.path(), &batch.id).join(OPTIONS_FILE)).unwrap(), b"fov:1.0
 ");
     }
 

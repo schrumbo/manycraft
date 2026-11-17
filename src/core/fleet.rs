@@ -41,6 +41,7 @@ const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
 /// How long a stopped game may take to save and quit before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(30);
+const LINKED: [&str; 5] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks"];
 const QUIT_POLL: Duration = Duration::from_millis(100);
 const TURN_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
@@ -144,9 +145,39 @@ impl Shared {
 /// Readies the game folder of `account` in `instance` and returns it: shared `mods`, `config`, `resourcepacks`,
 /// `shaderpacks` and `datapacks` linked in, `options.txt` and `servers.dat` from the instance templates, an old companion gone from the shared mods folder.
 pub fn prepare(instance: &Instance, account: &Account) -> Result<PathBuf> {
+    instance::existing(&instance.id)?;
     let dir = instance.game_dir(account.id);
     prepare_in(&dir, &Shared::of(instance), &instance.other_games(account.id))?;
     Ok(dir)
+}
+
+/// Points every link in the game folders of the instance folder `instance_dir` that leads to a shared folder at that
+/// folder in `instance_dir` again, after the instance folder moved. Only links change; real folders stay as they are.
+pub fn relink(instance_dir: &Path) -> Result<()> {
+    let games = super::instance::games_dir(instance_dir);
+    let entries = match fs::read_dir(&games) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", games.display())),
+    };
+    let mut first = Ok(());
+    for game in entries.filter_map(Result::ok) {
+        for name in LINKED {
+            let path = game.path().join(name);
+            let target = instance_dir.join(name);
+            let linked = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) || is_junction(&path);
+            if !linked || points_to(&path, &target) {
+                continue;
+            }
+            let renewed = fs::create_dir_all(&target).with_context(|| format!("cannot create {}", target.display())).and_then(|()| remove_link(&path)).and_then(|()| create_link(&target, &path).with_context(|| format!("cannot link {} to {}", path.display(), target.display())));
+            if let Err(e) = renewed
+                && first.is_ok()
+            {
+                first = Err(e);
+            }
+        }
+    }
+    first
 }
 
 fn prepare_in(dir: &Path, shared: &Shared, siblings: &[PathBuf]) -> Result<()> {
@@ -581,8 +612,9 @@ struct Held {
 }
 
 impl Held {
-    fn new(child: Child, instance: &str) -> Self {
-        Self { child, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(instance) }
+    fn launch(instance: &str, launch: impl FnOnce() -> Result<Child>) -> Result<Box<dyn Process>> {
+        let hold = instance::hold(instance).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
+        Ok(Box::new(Self { child: launch()?, in_use: install::clean::in_use().ok(), instance_in_use: Some(hold) }))
     }
 }
 
@@ -838,7 +870,7 @@ impl Fleet {
         let ipc_address = self.ipc.address();
         let ipc_file = self.ipc_file();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
+            Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token))
         };
         Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
@@ -868,7 +900,7 @@ impl Fleet {
         let ipc_address = self.ipc.address();
         let ipc_file = self.ipc_file();
         self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
+            Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token))
         })
     }
 

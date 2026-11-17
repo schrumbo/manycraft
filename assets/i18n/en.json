@@ -1454,5 +1454,12 @@
   "„%1$@“ läuft nicht mit Java %2$@.": "“%1$@” doesn’t run with Java %2$@.",
   "„%@“ gibt es nicht auf Modrinth.": "“%@” isn’t on Modrinth.",
   "„%1$@“ gibt es nicht für %2$@ %3$@.": "“%1$@” isn’t available for %2$@ %3$@.",
-  "Für „%@“ nötig": "Required by “%@”"
+  "Für „%@“ nötig": "Required by “%@”",
+  "Der Ordner der Instanz „%@“ wurde nicht umbenannt: %@": "The folder of the instance “%@” was not renamed: %@",
+  "Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal.": "The instance is being renamed or reset. Try again in a moment.",
+  "Die Instanz „%@“ bleibt, wo sie ist: Ein Ordner mit ihrer Kennung ist schon da.": "The instance “%@” stays where it is: a folder with its ID already exists.",
+  "Die Instanz „%@“ liegt in mehr als einem Ordner und bleibt, wo sie ist.": "The instance “%@” is in more than one folder and stays where it is.",
+  "Ein anderes Programm nutzt gerade Dateien der Instanz. Schließe es und versuch es noch einmal.": "Another program is using files of the instance. Close it and try again.",
+  "Erst stoppen, dann umbenennen": "Stop first, then rename",
+  "Erst stoppen: Ein Spiel dieser Instanz läuft.": "Stop first: a game of this instance is running."
 }

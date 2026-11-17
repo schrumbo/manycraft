@@ -757,8 +757,13 @@ pub fn save_instance(id: &str, base: &InstanceEdit, edit: InstanceEdit) -> Resul
             taken_name(&merged.name, Some(id))?;
         }
         let gpu_before = made.options.gpu;
+        let renamed = made.name != merged.name.trim();
         edited(&mut made, merged);
-        setup::save(&made)?;
+        if renamed {
+            setup::save_renamed(&made)?;
+        } else {
+            setup::save(&made)?;
+        }
         if gpu_before.is_some() && made.options.gpu.is_none() {
             let _ = crate::core::gpu::release(&made.id);
         }

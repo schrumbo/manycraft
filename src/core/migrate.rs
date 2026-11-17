@@ -14,7 +14,7 @@ use super::batch::ModRef;
 use super::i18n::trf;
 use super::install::clean::LOCK_FILE;
 use super::instance::{self, Instance, Loader};
-use super::{lock, net, paths, store};
+use super::{folders, lock, net, paths, store};
 
 const SHARED: [&str; 6] = ["mods", "config", "resourcepacks", "shaderpacks", "options.txt", "servers.dat"];
 const MOVED_FIELDS: [&str; 6] = ["game_version", "loader_version", "mods", "local_mods", "memory_mb", "jvm_args"];
@@ -29,15 +29,24 @@ pub struct Report {
     pub problems: Vec<String>,
 }
 
-/// Moves every batch that still holds its own version, mods and config into an instance of the same id, once per
-/// process. Nothing moves while a game runs or a cleanup holds the shared files; that waits for the next start.
+/// Moves every batch that still holds its own version, mods and config into an instance of the same id, then every
+/// instance still in a folder named after its id into one named after the instance, once per process. Nothing moves
+/// while a game of it runs or a cleanup holds the shared files; that waits for the next start.
 pub fn run() -> Report {
     let mut done = DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if *done {
         return Report::default();
     }
-    let report = run_in(&paths::data_dir());
-    *done = report.problems.is_empty();
+    let mut report = run_in(&paths::data_dir());
+    if !report.problems.is_empty() {
+        return report;
+    }
+    let moved = folders::migrate_in(&paths::instances_dir(), &folders::running);
+    if moved.moved > 0 || moved.waiting > 0 {
+        eprintln!("instance folders: {} renamed, {} wait for their games to stop", moved.moved, moved.waiting);
+    }
+    report.problems = moved.problems;
+    *done = moved.waiting == 0;
     report
 }
 
@@ -95,7 +104,8 @@ fn pending(batches: &Path) -> Result<Vec<(String, Value)>> {
 }
 
 fn migrate_one(from: &Path, to: &Path, id: &str, mut value: Value, taken: &mut Vec<String>) -> Result<()> {
-    if !store::exists(&to.join(instance::FILE)) {
+    let elsewhere = to.parent().is_some_and(|root| folders::find_fresh(root, id).is_some_and(|dir| dir != to));
+    if !elsewhere && !store::exists(&to.join(instance::FILE)) {
         move_games(to)?;
         for name in SHARED {
             rename_new(&from.join(name), &to.join(name))?;

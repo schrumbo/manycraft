@@ -124,12 +124,19 @@ def clippy(scope):
 
 def tests():
     run = subprocess.run(
-        ["cargo", "nextest", "run", "--no-tests", "pass", "--status-level", "fail", "--failure-output", "final", "--no-input-handler"],
+        ["cargo", "nextest", "run", "--no-fail-fast", "--no-tests", "pass", "--status-level", "fail", "--failure-output", "final", "--no-input-handler"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if run.returncode == 0:
         return []
-    return (run.stdout + run.stderr).strip().splitlines()[-30:]
+    lines = (run.stdout + run.stderr).strip().splitlines()
+    summary = []
+    for i, line in enumerate(lines):
+        if re.match(r"\s*FAIL \[", line):
+            summary.append(line.strip())
+        elif "panicked at" in line:
+            summary.append("  " + line.strip() + (" " + lines[i + 1].strip() if i + 1 < len(lines) else ""))
+    return list(dict.fromkeys(summary)) or lines[-30:]
 
 
 def gradle_build(module):

@@ -587,6 +587,9 @@ impl InstancePage {
             cx.notify();
             return;
         }
+        if self.running(cx) {
+            return;
+        }
         self.rename_error = None;
         self.renaming = true;
         self.rename_saving = false;
@@ -977,6 +980,7 @@ impl InstancePage {
 
     fn header(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Div {
         let made = &f.made;
+        let running = f.running;
         let icon_tile = div().size(px(ICON_TILE)).flex_none().rounded(px(radius::CONTROL)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::L, t.tertiary));
         let name = if self.renaming {
             let typed = self.name.read(cx).value().chars().count() as f32;
@@ -1009,8 +1013,8 @@ impl InstancePage {
                 .truncate()
                 .text_size(px(font::TITLE3))
                 .font_weight(FontWeight::SEMIBOLD)
-                .cursor_pointer()
-                .when(!super::widgets::menu_open("instance-title", cx), |d| d.tooltip(tip(tr("Doppelklicken zum Umbenennen"))))
+                .when(!running, |d| d.cursor_pointer())
+                .when(!super::widgets::menu_open("instance-title", cx), |d| d.tooltip(tip(if running { tr("Erst stoppen, dann umbenennen") } else { tr("Doppelklicken zum Umbenennen") })))
                 .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
                 .on_click(cx.listener(|s, e: &ClickEvent, window, cx| {
                     if e.click_count() == 2 {

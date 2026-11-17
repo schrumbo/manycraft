@@ -255,7 +255,7 @@ pub(super) fn unrestore_in(root: &Path, before: &Instance, trashed: &[String]) -
         bail!("invalid instance {:?}", before.id);
     }
     let _quiet = instance::quiet_in(root, &before.id)?;
-    let dir = root.join(&before.id);
+    let dir = instance::existing_in(root, &before.id).map_err(|e| anyhow::Error::new(Final(tr("Diese Instanz gibt es nicht mehr."))).context(e))?;
     let _held = lock::exclusive(&dir.join(super::origin::MODS_LOCK))?;
     let now: Instance = store::load(&dir.join(instance::FILE))?.ok_or_else(|| anyhow::Error::new(Final(tr("Diese Instanz gibt es nicht mehr."))))?;
     if let Some(gone) = trashed.iter().find(|e| !trash::holds(&dir, e)) {
@@ -282,7 +282,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
         bail!("invalid snapshot {instance_id:?} {id:?}");
     }
     let _quiet = instance::quiet_in(root, instance_id)?;
-    let dir = root.join(instance_id);
+    let dir = instance::existing_in(root, instance_id).map_err(|e| anyhow::Error::new(Final(tr("Diese Instanz gibt es nicht mehr."))).context(e))?;
     let _held = lock::exclusive(&dir.join(super::origin::MODS_LOCK))?;
     let now: Instance = store::load(&dir.join(instance::FILE))?.ok_or_else(|| anyhow::Error::new(Final(tr("Diese Instanz gibt es nicht mehr."))))?;
     let from = self::dir(&dir).join(id);
@@ -404,7 +404,7 @@ mod tests {
     fn setup(root: &Path) -> (Instance, PathBuf, PathBuf) {
         let made = Instance::new("Farm", "26.3", Loader::Fabric(None));
         save_in(root, &made).unwrap();
-        let dir = root.join(&made.id);
+        let dir = instance::dir_in(root, &made.id);
         std::fs::create_dir_all(dir.join("mods")).unwrap();
         std::fs::write(dir.join("mods").join("a.jar"), b"a1").unwrap();
         std::fs::create_dir_all(dir.join("config")).unwrap();

@@ -400,7 +400,12 @@ pub fn instance_menu(menu: PopupMenu, id: &str, cx: &App) -> PopupMenu {
     let takes_mods = made.is_some_and(|made| made.loader.takes_mods());
     let pinned = made.is_some_and(|made| matches!(made.loader, crate::core::instance::Loader::Fabric(Some(_)) | crate::core::instance::Loader::Quilt(Some(_))));
     let running = m.games.values().any(|g| g.instance_id == id && g.phase.is_active());
-    let mut menu = menu.menu(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None })).menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())));
+    let menu = menu.menu(tr("Spielen"), Box::new(PlayInstance { instance: id.to_owned(), account: None }));
+    let mut menu = if running {
+        menu.menu_element_with_disabled(Box::new(RenameInstance(id.to_owned())), true, super::palette::menu_row(tr("Umbenennen…"), Some(tr("Erst stoppen")), true))
+    } else {
+        menu.menu(tr("Umbenennen…"), Box::new(RenameInstance(id.to_owned())))
+    };
     if takes_mods {
         menu = menu.menu(tr("Mods hinzufügen…"), Box::new(AddMods(id.to_owned()))).menu(tr("Mods verwalten…"), Box::new(EditMods(id.to_owned())));
     }

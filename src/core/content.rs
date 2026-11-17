@@ -101,18 +101,11 @@ pub struct Scan {
 const FIXED: usize = usize::MAX;
 
 fn existing(root: &Path, id: &str) -> Result<PathBuf> {
-    if !instance::valid_id(id) {
-        bail!("invalid instance id {id:?}");
-    }
-    let dir = root.join(id);
-    if !store::exists(&dir.join(instance::FILE)) {
-        bail!(tr("Diese Instanz gibt es nicht mehr."));
-    }
-    Ok(dir)
+    instance::existing_in(root, id)
 }
 
 fn saved_in(root: &Path, id: &str) -> Result<Instance> {
-    store::load::<Instance>(&root.join(id).join(instance::FILE))?.ok_or_else(|| anyhow!(tr("Diese Instanz gibt es nicht mehr.")))
+    store::load::<Instance>(&instance::dir_in(root, id).join(instance::FILE))?.ok_or_else(|| anyhow!(tr("Diese Instanz gibt es nicht mehr.")))
 }
 
 fn shared<T>(root: &Path, id: &str, work: impl FnOnce(&Path, Instance) -> Result<T>) -> Result<T> {
@@ -797,7 +790,7 @@ fn purge_stale_in(root: &Path, now: u64, older_than: Duration) -> Result<()> {
     let ahead = now.saturating_add(instance::FUTURE_MILLIS);
     let mut first = Ok(());
     for folder in instances.filter_map(Result::ok) {
-        if !folder.file_name().to_str().is_some_and(instance::valid_id) {
+        if folder.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
         let Ok(entries) = std::fs::read_dir(folder.path().join(TRASH)) else { continue };
@@ -1055,7 +1048,7 @@ pub fn load(id: &str) -> Option<Bisect> {
 }
 
 fn load_in(root: &Path, id: &str) -> Option<Bisect> {
-    instance::valid_id(id).then(|| read_state(&root.join(id))).flatten()
+    instance::valid_id(id).then(|| read_state(&instance::dir_in(root, id))).flatten()
 }
 
 /// Forgets a finished troubleshooter's outcome.
@@ -1067,10 +1060,7 @@ fn dismiss_in(root: &Path, id: &str) -> Result<()> {
     if !instance::valid_id(id) {
         bail!("invalid instance id {id:?}");
     }
-    let dir = root.join(id);
-    if !store::exists(&dir.join(instance::FILE)) {
-        return Ok(());
-    }
+    let Some(dir) = super::folders::find_fresh(root, id) else { return Ok(()) };
     with_mods_lock(&dir, || {
         if read_state(&dir).is_some_and(|s| s.outcome.is_some()) {
             drop_state(&dir)?;
@@ -1095,16 +1085,16 @@ mod tests {
         let root = dir.path().join("instances");
         let made = Instance::new("Farm", "26.3", Loader::Fabric(None));
         instance::save_in(&root, &made).unwrap();
-        std::fs::create_dir_all(root.join(&made.id).join("mods")).unwrap();
+        std::fs::create_dir_all(crate::core::instance::dir_in(&root, &made.id).join("mods")).unwrap();
         (dir, root, made)
     }
 
     fn put(root: &Path, made: &Instance, name: &str, bytes: &[u8]) {
-        std::fs::write(root.join(&made.id).join("mods").join(name), bytes).unwrap();
+        std::fs::write(crate::core::instance::dir_in(root, &made.id).join("mods").join(name), bytes).unwrap();
     }
 
     fn mods_of(root: &Path, made: &Instance) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(root.join(&made.id).join("mods")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        let mut names: Vec<String> = std::fs::read_dir(crate::core::instance::dir_in(root, &made.id).join("mods")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
         names
     }
@@ -1159,7 +1149,7 @@ mod tests {
         let back = set_enabled_in(&root, &made.id, &names(&["r.jar", "a.jar", "later.jar"]), true).unwrap();
         assert!(back.disabled.is_empty());
         assert_eq!(mods_of(&root, &made), ["B.jar", "a.jar", "r.jar"]);
-        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("r.jar")).unwrap(), b"r.jar");
+        assert_eq!(std::fs::read(crate::core::instance::dir_in(&root, &made.id).join("mods").join("r.jar")).unwrap(), b"r.jar");
         assert_eq!(saved(&root, &made), back);
         assert!(set_enabled_in(&root, &made.id, &names(&["unknown.jar"]), false).is_err());
         assert!(set_enabled_in(&root, "../x", &[], false).is_err());
@@ -1224,7 +1214,7 @@ mod tests {
         assert_eq!(trashed.refs.iter().map(|(i, m)| (*i, m.file_name.as_str())).collect::<Vec<_>>(), [(0, "a.jar"), (1, "b.jar"), (2, "c.jar")]);
         assert_eq!((trashed.local.clone(), trashed.disabled.clone()), (names(&["mine.jar"]), names(&["b.jar", "mine.jar"])));
         assert_eq!(mods_of(&root, &made), ["keep.jar.disabled"]);
-        let held = root.join(&made.id).join(".trash").join("1000");
+        let held = crate::core::instance::dir_in(&root, &made.id).join(".trash").join("1000");
         assert_eq!(std::fs::read(held.join("b.jar.disabled")).unwrap(), b"b.jar.disabled");
         let mut kept: Trashed = serde_json::from_slice(&std::fs::read(held.join(TRASHED)).unwrap()).unwrap();
         kept.entry = "1000".into();
@@ -1246,8 +1236,8 @@ mod tests {
         let is_final = |e: anyhow::Error| e.chain().any(|c| c.downcast_ref::<Final>().is_some());
         put(&root, &made, "A.JAR.disabled", b"new");
         assert!(is_final(untrash_in(&root, &made.id, &trashed).unwrap_err()));
-        std::fs::remove_file(root.join(&made.id).join("mods").join("A.JAR.disabled")).unwrap();
-        let held = root.join(&made.id).join(".trash").join("7");
+        std::fs::remove_file(crate::core::instance::dir_in(&root, &made.id).join("mods").join("A.JAR.disabled")).unwrap();
+        let held = crate::core::instance::dir_in(&root, &made.id).join(".trash").join("7");
         std::fs::remove_file(held.join("mine.jar")).unwrap();
         assert!(is_final(untrash_in(&root, &made.id, &trashed).unwrap_err()));
         assert!(mods_of(&root, &made).is_empty() && held.join("a.jar").is_file());
@@ -1277,7 +1267,7 @@ mod tests {
     #[test]
     fn stale_mod_trash_goes_and_fresh_trash_and_other_names_stay() {
         let (_dir, root, made) = setup();
-        let trash = root.join(&made.id).join(".trash");
+        let trash = crate::core::instance::dir_in(&root, &made.id).join(".trash");
         for name in ["1000", "700000", "notes", "9x"] {
             std::fs::create_dir_all(trash.join(name)).unwrap();
         }
@@ -1306,7 +1296,7 @@ mod tests {
         put(&root, &made, "Dropped.jar", b"d");
         put(&root, &made, "zeta.jar.disabled", b"z");
         put(&root, &made, "readme.txt", b"t");
-        std::fs::create_dir_all(root.join(&made.id).join("mods").join("sub.jar")).unwrap();
+        std::fs::create_dir_all(crate::core::instance::dir_in(&root, &made.id).join("mods").join("sub.jar")).unwrap();
         let companion = jar_bytes(&[("fabric.mod.json", br#"{"id":"manycraft","depends":{"fabricloader":"*","fabric-api":"*"}}"#)]);
         put(&root, &made, COMPANION_FILE, &companion);
         let icons = dir.path().join("icons");
@@ -1753,7 +1743,7 @@ mod tests {
 
     fn write_ledger(root: &Path, made: &Instance, lines: &[(&str, &[u8])]) {
         let text: String = lines.iter().map(|(name, bytes)| format!("{} {}\n", name.to_lowercase(), sha_of(bytes))).collect();
-        std::fs::write(root.join(&made.id).join("mods.managed"), text).unwrap();
+        std::fs::write(crate::core::instance::dir_in(root, &made.id).join("mods.managed"), text).unwrap();
     }
 
     #[test]
@@ -1815,7 +1805,7 @@ mod tests {
         let (_dir, root, mut made) = setup();
         four(&root, &mut made);
         let state = Bisect { before: Vec::new(), suspects: Vec::new(), off: Vec::new(), round: 1, rounds: 1, outcome: Some(Outcome::Nothing) };
-        let dir = root.join(&made.id);
+        let dir = crate::core::instance::dir_in(&root, &made.id);
         for stop in [true, false] {
             write_state(&dir, &state).unwrap();
             let held = crate::core::lock::exclusive(&dir.join("mods.lock")).unwrap();
@@ -1852,7 +1842,7 @@ mod tests {
         assert_eq!(now.local_mods, ["One.JAR", "two.jar"]);
         assert_eq!(saved(&root, &made), now);
         assert_eq!(mods_of(&root, &made), ["One.JAR", "two.jar"]);
-        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("two.jar")).unwrap(), b"two");
+        assert_eq!(std::fs::read(crate::core::instance::dir_in(&root, &made.id).join("mods").join("two.jar")).unwrap(), b"two");
         let (_, scan) = scan_in(&root, &dir.path().join("icons"), &made.id).unwrap();
         assert!(scan.entries.iter().any(|e| e.file == "two.jar" && e.source == Source::Own));
     }
@@ -1873,8 +1863,8 @@ mod tests {
         assert_eq!(skipped, ["A.jar", "b.JAR", "Listed.jar", "OWN.jar", "fresh.jar"]);
         assert_eq!(now.local_mods, ["own.jar", "fresh.jar"]);
         assert_eq!(mods_of(&root, &made), ["a.jar", "b.jar.disabled", "fresh.jar"]);
-        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("a.jar")).unwrap(), b"mine");
-        assert_eq!(std::fs::read(root.join(&made.id).join("mods").join("fresh.jar")).unwrap(), b"x");
+        assert_eq!(std::fs::read(crate::core::instance::dir_in(&root, &made.id).join("mods").join("a.jar")).unwrap(), b"mine");
+        assert_eq!(std::fs::read(crate::core::instance::dir_in(&root, &made.id).join("mods").join("fresh.jar")).unwrap(), b"x");
         let (same, none) = add_files_in(&root, &made.id, &[]).unwrap();
         assert!(none.is_empty() && same == now);
     }
@@ -1888,7 +1878,7 @@ mod tests {
         assert!(add_files_in(&root, &made.id, std::slice::from_ref(&jar)).is_err());
         assert!(mods_of(&root, &made).is_empty());
         drop(running);
-        std::fs::create_dir_all(root.join(&made.id).join("mods").join("blocked.jar")).unwrap();
+        std::fs::create_dir_all(crate::core::instance::dir_in(&root, &made.id).join("mods").join("blocked.jar")).unwrap();
         let blocked = outside(dir.path(), "blocked.jar", b"b");
         assert!(add_files_in(&root, &made.id, &[jar, blocked]).is_err());
         assert_eq!(mods_of(&root, &made), ["blocked.jar"]);
