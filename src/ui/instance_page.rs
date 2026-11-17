@@ -297,7 +297,7 @@ impl Change {
     fn apply(&self, edit: &mut InstanceEdit) {
         match self {
             Self::Name(name) => edit.name.clone_from(name),
-            Self::Memory(mb) => edit.memory_mb = (*mb != crate::core::instance::DEFAULT_MEMORY_MB).then_some(*mb),
+            Self::Memory(mb) => edit.memory_mb = (*mb != crate::core::settings::active().game.memory_mb).then_some(*mb),
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
             Self::Option(change) => change.apply(&mut edit.options),

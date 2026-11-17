@@ -685,10 +685,11 @@ impl Component for Row {
         let store = use_store();
         let found = links(&l.text);
         let copied = summary.clone();
+        let alt = if r.heard.is_none() && r.seen > 1 { format!("{summary} · {}", trf("Gesehen von %lld Accounts", &[&r.seen])) } else { summary };
         let mut row = rect()
             .on_sized(spot)
             .a11y_role(AccessibilityRole::ListItem)
-            .a11y_alt(summary)
+            .a11y_alt(alt)
             .width(Size::fill())
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
@@ -703,7 +704,7 @@ impl Component for Row {
             .spacing(space::M)
             .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).maybe_child(self.stamp.then(|| caption(&t, clock(l.at)).font_tabular())))
             .child(body);
-        let seen = (*hovered.read() && r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
+        let seen = (r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
         if r.heard.is_some() || r.batch.is_some() || seen.is_some() {
             let mut tags = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).max_width(Size::px(TAG_MAX * 2.));
             if let Some(b) = &r.batch {
@@ -715,7 +716,8 @@ impl Component for Row {
                 tags = tags.child(WithTip::new(Some(tip), names));
             }
             if let Some(tip) = seen {
-                tags = tags.child(WithTip::new(Some(tip.clone()), rect().a11y_alt(tip).child(caption(&t, format!("{}×", r.seen)).font_tabular())));
+                let ink = if *hovered.read() { t.text3 } else { Color::TRANSPARENT };
+                tags = tags.child(WithTip::new(Some(tip.clone()), rect().a11y_alt(tip).child(caption(&t, format!("{}×", r.seen)).color(ink).font_tabular())));
             }
             row = row.child(tags);
         }
@@ -731,7 +733,11 @@ fn links(text: &str) -> Vec<String> {
         if !(word.starts_with("https://") || word.starts_with("http://")) {
             continue;
         }
-        let url = word.trim_end_matches(['.', ',', '!', '?', ':', ';', ')', '>', ']', '"', '\'']);
+        let closing = ['.', ',', '!', '?', ':', ';', '>', ']', '"', '\''];
+        let mut url = word.trim_end_matches(closing);
+        while url.ends_with(')') && url.matches(')').count() > url.matches('(').count() {
+            url = url[..url.len() - 1].trim_end_matches(closing);
+        }
         if url.len() > "https://".len() && !found.iter().any(|f| f == url) {
             found.push(url.to_owned());
         }
@@ -752,7 +758,7 @@ fn line_menu(store: Store, links: &[String], text: String) -> Vec<Item> {
     if !items.is_empty() {
         items.push(Item::Separator);
     }
-    items.push(Item::new("chat.line.copy", tr("Text kopieren"), move |_| {
+    items.push(Item::new("chat.line.copy", tr("Zeile kopieren"), move |_| {
         if !native::copy_text(text.clone()) {
             toast::show(store.ui, tr("Der Text wurde nicht kopiert."), None);
         }
@@ -1293,6 +1299,7 @@ mod tests {
     fn links_are_found_once_without_closing_punctuation() {
         assert_eq!(links("see https://example.org/a, and (http://x.io/b). again https://example.org/a"), ["https://example.org/a", "http://x.io/b"]);
         assert!(links("no link here, https:// alone or ftp://x").is_empty());
+        assert_eq!(links("(https://en.wikipedia.org/wiki/Java_(language))."), ["https://en.wikipedia.org/wiki/Java_(language)"]);
         assert_eq!(clip_link("https://example.org/"), "example.org/");
         assert!(clip_link(&format!("https://example.org/{}", "a".repeat(80))).ends_with('…'));
     }

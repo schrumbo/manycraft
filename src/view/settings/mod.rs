@@ -233,15 +233,11 @@ impl Component for SettingsPage {
         for (i, section) in sections.into_iter().enumerate() {
             column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, i + 1, Bounds::of(&e).h)).child(section));
         }
-        let mut page = rect()
-            .width(Size::fill())
-            .height(Size::fill())
-            .on_sized(move |e| width.set_if_modified(Bounds::of(&e).w))
-            .child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column)));
+        let mut page = rect().width(Size::fill()).height(Size::fill()).on_sized(move |e| width.set_if_modified(Bounds::of(&e).w));
         if wide {
             page = page.child(rect().position(Position::new_absolute().left(space::XL).top(space::XL)).layer(Layer::Relative(level::FLOAT)).width(Size::px(JUMPS)).child(Jumps { scroll, heights, picked, wide }));
         }
-        page
+        page.child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column)))
     }
 }
 

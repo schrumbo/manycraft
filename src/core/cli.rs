@@ -25,6 +25,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         for problem in super::migrate::run().problems {
             eprintln!("{problem}");
         }
+        super::settings::loaded();
     }
     Some(run(rest))
 }

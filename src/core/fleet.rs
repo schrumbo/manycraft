@@ -504,7 +504,7 @@ fn default_window(options: &LaunchOptions, game: &super::settings::Game) -> Vec<
     {
         out.extend(["--width".to_owned(), size.width.to_string(), "--height".to_owned(), size.height.to_string()]);
     }
-    if game.fullscreen && !options.game_args.iter().any(|a| a == "--fullscreen") {
+    if game.fullscreen && options.window.is_none() && !options.game_args.iter().any(|a| a == "--fullscreen") {
         out.push("--fullscreen".to_owned());
     }
     out
@@ -2354,6 +2354,8 @@ mod tests {
         assert_eq!(default_window(&LaunchOptions::default(), &wide), ["--width", "1920", "--height", "1080", "--fullscreen"]);
         let own = LaunchOptions { window: Some(WindowSize { width: 800, height: 600 }), game_args: vec!["--fullscreen".into()], ..Default::default() };
         assert!(default_window(&own, &wide).is_empty());
+        let sized = LaunchOptions { window: Some(WindowSize { width: 800, height: 600 }), ..Default::default() };
+        assert!(default_window(&sized, &wide).is_empty());
         assert!(default_window(&LaunchOptions::default(), &Game::default()).is_empty());
     }
 

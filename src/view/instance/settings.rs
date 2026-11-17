@@ -638,7 +638,8 @@ impl Component for Advanced {
             .child(Field::new("instance.settings.window.height", height).placeholder(standard.window.map_or_else(|| tr("Höhe"), |w| w.height.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| h_submit.call(s)));
         let window_hint = match standard.window {
             Some(w) if now.window.is_none() => as_standard(format!("{} × {}", w.width, w.height)),
-            _ => tr("Leer lassen für die Größe, die Minecraft wählt."),
+            Some(w) => trf("Leer lassen: %@", &[&as_standard(format!("{} × {}", w.width, w.height))]),
+            None => tr("Leer lassen für die Größe, die Minecraft wählt."),
         };
         col = col.child(setting(&t, tr("Fenstergröße beim Start"), window_reset, size.into_element(), Some(window_hint), window_problem.read().clone()));
 

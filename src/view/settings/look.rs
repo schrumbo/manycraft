@@ -90,7 +90,7 @@ impl Component for LookGroup {
         let library = look.library.read().clone();
         let chosen = library.chosen(s.theme.as_deref()).map(|c| c.id.clone()).unwrap_or_default();
         let appearance = s.appearance;
-        let languages = vec![tr("Wie das System"), "Deutsch".to_string(), "English".to_string()];
+        let languages = vec![tr("Automatisch"), "Deutsch".to_string(), "English".to_string()];
         let at_lang = LANGS.iter().position(|l| *l == s.language.as_deref()).unwrap_or(0);
         let language = Line::new("settings.language.row", tr("Sprache"))
             .control(Select::new("settings.language", tr("Sprache"), languages, at_lang).on_choose(move |i| set_language(p, drawn, LANGS[i.min(2)])))
@@ -130,10 +130,13 @@ impl Component for LookGroup {
                     .into_element(),
             );
         }
-        if *open.read() {
-            rows.push(Gallery { library, chosen, dark, appearance, anchor: *anchor.read(), on_close: EventHandler::new(move |_| open.set(false)) }.into_element());
+        let shown = *open.read();
+        use_focus_return(shown);
+        let card = group(&t, Some(tr("Allgemein")), rows, None);
+        if !shown {
+            return card;
         }
-        group(&t, Some(tr("Allgemein")), rows, None)
+        rect().width(Size::fill()).child(card).child(Gallery { library, chosen, dark, appearance, anchor: *anchor.read(), on_close: EventHandler::new(move |_| open.set(false)) }).into_element()
     }
 }
 
@@ -155,7 +158,6 @@ impl Component for Gallery {
         let p = use_prefs();
         let look = use_consume::<Look>();
         let ui = use_consume::<Ui>();
-        use_focus_return(true);
         let (w, h) = *ui.window.read();
         let width = GALLERY_W.min(w - space::L * 2.);
         let x = (self.anchor.x + self.anchor.w - width).clamp(space::L, (w - width - space::L).max(space::L));
@@ -171,7 +173,7 @@ impl Component for Gallery {
             .cross_align(Alignment::Center)
             .spacing(space::S)
             .padding((space::S, 0., 0., 0.))
-            .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(line(&t, tr("Eigene Themes"), font::CALLOUT, t.text1)).child(note(&t, tr("Jede JSON-Datei im Themes-Ordner erscheint hier."))))
+            .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(line(&t, tr("Eigene Themes"), font::CALLOUT, t.text1)).child(note(&t, tr("Jede Theme-Datei im Themes-Ordner erscheint hier."))))
             .child(Button::new("settings.theme.copy", tr("Kopieren")).tip(tr("Legt das gewählte Theme als eigene Datei in den Themes-Ordner")).disabled(template.is_none().then(|| tr("Kein Theme gewählt"))).on_press(move |_| {
                 if let Some(source) = &template {
                     copy(store, look, p, appearance, source.clone());

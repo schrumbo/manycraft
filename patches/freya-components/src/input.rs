@@ -361,7 +361,7 @@ impl Component for Input {
         );
         use_hook(move || {
             let mut editor = editable.editor_mut().write();
-            let end = editor.len_chars();
+            let end = editor.len_utf16_cu();
             editor.move_cursor_to(end);
         });
         let mut is_dragging = use_state(|| false);
@@ -415,7 +415,7 @@ impl Component for Input {
             editor.set(&value.read());
             editor.editor_history_mut().clear();
             editor.clear_selection();
-            let end = editor.len_chars();
+            let end = editor.len_utf16_cu();
             editor.move_cursor_to(end);
         }
 
