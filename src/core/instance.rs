@@ -112,6 +112,9 @@ pub struct Instance {
     /// The account that last played this instance alone.
     #[serde(default)]
     pub last_account: Option<Uuid>,
+    /// Fields a newer version wrote that this one does not know, written back unchanged.
+    #[serde(flatten)]
+    pub kept: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_memory() -> u32 {
@@ -134,6 +137,7 @@ impl Instance {
             jvm_args: Vec::new(),
             options: LaunchOptions::default(),
             last_account: None,
+            kept: serde_json::Map::new(),
         }
     }
 

@@ -1,0 +1,16 @@
+{
+  "id": "a1b2",
+  "name": "Farm",
+  "icon": "icon-1700000000000.png",
+  "game_version": "26.3",
+  "loader": { "fabric": "0.18.1" },
+  "mods": [{ "project_id": "AANobbMI", "version_id": "v1", "title": "Sodium", "file_name": "sodium.jar", "url": "https://cdn.modrinth.com/sodium.jar", "sha1": "0000000000000000000000000000000000000000" }],
+  "local_mods": ["own.jar"],
+  "disabled": ["own.jar"],
+  "memory_mb": 2048,
+  "memory_own": true,
+  "jvm_args": ["-XX:+UseG1GC"],
+  "options": { "java": "java", "game_args": ["--fullscreen"], "window": { "width": 854, "height": 480 }, "gpu": "power_saving", "renderer": "vulkan" },
+  "last_account": "00000000-0000-0000-0000-000000000008",
+  "default_account": "00000000-0000-0000-0000-000000000007"
+}

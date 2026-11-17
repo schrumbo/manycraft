@@ -15,6 +15,8 @@ pub mod companion;
 pub mod compat;
 #[allow(dead_code)]
 pub mod content;
+#[cfg(test)]
+mod downgrade;
 #[allow(dead_code)]
 pub mod drive;
 #[allow(dead_code)]

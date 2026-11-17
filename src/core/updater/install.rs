@@ -75,9 +75,10 @@ pub struct Plan {
     pub started: Option<String>,
 }
 
-/// The plan that installs the ready update over the running `current`, when there is one this install can take.
-pub fn install_plan(state: &State, dir: &Path, here: &Here, current: &str, relaunch: bool) -> Option<Plan> {
-    let ready = super::ready_for(state, dir, current)?;
+/// The plan that installs the ready update over the running `current`, when there is one this install can take; a ready
+/// pre-release only while `prereleases` are wanted.
+pub fn install_plan(state: &State, dir: &Path, here: &Here, current: &str, prereleases: bool, relaunch: bool) -> Option<Plan> {
+    let ready = super::ready_for(state, dir, current, prereleases)?;
     here.kind.installs_itself().then(|| Plan { rollback: false, kind: here.kind, target: here.target.clone(), file: dir.join(&ready.file), version: ready.version, notes: ready.notes, from: current.to_owned(), relaunch, started: None })
 }
 
@@ -586,8 +587,9 @@ pub fn boot(current: &str) -> bool {
 }
 
 /// At quit: records that `current` works, then starts the helper that installs the ready update, or goes back to the
-/// kept version when `back`. Nothing happens while an instance is still launching. True when a helper was started.
-pub fn on_exit(current: &str, back: bool, relaunch: bool, launching: bool) -> Result<bool> {
+/// kept version when `back`. A ready pre-release installs only while `prereleases` are wanted. Nothing happens while an
+/// instance is still launching. True when a helper was started.
+pub fn on_exit(current: &str, prereleases: bool, back: bool, relaunch: bool, launching: bool) -> Result<bool> {
     let dir = super::dir();
     if !dir.join(super::STATE).is_file() {
         return Ok(false);
@@ -600,7 +602,7 @@ pub fn on_exit(current: &str, back: bool, relaunch: bool, launching: bool) -> Re
     }
     let state = super::load(&dir);
     let here = here();
-    let plan = if back { rollback_plan(&state, &here, current, relaunch) } else { install_plan(&state, &dir, &here, current, relaunch) };
+    let plan = if back { rollback_plan(&state, &here, current, relaunch) } else { install_plan(&state, &dir, &here, current, prereleases, relaunch) };
     let Some(plan) = plan else { return Ok(false) };
     spawn(&dir, &plan)?;
     Ok(true)
@@ -735,7 +737,7 @@ mod tests {
         let (file, key) = signed(&dir);
         edit(&dir, |s| s.ready = Some(super::super::Ready { version: "0.9.0".into(), notes: "Faster.".into(), page: String::new(), file: file.file_name().unwrap().to_string_lossy().into_owned() })).unwrap();
         let here = Here { kind: Kind::AppImage, target: target.clone() };
-        let plan = install_plan(&super::super::load(&dir), &dir, &here, "0.5.0", false).unwrap();
+        let plan = install_plan(&super::super::load(&dir), &dir, &here, "0.5.0", false, false).unwrap();
         apply(&dir, &plan, &key).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/testdata/update/asset.bin")).unwrap());
         assert!(!file.exists());
@@ -855,11 +857,25 @@ mod tests {
             ..State::default()
         };
         let package = Here { kind: Kind::Package, target: PathBuf::from("/usr/bin/manycraft") };
-        assert_eq!(install_plan(&state, root.path(), &package, "0.5.0", true), None);
+        assert_eq!(install_plan(&state, root.path(), &package, "0.5.0", false, true), None);
         assert_eq!(rollback_plan(&state, &package, "0.5.0", true), None);
         let image = Here { kind: Kind::AppImage, target: root.path().join("x") };
-        assert!(install_plan(&state, root.path(), &image, "0.5.0", true).is_some());
-        assert_eq!(install_plan(&state, root.path(), &image, "0.6.0", true), None);
+        assert!(install_plan(&state, root.path(), &image, "0.5.0", false, true).is_some());
+        assert_eq!(install_plan(&state, root.path(), &image, "0.6.0", false, true), None);
         assert!(rollback_plan(&state, &image, "0.5.0", true).is_some_and(|p| p.rollback && p.version == "0.4.0"));
+    }
+
+    #[test]
+    fn a_ready_beta_installs_only_while_pre_releases_are_wanted() {
+        let root = tempfile::tempdir().unwrap();
+        let (file, _) = signed(root.path());
+        let ready = |version: &str| State { ready: Some(super::super::Ready { version: version.into(), notes: String::new(), page: String::new(), file: file.file_name().unwrap().to_string_lossy().into_owned() }), ..State::default() };
+        let image = Here { kind: Kind::AppImage, target: root.path().join("x") };
+        let beta = ready("0.10.0-beta.2");
+        assert_eq!(install_plan(&beta, root.path(), &image, "0.9.4", false, true), None, "switched off after the download");
+        assert_eq!(install_plan(&beta, root.path(), &image, "0.9.4", true, true).map(|p| p.version).as_deref(), Some("0.10.0-beta.2"));
+        assert!(install_plan(&beta, root.path(), &image, "0.10.0-beta.1", false, true).is_some(), "a running beta follows the betas");
+        assert!(install_plan(&ready("0.10.0"), root.path(), &image, "0.10.0-beta.2", false, true).is_some_and(|p| p.version == "0.10.0"));
+        assert!(install_plan(&ready("0.9.5"), root.path(), &image, "0.9.4", false, true).is_some());
     }
 }

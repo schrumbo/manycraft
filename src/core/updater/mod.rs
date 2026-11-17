@@ -123,8 +123,15 @@ fn within_a_day(then: u64, now: u64) -> bool {
     then > 0 && then <= now && now - then < DAY
 }
 
+/// Whether pre-releases are offered to `current`: when the user asked for them, and always while a pre-release runs, so
+/// a beta follows the betas up to the release that ends them.
+pub fn wants_prereleases(asked: bool, current: &str) -> bool {
+    asked || release::is_prerelease(current)
+}
+
 /// The newest release newer than `current`. Asks at most once a day and answers from the state in between, unless `force`.
 pub fn check(current: &str, prereleases: bool, force: bool) -> Result<Option<Release>> {
+    let prereleases = wants_prereleases(prereleases, current);
     let agent = net::agent_within(TIMEOUT);
     check_in(&dir(), current, prereleases, force, now(), || net::get_json(&agent, &list_url()))
 }
@@ -132,8 +139,7 @@ pub fn check(current: &str, prereleases: bool, force: bool) -> Result<Option<Rel
 fn check_in(dir: &Path, current: &str, prereleases: bool, force: bool, now: u64, fetch: impl FnOnce() -> Result<serde_json::Value>) -> Result<Option<Release>> {
     let state = load(dir);
     if !force && state.checked_prereleases == prereleases && within_a_day(state.checked_at, now) {
-        let skipped = state.skipped.as_deref();
-        return Ok(state.newest.filter(|r| release::is_newer(&r.version, current) && skipped.is_none_or(|s| !release::same(&r.version, s))));
+        return Ok(state.newest.filter(|r| release::is_newer(&r.version, current) && !release::passed_over(&r.version, state.skipped.as_deref())));
     }
     let newest = release::newest(fetch()?, current, prereleases, state.skipped.as_deref())?;
     let saved = edit(dir, |s| {
@@ -264,9 +270,9 @@ pub fn discard_ready(dir: &Path) {
     }
 }
 
-/// The ready installer, if it is newer than `current` and still on disk.
-pub fn ready_for(state: &State, dir: &Path, current: &str) -> Option<Ready> {
-    state.ready.clone().filter(|r| release::is_newer(&r.version, current) && dir.join(&r.file).is_file())
+/// The ready installer, if it is newer than `current`, still on disk, and no pre-release nobody wants any more.
+pub fn ready_for(state: &State, dir: &Path, current: &str, prereleases: bool) -> Option<Ready> {
+    state.ready.clone().filter(|r| release::is_newer(&r.version, current) && (wants_prereleases(prereleases, current) || !release::is_prerelease(&r.version)) && dir.join(&r.file).is_file())
 }
 
 /// The "new in" line for `current`: its version and the first line of its notes, until the user dismissed it.
@@ -388,8 +394,8 @@ mod tests {
         assert!(!dir.path().join("Manycraft-Setup-0.8.0-windows-x64.exe").exists());
         let state = load(dir.path());
         assert_eq!(state.ready.as_ref(), Some(&ready));
-        assert_eq!(ready_for(&state, dir.path(), "0.5.0"), Some(ready.clone()));
-        assert_eq!(ready_for(&state, dir.path(), "0.9.0"), None);
+        assert_eq!(ready_for(&state, dir.path(), "0.5.0", false), Some(ready.clone()));
+        assert_eq!(ready_for(&state, dir.path(), "0.9.0", false), None);
         let again = prepare_in(dir.path(), &hosted.release, Kind::Installer, "x86_64", "unused", false, 101, &agent(), &NO, &mut |_, _| panic!("downloaded twice")).unwrap();
         assert_eq!(again, ready);
     }
