@@ -276,7 +276,7 @@ impl Component for Panel {
         let typed = use_state(|| (String::new(), Instant::now()));
         let born = use_hook(Instant::now);
         let mut down_in = use_state(|| false);
-        let first = if menu.pop { checked } else { None };
+        let entered = use_state(|| (None::<usize>, false));
         let drag = menu.drag;
         let fade = use_animation(|conf| {
             conf.on_creation(OnCreation::Run);
@@ -353,11 +353,21 @@ impl Component for Panel {
                     let at = q.clone();
                     let mut release_run = run.clone();
                     let release = EventHandler::new(move |_| {
-                        if drag && !*down_in.peek() && (born.elapsed() > HELD || Some(i) != first) {
+                        if drag && !*down_in.peek() && (born.elapsed() > HELD || entered.peek().1) {
                             release_run(i, ui);
                         }
                     });
-                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, lead, on_down: EventHandler::new(move |_| down_in.set(true)), on_release: release, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
+                    let hover = EventHandler::new(move |_| {
+                        let mut entered = entered;
+                        let now = *entered.peek();
+                        match now {
+                            (None, _) => entered.set((Some(i), false)),
+                            (Some(first), false) if first != i => entered.set((Some(first), true)),
+                            _ => {}
+                        }
+                        hot.set((at.clone(), Some(i)));
+                    });
+                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, lead, on_release: release, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, hot: chosen == Some(i), on_hover: hover, on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
                 }
             })
             .collect();
@@ -372,7 +382,10 @@ impl Component for Panel {
             .corner_radius(t.shape.control + 2.)
             .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Outer))
             .shadow(t.elevation.float.clone())
-            .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                down_in.set(true);
+                e.stop_propagation();
+            })
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 let mut ui = ui;
                 let mut keys_run = keys_run.clone();
@@ -447,7 +460,6 @@ struct Entry {
     face: Option<Face>,
     warn: bool,
     hot: bool,
-    on_down: EventHandler<()>,
     on_release: EventHandler<()>,
     on_hover: EventHandler<()>,
     on_press: EventHandler<()>,
@@ -469,7 +481,6 @@ impl Component for Entry {
         };
         let hover = self.on_hover.clone();
         let press = self.on_press.clone();
-        let down = self.on_down.clone();
         let release = self.on_release.clone();
         let mut e = rect()
             .a11y_role(AccessibilityRole::MenuItem)
@@ -481,9 +492,9 @@ impl Component for Entry {
             .cross_align(Alignment::Center)
             .spacing(space::XS)
             .corner_radius(t.shape.small)
+            .cursor(if self.disabled { CursorIcon::NotAllowed } else { CursorIcon::Pointer })
             .on_sized(spot)
             .on_pointer_enter(move |_| hover.call(()))
-            .on_mouse_down(move |_| down.call(()))
             .on_mouse_up(move |e: Event<MouseEventData>| {
                 if e.button == Some(MouseButton::Left) {
                     release.call(());

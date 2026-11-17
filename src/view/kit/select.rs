@@ -116,7 +116,7 @@ impl Component for Select {
                 }
             })
             .on_key_down(move |e: Event<KeyboardEventData>| {
-                if !a11y.is_focused() || !enabled {
+                if !a11y.is_focused() || !enabled || ui.menu.peek().is_some() {
                     return;
                 }
                 let opens = match &e.key {
