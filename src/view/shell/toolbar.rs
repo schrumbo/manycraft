@@ -57,6 +57,8 @@ impl Component for Toolbar {
                 (name, Some(grid::count_line(&m, &keys, shelf)))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
+            Page::Installing(id) => ui.installs.read().iter().find(|i| i.id == *id).map_or_else(|| (tr("Instanz"), None), |i| (i.name.clone(), Some(i.state()))),
+            Page::Modpacks => (tr("Modpacks"), Some(tr("Von Modrinth, jedes wird eine eigene Instanz"))),
             Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
             Page::Settings => (tr("Einstellungen"), None),

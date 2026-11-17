@@ -31,6 +31,30 @@ pub fn at_least(height: f32, child: impl IntoElement) -> Rect {
     rect().horizontal().cross_align(Alignment::Center).child(rect().width(Size::px(0.)).height(Size::px(height))).child(child)
 }
 
+/// Soft edges over a scrolled list: a fade into `base` at the top once it is scrolled, at the bottom while more follows.
+/// `scrolled` is how far the list moved, `content` and `viewport` the heights of the list and of its window.
+pub fn fades(base: Color, scrolled: f32, content: f32, viewport: f32) -> Vec<Element> {
+    let edge = |top: bool| {
+        let (from, to) = if top { (base, base.with_a(0)) } else { (base.with_a(0), base) };
+        let at = Position::new_absolute().left(0.);
+        rect()
+            .position(if top { at.top(0.) } else { at.top(viewport - frame::FADE) })
+            .layer(Layer::Relative(frame::FADE_LAYER))
+            .width(Size::fill())
+            .height(Size::px(frame::FADE))
+            .background(LinearGradient::new().angle(0.).stop((from, 0.)).stop((to, 100.)))
+            .into_element()
+    };
+    let mut out = Vec::new();
+    if scrolled > 0.5 {
+        out.push(edge(true));
+    }
+    if viewport > 0. && content - viewport - scrolled > 0.5 {
+        out.push(edge(false));
+    }
+    out
+}
+
 /// The theme of the window, shared by every component below the root.
 pub fn use_theme() -> Rc<Theme> {
     use_consume::<State<Rc<Theme>>>().read().clone()

@@ -141,6 +141,15 @@ fn parts(v: &str) -> Vec<Part> {
     v.split(['.', '-', '+']).map(|p| p.parse().map_or_else(|_| Part::Text(p.to_owned()), Part::Num)).collect()
 }
 
+/// The refusal for a loader that has no build for `game` yet; Quilt and Fabric answer 404 or an empty list.
+fn unsupported(loader: &str, game: &str) -> anyhow::Error {
+    anyhow::Error::new(super::instance::Final(super::i18n::trf("%@ unterstützt Minecraft %@ noch nicht.", &[&loader, &game]))).context(format!("{loader} does not support Minecraft {game}"))
+}
+
+fn offered<T>(loader: &str, game: &str, result: Result<T>) -> Result<T> {
+    result.map_err(|e| if net::not_found(&e) { unsupported(loader, game) } else { e })
+}
+
 fn newest_first(mut list: Vec<String>) -> Vec<String> {
     list.sort_by(|a, b| compare_versions(b, a));
     list.dedup();
@@ -503,6 +512,15 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_missing_loader_build_says_so_plainly() {
+        let gone = offered::<()>("Quilt", "26.4-snapshot-1", Err(anyhow::Error::from(ureq::Error::StatusCode(404)).context("download failed: x")));
+        let text = gone.unwrap_err().chain().find_map(|c| c.downcast_ref::<super::super::instance::Final>().map(|f| f.0.clone()));
+        assert_eq!(text.as_deref(), Some("Quilt unterstützt Minecraft 26.4-snapshot-1 noch nicht."));
+        let other = offered::<()>("Quilt", "26.3", Err(anyhow::Error::from(ureq::Error::StatusCode(500))));
+        assert!(other.unwrap_err().chain().all(|c| c.downcast_ref::<super::super::instance::Final>().is_none()));
+    }
 
     fn write_version(versions: &Path, id: &str, age_secs: u64) {
         let json = versions.join(id).join(format!("{id}.json"));

@@ -12,7 +12,7 @@ use crate::core::companion;
 use crate::core::fit::{self, Fit, Memory};
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
-use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
+use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, Loader};
 use crate::core::modrinth::{Kind as ModKind, Update};
 use crate::core::settings;
 use crate::core::snapshot::Reason;
@@ -32,7 +32,6 @@ use crate::view::kit::switch::SwitchLabel;
 use crate::view::kit::text::{caption, line, mono, para, strong};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{at_least, off_ui, ring, toast, use_theme};
-use crate::view::native;
 use crate::view::settings::remember_all_versions;
 use crate::view::sheets::browser::{Browser, Scope};
 use crate::view::sheets::import;
@@ -50,22 +49,18 @@ const DEFAULT_ROWS: usize = 4;
 const SNUG_PERCENT: u64 = 80;
 const DETAIL_LINES: usize = 8;
 const BOX_EDGES: f32 = 2.;
+const MOD_LOADERS: [Loader; 4] = [Loader::Fabric(None), Loader::Quilt(None), Loader::NeoForge(None), Loader::Forge(None)];
 
 /// Opens the sheet that sets up a new instance; with `play`, it also starts the instance with that account (or the
 /// first one) once it is made.
 pub fn create(store: Store, play: Option<Option<String>>) {
-    open_create(store, play, None);
+    sheet::open(store.ui, Create { play });
 }
 
 /// Opens the mods of instance `id`.
 pub fn mods(store: Store, id: String) {
     let Some(made) = store.model.peek().instance(&id).cloned() else { return };
     open_mods(store, made, None);
-}
-
-/// Opens the sheet that sets up a new instance, straight in the browser on `search` when given.
-pub(super) fn open_create(store: Store, play: Option<Option<String>>, search: Option<ModKind>) {
-    sheet::open(store.ui, Create { play, search });
 }
 
 /// Opens the mods of `made`, straight in the browser on `search` when given.
@@ -100,7 +95,7 @@ fn followed_name(typed: &str, auto: &str, version: &str, taken: &[&str]) -> Opti
     (!version.is_empty() && typed.trim() == auto).then(|| forms::unique_name(&trf("Minecraft %@", &[&version]), taken))
 }
 
-fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>) -> InstanceEdit {
+fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>, with_mods: bool) -> InstanceEdit {
     InstanceEdit {
         name: name.trim().to_owned(),
         game_version: version.to_owned(),
@@ -108,7 +103,7 @@ fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: 
         memory_mb,
         jvm_args: args.split_whitespace().map(str::to_owned).collect(),
         options: Default::default(),
-        mods: if loader.takes_mods() { mods } else { Vec::new() },
+        mods: if loader.takes_mods() && with_mods { mods } else { Vec::new() },
     }
 }
 
@@ -151,6 +146,10 @@ fn add_button(reason: Option<String>) -> Button {
 
 fn mods_header(t: &Theme, count: usize, add: Button) -> Element {
     rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(rect().width(Size::flex(1.)).child(label(t, trf("Mods (%lld)", &[&count])))).child(add).into_element()
+}
+
+fn mods_title(count: usize, touched: bool) -> String {
+    if touched { trf("Mods (%lld)", &[&count]) } else { trf("Performance-Mods (%lld)", &[&count]) }
 }
 
 pub(super) fn body_max(store: Store) -> f32 {
@@ -299,13 +298,14 @@ struct Make {
     saving: State<bool>,
     save_error: State<Option<Problem>>,
     tried: State<bool>,
-    picking: State<bool>,
     made: State<Option<Instance>>,
     details: State<HashSet<String>>,
     searching: State<bool>,
-    direct: State<bool>,
     adding: State<HashSet<String>>,
-    kind: State<ModKind>,
+    with_mods: State<bool>,
+    show_mods: State<bool>,
+    others: State<bool>,
+    mod_loader: State<Loader>,
 }
 
 impl Make {
@@ -460,10 +460,12 @@ impl Make {
         });
     }
 
-    fn pick_loader(mut self, n: usize) {
-        let Some(next) = LOADERS.get(n) else { return };
-        if *self.saving.peek() || self.busy.peek().is_some() || !self.adding.peek().is_empty() || self.loader.peek().same_kind(next) {
+    fn pick_loader(mut self, next: Loader) {
+        if *self.saving.peek() || self.busy.peek().is_some() || !self.adding.peek().is_empty() || self.loader.peek().same_kind(&next) {
             return;
+        }
+        if next.takes_mods() {
+            self.mod_loader.set(next.clone());
         }
         self.loader.set(next.clone());
         self.save_error.set(None);
@@ -474,18 +476,12 @@ impl Make {
         }
     }
 
-    fn search(mut self, kind: ModKind) {
-        self.kind.set(kind);
+    fn search(mut self) {
         self.searching.set(true);
     }
 
     fn leave_search(mut self) {
-        if *self.direct.peek() && !*self.touched.peek() && self.adding.peek().is_empty() {
-            sheet::close(self.store.ui);
-        } else {
-            self.searching.set(false);
-            self.direct.set(false);
-        }
+        self.searching.set(false);
     }
 
     fn remove_mod(mut self, project_id: &str) {
@@ -507,7 +503,7 @@ impl Make {
 
     fn edit(self) -> InstanceEdit {
         let loader = self.loader.peek().clone();
-        build_edit(&self.name.peek(), &self.version.peek(), &loader, *self.memory.peek(), &self.args.peek(), self.mods.peek().clone())
+        build_edit(&self.name.peek(), &self.version.peek(), &loader, *self.memory.peek(), &self.args.peek(), self.mods.peek().clone(), *self.with_mods.peek())
     }
 
     fn create(mut self) {
@@ -551,32 +547,11 @@ impl Make {
             }
         });
     }
-
-    fn pick_file(mut self) {
-        if *self.picking.peek() || *self.saving.peek() || self.busy.peek().is_some() {
-            return;
-        }
-        self.picking.set(true);
-        let store = self.store;
-        spawn_in_window(async move {
-            let title = tr("Modpack wählen");
-            let paths = off_ui(move || native::pick_files(&title, "", &[], false)).await.unwrap_or_default();
-            if !self.alive() {
-                return;
-            }
-            self.picking.set(false);
-            if let Some(path) = paths.into_iter().next() {
-                sheet::close(store.ui);
-                import::open_file(store, path);
-            }
-        });
-    }
 }
 
 #[derive(PartialEq)]
 struct Create {
     play: Option<Option<String>>,
-    search: Option<ModKind>,
 }
 
 impl Component for Create {
@@ -608,13 +583,14 @@ impl Component for Create {
             saving: use_state(|| false),
             save_error: use_state(|| None),
             tried: use_state(|| false),
-            picking: use_state(|| false),
             made: use_state(|| None),
             details: use_state(HashSet::new),
-            searching: use_state(|| self.search.is_some()),
-            direct: use_state(|| self.search.is_some()),
+            searching: use_state(|| false),
             adding: use_state(HashSet::new),
-            kind: use_state(|| self.search.unwrap_or(ModKind::Mod)),
+            with_mods: use_state(|| true),
+            show_mods: use_state(|| false),
+            others: use_state(|| false),
+            mod_loader: use_state(Loader::default),
         };
         use_hook(move || {
             flow.load_versions(false);
@@ -645,6 +621,7 @@ impl Component for Create {
         if *flow.searching.read() {
             let scope = Scope {
                 create: true,
+                page: false,
                 made: None,
                 version: version.clone(),
                 loader: loader.clone(),
@@ -658,7 +635,7 @@ impl Component for Create {
                 pending: false,
                 dirty: form_dirty(*flow.touched.read(), &name_text, &flow.name_auto.read()),
                 follow: Some((flow.version, flow.loader)),
-                kind: *flow.kind.read(),
+                kind: ModKind::Mod,
                 on_update: EventHandler::new(|_| {}),
                 back: EventHandler::new(move |_| flow.leave_search()),
                 done: EventHandler::new(move |_| flow.leave_search()),
@@ -704,23 +681,28 @@ impl Component for Create {
         let name_column = rect().width(Size::flex(1.)).child(Field::new("instance.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Technik")).error(name_error).auto_focus());
         let top = rect().width(Size::fill()).horizontal().spacing(space::M).content(Content::flex()).child(name_column).child(version_column);
 
-        let chosen = LOADERS.iter().position(|l| loader.same_kind(l)).unwrap_or(0);
-        let segments = LOADERS.iter().map(|l| Segment { id: format!("instance.loader.{}", l.name().to_lowercase()), label: l.name().to_owned(), tip: None }).collect();
-        let loader_control = Segmented::new(tr("Loader"), segments, chosen).disabled(blocked.clone()).on_choose(move |i| flow.pick_loader(i));
-        let loader_column = rect().width(Size::fill()).spacing(space::XS).child(label(&t, tr("Loader"))).child(rect().horizontal().child(loader_control));
+        let loader_column = loader_section(flow, &loader, blocked.clone());
 
         let press = pressure(*flow.memory.read(), total, *flow.free.read(), memory_max);
-        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M).child(top);
+        let pack = Entry {
+            id: "instance.pack",
+            glyph: Icon::Package,
+            title: tr("Aus Modpack…"),
+            subtitle: tr("Fertige Modpacks von Modrinth, jedes wird eine eigene Instanz"),
+            disabled: saving.then(|| tr("Wird gerade gesichert …")),
+            on_press: EventHandler::new(move |_| crate::view::sheets::browser::find_modpacks(store)),
+        };
+        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M).child(pack).child(top);
         if !*flow.advanced.read()
             && let Some(text) = strain_text(&press, *flow.memory.read(), total)
         {
             form = form.child(strain_row(&t, flow, &press, text, t.attention_text));
         }
-        form = form.child(loader_column).child(advanced(&t, flow, &loader, &version, blocked.clone(), total, memory_max, &press));
+        form = form.child(loader_column);
         if loader.takes_mods() {
             form = form.child(mods_section(&t, flow, &loader));
         }
-        form = form.child(imports(flow, blocked.clone()));
+        form = form.child(advanced(&t, flow, &loader, &version, blocked.clone(), total, memory_max, &press)).child(imports(flow, blocked.clone()));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
@@ -831,60 +813,99 @@ fn advanced(t: &Theme, flow: Make, loader: &Loader, version: &str, locked: Optio
     column.into_element()
 }
 
+fn loader_section(flow: Make, loader: &Loader, blocked: Option<String>) -> Element {
+    let modded = loader.takes_mods();
+    let remembered = flow.mod_loader.read().clone();
+    let mod_name = if modded { loader.name() } else { remembered.name() };
+    let segments = vec![
+        Segment { id: "instance.loader.mods".into(), label: trf("Mit Mods (%@)", &[&mod_name]), tip: None },
+        Segment { id: "instance.loader.vanilla".into(), label: tr("Ohne Mods"), tip: None },
+    ];
+    let control = Segmented::new(tr("Mods"), segments, usize::from(!modded)).disabled(blocked.clone()).on_choose(move |i| flow.pick_loader(if i == 0 { flow.mod_loader.peek().clone() } else { Loader::Vanilla }));
+    let mut column = rect().width(Size::fill()).spacing(space::XS).child(rect().horizontal().child(control));
+    if !modded {
+        return column.into_element();
+    }
+    let open = *flow.others.read() || !loader.same_kind(&Loader::default());
+    let mut others = flow.others;
+    let toggle = Button::new("instance.loader.others", tr("Andere Loader…")).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| others.set(!open));
+    column = column.child(rect().horizontal().child(toggle));
+    if open {
+        let chosen = MOD_LOADERS.iter().position(|l| loader.same_kind(l)).unwrap_or(0);
+        let segments = MOD_LOADERS.iter().map(|l| Segment { id: format!("instance.loader.{}", l.name().to_lowercase()), label: l.name().to_owned(), tip: None }).collect();
+        let pick = Segmented::new(tr("Loader"), segments, chosen).disabled(blocked).on_choose(move |i| {
+            if let Some(next) = MOD_LOADERS.get(i) {
+                flow.pick_loader(next.clone());
+            }
+        });
+        column = column.child(rect().padding((0., 0., 0., space::L)).horizontal().child(pick));
+    }
+    column.into_element()
+}
+
 fn mods_section(t: &Theme, flow: Make, loader: &Loader) -> Element {
     let mods = flow.mods.read().clone();
     let busy = flow.busy.read().clone();
     let saving = *flow.saving.read();
     let version = flow.version.read().clone();
-    let reason = adding_reason(&version, busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …"))));
-    let add = add_button(reason).on_press(move |_| flow.search(ModKind::Mod));
-    let mut column = rect().width(Size::fill()).spacing(space::XS).child(mods_header(t, mods.len(), add));
-    if let Some(text) = busy {
-        return column.child(waiting(t, text, if mods.is_empty() { DEFAULT_ROWS } else { mods.len() })).into_element();
+    let on = *flow.with_mods.read();
+    let failed = flow.mods_error.read().clone();
+    let open = (*flow.show_mods.read() || failed.is_some()) && on;
+    let lock = busy.clone().or_else(|| saving.then(|| tr("Wird gerade gesichert …")));
+    let mut with = flow.with_mods;
+    let title = if busy.is_some() { tr("Performance-Mods") } else { mods_title(mods.len(), *flow.touched.read()) };
+    let switch = SwitchLabel { id: "instance.mods.on", text: title, on, disabled: lock.clone(), on_toggle: EventHandler::new(move |next: bool| with.set(next)) };
+    let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(rect().width(Size::flex(1.)).child(switch));
+    if let Some(text) = busy.clone().filter(|_| on) {
+        head = head.child(spinner::beside(line(t, text, font::CALLOUT, t.text2)));
+    } else if on {
+        let mut show = flow.show_mods;
+        let (label, glyph) = if open { (tr("Mods ausblenden"), Icon::ChevronDown) } else { (tr("Mods zeigen"), Icon::ChevronRight) };
+        head = head.child(Button::new("instance.mods.show", label).plain().glyph(glyph).on_press(move |_| show.set(!open)));
     }
-    if let Some(problem) = flow.mods_error.read().clone() {
+    let mut column = rect().width(Size::fill()).spacing(space::XS).child(head);
+    if !on {
+        return column.child(para(t, trf("Die Instanz startet mit %@ allein.", &[&loader.name()]), font::CAPTION, t.text3)).into_element();
+    }
+    if !open || busy.is_some() {
+        return column.into_element();
+    }
+    let mut inner = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::XS);
+    if let Some(problem) = failed {
         let retry = Button::new("instance.mods.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| {
             let version = flow.version.peek().clone();
             flow.load_mods(version);
         });
-        column = column.child(problem_view(t, "instance.mods", Icon::CircleAlert, &problem, flow.details)).child(rect().horizontal().child(retry));
+        inner = inner.child(problem_view(t, "instance.mods", Icon::CircleAlert, &problem, flow.details)).child(rect().horizontal().child(retry));
     }
     if mods.is_empty() {
         if flow.mods_error.read().is_none() {
-            column = column.child(line(t, trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&loader.name()]), font::CALLOUT, t.text2));
+            inner = inner.child(line(t, trf("Keine Mods. Die Instanz startet mit %@ allein.", &[&loader.name()]), font::CALLOUT, t.text2));
         }
     } else {
-        column = column.child(mod_list(t, &mods, saving.then(|| tr("Wird gerade gesichert …")), move |pid| flow.remove_mod(&pid)));
+        inner = inner.child(mod_list(t, &mods, saving.then(|| tr("Wird gerade gesichert …")), move |pid| flow.remove_mod(&pid)));
     }
     for note in flow.notes.read().iter() {
-        column = column.child(para(t, note.clone(), font::CAPTION, t.text3));
+        inner = inner.child(para(t, note.clone(), font::CAPTION, t.text3));
     }
-    column.into_element()
+    let more = Button::new("instance.sheet.mods.add", tr("Weitere Mods…")).glyph(Icon::Plus).plain().disabled(adding_reason(&version, lock)).on_press(move |_| flow.search());
+    column.child(inner.child(rect().horizontal().child(more))).into_element()
 }
 
 fn imports(flow: Make, blocked: Option<String>) -> Element {
     let store = flow.store;
     rect()
         .width(Size::fill())
-        .spacing(space::S)
         .child(Entry {
-            id: "instance.import.launcher",
+            id: "instance.import",
             glyph: Icon::Download,
-            title: tr("Aus anderem Launcher importieren…"),
-            subtitle: tr("Prism, Modrinth, CurseForge, ATLauncher und mehr"),
-            disabled: blocked.clone(),
+            title: tr("Aus anderem Launcher oder Datei…"),
+            subtitle: tr("Prism, Modrinth App, CurseForge, ATLauncher oder eine .mrpack-Datei"),
+            disabled: blocked,
             on_press: EventHandler::new(move |_| {
                 sheet::close(store.ui);
                 import::open(store);
             }),
-        })
-        .child(Entry {
-            id: "instance.import.file",
-            glyph: Icon::FileDown,
-            title: tr("Datei importieren…"),
-            subtitle: tr("Modpack von Modrinth, Export oder Instanz aus Prism"),
-            disabled: blocked.or_else(|| flow.picking.read().then(|| tr("Datei wird gewählt …"))),
-            on_press: EventHandler::new(move |_| flow.pick_file()),
         })
         .into_element()
 }
@@ -1362,6 +1383,7 @@ impl Component for Mods {
             let _ = flow.applied.read();
             let scope = Scope {
                 create: false,
+                page: false,
                 made: Some(base.clone()),
                 version: base.game_version.clone(),
                 loader: base.loader.clone(),
@@ -1523,25 +1545,26 @@ mod tests {
 
     #[test]
     fn every_mod_loader_keeps_the_mods() {
-        let fabric = build_edit(" Farm ", "26.3", &Loader::Fabric(None), 2048, "", vec![a_mod()]);
+        let fabric = build_edit(" Farm ", "26.3", &Loader::Fabric(None), 2048, "", vec![a_mod()], true);
         assert_eq!(fabric.name, "Farm");
         assert_eq!(fabric.mods.len(), 1);
         for loader in [Loader::Quilt(None), Loader::Forge(None), Loader::NeoForge(None)] {
-            assert_eq!(build_edit("Farm", "26.3", &loader, 2048, "", vec![a_mod()]).mods.len(), 1);
+            assert_eq!(build_edit("Farm", "26.3", &loader, 2048, "", vec![a_mod()], true).mods.len(), 1);
         }
-        assert!(build_edit("Farm", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()]).mods.is_empty());
+        assert!(build_edit("Farm", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()], true).mods.is_empty());
+        assert!(build_edit("Farm", "26.3", &Loader::Fabric(None), 2048, "", vec![a_mod()], false).mods.is_empty());
     }
 
     #[test]
     fn the_picked_loader_version_is_saved_and_vanilla_takes_no_mods() {
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(Some("0.17.1".into())), 2048, "", Vec::new()).loader, Loader::Fabric(Some("0.17.1".into())));
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, "", Vec::new()).loader, Loader::Fabric(None));
-        assert!(build_edit("A", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()]).mods.is_empty());
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(Some("0.17.1".into())), 2048, "", Vec::new(), true).loader, Loader::Fabric(Some("0.17.1".into())));
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, "", Vec::new(), true).loader, Loader::Fabric(None));
+        assert!(build_edit("A", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()], true).mods.is_empty());
     }
 
     #[test]
     fn java_arguments_split_on_whitespace() {
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, " -Xss1M  -Dx=1 ", Vec::new()).jvm_args, ["-Xss1M", "-Dx=1"]);
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, " -Xss1M  -Dx=1 ", Vec::new(), true).jvm_args, ["-Xss1M", "-Dx=1"]);
     }
 
     #[test]

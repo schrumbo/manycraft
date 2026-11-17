@@ -1,7 +1,7 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 
-use super::Versions;
+use super::{Versions, offered, unsupported};
 use super::meta::VersionJson;
 use crate::core::net;
 
@@ -22,15 +22,15 @@ struct Loader {
 
 /// Newest stable Fabric loader for `game`, or the newest of any kind when none is stable.
 pub fn latest_loader(agent: &ureq::Agent, game: &str) -> Result<String> {
-    let entries: Vec<Entry> = net::get_json(agent, &format!("{LOADERS_URL}/{game}"))?;
-    pick_loader(entries).with_context(|| format!("Fabric does not support Minecraft {game}"))
+    let entries: Vec<Entry> = offered("Fabric", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}")))?;
+    pick_loader(entries).ok_or_else(|| unsupported("Fabric", game))
 }
 
 /// Fabric loaders for `game`, newest first, with the newest stable one as default.
 pub fn versions(agent: &ureq::Agent, game: &str) -> Result<Versions> {
-    let entries: Vec<Entry> = net::get_json(agent, &format!("{LOADERS_URL}/{game}"))?;
+    let entries: Vec<Entry> = offered("Fabric", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}")))?;
     if entries.is_empty() {
-        bail!("Fabric does not support Minecraft {game}");
+        return Err(unsupported("Fabric", game));
     }
     Ok(listed(entries))
 }
@@ -59,7 +59,7 @@ fn pick_loader(entries: Vec<Entry>) -> Option<String> {
 
 /// Fabric's launcher profile for a game and loader version.
 pub fn profile(agent: &ureq::Agent, game: &str, loader: &str) -> Result<VersionJson> {
-    let profile: VersionJson = net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json"))?;
+    let profile: VersionJson = offered("Fabric", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json")))?;
     if profile.id.is_empty() || profile.id.contains(['/', '\\']) || profile.id.starts_with('.') {
         bail!("Fabric returned an unusable profile id");
     }
