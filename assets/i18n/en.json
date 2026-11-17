@@ -1161,10 +1161,7 @@
   "Prism, Modrinth, CurseForge, ATLauncher und mehr": "Prism, Modrinth, CurseForge, ATLauncher and more",
   "Prism, Modrinth, CurseForge und mehr": "Prism, Modrinth, CurseForge and more",
   "„%@“ lässt sich nicht übernehmen.": "“%@” cannot be imported.",
-  "%lld Mods": {
-    "one": "1 mod",
-    "other": "%lld mods"
-  },
+  "%lld Mods": {"one": "1 mod", "other": "%lld mods"},
   "Der Desktop-Ordner wurde nicht gefunden.": "The desktop folder was not found.",
   "Das Programm lässt sich nicht finden.": "The program cannot be found.",
   "Verknüpfung für „%@“ nicht erstellt.": "Shortcut for “%@” not created.",
@@ -1234,30 +1231,18 @@
   "Mods werden gelesen …": "Reading mods …",
   "%@ und 1 weiterer": "%@ and 1 more",
   "%@ ausschalten?": "Turn off %@?",
-  "%lld Mods ausschalten?": {
-    "one": "Turn off 1 mod?",
-    "other": "Turn off %lld mods?"
-  },
+  "%lld Mods ausschalten?": {"one": "Turn off 1 mod?", "other": "Turn off %lld mods?"},
   "Dann startet %@ nicht mehr.": "Then %@ no longer starts.",
   "Dann starten %@ nicht mehr.": "Then %@ no longer start.",
   "Auch „%@“ einschalten?": "Also turn on “%@”?",
-  "Auch %lld weitere Mods einschalten?": {
-    "one": "Also turn on 1 more mod?",
-    "other": "Also turn on %lld more mods?"
-  },
+  "Auch %lld weitere Mods einschalten?": {"one": "Also turn on 1 more mod?", "other": "Also turn on %lld more mods?"},
   "Ohne %@ startet %@ nicht.": "Without %@, %@ does not start.",
   "Ohne %@ starten diese Mods nicht.": "Without %@, these mods do not start.",
   "Nur %@": "Only %@",
   " (%@)": " (%@)",
-  "Liste mit %lld Mods kopiert.": {
-    "one": "Copied a list of 1 mod.",
-    "other": "Copied a list of %lld mods."
-  },
+  "Liste mit %lld Mods kopiert.": {"one": "Copied a list of 1 mod.", "other": "Copied a list of %lld mods."},
   "Schon da: %@.": "Already there: %@.",
-  "Manycraft schaltet in jeder Runde einen Teil der Mods aus. Du startest das Spiel und sagst, ob der Fehler noch da ist. Nach etwa %lld Runden steht fest, welcher Mod es ist. Danach ist alles wieder wie vorher.": {
-    "one": "Each round, Manycraft turns off some of the mods. You start the game and say whether the problem is still there. After about 1 round it is clear which mod it is. Afterwards everything is back as it was.",
-    "other": "Each round, Manycraft turns off some of the mods. You start the game and say whether the problem is still there. After about %lld rounds it is clear which mod it is. Afterwards everything is back as it was."
-  },
+  "Manycraft schaltet in jeder Runde einen Teil der Mods aus. Du startest das Spiel und sagst, ob der Fehler noch da ist. Nach etwa %lld Runden steht fest, welcher Mod es ist. Danach ist alles wieder wie vorher.": {"one": "Each round, Manycraft turns off some of the mods. You start the game and say whether the problem is still there. After about 1 round it is clear which mod it is. Afterwards everything is back as it was.", "other": "Each round, Manycraft turns off some of the mods. You start the game and say whether the problem is still there. After about %lld rounds it is clear which mod it is. Afterwards everything is back as it was."},
   "Fehlersuche · Runde %lld von etwa %lld": "Troubleshooting · round %lld of about %lld",
   "%lld von %lld Mods sind gerade aus. Starte das Spiel und sieh nach, ob der Fehler noch auftritt.": "%lld of %lld mods are off right now. Start the game and check whether the problem still happens.",
   "%@ verursacht den Fehler.": "%@ causes the problem.",
@@ -1265,18 +1250,12 @@
   "%@ ausschalten": "Turn Off %@",
   "%lld von %@": "%lld of %@",
   "%lld aus": "%lld off",
-  "%lld doppelt": {
-    "one": "1 duplicate",
-    "other": "%lld duplicates"
-  },
+  "%lld doppelt": {"one": "1 duplicate", "other": "%lld duplicates"},
   "Doppelt: auch %@ ist da.": "Duplicate: %@ is there too.",
   "Braucht %@, ist aus.": "Needs %@, which is off.",
   "Aus · %@": "Off · %@",
   "Kein Mod passt zu „%@“.": "No mod matches “%@”.",
-  "%lld Mods löschen": {
-    "one": "Delete 1 Mod",
-    "other": "Delete %lld Mods"
-  },
+  "%lld Mods löschen": {"one": "Delete 1 Mod", "other": "Delete %lld Mods"},
   "Änderungen": "Changes",
   "Keine Angaben.": "No details.",
   "Mehr auf Modrinth.": "More on Modrinth.",
@@ -1284,14 +1263,8 @@
   "1 Update": "1 update",
   "1 Mod aktualisieren": "Update 1 Mod",
   "Mod-Updates": "Mod Updates",
-  "%lld Updates": {
-    "one": "1 update",
-    "other": "%lld updates"
-  },
-  "%lld Mods aktualisieren": {
-    "one": "Update 1 Mod",
-    "other": "Update %lld Mods"
-  },
+  "%lld Updates": {"one": "1 update", "other": "%lld updates"},
+  "%lld Mods aktualisieren": {"one": "Update 1 Mod", "other": "Update %lld Mods"},
   "%@ eingeschaltet.": "%@ turned on.",
   "%@ wurde nicht zurückgestellt.": "%@ was not changed back.",
   "%@ ausgeschaltet.": "%@ turned off.",
@@ -1363,10 +1336,7 @@
   "Erscheinungsbild": "Appearance",
   "Nur hell": "Light only",
   "Nur dunkel": "Dark only",
-  "%lld Hinweise": {
-    "one": "%lld note",
-    "other": "%lld notes"
-  },
+  "%lld Hinweise": {"one": "%lld note", "other": "%lld notes"},
   "„%@“ gibt es nur hell.": "“%@” only comes in light.",
   "„%@“ gibt es nur dunkel.": "“%@” only comes in dark.",
   "Hell oder dunkel folgt dem System.": "Light or dark follows the system.",
@@ -1952,10 +1922,7 @@
   "Erst nach dem Beenden änderbar": "Can be changed once the game has quit",
   "Mod-Updates prüfen": "Check for mod updates",
   "Update für „%@“": "Update for “%@”",
-  "%lld Updates verfügbar": {
-    "one": "1 update available",
-    "other": "%lld updates available"
-  },
+  "%lld Updates verfügbar": {"one": "1 update available", "other": "%lld updates available"},
   "Auswählen…": "Choose…",
   "%@ wird aktualisiert …": "Updating %@ …",
   "Bild wählen": "Choose image",
@@ -2039,6 +2006,8 @@
   "Leer lassen: %@": "Leave empty: %@",
   "Jede Theme-Datei im Themes-Ordner erscheint hier.": "Every theme file in the themes folder shows up here.",
   "Version & Loader": "Version & Loader",
+  "Snapshots zeigen": "Show snapshots",
+  "Andere Loader": "Other loaders",
   "Mod-Loader": "Mod loader",
   "Starte das Spiel und lege eine Welt an.": "Start the game and create a world.",
   "Einen Weltordner oder eine .zip hinzufügen, auch per Ziehen.": "Add a world folder or a .zip, or drag it here.",
