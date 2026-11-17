@@ -297,7 +297,7 @@ impl Change {
     fn apply(&self, edit: &mut InstanceEdit) {
         match self {
             Self::Name(name) => edit.name.clone_from(name),
-            Self::Memory(mb) => edit.memory_mb = *mb,
+            Self::Memory(mb) => edit.memory_mb = (*mb != crate::core::instance::DEFAULT_MEMORY_MB).then_some(*mb),
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
             Self::Option(change) => change.apply(&mut edit.options),
@@ -910,7 +910,7 @@ impl InstancePage {
 
     fn step_memory(&mut self, delta: i32, cx: &mut Context<Self>) {
         let Some(made) = self.instance(cx) else { return };
-        let now = self.pending_memory().unwrap_or(made.memory_mb);
+        let now = self.pending_memory().unwrap_or_else(|| made.memory());
         let next = forms::memory_step(now, delta, self.memory_max);
         if next != now {
             self.enqueue(Job::Save(Change::Memory(next)), cx);
@@ -1362,7 +1362,7 @@ impl InstancePage {
     }
 
     fn render_memory(&self, made: &Instance, busy: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let shown = self.pending_memory().unwrap_or(made.memory_mb);
+        let shown = self.pending_memory().unwrap_or_else(|| made.memory());
         let step = |id: &'static str, icon_name: &'static str, label: String, reason: Option<String>, delta: i32, cx: &mut Context<Self>| {
             if let Some(reason) = reason {
                 return sheet::unavailable(div().id(id).size(px(control::M)).flex().items_center().justify_center().rounded(px(radius::INNER)), icon(icon_name, iconsize::M, t.tertiary), reason);
@@ -1597,9 +1597,9 @@ mod tests {
     #[test]
     fn a_change_touches_only_its_field() {
         let mut e = edit();
-        Change::Memory(4096).apply(&mut e);
+        Change::Memory(3072).apply(&mut e);
         Change::JvmArgs(vec!["-XX:+UseZGC".into()]).apply(&mut e);
-        assert_eq!((e.memory_mb, e.jvm_args.as_slice(), e.mods.len(), e.game_version.as_str()), (4096, &["-XX:+UseZGC".to_owned()][..], 2, "26.2"));
+        assert_eq!((e.memory_mb, e.jvm_args.as_slice(), e.mods.len(), e.game_version.as_str()), (Some(3072), &["-XX:+UseZGC".to_owned()][..], 2, "26.2"));
         Change::LoaderVersion(None).apply(&mut e);
         assert_eq!(e.loader, Loader::Fabric(None));
         Change::LoaderVersion(Some("0.18".into())).apply(&mut e);

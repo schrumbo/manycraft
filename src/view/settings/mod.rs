@@ -1,29 +1,37 @@
 //! The settings page: the few options that rarely change, saved the moment they are touched.
 
+mod game;
 mod look;
 mod phone;
 
 use freya::prelude::*;
 
+pub(crate) use self::game::gpu_label;
+use self::game::GameGroup;
 use self::look::LookGroup;
 use self::phone::PhoneGroup;
 use crate::app::event::Event;
 use crate::app::model::UpdateStatus;
 use crate::core::i18n::{tr, trf};
 use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings};
+use crate::view::kit::Bounds;
 use crate::view::kit::button::Button;
+use crate::view::kit::chip::Chip;
 use crate::view::kit::group::{Line, group};
+use crate::view::kit::row::Row;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::stepper::Stepper;
 use crate::view::kit::switch::Switch;
-use crate::view::kit::text::{line, para};
+use crate::view::kit::text::line;
 use crate::view::kit::{off_thread, open_external, use_theme};
 use crate::view::sheets;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, space};
+use crate::view::theme::{Theme, control, font, level, space};
 use crate::view::updates;
 
 const PAGE: f32 = 600.;
+const JUMPS: f32 = 180.;
+const SECTIONS: usize = 10;
 const ATTEMPTS: (i64, i64) = (1, 100);
 const RATES: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
 
@@ -147,6 +155,10 @@ impl Component for SettingsPage {
         let store = use_store();
         let rev = use_state(|| 0u64);
         let p = use_provide_context(|| Prefs { store, rev });
+        let scroll = use_scroll_controller(ScrollConfig::default);
+        let heights = use_state(|| [0f32; SECTIONS + 1]);
+        let picked = use_state(|| None::<usize>);
+        let mut width = use_state(|| f32::INFINITY);
         let s = p.read();
         let ingame = group(
             &t,
@@ -212,21 +224,94 @@ impl Component for SettingsPage {
             ],
             None,
         );
-        let column = rect()
+        let sections: [Element; SECTIONS] = [LookGroup.into_element(), GameGroup.into_element(), ingame, connection, notices, PhoneGroup.into_element(), chat, hotkeys, UpdatesGroup.into_element(), advanced];
+        let wide = *width.read() >= PAGE + (JUMPS + space::XL) * 2.;
+        let mut column = rect().width(Size::fill()).max_width(Size::px(PAGE)).spacing(space::XL);
+        if !wide {
+            column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, 0, Bounds::of(&e).h)).child(Jumps { scroll, heights, picked, wide }));
+        }
+        for (i, section) in sections.into_iter().enumerate() {
+            column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, i + 1, Bounds::of(&e).h)).child(section));
+        }
+        let mut page = rect()
             .width(Size::fill())
-            .max_width(Size::px(PAGE))
-            .spacing(space::XL)
-            .child(LookGroup)
-            .child(ingame)
-            .child(connection)
-            .child(notices)
-            .child(PhoneGroup)
-            .child(chat)
-            .child(hotkeys)
-            .child(UpdatesGroup)
-            .child(advanced)
-            .child(rect().padding((0., space::XS)).child(para(&t, tr("Die Sprache folgt dem System."), font::CAPTION, t.text3)));
-        ScrollView::new().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column))
+            .height(Size::fill())
+            .on_sized(move |e| width.set_if_modified(Bounds::of(&e).w))
+            .child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column)));
+        if wide {
+            page = page.child(rect().position(Position::new_absolute().left(space::XL).top(space::XL)).layer(Layer::Relative(level::FLOAT)).width(Size::px(JUMPS)).child(Jumps { scroll, heights, picked, wide }));
+        }
+        page
+    }
+}
+
+fn measure(mut heights: State<[f32; SECTIONS + 1]>, i: usize, h: f32) {
+    let mut next = *heights.peek();
+    if next[i] != h {
+        next[i] = h;
+        heights.set(next);
+    }
+}
+
+fn titles() -> [String; SECTIONS] {
+    ["Allgemein", "Spiel", "Im Spiel", "Verbindung", "Benachrichtigungen", "Aufs Handy", "Chat", "Tastenkürzel", "Updates", "Erweitert"].map(tr)
+}
+
+/// Where section `i` starts in the scrolled page; slot 0 of `heights` is the jump row that stands above the sections on a narrow page.
+fn top_of(heights: &[f32; SECTIONS + 1], wide: bool, i: usize) -> f32 {
+    let lead = if wide { 0. } else { heights[0] + space::XL };
+    space::XL + lead + heights[1..=i].iter().map(|h| h + space::XL).sum::<f32>()
+}
+
+/// Which section the reader is in: the last one whose title passed the top, or the one just picked while the page is at its end.
+fn current(heights: &[f32; SECTIONS + 1], wide: bool, y: f32, viewport: f32, end: bool, picked: Option<usize>) -> usize {
+    if end && let Some(p) = picked.filter(|p| top_of(heights, wide, *p) < y + viewport) {
+        return p;
+    }
+    (0..SECTIONS).rev().find(|i| top_of(heights, wide, *i) <= y + space::XL + 1.).unwrap_or(0)
+}
+
+/// The sections of the page as a list beside it when there is room, or as a row of chips above it; picking one scrolls there.
+#[derive(PartialEq)]
+struct Jumps {
+    scroll: ScrollController,
+    heights: State<[f32; SECTIONS + 1]>,
+    picked: State<Option<usize>>,
+    wide: bool,
+}
+
+impl Component for Jumps {
+    fn render(&self) -> impl IntoElement {
+        let mut scroll = self.scroll;
+        let heights = *self.heights.read();
+        let mut picked = self.picked;
+        let y = -scroll.position().y;
+        let (content, viewport) = scroll.bounds.read().map_or((0., 0.), |(c, v)| (c.height, v.height));
+        let end = content > viewport && y + viewport >= content - 1.;
+        let wide = self.wide;
+        let on = current(&heights, wide, y, viewport, end, *picked.read());
+        let mut jump = move |i: usize| {
+            picked.set(Some(i));
+            scroll.scroll_to_y(-(top_of(&heights, wide, i) - space::XL) as i32);
+        };
+        let titles = titles();
+        if wide {
+            return rect()
+                .width(Size::fill())
+                .a11y_role(AccessibilityRole::Navigation)
+                .a11y_alt(tr("Abschnitte"))
+                .children(titles.into_iter().enumerate().map(|(i, title)| Row::new(format!("settings.jump.{i}"), title).selected(i == on).on_press(move |_| jump(i)).into_element()))
+                .into_element();
+        }
+        rect()
+            .width(Size::fill())
+            .horizontal()
+            .content(Content::wrap_spacing(space::XS))
+            .spacing(space::XS)
+            .a11y_role(AccessibilityRole::Navigation)
+            .a11y_alt(tr("Abschnitte"))
+            .children(titles.into_iter().enumerate().map(|(i, title)| Chip::new(format!("settings.jump.{i}"), title).on(i == on).on_press(move |_| jump(i)).into_element()))
+            .into_element()
     }
 }
 

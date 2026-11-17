@@ -12,7 +12,7 @@ use super::{Facts, snapshots, version_text};
 use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
-use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, LOADERS, Loader};
+use crate::core::instance::{Instance, LOADERS, Loader};
 use crate::core::javas::{Java, mismatch};
 use crate::core::options::{self, Gpu, LaunchOptions, Renderer};
 use crate::core::snapshot::Reason;
@@ -30,7 +30,7 @@ use crate::view::kit::switch::SwitchLabel;
 use crate::view::kit::text::{caption, line, strong};
 use crate::view::kit::{after, off_ui, use_theme};
 use crate::view::native;
-use crate::view::settings::remember_all_versions;
+use crate::view::settings::{gpu_label, remember_all_versions};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, iconsize, space};
 
@@ -500,18 +500,20 @@ impl Component for Advanced {
 
         let mut col = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::L).child(caption(&t, tr("Änderungen wirken beim nächsten Start.")));
 
+        let standard = settings::active().game.clone();
         let max = forms::memory_max(forms::total_ram_mb());
-        let shown_mb = save::pending_memory(store, &id).unwrap_or(made.memory_mb);
+        let own_mb = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory());
+        let shown_mb = own_mb.unwrap_or(standard.memory_mb);
         let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
         let less = wait().or_else(|| (shown_mb <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
         let more = wait().or_else(|| (shown_mb >= max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(max)])));
         let step = move |delta: i32, id: String| {
             move |_| {
                 let Some(made) = store.model.peek().instance(&id).cloned() else { return };
-                let now = save::pending_memory(store, &id).unwrap_or(made.memory_mb);
+                let now = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory()).unwrap_or_else(|| settings::active().game.memory_mb);
                 let next = forms::memory_step(now, delta, max);
                 if next != now {
-                    save::enqueue(store, &id, Job::Save(Change::Memory(next)));
+                    save::enqueue(store, &id, Job::Save(Change::Memory(Some(next))));
                 }
             }
         };
@@ -520,18 +522,28 @@ impl Component for Advanced {
             .cross_align(Alignment::Center)
             .spacing(space::XS)
             .child(Button::icon("instance.settings.memory.less", Icon::Minus, tr("Weniger Arbeitsspeicher")).disabled(less).on_press(step(-1, id.clone())))
-            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(&t, forms::memory_label(shown_mb), font::BODY, t.text1)))
+            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(&t, forms::memory_label(shown_mb), font::BODY, if own_mb.is_some() { t.text1 } else { t.text2 })))
             .child(Button::icon("instance.settings.memory.more", Icon::Plus, tr("Mehr Arbeitsspeicher")).disabled(more).on_press(step(1, id.clone())));
         let mem_id = id.clone();
-        let memory_reset = (shown_mb != DEFAULT_MEMORY_MB).then(|| reset("memory", tr("Arbeitsspeicher"), move |_| save::enqueue(store, &mem_id, Job::Save(Change::Memory(DEFAULT_MEMORY_MB)))));
-        col = col.child(setting(&t, tr("Arbeitsspeicher"), memory_reset, stepper.into_element(), Some(tr("Pro Account.")), None));
+        let memory_reset = own_mb.is_some().then(|| reset("memory", tr("Arbeitsspeicher"), move |_| save::enqueue(store, &mem_id, Job::Save(Change::Memory(None)))));
+        let memory_hint = match (own_mb, self.facts.batches.is_empty()) {
+            (None, true) => Some(as_standard(forms::memory_label(standard.memory_mb))),
+            (None, false) => Some(format!("{} · {}", as_standard(forms::memory_label(standard.memory_mb)), tr("Pro Account in jedem Batch."))),
+            (Some(_), false) => Some(tr("Pro Account in jedem Batch.")),
+            (Some(_), true) => None,
+        };
+        col = col.child(setting(&t, tr("Arbeitsspeicher"), memory_reset, stepper.into_element(), memory_hint, None));
 
         enum Choice {
             Auto,
             Path(PathBuf),
             Pick,
         }
-        let mut choices = vec![(Choice::Auto, tr("Automatisch (empfohlen)"))];
+        let standard_java = match &standard.java {
+            Some(path) => javas.read().iter().flatten().find(|j| j.path == *path).map_or_else(|| tr("Eigenes Java"), java_title),
+            None => tr("Automatisch"),
+        };
+        let mut choices = vec![(Choice::Auto, as_standard(standard_java))];
         for found in javas.read().iter().flatten() {
             choices.push((Choice::Path(found.path.clone()), java_title(found)));
         }
@@ -572,6 +584,7 @@ impl Component for Advanced {
         let (java_hint, java_problem_now) = match (java_problem, &now.java) {
             (Some(p), _) => (None, Some(p)),
             (None, None) if javas.read().is_none() => (Some(tr("Suche installierte Java-Versionen …")), None),
+            (None, None) if standard.java.is_some() => (Some(tr("Passt das Standard-Java nicht zu dieser Version, nimmt Manycraft das passende.")), None),
             (None, None) => (Some(tr("Manycraft lädt das passende Java für diese Version.")), None),
             (None, Some(path)) => match &*probe.read() {
                 Some((probed, version, Ok(found), expected)) if probed == path && *version == made.game_version => (Some(path.display().to_string()), expected.and_then(|needed| mismatch(needed, found.major, &made.game_version))),
@@ -620,13 +633,17 @@ impl Component for Advanced {
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
-            .child(Field::new("instance.settings.window.width", width).placeholder(tr("Breite")).width(Size::px(control::NUMBER)).on_submit(move |s| w_submit.call(s)))
+            .child(Field::new("instance.settings.window.width", width).placeholder(standard.window.map_or_else(|| tr("Breite"), |w| w.width.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| w_submit.call(s)))
             .child(line(&t, "×", font::BODY, t.text3))
-            .child(Field::new("instance.settings.window.height", height).placeholder(tr("Höhe")).width(Size::px(control::NUMBER)).on_submit(move |s| h_submit.call(s)));
-        col = col.child(setting(&t, tr("Fenstergröße beim Start"), window_reset, size.into_element(), Some(tr("Leer lassen für die Größe, die Minecraft wählt.")), window_problem.read().clone()));
+            .child(Field::new("instance.settings.window.height", height).placeholder(standard.window.map_or_else(|| tr("Höhe"), |w| w.height.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| h_submit.call(s)));
+        let window_hint = match standard.window {
+            Some(w) if now.window.is_none() => as_standard(format!("{} × {}", w.width, w.height)),
+            _ => tr("Leer lassen für die Größe, die Minecraft wählt."),
+        };
+        col = col.child(setting(&t, tr("Fenstergröße beim Start"), window_reset, size.into_element(), Some(window_hint), window_problem.read().clone()));
 
         if cfg!(windows) || now.gpu.is_some() {
-            let choices = [(None, tr("Automatisch")), (Some(Gpu::HighPerformance), tr("Hohe Leistung")), (Some(Gpu::PowerSaving), tr("Energie sparen"))];
+            let choices = [(None, as_standard(gpu_label(standard.gpu))), (Some(Gpu::HighPerformance), gpu_label(Some(Gpu::HighPerformance))), (Some(Gpu::PowerSaving), gpu_label(Some(Gpu::PowerSaving)))];
             col = col.child(setting(&t, tr("Grafikkarte"), None, choice_row(store, &id, "gpu", tr("Grafikkarte"), now.gpu, choices.to_vec(), OptionChange::Gpu), Some(tr("Gilt für alle Instanzen, die dasselbe Java nutzen.")), None));
         }
         if options::renderer_choice(&made.game_version) {
@@ -672,6 +689,11 @@ fn choice_row<T: Copy + PartialEq + 'static>(store: Store, id: &str, key: &str, 
             }
         }))
         .into_element()
+}
+
+/// "Wie Standard (4 GB)": a field that follows the launcher default and what that default is.
+fn as_standard(value: String) -> String {
+    trf("Wie Standard (%@)", &[&value])
 }
 
 fn forget_java_problem(store: Store, id: &str) {

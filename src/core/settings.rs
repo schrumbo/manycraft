@@ -1,16 +1,19 @@
 //! App-wide settings in `settings.json`: chat, notifications, how instances reconnect and restart. Missing keys take their defaults.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::instance::DEFAULT_MEMORY_MB;
+use super::options::{Gpu, WindowSize};
 use super::{paths, phone, store};
 
 const FILE: &str = "settings.json";
 const MAX_ATTEMPTS: u32 = 100;
 const MAX_SECS: u64 = 24 * 3600;
+const MEMORY_RANGE: (u32, u32) = (512, 1 << 20);
 
 /// How a dropped instance comes back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,6 +62,28 @@ pub struct Notifications {
 impl Default for Notifications {
     fn default() -> Self {
         Self { attention: true }
+    }
+}
+
+/// What a game starts with when its instance sets nothing of its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Game {
+    pub memory_mb: u32,
+    /// Used only where it fits the game version; otherwise the runtime Mojang names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub java: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowSize>,
+    /// Whether games played alone open in fullscreen.
+    pub fullscreen: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<Gpu>,
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Self { memory_mb: DEFAULT_MEMORY_MB, java: None, window: None, fullscreen: false, gpu: None }
     }
 }
 
@@ -119,11 +144,16 @@ pub struct Settings {
     /// The account that plays an instance alone when the instance names none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_account: Option<uuid::Uuid>,
+    /// The launcher defaults instances inherit.
+    pub game: Game,
+    /// `de` or `en`; none follows the system.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None }
     }
 }
 
@@ -149,6 +179,11 @@ impl Settings {
         self.crash_restart.jitter_percent = self.crash_restart.jitter_percent.min(100);
         self.reconnect.max_attempts = self.reconnect.max_attempts.min(MAX_ATTEMPTS);
         self.crash_restart.max_attempts = self.crash_restart.max_attempts.min(MAX_ATTEMPTS);
+        self.game.memory_mb = self.game.memory_mb.clamp(MEMORY_RANGE.0, MEMORY_RANGE.1);
+        self.game.window = self.game.window.filter(|w| w.width > 0 && w.height > 0);
+        if !self.language.as_deref().is_some_and(|l| matches!(l, "de" | "en")) {
+            self.language = None;
+        }
         self
     }
 }
@@ -348,6 +383,22 @@ mod tests {
         save_to(dir.path(), &Settings::default()).unwrap();
         load_from(dir.path()).unwrap();
         assert!(!store::backup_path(&dir.path().join(FILE)).exists());
+    }
+
+    #[test]
+    fn game_defaults_and_language_survive_a_save_and_old_files_get_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), r#"{"merged_chat":false}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert_eq!((s.game.clone(), s.language.clone()), (Game::default(), None));
+        let mut s = Settings::default();
+        s.game = Game { memory_mb: 6144, java: Some(PathBuf::from("java")), window: Some(WindowSize { width: 1280, height: 720 }), fullscreen: true, gpu: Some(Gpu::HighPerformance) };
+        s.language = Some("en".into());
+        save_to(dir.path(), &s).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), s);
+        std::fs::write(dir.path().join(FILE), r#"{"game":{"memory_mb":0,"window":{"width":0,"height":5}},"language":"fr"}"#).unwrap();
+        let s = load_from(dir.path()).unwrap();
+        assert_eq!((s.game.memory_mb, s.game.window, s.language), (MEMORY_RANGE.0, None, None));
     }
 
     #[test]

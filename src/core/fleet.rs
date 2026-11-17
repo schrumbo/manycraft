@@ -24,6 +24,7 @@ use super::batch::{self, Background, Batch};
 use super::instance::{self, Instance, Loader};
 use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
+use super::options::LaunchOptions;
 use super::proxy::{self, Kind};
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
 use super::{adopt, auth, gpu, ipc, javas, lock, net, paths, scrub, stagger};
@@ -110,7 +111,7 @@ impl Target {
 
     /// Memory each game gets.
     pub fn memory_mb(&self) -> u32 {
-        self.batch.as_ref().map_or(self.instance.memory_mb, |b| b.memory(self.instance.memory_mb))
+        self.batch.as_ref().map_or_else(|| self.instance.memory(), |b| b.memory(self.instance.memory()))
     }
 
     fn server(&self) -> Option<&str> {
@@ -480,6 +481,9 @@ fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_addr
         jvm.extend([format!("-Dmanycraft.preview={}", game_dir.join(PREVIEW_FILE).display()), "-Dmanycraft.hidden=true".to_owned()]);
     }
     let mut game = instance.options.game_arguments(&instance.game_version);
+    if target.batch.is_none() {
+        game.extend(default_window(&instance.options, &super::settings::active().game));
+    }
     let mut secrets = vec![(TOKEN_VAR.to_owned(), token.to_owned())];
     if let Some(url) = &account.proxy {
         let proxy = proxy::parse(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
@@ -492,20 +496,41 @@ fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_addr
     Ok(Extra { jvm, game, secrets })
 }
 
-/// Starts with the Java the user picked for `instance` when it fits the game, and gives that Java the graphics card
-/// the user picked.
+/// The size and fullscreen a game played alone gets from the launcher defaults where its instance sets neither.
+fn default_window(options: &LaunchOptions, game: &super::settings::Game) -> Vec<String> {
+    let mut out = Vec::new();
+    if options.window.is_none()
+        && let Some(size) = game.window
+    {
+        out.extend(["--width".to_owned(), size.width.to_string(), "--height".to_owned(), size.height.to_string()]);
+    }
+    if game.fullscreen && !options.game_args.iter().any(|a| a == "--fullscreen") {
+        out.push("--fullscreen".to_owned());
+    }
+    out
+}
+
+/// Starts with the Java the user picked for `instance` when it fits the game, else with the launcher's default Java
+/// when that fits, and gives that Java the graphics card the instance or the launcher default names.
 fn choose_java(installed: &mut Installed, instance: &Instance) -> Result<()> {
+    let declared = installed.profile.java_version.as_ref();
+    let required = javas::required_major(declared.and_then(|j| j.major_version), declared.map(|j| j.component.as_str()));
+    let defaults = &super::settings::active().game;
     if let Some(picked) = &instance.options.java {
         let home = javas::home_of(picked).with_context(|| super::i18n::trf("Das gewählte Java fehlt: %@", &[&picked.display()]))?;
         let java = javas::probe(&home)?;
-        let declared = installed.profile.java_version.as_ref();
-        let required = javas::required_major(declared.and_then(|j| j.major_version), declared.map(|j| j.component.as_str()));
         if let Some(reason) = javas::mismatch(required, java.major, &instance.game_version) {
             bail!(reason);
         }
         installed.java = java.path;
+    } else if let Some(standard) = &defaults.java {
+        match javas::home_of(standard).ok_or_else(|| anyhow!("{} is missing", standard.display())).and_then(|home| javas::probe(&home)) {
+            Ok(java) if javas::mismatch(required, java.major, &instance.game_version).is_none() => installed.java = java.path,
+            Ok(java) => eprintln!("default Java {} does not fit {}, using the version's own", java.major, instance.game_version),
+            Err(e) => eprintln!("default Java: {e:#}"),
+        }
     }
-    if let Err(e) = gpu::apply(&installed.java, &instance.id, instance.options.gpu) {
+    if let Err(e) = gpu::apply(&installed.java, &instance.id, instance.options.gpu.or(defaults.gpu)) {
         eprintln!("graphics card preference: {e:#}");
     }
     Ok(())
@@ -1386,8 +1411,8 @@ pub(super) fn new_instance(name: &str, version: Option<&str>, loader: Loader, me
         None => install::latest_release()?,
     };
     let mut made = Instance::new(name, &version, loader);
-    if let Some(mb) = memory {
-        made.memory_mb = mb;
+    if memory.is_some() {
+        made.set_memory(memory);
     }
     if super::companion::available(&made.game_version) {
         let defaults = super::modrinth::default_mods(&made.game_version, &made.loader)?;
@@ -1443,7 +1468,7 @@ fn list() -> Result<i32> {
     let name = |id: &Uuid| accounts.iter().find(|a| a.id == *id).map_or_else(|| id.to_string(), |a| a.name.clone());
     for b in batch::load_all()? {
         let members: Vec<String> = b.accounts.iter().map(name).collect();
-        let (played, memory) = instance_of(&instances, &b).map_or_else(|_| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory_mb)));
+        let (played, memory) = instance_of(&instances, &b).map_or_else(|_| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory())));
         println!("{} ({})  instance {played}  server {}  {memory} MB  accounts: {}", b.name, b.id, b.server.as_deref().unwrap_or("-"), if members.is_empty() { "-".to_owned() } else { members.join(", ") });
     }
     Ok(0)
@@ -1516,7 +1541,7 @@ fn list_instances() -> Result<i32> {
     let batches = batch::load_all()?;
     for i in instance::load_all()? {
         let users: Vec<&str> = batches.iter().filter(|b| b.instance_id == i.id).map(|b| b.name.as_str()).collect();
-        println!("{} ({})  {}  {} mods  {} MB  batches: {}", i.name, i.id, i.version_line(), i.mods.len() + i.local_mods.len(), i.memory_mb, if users.is_empty() { "-".to_owned() } else { users.join(", ") });
+        println!("{} ({})  {}  {} mods  {} MB  batches: {}", i.name, i.id, i.version_line(), i.mods.len() + i.local_mods.len(), i.memory(), if users.is_empty() { "-".to_owned() } else { users.join(", ") });
     }
     Ok(0)
 }
@@ -2319,6 +2344,17 @@ mod tests {
         alt.proxy = Some("socks5://10.1.1.1:1081".into());
         let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert_eq!(extra.game, ["--fullscreen", "--width", "1280", "--height", "720", "--graphicsBackend", "opengl", "--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
+    }
+
+    #[test]
+    fn launcher_defaults_fill_only_what_a_solo_instance_leaves_open() {
+        use super::super::options::WindowSize;
+        use super::super::settings::Game;
+        let wide = Game { window: Some(WindowSize { width: 1920, height: 1080 }), fullscreen: true, ..Game::default() };
+        assert_eq!(default_window(&LaunchOptions::default(), &wide), ["--width", "1920", "--height", "1080", "--fullscreen"]);
+        let own = LaunchOptions { window: Some(WindowSize { width: 800, height: 600 }), game_args: vec!["--fullscreen".into()], ..Default::default() };
+        assert!(default_window(&own, &wide).is_empty());
+        assert!(default_window(&LaunchOptions::default(), &Game::default()).is_empty());
     }
 
     fn installed_needing(component: &str, major: u32) -> Installed {

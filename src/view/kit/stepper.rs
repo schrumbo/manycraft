@@ -20,13 +20,14 @@ pub struct Stepper {
     max: i64,
     step: i64,
     unit: String,
+    shown: Option<fn(i64) -> String>,
     disabled: Option<String>,
     on_change: Option<EventHandler<i64>>,
 }
 
 impl Stepper {
     pub fn new(id: impl Into<String>, label: impl Into<String>, value: i64, min: i64, max: i64) -> Self {
-        Self { id: id.into(), label: label.into(), value, min, max, step: 1, unit: String::new(), disabled: None, on_change: None }
+        Self { id: id.into(), label: label.into(), value, min, max, step: 1, unit: String::new(), shown: None, disabled: None, on_change: None }
     }
 
     pub fn step(mut self, step: i64) -> Self {
@@ -37,6 +38,12 @@ impl Stepper {
     /// Text after the number, such as "GB".
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = unit.into();
+        self
+    }
+
+    /// Writes the value with `shown` instead of as a number with its unit, such as "4 GB" for 4096.
+    pub fn shown(mut self, shown: fn(i64) -> String) -> Self {
+        self.shown = Some(shown);
         self
     }
 
@@ -76,7 +83,11 @@ impl Component for Stepper {
                 set(to);
             }) }
         };
-        let text = if self.unit.is_empty() { value.to_string() } else { format!("{value} {}", self.unit) };
+        let text = match self.shown {
+            Some(shown) => shown(value),
+            None if self.unit.is_empty() => value.to_string(),
+            None => format!("{value} {}", self.unit),
+        };
         let mut keys = set.clone();
         let mut s = rect()
             .a11y_id(a11y)

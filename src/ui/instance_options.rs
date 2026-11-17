@@ -408,7 +408,7 @@ impl InstancePage {
     /// The settings inside "Erweitert".
     pub(super) fn render_options(&mut self, made: &Instance, memory: Div, cx: &mut Context<Self>, t: &Theme) -> Div {
         let now = self.options_now(made);
-        let memory_reset = (self.pending_memory().unwrap_or(made.memory_mb) != DEFAULT_MEMORY_MB).then(|| self.reset_button("memory-reset", tr("Arbeitsspeicher"), cx, |s, cx| s.enqueue(Job::Save(Change::Memory(DEFAULT_MEMORY_MB)), cx), t));
+        let memory_reset = (self.pending_memory().unwrap_or_else(|| made.memory()) != DEFAULT_MEMORY_MB).then(|| self.reset_button("memory-reset", tr("Arbeitsspeicher"), cx, |s, cx| s.enqueue(Job::Save(Change::Memory(DEFAULT_MEMORY_MB)), cx), t));
         let memory = self.setting("memory", tr("Arbeitsspeicher"), memory_reset, memory, Some(tr("Pro Account.")), None, t);
 
         let (java_hint, java_problem) = self.java_note(made, now.java.as_ref());

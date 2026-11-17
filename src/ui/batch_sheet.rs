@@ -230,7 +230,7 @@ impl BatchSheet {
         let name_auto = original.is_none().then(|| name_value.clone());
         let total_ram = forms::total_ram_mb();
         let memory_max = forms::memory_max(total_ram);
-        let own = instance.as_deref().and_then(|id| model.instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory_mb);
+        let own = instance.as_deref().and_then(|id| model.instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory());
         let memory = forms::memory_step(original.as_ref().and_then(|b| b.memory_override).unwrap_or(own), 0, memory_max);
         let inherit = original.as_ref().is_none_or(|b| b.memory_override.is_none());
         let instance_select = cx.new(|cx| SelectState::new(SearchableVec::new(choices), selected, window, cx).searchable(many));
@@ -401,7 +401,7 @@ impl BatchSheet {
     }
 
     fn instance_memory(&self, cx: &App) -> u32 {
-        self.instance.as_deref().and_then(|id| super::model::get(cx).read(cx).instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory_mb)
+        self.instance.as_deref().and_then(|id| super::model::get(cx).read(cx).instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory())
     }
 
     fn problems(&self, cx: &App) -> (Option<String>, Option<String>, Option<String>) {

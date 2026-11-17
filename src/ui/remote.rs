@@ -753,7 +753,8 @@ pub struct InstanceEdit {
     pub name: String,
     pub game_version: String,
     pub loader: Loader,
-    pub memory_mb: u32,
+    /// The instance's own memory; `None` follows the launcher default.
+    pub memory_mb: Option<u32>,
     pub jvm_args: Vec<String>,
     pub options: LaunchOptions,
     pub mods: Vec<ModRef>,
@@ -762,7 +763,7 @@ pub struct InstanceEdit {
 impl InstanceEdit {
     /// What `made` holds now.
     pub fn of(made: &setup::Instance) -> Self {
-        Self { name: made.name.clone(), game_version: made.game_version.clone(), loader: made.loader.clone(), memory_mb: made.memory_mb, jvm_args: made.jvm_args.clone(), options: made.options.clone(), mods: made.mods.clone() }
+        Self { name: made.name.clone(), game_version: made.game_version.clone(), loader: made.loader.clone(), memory_mb: made.own_memory(), jvm_args: made.jvm_args.clone(), options: made.options.clone(), mods: made.mods.clone() }
     }
 }
 
@@ -781,7 +782,7 @@ fn edited(made: &mut setup::Instance, edit: InstanceEdit) {
     made.name = edit.name.trim().to_owned();
     made.game_version = edit.game_version;
     made.loader = edit.loader;
-    made.memory_mb = edit.memory_mb;
+    made.set_memory(edit.memory_mb);
     made.jvm_args = edit.jvm_args;
     made.options = edit.options;
     if made.loader.takes_mods() {
@@ -1246,9 +1247,9 @@ mod tests {
         let mut now = base.clone();
         now.jvm_args = vec!["-Xss2m".into()];
         let mut edit = base.clone();
-        edit.memory_mb = 4096;
+        edit.memory_mb = Some(4096);
         let merged = merge(&base, &now, &edit).unwrap();
-        assert_eq!((merged.memory_mb, merged.jvm_args.as_slice()), (4096, &["-Xss2m".to_owned()][..]));
+        assert_eq!((merged.memory_mb, merged.jvm_args.as_slice()), (Some(4096), &["-Xss2m".to_owned()][..]));
         let mut clash = base.clone();
         clash.jvm_args = vec!["-Xss4m".into()];
         assert!(merge(&base, &now, &clash).is_none());

@@ -1165,7 +1165,7 @@ fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: 
         name: name.trim().to_owned(),
         game_version: version.to_owned(),
         loader: loader.clone(),
-        memory_mb,
+        memory_mb: (memory_mb != crate::core::instance::DEFAULT_MEMORY_MB).then_some(memory_mb),
         jvm_args: args.split_whitespace().map(str::to_owned).collect(),
         options: Default::default(),
         mods: if loader.takes_mods() { mods } else { Vec::new() },
