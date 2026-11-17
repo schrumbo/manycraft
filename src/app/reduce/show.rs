@@ -5,7 +5,7 @@ use super::super::model::{Game, Model, Phase};
 use super::super::session::Reveal;
 use super::fleet;
 use crate::core::account::AccountKind;
-use crate::core::fleet as fleets;
+use crate::core::fleet::{self as fleets, Quick};
 use crate::core::i18n::trf;
 use crate::core::instance::Instance;
 use crate::core::ipc::{HotkeyAction, ToMod};
@@ -174,6 +174,17 @@ pub(super) fn play_instance(m: &mut Model, id: &str, account: Option<Uuid>, out:
     Some(key)
 }
 
+/// Plays `id` alone with `account` and opens `quick` right away; a game of it that already runs is left as it is.
+pub(super) fn quick_play(m: &mut Model, id: &str, account: Uuid, quick: Quick, out: &mut Vec<Effect>) {
+    let Some(key) = m.instance(id).map(|made| fleets::solo_key(made, account)) else { return };
+    if m.games.get(&key).is_some_and(|g| g.phase.is_active()) {
+        return;
+    }
+    m.session.quick.insert(key.clone(), quick);
+    play_instance(m, id, Some(account), out);
+    m.session.quick.remove(&key);
+}
+
 /// Plays `instance` as another start of Manycraft or a shortcut asked, and brings the manager up when it cannot or the
 /// game already runs; waits for the first load when the data is not there yet.
 pub(super) fn request_play(m: &mut Model, instance: String, account: Option<String>, out: &mut Vec<Effect>) {
@@ -304,6 +315,25 @@ mod tests {
         let fx = run(m, s, std::time::Instant::now(), Event::PlayInstance { instance, account: None });
         let key = m.games.values().find(|g| g.alone()).expect("a game played alone").key.clone();
         (key, fx)
+    }
+
+    #[test]
+    fn quick_play_opens_its_world_once_and_raise_only_reaches_games_played_alone() {
+        let s = settings();
+        let (mut m, batch_key) = setup(Phase::Menu, AccountKind::Offline, &[]);
+        let alone = uuid::Uuid::from_u128(8);
+        m.accounts.push(crate::core::account::Account { id: alone, name: "Solo".into(), kind: AccountKind::Offline, proxy: None, color: None });
+        let instance = m.instances[0].id.clone();
+        let world = super::Quick::World("Insel".into());
+        let fx = run(&mut m, &s, std::time::Instant::now(), Event::QuickPlay { instance: instance.clone(), account: alone, quick: world.clone() });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { target, .. } if target.batch.is_none() && target.quick.as_ref() == Some(&world))), "{fx:?}");
+        assert!(m.session.quick.is_empty(), "used once");
+        let key = m.games.values().find(|g| g.alone()).unwrap().key.clone();
+        let fx = run(&mut m, &s, std::time::Instant::now(), Event::QuickPlay { instance: instance.clone(), account: alone, quick: super::Quick::Server("x.example".into()) });
+        assert!(fx.is_empty() && m.session.quick.is_empty(), "a running game is left as it is");
+        let fx = run(&mut m, &s, std::time::Instant::now(), Event::Raise(key.clone()));
+        assert!(matches!(fx.as_slice(), [Effect::Raise(k)] if *k == key));
+        assert!(run(&mut m, &s, std::time::Instant::now(), Event::Raise(batch_key)).is_empty(), "games of a batch are swapped in, never raised");
     }
 
     #[test]

@@ -32,11 +32,11 @@ thread_local! {
     static FACES: RefCell<HashMap<PathBuf, Option<ImageHandle>>> = RefCell::new(HashMap::new());
 }
 
-fn cached(path: &Path) -> Option<Option<ImageHandle>> {
+pub(in crate::view::instance) fn cached(path: &Path) -> Option<Option<ImageHandle>> {
     FACES.with(|f| f.borrow().get(path).cloned())
 }
 
-fn remember(path: PathBuf, face: Option<ImageHandle>) {
+pub(in crate::view::instance) fn remember(path: PathBuf, face: Option<ImageHandle>) {
     FACES.with(|f| {
         let mut f = f.borrow_mut();
         if f.len() >= CACHED {
@@ -71,7 +71,7 @@ fn worker() -> &'static async_channel::Sender<(PathBuf, Reply)> {
     })
 }
 
-async fn load(path: PathBuf) -> Option<ImageHandle> {
+pub(in crate::view::instance) async fn load(path: PathBuf) -> Option<ImageHandle> {
     let (tx, rx) = async_channel::bounded(1);
     worker().send((path, tx)).await.ok()?;
     let (w, h, rgba) = rx.recv().await.ok()??;
@@ -138,7 +138,6 @@ pub(super) struct ModRow {
     pub ctx: Ctx,
     pub file: String,
     pub name: String,
-    pub version: Option<String>,
     pub caption: String,
     pub warn: bool,
     pub enabled: bool,
@@ -165,17 +164,13 @@ impl Component for ModRow {
         };
 
         let dim = if self.enabled { 1. } else { t.hidden_dim };
-        let mut title = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).opacity(dim).content(Content::flex()).child(
-            line(&t, self.name.clone(), font::BODY, t.text1).font_weight(FontWeight::MEDIUM).width(Size::flex(1.)),
-        );
-        if let Some(v) = &self.version {
-            title = title.child(caption(&t, v.clone()));
-        }
-        let text = rect()
-            .width(Size::flex(1.))
+        let title = rect().width(Size::fill()).opacity(dim).child(line(&t, self.name.clone(), font::BODY, t.text1).font_weight(FontWeight::MEDIUM).width(Size::fill()));
+        let lines = rect()
+            .width(Size::fill())
             .spacing(1.)
             .child(title)
             .child(line(&t, self.caption.clone(), font::CAPTION, if self.warn { t.attention_text } else { t.text3 }).width(Size::fill()));
+        let text = rect().width(Size::flex(1.)).child(WithTip::new(Some(self.file.clone()), lines).fill());
 
         let (press_ctx, press_file) = (ctx.clone(), file.clone());
         let main = rect()

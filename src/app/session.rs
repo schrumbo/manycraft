@@ -66,6 +66,8 @@ pub struct Shot {
 /// The state of the running session that no view shows directly.
 #[derive(Default)]
 pub struct Session {
+    /// Where each game played alone goes on its next start, by key.
+    pub quick: HashMap<String, crate::core::fleet::Quick>,
     /// Tiles on screen, whose previews update at full rate.
     pub visible: HashSet<String>,
     /// Games whose newest preview was not read because their tile is off screen, since when.

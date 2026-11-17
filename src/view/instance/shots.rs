@@ -376,7 +376,7 @@ impl Component for Shots {
         let body = if !shown.loaded {
             rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Screenshots werden gesucht …"))).into_element()
         } else if count == 0 {
-            centered(&t, Icon::Fit, tr("Noch keine Screenshots"), tr("Drücke im Spiel F2, um einen aufzunehmen."), None)
+            centered(&t, Icon::Fit, tr("Noch keine Screenshots"), tr("Drücke im Spiel F2, um einen aufzunehmen."), super::play::empty_action(store, f, "instance.shots.empty.play"))
         } else {
             let usable = grid.usable();
             let n = columns(usable);

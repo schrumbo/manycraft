@@ -165,6 +165,12 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::PlayInstance { instance, account } => {
             show::play_instance(model, &instance, account, &mut out);
         }
+        Event::QuickPlay { instance, account, quick } => show::quick_play(model, &instance, account, quick, &mut out),
+        Event::Raise(key) => {
+            if model.games.get(&key).is_some_and(|g| g.alone() && g.phase.is_active()) {
+                out.push(Effect::Raise(key));
+            }
+        }
         Event::RequestPlay { instance, account } => show::request_play(model, instance, account, &mut out),
         Event::ChooseAccount(id) => show::choose_account(model, id, &mut out),
         Event::SetDefaultAccount { instance, account } => show::set_default_account(model, &instance, account, &mut out),

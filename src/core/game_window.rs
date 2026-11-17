@@ -150,6 +150,34 @@ pub fn close(pid: u32) -> bool {
     }
 }
 
+/// Whether [`raise`] works on this system.
+pub const CAN_RAISE: bool = cfg!(any(target_os = "windows", target_os = "macos"));
+
+/// Brings the main window of process `pid` to the front, restored when it was minimized. Returns whether it could.
+pub fn raise(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::game_window(pid).is_some_and(win::raise)
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        let Ok(pid) = i32::try_from(pid) else { return false };
+        let app: *mut AnyObject = msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+        if app.is_null() {
+            return false;
+        }
+        let raised: bool = msg_send![app, activateWithOptions: 2usize];
+        raised
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// The work areas of all monitors, empty where unknown.
 pub fn work_areas() -> Vec<Rect> {
     #[cfg(target_os = "windows")]
@@ -195,7 +223,7 @@ pub mod win {
     use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-        PostMessageW, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
+        PostMessageW, SW_RESTORE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE,
     };
 
     const EMPTY: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -331,6 +359,14 @@ pub mod win {
         fn drop(&mut self) {
             unsafe { CloseHandle(self.0) };
         }
+    }
+
+    /// Restores `hwnd` when it is minimized and brings it to the front.
+    pub fn raise(hwnd: HWND) -> bool {
+        if unsafe { IsIconic(hwnd) } != 0 {
+            unsafe { ShowWindow(hwnd, SW_RESTORE) };
+        }
+        unsafe { SetForegroundWindow(hwnd) != 0 }
     }
 
     /// Posts a close request to `hwnd`.

@@ -52,7 +52,7 @@ const MEMORY_EVERY: Duration = Duration::from_secs(10);
 pub(super) fn launch(m: &mut Model, owner: &str, only: Option<&[String]>, kick: Kick, out: &mut Vec<Effect>) {
     let restart = kick == Kick::Crash;
     let alive: HashSet<&String> = m.session.pids.keys().collect();
-    let Some(target) = m.target(owner) else { return };
+    let Some(mut target) = m.target(owner) else { return };
     let ids: Vec<Uuid> = match &target.batch {
         Some(batch) => batch.accounts.clone(),
         None => m.games.values().filter(|g| g.batch_id == owner).map(|g| g.account_id).collect(),
@@ -65,6 +65,12 @@ pub(super) fn launch(m: &mut Model, owner: &str, only: Option<&[String]>, kick: 
             only.is_none_or(|o| o.contains(&key)) && !alive.contains(&key) && m.games.get(&key).is_some_and(|i| if only.is_some() { !i.phase.is_running() } else { !i.phase.is_active() })
         })
         .collect();
+    if target.batch.is_none() {
+        let quick: Vec<Option<crate::core::fleet::Quick>> = wanted.iter().map(|a| m.session.quick.remove(&target.key(a.id))).collect();
+        if let [Some(quick)] = quick.as_slice() {
+            target.quick = Some(quick.clone());
+        }
+    }
     let (busy, accounts): (Vec<Account>, Vec<Account>) = wanted.into_iter().partition(|a| m.playing_elsewhere(&target.instance.id, a.id, &target.key(a.id)).is_some());
     let busy: Vec<(String, String)> = busy.iter().filter_map(|a| m.playing_elsewhere(&target.instance.id, a.id, &target.key(a.id)).map(|place| (target.key(a.id), trf("Spielt schon in %@", &[&place])))).collect();
     if !busy.is_empty() {

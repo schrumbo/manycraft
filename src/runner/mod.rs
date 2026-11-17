@@ -144,6 +144,7 @@ impl Runtime {
                 }
             }
             Effect::Settle { placed, dropped } => self.backend.settle(&placed, &dropped),
+            Effect::Raise(key) => self.backend.raise(&key),
             Effect::Known(known) => self.backend.known(known),
             Effect::Refresh(accounts) => self.backend.refresh(accounts),
             Effect::RememberTrayExplained => {

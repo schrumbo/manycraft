@@ -85,6 +85,8 @@ pub trait Backend: Send + Sync {
     }
     /// Lets the adopted games that got a tile talk to the manager again and stops tracking the rest, which keep running.
     fn settle(&self, _placed: &[String], _dropped: &[String]) {}
+    /// Brings the window of the game `key`, played alone, to the front.
+    fn raise(&self, _key: &str) {}
 }
 
 /// The real fleet of Minecraft processes.
@@ -338,6 +340,10 @@ impl<P: Pixels> Backend for Real<P> {
         let (live, ended): (Vec<_>, Vec<_>) = std::mem::take(&mut *lock(&self.adopted)).into_iter().partition(|a| self.fleet.is_running(&a.key));
         self.settle(&[], &ended.into_iter().map(|a| a.key).collect::<Vec<_>>());
         live
+    }
+
+    fn raise(&self, key: &str) {
+        self.fleet.raise(key);
     }
 
     fn settle(&self, placed: &[String], dropped: &[String]) {

@@ -147,6 +147,11 @@ impl Instance {
         instances_dir().join(&self.id)
     }
 
+    /// The picture the instance shows in place of its initial, when it has one.
+    pub fn icon_path(&self) -> Option<PathBuf> {
+        self.icon.as_deref().filter(|name| icon_name(name)).map(|name| self.dir().join(name))
+    }
+
     /// Shared mod folder every game of the instance links to.
     pub fn mods_dir(&self) -> PathBuf {
         self.dir().join("mods")
@@ -271,6 +276,58 @@ pub(super) fn save_in(root: &Path, instance: &Instance) -> Result<()> {
         eprintln!("the start of {} was not kept: {e:#}", instance.name);
     }
     Ok(())
+}
+
+const ICON_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const ICON_TYPES: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+fn icon_name(name: &str) -> bool {
+    let path = Path::new(name);
+    name.starts_with("icon-") && path.file_name().is_some_and(|n| n == name) && path.extension().is_some_and(|e| ICON_TYPES.iter().any(|t| e.eq_ignore_ascii_case(t)))
+}
+
+/// Copies the picture at `source` into the folder of instance `id` as its icon, or takes the icon away when `source`
+/// is `None`, and returns the instance as saved. Only an icon this function placed is ever removed.
+pub fn set_icon(id: &str, source: Option<&Path>) -> Result<Instance> {
+    set_icon_in(&instances_dir(), id, source)
+}
+
+pub(super) fn set_icon_in(root: &Path, id: &str, source: Option<&Path>) -> Result<Instance> {
+    let mut made = load_all_in(root)?.into_iter().find(|i| i.id == id).ok_or_else(|| Final(super::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
+    let dir = root.join(&made.id);
+    let old = made.icon.clone().filter(|n| icon_name(n));
+    made.icon = match source {
+        None => None,
+        Some(source) => {
+            let ext = source.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).filter(|e| ICON_TYPES.contains(&e.as_str()));
+            let fits = std::fs::metadata(source).is_ok_and(|m| m.is_file() && m.len() <= ICON_MAX_BYTES);
+            let Some(ext) = ext.filter(|_| fits && image::ImageReader::open(source).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok()).is_some()) else {
+                bail!(Final(super::i18n::tr("Das Bild lässt sich nicht lesen. Nimm ein PNG, JPG, WebP oder GIF bis 4 MB.")));
+            };
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+            let name = format!("icon-{stamp}.{ext}");
+            let temp = dir.join(format!(".{name}.part"));
+            if let Err(e) = std::fs::copy(source, &temp) {
+                let _ = std::fs::remove_file(&temp);
+                return Err(anyhow::Error::new(e).context(format!("cannot copy {}", source.display())));
+            }
+            if let Err(e) = std::fs::rename(&temp, dir.join(&name)) {
+                let _ = std::fs::remove_file(&temp);
+                return Err(anyhow::Error::new(e).context("cannot place the icon"));
+            }
+            Some(name)
+        }
+    };
+    if let Err(e) = save_in(root, &made) {
+        if let Some(new) = made.icon.as_deref() {
+            let _ = std::fs::remove_file(dir.join(new));
+        }
+        return Err(e);
+    }
+    if let Some(old) = old.filter(|o| made.icon.as_deref() != Some(o.as_str())) {
+        let _ = std::fs::remove_file(dir.join(old));
+    }
+    Ok(made)
 }
 
 /// Whether `id` can name a folder without escaping it.
@@ -476,7 +533,7 @@ pub(super) fn clone_in(root: &Path, source: &Instance, name: &str) -> Result<Ins
     let (from, to) = (root.join(&source.id), root.join(&made.id));
     let copied = (|| -> Result<()> {
         std::fs::create_dir_all(&to).with_context(|| format!("cannot create {}", to.display()))?;
-        for item in COPIED {
+        for item in COPIED.iter().copied().chain(made.icon.as_deref().filter(|n| icon_name(n))) {
             copy_tree(&from.join(item), &to.join(item))?;
         }
         save_in(root, &made)
@@ -631,6 +688,36 @@ mod tests {
         assert!(!dst.join("games").exists());
         assert!(src.join("games").join("x").join("saves").is_dir());
         assert_eq!(load_all_in(dir.path()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_icon_is_copied_in_replaced_cloned_and_removed_and_nothing_else_is_touched() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = Instance::new("Farm", "26.3", Loader::Vanilla);
+        save_in(dir.path(), &made).unwrap();
+        let home = dir.path().join(&made.id);
+        let png = dir.path().join("Pack Logo.PNG");
+        image::RgbaImage::new(2, 2).save_with_format(&png, image::ImageFormat::Png).unwrap();
+        std::fs::write(home.join("icon.png"), b"the user's own").unwrap();
+        let first = set_icon_in(dir.path(), &made.id, Some(&png)).unwrap();
+        let name = first.icon.clone().unwrap();
+        assert!(name.starts_with("icon-") && name.ends_with(".png") && home.join(&name).is_file(), "{name}");
+        assert_eq!(load_all_in(dir.path()).unwrap()[0].icon, first.icon);
+        let copy = clone_in(dir.path(), &first, "Farm 2").unwrap();
+        assert!(dir.path().join(&copy.id).join(&name).is_file());
+        std::thread::sleep(Duration::from_millis(5));
+        let second = set_icon_in(dir.path(), &made.id, Some(&png)).unwrap();
+        assert!(second.icon != first.icon && !home.join(&name).exists());
+        let text = dir.path().join("notes.png");
+        std::fs::write(&text, b"not a picture").unwrap();
+        assert!(set_icon_in(dir.path(), &made.id, Some(&text)).is_err());
+        assert_eq!(load_all_in(dir.path()).unwrap().into_iter().find(|i| i.id == made.id).unwrap().icon, second.icon);
+        let cleared = set_icon_in(dir.path(), &made.id, None).unwrap();
+        assert!(cleared.icon.is_none() && !home.join(second.icon.unwrap()).exists());
+        assert_eq!(std::fs::read(home.join("icon.png")).unwrap(), b"the user's own");
+        let mut odd = cleared;
+        odd.icon = Some("../escape-icon.png".into());
+        assert!(odd.icon_path().is_none());
     }
 
     fn trashed_setup(dir: &Path) -> (Instance, PathBuf) {
