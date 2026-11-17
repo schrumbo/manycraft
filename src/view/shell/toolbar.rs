@@ -72,7 +72,7 @@ impl Component for Toolbar {
             .content(Content::flex());
         let room = ui.window.read().0 - ui.sidebar_room();
         if let Page::Instance(_) = &page
-            && room >= frame::TOOLBAR_FULL
+            && room >= frame::TOOLBAR_TABS
         {
             bar = bar.child(instance::Tabs);
         }

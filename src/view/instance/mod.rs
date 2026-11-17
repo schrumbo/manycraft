@@ -363,7 +363,7 @@ impl Component for InstancePage {
                 left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
             }
         }
-        if room < frame::TOOLBAR_FULL {
+        if room < frame::TOOLBAR_TABS {
             left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
         }
         left = left.child(content).content(Content::flex());

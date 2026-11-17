@@ -39,6 +39,7 @@ pub mod frame {
     pub const SEARCH_NARROW: f32 = 160.;
     /// The content width below which the toolbar drops the tile size control, left to the palette and shortcuts.
     pub const TOOLBAR_FULL: f32 = 780.;
+    pub const TOOLBAR_TABS: f32 = 1240.;
     /// The content width below which the search field narrows.
     pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
