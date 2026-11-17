@@ -1,7 +1,7 @@
 //! Toasts: a short note at the bottom of the window, with Rückgängig for what can be undone. At most three at once; a toast
-//! under the pointer stays.
+//! under the pointer stays, and every toast waits while the window is in the background.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use freya::prelude::*;
@@ -20,6 +20,12 @@ const GRACE: Duration = Duration::from_secs(3);
 const HELD: Duration = Duration::from_millis(500);
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static FOCUSED: AtomicBool = AtomicBool::new(true);
+
+/// Notes whether the window has the keyboard; toasts run out only while it does.
+pub fn window_focused(focused: bool) {
+    FOCUSED.store(focused, Ordering::Relaxed);
+}
 
 /// One toast: what happened, and how to take it back.
 #[derive(Clone, PartialEq)]
@@ -62,14 +68,25 @@ fn push(mut ui: Ui, text: String, undo: Option<EventHandler<()>>, action: Option
         }
     }
     spawn_in_window(async move {
+        let mut left: Option<Duration> = None;
         loop {
             let Some((held, until)) = ui.toasts.peek().iter().find(|t| t.id == id).map(|t| (t.held, t.until)) else { return };
             let now = Instant::now();
-            if !held && now >= until {
+            let focused = FOCUSED.load(Ordering::Relaxed);
+            match (focused, left) {
+                (true, Some(rest)) => {
+                    left = None;
+                    extend(ui, id, now + rest.max(GRACE));
+                    continue;
+                }
+                (false, None) => left = Some(until.saturating_duration_since(now)),
+                _ => {}
+            }
+            if !held && focused && now >= until {
                 dismiss(ui, id);
                 return;
             }
-            after(if held { HELD } else { until - now }).await;
+            after(if held || !focused { HELD } else { until - now }).await;
         }
     });
     id
@@ -85,6 +102,15 @@ fn hold(mut ui: Ui, id: u64, held: bool) {
         if !held {
             t.until = t.until.max(Instant::now() + GRACE);
         }
+    }
+}
+
+fn extend(mut ui: Ui, id: u64, at_least: Instant) {
+    if !ui.toasts.peek().iter().any(|t| t.id == id && t.until < at_least) {
+        return;
+    }
+    if let Some(t) = ui.toasts.write().iter_mut().find(|t| t.id == id) {
+        t.until = at_least;
     }
 }
 

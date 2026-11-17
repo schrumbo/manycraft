@@ -52,6 +52,23 @@ pub fn word(g: &Game, m: &Model) -> String {
     }
 }
 
+/// The one coloured word a small tile shows for a game that needs you, in place of its glyph.
+pub fn short(g: &Game, m: &Model) -> Option<String> {
+    if g.stopping {
+        return None;
+    }
+    Some(match &g.phase {
+        _ if stopped_ban(g, m).is_some() => tr("Gesperrt"),
+        Phase::LoginNeeded => tr("Abgemeldet"),
+        Phase::Banned { .. } => tr("Gesperrt"),
+        Phase::Disconnected { .. } => tr("Getrennt"),
+        Phase::Crashed { .. } => tr("Abgestürzt"),
+        Phase::Dead { .. } => tr("Gestorben"),
+        Phase::Failed { .. } => tr("Fehler"),
+        _ => return None,
+    })
+}
+
 /// The full status line of `g`.
 pub fn detail(g: &Game, m: &Model) -> String {
     stopped_ban(g, m).unwrap_or_else(|| status(g, m.preparing.get(&g.batch_id).copied()))
@@ -256,7 +273,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
         }
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
-        Need::Crashed | Need::Failed => (pick("Alle starten", "Starten"), Fix::Events(vec![Event::StartMany(keys.to_vec())])),
+        Need::Crashed | Need::Failed => (if many { trf("Neu starten (%lld)", &[&keys.len()]) } else { tr("Neu starten") }, Fix::Events(vec![Event::StartMany(keys.to_vec())])),
         Need::Banned => {
             let batched: Vec<String> = keys.iter().filter(|k| m.games.get(*k).is_some_and(|g| m.batch(&g.batch_id).is_some())).cloned().collect();
             if batched.is_empty() {

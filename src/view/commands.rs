@@ -39,7 +39,11 @@ pub enum Command {
     StartAll,
     StopAll,
     MessageSelected,
+    MoveSelected,
+    LeaveSelected,
     ShowHistory,
+    GroupByBatch,
+    ShowUngrouped,
     ShowTiles,
     ShowTable,
     ShowRunning,
@@ -163,12 +167,14 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 46] = [
+    pub const ALL: [Command; 50] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
         Command::ReconnectSelected,
         Command::MessageSelected,
+        Command::MoveSelected,
+        Command::LeaveSelected,
         Command::ShowHistory,
         Command::ClearSelection,
         Command::StartAll,
@@ -178,6 +184,8 @@ impl Command {
         Command::ReconnectDropped,
         Command::ShowTiles,
         Command::ShowTable,
+        Command::GroupByBatch,
+        Command::ShowUngrouped,
         Command::ShowRunning,
         Command::ShowStopped,
         Command::NextInstance,
@@ -237,6 +245,10 @@ impl Command {
             Command::StartAll => "StartAll",
             Command::StopAll => "StopAll",
             Command::MessageSelected => "MessageSelected",
+            Command::MoveSelected => "MoveSelected",
+            Command::LeaveSelected => "LeaveSelected",
+            Command::GroupByBatch => "GroupByBatch",
+            Command::ShowUngrouped => "ShowUngrouped",
             Command::ShowHistory => "ShowHistory",
             Command::ShowTiles => "ShowTiles",
             Command::ShowTable => "ShowTable",
@@ -285,6 +297,10 @@ impl Command {
             Command::StartAll => tr("Alle starten"),
             Command::StopAll => tr("Alle stoppen"),
             Command::MessageSelected => tr("Nachricht an Ausgewählte…"),
+            Command::MoveSelected => tr("In Batch verschieben…"),
+            Command::LeaveSelected => tr("Aus Batch nehmen"),
+            Command::GroupByBatch => tr("Nach Batch gruppieren"),
+            Command::ShowUngrouped => tr("Ohne Gruppen zeigen"),
             Command::ShowHistory => tr("Verlauf zeigen"),
             Command::ShowTiles => tr("Als Kacheln zeigen"),
             Command::ShowTable => tr("Als Tabelle zeigen"),
@@ -308,6 +324,8 @@ impl Command {
             Command::StopSelected | Command::StopAll | Command::CancelStart | Command::ShowStopped => Icon::Stop,
             Command::RestartSelected | Command::ReconnectSelected | Command::ReconnectDropped => Icon::Refresh,
             Command::MessageSelected => Icon::Message,
+            Command::MoveSelected | Command::LeaveSelected | Command::GroupByBatch => Icon::Layers,
+            Command::ShowUngrouped => Icon::Grid,
             Command::ShowHistory => Icon::Clock,
             Command::ShowTiles => Icon::Grid,
             Command::ShowTable => Icon::Rows,
@@ -356,6 +374,9 @@ impl Command {
             Command::Fit => k(Code::Digit0),
             Command::ShowTiles => k(Code::Digit1),
             Command::ShowTable => k(Code::Digit2),
+            Command::GroupByBatch | Command::ShowUngrouped => k(Code::Digit3),
+            Command::MoveSelected => ks(Code::KeyB),
+            Command::LeaveSelected => ka(Code::KeyB),
             Command::Quit => k(Code::KeyQ),
             Command::Import => k(Code::KeyO),
             Command::StartAll => ks(Code::Enter),
@@ -389,6 +410,11 @@ impl Command {
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
             Command::ClearSelection => grid && !selected.is_empty(),
             Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
+            Command::MoveSelected => grid && m.batches.len() > 1 && picked().any(|g| m.batch(&g.batch_id).is_some()),
+            Command::LeaveSelected => grid && picked().any(|g| m.batch(&g.batch_id).is_some()),
+            Command::GroupByBatch | Command::ShowUngrouped => {
+                *store.ui.page.peek() == Page::Grid(Filter::All) && *store.ui.view.peek() == View::Tiles && m.batches.len() > 1 && *store.ui.grid_view.grouped.peek() == (self == Command::ShowUngrouped)
+            }
             Command::ShowHistory => grid && store.ui.cursor.peek().as_ref().or(selected.iter().next()).is_some_and(|k| m.games.contains_key(k)),
             Command::ShowTiles => grid && *store.ui.view.peek() != View::Tiles,
             Command::ShowTable => grid && *store.ui.view.peek() != View::Table,
@@ -468,6 +494,12 @@ impl Command {
             Command::StartAll => store.dispatch(Event::StartAll),
             Command::StopAll => store.dispatch(Event::StopAll),
             Command::MessageSelected => ui.message.set(true),
+            Command::MoveSelected => super::grid::ask_move(store, keys(), None),
+            Command::LeaveSelected => super::grid::leave(store, keys()),
+            Command::GroupByBatch | Command::ShowUngrouped => {
+                let mut shared = ui.grid_view;
+                shared.grouped.set(self == Command::GroupByBatch);
+            }
             Command::ShowHistory => {
                 let key = ui.cursor.peek().clone().or_else(|| ui.selection.peek().iter().next().cloned());
                 ui.history.set(key);
@@ -820,7 +852,7 @@ mod tests {
 
     #[test]
     fn no_two_commands_share_a_chord_unless_their_pages_differ() {
-        let paged = [(Command::ShowTiles, Command::AccountsAsList), (Command::ShowTable, Command::AccountsAsTable)];
+        let paged = [(Command::ShowTiles, Command::AccountsAsList), (Command::ShowTable, Command::AccountsAsTable), (Command::GroupByBatch, Command::ShowUngrouped)];
         for (i, a) in Command::ALL.into_iter().enumerate() {
             for b in Command::ALL.into_iter().skip(i + 1) {
                 if a.shortcut().is_some() && a.shortcut() == b.shortcut() {

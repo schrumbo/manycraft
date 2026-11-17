@@ -10,6 +10,7 @@ use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::view::commands::Command;
 use crate::view::icons::Icon;
+use crate::view::kit::Bounds;
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::text::line;
@@ -48,6 +49,7 @@ impl Component for SelectionBar {
             id
         });
         let mut sent = use_state(|| None::<usize>);
+        let mut move_at = use_state(Bounds::default);
         let keys: Vec<String> = ui.selection.read().iter().cloned().collect();
         let open = *ui.message.read();
         let many = keys.len() >= 2;
@@ -119,6 +121,20 @@ impl Component for SelectionBar {
                     _ => Command::MessageSelected.run(store),
                 }));
             }
+        }
+        if !open && super::moves::batched(store, &keys) {
+            let several = store.model.peek().batches.len() > 1;
+            row = row.child(rect().width(Size::px(1.)).height(Size::px(space::L)).background(t.separator));
+            if several {
+                let move_keys = keys.clone();
+                row = row.child(
+                    rect()
+                        .on_sized(move |e: Event<SizedEventData>| move_at.set_if_modified(Bounds::of(&e)))
+                        .child(Button::new("selection.move", tr("In Batch verschieben…")).plain().tip(Command::MoveSelected.tip()).on_press(move |_| super::moves::ask_move(store, move_keys.clone(), Some(*move_at.peek())))),
+                );
+            }
+            let leave_keys = keys.clone();
+            row = row.child(Button::new("selection.leave", tr("Aus Batch nehmen")).plain().tip(Command::LeaveSelected.tip()).on_press(move |_| super::moves::leave(store, leave_keys.clone())));
         }
         row = row.child(rect().width(Size::px(1.)).height(Size::px(space::L)).background(t.separator)).child(
             Button::icon("selection.clear", Icon::Close, tr("Auswahl aufheben")).plain().on_press(move |_| ui.selection.set(BTreeSet::new())),

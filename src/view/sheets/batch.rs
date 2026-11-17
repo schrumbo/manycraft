@@ -106,13 +106,26 @@ fn recent(model: &Model) -> Option<String> {
     played.or_else(|| sorted(model).first().map(|i| i.id.clone()))
 }
 
-/// The name a new batch takes from its instance, made unique among the batches.
-fn name_for(model: &Model, instance: Option<&str>) -> String {
+/// The name a new batch takes from its server's host, else from its instance, made unique among the batches; an IP
+/// address never becomes a name.
+fn name_for(model: &Model, instance: Option<&str>, server: &str) -> String {
     let taken: Vec<&str> = model.batches.iter().map(|b| b.name.as_str()).collect();
+    if let Some(host) = forms::server_host(server) {
+        return forms::unique_name(&host, &taken);
+    }
     match instance.and_then(|id| model.instance(id)) {
         Some(i) => forms::unique_name(&i.name, &taken),
         None => forms::next_batch_name(&taken),
     }
+}
+
+/// The accounts a new batch starts with: those in no batch yet, as many as fit into memory at `each_mb`; with how many
+/// were free when that is more than fit.
+fn free_accounts(model: &Model, each_mb: u32, memory_max: u32) -> (HashSet<Uuid>, Option<usize>) {
+    let free: Vec<Uuid> = model.accounts.iter().map(|a| a.id).filter(|id| !model.batches.iter().any(|b| b.accounts.contains(id))).collect();
+    let fit = (memory_max / each_mb.max(1)).max(1) as usize;
+    let capped = (free.len() > fit).then_some(free.len());
+    (free.into_iter().take(fit).collect(), capped)
 }
 
 fn sorted(model: &Model) -> Vec<&Instance> {
@@ -237,6 +250,8 @@ struct Seed {
     name: String,
     server: String,
     accounts: HashSet<Uuid>,
+    /// How many accounts were free when fewer of them fit into memory and were picked.
+    capped: Option<usize>,
     memory: u32,
     inherit: bool,
     background: Background,
@@ -251,18 +266,19 @@ impl Seed {
             (None, Some(id)) => Some(id.clone()).filter(|id| model.instance(id).is_some()).or_else(|| recent(&model)),
             (None, None) => recent(&model),
         };
-        let accounts = match (original, picked) {
-            (Some(b), _) => b.accounts.iter().copied().collect(),
-            (None, Some(picked)) => picked.clone(),
-            (None, None) => model.accounts.iter().map(|a| a.id).collect(),
-        };
         let own = instance.as_deref().and_then(|id| model.instance(id)).map_or_else(|| crate::core::settings::active().game.memory_mb, |i| i.memory());
-        let name = original.map_or_else(|| name_for(&model, instance.as_deref()), |b| b.name.clone());
+        let (accounts, capped) = match (original, picked) {
+            (Some(b), _) => (b.accounts.iter().copied().collect(), None),
+            (None, Some(picked)) => (picked.clone(), None),
+            (None, None) => free_accounts(&model, own, memory_max),
+        };
+        let name = original.map_or_else(|| name_for(&model, instance.as_deref(), ""), |b| b.name.clone());
         Self {
             instance,
             name,
             server: original.and_then(|b| b.server.clone()).unwrap_or_default(),
             accounts,
+            capped,
             memory: forms::memory_step(original.and_then(|b| b.memory_override).unwrap_or(own), 0, memory_max),
             inherit: original.is_none_or(|b| b.memory_override.is_none()),
             background: original.map_or_else(Background::default, |b| b.background),
@@ -345,11 +361,11 @@ impl Flow {
         (name, server, version)
     }
 
-    fn follow_instance(mut self, instance: Option<&str>) {
+    fn follow(mut self) {
         if self.name_auto.peek().is_none() {
             return;
         }
-        let next = name_for(&self.store.model.peek(), instance);
+        let next = name_for(&self.store.model.peek(), self.instance.peek().as_deref(), &self.server.peek());
         self.name_auto.set(Some(next.clone()));
         if *self.name.peek() != next {
             self.name.set(next);
@@ -369,7 +385,7 @@ impl Flow {
         }
         self.instance.set(id.clone());
         self.clear_error();
-        self.follow_instance(id.as_deref());
+        self.follow();
         if id.is_none() && !*self.asked.peek() {
             self.load_versions(true);
         }
@@ -590,7 +606,10 @@ impl Component for BatchSheet {
         let back = *store.back.read();
         use_side_effect_with_deps(&back, move |_| flow.retry_failed());
         let server_text = flow.server.read().clone();
-        use_side_effect_with_deps(&server_text, move |_| flow.clear_error());
+        use_side_effect_with_deps(&server_text, move |_| {
+            flow.clear_error();
+            flow.follow();
+        });
         let name_text = flow.name.read().clone();
         use_side_effect_with_deps(&name_text, move |n| flow.name_typed(n));
 
@@ -692,7 +711,9 @@ impl Component for BatchSheet {
         }
         form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock));
 
+        let preset = seed.capped.filter(|_| !editing && chosen == seed.accounts).map(|free| preset_line(&t, flow, picked, free, &lock));
         form = form
+            .children(preset)
             .children(fit_line(&t, flow, picked))
             .child(name_field)
             .child(background_section(&t, flow, background, running, &lock))
@@ -760,6 +781,25 @@ fn confirm_card(flow: Flow, batch: Batch, running: bool) -> Element {
         .secondary(secondary)
         .secondary_id("batch.delete.keep")
         .on_escape(move |_| asking.set(false))
+        .into_element()
+}
+
+fn preset_line(t: &Theme, mut flow: Flow, picked: usize, free: usize, lock: &Option<String>) -> Element {
+    let text = trf("%1$lld von %2$lld vorgewählt, mehr passen nicht in den Arbeitsspeicher.", &[&picked, &free]);
+    let all = Button::new("batch.preset.all", tr("Alle wählen")).plain().disabled(lock.clone()).on_press(move |_| {
+        let m = flow.store.model.peek();
+        let ids: HashSet<Uuid> = m.accounts.iter().map(|a| a.id).filter(|id| !m.batches.iter().any(|b| b.accounts.contains(id))).collect();
+        drop(m);
+        flow.accounts.set(ids);
+    });
+    rect()
+        .width(Size::fill())
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(space::S)
+        .content(Content::flex())
+        .child(rect().width(Size::flex(1.)).child(notice(t, Icon::Info, t.text2, text)))
+        .child(all)
         .into_element()
 }
 
