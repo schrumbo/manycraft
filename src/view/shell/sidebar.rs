@@ -142,7 +142,7 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
     let g = id.to_owned();
     items.push(Item::new("instance.group", tr("Gruppe…"), move |_| crate::view::library::assign(store, &g)));
     if made.loader.takes_mods() {
-        items.extend(wanted("instance.mods.add", tr("Mods hinzufügen…"), Want::AddMods(id.to_owned()), store));
+        items.extend(wanted("instance.mods.add", tr("Inhalte hinzufügen…"), Want::AddMods(id.to_owned()), store));
         items.extend(wanted("instance.mods.edit", tr("Mods verwalten…"), Want::EditMods(id.to_owned()), store));
     }
     if pinned {
@@ -223,7 +223,8 @@ fn batch_lines(m: &Model) -> Vec<BatchLine> {
     lines
 }
 
-fn swatch(t: &Theme, id: &str, side: f32) -> Element {
+/// The colour chip of batch `id`, as the sidebar shows it.
+pub fn swatch(t: &Theme, id: &str, side: f32) -> Element {
     let at = id.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(usize::from(b)));
     rect().width(Size::px(side)).height(Size::px(side)).corner_radius(t.shape.small).background(t.identity(at)).into_element()
 }

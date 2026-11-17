@@ -17,7 +17,8 @@ use crate::view::store::use_store;
 use crate::view::theme::{frame, iconsize, space};
 use crate::view::ui::Page;
 
-const CARD_W: f32 = 168.;
+/// The width of one instance card.
+pub const CARD_W: f32 = 168.;
 const PICTURE: f32 = 96.;
 
 /// A wrapped run of instance cards.
@@ -29,7 +30,7 @@ pub struct Wall {
 impl Component for Wall {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        rect().width(Size::fill()).horizontal().content(Content::wrap_spacing(t.grid_gap)).children(self.lines.iter().map(|l| rect().key(&l.id).child(Card { line: l.clone() }).into_element()))
+        rect().width(Size::fill()).horizontal().spacing(t.grid_gap).content(Content::wrap_spacing(t.grid_gap)).children(self.lines.iter().map(|l| rect().key(&l.id).child(Card { line: l.clone() }).into_element()))
     }
 }
 
@@ -125,7 +126,7 @@ pub struct Arriving {
 impl Component for Arriving {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        rect().width(Size::fill()).horizontal().content(Content::wrap_spacing(t.grid_gap)).children(self.entries.iter().map(|e| rect().key(e.id.to_string()).child(Ghost { entry: e.clone() }).into_element()))
+        rect().width(Size::fill()).horizontal().spacing(t.grid_gap).content(Content::wrap_spacing(t.grid_gap)).children(self.entries.iter().map(|e| rect().key(e.id.to_string()).child(Ghost { entry: e.clone() }).into_element()))
     }
 }
 

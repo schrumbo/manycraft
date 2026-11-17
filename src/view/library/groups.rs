@@ -93,7 +93,7 @@ impl Component for GroupSheet {
                 sheet::close(store.ui);
             }
         };
-        let mut chips = rect().width(Size::fill()).horizontal().content(Content::wrap_spacing(space::XS));
+        let mut chips = rect().width(Size::fill()).horizontal().spacing(space::XS).content(Content::wrap_spacing(space::XS));
         for name in existing {
             let mut value = value;
             let label = name.clone();

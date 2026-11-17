@@ -27,10 +27,10 @@ pub fn new_batch(store: Store, id: &str, name: &str) -> Action {
     .disabled(want_blocked(&Want::NewBatchFor(String::new())))
 }
 
-/// Opens the mod browser to add mods to instance `id`.
+/// Opens the content browser to add mods, packs and shaders to instance `id`.
 pub fn add_mods(store: Store, id: &str, name: &str) -> Action {
     let (why, id) = (held(store, id), id.to_owned());
-    Action::new("mods.add", tr("Mods hinzufügen…"), trf("Mods zu %@ hinzufügen…", &[&name]), Icon::Plus, move |_| {
+    Action::new("mods.add", tr("Inhalte hinzufügen…"), trf("Inhalte zu %@ hinzufügen…", &[&name]), Icon::Plus, move |_| {
         want(store, Want::AddMods(id.clone()));
     })
     .disabled(why)

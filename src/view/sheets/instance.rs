@@ -175,7 +175,7 @@ fn adding_reason(version: &str, lock: Option<String>) -> Option<String> {
 }
 
 fn add_button(reason: Option<String>) -> Button {
-    Button::new("instance.sheet.mods.add", tr("Mods hinzufügen…")).glyph(Icon::Plus).disabled(reason)
+    Button::new("instance.sheet.mods.add", tr("Inhalte hinzufügen…")).glyph(Icon::Plus).disabled(reason)
 }
 
 fn mods_header(t: &Theme, count: usize, add: Button) -> Element {

@@ -70,7 +70,8 @@ impl Component for Strips {
     }
 }
 
-fn fix_of(m: &Model, need: Need) -> Option<String> {
+/// The label of the one action that fixes `need` for everyone who has it.
+pub fn fix_of(m: &Model, need: Need) -> Option<String> {
     words::fix(need, &words::keys_of(need, None, m), m).map(|(label, _)| label)
 }
 
@@ -93,7 +94,7 @@ fn strip(t: &Theme, glyph: Icon, tone: Color, text: String, ink: Color) -> Rect 
 }
 
 /// Carries out the fix of `need` for everyone who needs it.
-fn run_fix(store: Store, need: Need) {
+pub fn run_fix(store: Store, need: Need) {
     let fix = {
         let m = store.model.peek();
         words::fix(need, &words::keys_of(need, None, &m), &m)

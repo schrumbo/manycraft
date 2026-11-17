@@ -140,7 +140,7 @@ impl Scope {
         } else if self.create {
             &[Kind::Mod]
         } else {
-            &Kind::ALL
+            &[Kind::Mod, Kind::ResourcePack, Kind::Shader, Kind::DataPack]
         }
     }
 }
@@ -2466,7 +2466,7 @@ impl Component for ResultList {
             let mut scroll = scroll;
             let (top, row) = (*at as f32 * *row, *row);
             let bottom = top + row;
-            let shown = -scroll.position().y;
+            let shown = -scroll.peek_position().y;
             let h = *viewport.peek();
             if top < shown {
                 scroll.scroll_to_y(-(top as i32));

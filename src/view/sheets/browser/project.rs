@@ -671,7 +671,7 @@ impl Component for VersionList {
             let mut body = body;
             let top = (*list_top.peek() - *content_top.peek()) + frame::RING_GAP + at as f32 * VERSION_STEP;
             let bottom = top + frame::VERSION_ROW;
-            let shown = -body.position().y;
+            let shown = -body.peek_position().y;
             let h = body.bounds.peek().map_or(0., |(_, viewport)| viewport.height);
             if top < shown {
                 body.scroll_to_y(-((top - space::M).max(0.) as i32));

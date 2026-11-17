@@ -211,10 +211,9 @@ impl Component for Hero {
         }
         if f.none_free() {
             return row
-                .child(Button::new("instance.play.add", tr("Account hinzufügen…")).plain().on_press(move |_| {
-                want(store, Want::AddAccount);
-            }))
-                .child(Button::new("instance.play", tr("Alle Accounts beschäftigt")).glyph(Icon::Play).primary().tall().disabled(Some(tr("Jeder Account spielt diese Instanz gerade in einem Batch."))))
+                .child(Button::new("instance.play", tr("Account hinzufügen…")).glyph(Icon::UserPlus).primary().tall().tip(tr("Jeder Account spielt diese Instanz gerade in einem Batch.")).disabled(want_blocked(&Want::AddAccount)).on_press(move |_| {
+                    want(store, Want::AddAccount);
+                }))
                 .into_element();
         }
         let mut row = row;

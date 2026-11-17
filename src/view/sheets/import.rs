@@ -430,7 +430,7 @@ impl Component for Import {
         use_side_effect_with_deps(&at, move |at| {
             let Some((top, height)) = *at else { return };
             let mut scroll = scroll;
-            let now = -scroll.position().y;
+            let now = -scroll.peek_position().y;
             let h = *viewport.peek();
             if top < now {
                 scroll.scroll_to_y(-(top as i32));

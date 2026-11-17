@@ -263,6 +263,121 @@ pub fn restore_selection(kind: Kind, saved: &[(PathBuf, String)]) -> Result<()> 
     if kind == Kind::ResourcePack { super::sync::with_templates(write) } else { write() }
 }
 
+/// The pack files of `kind` the instance has switched on: its resource packs from the options template, or the shader
+/// pack that Iris or Oculus load.
+pub fn selected(instance_dir: &Path, kind: Kind) -> Vec<String> {
+    match kind {
+        Kind::ResourcePack => super::sync::with_templates(|| std::fs::read_to_string(instance_dir.join(super::sync::OPTIONS_FILE)).map(|text| packs_on(&text)).unwrap_or_default()),
+        Kind::Shader => SHADER_SETTINGS.iter().find_map(|name| std::fs::read_to_string(instance_dir.join("config").join(name)).ok().and_then(|text| shader_on(&text))).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Switches the pack `file` of `kind` on or off for the instance. A resource pack goes last in the options template,
+/// where it wins over the others; a shader pack replaces the one Iris or Oculus had.
+pub fn switch(instance_dir: &Path, kind: Kind, file: &str, on: bool, loader: &Loader) -> Result<()> {
+    modrinth::safe_file_name(file)?;
+    match kind {
+        Kind::ResourcePack => super::sync::with_templates(|| {
+            let path = instance_dir.join(super::sync::OPTIONS_FILE);
+            let text = read_or_empty(&path)?;
+            let next = switched_packs(&text, file, on)?;
+            if next == text { Ok(()) } else { net::write_atomic(&path, next.as_bytes()) }
+        }),
+        Kind::Shader => {
+            let config = instance_dir.join("config");
+            let own = if matches!(loader, Loader::Forge(_)) { SHADER_SETTINGS[1] } else { SHADER_SETTINGS[0] };
+            let name = std::iter::once(own).chain(SHADER_SETTINGS).find(|name| config.join(name).is_file()).unwrap_or(own);
+            let path = config.join(name);
+            let text = read_or_empty(&path)?;
+            let next = switched_shader(&text, file, on);
+            if next == text {
+                return Ok(());
+            }
+            std::fs::create_dir_all(&config).with_context(|| format!("cannot create {}", config.display()))?;
+            net::write_atomic(&path, next.as_bytes())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn read_or_empty(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
+fn pack_list(text: &str) -> Option<(usize, Vec<String>)> {
+    text.split('\n').enumerate().find_map(|(at, line)| {
+        let body = line.trim_end_matches('\r').strip_prefix(OPTION_KEYS[0])?;
+        Some((at, serde_json::from_str::<Vec<String>>(body).ok()?))
+    })
+}
+
+fn packs_on(text: &str) -> Vec<String> {
+    pack_list(text).map(|(_, list)| list.into_iter().filter_map(|p| p.strip_prefix("file/").map(str::to_owned)).collect()).unwrap_or_default()
+}
+
+fn switched_packs(text: &str, file: &str, on: bool) -> Result<String> {
+    let entry = format!("file/{file}");
+    let line_of = |list: &[String], tail: &str| format!("{}{}{tail}", OPTION_KEYS[0], serde_json::to_string(list).unwrap_or_default());
+    let Some((at, mut list)) = pack_list(text) else {
+        if text.split('\n').any(|l| l.starts_with(OPTION_KEYS[0])) {
+            bail!("the resource pack list in options.txt cannot be read");
+        }
+        if !on {
+            return Ok(text.to_owned());
+        }
+        let line = line_of(&["vanilla".to_owned(), entry], "");
+        let sep = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+        return Ok(format!("{text}{sep}{line}\n"));
+    };
+    list.retain(|p| *p != entry);
+    if on {
+        list.push(entry);
+    }
+    let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    let tail = if lines[at].ends_with('\r') { "\r" } else { "" };
+    lines[at] = line_of(&list, tail);
+    Ok(lines.join("\n"))
+}
+
+fn shader_on(text: &str) -> Option<String> {
+    text.split('\n').find_map(|line| {
+        let (key, value) = line.trim_end_matches('\r').split_once('=')?;
+        (key.trim() == "shaderPack").then(|| unescaped(value.trim_start())).filter(|v| !v.is_empty())
+    })
+}
+
+fn switched_shader(text: &str, file: &str, on: bool) -> String {
+    let mut seen = false;
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.split('\n') {
+        let body = line.trim_end_matches('\r');
+        match body.split_once('=') {
+            Some((key, value)) if key.trim() == "shaderPack" => {
+                seen = true;
+                if on {
+                    lines.push(format!("shaderPack={}{}", escaped(file), &line[body.len()..]));
+                } else if unescaped(value.trim_start()) != file {
+                    lines.push(line.to_owned());
+                }
+            }
+            _ => lines.push(line.to_owned()),
+        }
+    }
+    if on && !seen {
+        if lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines.push(format!("shaderPack={}", escaped(file)));
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
 fn selection_files(instance_dir: &Path, kind: Kind) -> Vec<PathBuf> {
     match kind {
         Kind::ResourcePack => vec![instance_dir.join(super::sync::OPTIONS_FILE)],
@@ -581,6 +696,65 @@ mod tests {
         rename_selected(inst.path(), Kind::Shader, "Schöne: Shader.zip", "Schöne: Shader 2.zip").unwrap();
         assert_eq!(std::fs::read_to_string(inst.path().join("config").join("iris.properties")).unwrap(), "shaderPack=Sch\\u00F6ne\\: Shader 2.zip\n");
         assert_eq!(unescaped(&escaped(" a=b#c!d\\é😀")), " a=b#c!d\\é😀");
+    }
+
+    #[test]
+    fn a_resource_pack_goes_on_last_and_off_again() {
+        let text = "lang:de_de\r\nresourcePacks:[\"vanilla\",\"file/A.zip\"]\r\nfov:0.5\r\n";
+        assert_eq!(packs_on(text), ["A.zip"]);
+        let on = switched_packs(text, "B's.zip", true).unwrap();
+        assert_eq!(on, "lang:de_de\r\nresourcePacks:[\"vanilla\",\"file/A.zip\",\"file/B's.zip\"]\r\nfov:0.5\r\n");
+        assert_eq!(packs_on(&on), ["A.zip", "B's.zip"]);
+        assert_eq!(switched_packs(&on, "A.zip", true).unwrap(), "lang:de_de\r\nresourcePacks:[\"vanilla\",\"file/B's.zip\",\"file/A.zip\"]\r\nfov:0.5\r\n");
+        assert_eq!(switched_packs(&on, "B's.zip", false).unwrap(), text);
+        assert_eq!(switched_packs(text, "Other.zip", false).unwrap(), text);
+    }
+
+    #[test]
+    fn a_resource_pack_list_that_is_missing_is_made_and_one_that_is_broken_is_left_alone() {
+        assert_eq!(switched_packs("", "A.zip", true).unwrap(), "resourcePacks:[\"vanilla\",\"file/A.zip\"]\n");
+        assert_eq!(switched_packs("fov:1", "A.zip", true).unwrap(), "fov:1\nresourcePacks:[\"vanilla\",\"file/A.zip\"]\n");
+        assert_eq!(switched_packs("fov:1\n", "A.zip", false).unwrap(), "fov:1\n");
+        assert!(switched_packs("resourcePacks:[oops\n", "A.zip", true).is_err());
+        assert!(packs_on("resourcePacks:[oops\n").is_empty());
+    }
+
+    #[test]
+    fn one_shader_pack_is_on_at_a_time() {
+        let text = "enableShaders=true\nshaderPack=Old\\: One.zip\n";
+        assert_eq!(shader_on(text).as_deref(), Some("Old: One.zip"));
+        assert_eq!(switched_shader(text, "New.zip", true), "enableShaders=true\nshaderPack=New.zip\n");
+        assert_eq!(switched_shader(text, "Old: One.zip", false), "enableShaders=true\n");
+        assert_eq!(switched_shader(text, "Other.zip", false), text);
+        assert_eq!(switched_shader("a=b", "N.zip", true), "a=b\nshaderPack=N.zip\n");
+        assert_eq!(switched_shader("", "N.zip", true), "shaderPack=N.zip\n");
+        assert_eq!(switched_shader("shaderPack=\r\n", "N.zip", true), "shaderPack=N.zip\r\n");
+        assert!(shader_on("shaderPack=\n").is_none());
+    }
+
+    #[test]
+    fn switching_writes_the_files_the_game_reads() {
+        let inst = tempfile::tempdir().unwrap();
+        switch(inst.path(), Kind::ResourcePack, "A.zip", true, &Loader::Vanilla).unwrap();
+        assert_eq!(selected(inst.path(), Kind::ResourcePack), ["A.zip"]);
+        switch(inst.path(), Kind::ResourcePack, "A.zip", false, &Loader::Vanilla).unwrap();
+        assert!(selected(inst.path(), Kind::ResourcePack).is_empty());
+        switch(inst.path(), Kind::Shader, "S.zip", true, &Loader::Forge(None)).unwrap();
+        assert!(inst.path().join("config").join("oculus.properties").is_file());
+        assert_eq!(selected(inst.path(), Kind::Shader), ["S.zip"]);
+        switch(inst.path(), Kind::Shader, "T.zip", true, &Loader::Fabric(None)).unwrap();
+        assert_eq!(selected(inst.path(), Kind::Shader), ["T.zip"]);
+        assert!(!inst.path().join("config").join("iris.properties").exists());
+        assert!(switch(inst.path(), Kind::Shader, "..\\x.zip", true, &Loader::Vanilla).is_err());
+        assert!(selected(inst.path(), Kind::Mod).is_empty());
+    }
+
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_not_overwritten() {
+        let inst = tempfile::tempdir().unwrap();
+        std::fs::create_dir(inst.path().join(crate::core::sync::OPTIONS_FILE)).unwrap();
+        assert!(switch(inst.path(), Kind::ResourcePack, "A.zip", true, &Loader::Vanilla).is_err());
+        assert!(inst.path().join(crate::core::sync::OPTIONS_FILE).is_dir());
     }
 
     #[test]

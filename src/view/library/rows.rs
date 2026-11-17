@@ -43,8 +43,8 @@ impl Component for Table {
             .child(rect().width(Size::px(WIDE)).child(caption(&t, tr("Zuletzt gespielt"))))
             .child(rect().width(Size::px(FACE + space::S)))
             .content(Content::flex());
-        let rows = self.lines.iter().map(|l| rect().key(&l.id).width(Size::fill()).child(RowLine { line: l.clone() }).into_element());
-        rect().width(Size::fill()).child(head).child(hairline(&t)).children(rows)
+        let rows = rect().width(Size::fill()).spacing(space::XXS).children(self.lines.iter().map(|l| rect().key(&l.id).width(Size::fill()).child(RowLine { line: l.clone() }).into_element()));
+        rect().width(Size::fill()).spacing(space::XXS).child(head).child(hairline(&t)).child(rows)
     }
 }
 

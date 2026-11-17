@@ -122,7 +122,7 @@ impl Component for List {
         use_side_effect_with_deps(&(hot, tops), move |(hot, tops)| {
             let Some(at) = hot.and_then(|i| tops.get(i).copied()) else { return };
             let Some((_, viewport)) = *scroll.bounds.peek() else { return };
-            let now = -scroll.position().y;
+            let now = -scroll.peek_position().y;
             if at < now {
                 scroll.scroll_to_y(-(at as i32));
             } else if at + ROW > now + viewport.height {

@@ -814,7 +814,7 @@ impl Command {
             Command::NewInstance => tr("Neue Instanz"),
             Command::OpenTrash => tr("Zuletzt gelöschte Instanzen"),
             Command::FindModpacks => tr("Modpacks suchen…"),
-            Command::AddMods => tr("Mods hinzufügen…"),
+            Command::AddMods => tr("Inhalte hinzufügen…"),
             _ => String::new(),
         }
     }

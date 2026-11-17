@@ -61,6 +61,7 @@ pub mod frame {
     pub const SEARCH_NARROW: f32 = 160.;
     /// The content width below which the toolbar drops the tile size control, left to the palette and shortcuts.
     pub const TOOLBAR_FULL: f32 = 780.;
+    pub const TOOLBAR_TABS: f32 = 1240.;
     /// The content width below which the search field narrows.
     pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
@@ -96,6 +97,12 @@ pub mod frame {
     pub const CONTENT_MAX: f32 = 760.;
     /// The width of the welcome card on the first run.
     pub const WELCOME: f32 = 440.;
+    /// The width of the welcome card of the Start page.
+    pub const START_WELCOME: f32 = 640.;
+    /// The side of the instance picture in the hero of the Start page.
+    pub const HERO_FACE: f32 = 72.;
+    /// The width of the version select of Schnell spielen.
+    pub const QUICK_SELECT: f32 = 160.;
     /// The widest the Start page gets.
     pub const START: f32 = 1120.;
     pub const TOAST: f32 = 420.;

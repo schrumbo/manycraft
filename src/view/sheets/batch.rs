@@ -1090,7 +1090,7 @@ impl Component for PickList {
             let mut scroll = scroll;
             let top = at as f32 * PICK_ROW;
             let bottom = top + PICK_ROW;
-            let shown = -(scroll.position().y);
+            let shown = -(scroll.peek_position().y);
             let h = *viewport.peek();
             if top < shown {
                 scroll.scroll_to_y(-(top as i32));
