@@ -67,7 +67,8 @@ struct RawAsset {
     size: u64,
 }
 
-/// The newest release in a GitHub release list that is newer than `current`, skipping drafts, `skipped`, and pre-releases unless `prerelease`.
+/// The newest release in a GitHub release list that is newer than `current`, skipping drafts, `skipped`, and pre-releases
+/// (by flag or by version) unless `prerelease`.
 pub fn newest(list: serde_json::Value, current: &str, prerelease: bool, skipped: Option<&str>) -> Result<Option<Release>> {
     let list: Vec<Raw> = match list {
         serde_json::Value::Array(_) => serde_json::from_value(list),
@@ -76,7 +77,7 @@ pub fn newest(list: serde_json::Value, current: &str, prerelease: bool, skipped:
     .context("unexpected answer from the release list")?;
     let best = list
         .into_iter()
-        .filter(|r| !r.draft && (prerelease || !r.prerelease) && is_newer(&r.tag_name, current) && skipped.is_none_or(|s| !same(&r.tag_name, s)))
+        .filter(|r| !r.draft && (prerelease || !(r.prerelease || is_prerelease(&r.tag_name))) && is_newer(&r.tag_name, current) && skipped.is_none_or(|s| !same(&r.tag_name, s)))
         .max_by(|a, b| order(&a.tag_name, &b.tag_name));
     Ok(best.map(|r| Release {
         version: r.tag_name.trim().trim_start_matches(['v', 'V']).to_owned(),
@@ -98,18 +99,13 @@ pub fn first_line(body: &str) -> String {
 
 /// The installer that fits `kind` on `arch` (as `std::env::consts::ARCH` names it), when its checksum and signature are attached too.
 pub fn pick<'a>(assets: &'a [Asset], kind: Kind, arch: &str) -> Option<&'a Asset> {
-    pick_tagged(assets, kind, arch, super::super::channel::asset_tag())
-}
-
-/// [`pick`] for the installers of one channel, whose names end in `tag` before the extension.
-pub fn pick_tagged<'a>(assets: &'a [Asset], kind: Kind, arch: &str, tag: &str) -> Option<&'a Asset> {
     let suffix = match (kind, arch) {
-        (Kind::Installer, "x86_64") => format!("-windows-x64{tag}.exe"),
-        (Kind::Bundle, "x86_64" | "aarch64") => format!("-macos-universal{tag}.dmg"),
-        (Kind::AppImage, "x86_64") => format!("-linux-x86_64{tag}.AppImage"),
+        (Kind::Installer, "x86_64") => "-windows-x64.exe",
+        (Kind::Bundle, "x86_64" | "aarch64") => "-macos-universal.dmg",
+        (Kind::AppImage, "x86_64") => "-linux-x86_64.AppImage",
         _ => return None,
     };
-    let found = assets.iter().find(|a| a.name.starts_with("Manycraft") && a.name.ends_with(&suffix))?;
+    let found = assets.iter().find(|a| a.name.starts_with("Manycraft") && a.name.ends_with(suffix))?;
     (sidecar(assets, &found.name, "sha256").is_some() && sidecar(assets, &found.name, "minisig").is_some()).then_some(found)
 }
 
@@ -178,6 +174,11 @@ pub fn same(a: &str, b: &str) -> bool {
     matches!((parse(a), parse(b)), (Some(a), Some(b)) if compare(&a, &b).is_eq())
 }
 
+/// Whether `version` carries a pre-release tag, like `0.10.0-beta.2`.
+pub fn is_prerelease(version: &str) -> bool {
+    parse(version).is_some_and(|v| v.pre.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,19 +208,65 @@ mod tests {
         assert!(!is_newer("v0.2.0", "0.2.0"));
         assert!(!is_newer("0.1.9", "0.2.0"));
         assert!(is_newer("0.3.0-beta.1", "0.2.0"));
-        assert!(is_newer("0.10.0-beta.2", "0.10.0-beta.1"));
-        assert!(is_newer("0.10.0-beta.10", "0.10.0-beta.9"));
-        assert!(is_newer("0.10.0", "0.10.0-beta.9"));
-        assert!(is_newer("0.10.0-rc.1", "0.10.0-beta.9"));
-        assert!(!is_newer("0.10.0-beta.1", "0.10.0"));
-        assert!(!is_newer("0.10.0-beta.1", "0.10.0-beta.1"));
-        assert!(!is_newer("0.10.0-beta.1", "0.10.0-beta.2"));
-        assert!(!is_newer("0.10.0-", "0.9.0"));
-        assert!(same("v0.10.0-beta.1", "0.10.0-beta.1"));
-        assert!(!same("0.10.0-beta.1", "0.10.0-beta.2"));
-        assert!(!same("0.10.0-beta.1", "0.10.0"));
         assert!(same("v0.5", "0.5.0"));
         assert!(!same("0.5.1", "0.5.0"));
+    }
+
+    #[test]
+    fn pre_releases_order_like_semver() {
+        assert!(is_newer("0.10.0-beta.1", "0.9.4"));
+        assert!(is_newer("0.10.0-beta.2", "0.10.0-beta.1"));
+        assert!(is_newer("0.10.0-beta.10", "0.10.0-beta.9"));
+        assert!(is_newer("0.10.0-rc.1", "0.10.0-beta.9"));
+        assert!(is_newer("0.10.0", "0.10.0-beta.9"));
+        assert!(is_newer("v0.10.0", "0.10.0-beta.2"));
+        assert!(!is_newer("0.10.0-beta.2", "0.10.0"));
+        assert!(!is_newer("0.10.0-beta.1", "0.10.0-beta.2"));
+        assert!(!is_newer("0.10.0-beta.1", "0.10.0-beta.1"));
+        assert!(!is_newer("0.9.4", "0.10.0-beta.1"));
+        assert!(!is_newer("0.10.0-", "0.9.0"));
+        assert!(!is_newer("0.10.0-beta..1", "0.9.0"));
+        assert!(same("v0.10.0-beta.1", "0.10.0-beta.1"));
+        assert!(same("0.10.0-beta.1+build.7", "0.10.0-beta.1"));
+        assert!(!same("0.10.0-beta.1", "0.10.0-beta.2"));
+        assert!(!same("0.10.0-beta.2", "0.10.0"));
+        assert!(is_prerelease("v0.10.0-beta.2") && !is_prerelease("0.10.0") && !is_prerelease("0.9.4+build") && !is_prerelease("nightly"));
+    }
+
+    #[test]
+    fn an_opted_in_install_walks_from_the_release_through_the_betas_to_the_final() {
+        let beta = |n: u32| raw(&format!("v0.10.0-beta.{n}"), false, true);
+        let betas = json!([beta(2), beta(1), raw("v0.9.4", false, false), raw("v0.9.3", false, false)]);
+        assert_eq!(newest(betas.clone(), "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.2");
+        assert_eq!(newest(betas.clone(), "0.10.0-beta.1", true, None).unwrap().unwrap().version, "0.10.0-beta.2");
+        assert_eq!(newest(betas.clone(), "0.10.0-beta.2", true, None).unwrap(), None);
+        assert_eq!(newest(json!([beta(1), beta(2)]), "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.2", "list order does not matter");
+        let released = json!([raw("v0.10.0", false, false), beta(3), beta(2), raw("v0.9.4", false, false)]);
+        assert_eq!(newest(released.clone(), "0.9.4", true, None).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(released.clone(), "0.10.0-beta.2", true, None).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(released.clone(), "0.10.0-beta.2", false, None).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(released, "0.10.0", true, None).unwrap(), None);
+    }
+
+    #[test]
+    fn without_opting_in_no_pre_release_is_ever_offered() {
+        let beta = |n: u32| raw(&format!("v0.10.0-beta.{n}"), false, true);
+        let list = json!([beta(2), beta(1), raw("v0.9.4", false, false), raw("v0.9.3", false, false)]);
+        assert_eq!(newest(list.clone(), "0.9.3", false, None).unwrap().unwrap().version, "0.9.4");
+        assert_eq!(newest(list, "0.9.4", false, None).unwrap(), None);
+        let unflagged = json!([raw("v0.10.0-beta.3", false, false), raw("v0.9.4", false, false)]);
+        assert_eq!(newest(unflagged.clone(), "0.9.3", false, None).unwrap().unwrap().version, "0.9.4", "a pre-release version counts even without the flag");
+        assert_eq!(newest(unflagged, "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.3");
+        assert_eq!(newest(json!([beta(2), raw("v0.9.4", false, false)]), "0.9.4", true, Some("0.10.0-beta.2")).unwrap(), None, "a version gone back from stays skipped");
+    }
+
+    #[test]
+    fn a_beta_with_standard_names_installs_like_any_update() {
+        let names = ["Manycraft-Setup-0.10.0-beta.2-windows-x64.exe", "Manycraft-0.10.0-beta.2-macos-universal.dmg", "Manycraft-0.10.0-beta.2-linux-x86_64.AppImage"];
+        let all: Vec<Asset> = names.iter().flat_map(|n| [n.to_string(), format!("{n}.sha256"), format!("{n}.minisig")]).map(|n| asset(&n)).collect();
+        assert_eq!(pick(&all, Kind::Installer, "x86_64").map(|a| a.name.as_str()), Some(names[0]));
+        assert_eq!(pick(&all, Kind::Bundle, "aarch64").map(|a| a.name.as_str()), Some(names[1]));
+        assert_eq!(pick(&all, Kind::AppImage, "x86_64").map(|a| a.name.as_str()), Some(names[2]));
     }
 
     #[test]
@@ -278,7 +325,7 @@ mod tests {
         .into_iter()
         .map(asset)
         .collect();
-        let name = |kind, arch| pick_tagged(&all, kind, arch, "").map(|a| a.name.as_str());
+        let name = |kind, arch| pick(&all, kind, arch).map(|a| a.name.as_str());
         assert_eq!(name(Kind::Installer, "x86_64"), Some("Manycraft-Setup-0.6.0-windows-x64.exe"));
         assert_eq!(name(Kind::Installer, "aarch64"), None);
         assert_eq!(name(Kind::Bundle, "aarch64"), Some("Manycraft-0.6.0-macos-universal.dmg"));
@@ -290,63 +337,10 @@ mod tests {
         assert_eq!(sidecar(&all, "Manycraft-0.6.0-macos-universal.dmg", "minisig").map(|a| a.name.as_str()), Some("Manycraft-0.6.0-macos-universal.dmg.minisig"));
     }
 
-    fn beta_release() -> serde_json::Value {
-        let names = [
-            "Manycraft-Setup-0.10.0-beta.1-windows-x64-beta.exe",
-            "Manycraft-Setup-0.10.0-beta.1-windows-x64-beta.exe.sha256",
-            "Manycraft-Setup-0.10.0-beta.1-windows-x64-beta.exe.minisig",
-            "Manycraft-0.10.0-beta.1-macos-universal-beta.dmg",
-            "Manycraft-0.10.0-beta.1-macos-universal-beta.dmg.sha256",
-            "Manycraft-0.10.0-beta.1-macos-universal-beta.dmg.minisig",
-            "Manycraft-0.10.0-beta.1-linux-x86_64-beta.AppImage",
-            "Manycraft-0.10.0-beta.1-linux-x86_64-beta.AppImage.sha256",
-            "Manycraft-0.10.0-beta.1-linux-x86_64-beta.AppImage.minisig",
-        ];
-        let assets: Vec<_> = names.iter().map(|n| json!({ "name": n, "browser_download_url": format!("https://example.invalid/{n}"), "size": 9 })).collect();
-        let mut release = raw("v0.10.0-beta.1", false, true);
-        release["assets"] = json!(assets);
-        release
-    }
-
-    #[test]
-    fn a_stable_install_is_never_offered_the_beta() {
-        let list = json!([beta_release(), raw("v0.9.3", false, false), raw("v0.9.2", false, false)]);
-        assert_eq!(newest(list.clone(), "0.9.2", false, None).unwrap().unwrap().version, "0.9.3");
-        assert_eq!(newest(list.clone(), "0.9.3", false, None).unwrap(), None);
-        let opted_in = newest(list, "0.9.3", true, None).unwrap().unwrap();
-        assert_eq!(opted_in.version, "0.10.0-beta.1");
-        for (kind, arch) in [(Kind::Installer, "x86_64"), (Kind::Bundle, "aarch64"), (Kind::Bundle, "x86_64"), (Kind::AppImage, "x86_64")] {
-            assert_eq!(pick_tagged(&opted_in.assets, kind, arch, ""), None);
-            assert!(pick_tagged(&opted_in.assets, kind, arch, "-beta").is_some());
-        }
-    }
-
-    #[test]
-    fn a_beta_follows_newer_betas_and_the_release_that_ends_them() {
-        let two = || {
-            let mut r = beta_release();
-            r["tag_name"] = json!("v0.10.0-beta.2");
-            r
-        };
-        let list = json!([two(), beta_release(), raw("v0.9.3", false, false)]);
-        assert_eq!(newest(list.clone(), "0.10.0-beta.1", true, None).unwrap().unwrap().version, "0.10.0-beta.2");
-        assert_eq!(newest(list.clone(), "0.10.0-beta.2", true, None).unwrap(), None);
-        assert_eq!(newest(list.clone(), "0.10.0-beta.1", true, Some("0.10.0-beta.2")).unwrap(), None);
-        let with_final = json!([raw("v0.10.0", false, false), two()]);
-        assert_eq!(newest(with_final, "0.10.0-beta.2", true, None).unwrap().unwrap().version, "0.10.0");
-    }
-
-    #[test]
-    fn a_beta_never_picks_a_stable_installer_and_the_other_way_round() {
-        let stable: Vec<Asset> = ["Manycraft-Setup-0.10.0-windows-x64.exe", "Manycraft-Setup-0.10.0-windows-x64.exe.sha256", "Manycraft-Setup-0.10.0-windows-x64.exe.minisig"].into_iter().map(asset).collect();
-        assert_eq!(pick_tagged(&stable, Kind::Installer, "x86_64", "-beta"), None);
-        assert!(pick_tagged(&stable, Kind::Installer, "x86_64", "").is_some());
-    }
-
     #[test]
     fn an_unsigned_installer_is_not_picked() {
         let all = vec![asset("Manycraft-Setup-0.6.0-windows-x64.exe"), asset("Manycraft-Setup-0.6.0-windows-x64.exe.sha256")];
-        assert_eq!(pick_tagged(&all, Kind::Installer, "x86_64", ""), None);
+        assert_eq!(pick(&all, Kind::Installer, "x86_64"), None);
         assert!(Kind::Installer.installs_itself() && !Kind::Package.installs_itself() && !Kind::Unknown.installs_itself());
     }
 }

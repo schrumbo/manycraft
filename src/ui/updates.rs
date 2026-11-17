@@ -56,7 +56,7 @@ pub fn init(cx: &mut App) {
     let saved = cx.background_spawn(async {
         let dir = updater::dir();
         let state = updater::load(&dir);
-        (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION).map(|r| r.version), state.declined)
+        (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION, settings::active().prereleases).map(|r| r.version), state.declined)
     });
     cx.spawn(async move |cx| {
         let (news, previous, trouble, ready, declined) = saved.await;
@@ -131,7 +131,7 @@ pub fn check(asked: bool, cx: &mut App) {
     let task = cx.background_spawn(async move {
         let found = updater::check(VERSION, prereleases, asked)?;
         let dir = updater::dir();
-        let ready = updater::ready_for(&updater::load(&dir), &dir, VERSION).map(|r| r.version);
+        let ready = updater::ready_for(&updater::load(&dir), &dir, VERSION, prereleases).map(|r| r.version);
         anyhow::Ok((found, install::here().kind, ready))
     });
     cx.spawn(async move |cx| {
@@ -374,7 +374,7 @@ fn quit(how: Quit, cx: &mut App) {
 fn on_quit(cx: &mut App) {
     let how = cx.try_global::<Flight>().and_then(|f| f.quit);
     let launching = counts(cx).0 > 0;
-    if let Err(e) = install::on_exit(VERSION, how == Some(Quit::Back), how.is_some(), launching) {
+    if let Err(e) = install::on_exit(VERSION, settings::active().prereleases, how == Some(Quit::Back), how.is_some(), launching) {
         eprintln!("update: {e:#}");
     }
 }

@@ -1,0 +1,13 @@
+{
+  "id": "b1",
+  "name": "AFK",
+  "instance_id": "a1b2",
+  "server": "127.0.0.1:25565",
+  "accounts": ["00000000-0000-0000-0000-000000000007", "00000000-0000-0000-0000-000000000008"],
+  "join_commands": ["/home afk"],
+  "join_delay_ms": 1500,
+  "background": { "custom": { "fps": 10, "sight": 4 } },
+  "memory_override": 3072,
+  "launch_parallel": 2,
+  "full_speed": true
+}

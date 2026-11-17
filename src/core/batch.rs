@@ -117,6 +117,9 @@ pub struct Batch {
     /// How many games of a start may load at once; 0 lets the machine's cores and free memory decide.
     #[serde(default)]
     pub launch_parallel: u32,
+    /// Kept for Manycraft 0.9, which starts this batch's games with the full compiler when set; unused here.
+    #[serde(default)]
+    pub full_speed: bool,
 }
 
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
@@ -151,6 +154,7 @@ impl Batch {
             background: Background::Saving,
             memory_override: None,
             launch_parallel: 0,
+            full_speed: false,
         }
     }
 

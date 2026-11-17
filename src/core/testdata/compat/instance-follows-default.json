@@ -1,0 +1,13 @@
+{
+  "id": "c3d4",
+  "name": "Plain",
+  "icon": null,
+  "game_version": "26.3",
+  "loader": "vanilla",
+  "mods": [],
+  "local_mods": [],
+  "disabled": [],
+  "memory_mb": 2048,
+  "jvm_args": [],
+  "last_account": null
+}

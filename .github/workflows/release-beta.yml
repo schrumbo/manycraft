@@ -140,16 +140,16 @@ jobs:
           lipo -create -output target/release/manycraft target/aarch64-apple-darwin/release/manycraft target/x86_64-apple-darwin/release/manycraft
       - name: Bundle and DMG
         run: |
-          APP="dist/Manycraft Beta.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/en.lproj"
+          APP="dist/Manycraft.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp target/release/manycraft "$APP/Contents/MacOS/"
           cp packaging/icons/manycraft.icns "$APP/Contents/Resources/"
-          sed 's/"Manycraft"/"Manycraft Beta"/' packaging/macos/en.lproj/InfoPlist.strings > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
-          sed "s/VERSION/$VERSION/g" packaging/macos/InfoBeta.plist > "$APP/Contents/Info.plist"
+          cp -R packaging/macos/en.lproj "$APP/Contents/Resources/"
+          sed "s/VERSION/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
           codesign --force --deep --sign - "$APP"
           ln -s /Applications dist/Applications
-          DMG="Manycraft-$VERSION-macos-universal-beta.dmg"
-          hdiutil create -volname "Manycraft Beta" -srcfolder dist -ov -format UDZO "$DMG"
+          DMG="Manycraft-$VERSION-macos-universal.dmg"
+          hdiutil create -volname Manycraft -srcfolder dist -ov -format UDZO "$DMG"
           shasum -a 256 "$DMG" > "$DMG.sha256"
       - name: Upload
         run: gh release upload "v$VERSION" Manycraft-*.dmg* --clobber
@@ -180,10 +180,10 @@ jobs:
         run: |
           export PATH="$PATH:/c/Program Files (x86)/NSIS"
           cd packaging/windows
-          makensis -DBETA=1 -DVERSION="$VERSION" installer.nsi
+          makensis -DVERSION="$VERSION" installer.nsi
           mv Manycraft-Setup-*.exe ../../
           cd ../..
-          SETUP="Manycraft-Setup-$VERSION-windows-x64-beta.exe"
+          SETUP="Manycraft-Setup-$VERSION-windows-x64.exe"
           test -f "$SETUP"
           sha256sum "$SETUP" > "$SETUP.sha256"
       - name: Upload
@@ -217,15 +217,15 @@ jobs:
           D=AppDir
           mkdir -p $D/usr/bin $D/usr/share/applications $D/usr/share/icons/hicolor/512x512/apps
           cp target/release/manycraft $D/usr/bin/
-          cp packaging/linux/manycraft-beta.desktop $D/usr/share/applications/
-          cp packaging/linux/manycraft-beta.desktop $D/
+          cp packaging/linux/manycraft.desktop $D/usr/share/applications/
+          cp packaging/linux/manycraft.desktop $D/
           cp packaging/icons/manycraft.png $D/usr/share/icons/hicolor/512x512/apps/manycraft.png
           cp packaging/icons/manycraft.png $D/manycraft.png
           printf '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/manycraft" "$@"\n' > $D/AppRun
           chmod +x $D/AppRun
           curl -sSLo appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
-          IMAGE="Manycraft-$VERSION-linux-x86_64-beta.AppImage"
+          IMAGE="Manycraft-$VERSION-linux-x86_64.AppImage"
           ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool $D "$IMAGE"
           sha256sum "$IMAGE" > "$IMAGE.sha256"
       - name: Upload

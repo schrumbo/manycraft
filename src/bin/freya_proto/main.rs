@@ -11,10 +11,6 @@ mod app;
 #[cfg(windows)]
 mod art;
 #[cfg(windows)]
-#[path = "../../core/channel.rs"]
-#[allow(dead_code)]
-mod channel;
-#[cfg(windows)]
 mod gallery;
 #[cfg(windows)]
 #[path = "../../core/i18n.rs"]

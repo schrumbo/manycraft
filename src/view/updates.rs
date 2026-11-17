@@ -51,7 +51,7 @@ pub fn start(store: Store) {
     let Some(saved) = off_thread("update-state", || {
         let dir = updater::dir();
         let state = updater::load(&dir);
-        (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION).map(|r| r.version), state.declined)
+        (updater::news(&state, VERSION), updater::previous(&state).map(|p| p.version), state.trouble, updater::ready_for(&state, &dir, VERSION, settings::active().prereleases).map(|r| r.version), state.declined)
     }) else {
         return;
     };
@@ -125,7 +125,7 @@ pub fn check(store: Store, asked: bool) {
     let Some(rx) = off_thread("update-check", move || {
         let found = updater::check(VERSION, prereleases, asked)?;
         let dir = updater::dir();
-        let ready = updater::ready_for(&updater::load(&dir), &dir, VERSION).map(|r| r.version);
+        let ready = updater::ready_for(&updater::load(&dir), &dir, VERSION, prereleases).map(|r| r.version);
         anyhow::Ok((found, install::here().kind, ready))
     }) else {
         busy(false);
@@ -316,7 +316,7 @@ pub fn quit(store: Store, how: Quit) {
 pub fn on_quit(store: Store) {
     let how = FLIGHT.with(|f| f.borrow().quit);
     let launching = counts(store).0 > 0;
-    if let Err(e) = install::on_exit(VERSION, how == Some(Quit::Back), how.is_some(), launching) {
+    if let Err(e) = install::on_exit(VERSION, settings::active().prereleases, how == Some(Quit::Back), how.is_some(), launching) {
         eprintln!("update: {e:#}");
     }
 }

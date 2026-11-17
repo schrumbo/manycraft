@@ -762,7 +762,7 @@ pub fn open(cx: &mut App) {
         display_id,
         show: !(maximized && !driven) && !crate::core::drive::away(),
         window_min_size: Some(size(px(640.), px(420.))),
-        app_id: Some(crate::core::channel::app_id().into()),
+        app_id: Some(crate::core::APP_ID.into()),
         ..Default::default()
     };
     let options = super::chrome::window_options(options, "Manycraft");

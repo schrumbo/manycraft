@@ -2036,5 +2036,7 @@
   "vor %lld Min.": "%lld min ago",
   "vor %lld Std.": "%lld h ago",
   "eingeklappt": "collapsed",
-  "ausgeklappt": "expanded"
+  "ausgeklappt": "expanded",
+  "Manycraft kann nicht starten": "Manycraft can't start",
+  "Vor dem ersten Start dieser Version sichert Manycraft deine Accounts, Instanzen, Batches und Einstellungen. Das hat nicht geklappt, deshalb wurde nichts verändert. Prüfe, ob genug Speicherplatz frei ist, und starte Manycraft dann erneut.\n\nDetails: %@": "Before this version first starts, Manycraft backs up your accounts, instances, batches and settings. That didn't work, so nothing was changed. Check that there is enough free disk space, then start Manycraft again.\n\nDetails: %@"
 }
