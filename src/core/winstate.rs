@@ -14,10 +14,13 @@ const FILE: &str = "window.json";
 #[serde(rename_all = "snake_case")]
 pub enum Page {
     #[default]
+    Start,
     Grid,
     Instance,
     Accounts,
     Chat,
+    Library,
+    Discover,
 }
 
 /// A window's frame in the units of the window system: logical pixels.
@@ -48,13 +51,22 @@ pub struct Saved {
     /// The batch of the grid page, or the instance of the instance page; the grid of all when `None`.
     pub batch: Option<String>,
     pub sidebar: bool,
+    /// The width of the sidebar in logical pixels.
+    pub sidebar_width: f32,
+    /// Whether the sidebar shrinks to a rail of icons.
+    pub rail: bool,
 }
 
 impl Default for Saved {
     fn default() -> Self {
-        Self { frame: None, maximized: false, display: None, page: Page::Grid, batch: None, sidebar: true }
+        Self { frame: None, maximized: false, display: None, page: Page::Start, batch: None, sidebar: true, sidebar_width: SIDEBAR_WIDTH, rail: false }
     }
 }
+
+/// The sidebar width a window starts with.
+pub const SIDEBAR_WIDTH: f32 = 232.;
+/// The narrowest and widest the sidebar can be dragged.
+pub const SIDEBAR_RANGE: (f32, f32) = (200., 320.);
 
 fn path() -> PathBuf {
     paths::data_dir().join(FILE)
@@ -73,6 +85,7 @@ pub fn save(saved: &Saved) -> Result<()> {
 fn load_from(path: &Path) -> Saved {
     let mut saved: Saved = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     saved.frame = saved.frame.filter(Frame::sound);
+    saved.sidebar_width = if saved.sidebar_width.is_finite() { saved.sidebar_width.clamp(SIDEBAR_RANGE.0, SIDEBAR_RANGE.1) } else { SIDEBAR_WIDTH };
     saved
 }
 
@@ -85,7 +98,7 @@ mod tests {
     use super::*;
 
     fn saved() -> Saved {
-        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Chat, batch: Some("b".into()), sidebar: false }
+        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Chat, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true }
     }
 
     #[test]
@@ -113,6 +126,16 @@ mod tests {
         let file = dir.path().join(FILE);
         std::fs::write(&file, b"{\"maximized\":true}").unwrap();
         assert_eq!(load_from(&file), Saved { maximized: true, ..Saved::default() });
+    }
+
+    #[test]
+    fn the_sidebar_width_stays_in_its_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        std::fs::write(&file, b"{\"sidebar_width\":900}").unwrap();
+        assert_eq!(load_from(&file).sidebar_width, SIDEBAR_RANGE.1);
+        std::fs::write(&file, b"{\"sidebar_width\":3}").unwrap();
+        assert_eq!(load_from(&file).sidebar_width, SIDEBAR_RANGE.0);
     }
 
     #[test]

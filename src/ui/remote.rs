@@ -986,6 +986,18 @@ pub fn set_default_account(id: &str, account: Option<Uuid>) -> Result<()> {
     })
 }
 
+/// Lists instance `id` under `group` in the library; `None` leaves it ungrouped.
+pub fn set_group(id: &str, group: Option<String>) -> Result<()> {
+    saved(|| {
+        let mut made = find_instance(id)?;
+        if made.group != group {
+            made.group = group.clone();
+            setup::save(&made)?;
+        }
+        Ok(())
+    })
+}
+
 /// Moves a batch to the Papierkorb; its instance with worlds, mods and settings stays. Returns its entry there.
 pub fn delete_batch(b: &Batch) -> Result<String> {
     saved(|| fleet::delete_batch(b))

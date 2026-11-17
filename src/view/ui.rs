@@ -7,6 +7,8 @@ use freya::prelude::*;
 
 use super::accounts;
 use super::chat;
+use super::library;
+use super::shell::history::History;
 use super::grid::layout::TileSize;
 use super::grid::table::Column;
 use super::instance::Nav;
@@ -23,20 +25,32 @@ use crate::core::winstate;
 /// The pages the sidebar leads to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
-    /// The grid of every game, or of one batch, or of those that need the person.
+    /// What to play next: the last instance, recent ones, batches and what needs the person.
+    Start,
+    /// Every instance, in groups.
+    Library,
+    /// Modpacks and content from Modrinth, each installable as a new instance.
+    Discover,
+    /// The mosaic of every game, or of one batch, or of those that need the person.
     Grid(Filter),
     Instance(String),
-    /// An instance still on its way in, by install id.
-    Installing(u64),
-    /// Modpacks from Modrinth, each installable as a new instance.
-    Modpacks,
     /// Mods and other content from Modrinth for one instance, by instance id, on the tab of a kind.
     Browse(String, Kind),
-    Accounts,
     Chat,
-    Settings,
-    /// What was deleted in the last seven days.
-    Trash,
+    Settings(Pane),
+}
+
+impl Page {
+    /// The accounts table, a pane of the settings.
+    pub const ACCOUNTS: Page = Page::Settings(Pane::Accounts);
+}
+
+/// The parts of the settings page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pane {
+    #[default]
+    General,
+    Accounts,
 }
 
 /// Which games the grid shows.
@@ -96,6 +110,17 @@ pub struct Ui {
     pub sidebar_wanted: State<bool>,
     /// Whether a narrow window shows the sidebar above the page.
     pub drawer: State<bool>,
+    /// The width of the sidebar column, and whether it shrinks to a rail of icons.
+    pub sidebar_w: State<f32>,
+    pub rail: State<bool>,
+    /// Whether the sidebar's edge is being dragged, so the width is kept once it is let go.
+    pub sidebar_drag: State<bool>,
+    /// The pages shown before and after this one.
+    pub hist: State<History>,
+    /// What the library page shows and has picked.
+    pub library: library::Shared,
+    /// When each instance was last played and made.
+    pub infos: State<library::Infos>,
     pub size: State<TileSize>,
     pub show: State<Show>,
     pub view: State<View>,
@@ -154,10 +179,16 @@ impl Ui {
         let page = restored(saved.page, saved.batch);
         Self {
             window: State::create(size),
-            page: State::create(page),
-            sidebar: State::create(saved.sidebar && size.0 >= frame::SIDEBAR_FOLD),
-            sidebar_wanted: State::create(saved.sidebar),
+            page: State::create(page.clone()),
+            sidebar: State::create(size.0 >= frame::SIDEBAR_FOLD),
+            sidebar_wanted: State::create(true),
             drawer: State::create(false),
+            sidebar_w: State::create(saved.sidebar_width),
+            rail: State::create(saved.rail),
+            sidebar_drag: State::create(false),
+            hist: State::create(History::new(page.clone())),
+            library: library::Shared::create(),
+            infos: State::create(Default::default()),
             size: State::create(TileSize::Fit),
             show: State::create(Show::All),
             view: State::create(View::Tiles),
@@ -190,6 +221,14 @@ impl Ui {
         }
     }
 
+    /// The width the sidebar column and its divider take now; nothing while it is hidden.
+    pub fn sidebar_room(&self) -> f32 {
+        if !*self.sidebar.read() {
+            return 0.;
+        }
+        1. + if *self.rail.read() { frame::RAIL } else { *self.sidebar_w.read() }
+    }
+
     /// Whether the window is too narrow for the sidebar's column.
     pub fn narrow(&self) -> bool {
         self.window.peek().0 < frame::SIDEBAR_FOLD
@@ -205,15 +244,15 @@ impl Ui {
         }
     }
 
-    /// Shows or hides the sidebar: its column in a wide window, above the page in a narrow one.
+    /// Folds the sidebar to its rail of icons and opens it again in a wide window, shows or hides it above the page in a
+    /// narrow one.
     pub fn toggle_sidebar(mut self) {
         if self.narrow() {
             let open = !*self.drawer.peek();
             self.drawer.set(open);
         } else {
-            let shown = !*self.sidebar.peek();
-            self.sidebar_wanted.set(shown);
-            self.sidebar.set(shown);
+            let folded = *self.rail.peek();
+            self.rail.set(!folded);
         }
     }
 
@@ -226,22 +265,26 @@ impl Ui {
 /// The page `window.json` keeps for `page`, with its batch or instance; None for a page it does not keep.
 pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
     match page {
+        Page::Start => Some((winstate::Page::Start, None)),
+        Page::Library => Some((winstate::Page::Library, None)),
+        Page::Discover => Some((winstate::Page::Discover, None)),
         Page::Grid(Filter::Batch(b)) => Some((winstate::Page::Grid, Some(b.clone()))),
         Page::Grid(_) => Some((winstate::Page::Grid, None)),
         Page::Instance(id) | Page::Browse(id, _) => Some((winstate::Page::Instance, Some(id.clone()))),
-        Page::Accounts => Some((winstate::Page::Accounts, None)),
         Page::Chat => Some((winstate::Page::Chat, None)),
-        Page::Settings | Page::Installing(_) | Page::Modpacks | Page::Trash => None,
+        Page::Settings(_) => None,
     }
 }
 
 fn restored(page: winstate::Page, batch: Option<String>) -> Page {
     match (page, batch) {
         (winstate::Page::Grid, Some(b)) => Page::Grid(Filter::Batch(b)),
+        (winstate::Page::Grid, None) => Page::Grid(Filter::All),
         (winstate::Page::Instance, Some(id)) => Page::Instance(id),
-        (winstate::Page::Accounts, _) => Page::Accounts,
+        (winstate::Page::Library, _) => Page::Library,
+        (winstate::Page::Discover, _) => Page::Discover,
         (winstate::Page::Chat, _) => Page::Chat,
-        _ => Page::Grid(Filter::All),
+        _ => Page::Start,
     }
 }
 
@@ -251,11 +294,12 @@ mod tests {
 
     #[test]
     fn every_kept_page_comes_back_after_a_restart() {
-        for page in [Page::Grid(Filter::All), Page::Grid(Filter::Batch("b".into())), Page::Instance("i".into()), Page::Accounts, Page::Chat] {
+        for page in [Page::Start, Page::Library, Page::Discover, Page::Grid(Filter::All), Page::Grid(Filter::Batch("b".into())), Page::Instance("i".into()), Page::Chat] {
             let (kind, batch) = kept(&page).unwrap();
             assert_eq!(restored(kind, batch), page);
         }
-        assert_eq!(kept(&Page::Settings), None);
+        assert_eq!(kept(&Page::Settings(Pane::General)), None);
+        assert_eq!(restored(winstate::Page::Accounts, None), Page::Start);
     }
 
     fn entry(key: &str, label: &str) -> SessionUndo {

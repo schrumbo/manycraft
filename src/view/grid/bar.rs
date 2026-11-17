@@ -102,7 +102,7 @@ impl Component for SelectionBar {
                 )
                 .child(Button::icon("selection.message.close", Icon::Close, tr("Nachricht schließen")).plain().on_press(move |_| ui.message.set(false)));
         } else {
-            let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR } else { 0. };
+            let room = ui.window.read().0 - ui.sidebar_room();
             let inline = if room >= WIDE { usize::MAX } else if room >= MID { offers.len() } else { 2 };
             let mut more = Vec::new();
             for (i, o) in offers.into_iter().enumerate() {

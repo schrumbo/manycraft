@@ -18,6 +18,7 @@ pub struct Row {
     leading: Option<Element>,
     trailing: Option<Element>,
     selected: bool,
+    compact: Option<Option<Element>>,
     height: f32,
     on_press: Option<EventHandler<()>>,
     on_secondary: Option<EventHandler<(f32, f32)>>,
@@ -25,7 +26,7 @@ pub struct Row {
 
 impl Row {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), detail: None, glyph: None, leading: None, trailing: None, selected: false, height: frame::ROW, on_press: None, on_secondary: None }
+        Self { id: id.into(), title: title.into(), detail: None, glyph: None, leading: None, trailing: None, selected: false, compact: None, height: frame::ROW, on_press: None, on_secondary: None }
     }
 
     /// A second, quieter line under the title.
@@ -54,6 +55,12 @@ impl Row {
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Shows only the glyph or leading content, centred, with `mark` over its corner: the row of a folded sidebar.
+    pub fn compact(mut self, on: bool, mark: Option<Element>) -> Self {
+        self.compact = on.then_some(mark);
         self
     }
 
@@ -92,7 +99,7 @@ impl Component for Row {
             .a11y_alt(self.title.clone())
             .width(Size::fill())
             .height(Size::px(self.height))
-            .padding((0., space::S))
+            .padding((0., if self.compact.is_some() { 0. } else { space::S }))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
@@ -123,11 +130,20 @@ impl Component for Row {
         if let Some(border) = ring(&t, focus()) {
             r = r.border(border);
         }
+        let mut lead = None;
         if let Some(l) = &self.leading {
-            r = r.child(l.clone());
+            lead = Some(l.clone());
         } else if let Some(g) = self.glyph {
-            r = r.child(icon(&t, g, iconsize::S, if self.selected { t.accent_text } else { t.text2 }));
+            lead = Some(icon(&t, g, iconsize::S, if self.selected { t.accent_text } else { t.text2 }));
         }
+        if let Some(mark) = &self.compact {
+            let mut face = rect().center().children(lead);
+            if let Some(m) = mark {
+                face = face.child(rect().position(Position::new_absolute().top(-space::XXS).right(-space::XXS)).child(m.clone()));
+            }
+            return r.main_align(Alignment::Center).child(face);
+        }
+        r = r.children(lead);
         let mut text = rect().width(Size::flex(1.)).spacing(1.).child(line(&t, self.title.clone(), font::BODY, ink).font_weight(if self.selected { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL }));
         if let Some(d) = &self.detail {
             text = text.child(caption(&t, d.clone()));

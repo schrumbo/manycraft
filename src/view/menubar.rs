@@ -183,13 +183,13 @@ pub fn refresh(store: Store) {
     let _ = (store.model.read(), ui.page.read(), ui.selection.read(), ui.cursor.read(), ui.toasts.read(), ui.view.read(), ui.show.read(), ui.size.read());
     let _ = (ui.sheet.read(), ui.palette.read(), ui.menu.read(), ui.accounts.picked.read(), ui.accounts.prism.read(), ui.accounts.view.read());
     let _ = (ui.browser_undo.read(), ui.session_undo.read());
-    let sidebar = *ui.sidebar.read();
+    let sidebar = *ui.sidebar.read() && !*ui.rail.read();
     ITEMS.with_borrow_mut(|all| {
         for it in all.iter_mut() {
             let runs = commands::for_menu(store, it.command);
             let text = match it.command {
-                Command::ToggleSidebar if sidebar => tr("Seitenleiste ausblenden"),
-                Command::ToggleSidebar => tr("Seitenleiste einblenden"),
+                Command::ToggleSidebar if sidebar => tr("Seitenleiste einklappen"),
+                Command::ToggleSidebar => tr("Seitenleiste ausklappen"),
                 Command::Undo if runs == Some(Command::Undo) => commands::undo_label(store).unwrap_or_else(|| label(Command::Undo)),
                 c => label(runs.unwrap_or(c)),
             };

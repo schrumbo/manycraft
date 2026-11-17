@@ -1,25 +1,16 @@
 use freya::prelude::*;
 
 use crate::core::i18n::{tr, trf};
-use crate::view::commands::Command;
 use crate::view::grid;
-use crate::view::icons::Icon;
 use crate::view::instance;
-use crate::view::kit::button::Button;
+use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, title};
 use crate::view::kit::use_theme;
 use crate::view::store::use_store;
 use crate::view::theme::{frame, space};
-use crate::view::ui::{Filter, Page};
+use crate::view::ui::{Filter, Page, Pane};
 
-fn shortcut_tip(c: Command) -> String {
-    match c.shortcut() {
-        Some(s) => format!("{} ({})", c.label(), s.label()),
-        None => c.label(),
-    }
-}
-
-/// The page title with what it shows, and on the grid the tile size and the search.
+/// The heading of the shown page with what it holds, and the tools that belong to it.
 #[derive(PartialEq)]
 pub struct Toolbar;
 
@@ -27,13 +18,19 @@ impl Component for Toolbar {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let mut ui = store.ui;
+        let ui = store.ui;
         let page = ui.page.read().clone();
+        if page == Page::Start {
+            return rect().into_element();
+        }
         let m = store.model.read();
         let (heading, sub) = match &page {
+            Page::Start => (String::new(), None),
+            Page::Library => (tr("Instanzen"), (!m.instances.is_empty()).then(|| if m.instances.len() == 1 { tr("1 Instanz") } else { trf("%lld Instanzen", &[&m.instances.len()]) })),
+            Page::Discover => (tr("Entdecken"), Some(tr("Von Modrinth, jedes Modpack wird eine eigene Instanz"))),
             Page::Grid(filter) => {
                 let name = match filter {
-                    Filter::All => tr("Alle"),
+                    Filter::All => tr("Alle Batches"),
                     Filter::Attention => tr("Brauchen dich"),
                     Filter::Batch(id) => m.batch(id).map_or_else(|| tr("Batch"), |b| b.name.clone()),
                 };
@@ -44,16 +41,13 @@ impl Component for Toolbar {
                 (name, sub)
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
-            Page::Installing(id) => ui.installs.read().iter().find(|i| i.id == *id).map_or_else(|| (tr("Instanz"), None), |i| (i.name.clone(), matches!(i.stage, crate::view::install::Stage::Failed(_)).then(|| i.state()))),
-            Page::Modpacks => (tr("Modpacks"), Some(tr("Von Modrinth, jedes wird eine eigene Instanz"))),
             Page::Browse(id, _) => match m.instance(id) {
                 Some(i) => (trf("Mods für %@", &[&i.name]), Some(crate::view::sheets::browser::content_line(i, m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active())))),
                 None => (tr("Mods"), None),
             },
-            Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
-            Page::Settings => (tr("Einstellungen"), None),
-            Page::Trash => (tr("Papierkorb"), None),
+            Page::Settings(Pane::General) => (tr("Einstellungen"), None),
+            Page::Settings(Pane::Accounts) => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
         };
 
         let heading_col = match &page {
@@ -70,14 +64,13 @@ impl Component for Toolbar {
             .a11y_role(AccessibilityRole::Toolbar)
             .width(Size::fill())
             .height(Size::px(frame::TOOLBAR))
-            .padding((0., space::L, 0., space::S))
+            .padding((0., space::L))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
-            .child(Button::icon("toolbar.sidebar", Icon::Sidebar, tr("Seitenleiste")).plain().tip(shortcut_tip(Command::ToggleSidebar)).on_press(move |_| Command::ToggleSidebar.run(store)))
             .child(rect().width(Size::flex(1.)).child(heading_col))
             .content(Content::flex());
-        let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
+        let room = ui.window.read().0 - ui.sidebar_room();
         if let Page::Instance(_) = &page
             && room >= frame::TOOLBAR_FULL
         {
@@ -88,20 +81,25 @@ impl Component for Toolbar {
         {
             bar = bar.child(grid::tools::Tools { filter: filter.clone(), room });
         }
-        if page == Page::Accounts {
-            bar = bar.child(crate::view::accounts::Tools { room });
+        match &page {
+            Page::Library => bar = bar.child(crate::view::library::Tools { room }),
+            Page::Settings(pane) => {
+                let mut open = ui.page;
+                let items = vec![Segment { id: "settings.pane.general".into(), label: tr("Allgemein"), tip: None }, Segment { id: "settings.pane.accounts".into(), label: tr("Accounts"), tip: None }];
+                bar = bar.child(Segmented::new(tr("Bereich"), items, usize::from(*pane == Pane::Accounts)).on_choose(move |i| open.set(Page::Settings(if i == 1 { Pane::Accounts } else { Pane::General }))));
+                if *pane == Pane::Accounts {
+                    bar = bar.child(crate::view::accounts::Tools { room });
+                }
+            }
+            _ => {}
         }
         if page == Page::Chat {
             bar = bar.child(crate::view::chat::Tools { room });
-        }
-        if let Page::Installing(id) = &page {
-            bar = bar.child(rect().width(Size::px(frame::HERO.min(room / 2.))).horizontal().cross_align(Alignment::Center).child(crate::view::install::PlaySlot { id: *id }));
         }
         if let Page::Instance(id) = &page {
             let hero = instance::Hero { id: id.clone(), room };
             bar = if room >= frame::TOOLBAR_FULL { bar.child(rect().width(Size::px(frame::HERO)).horizontal().main_align(Alignment::End).cross_align(Alignment::Center).child(hero)) } else { bar.child(hero) };
         }
-        bar = bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)));
-        bar
+        bar.into_element()
     }
 }

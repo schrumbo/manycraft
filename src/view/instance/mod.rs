@@ -336,7 +336,7 @@ impl Component for InstancePage {
         let Some(f) = facts(&m, &self.id) else {
             return gone(&t, store, m.loaded).into_element();
         };
-        let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
+        let room = ui.window.read().0 - ui.sidebar_room();
         let wide = room >= SPLIT;
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
             rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, store, tab, f.clone())),
@@ -419,7 +419,7 @@ fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement
         .spacing(space::M)
         .child(icon(t, Icon::Folder, iconsize::HERO, t.text3))
         .child(heading(t, tr("Diese Instanz gibt es nicht mehr.")))
-        .child(Button::new("instance.gone.all", tr("Zu allen Spielen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+        .child(Button::new("instance.gone.all", tr("Zu den Instanzen")).tall().on_press(move |_| ui.page.set(Page::Library)))
 }
 
 /// The tab the page of instance `id` shows: the one it showed last, at first Mods when it takes mods and Worlds when not.
@@ -482,7 +482,7 @@ pub fn extras(store: Store) -> Vec<Extra> {
     for (n, tab) in Tab::ALL.into_iter().enumerate() {
         let mut nav = store.ui.instance.tab;
         let code = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5][n];
-        push(&format!("tab.{}", tab.key()), tab_entry(tab, &name), tab.glyph(), Some(Shortcut::primary(code)), EventHandler::new(move |_| nav.set(tab)));
+        push(&format!("tab.{}", tab.key()), tab_entry(tab, &name), tab.glyph(), Some(Shortcut::alt(code)), EventHandler::new(move |_| nav.set(tab)));
     }
     let rename_id = id.clone();
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));

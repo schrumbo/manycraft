@@ -1,1 +1,1 @@
-{ "frame": { "x": 10.0, "y": 20.0, "w": 1200.0, "h": 800.0 }, "maximized": true, "display": "DISPLAY1", "page": "instance", "batch": "a1b2", "sidebar": false }
+{ "frame": { "x": 10.0, "y": 20.0, "w": 1200.0, "h": 800.0 }, "maximized": true, "display": "DISPLAY1", "page": "instance", "batch": "a1b2", "sidebar": false, "sidebar_width": 232.0, "rail": false }

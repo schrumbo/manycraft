@@ -7,6 +7,7 @@ use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::view::commands::{Command, Want, can_want, want, want_blocked};
 use crate::view::icons::{Icon, icon};
+use crate::view::kit::badge::dot;
 use crate::view::kit::menu::{self, Face, Item, Menu};
 use crate::view::kit::row::Row;
 use crate::view::kit::tooltip::WithTip;
@@ -40,7 +41,7 @@ fn items(store: Store) -> Vec<Item> {
         .kept(),
     );
     let mut page = store.ui.page;
-    items.push(Item::new("account.switch.manage", tr("Accounts verwalten"), move |_| page.set(Page::Accounts)).kept());
+    items.push(Item::new("account.switch.manage", tr("Accounts verwalten…"), move |_| page.set(Page::ACCOUNTS)).kept());
     items
 }
 
@@ -65,9 +66,11 @@ pub fn open_from_keys(store: Store) {
     open(store, anchor);
 }
 
-/// The active account in the sidebar's foot; adds the first account while there is none.
+/// The active account in the sidebar's foot, folded to its face on the rail; adds the first account while there is none.
 #[derive(PartialEq)]
-pub struct AccountSwitch;
+pub struct AccountSwitch {
+    pub rail: bool,
+}
 
 impl Component for AccountSwitch {
     fn render(&self) -> impl IntoElement {
@@ -80,21 +83,25 @@ impl Component for AccountSwitch {
         }
         let Some(account) = crate::app::reduce::active_account(&m).and_then(|id| m.account(id)) else {
             let blocked = want_blocked(&Want::AddAccount);
-            let row = Row::new("nav.account.add", tr("Account hinzufügen…")).glyph(Icon::UserPlus).height(frame::ROW).on_press(move |_| {
+            let row = Row::new("nav.account.add", tr("Account hinzufügen…")).glyph(Icon::UserPlus).height(frame::ROW).compact(self.rail, None).on_press(move |_| {
                 want(store, Want::AddAccount);
             });
-            return WithTip::new(blocked, row).into_element();
+            return WithTip::new(blocked.or_else(|| self.rail.then(|| tr("Account hinzufügen…"))), row).into_element();
         };
         let head = crate::view::accounts::head(&t, store, account.id, &account.name, account.color(), frame::FACE);
+        let expired = m.sign_in_expired(account.id);
         let mut tip = trf("Spielt Instanzen ohne eigenen Account · %@", &[&Command::SwitchAccount.keys()]);
         let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
-        let mut row = Row::new("nav.account", account.name.clone()).leading(head).height(frame::ROW);
-        if m.sign_in_expired(account.id) {
-            tip = format!("{} · {tip}", tr("Anmeldung abgelaufen"));
-            end = end.child(icon(&t, Icon::Alert, iconsize::S, t.attention_text));
-            row = row.detail(tr("Anmeldung abgelaufen"));
+        let mut row = Row::new("nav.account", account.name.clone()).leading(head).height(frame::ROW).compact(self.rail, expired.then(|| dot(t.attention)));
+        if expired {
+            tip = format!("{} · {tip}", tr("Anmeldung nötig"));
+            end = end.child(dot(t.attention));
+            row = row.detail(tr("Anmeldung nötig"));
         }
-        let row = row.trailing(end.child(icon(&t, Icon::ChevronsUpDown, iconsize::S, t.text3))).on_press(move |_| open_from_keys(store));
+        if self.rail {
+            tip = format!("{} · {tip}", account.name);
+        }
+        let row = row.trailing(end.child(icon(&t, Icon::ChevronDown, iconsize::S, t.text3))).on_press(move |_| open_from_keys(store));
         rect().width(Size::fill()).on_sized(move |e: Event<SizedEventData>| at.set_if_modified(Some(Bounds::of(&e)))).child(WithTip::new(Some(tip), row)).into_element()
     }
 }

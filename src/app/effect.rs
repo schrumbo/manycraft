@@ -95,6 +95,7 @@ pub enum Effect {
     SaveActiveAccount(Uuid),
     /// Saves the account `instance` always plays with alone; none falls back to the active account.
     SaveDefaultAccount { instance: String, account: Option<Uuid> },
+    SaveGroup { instance: String, group: Option<String> },
     SaveColor { ids: Vec<Uuid>, color: u8 },
     /// Drops images and caches of games and accounts that are gone.
     Retain,

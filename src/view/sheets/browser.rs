@@ -87,11 +87,11 @@ fn row_h(kind: Kind) -> f32 {
     if kind == Kind::Modpack { PACK_ROW_H } else { ROW_H }
 }
 
-/// Shows the Modpacks page, where every pack installs as a new instance.
+/// Shows Entdecken, where every pack installs as a new instance.
 pub fn find_modpacks(store: Store) {
     crate::view::kit::sheet::close(store.ui);
     let mut page = store.ui.page;
-    page.set(crate::view::ui::Page::Modpacks);
+    page.set(crate::view::ui::Page::Discover);
 }
 
 /// What the Modpacks page filters by, held by the page so the browser searches again when it changes.

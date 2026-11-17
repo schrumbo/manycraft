@@ -40,7 +40,7 @@ fn caps(label: &str) -> Vec<String> {
 fn sections() -> Vec<Section> {
     use Command::*;
     let bound = |list: &[Command]| list.iter().filter_map(|c| c.shortcut().map(|s| (c.label(), caps(&s.label())))).collect::<Vec<_>>();
-    let mut tabs = caps(&Shortcut::primary(Code::Digit1).label());
+    let mut tabs = caps(&Shortcut::alt(Code::Digit1).label());
     if let Some(last) = tabs.last_mut() {
         *last = "1–5".to_owned();
     }

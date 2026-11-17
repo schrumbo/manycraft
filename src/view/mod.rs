@@ -10,6 +10,8 @@ mod icons;
 mod install;
 mod instance;
 mod kit;
+mod library;
+mod start;
 mod menubar;
 mod native;
 mod settings;

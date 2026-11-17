@@ -18,19 +18,15 @@ use crate::view::kit::text::{caption, heading, line, para, spacer};
 use crate::view::kit::{after, at_least, off_thread, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{font, frame, iconsize, space};
-use crate::view::ui::Page;
 
 const PAGE: f32 = 640.;
 const ROW: f32 = 52.;
 const RECHECK: Duration = Duration::from_millis(600);
 const TEXT_GAP: f32 = 1.;
 
-/// Shows the Papierkorb.
+/// Shows the Papierkorb: the library's group of what was deleted lately, opened.
 pub fn open(store: Store) {
-    let mut page = store.ui.page;
-    if *page.peek() != Page::Trash {
-        page.set(Page::Trash);
-    }
+    crate::view::library::show_recent(store);
 }
 
 #[derive(Clone, PartialEq)]
@@ -171,9 +167,11 @@ fn put_back(store: Store, item: Item) -> Result<(), String> {
     Ok(())
 }
 
-/// The Papierkorb page.
+/// What was deleted lately; `embedded` lists it inline under its group header in the library instead of filling a page.
 #[derive(PartialEq)]
-pub struct TrashPage;
+pub struct TrashPage {
+    pub embedded: bool,
+}
 
 impl Component for TrashPage {
     fn render(&self) -> impl IntoElement {
@@ -207,6 +205,7 @@ impl Component for TrashPage {
         let shape = (m.batches.len(), m.instances.len());
         use_side_effect_with_deps(&shape, move |_| reload());
         let state = load.read().clone();
+        let embedded = self.embedded;
         let body = match &state {
             Load::Loading => rect().width(Size::fill()).padding((space::XL, 0.)).center().child(caption(&t, tr("Wird geladen …"))).into_element(),
             Load::Failed(problem) => rect()
@@ -220,6 +219,7 @@ impl Component for TrashPage {
                     reload();
                 }))
                 .into_element(),
+            Load::Ready(items) if items.is_empty() && embedded => rect().width(Size::fill()).padding((space::M, 0.)).child(caption(&t, tr("Der Papierkorb ist leer. Was du löschst oder ersetzt, bleibt hier 7 Tage."))).into_element(),
             Load::Ready(items) if items.is_empty() => rect()
                 .width(Size::fill())
                 .height(Size::fill())
@@ -350,10 +350,16 @@ impl Component for TrashPage {
                     );
                 }
                 column = column.child(group(&t, None, rows, Some(tr("Wird nach 7 Tagen endgültig gelöscht"))));
+                if embedded {
+                    return column.into_element();
+                }
                 ScrollView::new().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column)).into_element()
             }
         };
-        rect().width(Size::fill()).height(Size::fill()).child(body)
+        if embedded {
+            return rect().width(Size::fill()).child(body).into_element();
+        }
+        rect().width(Size::fill()).height(Size::fill()).child(body).into_element()
     }
 }
 
