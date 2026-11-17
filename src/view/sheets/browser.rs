@@ -60,7 +60,7 @@ const AUTHOR_MAX: f32 = 120.;
 const CATEGORY_W: f32 = 168.;
 const SORT_W: f32 = 120.;
 const SPLIT_AT: f32 = 1100.;
-const PANE_LIST: f32 = 500.;
+const PANE_LIST: f32 = 0.8;
 const PANE_MAX: f32 = 1240.;
 const OTHERS: f32 = control::M * 4. + space::XS * 7. + font::CAPTION * font::LINE + font::BODY * font::LINE;
 
@@ -85,8 +85,8 @@ pub fn find_modpacks(store: Store) {
     page.set(crate::view::ui::Page::Modpacks);
 }
 
-/// What the sheet around the browser shares with it: the instance and what is picked, the work in flight, and what Zurück
-/// and Fertig do.
+/// What the sheet or page around the browser shares with it: the instance and what is picked, the work in flight, and
+/// what leaving and Fertig do.
 #[derive(Clone, PartialEq)]
 pub(super) struct Scope {
     pub create: bool,
@@ -1954,7 +1954,7 @@ impl Component for Browser {
                         .horizontal()
                         .spacing(space::M)
                         .content(Content::flex())
-                        .child(column.width(Size::px(PANE_LIST)).height(Size::fill()).content(Content::flex()))
+                        .child(column.width(Size::flex(PANE_LIST)).height(Size::fill()).content(Content::flex()))
                         .child(aside)
                         .into_element(),
                     None => column.max_width(Size::px(frame::CONTENT_MAX)).height(Size::fill()).content(Content::flex()).into_element(),

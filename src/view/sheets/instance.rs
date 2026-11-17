@@ -9,7 +9,7 @@ use crate::app::event::Event as AppEvent;
 use crate::core::batch::ModRef;
 use crate::core::companion;
 use crate::core::fit::{self, Fit, Memory};
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{tr, trc, trf};
 use crate::core::install::Versions;
 use crate::core::instance::{Instance, Loader};
 use crate::core::modrinth::{Kind as ModKind, Update};
@@ -79,7 +79,7 @@ pub(super) fn origins(mut origin: State<Origin>, disabled: Option<String>) -> El
         .iter()
         .map(|o| {
             let (id, label) = match o {
-                Origin::New => ("instance.origin.new", tr("Neu")),
+                Origin::New => ("instance.origin.new", trc("Herkunft", "Neu")),
                 Origin::Pack => ("instance.origin.pack", tr("Modpack")),
                 Origin::Import => ("instance.origin.import", tr("Importieren")),
             };
@@ -953,12 +953,13 @@ impl Component for PackDrop {
         let mut dropping = use_state(|| false);
         let mut wrong = use_state(|| false);
         let mut picking = use_state(|| false);
-        let spot = use_spot("instance.pack.drop", "group", "drop", true);
+        let spot = use_spot("instance.pack.drop", "group", &tr("Modpack-Datei hierher ziehen"), true);
         let pick = move |_| {
             if *picking.peek() {
                 return;
             }
             picking.set(true);
+            wrong.set_if_modified(false);
             spawn_in_window(async move {
                 let (title, filter) = (tr("Modpack wählen"), tr("Modpack"));
                 let paths = off_ui(move || crate::view::native::pick_files(&title, &filter, &PACK_FILES, true)).await.unwrap_or_default();
@@ -982,7 +983,10 @@ impl Component for PackDrop {
             .background(t.well)
             .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
             .on_sized(spot)
-            .on_global_file_hover(move |_| dropping.set_if_modified(true))
+            .on_global_file_hover(move |_| {
+                dropping.set_if_modified(true);
+                wrong.set_if_modified(false);
+            })
             .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
             .on_file_drop(move |e: Event<FileEventData>| {
                 dropping.set_if_modified(false);

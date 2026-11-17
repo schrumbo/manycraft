@@ -288,7 +288,9 @@ impl Component for Sidebar {
                 let running = m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active());
                 let since = m.solo_games(&i.id).filter(|g| g.phase.is_active()).filter_map(|g| up.get(&g.key)).min().copied();
                 let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
-                if running {
+                if let Some(p) = crate::view::instance::loading(&m, &i.id) {
+                    end = end.child(crate::view::install::ring(&t, &crate::view::install::Stage::Running(Some(p)), iconsize::S));
+                } else if running {
                     end = end.child(dot(t.success));
                 }
                 if let Some(up) = since.and_then(crate::view::instance::uptime_text) {

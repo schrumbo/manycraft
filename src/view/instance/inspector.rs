@@ -43,6 +43,9 @@ fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
     if let Some((_, overdue)) = f.stopping {
         return (t.attention, if overdue { tr("Beendet sich nicht") } else { tr("Wird gestoppt…") });
     }
+    if let Some(p) = super::loading(&store.model.read(), id) {
+        return (t.accent, trf("Lädt Minecraft · %lld %%", &[&p]));
+    }
     if let Some(trouble) = &f.trouble {
         return (t.danger, trouble.clone());
     }

@@ -453,6 +453,11 @@ fn use_remembered_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
     tab
 }
 
+/// How far the game of instance `id` played alone has loaded Minecraft before its start, while it does.
+pub fn loading(m: &crate::app::model::Model, id: &str) -> Option<u8> {
+    m.solo_games(id).filter(|g| matches!(g.phase, crate::app::model::Phase::Starting { .. }) && g.memory_wait.is_none()).find_map(|g| m.preparing.get(&g.batch_id).copied())
+}
+
 /// Shows the page of instance `id` on `tab`.
 pub fn show_on(store: Store, id: &str, tab: Tab) {
     let nav = store.ui.instance;
