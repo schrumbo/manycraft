@@ -174,6 +174,30 @@ impl LaunchSpec {
     }
 }
 
+/// The JVM arguments batch games start with on Java `major` and `cores` processor cores, leaving out every option the
+/// instance's own arguments `own` already set. Batch games start hidden and mostly stay so: they use compact object
+/// headers from Java 25 on and keep at most four collector and worker threads; when `quick`, they also compile with the
+/// quick compiler only, which makes a hidden game far smaller but a played one slower. Without a known Java release only
+/// options every release knows are used. Options that only work together are left out together when the instance sets
+/// one of them itself.
+pub fn batch_jvm(major: Option<u32>, cores: usize, quick: bool, own: &[String]) -> Vec<String> {
+    let groups: [(Vec<String>, &[&str], u32); 4] = [
+        (if quick { vec!["-XX:TieredStopAtLevel=1".to_owned(), "-XX:CICompilerCount=2".to_owned()] } else { Vec::new() }, &["TieredStopAtLevel", "CICompilerCount", "TieredCompilation"], 8),
+        (vec![format!("-XX:ParallelGCThreads={}", cores.clamp(1, 4)), "-XX:ConcGCThreads=1".to_owned()], &["ParallelGCThreads", "ConcGCThreads"], 8),
+        (vec!["-XX:+UseCompactObjectHeaders".to_owned()], &["UseCompactObjectHeaders"], 25),
+        (vec![format!("-Dmax.bg.threads={}", cores.saturating_sub(1).clamp(1, 4))], &["-Dmax.bg.threads"], 8),
+    ];
+    groups.into_iter().filter(|(_, names, from)| major.unwrap_or(8) >= *from && !own.iter().any(|o| names.contains(&option(o)))).flat_map(|(args, ..)| args).collect()
+}
+
+fn option(arg: &str) -> &str {
+    let arg = arg.split('=').next().unwrap_or(arg);
+    match arg.strip_prefix("-XX:") {
+        Some(name) => name.trim_start_matches(['+', '-']),
+        None => arg,
+    }
+}
+
 /// JVM arguments that versions without an `arguments` block expect from the launcher, as Mojang's launcher passes them.
 fn legacy_jvm(os: Os) -> Vec<String> {
     let mut out = vec!["-Dminecraft.launcher.brand=${launcher_name}".to_owned(), "-Dminecraft.launcher.version=${launcher_version}".to_owned()];
@@ -302,6 +326,32 @@ mod tests {
         let vanilla: VersionJson = serde_json::from_str(include_str!("testdata/install/vanilla.json")).unwrap();
         let fabric: VersionJson = serde_json::from_str(include_str!("testdata/install/fabric.json")).unwrap();
         merge(vanilla, fabric)
+    }
+
+    fn owned(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn batch_defaults_follow_the_java_release_and_the_cores() {
+        let all = ["-XX:TieredStopAtLevel=1", "-XX:CICompilerCount=2", "-XX:ParallelGCThreads=4", "-XX:ConcGCThreads=1", "-XX:+UseCompactObjectHeaders", "-Dmax.bg.threads=4"];
+        assert_eq!(batch_jvm(Some(25), 32, true, &[]), all);
+        let without_headers: Vec<&str> = all.iter().copied().filter(|a| !a.contains("CompactObjectHeaders")).collect();
+        assert_eq!(batch_jvm(Some(21), 32, true, &[]), without_headers);
+        assert_eq!(batch_jvm(None, 32, true, &[]), without_headers);
+        let small = batch_jvm(Some(25), 2, true, &[]);
+        assert!(small.contains(&"-XX:ParallelGCThreads=2".to_owned()) && small.contains(&"-Dmax.bg.threads=1".to_owned()));
+        assert!(batch_jvm(Some(25), 1, true, &[]).contains(&"-XX:ParallelGCThreads=1".to_owned()));
+        assert_eq!(batch_jvm(Some(25), 32, false, &[]), all[2..]);
+    }
+
+    #[test]
+    fn an_option_the_instance_sets_itself_wins_over_the_batch_default() {
+        let own = owned(&["-XX:TieredStopAtLevel=4", "-Dmax.bg.threads=8", "-XX:-UseCompactObjectHeaders", "-Dx=1"]);
+        assert_eq!(batch_jvm(Some(25), 32, true, &own), ["-XX:ParallelGCThreads=4", "-XX:ConcGCThreads=1"]);
+        assert_eq!(batch_jvm(Some(25), 32, true, &owned(&["-XX:-TieredCompilation"]))[..2], ["-XX:ParallelGCThreads=4", "-XX:ConcGCThreads=1"]);
+        let own = owned(&["-XX:ParallelGCThreadsX=1", "-XX:ConcGCThreads=6", "-XX:+UseSerialGC"]);
+        assert_eq!(batch_jvm(Some(25), 32, true, &own), ["-XX:TieredStopAtLevel=1", "-XX:CICompilerCount=2", "-XX:+UseCompactObjectHeaders", "-Dmax.bg.threads=4"]);
     }
 
     fn installed(log_config: Option<&str>) -> Installed {

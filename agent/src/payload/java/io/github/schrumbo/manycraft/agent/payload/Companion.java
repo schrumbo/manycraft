@@ -100,9 +100,9 @@ final class Companion implements Bridge {
 		}
 		if (smoke != null) {
 			BackgroundController bg = background;
-			smoke.count(System.nanoTime()).ifPresent(fps -> {
+			smoke.count(System.nanoTime()).ifPresent(w -> {
 				boolean hidden = bg != null && bg.hidden();
-				LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), hidden);
+				LOGGER.info("manycraft smoke fps {} hidden {} worst {} ms slow {}", Math.round(w.fps()), hidden, w.worstMs(), w.slow());
 				if (hidden && ++smokeHiddenSamples == SMOKE_SAVE_AFTER) {
 					((Minecraft) minecraft).options.save();
 					LOGGER.info("manycraft smoke saved options while hidden");

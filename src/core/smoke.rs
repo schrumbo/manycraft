@@ -484,8 +484,8 @@ mod tests {
 
     #[test]
     fn fps_lines_parse_and_others_are_skipped() {
-        let log = "[12:00:01] [Render thread/INFO]: manycraft smoke fps 3 hidden true\nnoise\n[x]: manycraft smoke fps 60 hidden false\n[x]: manycraft smoke fps x hidden true\n<log4j:Message><![CDATA[manycraft smoke fps 2 hidden true]]></log4j:Message>\n";
-        assert_eq!(fps_samples(log), vec![(3, true), (60, false), (2, true)]);
+        let log = "[12:00:01] [Render thread/INFO]: manycraft smoke fps 3 hidden true\nnoise\n[x]: manycraft smoke fps 60 hidden false\n[x]: manycraft smoke fps x hidden true\n<log4j:Message><![CDATA[manycraft smoke fps 2 hidden true]]></log4j:Message>\n[x]: manycraft smoke fps 58 hidden false worst 41 ms slow 0\n";
+        assert_eq!(fps_samples(log), vec![(3, true), (60, false), (2, true), (58, false)]);
     }
 
     #[test]

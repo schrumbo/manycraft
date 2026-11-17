@@ -116,6 +116,9 @@ pub struct Batch {
     /// How many games of a start may load at once; 0 lets the machine's cores and free memory decide.
     #[serde(default)]
     pub launch_parallel: u32,
+    /// Games keep the full compiler, so a played game runs as fast as a solo one at the cost of more memory per game.
+    #[serde(default)]
+    pub full_speed: bool,
 }
 
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
@@ -150,7 +153,14 @@ impl Batch {
             background: Background::Saving,
             memory_override: None,
             launch_parallel: 0,
+            full_speed: false,
         }
+    }
+
+    /// The name its measured memory per game is kept under: games with the full compiler hold more, so each choice has a
+    /// figure of its own.
+    pub fn measure_key(&self) -> String {
+        if self.full_speed { format!("{}+full", self.id) } else { self.id.clone() }
     }
 
     /// Folder holding `batch.json`.
@@ -342,6 +352,7 @@ mod tests {
         assert_eq!(batch.join_delay_ms, DEFAULT_JOIN_DELAY_MS);
         assert_eq!(batch.background, Background::Saving);
         assert_eq!(batch.launch_parallel, 0);
+        assert!(!batch.full_speed);
     }
 
     #[test]
@@ -349,8 +360,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut b = Batch::new("a", "i1");
         b.launch_parallel = 4;
+        b.full_speed = true;
         save_in(dir.path(), &b).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
+    }
+
+    #[test]
+    fn each_compiler_choice_keeps_its_own_measured_memory() {
+        let mut b = Batch::new("a", "i1");
+        let lean = b.measure_key();
+        assert_eq!(lean, b.id);
+        b.full_speed = true;
+        assert_ne!(b.measure_key(), lean);
     }
 
     #[test]
