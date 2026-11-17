@@ -737,27 +737,33 @@ impl Component for Choice {
                 pressed.set_if_modified(false);
             })
             .on_mouse_down(move |_| pressed.set(true))
-            .on_mouse_up(move |_| pressed.set_if_modified(false))
-            .on_key_down(move |e: Event<KeyboardEventData>| {
-                if !own.is_focused() {
-                    return;
-                }
-                let target = match e.key {
-                    Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => after,
-                    Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => before,
-                    _ => return,
-                };
-                e.stop_propagation();
-                if let Some(id) = target {
-                    id.request_focus();
-                }
-            });
+            .on_mouse_up(move |_| pressed.set_if_modified(false));
         if enabled {
+            let press = press.clone();
             card = card.on_all_press(move |_| {
                 own.request_focus();
                 press.call(());
             });
         }
+        card = card.on_key_down(move |e: Event<KeyboardEventData>| {
+            if !own.is_focused() {
+                return;
+            }
+            if enabled && e.is_press_event() {
+                press.call(());
+                return;
+            }
+            let target = match e.key {
+                Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => after,
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => before,
+                _ => return,
+            };
+            e.stop_propagation();
+            e.prevent_default();
+            if let Some(id) = target {
+                id.request_focus();
+            }
+        });
         if let Some(border) = ring(&t, focus()) {
             card = card.border(border);
         }
@@ -821,14 +827,18 @@ fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
 
 fn saved(flow: Flow, t: &Theme, added: &[(String, String)]) -> Parts {
     let text = match added {
-        [(_, name)] => trf("„%@“ hinzugefügt.", &[name]),
+        [_] => tr("Spielt auf Servern ohne Anmeldeprüfung."),
         _ => trf("%lld Offline-Accounts hinzugefügt.", &[&added.len()]),
     };
     let onward = first_run(flow.store);
     let ids: Vec<String> = added.iter().map(|(id, _)| id.clone()).collect();
     let primary = if onward { act(tr("Weiter"), None, move || flow.onward(ids.clone())) } else { act(tr("Fertig"), None, move || flow.finish()) };
+    let title = match added {
+        [(_, name)] => trf("%@ hinzugefügt", &[name]),
+        _ => tr("Offline-Account"),
+    };
     Parts {
-        title: tr("Offline-Account"),
+        title,
         message: None,
         body: rect().width(Size::fill()).padding((space::S, 0.)).child(notice(t, Icon::CircleCheck, t.success_text, text)).into_element(),
         back: false,
@@ -842,7 +852,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
     let added = matches!(ms, Ms::Added(_));
     let (title, message) = match (&pending.again, ms) {
         (Some(a), _) => (tr("Erneut anmelden"), Some(a.name.clone())),
-        (None, Ms::Added(_)) => (trf("Account %lld hinzugefügt", &[&flow.added.read().len()]), None),
+        (None, Ms::Added(name)) => (trf("%@ hinzugefügt", &[name]), None),
         (None, _) => (tr("Mit Microsoft anmelden"), pending.queue.first().map(|n| trf("Für den Account „%@“", &[n]))),
     };
     let mut parts = Parts { title, message, body: rect().into_element(), back: can_back && pending.again.is_none() && !added, secondary: None, primary: None };

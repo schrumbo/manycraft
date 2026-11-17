@@ -36,7 +36,8 @@ fn account_items(store: Store, f: &Facts) -> Vec<Item> {
         } else if f.playing.contains(account) {
             Item::new(format!("instance.play.as.{id}"), name.clone(), |_| {}).shortcut(tr("Läuft")).disabled(true)
         } else if f.expired.contains(account) {
-            Item::new(format!("instance.play.as.{id}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![id])).shortcut(tr("Anmelden"))
+            let blocked = crate::view::commands::sign_in_blocked(store);
+            Item::new(format!("instance.play.as.{id}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![id])).disabled(blocked.is_some()).shortcut(blocked.unwrap_or_else(|| tr("Anmelden")))
         } else {
             let tag = if kind == Some(AccountKind::Microsoft) { tr("Microsoft") } else { tr("Offline") };
             Item::new(format!("instance.play.as.{id}"), name.clone(), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account: Some(id) })).shortcut(tag)

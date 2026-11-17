@@ -15,7 +15,9 @@ use super::kit::menu::Menu;
 use super::kit::sheet::Sheet;
 use super::kit::toast::Toast;
 use super::kit::tooltip::Tip;
+use super::theme::frame;
 use crate::app::model::Need;
+use crate::core::winstate;
 
 /// The pages the sidebar leads to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +25,10 @@ pub enum Page {
     /// The grid of every game, or of one batch, or of those that need the person.
     Grid(Filter),
     Instance(String),
+    /// An instance still on its way in, by install id.
+    Installing(u64),
+    /// Modpacks from Modrinth, each installable as a new instance.
+    Modpacks,
     Accounts,
     Chat,
     Settings,
@@ -79,7 +85,12 @@ pub struct Ui {
     /// The window's content size in logical pixels.
     pub window: State<(f32, f32)>,
     pub page: State<Page>,
+    /// Whether the sidebar takes its column: what the user chose, unless the window is too narrow for it.
     pub sidebar: State<bool>,
+    /// Whether the user wants the sidebar, remembered while a narrow window hides it.
+    pub sidebar_wanted: State<bool>,
+    /// Whether a narrow window shows the sidebar above the page.
+    pub drawer: State<bool>,
     pub size: State<TileSize>,
     pub show: State<Show>,
     pub view: State<View>,
@@ -115,6 +126,10 @@ pub struct Ui {
     pub session_undo: State<Vec<SessionUndo>>,
     /// When the last tooltip went away, so the next one shows at once.
     pub tip_seen: State<Option<Instant>>,
+    /// Instances on their way in, oldest first.
+    pub installs: State<Vec<crate::view::install::Install>>,
+    /// Whether the install runner is working through the queue.
+    pub installing: State<bool>,
     /// What the Accounts page shows and has picked.
     pub accounts: accounts::Shared,
     /// What the Chat page shows and is about to send.
@@ -124,12 +139,16 @@ pub struct Ui {
 }
 
 impl Ui {
-    /// Fresh view state for a window of `size`.
+    /// View state for a window of `size`, on the page and with the sidebar it had when it last closed.
     pub fn create(size: (f32, f32)) -> Self {
+        let saved = winstate::load();
+        let page = restored(saved.page, saved.batch);
         Self {
             window: State::create(size),
-            page: State::create(Page::Grid(Filter::All)),
-            sidebar: State::create(true),
+            page: State::create(page),
+            sidebar: State::create(saved.sidebar && size.0 >= frame::SIDEBAR_FOLD),
+            sidebar_wanted: State::create(saved.sidebar),
+            drawer: State::create(false),
             size: State::create(TileSize::Fit),
             show: State::create(Show::All),
             view: State::create(View::Tiles),
@@ -152,9 +171,38 @@ impl Ui {
             all_versions: State::create(crate::core::settings::loaded().all_versions),
             session_undo: State::create(Vec::new()),
             tip_seen: State::create(None),
+            installs: State::create(Vec::new()),
+            installing: State::create(false),
             accounts: accounts::Shared::create(),
             chat: chat::Shared::create(),
             instance: Nav::create(),
+        }
+    }
+
+    /// Whether the window is too narrow for the sidebar's column.
+    pub fn narrow(&self) -> bool {
+        self.window.peek().0 < frame::SIDEBAR_FOLD
+    }
+
+    /// Sets the window's content size and gives the sidebar its column only where it fits.
+    pub fn resize(mut self, size: (f32, f32)) {
+        self.window.set_if_modified(size);
+        let narrow = self.narrow();
+        self.sidebar.set_if_modified(!narrow && *self.sidebar_wanted.peek());
+        if !narrow {
+            self.drawer.set_if_modified(false);
+        }
+    }
+
+    /// Shows or hides the sidebar: its column in a wide window, above the page in a narrow one.
+    pub fn toggle_sidebar(mut self) {
+        if self.narrow() {
+            let open = !*self.drawer.peek();
+            self.drawer.set(open);
+        } else {
+            let shown = !*self.sidebar.peek();
+            self.sidebar_wanted.set(shown);
+            self.sidebar.set(shown);
         }
     }
 
@@ -164,9 +212,40 @@ impl Ui {
     }
 }
 
+/// The page `window.json` keeps for `page`, with its batch or instance; None for a page it does not keep.
+pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
+    match page {
+        Page::Grid(Filter::Batch(b)) => Some((winstate::Page::Grid, Some(b.clone()))),
+        Page::Grid(_) => Some((winstate::Page::Grid, None)),
+        Page::Instance(id) => Some((winstate::Page::Instance, Some(id.clone()))),
+        Page::Accounts => Some((winstate::Page::Accounts, None)),
+        Page::Chat => Some((winstate::Page::Chat, None)),
+        Page::Settings | Page::Installing(_) | Page::Modpacks => None,
+    }
+}
+
+fn restored(page: winstate::Page, batch: Option<String>) -> Page {
+    match (page, batch) {
+        (winstate::Page::Grid, Some(b)) => Page::Grid(Filter::Batch(b)),
+        (winstate::Page::Instance, Some(id)) => Page::Instance(id),
+        (winstate::Page::Accounts, _) => Page::Accounts,
+        (winstate::Page::Chat, _) => Page::Chat,
+        _ => Page::Grid(Filter::All),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_kept_page_comes_back_after_a_restart() {
+        for page in [Page::Grid(Filter::All), Page::Grid(Filter::Batch("b".into())), Page::Instance("i".into()), Page::Accounts, Page::Chat] {
+            let (kind, batch) = kept(&page).unwrap();
+            assert_eq!(restored(kind, batch), page);
+        }
+        assert_eq!(kept(&Page::Settings), None);
+    }
 
     fn entry(key: &str, label: &str) -> SessionUndo {
         SessionUndo { key: key.into(), label: label.into(), run: EventHandler::new(|_| {}) }

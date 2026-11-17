@@ -1,4 +1,5 @@
-//! The macOS menu bar, built with muda since Freya drives none: the app, Ablage, Darstellung, Spiele and Fenster menus.
+//! The macOS menu bar, built with muda since Freya drives none: the app, Ablage, Bearbeiten, Darstellung, Spiele and
+//! Fenster menus.
 //! Every item runs a window command, so a menu item, its shortcut and the palette do the same; items that cannot run
 //! now are dimmed, never hidden. Other systems have no menu bar and these calls do nothing.
 
@@ -73,12 +74,17 @@ fn build(told: async_channel::Sender<Told>) -> anyhow::Result<()> {
             &item(Command::NewBatch),
             &item(Command::OpenTrash),
             &separator(),
+            &item(Command::Import),
+            &item(Command::FindModpacks),
+            &item(Command::AddMods),
+            &separator(),
             &item(Command::ImportPrism),
             &item(Command::SignInWaiting),
             &separator(),
             &Pre::close_window(Some(&tr("Fenster schließen"))),
         ],
     )?;
+    let edit = Submenu::with_items(tr("Bearbeiten"), true, &[&item(Command::Undo)])?;
     let view = Submenu::with_items(
         tr("Darstellung"),
         true,
@@ -126,7 +132,7 @@ fn build(told: async_channel::Sender<Told>) -> anyhow::Result<()> {
         true,
         &[&Pre::minimize(Some(&tr("Im Dock ablegen"))), &Pre::maximize(Some(&tr("Zoomen"))), &separator(), &Pre::bring_all_to_front(Some(&tr("Alle nach vorne bringen")))],
     )?;
-    let bar = Menu::with_items(&[&app, &file, &view, &games, &window])?;
+    let bar = Menu::with_items(&[&app, &file, &edit, &view, &games, &window])?;
     bar.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
     muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
@@ -153,6 +159,7 @@ fn accelerator(keys: commands::Shortcut) -> muda::accelerator::Accelerator {
 fn label(command: Command) -> String {
     match command {
         Command::OpenSettings => tr("Einstellungen …"),
+        Command::Import => tr("Importieren…"),
         other => other.label(),
     }
 }
@@ -175,6 +182,7 @@ pub fn refresh(store: Store) {
     let ui = store.ui;
     let _ = (store.model.read(), ui.page.read(), ui.selection.read(), ui.cursor.read(), ui.toasts.read(), ui.view.read(), ui.show.read(), ui.size.read());
     let _ = (ui.sheet.read(), ui.palette.read(), ui.menu.read(), ui.accounts.picked.read(), ui.accounts.prism.read(), ui.accounts.view.read());
+    let _ = (ui.browser_undo.read(), ui.session_undo.read());
     let sidebar = *ui.sidebar.read();
     ITEMS.with_borrow_mut(|all| {
         for it in all.iter_mut() {
@@ -182,6 +190,7 @@ pub fn refresh(store: Store) {
             let text = match it.command {
                 Command::ToggleSidebar if sidebar => tr("Seitenleiste ausblenden"),
                 Command::ToggleSidebar => tr("Seitenleiste einblenden"),
+                Command::Undo if runs == Some(Command::Undo) => commands::undo_label(store).unwrap_or_else(|| label(Command::Undo)),
                 c => label(runs.unwrap_or(c)),
             };
             if text != it.text {

@@ -257,7 +257,7 @@ impl Component for Tile {
         let r = t.shape.tile;
         let (w, h) = (self.width, layout::picture_h(self.width));
 
-        let well = mix(t.surface, t.text1, if t.dark { 0.05 } else { 0.06 });
+        let well = mix(t.surface, t.text1, if t.dark { 0.05 } else { 0.1 });
         let mut pic = rect().width(Size::px(w)).height(Size::px(h)).background(well).corner_radius(r).overflow(Overflow::Clip);
         if let Some(handle) = &preview {
             pic = pic.child(frame_image(handle.clone(), w, h, if attention { DOWN_DIM } else { 1. }));

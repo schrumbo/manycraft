@@ -385,15 +385,17 @@ impl Store {
                 }
             }
             Effect::Stopped(keys) => {
-                let text = match keys.as_slice() {
-                    [one] => self.model.peek().games.get(one).map_or_else(|| tr("Gestoppt"), |g| trf("%@ gestoppt", &[&g.name])),
-                    many => trf("%lld gestoppt", &[&many.len()]),
+                let (text, what) = match keys.as_slice() {
+                    [one] => self.model.peek().games.get(one).map_or_else(|| (tr("Gestoppt"), tr("Stoppen")), |g| (trf("%@ gestoppt", &[&g.name]), trf("%@ stoppen", &[&g.name]))),
+                    many => (trf("%lld gestoppt", &[&many.len()]), trf("%lld stoppen", &[&many.len()])),
                 };
-                toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(keys.clone())))));
+                let id = toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(keys.clone())))));
+                super::commands::name_undo(self, id, what);
             }
             Effect::Closed(key) => {
-                let Some(text) = self.model.peek().games.get(&key).map(|g| trf("„%@“ beendet.", &[&g.name])) else { return };
-                toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(vec![key.clone()])))));
+                let Some((text, what)) = self.model.peek().games.get(&key).map(|g| (trf("„%@“ beendet.", &[&g.name]), trf("„%@“ beenden", &[&g.name]))) else { return };
+                let id = toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(vec![key.clone()])))));
+                super::commands::name_undo(self, id, what);
             }
             Effect::ReadMemory => self.read_memory(),
             Effect::ReadUsage(pids) => self.read_usage(pids),

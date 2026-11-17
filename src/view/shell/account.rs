@@ -12,7 +12,6 @@ use crate::view::kit::row::Row;
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{Bounds, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::kit::badge::dot;
 use crate::view::theme::{frame, iconsize, space};
 use crate::view::ui::Page;
 
@@ -52,11 +51,11 @@ pub fn open(store: Store, anchor: Bounds) {
     menu::open(store.ui, if many { menu.searchable(tr("Account suchen")) } else { menu });
 }
 
-/// Opens the account switcher where the sidebar shows the active account, or under the toolbar while the sidebar is
-/// hidden or not laid out yet.
+/// Opens the account switcher where the sidebar or its drawer shows the active account, or under the toolbar while
+/// neither is shown or laid out yet.
 pub fn open_from_keys(store: Store) {
     let at = *store.ui.account_at.peek();
-    let anchor = match at.filter(|_| *store.ui.sidebar.peek()) {
+    let anchor = match at.filter(|_| *store.ui.sidebar.peek() || *store.ui.drawer.peek()) {
         Some(b) => b,
         None => {
             let w = store.ui.window.peek().0;
@@ -89,11 +88,13 @@ impl Component for AccountSwitch {
         let head = crate::view::accounts::head(&t, store, account.id, &account.name, account.color(), frame::FACE);
         let mut tip = trf("Spielt Instanzen ohne eigenen Account · %@", &[&Command::SwitchAccount.keys()]);
         let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
+        let mut row = Row::new("nav.account", account.name.clone()).leading(head).height(frame::ROW);
         if m.sign_in_expired(account.id) {
             tip = format!("{} · {tip}", tr("Anmeldung abgelaufen"));
-            end = end.child(dot(t.attention));
+            end = end.child(icon(&t, Icon::Alert, iconsize::S, t.attention_text));
+            row = row.detail(tr("Anmeldung abgelaufen"));
         }
-        let row = Row::new("nav.account", account.name.clone()).leading(head).height(frame::ROW).trailing(end.child(icon(&t, Icon::ChevronsUpDown, iconsize::S, t.text3))).on_press(move |_| open_from_keys(store));
+        let row = row.trailing(end.child(icon(&t, Icon::ChevronsUpDown, iconsize::S, t.text3))).on_press(move |_| open_from_keys(store));
         rect().width(Size::fill()).on_sized(move |e: Event<SizedEventData>| at.set_if_modified(Some(Bounds::of(&e)))).child(WithTip::new(Some(tip), row)).into_element()
     }
 }
