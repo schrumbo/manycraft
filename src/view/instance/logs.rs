@@ -248,38 +248,6 @@ async fn catch_up(ctx: Ctx, load: u64, path: PathBuf) -> bool {
     true
 }
 
-/// Reads what the running game appends to the newest log, about once a second; it exists only while that is shown.
-#[derive(Clone, PartialEq)]
-struct Follow {
-    doc: State<Doc>,
-    stick: State<bool>,
-    found: State<Found>,
-    controller: ScrollController,
-    wrap: State<bool>,
-    cols: State<usize>,
-    wrapped: State<Wrapped>,
-    load: u64,
-    path: PathBuf,
-}
-
-impl Component for Follow {
-    fn render(&self) -> impl IntoElement {
-        let ctx = Ctx { doc: self.doc, stick: self.stick, found: self.found, controller: self.controller, wrap: self.wrap, cols: self.cols, wrapped: self.wrapped };
-        let (load, path) = (self.load, self.path.clone());
-        use_hook(move || {
-            spawn(async move {
-                loop {
-                    after(FOLLOW).await;
-                    if !catch_up(ctx, load, path.clone()).await {
-                        break;
-                    }
-                }
-            })
-        });
-        rect()
-    }
-}
-
 fn all_text(doc: State<Doc>) -> String {
     let d = doc.peek();
     let mut out = String::with_capacity(d.lines.0.iter().map(|l| l.text.len() + 1).sum());
@@ -364,6 +332,25 @@ impl Component for Logs {
         let shown = scanned.read().clone();
         let running = shown.account.is_some_and(|a| playing.contains(&a));
         let latest = file_now.as_ref().is_some_and(|p| shown.files.iter().any(|x| &x.path == p && x.kind == Kind::Latest));
+        let follow = {
+            let d = doc.read();
+            (running && latest && d.status == Status::Ready).then(|| file_now.clone().map(|p| (d.load, p))).flatten()
+        };
+        let mut follower = use_state(|| None::<TaskHandle>);
+        use_side_effect_with_deps(&follow, move |follow| {
+            if let Some(old) = follower.write().take() {
+                old.cancel();
+            }
+            let Some((load, path)) = follow.clone() else { return };
+            follower.set(Some(spawn(async move {
+                loop {
+                    after(FOLLOW).await;
+                    if !catch_up(ctx, load, path.clone()).await {
+                        break;
+                    }
+                }
+            })));
+        });
         let mut was_running = use_state(|| running);
         use_side_effect_with_deps(&running, move |now| {
             let ended = *was_running.peek() && !*now;
@@ -716,12 +703,6 @@ impl Component for Logs {
             }
             .into_element(),
         };
-        if running && latest && state.status == Status::Ready
-            && let Some(path) = file_now.clone()
-        {
-            let follow = Follow { doc, stick, found, controller, wrap, cols, wrapped, load: state.load, path };
-            column = column.child(rect().key(state.load).child(follow));
-        }
         column.child(rect().width(Size::fill()).height(Size::flex(1.)).child(viewer)).content(Content::flex()).into_element()
     }
 }

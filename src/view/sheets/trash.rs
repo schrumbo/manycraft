@@ -265,7 +265,9 @@ impl Component for TrashPage {
                                         if let Ok(Err(e)) = rx.recv().await {
                                             toast::show(store.ui, explain_as(tr("Nicht gelöscht."), &e).text, None);
                                         }
-                                        busy.write().remove(&k);
+                                        if let Some(mut b) = busy.try_write() {
+                                            b.remove(&k);
+                                        }
                                         reload();
                                     });
                                 }))
@@ -279,7 +281,9 @@ impl Component for TrashPage {
                                     busy.write().insert(k.clone());
                                     spawn_in_window(async move {
                                         after(RECHECK).await;
-                                        busy.write().remove(&k);
+                                        if let Some(mut b) = busy.try_write() {
+                                            b.remove(&k);
+                                        }
                                         reload();
                                     });
                                 }

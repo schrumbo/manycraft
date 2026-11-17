@@ -1,12 +1,12 @@
-//! The quiet lines between the toolbar and the games: memory that will not fit, starts still on their way, servers that
-//! went away, and on "Brauchen dich" one chip per kind of work with the action that fixes it.
+//! The quiet lines between the toolbar and the games: starts still on their way, servers that went away, and on
+//! "Brauchen dich" one chip per kind of work with the action that fixes it.
 
 use freya::prelude::*;
 
 use super::words::{self, Fix};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{Model, Need};
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
@@ -32,7 +32,7 @@ impl Component for Strips {
             Filter::Batch(b) => Some(b.clone()),
             _ => None,
         };
-        let mut col = rect().width(Size::fill()).child(FitLine { batch: batch.clone() });
+        let mut col = rect().width(Size::fill());
         if let Some(run) = m.run(batch.as_deref()) {
             let (cancel, anyway) = (batch.clone(), batch.clone());
             let mut s = strip(&t, Icon::Play, t.text2, words::run_line(&run), t.text1);
@@ -183,74 +183,4 @@ impl Component for NeedChip {
         }
         row
     }
-}
-
-/// A line that warns when the games of the page will not all fit in the free memory, while none of them runs.
-#[derive(PartialEq)]
-struct FitLine {
-    batch: Option<String>,
-}
-
-type FitKey = (Option<String>, Vec<(u32, u32)>);
-
-impl Component for FitLine {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = use_store();
-        let mut fit = use_state(|| None::<(FitKey, Option<String>)>);
-        let key = {
-            let m = store.model.read();
-            scope(&m, self.batch.as_deref())
-        };
-        use_side_effect_with_deps(&key, move |key| {
-            let Some(k) = key.clone() else { return };
-            if fit.peek().as_ref().is_some_and(|(have, _)| *have == k) {
-                return;
-            }
-            let (tx, rx) = async_channel::bounded(1);
-            let per = k.1.clone();
-            let _ = std::thread::Builder::new().name("fit".into()).spawn(move || {
-                let count: u32 = per.iter().map(|(n, _)| n).sum();
-                let total: u64 = per.iter().map(|(n, mb)| u64::from(*n) * u64::from(*mb)).sum();
-                let each = per.first().map_or(0, |(_, mb)| *mb);
-                let uniform = per.iter().all(|(_, mb)| *mb == each);
-                let line = crate::core::fit::fit(1, u32::try_from(total).unwrap_or(u32::MAX)).filter(|f| !f.fits()).map(|f| {
-                    if uniform {
-                        crate::ui::model::fit_line(count, each, &f)
-                    } else {
-                        let label = |mb: u64| crate::ui::forms::memory_label(u32::try_from(mb).unwrap_or(u32::MAX));
-                        trf("%lld Accounts brauchen %@, dein PC hat %@ frei", &[&count, &label(f.needed_mb), &crate::ui::forms::free_memory_label(f.free_mb)])
-                    }
-                });
-                let _ = tx.send_blocking(line);
-            });
-            spawn(async move {
-                if let Ok(line) = rx.recv().await {
-                    fit.set(Some((k, line)));
-                }
-            });
-        });
-        let text = fit.read().as_ref().filter(|(k, _)| Some(k) == key.as_ref()).and_then(|(_, line)| line.clone());
-        match text {
-            Some(text) => strip(&t, Icon::Alert, t.attention_text, text, t.text2).into_element(),
-            None => rect().into_element(),
-        }
-    }
-}
-
-fn scope(m: &Model, batch: Option<&str>) -> Option<FitKey> {
-    let games: Vec<_> = m.games.values().filter(|g| batch.is_none_or(|b| g.batch_id == b) && crate::core::fleet::solo_instance(&g.batch_id).is_none()).collect();
-    if games.is_empty() || games.iter().any(|g| g.phase.is_active()) {
-        return None;
-    }
-    let mut per: Vec<(u32, u32)> = m
-        .batches
-        .iter()
-        .filter_map(|b| {
-            let n = games.iter().filter(|g| g.batch_id == b.id).count();
-            (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), m.target(&b.id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |t| t.memory_mb())))
-        })
-        .collect();
-    per.sort_unstable();
-    Some((batch.map(str::to_owned), per))
 }
