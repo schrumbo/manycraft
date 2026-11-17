@@ -172,6 +172,13 @@ impl Runtime {
                     }
                 });
             }
+            Effect::SaveGroup { instance, group } => {
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::ui::remote::set_group(&instance, group) {
+                        eprintln!("group: {e:#}");
+                    }
+                });
+            }
             Effect::SaveMeasured(seen) => {
                 std::thread::spawn(move || {
                     if let Err(e) = crate::core::measured::save(&seen) {

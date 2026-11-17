@@ -156,6 +156,8 @@ pub enum Event {
     ChooseAccount(Uuid),
     /// Makes `account` the one `instance` always plays with alone; `None` leaves it to the active account.
     SetDefaultAccount { instance: String, account: Option<Uuid> },
+    /// Lists `instance` in the library under `group`; ungrouped when `None`.
+    SetGroup { instance: String, group: Option<String> },
     /// Plays `instance` for another start or a shortcut, waiting for the first load, and shows it once it can be shown.
     RequestPlay { instance: String, account: Option<String> },
     ShowGrid,

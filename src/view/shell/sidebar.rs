@@ -8,24 +8,18 @@ use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::view::accounts::off;
 use crate::view::commands::{self, Command, Want, can_want, want, want_blocked};
+use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
-use crate::view::install::{self, Install, Stage};
-use crate::view::kit::badge::{Tone, badge, dot};
+use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::row::Row;
-use crate::view::kit::text::{caption, hairline, line, spacer};
+use crate::view::kit::text::{hairline, line, spacer};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{toast, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, font, frame, iconsize, space};
+use crate::view::theme::{Theme, font, frame, iconsize, level, space};
 use crate::view::ui::{Filter, Page};
-
-const IMPORT_ROWS_MAX: usize = 4;
-
-fn section(t: &Theme, title: String) -> impl IntoElement {
-    rect().padding((space::M, space::S, space::XS, space::S)).child(line(t, title, font::CAPTION, t.text3).font_weight(FontWeight::SEMI_BOLD))
-}
 
 fn count(t: &Theme, text: String, selected: bool) -> Element {
     line(t, text, font::CAPTION, if selected { t.accent_text } else { t.text3 }).into_element()
@@ -141,6 +135,8 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
         Item::new("instance.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::Stop(alone.clone())))
     }];
     items.extend(wanted("instance.rename", tr("Umbenennen…"), Want::RenameInstance(id.to_owned()), store));
+    let g = id.to_owned();
+    items.push(Item::new("instance.group", tr("Gruppe…"), move |_| crate::view::library::assign(store, &g)));
     if made.loader.takes_mods() {
         items.extend(wanted("instance.mods.add", tr("Mods hinzufügen…"), Want::AddMods(id.to_owned()), store));
         items.extend(wanted("instance.mods.edit", tr("Mods verwalten…"), Want::EditMods(id.to_owned()), store));
@@ -194,7 +190,8 @@ struct BatchLine {
 }
 
 fn batch_lines(m: &Model) -> Vec<BatchLine> {
-    m.batches
+    let mut lines: Vec<BatchLine> = m
+        .batches
         .iter()
         .map(|b| {
             let games = || m.games.values().filter(|g| g.batch_id == b.id);
@@ -212,186 +209,223 @@ fn batch_lines(m: &Model) -> Vec<BatchLine> {
             };
             let trailing = match &run {
                 _ if m.exporting.contains(&b.instance_id) => tr("Wird exportiert …"),
-                Some(run) => format!("{}/{}", run.launched, run.total),
+                Some(run) => trf("Startet %lld/%lld", &[&run.launched, &run.total]),
                 None => format!("{fine}/{total}"),
             };
             BatchLine { id: b.id.clone(), name: b.name.clone(), trailing, hint, attention, cancel: run.is_some() }
         })
-        .collect()
+        .collect();
+    lines.sort_by_cached_key(|l| l.name.to_lowercase());
+    lines
 }
 
-/// The sidebar: the grid of all games and of those that need you, accounts and chat, then every batch and instance.
+fn swatch(t: &Theme, id: &str, side: f32) -> Element {
+    let at = id.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(usize::from(b)));
+    rect().width(Size::px(side)).height(Size::px(side)).corner_radius(t.shape.small).background(t.identity(at)).into_element()
+}
+
+/// The sidebar: Start, the library and Entdecken, then the batches, chat, the settings and the account that plays.
 #[derive(PartialEq)]
-pub struct Sidebar;
+pub struct Sidebar {
+    /// Shown above the page in a narrow window, so never folded to the rail.
+    pub overlay: bool,
+}
 
 impl Component for Sidebar {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let mut page = store.ui.page;
+        let ui = store.ui;
+        let mut page = ui.page;
         let now = page.read().clone();
-        crate::view::instance::use_minute(store, true);
-        let up = store.ui.instance.up.read().clone();
+        let rail = *ui.rail.read() && !self.overlay;
+        let width = if rail { frame::RAIL } else { *ui.sidebar_w.read() };
         let m = store.model.read();
-        let attention = m.attention_count(None);
-        let mut drawer = store.ui.drawer;
+        let mut drawer = ui.drawer;
         let go = move |to: Page| {
             move |_| {
                 drawer.set_if_modified(false);
                 page.set(to.clone());
             }
         };
+        let row = |id: &str, label: String, glyph: Icon, selected: bool, tip: Option<Command>| {
+            let r = Row::new(id, label.clone()).glyph(glyph).height(frame::ROW).selected(selected).compact(rail, None);
+            (r, tip.map(Command::tip).or_else(|| rail.then_some(label)))
+        };
+        let attention = m.attention_count(None);
+        let batches = batch_lines(&m);
+        let games = m.games.values().filter(|g| !g.alone()).count();
+        let running = m.games.values().filter(|g| !g.alone() && g.phase.is_active()).count();
 
         let mut top = rect().width(Size::fill()).spacing(1.);
-        top = top.child(Row::new("nav.all", tr("Alle")).glyph(Icon::Grid).height(frame::ROW).selected(now == Page::Grid(Filter::All)).trailing(count(&t, m.games.values().filter(|g| !g.alone()).count().to_string(), now == Page::Grid(Filter::All))).on_press(go(Page::Grid(Filter::All))));
-        let people = !m.accounts.is_empty();
-        let greeting = crate::view::grid::greeting(&m);
-        if people {
-            let mut need = Row::new("nav.attention", tr("Brauchen dich")).glyph(Icon::Alert).height(frame::ROW).selected(now == Page::Grid(Filter::Attention)).on_press(go(Page::Grid(Filter::Attention)));
-            if attention > 0 {
-                need = need.trailing(badge(&t, attention.to_string(), Tone::Attention));
-            }
-            top = top.child(need);
-        }
-        top = top.child(Row::new("nav.accounts", tr("Accounts")).glyph(Icon::Users).height(frame::ROW).selected(now == Page::Accounts).trailing(count(&t, m.accounts.len().to_string(), now == Page::Accounts)).on_press(go(Page::Accounts)));
-        if people {
-            top = top.child(Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat)));
-        }
+        let (r, tip) = row("nav.start", tr("Start"), Icon::Home, now == Page::Start, Some(Command::ShowStart));
+        top = top.child(WithTip::new(tip, r.on_press(go(Page::Start))));
+        let (r, tip) = row("nav.library", tr("Instanzen"), Icon::Package, matches!(now, Page::Library | Page::Instance(_) | Page::Browse(..)), Some(Command::ShowLibrary));
+        let r = if rail { r } else { r.trailing(count(&t, m.instances.len().to_string(), matches!(now, Page::Library | Page::Instance(_) | Page::Browse(..)))) };
+        top = top.child(WithTip::new(tip, r.on_press(go(Page::Library))));
+        let (r, tip) = row("nav.discover", tr("Entdecken"), Icon::Compass, now == Page::Discover, Some(Command::ShowDiscover));
+        top = top.child(WithTip::new(tip, r.on_press(go(Page::Discover))));
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
-        if !m.batches.is_empty() || (can_want(&Want::NewBatch) && !greeting) {
-            list = list.child(section(&t, tr("Batches")));
-            for b in batch_lines(&m) {
-                let to = Page::Grid(Filter::Batch(b.id.clone()));
-                let selected = now == to;
-                let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
-                if b.attention > 0 {
-                    end = end.child(badge(&t, b.attention.to_string(), Tone::Attention));
-                }
-                end = end.child(count(&t, b.trailing, selected));
-                if b.cancel {
-                    let id = b.id.clone();
-                    end = end.child(Button::icon(format!("nav.batch.{}.cancel", b.id), Icon::Close, tr("Start abbrechen")).plain().on_press(move |_| store.dispatch(AppEvent::CancelStart(Some(id.clone())))));
-                }
-                let id = b.id.clone();
-                let row = Row::new(format!("nav.batch.{}", b.id), b.name).glyph(Icon::Layers).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
-                list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(b.hint), row)));
+        let can_batch = can_want(&Want::NewBatch);
+        if rail {
+            if !batches.is_empty() || can_batch {
+                list = list.child(rect().width(Size::fill()).padding((space::S, space::M)).child(hairline(&t)));
             }
-            if can_want(&Want::NewBatch) && !greeting {
-                list = list.child(new_row(&t, "nav.batch.new", tr("Neuer Batch"), move || {
-                    want(store, Want::NewBatch);
-                }));
-            }
+        } else if !batches.is_empty() || can_batch {
+            let add = Button::icon("nav.batches.add", Icon::Plus, tr("Neuer Batch")).plain().tip(Command::NewBatch.tip()).disabled(want_blocked(&Want::NewBatch)).on_press(move |_| {
+                want(store, Want::NewBatch);
+            });
+            list = list.child(
+                rect()
+                    .width(Size::fill())
+                    .padding((space::M, 0., 0., space::S))
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .child(rect().width(Size::flex(1.)).child(line(&t, tr("Batches"), font::CAPTION, t.text3).font_weight(FontWeight::SEMI_BOLD)))
+                    .content(Content::flex())
+                    .child(add),
+            );
         }
-        let installs = store.ui.installs.read().clone();
-        if !m.instances.is_empty() || !installs.is_empty() || (can_want(&Want::NewInstance) && !greeting) {
-            list = list.child(section(&t, tr("Instanzen")));
-            let mut made: Vec<&Instance> = m.instances.iter().collect();
-            made.sort_by_cached_key(|i| i.name.to_lowercase());
-            for i in made {
-                let to = Page::Instance(i.id.clone());
-                let selected = now == to || matches!(&now, Page::Browse(id, _) if *id == i.id);
-                let running = m.solo_games(&i.id).any(|g| g.phase.is_active());
-                let since = m.solo_games(&i.id).filter(|g| g.phase.is_active()).filter_map(|g| up.get(&g.key)).min().copied();
-                let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
-                if let Some(p) = crate::view::instance::loading(&m, &i.id) {
-                    end = end.child(crate::view::install::ring(&t, &crate::view::install::Stage::Running(Some(p)), iconsize::S));
-                } else if running {
-                    end = end.child(dot(t.success));
-                }
-                if let Some(up) = since.and_then(crate::view::instance::uptime_text) {
-                    end = end.child(count(&t, up, selected));
-                }
-                let what = crate::view::instance::subtitle(i);
-                let tip = match since.and_then(crate::view::instance::uptime_text) {
-                    Some(up) => trf("%1$@ · Läuft · %2$@", &[&what, &up]),
-                    None if running => trf("%@ · Läuft gerade", &[&what]),
-                    None => what,
-                };
-                let id = i.id.clone();
-                let picture = crate::view::instance::InstanceIcon { id: i.id.clone(), name: i.name.clone(), picture: i.icon_path(), side: frame::FACE };
-                let row = Row::new(format!("nav.instance.{}", i.id), i.name.clone()).leading(picture).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(instance_items(store, &id), at)));
-                list = list.child(rect().key(&i.id).width(Size::fill()).child(WithTip::new(Some(tip), row)));
+        if batches.len() >= 2 {
+            let selected = matches!(now, Page::Grid(Filter::All | Filter::Attention));
+            let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
+            if attention > 0 {
+                end = end.child(dot(t.attention));
             }
-            for entry in installs.iter().take(IMPORT_ROWS_MAX) {
-                list = list.child(InstallRow { selected: now == Page::Installing(entry.id), entry: entry.clone() });
+            end = end.child(count(&t, format!("{running}/{games}"), selected));
+            let mark = (attention > 0).then(|| dot(t.attention));
+            let r = Row::new("nav.all", tr("Alle Batches")).glyph(Icon::Grid).height(frame::ROW).selected(selected).trailing(end).compact(rail, mark).on_press(go(Page::Grid(Filter::All)));
+            list = list.child(WithTip::new(Some(if rail { tr("Alle Batches") } else { Command::ShowAll.tip() }), r));
+        }
+        for b in batches {
+            let to = Page::Grid(Filter::Batch(b.id.clone()));
+            let selected = now == to;
+            let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
+            if b.attention > 0 {
+                end = end.child(dot(t.attention));
             }
-            let more = installs.len().saturating_sub(IMPORT_ROWS_MAX);
-            if let Some(next) = installs.get(IMPORT_ROWS_MAX).map(|i| i.id) {
-                let mut page = store.ui.page;
-                list = list.child(Row::new("nav.install.more", trf("und %lld weitere", &[&more])).glyph(Icon::More).height(frame::ROW).on_press(move |_| page.set(Page::Installing(next))));
+            end = end.child(count(&t, b.trailing.clone(), selected));
+            if b.cancel {
+                let id = b.id.clone();
+                end = end.child(Button::icon(format!("nav.batch.{}.cancel", b.id), Icon::Close, tr("Start abbrechen")).plain().on_press(move |_| store.dispatch(AppEvent::CancelStart(Some(id.clone())))));
             }
-            if can_want(&Want::NewInstance) && !greeting {
-                list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {
-                    want(store, Want::NewInstance);
-                }));
-            }
+            let id = b.id.clone();
+            let mark = (b.attention > 0).then(|| dot(t.attention));
+            let r = Row::new(format!("nav.batch.{}", b.id), b.name.clone())
+                .leading(swatch(&t, &b.id, if rail { iconsize::S } else { iconsize::XS }))
+                .height(frame::ROW)
+                .selected(selected)
+                .trailing(end)
+                .compact(rail, mark)
+                .on_press(go(to))
+                .on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
+            let tip = if rail { format!("{} · {}", b.name, b.hint) } else { b.hint.clone() };
+            list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(tip), r)));
+        }
+        if m.batches.is_empty() && can_batch {
+            let blocked = want_blocked(&Want::NewBatch);
+            let r = Row::new("nav.batch.new", tr("Neuer Batch")).leading(icon(&t, Icon::Plus, iconsize::S, t.text3)).height(frame::ROW).compact(rail, None).on_press(move |_| {
+                want(store, Want::NewBatch);
+            });
+            list = list.child(WithTip::new(blocked.or_else(|| Some(Command::NewBatch.tip())), r));
         }
 
         let mut foot = rect().width(Size::fill()).spacing(1.);
-        if let Some(news) = news_line(&t, store, &m.updates) {
-            foot = foot.child(news);
+        if !rail {
+            if let Some(news) = news_line(&t, store, &m.updates) {
+                foot = foot.child(news);
+            }
+            let launching = m.games.values().any(|g| matches!(g.phase, Phase::Starting { .. }));
+            if let Some(update) = update_row(&t, store, &m.updates, launching) {
+                foot = foot.child(update);
+            }
         }
-        let launching = m.games.values().any(|g| matches!(g.phase, Phase::Starting { .. }));
-        if let Some(update) = update_row(&t, store, &m.updates, launching) {
-            foot = foot.child(update);
+        let people = !m.accounts.is_empty();
+        if people {
+            let (r, tip) = row("nav.chat", tr("Chat"), Icon::Message, now == Page::Chat, Some(Command::OpenChat));
+            foot = foot.child(WithTip::new(tip, r.on_press(go(Page::Chat))));
         }
-        if can_want(&Want::OpenTrash) {
-            foot = foot.child(WithTip::new(Some(Command::OpenTrash.tip()), Row::new("nav.trash", tr("Papierkorb")).glyph(Icon::Trash).height(frame::ROW).selected(now == Page::Trash).on_press(move |_| {
-                want(store, Want::OpenTrash);
-            })));
-        }
-        foot = foot.child(WithTip::new(Some(Command::OpenSettings.tip()), Row::new("nav.settings", tr("Einstellungen")).glyph(Icon::Settings).height(frame::ROW).selected(now == Page::Settings).on_press(go(Page::Settings))));
-        foot = foot.child(super::account::AccountSwitch);
+        let (r, tip) = row("nav.settings", tr("Einstellungen"), Icon::Settings, matches!(now, Page::Settings(_)), Some(Command::OpenSettings));
+        foot = foot.child(WithTip::new(tip, r.on_press(go(Page::Settings(Default::default())))));
+        foot = foot.child(super::account::AccountSwitch { rail });
 
-        rect()
+        let mut bar = rect()
             .a11y_role(AccessibilityRole::Navigation)
-            .width(Size::px(frame::SIDEBAR))
+            .width(Size::px(width))
             .height(Size::fill())
             .background(t.sidebar)
-            .padding((space::M, space::S))
+            .padding((space::S, space::S))
             .spacing(space::XS)
             .child(top)
             .child(list)
             .content(Content::flex())
             .child(hairline(&t))
-            .child(foot)
-            .child(spacer())
+            .child(foot);
+        if rail {
+            bar = bar.cross_align(Alignment::Center);
+        }
+        bar.child(spacer())
     }
 }
 
-fn new_row(t: &Theme, id: &str, label: String, mut run: impl FnMut() + 'static) -> Element {
-    Row::new(id, label).leading(icon(t, Icon::Plus, iconsize::S, t.text3)).height(frame::ROW).on_press(move |_| run()).into_element()
+/// How wide the sidebar is after its edge was dragged from `from` to `to` while it was `start` wide: a rail once pulled
+/// well under the narrowest width, else that width clamped to its range.
+pub fn resized(start: f32, from: f32, to: f32) -> Option<f32> {
+    let raw = start + (to - from);
+    (raw >= frame::SIDEBAR_MIN - frame::SIDEBAR_SNAP).then(|| raw.clamp(frame::SIDEBAR_MIN, frame::SIDEBAR_MAX))
 }
 
+/// The divider between the sidebar and the page, wide enough to take hold of: dragging it sets the sidebar's width, and
+/// pulling it in far enough folds the sidebar to its rail.
 #[derive(PartialEq)]
-struct InstallRow {
-    entry: Install,
-    selected: bool,
-}
+pub struct Grip;
 
-impl Component for InstallRow {
+impl Component for Grip {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let entry = &self.entry;
-        let id = entry.id;
-        let short = match entry.stage {
-            _ if entry.stopping() => tr("Bricht ab …"),
-            Stage::Queued => tr("Wartet …"),
-            Stage::Running(Some(p)) => format!("{p} %"),
-            Stage::Running(None) | Stage::Failed(_) => String::new(),
-        };
-        let mut page = store.ui.page;
-        let stopping = entry.stopping();
-        let row = Row::new(format!("nav.install.{id}"), entry.name.clone())
-            .leading(install::ring(&t, &entry.stage, iconsize::S))
-            .height(frame::ROW)
-            .selected(self.selected)
-            .trailing(count(&t, short, self.selected))
-            .on_press(move |_| page.set(Page::Installing(id)))
-            .on_secondary(move |at| menu::open(store.ui, Menu::at(vec![Item::new(format!("nav.install.{id}.cancel"), tr("Installation abbrechen"), move |_| install::cancel(store, id)).disabled(stopping)], at)));
-        WithTip::new(Some(entry.state()), row)
+        let ui = store.ui;
+        let mut start = use_state(|| None::<(f32, f32)>);
+        let spot = use_spot("sidebar.grip", "separator", &tr("Breite der Seitenleiste"), true);
+        let handle = rect()
+            .position(Position::new_absolute().left(-frame::SIDEBAR_GRIP / 2.).top(0.))
+            .width(Size::px(frame::SIDEBAR_GRIP))
+            .height(Size::fill())
+            .layer(level::FLOAT)
+            .cursor(CursorIcon::ColResize)
+            .on_sized(spot)
+            .on_pointer_down(move |e: Event<PointerEventData>| {
+                if !e.data().is_primary() {
+                    return;
+                }
+                let now = if *ui.rail.peek() { frame::RAIL } else { *ui.sidebar_w.peek() };
+                let mut dragging = ui.sidebar_drag;
+                dragging.set(true);
+                start.set(Some((e.global_location().x as f32, now)));
+                e.stop_propagation();
+            })
+            .on_global_pointer_move(move |e: Event<PointerEventData>| {
+                let Some((from, width)) = *start.peek() else { return };
+                let (mut rail, mut wide) = (ui.rail, ui.sidebar_w);
+                match resized(width, from, e.global_location().x as f32) {
+                    Some(w) => {
+                        rail.set_if_modified(false);
+                        wide.set_if_modified(w);
+                    }
+                    None => rail.set_if_modified(true),
+                }
+                e.stop_propagation();
+            })
+            .on_capture_global_pointer_up(move |e: Event<PointerEventData>| {
+                if start.peek().is_some() {
+                    start.set(None);
+                    let mut dragging = ui.sidebar_drag;
+                    dragging.set(false);
+                    e.stop_propagation();
+                }
+            });
+        rect().width(Size::px(1.)).height(Size::fill()).background(t.separator).child(handle)
     }
 }
 
@@ -462,4 +496,23 @@ fn update_row(t: &Theme, store: Store, updates: &Updates, launching: bool) -> Op
         _ => return None,
     };
     Some(el)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_the_edge_clamps_the_width_to_its_range() {
+        assert_eq!(resized(232., 232., 300.), Some(300.));
+        assert_eq!(resized(232., 232., 900.), Some(frame::SIDEBAR_MAX));
+        assert_eq!(resized(232., 232., 190.), Some(frame::SIDEBAR_MIN));
+    }
+
+    #[test]
+    fn pulling_the_edge_far_in_folds_the_sidebar_and_pulling_out_of_the_rail_opens_it() {
+        assert_eq!(resized(232., 232., 100.), None);
+        assert_eq!(resized(frame::RAIL, frame::RAIL, frame::RAIL + 40.), None);
+        assert_eq!(resized(frame::RAIL, frame::RAIL, frame::RAIL + 144.), Some(frame::SIDEBAR_MIN));
+    }
 }

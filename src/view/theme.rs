@@ -20,7 +20,17 @@ pub mod level {
 
 /// Fixed sizes of the window's frame around the content.
 pub mod frame {
-    pub const SIDEBAR: f32 = 232.;
+    /// The height of the title bar over both columns.
+    pub const TITLEBAR: f32 = 38.;
+    /// The narrowest and widest the user drags the sidebar.
+    pub const SIDEBAR_MIN: f32 = 200.;
+    pub const SIDEBAR_MAX: f32 = 320.;
+    /// The width of the sidebar folded to icons.
+    pub const RAIL: f32 = 56.;
+    /// The width of the strip at the sidebar's edge that drags its width.
+    pub const SIDEBAR_GRIP: f32 = 6.;
+    /// How far under the narrowest width the sidebar is pulled before it folds to its rail.
+    pub const SIDEBAR_SNAP: f32 = 40.;
     /// Below this window width the sidebar gives up its column and opens above the page instead.
     pub const SIDEBAR_FOLD: f32 = 900.;
     pub const TOOLBAR: f32 = 56.;
@@ -64,6 +74,8 @@ pub mod frame {
     pub const CONTENT_MAX: f32 = 760.;
     /// The width of the welcome card on the first run.
     pub const WELCOME: f32 = 440.;
+    /// The widest the Start page gets.
+    pub const START: f32 = 1120.;
     pub const TOAST: f32 = 420.;
     pub const TOASTS: usize = 3;
     pub const TOOLTIP: f32 = 280.;
@@ -77,8 +89,6 @@ pub mod frame {
     pub const FADE_LAYER: i16 = 64;
     /// How strongly the track of a progress ring shows.
     pub const RING_TRACK: f32 = 0.25;
-    /// Side of the large icon tile atop an empty or progress page.
-    pub const HERO_TILE: f32 = 72.;
     /// The hairline that divides the rows of a group.
     pub const HAIRLINE: f32 = 1.;
     pub const FACE: f32 = 18.;

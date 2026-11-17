@@ -48,7 +48,7 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::ForceQuit => store.dispatch(AppEvent::Stop(vec![key])),
         Primary::SignIn => {
             let mut page = store.ui.page;
-            page.set(Page::Accounts);
+            page.set(Page::ACCOUNTS);
         }
     }
 }

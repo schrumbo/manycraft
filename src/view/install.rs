@@ -1,5 +1,5 @@
 //! Instances on their way in: modpacks, files and other launchers' instances, installed one after another in the
-//! background, each with a page whose Play slot shows its progress and a row with a ring in the sidebar.
+//! background, each shown as a card in the library and as an entry of the title bar's activity menu.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use crate::view::kit::{after, toast, use_theme};
 use crate::ui::forms::explain_as;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
-use crate::view::ui::{Filter as Shown, Page};
+use crate::view::ui::Page;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -80,7 +80,6 @@ pub struct Install {
     /// Set to stop it; the entry stays until it stopped.
     pub cancel: Arc<AtomicBool>,
     source: Source,
-    from: Page,
 }
 
 impl PartialEq for Install {
@@ -113,27 +112,29 @@ enum Report {
     Done(anyhow::Result<Instance>),
 }
 
-/// Installs `sources` one after another and shows the first one's page.
+/// Installs `sources` one after another in the background and shows the library, where they arrive as cards, unless
+/// the page is the library or Entdecken already.
 pub fn start(store: Store, sources: Vec<Source>) {
-    if let Some(first) = begin(store, sources) {
-        let mut page = store.ui.page;
-        page.set(Page::Installing(first));
+    if !begin(store, sources) {
+        return;
+    }
+    let mut page = store.ui.page;
+    if !matches!(*page.peek(), Page::Library | Page::Discover) {
+        page.set(Page::Library);
     }
 }
 
-/// Installs `sources` one after another where only the sidebar shows them; the id of the first, `None` without sources.
-pub fn begin(store: Store, sources: Vec<Source>) -> Option<u64> {
+/// Installs `sources` one after another in the background; the library and the activity menu show them. Whether any
+/// were given.
+pub fn begin(store: Store, sources: Vec<Source>) -> bool {
     if sources.is_empty() {
-        return None;
+        return false;
     }
-    let from = store.ui.page.peek().clone();
-    let from = if matches!(from, Page::Installing(_)) { Page::Grid(Shown::All) } else { from };
-    let made: Vec<Install> = sources.into_iter().map(|source| Install { id: NEXT.fetch_add(1, Ordering::Relaxed), name: source.name(), stage: Stage::Queued, cancel: Arc::new(AtomicBool::new(false)), source, from: from.clone() }).collect();
-    let first = made[0].id;
+    let made: Vec<Install> = sources.into_iter().map(|source| Install { id: NEXT.fetch_add(1, Ordering::Relaxed), name: source.name(), stage: Stage::Queued, cancel: Arc::new(AtomicBool::new(false)), source }).collect();
     let mut installs = store.ui.installs;
     installs.write().extend(made);
     pump(store);
-    Some(first)
+    true
 }
 
 fn pump(store: Store) {
@@ -175,22 +176,14 @@ fn update(store: Store, id: u64, change: impl FnOnce(&mut Install)) {
     }
 }
 
-fn shown(store: Store, id: u64) -> bool {
-    *store.ui.page.peek() == Page::Installing(id)
-}
-
-fn close(store: Store, id: u64) {
-    let from = find(store, id).map(|i| i.from);
+/// Removes install `id` from the list.
+pub fn close(store: Store, id: u64) {
     let mut installs = store.ui.installs;
     installs.write().retain(|i| i.id != id);
-    if shown(store, id) {
-        let mut page = store.ui.page;
-        page.set(from.unwrap_or(Page::Grid(Shown::All)));
-    }
 }
 
 /// Installs `id` again after it failed.
-fn retry(store: Store, id: u64) {
+pub fn retry(store: Store, id: u64) {
     let Some(entry) = find(store, id) else { return };
     if !matches!(entry.stage, Stage::Failed(_)) {
         return;
@@ -295,15 +288,12 @@ async fn ended(store: Store, entry: &Install, result: anyhow::Result<Instance>) 
                 store.dispatch(AppEvent::InstanceAdded(made.clone()));
             }
             store.reload(true);
-            let here = shown(store, id);
-            let mut installs = store.ui.installs;
-            installs.write().retain(|i| i.id != id);
-            if here {
-                let mut page = store.ui.page;
-                page.set(Page::Instance(made.id.clone()));
-            }
+            close(store, id);
             let instance = made.id.clone();
-            toast::show_action(store.ui, trf("„%@“ ist bereit.", &[&made.name]), tr("Spielen"), EventHandler::new(move |_| store.dispatch(AppEvent::PlayInstance { instance: instance.clone(), account: None })));
+            toast::show_action(store.ui, trf("„%@“ ist bereit.", &[&made.name]), tr("Öffnen"), EventHandler::new(move |_| {
+                let mut page = store.ui.page;
+                page.set(Page::Instance(instance.clone()));
+            }));
         }
         Err(e) if stopped || is_cancelled(&e) => close(store, id),
         Err(_) if entry.source.gone() => failed(store, id, trf("„%@“ ist nicht mehr da. Wurde die Datei verschoben?", &[&entry.source.label()])),
@@ -312,11 +302,8 @@ async fn ended(store: Store, entry: &Install, result: anyhow::Result<Instance>) 
 }
 
 fn failed(store: Store, id: u64, why: String) {
-    let here = shown(store, id);
     update(store, id, |i| i.stage = Stage::Failed(why.clone()));
-    if !here {
-        toast::show_action(store.ui, why, tr("Erneut versuchen"), EventHandler::new(move |_| retry(store, id)));
-    }
+    toast::show_action(store.ui, why, tr("Erneut versuchen"), EventHandler::new(move |_| retry(store, id)));
 }
 
 fn is_cancelled(e: &anyhow::Error) -> bool {
@@ -369,33 +356,6 @@ pub fn ring(t: &Theme, stage: &Stage, size: f32) -> Element {
     }
 }
 
-/// The Play slot of an installing instance: the progress as a filling bar with its words, and Abbrechen.
-#[derive(PartialEq)]
-struct Slot {
-    entry: Install,
-}
-
-impl Component for Slot {
-    fn render(&self) -> impl IntoElement {
-        let store = use_store();
-        let entry = &self.entry;
-        let id = entry.id;
-        let share = match entry.stage {
-            Stage::Running(Some(p)) if !entry.stopping() => f32::from(p.min(100)),
-            _ => 0.,
-        };
-        let stopping = entry.stopping();
-        Progress {
-            id: format!("install.{id}"),
-            state: entry.state(),
-            share,
-            stopping,
-            on_cancel: EventHandler::new(move |_| cancel(store, id)),
-        }
-        .into_element()
-    }
-}
-
 /// A Play slot that shows work on its way: a bar filled to `share` percent with `state` on it, and Abbrechen.
 #[derive(PartialEq)]
 pub struct Progress {
@@ -429,63 +389,6 @@ impl Component for Progress {
     }
 }
 
-/// The toolbar's Play slot while install `id` runs; empty once it failed.
-#[derive(PartialEq)]
-pub struct PlaySlot {
-    pub id: u64,
-}
-
-impl Component for PlaySlot {
-    fn render(&self) -> impl IntoElement {
-        let store = use_store();
-        let entry = store.ui.installs.read().iter().find(|i| i.id == self.id && !matches!(i.stage, Stage::Failed(_))).cloned();
-        match entry {
-            Some(entry) => Slot { entry }.into_element(),
-            None => rect().into_element(),
-        }
-    }
-}
-
-/// The page of an installing instance: what comes in, and why it failed when it did; its progress sits where Spielen will be.
-#[derive(PartialEq)]
-pub struct InstallPage {
-    pub id: u64,
-}
-
-impl Component for InstallPage {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = use_store();
-        let id = self.id;
-        use_drop(move || {
-            let mut installs = store.ui.installs;
-            let failed = installs.try_peek().is_some_and(|l| l.iter().any(|i| i.id == id && matches!(i.stage, Stage::Failed(_))));
-            if failed && let Some(mut list) = installs.try_write() {
-                list.retain(|i| i.id != id);
-            }
-        });
-        let entry = store.ui.installs.read().iter().find(|i| i.id == id).cloned();
-        let Some(entry) = entry else { return rect().into_element() };
-        let tile = rect().width(Size::px(frame::HERO_TILE)).height(Size::px(frame::HERO_TILE)).center().corner_radius(t.shape.tile).background(t.accent.with_af32(frame::TILE_WASH)).child(icon(&t, Icon::Package, iconsize::HERO, t.accent_text));
-        let mut hero = rect().width(Size::fill()).max_width(Size::px(frame::SHEET)).cross_align(Alignment::Center).spacing(space::M).child(tile).child(strong(&t, entry.name.clone(), font::TITLE2, t.text1).width(Size::fill()).max_lines(2).text_align(TextAlign::Center));
-        let failed = match &entry.stage {
-            Stage::Failed(why) => Some(why.clone()),
-            _ => None,
-        };
-        match &failed {
-            Some(why) => {
-                let again = Button::new(format!("install.{id}.retry"), tr("Erneut versuchen")).glyph(Icon::Refresh).primary().on_press(move |_| retry(store, id));
-                let leave = Button::new(format!("install.{id}.close"), tr("Schließen")).on_press(move |_| close(store, id));
-                hero = hero.child(rect().horizontal().cross_align(Alignment::Center).spacing(space::XS).child(icon(&t, Icon::CircleAlert, iconsize::M, t.danger_text)).child(para(&t, why.clone(), font::BODY, t.text2).max_width(Size::px(frame::SHEET - iconsize::M - space::XS)))).child(rect().horizontal().spacing(space::S).child(leave).child(again));
-            }
-            None => {
-                hero = hero.child(para(&t, tr("Wird als Instanz installiert. Du kannst solange weiterarbeiten."), font::BODY, t.text2).text_align(TextAlign::Center));
-            }
-        }
-        rect().width(Size::fill()).height(Size::fill()).center().padding(space::XL).child(hero).into_element()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,7 +417,7 @@ mod tests {
 
     #[test]
     fn the_state_follows_the_stage() {
-        let mut entry = Install { id: 1, name: "Farm".into(), stage: Stage::Running(Some(62)), cancel: Arc::new(AtomicBool::new(false)), source: Source::File("x.mrpack".into()), from: Page::Grid(Shown::All) };
+        let mut entry = Install { id: 1, name: "Farm".into(), stage: Stage::Running(Some(62)), cancel: Arc::new(AtomicBool::new(false)), source: Source::File("x.mrpack".into()) };
         assert!(entry.state().contains("62"));
         entry.stage = Stage::Running(None);
         assert_ne!(entry.state(), Install { stage: Stage::Queued, ..entry.clone() }.state());

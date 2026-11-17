@@ -187,7 +187,7 @@ impl Store {
                         Pick::Open => {
                             self.unstow();
                             let mut page = self.ui.page;
-                            page.set(Page::Grid(Filter::All));
+                            page.set(Page::Start);
                         }
                         Pick::QuitAll => self.dispatch(Event::QuitChosen { keep: false }),
                         Pick::Quit => self.dispatch(Event::Quit),
@@ -433,7 +433,7 @@ impl Store {
                     self.reload(true);
                 });
             }
-            Effect::AddAccount => self.ui.page.set(Page::Accounts),
+            Effect::AddAccount => self.ui.page.set(Page::ACCOUNTS),
             Effect::AskQuit { running } => self.ask_quit(running),
             Effect::Quit { keep } => {
                 if let Some(rt) = runtime {
@@ -526,7 +526,7 @@ impl Store {
                 }
             }
             Route::Instance(id) => ui.page.set(Page::Instance(id)),
-            Route::Settings(_) => ui.page.set(Page::Settings),
+            Route::Settings(_) => ui.page.set(Page::Settings(Default::default())),
         }
     }
 

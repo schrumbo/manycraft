@@ -818,8 +818,8 @@ impl Component for SelectionBar {
 /// Opens the Accounts page with the filter field focused.
 pub fn focus_filter(store: Store) {
     let mut ui = store.ui;
-    if *ui.page.peek() != Page::Accounts {
-        ui.page.set(Page::Accounts);
+    if *ui.page.peek() != Page::ACCOUNTS {
+        ui.page.set(Page::ACCOUNTS);
     }
     let mut at = ui.accounts.focus_filter;
     at.set(Some(Instant::now()));

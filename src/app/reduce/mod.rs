@@ -91,7 +91,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::InstanceChanged(made) => {
             if let Some(slot) = model.instances.iter_mut().find(|i| i.id == made.id) {
-                *slot = crate::core::instance::Instance { default_account: slot.default_account, last_account: slot.last_account, ..made };
+                *slot = crate::core::instance::Instance { default_account: slot.default_account, last_account: slot.last_account, group: slot.group.clone(), ..made };
                 out.push(Effect::Redraw(Redraw::All));
             }
         }
@@ -175,6 +175,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::RequestPlay { instance, account } => show::request_play(model, instance, account, &mut out),
         Event::ChooseAccount(id) => show::choose_account(model, id, &mut out),
         Event::SetDefaultAccount { instance, account } => show::set_default_account(model, &instance, account, &mut out),
+        Event::SetGroup { instance, group } => show::set_group(model, &instance, group, &mut out),
         Event::ShowGrid => show::show_grid(model, &mut out),
         Event::Step(action) => show::step(model, action, &mut out),
         Event::SendChat { key, text } => {

@@ -336,7 +336,7 @@ impl Component for InstancePage {
         let Some(f) = facts(&m, &self.id) else {
             return gone(&t, store, m.loaded).into_element();
         };
-        let room = ui.window.read().0 - if *ui.sidebar.read() { frame::SIDEBAR + 1. } else { 0. };
+        let room = ui.window.read().0 - ui.sidebar_room();
         let wide = room >= SPLIT;
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
             rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, store, tab, f.clone())),
@@ -419,7 +419,7 @@ fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement
         .spacing(space::M)
         .child(icon(t, Icon::Folder, iconsize::HERO, t.text3))
         .child(heading(t, tr("Diese Instanz gibt es nicht mehr.")))
-        .child(Button::new("instance.gone.all", tr("Zu allen Spielen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+        .child(Button::new("instance.gone.all", tr("Zu den Instanzen")).tall().on_press(move |_| ui.page.set(Page::Library)))
 }
 
 /// The tab the page of instance `id` shows: the one it showed last, at first Mods when it takes mods and Worlds when not.

@@ -164,6 +164,18 @@ pub(super) fn set_default_account(m: &mut Model, id: &str, account: Option<Uuid>
     out.push(Effect::SaveDefaultAccount { instance: id.to_owned(), account });
 }
 
+/// Lists instance `id` under `group` in the library, trimmed; ungrouped when empty or `None`, and saves that.
+pub(super) fn set_group(m: &mut Model, id: &str, group: Option<String>, out: &mut Vec<Effect>) {
+    let group = group.map(|g| g.trim().to_owned()).filter(|g| !g.is_empty());
+    let Some(made) = m.instances.iter_mut().find(|made| made.id == id) else { return };
+    if made.group == group {
+        return;
+    }
+    made.group.clone_from(&group);
+    out.push(Effect::Redraw(Redraw::All));
+    out.push(Effect::SaveGroup { instance: id.to_owned(), group });
+}
+
 /// Plays instance `id` alone with `account`, else its [`solo_account`], as a normal game window; the game's key when there is one.
 pub(super) fn play_instance(m: &mut Model, id: &str, account: Option<Uuid>, out: &mut Vec<Effect>) -> Option<String> {
     let picked = m.instance(id).and_then(|made| {
@@ -223,7 +235,7 @@ pub(super) fn request_play(m: &mut Model, instance: String, account: Option<Stri
 mod tests {
     use super::super::super::effect::Effect;
     use super::super::super::event::{Event, Report};
-    use super::super::super::model::Phase;
+    use super::super::super::model::{Model, Phase};
     use super::super::super::session::Reveal;
     use super::super::testing::*;
     use crate::core::account::AccountKind;
@@ -437,6 +449,22 @@ mod tests {
         assert!(!plan.contains_key(&key), "no preview is captured for it");
         m.games.get_mut(&key).unwrap().phase = Phase::Crashed { code: Some(1) };
         assert_eq!(m.attention_count(None), 0, "its crash shows on its instance page, not in the grid's count");
+    }
+
+    #[test]
+    fn a_group_is_trimmed_saved_and_cleared_by_an_empty_name() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let instance = m.instances[0].id.clone();
+        let set = |m: &mut Model, group: Option<&str>| run(m, &s, std::time::Instant::now(), Event::SetGroup { instance: instance.clone(), group: group.map(str::to_owned) });
+        let fx = set(&mut m, Some("  Farmen "));
+        assert_eq!(m.instances[0].group.as_deref(), Some("Farmen"));
+        assert!(fx.iter().any(|e| matches!(e, Effect::SaveGroup { group: Some(g), .. } if g == "Farmen")));
+        assert!(set(&mut m, Some("Farmen")).is_empty(), "the same group changes nothing");
+        let fx = set(&mut m, Some("   "));
+        assert_eq!(m.instances[0].group, None);
+        assert!(fx.iter().any(|e| matches!(e, Effect::SaveGroup { group: None, .. })));
+        assert!(run(&mut m, &s, std::time::Instant::now(), Event::SetGroup { instance: "none".into(), group: Some("x".into()) }).is_empty());
     }
 
     #[test]

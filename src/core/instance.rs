@@ -120,6 +120,9 @@ pub struct Instance {
     /// The account this instance always plays with alone; the active account when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<Uuid>,
+    /// The library group this instance is listed under; ungrouped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 fn default_memory() -> u32 {
@@ -160,6 +163,7 @@ impl Instance {
             options: LaunchOptions::default(),
             last_account: None,
             default_account: None,
+            group: None,
         }
     }
 
@@ -588,6 +592,20 @@ pub(super) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_group_is_saved_when_set_and_absent_from_the_file_when_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut made = Instance::new("Farm", "26.3", Loader::Vanilla);
+        save_in(dir.path(), &made).unwrap();
+        let plain = std::fs::read_to_string(dir.path().join(&made.id).join(FILE)).unwrap();
+        assert!(!plain.contains("group"));
+        made.group = Some("Fabrik".into());
+        save_in(dir.path(), &made).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap()[0].group.as_deref(), Some("Fabrik"));
+        let cloned = clone_in(dir.path(), &made, "Farm 2").unwrap();
+        assert_eq!(cloned.group.as_deref(), Some("Fabrik"));
+    }
 
     #[test]
     fn a_missing_root_is_no_instances_and_a_broken_one_is_an_error() {

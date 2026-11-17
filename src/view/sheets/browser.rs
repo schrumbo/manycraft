@@ -78,11 +78,11 @@ pub fn find(store: Store, id: &str, kind: Kind) {
     }
 }
 
-/// Shows the Modpacks page, where every pack installs as a new instance.
+/// Shows Entdecken, where every pack installs as a new instance.
 pub fn find_modpacks(store: Store) {
     crate::view::kit::sheet::close(store.ui);
     let mut page = store.ui.page;
-    page.set(crate::view::ui::Page::Modpacks);
+    page.set(crate::view::ui::Page::Discover);
 }
 
 /// What the sheet or page around the browser shares with it: the instance and what is picked, the work in flight, and

@@ -236,7 +236,7 @@ fn leave(store: Store, id: &str, to: Option<&str>) {
     let m = store.model.peek();
     let next = to.filter(|t| m.instance(t).is_some()).map(str::to_owned).or_else(|| m.instances.first().map(|i| i.id.clone()));
     drop(m);
-    page.set(next.map_or(Page::Grid(Filter::All), Page::Instance));
+    page.set(next.map_or(Page::Library, Page::Instance));
 }
 
 pub(crate) fn ask_delete(store: Store, id: &str) {

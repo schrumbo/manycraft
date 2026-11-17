@@ -21,6 +21,13 @@ pub enum Command {
     ToggleSidebar,
     Undo,
     FocusSearch,
+    ShowStart,
+    ShowLibrary,
+    ShowDiscover,
+    GoBack,
+    GoForward,
+    LibraryAsGrid,
+    LibraryAsList,
     ShowAll,
     ShowAttention,
     ShowAccounts,
@@ -140,6 +147,9 @@ impl Shortcut {
             Code::ArrowDown => "↓".to_owned(),
             Code::F1 => "F1".to_owned(),
             Code::F2 => "F2".to_owned(),
+            Code::Backslash => "\\".to_owned(),
+            Code::BracketLeft => "[".to_owned(),
+            Code::BracketRight => "]".to_owned(),
             other => format!("{other:?}").trim_start_matches("Key").trim_start_matches("Digit").to_owned(),
         };
         if cfg!(target_os = "macos") {
@@ -169,7 +179,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 51] = [
+    pub const ALL: [Command; 58] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -195,6 +205,13 @@ impl Command {
         Command::NextAttention,
         Command::SelectAll,
         Command::FocusSearch,
+        Command::ShowStart,
+        Command::ShowLibrary,
+        Command::ShowDiscover,
+        Command::GoBack,
+        Command::GoForward,
+        Command::LibraryAsGrid,
+        Command::LibraryAsList,
         Command::ShowAll,
         Command::ShowAttention,
         Command::ShowAccounts,
@@ -230,6 +247,13 @@ impl Command {
             Command::ToggleSidebar => "ToggleSidebar",
             Command::Undo => "Undo",
             Command::FocusSearch => "FocusSearch",
+            Command::ShowStart => "ShowStart",
+            Command::ShowLibrary => "ShowLibrary",
+            Command::ShowDiscover => "ShowDiscover",
+            Command::GoBack => "GoBack",
+            Command::GoForward => "GoForward",
+            Command::LibraryAsGrid => "LibraryAsGrid",
+            Command::LibraryAsList => "LibraryAsList",
             Command::ShowAll => "ShowAll",
             Command::ShowAttention => "ShowAttention",
             Command::ShowAccounts => "ShowAccounts",
@@ -283,7 +307,14 @@ impl Command {
             Command::ToggleSidebar => tr("Seitenleiste ein- oder ausblenden"),
             Command::Undo => tr("Rückgängig"),
             Command::FocusSearch => tr("Suchen"),
-            Command::ShowAll => tr("Alle anzeigen"),
+            Command::ShowStart => tr("Start"),
+            Command::ShowLibrary => tr("Instanzen"),
+            Command::ShowDiscover => tr("Entdecken"),
+            Command::GoBack => tr("Zurück"),
+            Command::GoForward => tr("Vor"),
+            Command::LibraryAsGrid => tr("Instanzen als Raster"),
+            Command::LibraryAsList => tr("Instanzen als Liste"),
+            Command::ShowAll => tr("Alle Batches"),
             Command::ShowAttention => tr("Brauchen dich anzeigen"),
             Command::ShowAccounts => tr("Accounts"),
             Command::SwitchAccount => tr("Account wechseln…"),
@@ -338,7 +369,14 @@ impl Command {
             Command::ClearSelection | Command::Quit => Icon::Close,
             Command::SelectAll => Icon::Check,
             Command::FocusSearch => Icon::Search,
-            Command::ShowAll => Icon::Grid,
+            Command::ShowStart => Icon::Home,
+            Command::ShowLibrary => Icon::Package,
+            Command::ShowDiscover => Icon::Compass,
+            Command::GoBack => Icon::ChevronLeft,
+            Command::GoForward => Icon::ChevronRight,
+            Command::LibraryAsGrid => Icon::Grid,
+            Command::LibraryAsList => Icon::Rows,
+            Command::ShowAll => Icon::Layers,
             Command::ShowAccounts => Icon::Users,
             Command::SwitchAccount => Icon::ChevronsUpDown,
             Command::OpenChat => Icon::Message,
@@ -358,9 +396,16 @@ impl Command {
     pub fn shortcut(self) -> Option<Shortcut> {
         Some(match self {
             Command::OpenPalette => k(Code::KeyK),
-            Command::ToggleSidebar => k(Code::KeyB),
+            Command::ToggleSidebar => k(Code::Backslash),
             Command::Undo => k(Code::KeyZ),
             Command::FocusSearch => k(Code::KeyF),
+            Command::ShowStart => k(Code::Digit1),
+            Command::ShowLibrary => k(Code::Digit2),
+            Command::ShowDiscover => k(Code::Digit3),
+            Command::GoBack => k(Code::BracketLeft),
+            Command::GoForward => k(Code::BracketRight),
+            Command::LibraryAsGrid => ka(Code::Digit1),
+            Command::LibraryAsList => ka(Code::Digit2),
             Command::ShowAll => ks(Code::KeyG),
             Command::ShowAccounts => ks(Code::KeyU),
             Command::SwitchAccount => ks(Code::KeyA),
@@ -378,9 +423,9 @@ impl Command {
             Command::Larger => k(Code::Equal),
             Command::Smaller => k(Code::Minus),
             Command::Fit => k(Code::Digit0),
-            Command::ShowTiles => k(Code::Digit1),
-            Command::ShowTable => k(Code::Digit2),
-            Command::GroupByBatch | Command::ShowUngrouped => k(Code::Digit3),
+            Command::ShowTiles => ka(Code::Digit1),
+            Command::ShowTable => ka(Code::Digit2),
+            Command::GroupByBatch | Command::ShowUngrouped => ka(Code::Digit3),
             Command::MoveSelected => ks(Code::KeyB),
             Command::LeaveSelected => ka(Code::KeyB),
             Command::Quit => k(Code::KeyQ),
@@ -406,7 +451,7 @@ impl Command {
         let selected = store.ui.selection.peek();
         let picked = || selected.iter().filter_map(|k| m.games.get(k));
         let grid = matches!(*store.ui.page.peek(), Page::Grid(_));
-        let accounts = *store.ui.page.peek() == Page::Accounts;
+        let accounts = *store.ui.page.peek() == Page::ACCOUNTS;
         match self {
             Command::SelectAll if accounts => !m.accounts.is_empty(),
             Command::ClearSelection if accounts => !store.ui.accounts.picked.peek().is_empty(),
@@ -434,7 +479,11 @@ impl Command {
             Command::NextInstance | Command::PreviousInstance => m.games.values().filter(|g| g.phase.is_running()).count() > 0,
             Command::NextAttention | Command::ShowAttention => m.attention_count(None) > 0,
             Command::SelectAll | Command::Larger | Command::Smaller | Command::Fit => grid && !m.games.is_empty(),
-            Command::FocusSearch => grid,
+            Command::FocusSearch => grid || *store.ui.page.peek() == Page::Library,
+            Command::GoBack => store.ui.hist.peek().can_back(),
+            Command::GoForward => store.ui.hist.peek().can_forward(),
+            Command::LibraryAsGrid => *store.ui.page.peek() == Page::Library && *store.ui.library.mode.peek() != super::library::Mode::Grid,
+            Command::LibraryAsList => *store.ui.page.peek() == Page::Library && *store.ui.library.mode.peek() != super::library::Mode::List,
             Command::Undo => store.ui.browser_undo.peek().is_some() || store.ui.toasts.peek().iter().any(|t| t.undo.is_some()) || !store.ui.session_undo.peek().is_empty(),
             Command::SwitchAccount => store.model.peek().loaded,
             Command::Import => can_want(&Want::Import),
@@ -447,7 +496,7 @@ impl Command {
     pub fn run(self, store: Store) {
         let mut ui = store.ui;
         let keys = || store.ui.selection.peek().iter().cloned().collect::<Vec<String>>();
-        let accounts = *ui.page.peek() == Page::Accounts;
+        let accounts = *ui.page.peek() == Page::ACCOUNTS;
         match self {
             Command::SelectAll if accounts => super::accounts::pick_all(store),
             Command::ClearSelection if accounts => {
@@ -476,17 +525,24 @@ impl Command {
                 }
             }
             Command::FocusSearch => {
-                if !matches!(*ui.page.peek(), Page::Grid(_)) {
-                    ui.page.set(Page::Grid(Filter::All));
+                if !matches!(*ui.page.peek(), Page::Grid(_) | Page::Library) {
+                    ui.page.set(Page::Library);
                 }
                 ui.focus_search.set(Some(std::time::Instant::now()));
             }
+            Command::ShowStart => ui.page.set(Page::Start),
+            Command::ShowLibrary => ui.page.set(Page::Library),
+            Command::ShowDiscover => ui.page.set(Page::Discover),
+            Command::GoBack => super::shell::history::back(store),
+            Command::GoForward => super::shell::history::forward(store),
+            Command::LibraryAsGrid => ui.library.mode.set(super::library::Mode::Grid),
+            Command::LibraryAsList => ui.library.mode.set(super::library::Mode::List),
             Command::ShowAll => ui.page.set(Page::Grid(Filter::All)),
             Command::ShowAttention => ui.page.set(Page::Grid(Filter::Attention)),
-            Command::ShowAccounts => ui.page.set(Page::Accounts),
+            Command::ShowAccounts => ui.page.set(Page::ACCOUNTS),
             Command::SwitchAccount => super::shell::account::open_from_keys(store),
             Command::OpenChat => super::chat::focus(store),
-            Command::OpenSettings => ui.page.set(Page::Settings),
+            Command::OpenSettings => ui.page.set(Page::Settings(Default::default())),
             Command::NextInstance => store.dispatch(Event::Step(HotkeyAction::Next)),
             Command::PreviousInstance => store.dispatch(Event::Step(HotkeyAction::Prev)),
             Command::NextAttention => store.dispatch(Event::Step(HotkeyAction::NextAttention)),
@@ -751,7 +807,7 @@ impl Command {
             Command::ImportPrism => tr("Accounts aus Prism übernehmen"),
             Command::NewBatch => tr("Neuer Batch"),
             Command::NewInstance => tr("Neue Instanz"),
-            Command::OpenTrash => tr("Papierkorb öffnen"),
+            Command::OpenTrash => tr("Zuletzt gelöschte Instanzen"),
             Command::FindModpacks => tr("Modpacks suchen…"),
             Command::AddMods => tr("Mods hinzufügen…"),
             _ => String::new(),
@@ -779,8 +835,8 @@ impl Command {
             Command::AddAccount => k(Code::KeyN),
             Command::NewInstance => ks(Code::KeyN),
             Command::RemoveAccounts => bare(if cfg!(target_os = "macos") { Code::Backspace } else { Code::Delete }),
-            Command::AccountsAsList => k(Code::Digit1),
-            Command::AccountsAsTable => k(Code::Digit2),
+            Command::AccountsAsList => ka(Code::Digit1),
+            Command::AccountsAsTable => ka(Code::Digit2),
             Command::AddMods => ks(Code::KeyM),
             Command::NewBatch => ka(Code::KeyN),
             Command::FindModpacks => ks(Code::KeyO),
@@ -790,7 +846,7 @@ impl Command {
     }
 
     fn page_available(self, store: Store) -> bool {
-        let accounts = *store.ui.page.peek() == Page::Accounts;
+        let accounts = *store.ui.page.peek() == Page::ACCOUNTS;
         let view = || super::accounts::view_of(&store.model.peek(), store.ui.accounts);
         let any = || !store.model.peek().accounts.is_empty();
         match self {
@@ -827,7 +883,7 @@ impl Command {
             Command::AccountsAsTable => shared.view.set(Some(super::accounts::View::Table)),
             Command::ImportPrism => {
                 let mut ui = store.ui;
-                ui.page.set(Page::Accounts);
+                ui.page.set(Page::ACCOUNTS);
                 super::accounts::import_prism(store);
             }
             Command::NewBatch => {
@@ -871,7 +927,15 @@ mod tests {
 
     #[test]
     fn no_two_commands_share_a_chord_unless_their_pages_differ() {
-        let paged = [(Command::ShowTiles, Command::AccountsAsList), (Command::ShowTable, Command::AccountsAsTable), (Command::GroupByBatch, Command::ShowUngrouped)];
+        let paged = [
+            (Command::ShowTiles, Command::AccountsAsList),
+            (Command::ShowTable, Command::AccountsAsTable),
+            (Command::ShowTiles, Command::LibraryAsGrid),
+            (Command::ShowTable, Command::LibraryAsList),
+            (Command::AccountsAsList, Command::LibraryAsGrid),
+            (Command::AccountsAsTable, Command::LibraryAsList),
+            (Command::GroupByBatch, Command::ShowUngrouped),
+        ];
         for (i, a) in Command::ALL.into_iter().enumerate() {
             for b in Command::ALL.into_iter().skip(i + 1) {
                 if a.shortcut().is_some() && a.shortcut() == b.shortcut() {
