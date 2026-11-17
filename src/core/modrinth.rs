@@ -392,13 +392,29 @@ impl Source for Api {
     }
 
     fn needs(&self, found: &ModRef, quilt: bool) -> Result<Needs> {
-        let Some(path) = cached_jar(&jar_cache(), &found.sha1) else { return Ok(Needs::default()) };
-        if !path.is_file() {
-            net::fetch_verified(&self.agent, &found.url, &path, Some(&found.sha1)).with_context(|| format!("cannot download {}", found.title))?;
-            prune(&jar_cache(), KEPT_JARS);
-        }
-        Ok(std::fs::File::open(&path).ok().and_then(|file| Needs::read(std::io::BufReader::new(file), quilt).ok()).unwrap_or_default())
+        needs_in(&self.agent, &jar_cache(), found, quilt)
     }
+}
+
+fn needs_in(agent: &ureq::Agent, cache: &Path, found: &ModRef, quilt: bool) -> Result<Needs> {
+    let Some(path) = cached_jar(cache, &found.sha1) else { return Ok(Needs::default()) };
+    let open = || std::fs::File::options().read(true).write(true).open(&path).ok();
+    let file = match open() {
+        Some(file) => {
+            let _ = file.set_modified(SystemTime::now());
+            Some(file)
+        }
+        None => match net::fetch_verified(agent, &found.url, &path, Some(&found.sha1)) {
+            Ok(()) => {
+                let file = open();
+                prune(cache, KEPT_JARS);
+                file
+            }
+            Err(e) if net::no_connection(&e) => return Err(e.context(format!("cannot download {}", found.title))),
+            Err(_) => None,
+        },
+    };
+    Ok(file.and_then(|file| Needs::read(std::io::BufReader::new(file), quilt).ok()).unwrap_or_default())
 }
 
 fn checked(loader: &Loader) -> bool {
@@ -1502,6 +1518,38 @@ Connection: close
         let newest_fit = mod_ref("Fabric API", &fx.versions[1]).unwrap();
         assert!(updates_from(&fx, SNAPSHOT, &Loader::Quilt(None), &[newest_fit]).unwrap().is_empty());
         assert_eq!(*fx.opened.lock().unwrap(), ["v0"]);
+    }
+
+    #[test]
+    fn a_cached_jar_is_read_and_kept_fresh_and_only_a_lost_connection_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let jar = fabric_jar(r#"{"fabricloader":">=0.20.0"}"#);
+        let m = ModRef { project_id: "p".into(), version_id: "v".into(), title: "T".into(), file_name: "t.jar".into(), url: "http://modrinth.test/t.jar".into(), sha1: sha1_hex(&jar) };
+        let path = cached_jar(dir.path(), &m.sha1).unwrap();
+        std::fs::write(&path, &jar).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        let (none, _) = super::net::fake::agent(None, std::time::Duration::from_secs(1));
+        let old = Target { fabricloader: Some("0.19.5".into()), ..Target::default() };
+        assert_eq!(needs_in(&none, dir.path(), &m, true).unwrap().check(&old), Err(Miss::Loader));
+        assert!(path.metadata().unwrap().modified().unwrap() > SystemTime::UNIX_EPOCH);
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::net::no_connection(&needs_in(&none, dir.path(), &m, true).unwrap_err()));
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in server.incoming() {
+                let mut stream = stream.unwrap();
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found
+Content-Length: 0
+Connection: close
+
+");
+            }
+        });
+        let (up, _) = super::net::fake::agent(Some(addr), std::time::Duration::from_secs(5));
+        assert_eq!(needs_in(&up, dir.path(), &m, true).unwrap(), Needs::default());
     }
 
     #[test]

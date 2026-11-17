@@ -231,12 +231,12 @@ pub fn latest_loader(loader: &Loader, game: &str) -> Result<String> {
     }
 }
 
-/// What an instance on `game` with `loader` offers its mods: the game, the Java the installed game asks for, and the
-/// Fabric Loader version mods see (Fabric's own, or the one Quilt stands in for) of the pinned or newest stable loader.
-/// Whatever cannot be found out, for example without a connection, stays `None` and is not checked.
+/// What an instance on `game` with `loader` offers its mods: the game and the Fabric Loader version mods see (Fabric's
+/// own, or the one Quilt stands in for) of the pinned or newest stable loader. Java stays unknown, since an instance may
+/// run on a newer Java than the game asks for; whatever cannot be found out, for example without a connection, is not checked.
 pub fn mod_target(game: &str, loader: &Loader) -> Target {
     let root = paths::data_dir();
-    let mut target = Target { minecraft: Some(game.to_owned()), java: java_major(&root, game), quilt: matches!(loader, Loader::Quilt(_)), ..Target::default() };
+    let mut target = Target { minecraft: Some(game.to_owned()), quilt: matches!(loader, Loader::Quilt(_)), ..Target::default() };
     let version = || loader.version().map(str::to_owned).or_else(|| latest_loader(loader, game).ok());
     match loader {
         Loader::Fabric(_) => target.fabricloader = version(),
@@ -250,11 +250,6 @@ pub fn mod_target(game: &str, loader: &Loader) -> Target {
         _ => {}
     }
     target
-}
-
-fn java_major(root: &Path, game: &str) -> Option<u32> {
-    let path = join_safe(&root.join("versions"), game).ok()?.join(format!("{game}.json"));
-    read_json::<VersionJson>(&path).ok()?.java_version?.major_version
 }
 
 /// The newest stable loader of the same kind as `loader` for `game_version`; `None` for kinds Manycraft has no list for, and when only unstable ones exist.
