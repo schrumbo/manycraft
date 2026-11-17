@@ -2110,5 +2110,9 @@
   "Zuletzt %@": "Last played %@",
   "%lld/%lld laufen": "%lld/%lld running",
   "Kein Spiel zum Starten": "No game to start",
-  "Nichts läuft": "Nothing is running"
+  "Nichts läuft": "Nothing is running",
+  "Companion verwenden": "Use companion",
+  "Gibt es erst ab Minecraft %@.": "Only available from Minecraft %@.",
+  "Der Proxy von %@ braucht ihn, er startet hier immer mit.": "%@'s proxy needs it, so it always starts here.",
+  "Zeigt Status und Chat im Manager. Batches nutzen ihn immer.": "Shows status and chat in the manager. Batches always use it."
 }

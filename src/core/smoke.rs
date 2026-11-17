@@ -156,7 +156,8 @@ fn run(args: &[String]) -> Result<i32> {
     let loader = flags.get("--loader").map_or(Ok(Loader::Vanilla), |l| fleet::parse_loader(l))?;
     let timeout = flags.get("--timeout").map_or(Ok(DEFAULT_TIMEOUT), |t| t.parse().context("--timeout is a number of seconds"))?;
     let companion = flags.get("--companion").map(Path::new);
-    let instance = smoke_instance(version, loader)?;
+    let mut instance = smoke_instance(version, loader)?;
+    instance.companion = true;
     quiet(&instance.options_template())?;
     let relay = if proxy { Some(Relay::start()?) } else { None };
     let mut account = Account::offline(NAME)?;

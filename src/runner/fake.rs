@@ -181,7 +181,7 @@ impl<P: Pixels> Sim<P> {
                 }
             }
             Cmd::Start(target, accounts, cancel) => {
-                let plain = !crate::core::companion::available(&target.instance.game_version);
+                let plain = !crate::core::companion::available(&target.instance.game_version) || !crate::core::fleet::wants_companion(&target, &accounts);
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
                     let after = STAGGER * n as u32;

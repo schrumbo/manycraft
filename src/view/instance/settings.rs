@@ -11,6 +11,7 @@ use super::save::{self, Change, Job, OptionChange, Switch};
 use super::{Facts, snapshots, version_text};
 use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
+use crate::core::companion;
 use crate::core::install::Versions;
 use crate::core::instance::{Instance, Loader};
 use crate::core::javas::{Java, mismatch};
@@ -585,12 +586,40 @@ impl Component for Game {
         };
         rows.push(row(&t, "window", tr("Fenstergröße beim Start"), window_reset, size, Some(window_hint), window_problem.read().clone()).into_element());
 
+        rows.push(companion_row(store, f, busy));
+
         let mut footer: Vec<String> = f.running.then(|| tr("Änderungen wirken beim nächsten Start.")).into_iter().collect();
         if !f.batches.is_empty() {
             footer.push(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."));
         }
         group(&t, Some(tr("Spiel")), rows, (!footer.is_empty()).then(|| footer.join(" ")))
     }
+}
+
+/// "Companion verwenden": the agent behind status and chat for games played alone; a proxied account forces it on.
+fn companion_row(store: Store, f: &Facts, busy: bool) -> Element {
+    let label = tr("Companion verwenden");
+    let id = f.made.id.clone();
+    let proxied = {
+        let m = store.model.read();
+        f.pick.and_then(|a| m.account(a)).filter(|a| a.proxy.is_some()).map(|a| a.name.clone())
+    };
+    let saved = save::pending_companion(store, &f.made.id).unwrap_or(f.made.companion);
+    let game = &f.made.game_version;
+    let unavailable = !game.is_empty() && !companion::available(game);
+    let (on, why, dim, hint) = match (&proxied, unavailable, busy) {
+        (Some(_), true, _) => (false, true, false, trf("Der Proxy braucht Minecraft %@ oder neuer. Entferne ihn oder wähle eine neuere Version.", &[&companion::first()])),
+        (None, true, _) => (false, true, true, trf("Gibt es erst ab Minecraft %@.", &[&companion::first()])),
+        (Some(name), _, _) => (true, true, false, trf("Der Proxy von %@ braucht ihn, er startet hier immer mit.", &[name])),
+        (None, _, true) => (saved, true, false, tr("Warte, bis die Umstellung fertig ist.")),
+        (None, _, false) => (saved, false, false, tr("Zeigt Status und Chat im Manager. Batches nutzen ihn immer.")),
+    };
+    let flip = move |on: bool| save::enqueue(store, &id, Job::Save(Change::Companion(on)));
+    let mut line = Line::new("instance.settings.companion.row", label.clone()).hint(hint).dim(dim).control(Toggle::new("instance.settings.companion", label, on).disabled(why).on_toggle(flip.clone()));
+    if !why {
+        line = line.on_press(move |_| flip(!on));
+    }
+    line.into_element()
 }
 
 /// "Spielen als": always there so the group never jumps; a menu from two accounts on.
