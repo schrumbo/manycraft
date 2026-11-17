@@ -504,8 +504,15 @@ pub fn attributes(a: freya::winit::window::WindowAttributes) -> freya::winit::wi
     a.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true)
 }
 
-/// The window's attributes: on macOS the title bar turns transparent and the content runs under it.
-#[cfg(not(target_os = "macos"))]
+/// The window's attributes: on Windows the taskbar gets the large app icon, which it would otherwise take from the shell's icon cache.
+#[cfg(windows)]
+pub fn attributes(a: freya::winit::window::WindowAttributes) -> freya::winit::window::WindowAttributes {
+    use freya::winit::platform::windows::WindowAttributesExtWindows;
+    a.with_taskbar_icon(Some(freya::prelude::LaunchConfig::window_icon(include_bytes!("../../../packaging/icons/manycraft-256.png"))))
+}
+
+/// The window's attributes: unchanged on Linux.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn attributes(a: freya::winit::window::WindowAttributes) -> freya::winit::window::WindowAttributes {
     a
 }
