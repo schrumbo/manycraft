@@ -62,6 +62,16 @@ pub fn plain(runs: &[Run]) -> String {
     runs.iter().map(|r| r.text.as_str()).collect()
 }
 
+/// `text` with private-use characters, which only a resource pack can draw, replaced by U+FFFD.
+pub fn printable(text: &str) -> std::borrow::Cow<'_, str> {
+    let private = |c: char| matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}');
+    if text.chars().any(private) {
+        std::borrow::Cow::Owned(text.chars().map(|c| if private(c) { '\u{FFFD}' } else { c }).collect())
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// Whether a line needs runs to show as the game does: styled runs came, or the text holds `§` codes.
 pub fn needs_runs(runs: &[Run], text: &str) -> bool {
     !runs.is_empty() || text.contains('§')
@@ -120,6 +130,12 @@ mod tests {
 
     fn run(text: &str, color: Option<u32>) -> Run {
         Run { text: text.into(), color, ..Run::default() }
+    }
+
+    #[test]
+    fn private_use_characters_become_replacement_marks() {
+        assert_eq!(printable("a\u{E000}b\u{F8FF}c\u{F0001}"), "a\u{FFFD}b\u{FFFD}c\u{FFFD}");
+        assert!(matches!(printable("hallo ★ 你好 😀"), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]
