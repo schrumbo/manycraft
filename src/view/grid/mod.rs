@@ -8,7 +8,7 @@ mod strips;
 pub mod table;
 mod tile;
 mod welcome;
-mod words;
+pub mod words;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};

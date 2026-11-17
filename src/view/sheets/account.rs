@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use freya::clipboard::Clipboard;
 use freya::prelude::*;
+use freya_core::prelude::NavigationMode;
 use uuid::Uuid;
 
 use crate::core::account::{Account, AccountKind};
@@ -25,7 +26,7 @@ use crate::view::kit::spinner;
 use crate::view::kit::text::{line, mono, para, strong};
 use crate::view::kit::{after, at_least, off_thread, open_external, ring, toast, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, iconsize, space};
+use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
 const WIDTH: f32 = 440.;
 const COPIED_FOR: Duration = Duration::from_secs(2);
@@ -38,9 +39,12 @@ const ADDED_NOTES: f32 = font::BODY * font::LINE * 2. + font::CAPTION * font::LI
 const CODE_PAD: f32 = space::L;
 
 /// How the add-account sheet starts.
+#[derive(Clone)]
 pub enum Start {
     /// The choice between a Microsoft and an offline account.
     Choose,
+    /// The choice with the offline account picked and its name field open.
+    Offline,
     /// Straight into the Microsoft sign-in.
     Microsoft,
     /// Signs in the Microsoft accounts with these ids again, one after another.
@@ -53,8 +57,9 @@ pub enum Start {
 pub fn open(store: Store, start: Start) {
     let boot = match start {
         Start::Choose => Boot::default(),
+        Start::Offline => Boot { offline: true, ..Boot::default() },
         Start::Microsoft => Boot { microsoft: true, ..Boot::default() },
-        Start::Names(queue) => Boot { microsoft: true, pending: Pending { queue, ..Pending::default() } },
+        Start::Names(queue) => Boot { microsoft: true, pending: Pending { queue, ..Pending::default() }, ..Boot::default() },
         Start::Again(ids) => {
             let model = store.model.peek();
             let mut accounts: Vec<Account> = ids.iter().filter_map(|id| model.account(*id)).filter(|a| a.kind == AccountKind::Microsoft).cloned().collect();
@@ -62,7 +67,7 @@ pub fn open(store: Store, start: Start) {
                 return;
             }
             let first = accounts.remove(0);
-            Boot { microsoft: true, pending: Pending { again: Some(first), later: accounts, queue: Vec::new() } }
+            Boot { microsoft: true, pending: Pending { again: Some(first), later: accounts, queue: Vec::new() }, ..Boot::default() }
         }
     };
     sheet::open(store.ui, AddAccount { boot });
@@ -71,6 +76,7 @@ pub fn open(store: Store, start: Start) {
 #[derive(Clone, Default, PartialEq)]
 struct Boot {
     microsoft: bool,
+    offline: bool,
     pending: Pending,
 }
 
@@ -133,7 +139,6 @@ enum Copied {
 enum Step {
     Choose,
     Offline,
-    Saved(Vec<(String, String)>),
     Microsoft(Ms),
 }
 
@@ -270,6 +275,10 @@ impl Flow {
                     Done::Next => self.start(Via::Window),
                     Done::Added => {
                         let left = *self.opened_private.peek();
+                        if !left && self.pending.peek().queue.is_empty() {
+                            self.done(trf("%@ hinzugefügt", &[&name]), Vec::new(), Start::Microsoft);
+                            return;
+                        }
                         self.private_left_open.set(left);
                         self.added.write().push(name.clone());
                         self.go(Step::Microsoft(Ms::Added(name)));
@@ -375,21 +384,18 @@ impl Flow {
             self.saving.set(false);
             match result {
                 Ok(Ok(accounts)) if !accounts.is_empty() => {
-                    let saved: Vec<(String, String)> = accounts.into_iter().map(|a| (a.id.to_string(), a.name)).collect();
-                    self.added.write().extend(saved.iter().map(|(_, name)| name.clone()));
-                    self.go(Step::Saved(saved));
+                    let text = match accounts.as_slice() {
+                        [only] => trf("%@ hinzugefügt", &[&only.name]),
+                        _ => trf("%lld Offline-Accounts hinzugefügt.", &[&accounts.len()]),
+                    };
+                    let ids: Vec<String> = accounts.iter().map(|a| a.id.to_string()).collect();
+                    self.done(text, ids, Start::Offline);
                 }
                 Ok(Ok(_)) => self.save_error.set(Some(Problem::plain(tr("Diese Namen gibt es inzwischen schon.")))),
                 Ok(Err(e)) => self.save_error.set(Some(forms::explain(&e))),
                 Err(_) => self.save_error.set(Some(Problem::plain(tr("Das Hinzufügen ließ sich nicht abschließen.")))),
             }
         });
-    }
-
-    fn another(mut self) {
-        self.name.set(String::new());
-        self.save_error.set(None);
-        self.go(Step::Offline);
     }
 
     fn run_check(mut self) {
@@ -424,6 +430,18 @@ impl Flow {
     fn onward(self, added: Vec<String>) {
         self.stop();
         crate::view::sheets::after_first_account(self.store, added);
+    }
+
+    /// Leaves the sheet after accounts were added: on the first run straight on to the first instance, else closed, with
+    /// a toast that offers `again` for the next one.
+    fn done(self, text: String, added: Vec<String>, again: Start) {
+        let store = self.store;
+        if first_run(store) {
+            self.onward(added);
+        } else {
+            self.finish();
+        }
+        toast::show_action(store.ui, text, tr("Noch einen"), EventHandler::new(move |_| open(store, again.clone())));
     }
 }
 
@@ -560,7 +578,7 @@ impl Component for AddAccount {
         let boot = &self.boot;
         let flow = Flow {
             store,
-            step: use_state(|| if boot.microsoft { Step::Microsoft(Ms::Requesting) } else { Step::Choose }),
+            step: use_state(|| if boot.microsoft { Step::Microsoft(Ms::Requesting) } else if boot.offline { Step::Offline } else { Step::Choose }),
             pending: use_state(|| boot.pending.clone()),
             added: use_state(Vec::new),
             copied: use_state(|| None),
@@ -600,9 +618,8 @@ impl Component for AddAccount {
         });
         let step = flow.step.read().clone();
         let parts = match &step {
-            Step::Choose => choose(flow, &t, choices),
-            Step::Offline => offline(flow, &t, !microsoft),
-            Step::Saved(added) => saved(flow, &t, added),
+            Step::Choose => choose(flow, &t, choices, false),
+            Step::Offline => choose(flow, &t, choices, true),
             Step::Microsoft(ms) => microsoft_parts(flow, &t, ms, !microsoft),
         };
         let mut body = rect().width(Size::fill()).spacing(space::M).child(parts.body);
@@ -626,7 +643,7 @@ impl Component for AddAccount {
     }
 }
 
-fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
+fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2], offline: bool) -> Parts {
     let problem = flow.proxy_problem();
     let blocked = problem.is_some();
     let open = *flow.advanced.read() || blocked;
@@ -644,7 +661,8 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
             title: tr("Microsoft-Account"),
             subtitle: tr("Für alle Server. Du meldest dich bei Microsoft an."),
             disabled: problem.clone(),
-            first: !open,
+            first: !open && !offline,
+            selected: false,
             on_press: EventHandler::new(move |_| flow.start(Via::Window)),
         })
         .child(Choice {
@@ -657,15 +675,23 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
             subtitle: tr("Nur für Server ohne Anmeldeprüfung."),
             disabled: problem.clone(),
             first: false,
+            selected: offline,
             on_press: EventHandler::new(move |_| {
                 let mut step = flow.step;
-                step.set(Step::Offline);
+                step.set_if_modified(Step::Offline);
             }),
         });
     let label = if filled && !open { tr("Erweitert · Proxy gesetzt") } else { tr("Erweitert") };
     let mut advanced = flow.advanced;
     let disclosure = Button::new("account.add.advanced", label).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| advanced.set(!open));
-    let mut body = rect().width(Size::fill()).spacing(space::S).child(cards).child(rect().horizontal().child(disclosure));
+    let mut body = rect().width(Size::fill()).spacing(space::S).child(cards);
+    let mut primary = None;
+    if offline {
+        let (form, ready) = offline_form(flow, t);
+        body = body.child(rect().width(Size::fill()).padding((space::S, 0., space::XS, 0.)).child(form));
+        primary = Some(("account.add.ok", ready));
+    }
+    body = body.child(rect().horizontal().child(disclosure));
     if open {
         let check = flow.check.read().clone();
         let running = check == Check::Running;
@@ -685,7 +711,7 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2]) -> Parts {
         }
         body = body.child(block);
     }
-    Parts { title: tr("Account hinzufügen"), message: None, body: body.into_element(), back: false, secondary: None, primary: None }
+    Parts { title: tr("Account hinzufügen"), message: None, body: body.into_element(), back: false, secondary: None, primary }
 }
 
 #[derive(Clone, PartialEq)]
@@ -699,6 +725,7 @@ struct Choice {
     subtitle: String,
     disabled: Option<String>,
     first: bool,
+    selected: bool,
     on_press: EventHandler<()>,
 }
 
@@ -718,7 +745,7 @@ impl Component for Choice {
             .a11y_id(own)
             .a11y_focusable(enabled)
             .a11y_role(AccessibilityRole::RadioButton)
-            .a11y_alt(self.title.clone())
+            .a11y_alt(if self.selected { format!("{}, {}", self.title, tr("ausgewählt")) } else { self.title.clone() })
             .a11y_auto_focus(self.first && enabled)
             .width(Size::fill())
             .horizontal()
@@ -727,7 +754,7 @@ impl Component for Choice {
             .padding(space::M)
             .corner_radius(t.shape.tile)
             .background(if enabled && *pressed.read() { t.press } else if enabled && *hovered.read() { t.hover } else { Color::TRANSPARENT })
-            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
+            .border(if self.selected { Border::new().fill(t.accent).width(frame::BOX_EDGE).alignment(BorderAlignment::Inner) } else { Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner) })
             .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed })
             .content(Content::flex())
             .on_sized(spot)
@@ -761,6 +788,8 @@ impl Component for Choice {
             e.stop_propagation();
             e.prevent_default();
             if let Some(id) = target {
+                let mut mode = Platform::get().current_window().navigation_mode;
+                mode.set_if_modified(NavigationMode::Keyboard);
                 id.request_focus();
             }
         });
@@ -769,11 +798,11 @@ impl Component for Choice {
         }
         card.child(rect().width(Size::px(control::L)).height(Size::px(control::L)).center().corner_radius(t.shape.control).background(if enabled { t.accent.with_af32(TILE_WASH) } else { t.control }).child(icon(&t, self.glyph, iconsize::L, if enabled { t.accent_text } else { t.text3 })))
             .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(strong(&t, self.title.clone(), font::BODY, ink)).child(para(&t, self.subtitle.clone(), font::CALLOUT, quiet)))
-            .child(icon(&t, Icon::ChevronRight, iconsize::M, t.text3))
+            .child(if self.selected { icon(&t, Icon::Check, iconsize::M, t.accent_text) } else { icon(&t, Icon::ChevronRight, iconsize::M, t.text3) })
     }
 }
 
-fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
+fn offline_form(flow: Flow, t: &Theme) -> (Element, Primary) {
     let text = flow.name.read().clone();
     let saving = *flow.saving.read();
     let error = flow.save_error.read().clone();
@@ -806,45 +835,11 @@ fn offline(flow: Flow, t: &Theme, can_back: bool) -> Parts {
         (problem, tr("Hinzufügen"))
     };
     drop(model);
-    body = body.child(note(t, tr("Nur für Server ohne Anmeldeprüfung.")));
     if let Some(why) = &error {
         body = body.child(problem_view(t, "account.add.error", why, flow.details));
     }
-    if let Some(proxy) = flow.chosen_proxy() {
-        body = body.child(para(t, trf("Proxy: %@", &[&forms::proxy_display(&proxy)]), font::CALLOUT, t.text2));
-    }
     let reason = if saving { Some(tr("Wird hinzugefügt …")) } else { unready };
-    let label = add_label;
-    Parts {
-        title: tr("Offline-Account"),
-        message: Some(tr("Ohne Anmeldung, nur mit Namen.")),
-        body: body.into_element(),
-        back: can_back,
-        secondary: None,
-        primary: Some(("account.add.ok", act(label, reason, move || flow.add_offline()))),
-    }
-}
-
-fn saved(flow: Flow, t: &Theme, added: &[(String, String)]) -> Parts {
-    let text = match added {
-        [_] => tr("Spielt auf Servern ohne Anmeldeprüfung."),
-        _ => trf("%lld Offline-Accounts hinzugefügt.", &[&added.len()]),
-    };
-    let onward = first_run(flow.store);
-    let ids: Vec<String> = added.iter().map(|(id, _)| id.clone()).collect();
-    let primary = if onward { act(tr("Weiter"), None, move || flow.onward(ids.clone())) } else { act(tr("Fertig"), None, move || flow.finish()) };
-    let title = match added {
-        [(_, name)] => trf("%@ hinzugefügt", &[name]),
-        _ => tr("Offline-Account"),
-    };
-    Parts {
-        title,
-        message: None,
-        body: rect().width(Size::fill()).padding((space::S, 0.)).child(notice(t, Icon::CircleCheck, t.success_text, text)).into_element(),
-        back: false,
-        secondary: Some(("account.add.again", act(tr("Noch einen"), None, move || flow.another()))),
-        primary: Some(("account.add.ok", primary)),
-    }
+    (body.into_element(), act(add_label, reason, move || flow.add_offline()))
 }
 
 fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {

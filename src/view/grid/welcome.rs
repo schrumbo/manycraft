@@ -10,7 +10,7 @@ use crate::view::commands::{self, Command, Want};
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::text::{caption, heading, line, para, secondary};
-use crate::view::kit::use_theme;
+use crate::view::kit::{at_least, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
@@ -45,28 +45,25 @@ impl Component for Welcome {
         let play = first.clone().map(|(id, _)| Button::new("welcome.play", tr("Spielen")).glyph(Icon::Play).primary().on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: id.clone(), account: None })));
         let play_label = first.as_ref().map_or_else(|| tr("Spielen"), |(_, name)| trf("%@ spielen", &[name]));
 
+        let account_action = (next == 0).then(|| {
+            let row = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
+            let row = if prism { row.child(Button::new("welcome.prism", tr("Aus Prism")).plain().glyph(Icon::Download).tip(Command::ImportPrism.label()).on_press(move |_| Command::ImportPrism.run(store))) } else { row };
+            row.child(add).into_element()
+        });
         let mut steps = rect().width(Size::fill()).spacing(space::XS);
-        steps = steps.child(step(&t, 0, (has_account, next == 0), tr("Account hinzufügen"), (next == 0).then(|| add.into_element())));
+        steps = steps.child(step(&t, 0, (has_account, next == 0), tr("Account hinzufügen"), account_action));
         steps = steps.child(step(&t, 1, (has_instance, next == 1), tr("Instanz erstellen"), (next == 1).then(|| create.into_element())));
         steps = steps.child(step(&t, 2, (false, next == 2), play_label, play.filter(|_| next == 2).map(IntoElement::into_element)));
 
         let mut extra = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
-        let mut any = false;
-        if next == 0 && prism {
-            extra = extra.child(Button::new("welcome.prism", tr("Aus Prism übernehmen")).plain().glyph(Icon::Download).on_press(move |_| Command::ImportPrism.run(store)));
-            any = true;
-        }
-        if next == 1 && commands::can_want(&Want::Import) {
-            extra = extra.child(Button::new("welcome.import", tr("Instanz importieren…")).plain().glyph(Icon::Download).tip(Command::Import.tip()).on_press(move |_| {
+        if next < 2 {
+            extra = extra.child(Button::new("welcome.import", tr("Aus anderem Launcher übernehmen…")).plain().glyph(Icon::Download).disabled(commands::want_blocked(&Want::Import)).tip(Command::Import.tip()).on_press(move |_| {
                 commands::want(store, Want::Import);
             }));
-            any = true;
-        }
-        if next == 2 && commands::can_want(&Want::NewBatch) {
+        } else if commands::can_want(&Want::NewBatch) {
             extra = extra.child(Button::new("welcome.batch", tr("Mehrere Accounts als Batch…")).plain().glyph(Icon::Layers).tip(Command::NewBatch.tip()).on_press(move |_| {
                 commands::want(store, Want::NewBatch);
             }));
-            any = true;
         }
 
         let mut card = rect()
@@ -83,9 +80,7 @@ impl Component for Welcome {
         if let Some(e) = t.elevation.card.clone() {
             card = card.shadow(e);
         }
-        if any {
-            card = card.child(extra);
-        }
+        card = card.child(at_least(control::M, extra));
         let mut page = rect().width(Size::fill()).height(Size::fill()).center().padding(space::L).spacing(space::M).child(card);
         if next == 2 {
             page = page.child(caption(&t, tr("Prüfe die Regeln deines Servers, bevor du mehrere Accounts nutzt.")));

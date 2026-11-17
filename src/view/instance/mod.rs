@@ -176,7 +176,7 @@ pub struct Facts {
     pub expired: Vec<Uuid>,
     /// Accounts whose game of it runs in a batch, with the batch's name; they cannot play it alone now.
     pub busy: Vec<(Uuid, String)>,
-    /// The account Play starts: `solo`, or the first free one while `solo` is busy.
+    /// The account Play starts: `solo`, or the first free one while `solo` is busy or has to sign in again.
     pub pick: Option<Uuid>,
 }
 
@@ -219,14 +219,7 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
     let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
     let expired: Vec<Uuid> = m.accounts.iter().filter(|a| m.sign_in_expired(a.id)).map(|a| a.id).collect();
     let busy: Vec<(Uuid, String)> = m.accounts.iter().filter_map(|a| m.playing_elsewhere(&made.id, a.id, &crate::core::fleet::solo_key(&made, a.id)).map(|place| (a.id, place))).collect();
-    let free = |a: &Uuid| !busy.iter().any(|(b, _)| b == a) && !playing.contains(a);
-    let pick = match solo {
-        Some(s) if busy.iter().any(|(b, _)| *b == s) => {
-            let ids: Vec<Uuid> = m.accounts.iter().map(|a| a.id).filter(|a| free(a)).collect();
-            ids.iter().find(|a| !expired.contains(a)).or(ids.first()).copied()
-        }
-        other => other,
-    };
+    let pick = crate::app::reduce::solo_pick(m, &made);
     Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, expired, busy, pick })
 }
 
