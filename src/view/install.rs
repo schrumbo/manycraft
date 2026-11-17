@@ -377,16 +377,41 @@ struct Slot {
 
 impl Component for Slot {
     fn render(&self) -> impl IntoElement {
-        let t = use_theme();
         let store = use_store();
         let entry = &self.entry;
         let id = entry.id;
-        let state = entry.state();
-        let spot = use_spot(&format!("install.{id}.progress"), "progressbar", &state, false);
         let share = match entry.stage {
             Stage::Running(Some(p)) if !entry.stopping() => f32::from(p.min(100)),
             _ => 0.,
         };
+        let stopping = entry.stopping();
+        Progress {
+            id: format!("install.{id}"),
+            state: entry.state(),
+            share,
+            stopping,
+            on_cancel: EventHandler::new(move |_| cancel(store, id)),
+        }
+        .into_element()
+    }
+}
+
+/// A Play slot that shows work on its way: a bar filled to `share` percent with `state` on it, and Abbrechen.
+#[derive(PartialEq)]
+pub struct Progress {
+    pub id: String,
+    pub state: String,
+    pub share: f32,
+    pub stopping: bool,
+    pub on_cancel: EventHandler<()>,
+}
+
+impl Component for Progress {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let state = self.state.clone();
+        let spot = use_spot(&format!("{}.progress", self.id), "progressbar", &state, false);
+        let share = self.share;
         let bar = rect()
             .a11y_role(AccessibilityRole::ProgressIndicator)
             .a11y_alt(state.clone())
@@ -398,8 +423,8 @@ impl Component for Slot {
             .on_sized(spot)
             .child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::percent(share)).height(Size::fill()).background(t.accent.with_af32(frame::TILE_WASH * 2.)))
             .child(rect().width(Size::fill()).height(Size::fill()).center().child(figure(&t, state, font::BODY, t.text1).font_weight(FontWeight::MEDIUM)));
-        let stopping = entry.stopping();
-        let stop = Button::new(format!("install.{id}.cancel"), tr("Abbrechen")).disabled(stopping.then(|| tr("Bricht ab …"))).on_press(move |_| cancel(store, id));
+        let press = self.on_cancel.clone();
+        let stop = Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).disabled(self.stopping.then(|| tr("Bricht ab …"))).on_press(move |_| press.call(()));
         rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(bar).child(stop).into_element()
     }
 }

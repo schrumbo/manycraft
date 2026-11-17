@@ -19,6 +19,8 @@ use crate::view::kit::{Bounds, ring, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{control, font, frame, iconsize, space};
 
+const LOADING_W: f32 = 320.;
+
 const ACCOUNTS_SEARCH_FROM: usize = 6;
 
 fn tip(label: String, shortcut: Shortcut) -> String {
@@ -184,6 +186,19 @@ impl Component for Hero {
                 Button::new("instance.play", tr("Wird gestoppt…")).glyph(Icon::Stop).tall().disabled(Some(tr("Das Spiel speichert und beendet sich.")))
             };
             return row.child(b).into_element();
+        }
+        if let Some(p) = super::loading(&store.model.read(), &self.id) {
+            let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();
+            return rect()
+                .width(Size::px(LOADING_W))
+                .child(crate::view::install::Progress {
+                    id: "instance.loading".into(),
+                    state: trf("Lädt Minecraft · %lld %%", &[&p]),
+                    share: f32::from(p.min(100)),
+                    stopping: false,
+                    on_cancel: EventHandler::new(move |_| store.dispatch(AppEvent::Stop(keys.clone()))),
+                })
+                .into_element();
         }
         if let Some((first, _)) = f.stoppable.first().cloned() {
             let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();

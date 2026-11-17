@@ -400,6 +400,8 @@ pub(super) struct ProjectPage {
     pub facts: Rc<Facts>,
     pub have: Option<String>,
     pub mods: Rc<HashSet<String>>,
+    /// Shown beside the results instead of over them.
+    pub pane: bool,
 }
 
 impl Component for ProjectPage {
@@ -424,8 +426,14 @@ impl Component for ProjectPage {
 
         let back = {
             let flow = self.flow.clone();
-            let tip = trf("Zurück zu den Ergebnissen · %@", &[&Shortcut::bare(Code::Escape).label()]);
-            Button::new("browser.project.back", tr("Ergebnisse")).plain().glyph(Icon::ChevronLeft).tip(tip).on_press(move |_| flow.close_page())
+            let row = rect().width(Size::fill()).padding((space::XS, space::XS, 0., space::XS)).horizontal();
+            if self.pane {
+                let tip = trf("Schließen · %@", &[&Shortcut::bare(Code::Escape).label()]);
+                row.main_align(Alignment::End).child(Button::icon("browser.project.close", Icon::Close, tr("Schließen")).plain().tip(tip).on_press(move |_| flow.close_page()))
+            } else {
+                let tip = trf("Zurück zu den Ergebnissen · %@", &[&Shortcut::bare(Code::Escape).label()]);
+                row.child(Button::new("browser.project.back", tr("Ergebnisse")).plain().glyph(Icon::ChevronLeft).tip(tip).on_press(move |_| flow.close_page()))
+            }
         };
 
         let (downloads, updated, saved) = match &*pg.details.read() {
@@ -489,7 +497,7 @@ impl Component for ProjectPage {
             .height(Size::fill())
             .content(Content::flex())
             .on_sized(spot)
-            .child(rect().padding((space::XS, space::XS, 0., space::XS)).horizontal().child(back))
+            .child(back)
             .child(header)
             .child(rect().padding((0., space::M, space::S, space::M)).horizontal().child(sections))
             .child(hairline(&t))
