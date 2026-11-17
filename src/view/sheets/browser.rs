@@ -109,6 +109,8 @@ pub(super) struct Scope {
     pub create: bool,
     /// Shown as the Modpacks page instead of on a sheet.
     pub page: bool,
+    /// Inside Entdecken, whose own tabs pick the kind.
+    pub outer: bool,
     pub made: Option<Instance>,
     pub version: String,
     pub loader: Loader,
@@ -1833,6 +1835,7 @@ impl Component for PacksPage {
         let scope = Scope {
             create: false,
             page: true,
+            outer: false,
             made: None,
             version,
             loader,
@@ -1899,6 +1902,13 @@ impl Component for Browser {
         let mut slot = store.ui.browser_undo;
         use_side_effect_with_deps(&top, move |top| slot.set(top.clone().map(|label| BrowserUndo { label, run: undo_run.clone() })));
         use_drop(move || slot.set(None));
+        let outer = self.scope.outer;
+        let follow = flow.clone();
+        use_side_effect_with_deps(&self.scope.kind, move |k| {
+            if outer {
+                follow.tab(*k);
+            }
+        });
         let shelf = flow.clone();
         use_hook(move || shelf.shelf());
         let back = *store.back.read();
@@ -1928,7 +1938,7 @@ impl Component for Browser {
             }
         });
         let kinds = flow.scope.kinds();
-        if kinds.len() > 1 {
+        if kinds.len() > 1 && !self.scope.outer {
             let segments = kinds.iter().map(|k| Segment { id: format!("browser.tab.{}", k.project_type()), label: kind_name(*k), tip: None }).collect();
             let at = kinds.iter().position(|k| *k == kind).unwrap_or(0);
             let pick = flow.clone();

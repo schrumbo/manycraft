@@ -669,6 +669,7 @@ impl Component for Create {
             let scope = Scope {
                 create: true,
                 page: false,
+                outer: false,
                 made: None,
                 version: version.clone(),
                 loader: loader.clone(),

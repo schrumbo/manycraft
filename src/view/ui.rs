@@ -156,6 +156,8 @@ pub struct Ui {
     pub browser_undo: State<Option<BrowserUndo>>,
     /// Whether version pickers also offer snapshots, pre-releases and old versions; remembered in the settings.
     pub all_versions: State<bool>,
+    /// The instance Entdecken adds mods, packs and shaders to, kept for the session.
+    pub discover: State<crate::view::discover::Pick>,
     /// The deletions still to undo, newest first; the palette and Ctrl or Cmd+Z reach them after their toasts are gone.
     pub session_undo: State<Vec<SessionUndo>>,
     /// When the last tooltip went away, so the next one shows at once.
@@ -213,6 +215,7 @@ impl Ui {
             tip: State::create(None),
             browser_undo: State::create(None),
             all_versions: State::create(crate::core::settings::loaded().all_versions),
+            discover: State::create(crate::view::discover::Pick::new()),
             session_undo: State::create(Vec::new()),
             tip_seen: State::create(None),
             installs: State::create(Vec::new()),

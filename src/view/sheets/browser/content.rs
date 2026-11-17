@@ -30,6 +30,7 @@ pub fn show(store: Store, id: &str, kind: Kind) {
     crate::view::kit::sheet::close(store.ui);
     let mut page = store.ui.page;
     page.set(Page::Browse(id.to_owned(), kind));
+    crate::view::discover::target(store, id);
 }
 
 fn running(store: Store, id: &str) -> bool {
@@ -324,6 +325,8 @@ impl Keep {
 pub struct ContentPage {
     pub id: String,
     pub kind: Kind,
+    /// Shown inside Entdecken, which has its own tabs and leaves nothing to go back to.
+    pub outer: bool,
 }
 
 impl Component for ContentPage {
@@ -382,9 +385,11 @@ impl Component for ContentPage {
         let saving = *keep.saving.read();
         let pending = *keep.mods.read() != *keep.saved.read();
         let back = made.id.clone();
+        let outer = self.outer;
         let scope = Scope {
             create: false,
             page: true,
+            outer: self.outer,
             made: Some(made.clone()),
             version: made.game_version.clone(),
             loader: made.loader.clone(),
@@ -402,8 +407,10 @@ impl Component for ContentPage {
             filters: None,
             on_update: EventHandler::new(move |pid: String| keep.update(pid)),
             back: EventHandler::new(move |_| {
-                let mut page = store.ui.page;
-                page.set(Page::Instance(back.clone()));
+                if !outer {
+                    let mut page = store.ui.page;
+                    page.set(Page::Instance(back.clone()));
+                }
             }),
             done: EventHandler::new(|_| {}),
         };
