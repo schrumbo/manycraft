@@ -16,6 +16,7 @@ const KEPT: &str = "previous";
 const KEEPING: &str = "previous-new";
 const HELPER: &str = "helper";
 const LOG: &str = "update.log";
+const FOLDERS_SINCE: &str = "0.9.4";
 const RUNNING: &str = "running.lock";
 const WAIT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(100);
@@ -90,6 +91,9 @@ pub fn rollback_plan(state: &State, here: &Here, current: &str, relaunch: bool) 
 
 /// Starts the helper that carries out `plan` once this process has ended.
 pub fn spawn(dir: &Path, plan: &Plan) -> Result<()> {
+    if plan.rollback && release::is_newer(FOLDERS_SINCE, &plan.version) {
+        crate::core::folders::undo_all()?;
+    }
     let helper_dir = dir.join(HELPER);
     std::fs::create_dir_all(&helper_dir).with_context(|| format!("cannot create {}", helper_dir.display()))?;
     let helper = helper_dir.join(if cfg!(windows) { "manycraft-update.exe" } else { "manycraft-update" });
