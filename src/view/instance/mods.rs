@@ -368,6 +368,7 @@ impl Component for Mods {
                 .child(Button::new("instance.mods.bulk.delete", tr("Löschen")).plain().danger().disabled(lock.clone()).on_press(move |_| del.delete(del.targets())));
         }
 
+        let bare = scan.entries().is_empty() && !loading;
         let body: Element = if scan.entries().is_empty() && loading {
             rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Mods werden gelesen …"))).into_element()
         } else if scan.entries().is_empty() {
@@ -393,23 +394,27 @@ impl Component for Mods {
         };
 
         let keys = ctx.clone();
-        let list = rect()
-            .a11y_id(list_focus)
-            .a11y_focusable(true)
-            .a11y_role(AccessibilityRole::List)
-            .a11y_alt(tr("Mods"))
-            .width(Size::fill())
-            .height(Size::flex(1.))
-            .padding(INSET)
-            .corner_radius(t.shape.tile)
-            .overflow(Overflow::Clip)
-            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
-            .on_key_down(move |e: Event<KeyboardEventData>| {
-                if keys.key_down(&e, keys.list_focus.is_focused()) {
-                    e.stop_propagation();
-                }
-            })
-            .child(body);
+        let list = if bare {
+            rect().width(Size::fill()).height(Size::flex(1.)).child(body)
+        } else {
+            rect()
+                .a11y_id(list_focus)
+                .a11y_focusable(true)
+                .a11y_role(AccessibilityRole::List)
+                .a11y_alt(tr("Mods"))
+                .width(Size::fill())
+                .height(Size::flex(1.))
+                .padding(INSET)
+                .corner_radius(t.shape.tile)
+                .overflow(Overflow::Clip)
+                .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
+                .on_key_down(move |e: Event<KeyboardEventData>| {
+                    if keys.key_down(&e, keys.list_focus.is_focused()) {
+                        e.stop_propagation();
+                    }
+                })
+                .child(body)
+        };
 
         let drop_ctx = ctx.clone();
         let mut root = rect()
@@ -441,7 +446,10 @@ impl Component for Mods {
         if let Some(inline) = updates::inline(&t, &ctx, lock.clone()) {
             root = root.child(inline);
         }
-        root = root.child(counts).child(list);
+        if !bare {
+            root = root.child(counts);
+        }
+        root = root.child(list);
         if *dropping.read() {
             root = root.child(
                 rect()

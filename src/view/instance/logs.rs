@@ -593,7 +593,7 @@ impl Component for Logs {
         if empty {
             let body = centered(&t, Icon::Rows, tr("Noch keine Protokolle"), tr("Sobald ein Account diese Instanz einmal gestartet hat, stehen seine Protokolle hier."), super::play::empty_action(store, f, "instance.logs.empty.play"));
             let mut column = root;
-            if !shown.accounts.is_empty() {
+            if shown.accounts.len() > 1 {
                 column = column.child(bar);
             }
             return column.child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex()).into_element();

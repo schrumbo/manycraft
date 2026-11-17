@@ -12,7 +12,7 @@ use super::{Facts, snapshots, version_text};
 use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
-use crate::core::instance::{Instance, LOADERS, Loader};
+use crate::core::instance::{Instance, Loader};
 use crate::core::javas::{Java, mismatch};
 use crate::core::options::{self, Gpu, LaunchOptions, Renderer};
 use crate::core::snapshot::Reason;
@@ -23,10 +23,11 @@ use crate::ui::remote;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
+use crate::view::kit::group::{Line, group};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet;
-use crate::view::kit::switch::SwitchLabel;
+use crate::view::kit::switch::Switch as Toggle;
 use crate::view::kit::text::{caption, line, strong};
 use crate::view::kit::{after, off_ui, use_theme};
 use crate::view::native;
@@ -36,6 +37,7 @@ use crate::view::theme::{Theme, control, font, iconsize, space};
 
 const TYPING: Duration = Duration::from_millis(800);
 const ICON: f32 = 64.;
+const MOD_LOADERS: [Loader; 4] = [Loader::Fabric(None), Loader::Quilt(None), Loader::NeoForge(None), Loader::Forge(None)];
 
 #[derive(Clone)]
 enum Load<T> {
@@ -77,6 +79,35 @@ fn setting(t: &Theme, label: String, reset: Option<Element>, control: Element, h
         col = col.child(n);
     }
     col.into_element()
+}
+
+/// A row of a settings group: `control` on the right with its "Standard" reset before it, and a hint or a problem
+/// under the label.
+fn row(t: &Theme, key: &str, label: String, reset: Option<Element>, control: impl IntoElement, hint: Option<String>, problem: Option<String>) -> Line {
+    let mut right = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
+    if let Some(r) = reset {
+        right = right.child(r);
+    }
+    let mut line = Line::new(format!("instance.settings.{key}.row"), label).control(right.child(control));
+    match (problem, hint) {
+        (Some(p), _) => line = line.hint(p).hint_tone(t.danger_text),
+        (None, Some(h)) => line = line.hint(h),
+        (None, None) => {}
+    }
+    line
+}
+
+/// A row as [`row`] draws it, with a wide `field` across the row under the label.
+fn wide(t: &Theme, key: &str, label: String, reset: Option<Element>, field: Element, hint: Option<String>, problem: Option<String>) -> Element {
+    let mut below = rect().width(Size::fill()).spacing(space::XS).child(field);
+    if let Some(n) = note(t, hint, problem) {
+        below = below.child(n);
+    }
+    let mut line = Line::new(format!("instance.settings.{key}.row"), label).below(below);
+    if let Some(r) = reset {
+        line = line.control(r);
+    }
+    line.into_element()
 }
 
 fn reset(key: &str, label: String, run: impl FnMut(()) + 'static) -> Element {
@@ -261,7 +292,7 @@ fn save_window(store: Store, id: &str, width: &str, height: &str) -> Option<Stri
     None
 }
 
-/// The Einstellungen tab: Minecraft version and loader up top, start options under "Erweitert".
+/// The Einstellungen tab: version and loader, then the game, and start options under "Erweitert".
 #[derive(PartialEq)]
 pub struct Settings {
     pub facts: Facts,
@@ -276,6 +307,7 @@ impl Component for Settings {
         let id = made.id.clone();
         let nav = store.ui.instance;
         let why = super::blocked(store, &id);
+        let others = use_state(|| false);
 
         let mut catalog = use_state(|| Load::<Vec<GameVersion>>::Loading);
         let mut asked = use_state(|| 0u32);
@@ -306,8 +338,9 @@ impl Component for Settings {
 
         let mut col = rect().width(Size::fill()).padding(space::XL).spacing(space::XL).child(Identity { made: made.clone() });
 
+        let all = *store.ui.all_versions.read();
+        let mut version_problem = None;
         let version_control: Element = {
-            let all = *store.ui.all_versions.read();
             let catalog = catalog.read().clone();
             let list: Option<Vec<GameVersion>> = match &catalog {
                 Load::Ready(list) => {
@@ -321,60 +354,54 @@ impl Component for Settings {
                     let labels = list.iter().map(version_text).collect();
                     let at = list.iter().position(|v| v.id == made.game_version).unwrap_or(0);
                     let pick = id.clone();
-                    rect()
-                        .spacing(space::XS)
-                        .child(Select::new("instance.settings.version", tr("Minecraft-Version"), labels, at).width(control::VERSION_MENU).disabled(why.clone()).on_choose(move |i| {
+                    Select::new("instance.settings.version", tr("Minecraft-Version"), labels, at)
+                        .width(control::VERSION_MENU)
+                        .disabled(why.clone())
+                        .on_choose(move |i| {
                             if let Some(v) = list.get(i) {
                                 pick_version(store, &pick, v.id.clone());
                             }
-                        }))
-                        .child(SwitchLabel {
-                            id: "instance.settings.everything",
-                            text: tr("Snapshots und alte Versionen zeigen"),
-                            on: all,
-                            disabled: why.clone(),
-                            on_toggle: EventHandler::new(move |on: bool| remember_all_versions(store, on)),
                         })
                         .into_element()
                 }
-                (None, Load::Failed(e)) => rect()
-                    .spacing(space::XS)
-                    .child(line(&t, made.game_version.clone(), font::BODY, t.text1))
-                    .child(rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(line(&t, e.clone(), font::CAPTION, t.danger_text)).child(Button::new("instance.settings.versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).plain().on_press(move |_| {
-                        let next = asked.peek().wrapping_add(1);
-                        asked.set(next);
-                    })))
-                    .into_element(),
+                (None, Load::Failed(e)) => {
+                    version_problem = Some(e.clone());
+                    rect()
+                        .horizontal()
+                        .cross_align(Alignment::Center)
+                        .spacing(space::S)
+                        .child(line(&t, made.game_version.clone(), font::BODY, t.text1))
+                        .child(Button::new("instance.settings.versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).plain().on_press(move |_| {
+                            let next = asked.peek().wrapping_add(1);
+                            asked.set(next);
+                        }))
+                        .into_element()
+                }
                 _ => rect().height(Size::px(control::M)).center().child(caption(&t, tr("Versionen werden geladen …"))).into_element(),
             }
         };
-        let chosen = LOADERS.iter().position(|l| made.loader.same_kind(l)).unwrap_or(0);
-        let segments = LOADERS.iter().map(|l| Segment { id: format!("instance.settings.loader.{}", l.name().to_lowercase()), label: l.name().to_owned(), tip: None }).collect();
-        let pick = id.clone();
-        let loader_control = Segmented::new(tr("Loader"), segments, chosen).disabled(why.clone()).on_choose(move |i| {
-            if let Some(l) = LOADERS.get(i) {
-                pick_loader(store, &pick, l.clone());
-            }
-        });
-        let game = rect()
-            .width(Size::fill())
-            .horizontal()
-            .spacing(space::XL)
-            .child(rect().width(Size::px(control::VERSION_MENU)).spacing(space::XS).child(label_row(&t, tr("Minecraft-Version"), None)).child(version_control))
-            .child(rect().spacing(space::XS).child(label_row(&t, tr("Loader"), None)).child(loader_control));
-        let mut top = rect().width(Size::fill()).spacing(space::S).child(game);
+        let mut rows = vec![row(&t, "version", tr("Minecraft-Version"), None, version_control, None, version_problem).into_element()];
+        let snapshots = tr("Snapshots zeigen");
+        let mut everything = Line::new("instance.settings.everything.row", snapshots.clone())
+            .dim(why.is_some())
+            .control(Toggle::new("instance.settings.everything", snapshots, all).disabled(why.is_some()).on_toggle(move |on| remember_all_versions(store, on)));
+        if why.is_none() {
+            everything = everything.on_press(move |_| remember_all_versions(store, !all));
+        }
+        rows.push(everything.into_element());
+        rows.push(loader_row(&t, store, &made, why.clone(), others));
+        if made.loader.takes_mods() {
+            rows.push(LoaderVersion { made: made.clone(), why: why.clone() }.into_element());
+        }
+        let mut footer: Vec<String> = Vec::new();
         match (nav.busy.read().get(&id), &why) {
-            (Some(b), _) => top = top.child(caption(&t, b.text.clone())),
-            (None, Some(why)) => top = top.child(caption(&t, why.clone())),
+            (Some(b), _) => footer.push(b.text.clone()),
+            (None, Some(why)) => footer.push(why.clone()),
             (None, None) => {}
         }
-        for n in nav.notes.read().get(&id).into_iter().flatten() {
-            top = top.child(caption(&t, n.clone()));
-        }
-        col = col.child(top);
-        if let Some(account) = account_setting(&t, store, f) {
-            col = col.child(account);
-        }
+        footer.extend(nav.notes.read().get(&id).into_iter().flatten().cloned());
+        col = col.child(group(&t, Some(tr("Version & Loader")), rows, (!footer.is_empty()).then(|| footer.join(" "))));
+        col = col.child(Game { facts: f.clone() });
 
         let open = *nav.advanced.read();
         let mut adv = nav.advanced;
@@ -382,14 +409,48 @@ impl Component for Settings {
             let now = *adv.peek();
             adv.set(!now);
         });
-        let mut advanced = rect().width(Size::fill()).spacing(space::M).child(disclosure);
+        let mut advanced = rect().width(Size::fill()).spacing(space::S).child(rect().horizontal().child(disclosure));
         if open {
             advanced = advanced.child(Advanced { facts: f.clone() });
         }
         col = col.child(advanced);
-        col = col.child(caption(&t, tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste.")));
         ScrollView::new().width(Size::fill()).height(Size::fill()).child(col)
     }
+}
+
+/// The loader as the create sheet asks for it: with mods or without, and the other mod loaders one click deeper.
+fn loader_row(t: &Theme, store: Store, made: &Instance, why: Option<String>, mut others: State<bool>) -> Element {
+    let modded = made.loader.takes_mods();
+    let mod_name = if modded { made.loader.name() } else { Loader::default().name() };
+    let segments = vec![
+        Segment { id: "instance.settings.loader.mods".into(), label: trf("Mit Mods (%@)", &[&mod_name]), tip: None },
+        Segment { id: "instance.settings.loader.vanilla".into(), label: tr("Ohne Mods"), tip: None },
+    ];
+    let pick = made.id.clone();
+    let with_mods = if modded { made.loader.clone() } else { Loader::default() };
+    let control = Segmented::new(tr("Loader"), segments, usize::from(!modded)).disabled(why.clone()).on_choose(move |i| pick_loader(store, &pick, if i == 0 { with_mods.clone() } else { Loader::Vanilla }));
+    let mut line = row(t, "loader", tr("Loader"), None, control, None, None);
+    if modded {
+        let other = !made.loader.same_kind(&Loader::default());
+        let open = other || *others.read();
+        let mut below = rect().width(Size::fill()).spacing(space::XS);
+        if !other {
+            let toggle = Button::new("instance.settings.loader.others", tr("Andere Loader")).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| others.set(!open));
+            below = below.child(rect().horizontal().child(toggle));
+        }
+        if open {
+            let chosen = MOD_LOADERS.iter().position(|l| made.loader.same_kind(l)).unwrap_or(0);
+            let segments = MOD_LOADERS.iter().map(|l| Segment { id: format!("instance.settings.loader.{}", l.name().to_lowercase()), label: l.name().to_owned(), tip: None }).collect();
+            let pick = made.id.clone();
+            below = below.child(rect().horizontal().padding((0., 0., 0., space::L)).child(Segmented::new(tr("Mod-Loader"), segments, chosen).disabled(why).on_choose(move |i| {
+                if let Some(l) = MOD_LOADERS.get(i) {
+                    pick_loader(store, &pick, l.clone());
+                }
+            })));
+        }
+        line = line.below(below);
+    }
+    line.into_element()
 }
 
 fn pick_version(store: Store, id: &str, version: String) {
@@ -440,6 +501,130 @@ fn switch_safely(store: Store, id: String, switch: Switch) {
     });
 }
 
+/// The Spiel group: who plays the instance alone, its memory and its window.
+#[derive(PartialEq)]
+struct Game {
+    facts: Facts,
+}
+
+impl Component for Game {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let f = &self.facts;
+        let made = f.made.clone();
+        let id = made.id.clone();
+        let now: LaunchOptions = save::pending_options(store, &id, &made.options);
+        let busy = store.ui.instance.busy.read().contains_key(&id);
+        let standard = settings::active().game.clone();
+
+        let width = use_state(String::new);
+        let height = use_state(String::new);
+        let mut window_problem = use_state(|| None::<String>);
+        let w_draft = use_hook(Draft::default);
+        let h_draft = use_hook(Draft::default);
+        let other = h_draft.clone();
+        let w_submit = use_typed(width, now.window.map(|w| w.width.to_string()).unwrap_or_default(), id.clone(), window_problem, w_draft.clone(), move |id, w| save_window(store, id, w, &other.borrow()));
+        let other = w_draft;
+        let h_submit = use_typed(height, now.window.map(|w| w.height.to_string()).unwrap_or_default(), id.clone(), window_problem, h_draft, move |id, h| save_window(store, id, &other.borrow(), h));
+
+        let mut rows = vec![account_row(&t, store, f)];
+
+        let max = forms::memory_max(forms::total_ram_mb());
+        let own_mb = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory());
+        let shown_mb = own_mb.unwrap_or(standard.memory_mb);
+        let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
+        let less = wait().or_else(|| (shown_mb <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
+        let more = wait().or_else(|| (shown_mb >= max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(max)])));
+        let step = move |delta: i32, id: String| {
+            move |_| {
+                let Some(made) = store.model.peek().instance(&id).cloned() else { return };
+                let now = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory()).unwrap_or_else(|| settings::active().game.memory_mb);
+                let next = forms::memory_step(now, delta, max);
+                if next != now {
+                    let own = (next != settings::active().game.memory_mb).then_some(next);
+                    save::enqueue(store, &id, Job::Save(Change::Memory(own)));
+                }
+            }
+        };
+        let stepper = rect()
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::XS)
+            .child(Button::icon("instance.settings.memory.less", Icon::Minus, tr("Weniger Arbeitsspeicher")).disabled(less).on_press(step(-1, id.clone())))
+            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(&t, forms::memory_label(shown_mb), font::BODY, if own_mb.is_some() { t.text1 } else { t.text2 })))
+            .child(Button::icon("instance.settings.memory.more", Icon::Plus, tr("Mehr Arbeitsspeicher")).disabled(more).on_press(step(1, id.clone())));
+        let mem_id = id.clone();
+        let memory_reset = own_mb.filter(|mb| *mb != standard.memory_mb).map(|_| reset("memory", tr("Arbeitsspeicher"), move |_| save::enqueue(store, &mem_id, Job::Save(Change::Memory(None)))));
+        let memory_hint = match (own_mb, f.batches.is_empty()) {
+            (None, true) => Some(as_standard(forms::memory_label(standard.memory_mb))),
+            (None, false) => Some(format!("{} · {}", as_standard(forms::memory_label(standard.memory_mb)), tr("Pro Account in jedem Batch."))),
+            (Some(_), false) => Some(tr("Pro Account in jedem Batch.")),
+            (Some(_), true) => None,
+        };
+        rows.push(row(&t, "memory", tr("Arbeitsspeicher"), memory_reset, stepper, memory_hint, None).into_element());
+
+        let wr = id.clone();
+        let window_reset = now.window.filter(|w| Some(*w) != standard.window).map(|_| {
+            reset("window", tr("Fenstergröße beim Start"), move |_| {
+                window_problem.set_if_modified(None);
+                save::enqueue(store, &wr, Job::Save(Change::Option(OptionChange::Window(None))));
+            })
+        });
+        let size = rect()
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .child(Field::new("instance.settings.window.width", width).placeholder(standard.window.map_or_else(|| tr("Breite"), |w| w.width.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| w_submit.call(s)))
+            .child(line(&t, "×", font::BODY, t.text3))
+            .child(Field::new("instance.settings.window.height", height).placeholder(standard.window.map_or_else(|| tr("Höhe"), |w| w.height.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| h_submit.call(s)));
+        let window_hint = match standard.window {
+            Some(w) if now.window.is_none() => as_standard(format!("{} × {}", w.width, w.height)),
+            Some(w) => trf("Leer lassen: %@", &[&as_standard(format!("{} × {}", w.width, w.height))]),
+            None => tr("Leer lassen für die Größe, die Minecraft wählt."),
+        };
+        rows.push(row(&t, "window", tr("Fenstergröße beim Start"), window_reset, size, Some(window_hint), window_problem.read().clone()).into_element());
+
+        let mut footer: Vec<String> = f.running.then(|| tr("Änderungen wirken beim nächsten Start.")).into_iter().collect();
+        if !f.batches.is_empty() {
+            footer.push(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."));
+        }
+        group(&t, Some(tr("Spiel")), rows, (!footer.is_empty()).then(|| footer.join(" ")))
+    }
+}
+
+/// "Spielen als": always there so the group never jumps; a menu from two accounts on.
+fn account_row(t: &Theme, store: Store, f: &Facts) -> Element {
+    let label = tr("Spielen als");
+    let hint = Some(tr("Gilt, wenn du diese Instanz allein spielst. Batches haben eigene Accounts."));
+    match f.accounts.as_slice() {
+        [] => {
+            let add = Button::new("instance.settings.account.add", tr("Account hinzufügen…")).plain().on_press(move |_| {
+                crate::view::commands::want(store, crate::view::commands::Want::AddAccount);
+            });
+            return row(t, "account", label, None, add, hint, None).into_element();
+        }
+        [(_, name)] => return row(t, "account", label, None, line(t, name.clone(), font::BODY, t.text2), hint, None).into_element(),
+        _ => {}
+    }
+    let m = store.model.read();
+    let active = crate::app::reduce::active_account(&m).and_then(|a| m.account(a)).map(|a| a.name.clone());
+    let mut labels = vec![active.map_or_else(|| tr("Standard-Account"), |n| trf("Standard-Account (%@)", &[&n]))];
+    labels.extend(f.accounts.iter().map(|(_, n)| n.clone()));
+    let own = f.made.default_account.and_then(|d| f.accounts.iter().position(|(a, _)| *a == d));
+    let at = own.map_or(0, |n| n + 1);
+    let ids: Vec<Uuid> = f.accounts.iter().map(|(a, _)| *a).collect();
+    let instance = f.made.id.clone();
+    let select = Select::new("instance.settings.account", label.clone(), labels, at).width(control::VERSION_MENU).on_choose(move |i| {
+        let account = i.checked_sub(1).and_then(|n| ids.get(n).copied());
+        store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account });
+    });
+    let reset_id = f.made.id.clone();
+    let clear = own.map(|_| reset("account", label.clone(), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: reset_id.clone(), account: None })));
+    row(t, "account", label, clear, select, hint, None).into_element()
+}
+
+/// The Erweitert group: Java, start arguments and graphics, for the few who need them.
 #[derive(PartialEq)]
 struct Advanced {
     facts: Facts,
@@ -452,7 +637,6 @@ impl Component for Advanced {
         let made = self.facts.made.clone();
         let id = made.id.clone();
         let now: LaunchOptions = save::pending_options(store, &id, &made.options);
-        let busy = store.ui.instance.busy.read().contains_key(&id);
 
         let mut javas = use_state(|| None::<Vec<Java>>);
         use_hook(move || {
@@ -488,51 +672,9 @@ impl Component for Advanced {
         let mut args_problem = use_state(|| None::<String>);
         let args_draft = use_hook(Draft::default);
         let args_submit = use_typed(args, now.game_args.join(" "), id.clone(), args_problem, args_draft, move |id, text| save_args(store, id, text));
-        let width = use_state(String::new);
-        let height = use_state(String::new);
-        let mut window_problem = use_state(|| None::<String>);
-        let w_draft = use_hook(Draft::default);
-        let h_draft = use_hook(Draft::default);
-        let other = h_draft.clone();
-        let w_submit = use_typed(width, now.window.map(|w| w.width.to_string()).unwrap_or_default(), id.clone(), window_problem, w_draft.clone(), move |id, w| save_window(store, id, w, &other.borrow()));
-        let other = w_draft;
-        let h_submit = use_typed(height, now.window.map(|w| w.height.to_string()).unwrap_or_default(), id.clone(), window_problem, h_draft, move |id, h| save_window(store, id, &other.borrow(), h));
-
-        let mut col = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::L).child(caption(&t, tr("Änderungen wirken beim nächsten Start.")));
 
         let standard = settings::active().game.clone();
-        let max = forms::memory_max(forms::total_ram_mb());
-        let own_mb = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory());
-        let shown_mb = own_mb.unwrap_or(standard.memory_mb);
-        let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
-        let less = wait().or_else(|| (shown_mb <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
-        let more = wait().or_else(|| (shown_mb >= max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(max)])));
-        let step = move |delta: i32, id: String| {
-            move |_| {
-                let Some(made) = store.model.peek().instance(&id).cloned() else { return };
-                let now = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory()).unwrap_or_else(|| settings::active().game.memory_mb);
-                let next = forms::memory_step(now, delta, max);
-                if next != now {
-                    save::enqueue(store, &id, Job::Save(Change::Memory(Some(next))));
-                }
-            }
-        };
-        let stepper = rect()
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::XS)
-            .child(Button::icon("instance.settings.memory.less", Icon::Minus, tr("Weniger Arbeitsspeicher")).disabled(less).on_press(step(-1, id.clone())))
-            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(&t, forms::memory_label(shown_mb), font::BODY, if own_mb.is_some() { t.text1 } else { t.text2 })))
-            .child(Button::icon("instance.settings.memory.more", Icon::Plus, tr("Mehr Arbeitsspeicher")).disabled(more).on_press(step(1, id.clone())));
-        let mem_id = id.clone();
-        let memory_reset = own_mb.is_some().then(|| reset("memory", tr("Arbeitsspeicher"), move |_| save::enqueue(store, &mem_id, Job::Save(Change::Memory(None)))));
-        let memory_hint = match (own_mb, self.facts.batches.is_empty()) {
-            (None, true) => Some(as_standard(forms::memory_label(standard.memory_mb))),
-            (None, false) => Some(format!("{} · {}", as_standard(forms::memory_label(standard.memory_mb)), tr("Pro Account in jedem Batch."))),
-            (Some(_), false) => Some(tr("Pro Account in jedem Batch.")),
-            (Some(_), true) => None,
-        };
-        col = col.child(setting(&t, tr("Arbeitsspeicher"), memory_reset, stepper.into_element(), memory_hint, None));
+        let mut rows = Vec::new();
 
         enum Choice {
             Auto,
@@ -594,13 +736,13 @@ impl Component for Advanced {
             },
         };
         let java_reset_id = id.clone();
-        let java_reset = now.java.is_some().then(|| {
+        let java_reset = now.java.as_ref().filter(|j| standard.java.as_ref() != Some(*j)).map(|_| {
             reset("java", tr("Java"), move |_| {
                 forget_java_problem(store, &java_reset_id);
                 save::enqueue(store, &java_reset_id, Job::Save(Change::Option(OptionChange::Java(None))));
             })
         });
-        col = col.child(setting(&t, tr("Java"), java_reset, java_select.into_element(), java_hint, java_problem_now));
+        rows.push(row(&t, "java", tr("Java"), java_reset, java_select, java_hint, java_problem_now).into_element());
 
         let jr = id.clone();
         let jvm_reset = (!made.jvm_args.is_empty()).then(|| {
@@ -610,7 +752,7 @@ impl Component for Advanced {
             })
         });
         let jvm_field = Field::new("instance.settings.jvm_args", jvm).placeholder("-XX:+UseG1GC").on_submit(move |s| jvm_submit.call(s));
-        col = col.child(setting(&t, tr("Java-Argumente"), jvm_reset, jvm_field.into_element(), Some(tr("Zum Beispiel -XX:+UseG1GC, getrennt durch Leerzeichen.")), jvm_problem.read().clone()));
+        rows.push(wide(&t, "jvm_args", tr("Java-Argumente"), jvm_reset, jvm_field.into_element(), Some(tr("Zum Beispiel -XX:+UseG1GC, getrennt durch Leerzeichen.")), jvm_problem.read().clone()));
 
         let gr = id.clone();
         let args_reset = (!now.game_args.is_empty()).then(|| {
@@ -620,63 +762,18 @@ impl Component for Advanced {
             })
         });
         let args_field = Field::new("instance.settings.game_args", args).on_submit(move |s| args_submit.call(s));
-        col = col.child(setting(&t, tr("Spielargumente"), args_reset, args_field.into_element(), Some(tr("Gehen beim Start an Minecraft, zum Beispiel --fullscreen.")), args_problem.read().clone()));
-
-        let wr = id.clone();
-        let window_reset = now.window.is_some().then(|| {
-            reset("window", tr("Fenstergröße beim Start"), move |_| {
-                window_problem.set_if_modified(None);
-                save::enqueue(store, &wr, Job::Save(Change::Option(OptionChange::Window(None))));
-            })
-        });
-        let size = rect()
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::S)
-            .child(Field::new("instance.settings.window.width", width).placeholder(standard.window.map_or_else(|| tr("Breite"), |w| w.width.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| w_submit.call(s)))
-            .child(line(&t, "×", font::BODY, t.text3))
-            .child(Field::new("instance.settings.window.height", height).placeholder(standard.window.map_or_else(|| tr("Höhe"), |w| w.height.to_string())).width(Size::px(control::NUMBER)).on_submit(move |s| h_submit.call(s)));
-        let window_hint = match standard.window {
-            Some(w) if now.window.is_none() => as_standard(format!("{} × {}", w.width, w.height)),
-            Some(w) => trf("Leer lassen: %@", &[&as_standard(format!("{} × {}", w.width, w.height))]),
-            None => tr("Leer lassen für die Größe, die Minecraft wählt."),
-        };
-        col = col.child(setting(&t, tr("Fenstergröße beim Start"), window_reset, size.into_element(), Some(window_hint), window_problem.read().clone()));
+        rows.push(wide(&t, "game_args", tr("Spielargumente"), args_reset, args_field.into_element(), Some(tr("Gehen beim Start an Minecraft, zum Beispiel --fullscreen.")), args_problem.read().clone()));
 
         if cfg!(windows) || now.gpu.is_some() {
             let choices = [(None, as_standard(gpu_label(standard.gpu))), (Some(Gpu::HighPerformance), gpu_label(Some(Gpu::HighPerformance))), (Some(Gpu::PowerSaving), gpu_label(Some(Gpu::PowerSaving)))];
-            col = col.child(setting(&t, tr("Grafikkarte"), None, choice_row(store, &id, "gpu", tr("Grafikkarte"), now.gpu, choices.to_vec(), OptionChange::Gpu), Some(tr("Gilt für alle Instanzen, die dasselbe Java nutzen.")), None));
+            rows.push(row(&t, "gpu", tr("Grafikkarte"), None, choice_row(store, &id, "gpu", tr("Grafikkarte"), now.gpu, choices.to_vec(), OptionChange::Gpu), Some(tr("Gilt für alle Instanzen, die dasselbe Java nutzen.")), None).into_element());
         }
         if options::renderer_choice(&made.game_version) {
             let choices = [(None, tr("Automatisch")), (Some(Renderer::OpenGl), "OpenGL".to_owned()), (Some(Renderer::Vulkan), "Vulkan".to_owned())];
-            col = col.child(setting(&t, tr("Grafikschnittstelle"), None, choice_row(store, &id, "renderer", tr("Grafikschnittstelle"), now.renderer, choices.to_vec(), OptionChange::Renderer), Some(tr("Automatisch nimmt, was im Spiel eingestellt ist.")), None));
+            rows.push(row(&t, "renderer", tr("Grafikschnittstelle"), None, choice_row(store, &id, "renderer", tr("Grafikschnittstelle"), now.renderer, choices.to_vec(), OptionChange::Renderer), Some(tr("Automatisch nimmt, was im Spiel eingestellt ist.")), None).into_element());
         }
-        if made.loader.takes_mods() {
-            col = col.child(LoaderVersion { made: made.clone(), why: super::blocked(store, &id) });
-        }
-        col
+        group(&t, None, rows, None)
     }
-}
-
-fn account_setting(t: &Theme, store: Store, f: &Facts) -> Option<Element> {
-    if f.accounts.len() < 2 {
-        return None;
-    }
-    let m = store.model.read();
-    let active = crate::app::reduce::active_account(&m).and_then(|a| m.account(a)).map(|a| a.name.clone());
-    let mut labels = vec![active.map_or_else(|| tr("Standard-Account"), |n| trf("Standard-Account (%@)", &[&n]))];
-    labels.extend(f.accounts.iter().map(|(_, n)| n.clone()));
-    let own = f.made.default_account.and_then(|d| f.accounts.iter().position(|(a, _)| *a == d));
-    let at = own.map_or(0, |n| n + 1);
-    let ids: Vec<Uuid> = f.accounts.iter().map(|(a, _)| *a).collect();
-    let instance = f.made.id.clone();
-    let select = Select::new("instance.settings.account", tr("Spielen als"), labels, at).width(control::VERSION_MENU).on_choose(move |i| {
-        let account = i.checked_sub(1).and_then(|n| ids.get(n).copied());
-        store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account });
-    });
-    let reset_id = f.made.id.clone();
-    let clear = own.map(|_| Button::new("instance.settings.account.reset", tr("Standard-Account verwenden")).plain().on_press(move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: reset_id.clone(), account: None })).into_element());
-    Some(setting(t, tr("Spielen als"), clear, select.into_element(), Some(tr("Gilt, wenn du diese Instanz allein spielst. Batches haben eigene Accounts.")), None))
 }
 
 fn choice_row<T: Copy + PartialEq + 'static>(store: Store, id: &str, key: &str, label: String, now: Option<T>, choices: Vec<(Option<T>, String)>, wrap: fn(Option<T>) -> OptionChange) -> Element {
@@ -774,17 +871,17 @@ impl Component for LoaderVersion {
             let id = id.clone();
             snapshots::before(store, &id.clone(), Reason::LoaderUpdate(target), move || save::enqueue(store, &id, Job::Save(Change::LoaderVersion(want))));
         });
-        let mut col = rect().width(Size::fill()).spacing(space::XS).child(label_row(&t, crate::ui::loader_version::label(&made.loader), None)).child(select);
+        let label = crate::ui::loader_version::label(&made.loader);
         match &*versions.read() {
-            Load::Loading => col = col.child(caption(&t, tr("Versionen werden geladen …"))),
+            Load::Loading => row(&t, "loader_version", label, None, select, Some(tr("Versionen werden geladen …")), None),
             Load::Failed(e) => {
-                col = col.child(rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(line(&t, e.clone(), font::CAPTION, t.danger_text)).child(Button::new("instance.settings.loader_versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).plain().on_press(move |_| {
+                let retry = Button::new("instance.settings.loader_versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).plain().on_press(move |_| {
                     let next = asked.peek().wrapping_add(1);
                     asked.set(next);
-                })));
+                });
+                row(&t, "loader_version", label, Some(retry.into_element()), select, None, Some(e.clone()))
             }
-            Load::Ready(_) => {}
+            Load::Ready(_) => row(&t, "loader_version", label, None, select, None, None),
         }
-        col
     }
 }

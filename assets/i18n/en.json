@@ -1922,7 +1922,6 @@
   "Auf „%@“ spielen": "Play on “%@”",
   "Welt hinzufügen…": "Add world…",
   "Welt wird hinzugefügt … %lld %": "Adding world … %lld %",
-  "Sobald ein Account hier eine Welt anlegt, erscheint sie. Einen Weltordner oder eine .zip kannst du auch hinzufügen oder hierher ziehen.": "When an account creates a world here, it shows up. You can also add a world folder or a .zip, or drag one here.",
   "%1$@ · Läuft · %2$@": "%1$@ · Running · %2$@",
   "%@ · Läuft gerade": "%@ · Running",
   "läuft in %@": "running in %@",
@@ -1989,5 +1988,11 @@
   "%@ öffnen": "Open %@",
   "Zeile kopieren": "Copy line",
   "Leer lassen: %@": "Leave empty: %@",
-  "Jede Theme-Datei im Themes-Ordner erscheint hier.": "Every theme file in the themes folder shows up here."
+  "Jede Theme-Datei im Themes-Ordner erscheint hier.": "Every theme file in the themes folder shows up here.",
+  "Version & Loader": "Version & Loader",
+  "Snapshots zeigen": "Show snapshots",
+  "Andere Loader": "Other loaders",
+  "Mod-Loader": "Mod loader",
+  "Starte das Spiel und lege eine Welt an.": "Start the game and create a world.",
+  "Einen Weltordner oder eine .zip hinzufügen, auch per Ziehen.": "Add a world folder or a .zip, or drag it here."
 }

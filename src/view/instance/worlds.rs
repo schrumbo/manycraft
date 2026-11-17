@@ -1251,8 +1251,12 @@ impl Component for Worlds {
         if slots.is_empty() {
             let adder = page.clone();
             let adding = page.importing();
-            let add = Button::new("instance.worlds.empty.add", tr("Welt hinzufügen…")).primary().glyph(Icon::Plus).busy(adding.is_some()).disabled(page.add_blocked()).on_press(move |_| adder.ask_import());
-            let caption = adding.unwrap_or_else(|| tr("Sobald ein Account hier eine Welt anlegt, erscheint sie. Einen Weltordner oder eine .zip kannst du auch hinzufügen oder hierher ziehen."));
+            let add = Button::new("instance.worlds.empty.add", tr("Welt hinzufügen…")).glyph(Icon::Plus).busy(adding.is_some()).disabled(page.add_blocked()).tip(tr("Einen Weltordner oder eine .zip hinzufügen, auch per Ziehen.")).on_press(move |_| adder.ask_import());
+            let mut actions = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
+            if let Some(play) = super::play::empty_action(store, &self.facts, "instance.worlds.empty.play") {
+                actions = actions.child(play);
+            }
+            let caption = adding.unwrap_or_else(|| tr("Starte das Spiel und lege eine Welt an."));
             root = root.child(
                 rect()
                     .width(Size::fill())
@@ -1263,7 +1267,7 @@ impl Component for Worlds {
                     .child(icon(&t, Icon::Grid, iconsize::HERO, t.text3))
                     .child(heading(&t, tr("Noch keine Welten")))
                     .child(rect().max_width(Size::px(control::READING)).child(para(&t, caption, font::CALLOUT, t.text2).text_align(TextAlign::Center)))
-                    .child(add),
+                    .child(actions.child(add)),
             );
             if let Some(o) = outcome {
                 root = root.child(o);

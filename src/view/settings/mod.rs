@@ -32,6 +32,7 @@ use crate::view::updates;
 const PAGE: f32 = 600.;
 const JUMPS: f32 = 180.;
 const SECTIONS: usize = 10;
+const SPY: f32 = space::XL * 2.;
 const ATTEMPTS: (i64, i64) = (1, 100);
 const RATES: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
 
@@ -259,14 +260,19 @@ fn top_of(heights: &[f32; SECTIONS + 1], wide: bool, i: usize) -> f32 {
     space::XL + lead + heights[1..=i].iter().map(|h| h + space::XL).sum::<f32>()
 }
 
-/// Which section the reader is in: the last one whose title passed the top, or the one just picked while the page is at its end.
+/// Which section the reader is in: the last one whose title reached the top, the one just picked while it is still
+/// there, or at the end of the page the last one in view.
 fn current(heights: &[f32; SECTIONS + 1], wide: bool, y: f32, viewport: f32, end: bool, picked: Option<usize>) -> usize {
-    let reading = y + space::XL + (viewport / 3.).max(1.);
-    if let Some(p) = picked.filter(|p| {
-        let top = top_of(heights, wide, *p);
+    let reading = y + space::XL + SPY;
+    let seen = |i: usize| {
+        let top = top_of(heights, wide, i);
         top < if end { y + viewport } else { reading } && top + 1. >= y
-    }) {
+    };
+    if let Some(p) = picked.filter(|p| seen(*p)) {
         return p;
+    }
+    if end && let Some(last) = (0..SECTIONS).rev().find(|i| seen(*i)) {
+        return last;
     }
     (0..SECTIONS).rev().find(|i| top_of(heights, wide, *i) <= reading).unwrap_or(0)
 }
@@ -374,7 +380,7 @@ fn updates_group(t: &Theme, store: Store, p: Prefs, s: &Settings) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{HOTKEYS, chord_keys};
+    use super::{HOTKEYS, SECTIONS, chord_keys, current, space, top_of};
 
     #[test]
     fn chords_print_as_keys() {
@@ -389,5 +395,19 @@ mod tests {
         for (label, chord) in HOTKEYS {
             assert!(!label.is_empty() && chord.contains('+'));
         }
+    }
+
+    #[test]
+    fn the_spy_follows_the_title_at_the_top() {
+        let mut heights = [300f32; SECTIONS + 1];
+        heights[1] = 220.;
+        let viewport = 820.;
+        assert_eq!(current(&heights, true, 0., viewport, false, None), 0);
+        let second = top_of(&heights, true, 1);
+        assert_eq!(current(&heights, true, second - space::XL * 4., viewport, false, None), 0);
+        assert_eq!(current(&heights, true, second, viewport, false, None), 1);
+        let content = top_of(&heights, true, SECTIONS - 1) + 300.;
+        assert_eq!(current(&heights, true, content - viewport, viewport, true, None), SECTIONS - 1);
+        assert_eq!(current(&heights, true, content - viewport, viewport, true, Some(SECTIONS - 2)), SECTIONS - 2);
     }
 }
