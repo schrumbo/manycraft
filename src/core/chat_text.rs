@@ -62,6 +62,27 @@ pub fn plain(runs: &[Run]) -> String {
     runs.iter().map(|r| r.text.as_str()).collect()
 }
 
+/// `text` without private-use characters, which only a resource pack can draw, and without the double space one leaves behind.
+pub fn printable(text: &str) -> std::borrow::Cow<'_, str> {
+    let private = |c: char| matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}');
+    if !text.chars().any(private) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut dropped = false;
+    for c in text.chars() {
+        if private(c) {
+            dropped = true;
+        } else if c == ' ' && dropped && out.chars().last().is_none_or(|p| p == ' ') {
+            continue;
+        } else {
+            out.push(c);
+            dropped = false;
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Whether a line needs runs to show as the game does: styled runs came, or the text holds `§` codes.
 pub fn needs_runs(runs: &[Run], text: &str) -> bool {
     !runs.is_empty() || text.contains('§')
@@ -120,6 +141,16 @@ mod tests {
 
     fn run(text: &str, color: Option<u32>) -> Run {
         Run { text: text.into(), color, ..Run::default() }
+    }
+
+    #[test]
+    fn private_use_characters_are_dropped_without_a_double_space() {
+        assert_eq!(printable("a\u{E000}b\u{F8FF}c\u{F0001}"), "abc");
+        assert_eq!(printable("[VIP] \u{E000} Notch"), "[VIP] Notch");
+        assert_eq!(printable("\u{E000} Notch"), "Notch");
+        assert_eq!(printable("a  b \u{E001}"), "a  b ");
+        assert_eq!(printable("\u{E000}"), "");
+        assert!(matches!(printable("hallo ★ 你好 😀"), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

@@ -812,9 +812,14 @@ fn spans(t: &Theme, runs: &[Run], marks: &[(usize, usize)], base: Color) -> Vec<
         for to in cuts {
             let Some(piece) = run.text.get(from..to).filter(|p| !p.is_empty()) else { continue };
             let marked = marks.iter().any(|&(s, e)| s <= start + from && start + to <= e);
+            let piece = chat_text::printable(piece);
+            if piece.is_empty() {
+                from = to;
+                continue;
+            }
             let n = piece.chars().count();
             let cut = n > left;
-            let mut text: String = if cut { piece.chars().take(left).collect() } else { piece.to_owned() };
+            let mut text: String = if cut { piece.chars().take(left).collect() } else { piece.into_owned() };
             if cut {
                 text.push('…');
             }

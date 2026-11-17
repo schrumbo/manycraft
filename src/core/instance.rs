@@ -122,6 +122,9 @@ pub struct Instance {
     /// The Modrinth project of the modpack this instance was installed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pack: Option<String>,
+    /// Whether a game played alone starts with the companion agent; batches always do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub companion: bool,
     /// The library group this instance is listed under; ungrouped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -169,6 +172,7 @@ impl Instance {
             last_account: None,
             default_account: None,
             pack: None,
+            companion: false,
             group: None,
             kept: serde_json::Map::new(),
         }
@@ -1055,6 +1059,18 @@ mod tests {
         assert!(other.is_some() && quiet_in(root, "b").is_err());
         drop(quiet);
         assert!(hold_in(root, "../a").is_none());
+    }
+
+    #[test]
+    fn the_companion_setting_is_a_top_level_field_that_old_files_lack_and_old_versions_keep() {
+        let old = r#"{"id":"a","name":"A","game_version":"26.3"}"#;
+        let mut made: Instance = serde_json::from_str(old).unwrap();
+        assert!(!made.companion);
+        assert!(!serde_json::to_string(&made).unwrap().contains("companion"));
+        made.companion = true;
+        let text = serde_json::to_string(&made).unwrap();
+        assert!(text.contains(r#""companion":true"#));
+        assert!(serde_json::from_str::<Instance>(&text).unwrap().companion);
     }
 
     #[test]

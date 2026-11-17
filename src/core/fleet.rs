@@ -792,6 +792,8 @@ pub struct Adoption {
     pub instance: String,
     pub account: Uuid,
     pub pid: u32,
+    /// Whether it runs without the companion, so no mod will ever report.
+    pub plain: bool,
 }
 
 /// Outcome of starting one account: its instance key, or why it did not start.
@@ -867,7 +869,7 @@ impl Fleet {
                 logs: run.game_dir.join("logs"),
             };
             self.insert(key.clone(), instance);
-            adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid });
+            adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid, plain: run.plain });
         }
         adopted
     }
@@ -932,7 +934,8 @@ impl Fleet {
         choose_java(&mut installed, instance)?;
         let companion_jar = match companion_jar {
             Some(jar) => Some(jar.to_path_buf()),
-            None => super::companion::jar(&instance.game_version)?,
+            None if wants_companion(target, accounts) => super::companion::jar(&instance.game_version)?,
+            None => None,
         };
         Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar })
     }
@@ -1061,6 +1064,7 @@ impl Fleet {
                 game_dir: game_dir.clone(),
                 token,
                 server_addrs: server_addrs.to_vec(),
+                plain: !super::companion::available(&target.instance.game_version) || !wants_companion(target, std::slice::from_ref(account)),
             };
             ledger.add(&key, run);
         }
@@ -1336,6 +1340,12 @@ fn name_stand_in(server: &str) -> Result<SocketAddr> {
     host.to_ascii_lowercase().hash(&mut hasher);
     let [_, a, b, c, ..] = hasher.finish().to_be_bytes();
     Ok(SocketAddr::from(([240, a, b, c], port.unwrap_or(25565))))
+}
+
+/// Whether the games of `target` start with the companion: always in a batch, and alone when the instance asks for it
+/// or an account has a proxy, which must not connect without it.
+pub fn wants_companion(target: &Target, accounts: &[Account]) -> bool {
+    target.batch.is_some() || target.instance.companion || accounts.iter().any(|a| a.proxy.is_some())
 }
 
 fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) -> Result<()> {
@@ -2504,6 +2514,20 @@ mod tests {
         assert_eq!(extra.secrets.len(), 1);
         alt.proxy = Some("ftp://x:1".into());
         assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k", "tok").is_err());
+    }
+
+    #[test]
+    fn the_companion_starts_in_batches_with_a_proxy_or_when_the_instance_asks() {
+        let plain = Account::offline("AltOne").unwrap();
+        let mut proxied = Account::offline("AltTwo").unwrap();
+        proxied.proxy = Some("socks5://h:1".into());
+        let mut instance = Instance::new("Solo", "26.3", Loader::default());
+        let solo = Target::solo(&instance);
+        assert!(!wants_companion(&solo, std::slice::from_ref(&plain)));
+        assert!(wants_companion(&solo, &[plain.clone(), proxied.clone()]));
+        assert!(wants_companion(&target("A"), std::slice::from_ref(&plain)));
+        instance.companion = true;
+        assert!(wants_companion(&Target::solo(&instance), &[plain]));
     }
 
     #[test]
