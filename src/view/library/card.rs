@@ -6,7 +6,7 @@ use crate::core::i18n::{tr, trf};
 use crate::view::drive::use_spot;
 use crate::view::icons::Icon;
 use crate::view::install::{self, Install, Stage};
-use crate::view::instance::InstanceIcon;
+use crate::view::instance::{InstanceIcon, Mini};
 use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
@@ -90,11 +90,7 @@ impl Component for Card {
         }
         let mut picture = rect().width(Size::px(PICTURE)).height(Size::px(PICTURE)).child(InstanceIcon { id: l.id.clone(), name: l.name.clone(), picture: l.picture.clone(), side: PICTURE });
         if *hovered.read() || focus() != Focus::Not {
-            let id = l.id.clone();
-            let play = match l.running.clone() {
-                Some(keys) => Button::icon(format!("library.card.{id}.stop"), Icon::Stop, tr("Stoppen")).not_focusable().tip(trf("„%@“ stoppen", &[&l.name])).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone()))),
-                None => Button::icon(format!("library.card.{id}.play"), Icon::Play, tr("Spielen")).primary().not_focusable().tip(trf("„%@“ spielen", &[&l.name])).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: id.clone(), account: None })),
-            };
+            let play = Mini { id: l.id.clone(), name: l.name.clone(), spot: "library.card".into(), plain: false };
             picture = picture.child(rect().position(Position::new_absolute().right(space::XS).bottom(space::XS)).child(play));
         }
         let mut name = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS).main_align(Alignment::Center);

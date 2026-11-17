@@ -6,7 +6,7 @@ use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::view::drive::use_spot;
 use crate::view::icons::Icon;
-use crate::view::instance::InstanceIcon;
+use crate::view::instance::{InstanceIcon, Mini};
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Menu};
 use crate::view::kit::text::{body, caption, hairline, line as text_line};
@@ -108,15 +108,7 @@ impl Component for RowLine {
             name = name.child(mark);
         }
         let cell = |w: f32, s: String| rect().width(Size::px(w)).child(text_line(&t, s, font::CALLOUT, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis));
-        let id = l.id.clone();
-        let action = if shown {
-            match l.running.clone() {
-                Some(keys) => Button::icon(format!("library.row.{id}.stop"), Icon::Stop, tr("Stoppen")).plain().not_focusable().tip(trf("„%@“ stoppen", &[&l.name])).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone()))).into_element(),
-                None => Button::icon(format!("library.row.{id}.play"), Icon::Play, tr("Spielen")).plain().not_focusable().tip(trf("„%@“ spielen", &[&l.name])).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: id.clone(), account: None })).into_element(),
-            }
-        } else {
-            rect().into_element()
-        };
+        let action = if shown { Mini { id: l.id.clone(), name: l.name.clone(), spot: "library.row".into(), plain: true }.into_element() } else { rect().into_element() };
         row.child(name).child(cell(NARROW, l.game_version.clone())).child(cell(NARROW, l.loader.clone())).child(cell(WIDE, l.group.clone())).child(cell(WIDE, played)).child(rect().width(Size::px(FACE + space::S)).child(action)).content(Content::flex())
     }
 }

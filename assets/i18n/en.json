@@ -2146,5 +2146,15 @@
   "Shader brauchen %@. Ohne laden sie nicht.": "Shaders need %@. They do not load without it.",
   "%@ hinzufügen…": "Add %@…",
   "%@ einschalten": "Turn on %@",
-  "Ordner": "Folder"
+  "Ordner": "Folder",
+  "Startet …": "Starting …",
+  "Stoppt …": "Stopping …",
+  "Zum Spiel": "Go to game",
+  "Erneut spielen": "Play again",
+  "Das Spiel startet.": "The game is starting.",
+  "Läuft seit %@": "Running for %@",
+  "Von Batch %@ genutzt": "Used by batch %@",
+  "Start fehlgeschlagen": "Start failed",
+  "„%@“ erneut spielen": "Play “%@” again",
+  "%1$lld laufen seit %2$@": "%1$lld running for %2$@"
 }

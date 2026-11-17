@@ -2,7 +2,7 @@
 
 mod quick;
 
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use freya::prelude::*;
 
@@ -16,7 +16,7 @@ use crate::view::commands::{self, Want, can_want, want};
 use crate::view::drive::use_spot;
 use crate::view::grid::{fix_of, run_fix, words};
 use crate::view::icons::Icon;
-use crate::view::instance::{Facts, Hero, InstanceIcon, facts};
+use crate::view::instance::{self, Facts, Hero, InstanceIcon, facts, use_minute};
 use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::text::{body, caption, heading, line, secondary, strong};
@@ -64,19 +64,22 @@ enum Tone {
 }
 
 /// The line under the name of the hero: what stops Play, what runs, or when it was played last.
-fn status(f: &Facts, played: Option<SystemTime>) -> (Tone, String) {
+fn status(f: &Facts, played: Option<SystemTime>, since: Option<Instant>) -> (Tone, String) {
     if f.accounts.is_empty() {
         return (Tone::Attention, tr("Füge zuerst einen Account hinzu."));
     }
-    if f.stopping.is_some() {
-        return (Tone::Calm, tr("Wird gestoppt…"));
+    if let Some(text) = instance::running_line(f, since) {
+        return (Tone::Live, text);
     }
-    if !f.stoppable.is_empty() {
-        return (Tone::Live, tr("Läuft"));
+    if f.stopping.is_some() {
+        return (Tone::Calm, tr("Stoppt …"));
+    }
+    if !f.launching.is_empty() {
+        return (Tone::Calm, f.loading.map_or_else(|| tr("Startet …"), |p| trf("Wird installiert · %lld %", &[&p])));
     }
     if f.none_free() {
         let places = places(f);
-        return (Tone::Attention, trf("Alle Accounts spielen gerade im Batch „%@“.", &[&places.join("“, „")]));
+        return (Tone::Attention, trf("Von Batch %@ genutzt", &[&places.join(", ")]));
     }
     if let Some(who) = f.pick.filter(|a| f.expired.contains(a)).and_then(|a| f.name_of(a)) {
         return (Tone::Attention, trf("Die Anmeldung von %@ ist abgelaufen.", &[&who]));
@@ -181,7 +184,9 @@ impl Component for ResumeCard {
         let t = use_theme();
         let store = use_store();
         let f = facts(&store.model.read(), &self.id);
-        let (tone, text) = f.as_ref().map(|f| status(f, self.played)).unwrap_or((Tone::Calm, String::new()));
+        use_minute(store, true);
+        let since = f.as_ref().and_then(|f| f.stoppable.iter().filter_map(|(key, _)| store.ui.instance.up.read().get(key).copied()).min());
+        let (tone, text) = f.as_ref().map(|f| status(f, self.played, since)).unwrap_or((Tone::Calm, String::new()));
         let ink = if tone == Tone::Attention { t.attention_text } else { t.text2 };
         let mut note = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
         match tone {

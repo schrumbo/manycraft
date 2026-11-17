@@ -331,7 +331,7 @@ pub(super) fn drop_restart(m: &mut Model, key: &str) -> Vec<String> {
 }
 
 /// How long a stop runs before the game can be ended at once.
-pub const STOP_PATIENCE: Duration = Duration::from_secs(5);
+pub const STOP_PATIENCE: Duration = Duration::from_secs(10);
 
 /// Stops `keys`, and ends at once those whose stop is overdue.
 pub(super) fn stop_or_kill(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>) {

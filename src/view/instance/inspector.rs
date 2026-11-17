@@ -40,38 +40,35 @@ fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
         };
         return (t.accent, text);
     }
-    if let Some((_, overdue)) = f.stopping {
-        return (t.attention, if overdue { tr("Beendet sich nicht") } else { tr("Wird gestoppt…") });
-    }
-    if let Some(p) = super::loading(&store.model.read(), id) {
-        return (t.accent, trf("Lädt Minecraft · %lld %%", &[&p]));
-    }
-    if let Some(trouble) = &f.trouble {
-        return (t.danger, trouble.clone());
-    }
     let up = store.ui.instance.up.read();
     let since = f.stoppable.iter().filter_map(|(key, _)| up.get(key)).min().copied();
-    match (f.stoppable.len(), since.and_then(uptime_text)) {
-        (0, _) if f.running => (t.success, f.busy.first().map_or_else(|| tr("Läuft im Batch"), |(_, place)| trf("Läuft in %@", &[place]))),
-        (0, _) => (t.text3, tr("Gestoppt")),
-        (1, None) => (t.success, tr("Läuft")),
-        (1, Some(up)) => (t.success, trf("Läuft · %@", &[&up])),
-        (n, None) => (t.success, trf("%lld laufen", &[&n])),
-        (n, Some(up)) => (t.success, trf("%1$lld laufen · %2$@", &[&n, &up])),
+    if let Some(text) = super::running_line(f, since) {
+        return (t.success, text);
     }
+    if let Some((_, overdue)) = f.stopping {
+        return (t.attention, if overdue { tr("Beendet sich nicht") } else { tr("Stoppt …") });
+    }
+    if !f.launching.is_empty() {
+        return match f.loading {
+            Some(p) => (t.accent, trf("Wird installiert · %lld %", &[&p])),
+            None => (t.accent, tr("Startet …")),
+        };
+    }
+    if let Some(trouble) = f.trouble.as_ref().filter(|_| f.ended == Some(super::Ended::SignIn)) {
+        return (t.danger, trouble.clone());
+    }
+    if f.running {
+        return (t.success, f.busy.first().map_or_else(|| tr("Läuft im Batch"), |(_, place)| trf("Von Batch %@ genutzt", &[place])));
+    }
+    (t.text3, tr("Gestoppt"))
 }
 
 fn status_line(t: &Theme, color: Color, text: String) -> impl IntoElement {
     rect().horizontal().cross_align(Alignment::Center).spacing(space::XS + space::XXS).child(dot(color)).child(line(t, text, font::CALLOUT, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis))
 }
 
-fn status_row(t: &Theme, store: Store, f: &Facts, color: Color, text: String) -> Element {
-    let row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rect().width(Size::flex(1.)).child(status_line(t, color, text))).content(Content::flex());
-    if f.trouble.is_none() {
-        return row.into_element();
-    }
-    let mut tab = store.ui.instance.tab;
-    row.child(Button::new("instance.logs", tr("Protokoll ansehen")).plain().on_press(move |_| tab.set(super::Tab::Logs))).into_element()
+fn status_row(t: &Theme, color: Color, text: String) -> Element {
+    rect().width(Size::fill()).child(status_line(t, color, text)).into_element()
 }
 
 fn batch_links(t: &Theme, batches: &[(String, String)]) -> Option<Element> {
@@ -197,6 +194,9 @@ fn use_worlds(store: Store, made: &Instance) -> Option<Worlds> {
 pub fn notices(t: &Theme, store: Store, id: &str) -> Vec<Element> {
     let nav = store.ui.instance;
     let mut out = Vec::new();
+    if super::facts(&store.model.read(), id).is_some_and(|f| matches!(f.ended, Some(super::Ended::Crashed | super::Ended::Failed))) {
+        out.push(rect().width(Size::fill()).child(super::crash::Banner { id: id.to_owned() }).into_element());
+    }
     if let Some(e) = nav.error.read().get(id).cloned() {
         let mut error = nav.error;
         let gone = id.to_owned();
@@ -298,7 +298,7 @@ impl Component for Inspector {
         let (color, text) = status(&t, store, &f, &self.id);
 
         let mut col = rect().width(Size::fill()).padding(space::L).spacing(space::M);
-        col = col.child(status_row(&t, store, &f, color, text));
+        col = col.child(status_row(&t, color, text));
         if let Some(links) = batch_links(&t, &f.batches) {
             col = col.child(links);
         }
@@ -369,7 +369,7 @@ impl Component for Strip {
             .cross_align(Alignment::Center)
             .spacing(space::S)
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }).alignment(BorderAlignment::Inner))
-            .child(rect().width(Size::flex(1.)).child(status_row(&t, store, &f, color, text)))
+            .child(rect().width(Size::flex(1.)).child(status_row(&t, color, text)))
             .content(Content::flex())
             .child(More { facts: f.clone(), rename: true, all: true })
             .into_element()

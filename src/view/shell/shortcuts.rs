@@ -45,7 +45,7 @@ fn sections() -> Vec<Section> {
         *last = "1–5".to_owned();
     }
     let mut instance = vec![
-        (tr("Spielen"), caps(&Shortcut::primary(Code::KeyR).label())),
+        (tr("Spielen"), caps(&Shortcut::primary(Code::Enter).label())),
         (tr("Stoppen"), caps(&Shortcut::primary(Code::Period).label())),
         (tr("Umbenennen"), caps(&Shortcut::bare(Code::F2).label())),
         (tr("Tab wechseln"), tabs),
