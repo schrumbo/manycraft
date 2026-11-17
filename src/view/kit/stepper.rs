@@ -20,7 +20,7 @@ pub struct Stepper {
     max: i64,
     step: i64,
     unit: String,
-    shown: Option<fn(i64) -> String>,
+    shown: Option<String>,
     disabled: Option<String>,
     on_change: Option<EventHandler<i64>>,
 }
@@ -41,9 +41,9 @@ impl Stepper {
         self
     }
 
-    /// Writes the value with `shown` instead of as a number with its unit, such as "4 GB" for 4096.
-    pub fn shown(mut self, shown: fn(i64) -> String) -> Self {
-        self.shown = Some(shown);
+    /// Writes `text` in place of the number and its unit, such as "4 GB" for 4096.
+    pub fn shown(mut self, text: impl Into<String>) -> Self {
+        self.shown = Some(text.into());
         self
     }
 
@@ -83,8 +83,8 @@ impl Component for Stepper {
                 set(to);
             }) }
         };
-        let text = match self.shown {
-            Some(shown) => shown(value),
+        let text = match self.shown.clone() {
+            Some(shown) => shown,
             None if self.unit.is_empty() => value.to_string(),
             None => format!("{value} {}", self.unit),
         };

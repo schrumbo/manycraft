@@ -13,6 +13,8 @@ pub enum TextDecoration {
     Overline,
     /// A line through the middle of the text.
     LineThrough,
+    /// A line below the text and one through its middle.
+    UnderlineLineThrough,
 }
 
 impl TextDecoration {
@@ -22,6 +24,7 @@ impl TextDecoration {
             Self::Underline => "underline".to_string(),
             Self::Overline => "overline".to_string(),
             Self::LineThrough => "line-through".to_string(),
+            Self::UnderlineLineThrough => "underline line-through".to_string(),
         }
     }
 }
@@ -33,6 +36,7 @@ impl From<TextDecoration> for SkTextDecoration {
             TextDecoration::Underline => SkTextDecoration::UNDERLINE,
             TextDecoration::Overline => SkTextDecoration::OVERLINE,
             TextDecoration::LineThrough => SkTextDecoration::LINE_THROUGH,
+            TextDecoration::UnderlineLineThrough => SkTextDecoration::UNDERLINE | SkTextDecoration::LINE_THROUGH,
         }
     }
 }

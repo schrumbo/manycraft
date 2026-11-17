@@ -1951,5 +1951,9 @@
   "Jede JSON-Datei im Themes-Ordner erscheint hier.": "Every JSON file in the themes folder shows up here.",
   "Alle Themes": "All themes",
   "Theme: %@": "Theme: %@",
-  "Abschnitte": "Sections"
+  "Abschnitte": "Sections",
+  "Link öffnen": "Open link",
+  "Text kopieren": "Copy text",
+  "Der Text wurde nicht kopiert.": "The text was not copied.",
+  "%@ öffnen": "Open %@"
 }

@@ -41,10 +41,6 @@ fn java_title(java: &Java) -> String {
     }
 }
 
-fn memory_text(mb: i64) -> String {
-    forms::memory_label(u32::try_from(mb).unwrap_or(0))
-}
-
 /// The defaults group: memory, Java, window, graphics card and where the data lives.
 #[derive(PartialEq)]
 pub struct GameGroup;
@@ -72,7 +68,7 @@ impl Component for GameGroup {
             .control(
                 Stepper::new("settings.game.memory", tr("Arbeitsspeicher"), i64::from(game.memory_mb), i64::from(forms::MEMORY_MIN), i64::from(max))
                     .step(i64::from(forms::MEMORY_STEP))
-                    .shown(memory_text)
+                    .shown(forms::memory_label(game.memory_mb))
                     .on_change(move |v: i64| {
                         p.change(|s| {
                             let now = s.game.memory_mb;

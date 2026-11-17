@@ -144,7 +144,7 @@ impl Component for Host {
             .position(Position::new_global().left((w - width) / 2.).top(0.))
             .layer(Layer::OverlayLevel(level::TOAST))
             .width(Size::px(width))
-            .height(Size::px(h - space::L))
+            .height(Size::px(h - space::L - *ui.toast_lift.read()))
             .main_align(Alignment::End)
             .spacing(space::S)
             .children(cards)
