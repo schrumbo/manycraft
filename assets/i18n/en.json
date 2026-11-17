@@ -2157,5 +2157,15 @@
   "„%@“ erneut spielen": "Play “%@” again",
   "%1$lld laufen seit %2$@": "%1$lld running for %2$@",
   "„%@“ sofort beenden · Nicht Gespeichertes geht verloren": "Force quit “%@” · Unsaved progress is lost",
-  "%lld ungelesen": "%lld unread"
+  "%lld ungelesen": "%lld unread",
+  "Von Modrinth": "From Modrinth",
+  "Braucht Fabric, Quilt, Forge oder NeoForge": "Needs Fabric, Quilt, Forge or NeoForge",
+  "Instanz für Entdecken wählen …": "Choose instance for Discover …",
+  "Zu welcher Instanz?": "Which instance?",
+  "Dorthin kommt, was du hinzufügst.": "What you add goes there.",
+  "Für: %@": "For: %@",
+  "Noch keine Instanz": "No instance yet",
+  "Lege zuerst eine Instanz an, dann kannst du Inhalte hinzufügen.": "Create an instance first, then you can add content.",
+  "Mods, Ressourcenpakete, Shader und Datenpakete kommen in eine Instanz. Du kannst sie jederzeit wechseln.": "Mods, resource packs, shaders and data packs go into an instance. You can switch it at any time.",
+  "Instanz wählen …": "Choose instance …"
 }

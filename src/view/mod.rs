@@ -3,6 +3,7 @@
 mod accounts;
 mod alert;
 mod chat;
+mod discover;
 mod commands;
 pub mod drive;
 mod grid;

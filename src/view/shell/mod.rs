@@ -82,10 +82,10 @@ impl Component for Shell {
         let content = match page {
             Page::Start => super::start::StartPage.into_element(),
             Page::Library => super::library::LibraryPage.into_element(),
-            Page::Discover => crate::view::sheets::browser::PacksPage.into_element(),
+            Page::Discover => crate::view::discover::DiscoverPage.into_element(),
             Page::Grid(filter) => GridPage { filter }.into_element(),
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
-            Page::Browse(id, kind) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(crate::view::sheets::browser::ContentPage { id, kind }).into_element(),
+            Page::Browse(id, kind) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(crate::view::sheets::browser::ContentPage { id, kind, outer: false }).into_element(),
             Page::Chat => ChatPage.into_element(),
             Page::Settings(Pane::General) => super::settings::SettingsPage.into_element(),
             Page::Settings(Pane::Accounts) => AccountsPage.into_element(),
