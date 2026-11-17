@@ -20,6 +20,7 @@ pub mod drive;
 #[allow(dead_code)]
 pub mod fit;
 pub mod fleet;
+pub mod folders;
 pub mod game_icon;
 pub mod game_window;
 pub mod gpu;

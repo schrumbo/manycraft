@@ -391,6 +391,7 @@ struct InstancePage {
     error: Option<Problem>,
     rename_error: Option<Problem>,
     rename_error_for: String,
+    stop_first: bool,
     details: HashSet<&'static str>,
     memory_max: u32,
     scroll: ScrollHandle,
@@ -494,6 +495,7 @@ impl InstancePage {
             error: None,
             rename_error: None,
             rename_error_for: String::new(),
+            stop_first: false,
             details: HashSet::new(),
             memory_max: forms::memory_max(forms::total_ram_mb()),
             scroll: ScrollHandle::new(),
@@ -575,6 +577,7 @@ impl InstancePage {
         self.loader_news = None;
         self.notes.clear();
         self.error = None;
+        self.stop_first = false;
         self.details.clear();
         self.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
@@ -587,6 +590,12 @@ impl InstancePage {
             cx.notify();
             return;
         }
+        if self.running(cx) {
+            self.stop_first = true;
+            cx.notify();
+            return;
+        }
+        self.stop_first = false;
         self.rename_error = None;
         self.renaming = true;
         self.rename_saving = false;
@@ -878,11 +887,13 @@ impl InstancePage {
                 }
             }
             Err(e) => {
-                let problem = forms::explain_as(tr("Nicht gespeichert."), &e);
                 let rename_failed = renamed && self.rename_saving;
+                let refused = forms::explain(&e);
+                let for_good = refused.detail.is_none();
+                let problem = if rename_failed && for_good { refused } else { forms::explain_as(tr("Nicht gespeichert."), &e) };
                 if rename_failed {
                     self.rename_saving = false;
-                    self.focus_name = true;
+                    self.focus_name = !for_good;
                 }
                 self.queue.retain(|(queued, _)| queued != id);
                 if id == self.id {
@@ -977,6 +988,7 @@ impl InstancePage {
 
     fn header(&mut self, f: &Facts, cx: &mut Context<Self>, t: &Theme) -> Div {
         let made = &f.made;
+        let running = f.running;
         let icon_tile = div().size(px(ICON_TILE)).flex_none().rounded(px(radius::CONTROL)).bg(t.raised).flex().items_center().justify_center().child(icon("package", iconsize::L, t.tertiary));
         let name = if self.renaming {
             let typed = self.name.read(cx).value().chars().count() as f32;
@@ -1009,9 +1021,9 @@ impl InstancePage {
                 .truncate()
                 .text_size(px(font::TITLE3))
                 .font_weight(FontWeight::SEMIBOLD)
-                .cursor_pointer()
-                .when(!super::widgets::menu_open("instance-title", cx), |d| d.tooltip(tip(tr("Doppelklicken zum Umbenennen"))))
-                .soft(t.ink.opacity(tint::HOVER), radius::SMALL)
+                .when(!running, |d| d.cursor_pointer())
+                .when(!super::widgets::menu_open("instance-title", cx), |d| d.tooltip(tip(if running { tr("Erst stoppen, dann umbenennen") } else { tr("Doppelklicken zum Umbenennen") })))
+                .when(!running, |d| d.soft(t.ink.opacity(tint::HOVER), radius::SMALL))
                 .on_click(cx.listener(|s, e: &ClickEvent, window, cx| {
                     if e.click_count() == 2 {
                         s.begin_rename(window, cx);
@@ -1031,6 +1043,10 @@ impl InstancePage {
             .flex_col()
             .child(name)
             .child(match self.rename_error.as_ref().filter(|_| self.renaming) {
+                None if self.stop_first && running => {
+                    let said = tr("Erst stoppen: Ein Spiel dieser Instanz läuft.");
+                    div().id("instance-rename-error").mark("notice", said.clone()).truncate().text_size(px(font::CALLOUT)).text_color(t.danger_text).tooltip(tip(said.clone())).child(said)
+                }
                 Some(e) => {
                     let said = match &e.detail {
                         Some(detail) => format!("{}\n{detail}", e.text),

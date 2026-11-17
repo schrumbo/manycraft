@@ -145,7 +145,7 @@ pub fn restore_edit(id: &str, name: String, what: Edit, before: InstanceEdit, af
         state::reload(cx);
         return;
     }
-    let moves = before.game_version != after.game_version || !before.loader.same_kind(&after.loader) || before.mods != after.mods;
+    let moves = before.game_version != after.game_version || !before.loader.same_kind(&after.loader) || before.mods != after.mods || before.name.trim() != after.name.trim();
     if moves && running(id, cx) {
         undo::note(tr("Gerade laufen Spiele. Stoppe sie zuerst."), cx);
         undo::retry(again(name, what, before, after), at, cx);

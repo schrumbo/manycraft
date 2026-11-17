@@ -231,7 +231,7 @@ pub(super) fn claim_name(root: &Path, mut made: Instance) -> Instance {
     let name = free_name(&made.name, &taken);
     if name != made.name {
         let renamed = Instance { name, ..made.clone() };
-        if instance::save_in(root, &renamed).is_ok() {
+        if instance::save_renamed_in(root, &renamed, &|_| false).is_ok() {
             made = renamed;
         }
     }
@@ -270,7 +270,7 @@ fn import_prism_dir(dir: &Path, root: &Path, taken: &[String], lookup: Lookup, c
     }
     let made = prism::import_into(&instance, &free_name(&instance.name, taken), root, lookup)?;
     if cancel.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_dir_all(root.join(&made.id));
+        let _ = instance::delete_in(root, &made);
         bail!(Refused::Cancelled);
     }
     Ok(made)
@@ -487,8 +487,8 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
         placements.push(Placement { source: slot.source, dest: Path::new("mods").join(&slot.name) });
     }
 
-    let dest = root.join(&made.id);
-    let result = write_pack(zip, &pack, &placements, &dest, fetch, cancel, progress).and_then(|()| instance::save_in(root, &made));
+    let dest = super::folders::create(root, &made.name)?;
+    let result = write_pack(zip, &pack, &placements, &dest, fetch, cancel, progress).and_then(|()| instance::save_into(root, &dest, &made));
     if let Err(e) = result {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!((made.name.as_str(), made.game_version.as_str(), made.loader.version()), ("Farm Pack", "1.21.1", Some("0.16.5")));
         assert_eq!(made.mods, known);
         assert_eq!(made.local_mods, ["gh.jar", "mine.jar"]);
-        let dest = out.path().join(&made.id);
+        let dest = crate::core::instance::dir_in(out.path(), &made.id);
         assert_eq!(names(&dest.join("mods")), ["gh.jar", "mine.jar", "sodium-fabric.jar"]);
         assert_eq!(fs::read(dest.join("mods").join("sodium-fabric.jar")).unwrap(), b"sodium");
         assert_eq!(fs::read(dest.join("config").join("sodium.json")).unwrap(), b"{}");
@@ -962,7 +962,7 @@ mod tests {
         let made = import_pack(&mut zip, out.path(), &[], &lookup_of(known), &fetch, &AtomicBool::new(false), &quiet()).unwrap();
         assert!(made.mods.is_empty());
         assert_eq!(made.local_mods, ["sodium.jar"]);
-        assert_eq!(names(&out.path().join(&made.id).join("mods")), ["sodium.jar"]);
+        assert_eq!(names(&crate::core::instance::dir_in(out.path(), &made.id).join("mods")), ["sodium.jar"]);
     }
 
     #[test]
@@ -1005,7 +1005,7 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let err = import_prism_dir(&empty, out.path(), &[], &lookup_of(Vec::new()), &AtomicBool::new(false)).unwrap_err();
         assert_eq!(refused(&err), Some(Refused::Unknown));
-        assert!(names(out.path()).is_empty());
+        assert!(names(out.path()).iter().all(|n| n.starts_with('.')));
     }
 
     #[test]
@@ -1022,7 +1022,7 @@ mod tests {
         let ok = served(vec![("https://cdn.modrinth.com/a.jar", b"a".to_vec())]);
         let err = format!("{:#}", import_pack(&mut pack_of(&idx, &[]), out.path(), &[], &failing, &ok, &AtomicBool::new(false), &quiet()).unwrap_err());
         assert!(err.contains("Modrinth"), "{err}");
-        assert!(names(out.path()).is_empty());
+        assert!(names(out.path()).iter().all(|n| n.starts_with('.')));
     }
 
     #[test]
@@ -1033,7 +1033,7 @@ mod tests {
         let fetch = served(vec![("https://cdn.modrinth.com/a.jar", b"a".to_vec())]);
         let err = import_pack(&mut pack_of(&idx, &[]), out.path(), &[], &lookup_of(Vec::new()), &fetch, &AtomicBool::new(false), &quiet()).unwrap_err();
         assert_eq!(refused(&err), Some(Refused::Hash("mods/a.jar".into())));
-        assert!(names(out.path()).is_empty());
+        assert!(names(out.path()).iter().all(|n| n.starts_with('.')));
     }
 
     #[test]
@@ -1044,7 +1044,7 @@ mod tests {
             let err = import_pack(&mut zip, out.path(), &[], &lookup_of(Vec::new()), &served(Vec::new()), &AtomicBool::new(false), &quiet()).unwrap_err();
             assert!(matches!(refused(&err), Some(Refused::Path(_))), "{evil}: {err:#}");
         }
-        assert!(names(out.path()).is_empty());
+        assert!(names(out.path()).iter().all(|n| n.starts_with('.')));
         assert!(!out.path().parent().unwrap().join("evil.txt").exists());
     }
 
@@ -1060,7 +1060,7 @@ mod tests {
         assert!(import_pack(&mut pack_of(&idx, &[("overrides/config/a.json", b"{}")]), out.path(), &[], &lookup_of(Vec::new()), &fetch, &cancel, &quiet()).is_err());
         let err = import_pack(&mut pack_of(&idx, &[]), out.path(), &[], &lookup_of(Vec::new()), &served(Vec::new()), &cancel, &quiet()).unwrap_err();
         assert_eq!(refused(&err), Some(Refused::Cancelled));
-        assert!(names(out.path()).is_empty());
+        assert!(names(out.path()).iter().all(|n| n.starts_with('.')));
     }
 
     #[test]
@@ -1108,7 +1108,7 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let back = import_pack(&mut zip, out.path(), &[], &lookup_of(vec![sodium, lithium]), &cdn, &AtomicBool::new(false), &quiet()).unwrap();
         assert_eq!((&back.name, &back.game_version, &back.loader, &back.mods, &back.local_mods), (&b.name, &b.game_version, &b.loader, &b.mods, &b.local_mods));
-        let dest = out.path().join(&back.id);
+        let dest = crate::core::instance::dir_in(out.path(), &back.id);
         assert_eq!(fs::read(dest.join("config").join("deep").join("a.toml")).unwrap(), b"a=1");
         assert_eq!(fs::read(dest.join("resourcepacks").join("rp.zip")).unwrap(), b"rp");
         assert_eq!(fs::read(dest.join("options.txt")).unwrap(), b"fov:1.0\n");
