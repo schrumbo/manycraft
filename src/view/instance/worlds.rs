@@ -188,6 +188,7 @@ struct Page {
     expired: Vec<Uuid>,
     pick: Option<Uuid>,
     target: Option<Uuid>,
+    quick_ok: bool,
     scan: State<Option<Rc<Scan>>>,
     view: State<f32>,
     scroll: ScrollController,
@@ -254,6 +255,9 @@ impl Page {
     }
 
     fn blocked(&self, account: Uuid) -> Option<String> {
+        if !self.quick_ok {
+            return Some(tr("Direkt starten geht erst ab Minecraft 1.20."));
+        }
         if let Some((_, place)) = self.busy.iter().find(|(a, _)| *a == account) {
             return Some(trf("Läuft in %@", &[place]));
         }
@@ -328,6 +332,13 @@ impl Page {
                 }
             });
         }
+    }
+
+    fn add_blocked(&self) -> Option<String> {
+        if self.target.is_none() {
+            return Some(tr("Füge zuerst einen Account hinzu."));
+        }
+        self.importing().map(|_| tr("Warte, bis das fertig ist."))
     }
 
     fn importing(&self) -> Option<String> {
@@ -952,7 +963,7 @@ fn use_page(store: Store, f: &Facts) -> Page {
         });
     });
     let target = f.pick.or(f.solo).or_else(|| f.accounts.first().map(|(a, _)| *a));
-    Page { store, id, dir, accounts: f.accounts.clone(), busy: f.busy.clone(), expired: f.expired.clone(), pick: super::play::pick(f), target, scan, view, scroll, selected, work, outcome, details, tick, last }
+    Page { store, id, dir, accounts: f.accounts.clone(), busy: f.busy.clone(), expired: f.expired.clone(), pick: super::play::pick(f), target, quick_ok: crate::core::content::compare_versions(&f.made.game_version, "1.20").is_ge(), scan, view, scroll, selected, work, outcome, details, tick, last }
 }
 
 struct Listing {
@@ -1049,6 +1060,7 @@ struct ServerLine {
     at: usize,
     server: Server,
     go: Go,
+    chosen: State<Option<usize>>,
 }
 
 impl PartialEq for ServerLine {
@@ -1060,22 +1072,24 @@ impl PartialEq for ServerLine {
 impl Component for ServerLine {
     fn render(&self) -> impl IntoElement {
         let mut hovered = use_state(|| false);
-        let mut r = Row::new(format!("instance.servers.row.{}", self.at), self.server.name.clone()).glyph(Icon::Globe).height(frame::PALETTE_ROW);
+        let (at, mut chosen) = (self.at, self.chosen);
+        let selected = *chosen.read() == Some(at);
+        let mut r = Row::new(format!("instance.servers.row.{at}"), self.server.name.clone()).glyph(Icon::Globe).height(frame::PALETTE_ROW).selected(selected).on_press(move |()| chosen.set(Some(at)));
         if self.server.name != self.server.address {
             r = r.detail(self.server.address.clone());
         }
-        if *hovered.read() {
-            r = r.trailing(play_button(format!("instance.servers.play.{}", self.at), &self.go));
+        if *hovered.read() || selected {
+            r = r.trailing(play_button(format!("instance.servers.play.{at}"), &self.go));
         }
         rect().width(Size::fill()).on_pointer_enter(move |_| hovered.set(true)).on_pointer_leave(move |_| hovered.set_if_modified(false)).child(r)
     }
 }
 
-fn servers_section(t: &Theme, page: &Page, servers: &[Server]) -> Option<Element> {
+fn servers_section(t: &Theme, page: &Page, servers: &[Server], chosen: State<Option<usize>>) -> Option<Element> {
     if servers.is_empty() {
         return None;
     }
-    let rows: Vec<Element> = servers.iter().enumerate().map(|(at, s)| ServerLine { at, server: s.clone(), go: page.play_server(&s.address) }.into_element()).collect();
+    let rows: Vec<Element> = servers.iter().enumerate().map(|(at, s)| ServerLine { at, server: s.clone(), go: page.play_server(&s.address), chosen }.into_element()).collect();
     let shown = servers.len().min(SERVERS_SHOWN) as f32;
     Some(
         rect()
@@ -1191,6 +1205,7 @@ impl Component for Worlds {
         let restore_at = use_state(Bounds::default);
         let copy_at = use_state(Bounds::default);
         let mut dropping = use_state(|| false);
+        let server_at = use_state(|| None::<usize>);
         let _ = page.tick.read();
         let current = page.scan.read().clone().filter(|s| s.id == page.id);
         let selected = page.selected.read().clone();
@@ -1204,7 +1219,7 @@ impl Component for Worlds {
         let taking = store.ui.instance.busy.read().get(&page.id).and_then(|b| b.progress);
         let outcome = page.outcome.read().clone().map(|o| outcome_view(&t, &o, page.details));
         let saved = snapshot_section(&t, &page, &snaps, taking);
-        let servers = servers_section(&t, &page, &scan.servers);
+        let servers = servers_section(&t, &page, &scan.servers, server_at);
         let key_page = page.clone();
         let drop_page = page.clone();
         let mut root = rect()
@@ -1229,15 +1244,15 @@ impl Component for Worlds {
                 .height(Size::fill())
                 .corner_radius(t.shape.tile)
                 .background(t.accent.with_a((frame::NOTICE_WASH * 255.) as u8))
+                .center()
+                .child(strong(&t, tr("Zum Hinzufügen loslassen"), font::BODY, t.accent_text))
                 .into_element()
         });
         if slots.is_empty() {
             let adder = page.clone();
             let adding = page.importing();
-            let mut add = Button::new("instance.worlds.empty.add", adding.clone().unwrap_or_else(|| tr("Welt hinzufügen…"))).primary().glyph(Icon::Plus).on_press(move |_| adder.ask_import());
-            if adding.is_some() {
-                add = add.busy(true).disabled(Some(tr("Warte, bis das fertig ist.")));
-            }
+            let add = Button::new("instance.worlds.empty.add", tr("Welt hinzufügen…")).primary().glyph(Icon::Plus).busy(adding.is_some()).disabled(page.add_blocked()).on_press(move |_| adder.ask_import());
+            let caption = adding.unwrap_or_else(|| tr("Sobald ein Account hier eine Welt anlegt, erscheint sie. Einen Weltordner oder eine .zip kannst du auch hinzufügen oder hierher ziehen."));
             root = root.child(
                 rect()
                     .width(Size::fill())
@@ -1247,7 +1262,7 @@ impl Component for Worlds {
                     .padding((0., space::XL))
                     .child(icon(&t, Icon::Grid, iconsize::HERO, t.text3))
                     .child(heading(&t, tr("Noch keine Welten")))
-                    .child(rect().max_width(Size::px(control::READING)).child(para(&t, tr("Sobald ein Account hier eine Welt anlegt, erscheint sie. Einen Weltordner oder eine .zip kannst du auch hinzufügen oder hierher ziehen."), font::CALLOUT, t.text2).text_align(TextAlign::Center)))
+                    .child(rect().max_width(Size::px(control::READING)).child(para(&t, caption, font::CALLOUT, t.text2).text_align(TextAlign::Center)))
                     .child(add),
             );
             if let Some(o) = outcome {
@@ -1386,6 +1401,6 @@ fn toolbar(t: &Theme, page: &Page, scan: &Scan, slots: &[Slot], at: Option<usize
         }
     }
     let adder = page.clone();
-    bar = bar.child(Button::icon("instance.worlds.add", Icon::Plus, tr("Welt hinzufügen…")).disabled(page.importing().map(|_| tr("Warte, bis das fertig ist."))).on_press(move |_| adder.ask_import()));
+    bar = bar.child(Button::icon("instance.worlds.add", Icon::Plus, tr("Welt hinzufügen…")).busy(page.importing().is_some()).disabled(page.add_blocked()).on_press(move |_| adder.ask_import()));
     bar.into_element()
 }

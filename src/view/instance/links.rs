@@ -12,7 +12,7 @@ use crate::view::store::Store;
 pub fn export(store: Store, id: &str, name: &str) -> Action {
     let busy = store.model.peek().exporting.contains(id).then(|| tr("Wird exportiert…"));
     let id = id.to_owned();
-    Action::new("export", tr("Exportieren…"), trf("%@ als .mrpack exportieren…", &[&name]), Icon::FileDown, move |_| {
+    Action::new("export", tr("Exportieren…"), trf("%@ als Modpack-Datei exportieren…", &[&name]), Icon::FileDown, move |_| {
         want(store, Want::ExportInstance(id.clone()));
     })
     .disabled(busy.or_else(|| want_blocked(&Want::ExportInstance(String::new()))))

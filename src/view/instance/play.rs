@@ -6,6 +6,7 @@ use uuid::Uuid;
 use super::{Facts, facts};
 use crate::app::event::Event as AppEvent;
 use crate::core::account::AccountKind;
+use crate::core::game_window::CAN_RAISE;
 use crate::core::i18n::{tr, trf};
 use crate::view::commands::{Shortcut, Want, want, want_blocked};
 use crate::view::drive::use_spot;
@@ -85,14 +86,15 @@ impl Component for AccountChip {
         let instead = f.solo.filter(|s| Some(*s) != f.pick).and_then(|s| Some((f.name_of(s)?.to_owned(), f.busy_in(s)?.to_owned())));
         let tip = match instead {
             Some((who, place)) => trf("statt %1$@ (läuft in %2$@)", &[&who, &place]),
+            None if self.compact => label.clone(),
             None => tr("Account wählen"),
         };
-        let wash = if *pressed.read() {
+        let fill = if *pressed.read() {
             t.press
         } else if *hovered.read() {
             t.hover
         } else {
-            Color::TRANSPARENT
+            t.control
         };
         let m = store.model.read();
         let face = pick.and_then(|a| m.account(a)).map(|a| crate::view::accounts::head(&t, store, a.id, &a.name, a.color(), frame::FACE));
@@ -108,7 +110,7 @@ impl Component for AccountChip {
             .cross_align(Alignment::Center)
             .spacing(space::XS + space::XXS)
             .corner_radius(t.shape.control)
-            .background(t.control)
+            .background(fill)
             .cursor(CursorIcon::Pointer)
             .on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e)))
             .on_pointer_enter(move |_| hovered.set(true))
@@ -144,7 +146,7 @@ impl Component for AccountChip {
         if let Some(border) = ring(&t, focus()) {
             chip = chip.border(border);
         }
-        let chip = rect().corner_radius(t.shape.control).background(wash).on_sized(spot).child(chip);
+        let chip = rect().on_sized(spot).child(chip);
         WithTip::new(Some(tip), chip)
     }
 }
@@ -179,10 +181,11 @@ impl Component for Hero {
         if let Some((first, _)) = f.stoppable.first().cloned() {
             let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();
             let label = if keys.len() == 1 { tr("Stoppen") } else { tr("Alle stoppen") };
-            return row
-                .child(Button::new("instance.stop", label.clone()).glyph(Icon::Stop).tall().tip(tip(label, Shortcut::primary(Code::Period))).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone()))))
-                .child(Button::new("instance.play", tr("Zum Spiel wechseln")).glyph(Icon::External).primary().tall().on_press(move |_| store.dispatch(AppEvent::Raise(first.clone()))))
-                .into_element();
+            let row = row.child(Button::new("instance.stop", label.clone()).glyph(Icon::Stop).tall().tip(tip(label, Shortcut::primary(Code::Period))).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone()))));
+            if !CAN_RAISE {
+                return row.into_element();
+            }
+            return row.child(Button::new("instance.play", tr("Zum Spiel wechseln")).glyph(Icon::External).primary().tall().on_press(move |_| store.dispatch(AppEvent::Raise(first.clone())))).into_element();
         }
         if f.none_free() {
             return row
@@ -227,10 +230,14 @@ pub fn empty_action(store: Store, f: &Facts, id: &str) -> Option<Button> {
         }));
     }
     if let Some((first, _)) = f.stoppable.first().cloned() {
+        if !CAN_RAISE {
+            let keys: Vec<String> = f.stoppable.iter().map(|(k, _)| k.clone()).collect();
+            return Some(Button::new(id.to_owned(), tr("Stoppen")).glyph(Icon::Stop).on_press(move |_| store.dispatch(AppEvent::Stop(keys.clone()))));
+        }
         return Some(Button::new(id.to_owned(), tr("Zum Spiel wechseln")).glyph(Icon::External).primary().on_press(move |_| store.dispatch(AppEvent::Raise(first.clone()))));
     }
     if f.stopping.is_some() {
-        return None;
+        return Some(Button::new(id.to_owned(), tr("Wird gestoppt…")).glyph(Icon::Stop).primary().disabled(Some(tr("Das Spiel speichert und beendet sich."))));
     }
     let Some(account) = pick(f).filter(|a| !f.expired.contains(a)) else {
         return Some(Button::new(id.to_owned(), tr("Alle Accounts beschäftigt")).glyph(Icon::Play).primary().disabled(Some(tr("Jeder Account spielt diese Instanz gerade in einem Batch."))));

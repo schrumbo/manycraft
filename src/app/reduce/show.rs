@@ -181,9 +181,8 @@ pub(super) fn quick_play(m: &mut Model, id: &str, account: Uuid, quick: Quick, o
         return;
     }
     m.session.quick.insert(key.clone(), quick);
-    if play_instance(m, id, Some(account), out).as_deref() != Some(key.as_str()) {
-        m.session.quick.remove(&key);
-    }
+    play_instance(m, id, Some(account), out);
+    m.session.quick.remove(&key);
 }
 
 /// Plays `instance` as another start of Manycraft or a shortcut asked, and brings the manager up when it cannot or the

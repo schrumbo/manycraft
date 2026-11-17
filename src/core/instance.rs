@@ -307,7 +307,10 @@ pub(super) fn set_icon_in(root: &Path, id: &str, source: Option<&Path>) -> Resul
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
             let name = format!("icon-{stamp}.{ext}");
             let temp = dir.join(format!(".{name}.part"));
-            std::fs::copy(source, &temp).with_context(|| format!("cannot copy {}", source.display()))?;
+            if let Err(e) = std::fs::copy(source, &temp) {
+                let _ = std::fs::remove_file(&temp);
+                return Err(anyhow::Error::new(e).context(format!("cannot copy {}", source.display())));
+            }
             if let Err(e) = std::fs::rename(&temp, dir.join(&name)) {
                 let _ = std::fs::remove_file(&temp);
                 return Err(anyhow::Error::new(e).context("cannot place the icon"));

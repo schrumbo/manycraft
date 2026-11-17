@@ -232,14 +232,14 @@ fn more_items(store: Store, f: &Facts, rename: bool, all: bool) -> Vec<Item> {
         acts.retain(|a| !matches!(a.key, "folder" | "clone"));
     }
     let split = acts.iter().position(|a| a.key == "reset").unwrap_or(acts.len());
-    let mut new = Some(Item::new("instance.more.batch.new", tr("Neuer Batch…"), move |_| run.call(())).disabled(new.disabled.is_some()));
+    let mut new = Some(because(Item::new("instance.more.batch.new", tr("Neuer Batch…"), move |_| run.call(())), new.disabled));
     for (n, a) in acts.into_iter().enumerate() {
         if n == split {
             items.extend(new.take());
             items.push(Item::Separator);
         }
         let run = a.run.clone();
-        let mut item = Item::new(format!("instance.more.{}", a.key), a.label, move |_| run.call(())).disabled(a.disabled.is_some());
+        let mut item = because(Item::new(format!("instance.more.{}", a.key), a.label, move |_| run.call(())), a.disabled);
         if a.danger {
             item = item.danger();
         }
@@ -247,6 +247,13 @@ fn more_items(store: Store, f: &Facts, rename: bool, all: bool) -> Vec<Item> {
     }
     items.extend(new);
     items
+}
+
+fn because(item: Item, why: Option<String>) -> Item {
+    match why {
+        Some(why) => item.shortcut(why).disabled(true),
+        None => item,
+    }
 }
 
 #[derive(PartialEq)]

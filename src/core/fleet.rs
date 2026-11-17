@@ -117,6 +117,13 @@ impl Target {
         self.batch.as_ref().and_then(|b| b.server.as_deref())
     }
 
+    fn join(&self) -> Option<&str> {
+        self.server().or(match &self.quick {
+            Some(Quick::Server(address)) => Some(address.as_str()),
+            _ => None,
+        })
+    }
+
     fn label(&self) -> &str {
         self.batch.as_ref().map_or(&self.instance.name, |b| &b.name)
     }
@@ -861,7 +868,7 @@ impl Fleet {
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
         }
-        let server_addrs = server_addresses(target.server(), accounts, resolve_all, || !super::online::reachable())?;
+        let server_addrs = server_addresses(target.join(), accounts, resolve_all, || !super::online::reachable())?;
         let mut installed = install::install(&instance.game_version, &instance.loader, progress)?;
         choose_java(&mut installed, instance)?;
         let companion_jar = match companion_jar {
@@ -1218,10 +1225,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         session,
         offline_name: account.name.clone(),
         memory_mb: target.memory_mb(),
-        server: target.server().map(str::to_owned).or_else(|| match &target.quick {
-            Some(Quick::Server(address)) => Some(address.clone()),
-            _ => None,
-        }),
+        server: target.join().map(str::to_owned),
         world: match &target.quick {
             Some(Quick::World(folder)) if target.server().is_none() => Some(folder.clone()),
             _ => None,

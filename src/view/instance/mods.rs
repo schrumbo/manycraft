@@ -340,7 +340,7 @@ impl Component for Mods {
         let checking = matches!(*found.read(), updates::Found::Checking);
         let check = {
             let ctx = ctx.clone();
-            Button::new("instance.mods.updates", if checking { tr("Wird geprüft …") } else { tr("Updates prüfen") }).glyph(Icon::Refresh).busy(checking).disabled(updates_why).on_press(move |_| ctx.check_updates())
+            Button::new("instance.mods.updates", tr("Updates prüfen")).glyph(Icon::Refresh).busy(checking).disabled(updates_why).on_press(move |_| ctx.check_updates())
         };
 
         let mut more_bounds = use_state(Bounds::default);

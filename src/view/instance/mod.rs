@@ -429,7 +429,6 @@ fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement
         .child(Button::new("instance.gone.all", tr("Zu allen Spielen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
 }
 
-/// The instance the page shows, if it shows one.
 /// The tab the page of instance `id` shows: the one it showed last, at first Mods when it takes mods and Worlds when not.
 pub fn shown_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
     let nav = store.ui.instance;
@@ -454,6 +453,7 @@ fn use_remembered_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
     tab
 }
 
+/// The instance the page shows, if it shows one.
 pub fn current(store: Store) -> Option<String> {
     match &*store.ui.page.peek() {
         Page::Instance(id) => store.model.peek().instance(id).map(|i| i.id.clone()),
@@ -479,7 +479,7 @@ pub fn extras(store: Store) -> Vec<Extra> {
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
     let play_key = Some(Shortcut::primary(Code::KeyR));
     let pick = play::pick(&f).filter(|_| f.stoppable.is_empty() && f.stopping.is_none());
-    if let Some((key, _)) = f.stoppable.first().cloned() {
+    if let Some((key, _)) = f.stoppable.first().cloned().filter(|_| crate::core::game_window::CAN_RAISE) {
         push("raise", tr("Zum Spiel wechseln"), Icon::External, play_key, EventHandler::new(move |_| store.dispatch(Event::Raise(key.clone()))));
     }
     for (account, who) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a) && f.busy_in(*a).is_none()) {

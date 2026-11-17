@@ -210,11 +210,11 @@ impl Component for Identity {
         let problem = use_state(|| None::<String>);
         let draft = use_hook(Draft::default);
         let submit = use_typed(name, made.name.clone(), id.clone(), problem, draft, move |id, text| save_name(store, id, text));
-        let field = Field::new("instance.settings.name", name).placeholder(tr("Name")).on_submit(move |s| submit.call(s));
+        let field = Field::new("instance.settings.name", name).on_submit(move |s| submit.call(s));
         let (pick, clear) = (id.clone(), id.clone());
         let mut buttons = rect().horizontal().spacing(space::XS).child(Button::new("instance.settings.icon.pick", tr("Bild wählen…")).glyph(Icon::Image).on_press(move |_| choose_icon(store, pick.clone())));
         if made.icon.is_some() {
-            buttons = buttons.child(Button::new("instance.settings.icon.clear", tr("Entfernen")).plain().on_press(move |_| {
+            buttons = buttons.child(Button::new("instance.settings.icon.clear", tr("Bild entfernen")).plain().on_press(move |_| {
                 let id = clear.clone();
                 spawn_in_window(async move { set_icon(store, id, None).await });
             }));

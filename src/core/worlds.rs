@@ -549,7 +549,6 @@ pub fn import(source: &Path, game_dir: &Path, progress: &Progress) -> Result<Pat
     let folder = if one_folder(&name) && !name.starts_with('.') { name } else { tr("Welt") };
     let saves = game_dir.join(SAVES);
     std::fs::create_dir_all(&saves).with_context(|| format!("cannot create {}", saves.display()))?;
-    let target = (1..).map(|n| if n == 1 { saves.join(&folder) } else { saves.join(format!("{folder} ({n})")) }).find(|p| std::fs::symlink_metadata(p).is_err()).context("no free world name")?;
     let temp = fresh_temp(&saves, &folder, "importing")?;
     let copied = match &root {
         None => {
@@ -558,12 +557,26 @@ pub fn import(source: &Path, game_dir: &Path, progress: &Progress) -> Result<Pat
         }
         Some(root) => unpack(source, root, &temp, progress),
     }
-    .and_then(|()| std::fs::rename(&temp, &target).with_context(|| format!("cannot finish {}", target.display())));
-    if let Err(e) = copied {
+    .and_then(|()| place(&temp, &saves, &folder));
+    if copied.is_err() {
         let _ = std::fs::remove_dir_all(&temp);
-        return Err(e);
     }
-    Ok(target)
+    copied
+}
+
+fn place(temp: &Path, saves: &Path, folder: &str) -> Result<PathBuf> {
+    let mut last = None;
+    for n in 1..100 {
+        let target = if n == 1 { saves.join(folder) } else { saves.join(format!("{folder} ({n})")) };
+        if std::fs::symlink_metadata(&target).is_ok() {
+            continue;
+        }
+        match std::fs::rename(temp, &target) {
+            Ok(()) => return Ok(target),
+            Err(e) => last = Some(anyhow::Error::new(e).context(format!("cannot finish {}", target.display()))),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no free world name")))
 }
 
 fn zip_world(path: &Path) -> Result<PathBuf> {
@@ -622,7 +635,7 @@ fn parse_servers(bytes: &[u8]) -> Result<Vec<Server>> {
             continue;
         }
         for _ in 0..n {
-            let (mut name, mut address) = (String::new(), String::new());
+            let (mut name, mut address, mut hidden) = (String::new(), String::new(), false);
             loop {
                 let tag = r.u8()?;
                 if tag == 0 {
@@ -631,11 +644,12 @@ fn parse_servers(bytes: &[u8]) -> Result<Vec<Server>> {
                 match (tag, r.string()?.as_str()) {
                     (8, "name") => name = r.string()?,
                     (8, "ip") => address = r.string()?,
+                    (1, "hidden") => hidden = r.u8()? != 0,
                     (tag, _) => r.skip(tag, 2)?,
                 }
             }
             let address = address.trim().to_owned();
-            if !address.is_empty() {
+            if !address.is_empty() && !hidden {
                 out.push(Server { name: if name.trim().is_empty() { address.clone() } else { name }, address });
             }
         }
@@ -889,10 +903,10 @@ pub(crate) mod tests {
         tag(&mut b, 10, "");
         tag(&mut b, 9, "servers");
         b.push(10);
-        b.extend_from_slice(&3i32.to_be_bytes());
-        for (name, ip) in [("Farm", "farm.example:25570"), ("", "10.0.0.2"), ("Leer", "  ")] {
+        b.extend_from_slice(&4i32.to_be_bytes());
+        for (name, ip, hidden) in [("Farm", "farm.example:25570", 0), ("Minecraft Server", "quick.example", 1), ("", "10.0.0.2", 0), ("Leer", "  ", 0)] {
             tag(&mut b, 1, "hidden");
-            b.push(0);
+            b.push(hidden);
             tag(&mut b, 8, "name");
             b.extend_from_slice(&(name.len() as u16).to_be_bytes());
             b.extend_from_slice(name.as_bytes());

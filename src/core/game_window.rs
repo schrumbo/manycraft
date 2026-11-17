@@ -150,6 +150,9 @@ pub fn close(pid: u32) -> bool {
     }
 }
 
+/// Whether [`raise`] works on this system.
+pub const CAN_RAISE: bool = cfg!(any(target_os = "windows", target_os = "macos"));
+
 /// Brings the main window of process `pid` to the front, restored when it was minimized. Returns whether it could.
 pub fn raise(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
