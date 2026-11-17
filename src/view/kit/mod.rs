@@ -32,6 +32,12 @@ pub fn at_least(height: f32, child: impl IntoElement) -> Rect {
     rect().horizontal().cross_align(Alignment::Center).child(rect().width(Size::px(0.)).height(Size::px(height))).child(child)
 }
 
+/// `a` moved `share` of the way to `b`, alpha included.
+pub fn blend(a: Color, b: Color, share: f32) -> Color {
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * share.clamp(0., 1.)).round() as u8;
+    Color::from_argb(m(a.a(), b.a()), m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
 /// Soft edges over a scrolled list: a fade into `base` at the top once it is scrolled, at the bottom while more follows.
 /// `scrolled` is how far the list moved, `content` and `viewport` the heights of the list and of its window.
 pub fn fades(base: Color, scrolled: f32, content: f32, viewport: f32) -> Vec<Element> {

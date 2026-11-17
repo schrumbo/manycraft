@@ -76,8 +76,9 @@ impl Component for Select {
                     .checked(i == chosen)
                 })
                 .collect();
-            let menu = Menu::under(items, *bounds.peek());
-            menu::open(ui, if options.len() > frame::MENU_ROWS { menu.searchable(tr("Suchen")) } else { menu });
+            let anchor = *bounds.peek();
+            let menu = if options.len() > frame::MENU_ROWS { Menu::under(items, anchor).searchable(tr("Suchen")) } else { Menu::over(items, anchor, space::S) };
+            menu::open(ui, menu);
         };
         let mut click = open.clone();
         let mut keys = open;
@@ -89,7 +90,7 @@ impl Component for Select {
             .a11y_alt(format!("{}: {value}", self.label))
             .width(Size::px(self.width))
             .height(Size::px(control::M))
-            .padding((0., space::S, 0., space::S + 2.))
+            .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
             .background(if *hovered.read() && enabled { t.hover } else { t.control })
