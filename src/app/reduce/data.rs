@@ -26,10 +26,12 @@ pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Eff
     }
     match data {
         Ok((accounts, batches, instances)) => {
+            let before = if m.loaded { show::active_account(m) } else { None };
             m.accounts = accounts;
             m.batches = batches;
             m.instances = instances;
             m.active_account = env.settings.active_account;
+            keep_active(m, before, out);
             m.loaded = true;
             m.error = if keep { notice.or(m.error.take()) } else { notice };
         }
@@ -64,6 +66,19 @@ pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Eff
         } else {
             m.session.waiting_starts.push((batch, since));
         }
+    }
+}
+
+/// Keeps `before` active when a reload would hand the guess to an account just added, so adding an account never
+/// switches the one instances play with.
+fn keep_active(m: &mut Model, before: Option<uuid::Uuid>, out: &mut Vec<Effect>) {
+    let chosen = m.active_account.is_some_and(|id| m.account(id).is_some());
+    if let Some(id) = before
+        && !chosen
+        && m.account(id).is_some()
+        && show::active_account(m) != Some(id)
+    {
+        show::choose_account(m, id, out);
     }
 }
 
@@ -148,6 +163,29 @@ mod tests {
     use super::super::testing::*;
     use crate::core::account::AccountKind;
     use crate::core::fleet::Adoption;
+
+    fn reload(m: &mut crate::app::model::Model, s: &crate::core::settings::Settings, accounts: Vec<crate::core::account::Account>) -> Vec<Effect> {
+        let data = Ok((accounts, m.batches.clone(), m.instances.clone()));
+        let loaded = super::super::super::event::Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), measured: std::collections::HashMap::new() };
+        run(m, s, std::time::Instant::now(), super::super::super::event::Event::Loaded(Box::new(loaded)))
+    }
+
+    #[test]
+    fn adding_an_account_keeps_the_active_one() {
+        let s = settings();
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        m.loaded = true;
+        let first = m.accounts[0].id;
+        assert_eq!(super::show::active_account(&m), Some(first));
+        let mut accounts = m.accounts.clone();
+        accounts.push(crate::core::account::Account { id: uuid::Uuid::from_u128(77), name: "Neu".into(), kind: AccountKind::Offline, proxy: None, color: None });
+        let fx = reload(&mut m, &s, accounts.clone());
+        assert_eq!(super::show::active_account(&m), Some(first), "the new account does not take over");
+        assert!(fx.iter().any(|e| matches!(e, Effect::SaveActiveAccount(a) if *a == first)));
+        accounts.retain(|a| a.id != first);
+        reload(&mut m, &s, accounts);
+        assert_eq!(super::show::active_account(&m), Some(uuid::Uuid::from_u128(77)), "a removed active account falls back");
+    }
 
     #[test]
     fn a_batch_started_before_a_load_knows_it_starts_with_the_load() {

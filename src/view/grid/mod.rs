@@ -14,7 +14,7 @@ pub mod table;
 pub mod tools;
 mod tile;
 mod welcome;
-mod words;
+pub mod words;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};

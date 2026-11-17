@@ -121,6 +121,25 @@ pub fn solo_account(m: &Model, made: &Instance) -> Option<Uuid> {
     made.default_account.filter(|id| m.account(*id).is_some()).or_else(|| active_account(m))
 }
 
+/// The account a plain Play starts `made` with: the one already playing it alone, else [`solo_account`], or the first
+/// account online nowhere that can play while that one plays `made` in a batch or has to sign in again.
+pub fn solo_pick(m: &Model, made: &Instance) -> Option<Uuid> {
+    let solo = solo_account(m, made)?;
+    if let Some(g) = m.solo_games(&made.id).filter(|g| g.phase.is_active()).min_by_key(|g| g.account_id != solo) {
+        return Some(g.account_id);
+    }
+    let busy = |a: Uuid| m.playing_elsewhere(&made.id, a, &fleets::solo_key(made, a)).is_some();
+    let free = |a: &Uuid| !m.games.values().any(|g| g.account_id == *a && g.phase.is_active());
+    let working = m.accounts.iter().map(|a| a.id).find(|a| free(a) && !m.sign_in_expired(*a));
+    if busy(solo) {
+        working.or_else(|| m.accounts.iter().map(|a| a.id).find(free))
+    } else if m.sign_in_expired(solo) {
+        working.or(Some(solo))
+    } else {
+        Some(solo)
+    }
+}
+
 /// Makes `id` the active account and keeps it.
 pub(super) fn choose_account(m: &mut Model, id: Uuid, out: &mut Vec<Effect>) {
     if m.account(id).is_none() || m.active_account == Some(id) {
@@ -148,7 +167,7 @@ pub(super) fn set_default_account(m: &mut Model, id: &str, account: Option<Uuid>
 /// Plays instance `id` alone with `account`, else its [`solo_account`], as a normal game window; the game's key when there is one.
 pub(super) fn play_instance(m: &mut Model, id: &str, account: Option<Uuid>, out: &mut Vec<Effect>) -> Option<String> {
     let picked = m.instance(id).and_then(|made| {
-        let account = account.or_else(|| solo_account(m, made)).filter(|a| m.account(*a).is_some())?;
+        let account = account.or_else(|| solo_pick(m, made)).filter(|a| m.account(*a).is_some())?;
         let key = fleets::solo_key(made, account);
         let shown = m.games.get(&key).is_some_and(|g| g.phase.is_active());
         Some((key, account, shown))
@@ -305,6 +324,36 @@ mod tests {
         played.default_account = Some(uuid::Uuid::from_u128(99));
         m.active_account = Some(uuid::Uuid::from_u128(98));
         assert_eq!(super::solo_account(&m, &played), Some(uuid::Uuid::from_u128(50)), "removed accounts fall back to the guess");
+    }
+
+    #[test]
+    fn an_expired_active_account_hands_play_to_a_working_one() {
+        let (mut m, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let (expired, other) = (m.accounts[0].id, uuid::Uuid::from_u128(20));
+        m.accounts.push(crate::core::account::Account { id: other, name: "Zwei".into(), kind: AccountKind::Offline, proxy: None, color: None });
+        m.active_account = Some(expired);
+        let made = m.instances[0].clone();
+        assert_eq!(super::solo_pick(&m, &made), Some(expired));
+        m.games.get_mut(&key).unwrap().phase = Phase::LoginNeeded;
+        assert_eq!(super::solo_pick(&m, &made), Some(other), "a working account plays instead");
+        assert_eq!(m.active_account, Some(expired), "without switching the active one");
+        let fx = run(&mut m, &settings(), std::time::Instant::now(), Event::PlayInstance { instance: made.id.clone(), account: None });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.iter().any(|a| a.id == other))), "{fx:?}");
+        assert_eq!(super::solo_pick(&m, &made), Some(other), "a second Play shows the running one");
+        m.games.retain(|_, g| !g.alone());
+        let third = uuid::Uuid::from_u128(30);
+        m.accounts.push(crate::core::account::Account { id: third, name: "Drei".into(), kind: AccountKind::Offline, proxy: None, color: None });
+        let mut online = m.games[&key].clone();
+        online.key = "drei".into();
+        online.account_id = third;
+        online.instance_id = "anders".into();
+        online.phase = Phase::Menu;
+        m.games.insert(online.key.clone(), online);
+        let mut second = m.games[&key].clone();
+        second.key = "zwei".into();
+        second.account_id = other;
+        m.games.insert(second.key.clone(), second);
+        assert_eq!(super::solo_pick(&m, &made), Some(expired), "with no working account it stays, to sign in");
     }
 
     fn play_alone(m: &mut super::super::super::model::Model, s: &crate::core::settings::Settings) -> (String, Vec<Effect>) {

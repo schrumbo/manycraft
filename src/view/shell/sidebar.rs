@@ -122,7 +122,7 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
     let i = id.to_owned();
     let alone: Vec<String> = m.solo_games(id).filter(|g| g.phase.is_active()).map(|g| g.key.clone()).collect();
     let mut items = vec![if alone.is_empty() {
-        let who = crate::app::reduce::solo_account(&m, made).and_then(|a| m.account(a)).map(|a| (a.id, a.name.clone()));
+        let who = crate::app::reduce::solo_pick(&m, made).and_then(|a| m.account(a)).map(|a| (a.id, a.name.clone()));
         match who {
             Some((account, name)) if m.sign_in_expired(account) => {
                 let blocked = commands::sign_in_blocked(store);
@@ -290,11 +290,13 @@ impl Component for Sidebar {
             made.sort_by_cached_key(|i| i.name.to_lowercase());
             for i in made {
                 let to = Page::Instance(i.id.clone());
-                let selected = now == to;
+                let selected = now == to || matches!(&now, Page::Browse(id, _) if *id == i.id);
                 let running = m.solo_games(&i.id).any(|g| g.phase.is_active());
                 let since = m.solo_games(&i.id).filter(|g| g.phase.is_active()).filter_map(|g| up.get(&g.key)).min().copied();
                 let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
-                if running {
+                if let Some(p) = crate::view::instance::loading(&m, &i.id) {
+                    end = end.child(crate::view::install::ring(&t, &crate::view::install::Stage::Running(Some(p)), iconsize::S));
+                } else if running {
                     end = end.child(dot(t.success));
                 }
                 if let Some(up) = since.and_then(crate::view::instance::uptime_text) {

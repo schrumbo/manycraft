@@ -67,6 +67,7 @@ pub enum Command {
     Import,
     FindModpacks,
     AddMods,
+    ShowShortcuts,
 }
 
 /// A key combination; `primary` is Ctrl, or Cmd on macOS.
@@ -137,6 +138,7 @@ impl Shortcut {
             Code::ArrowRight => "→".to_owned(),
             Code::ArrowLeft => "←".to_owned(),
             Code::ArrowDown => "↓".to_owned(),
+            Code::F1 => "F1".to_owned(),
             Code::F2 => "F2".to_owned(),
             other => format!("{other:?}").trim_start_matches("Key").trim_start_matches("Digit").to_owned(),
         };
@@ -167,7 +169,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 50] = [
+    pub const ALL: [Command; 51] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -218,6 +220,7 @@ impl Command {
         Command::Import,
         Command::FindModpacks,
         Command::AddMods,
+        Command::ShowShortcuts,
     ];
 
     /// The name the drive tool and the GPUI shell use for it.
@@ -262,6 +265,7 @@ impl Command {
             Command::Fit => "FitTiles",
             Command::Quit => "Quit",
             Command::Import => "Import",
+            Command::ShowShortcuts => "ShowShortcuts",
             c => c.page_name(),
         }
     }
@@ -314,6 +318,7 @@ impl Command {
             Command::Fit => tr("Kacheln einpassen"),
             Command::Quit => tr("Manycraft beenden"),
             Command::Import => tr("Instanz importieren…"),
+            Command::ShowShortcuts => tr("Tastenkürzel anzeigen"),
             c => c.page_label(),
         }
     }
@@ -345,6 +350,7 @@ impl Command {
             Command::Undo => Icon::Undo,
             Command::OpenPalette => Icon::Keyboard,
             Command::Import => Icon::Download,
+            Command::ShowShortcuts => Icon::Keyboard,
             c => c.page_glyph(),
         }
     }
@@ -381,6 +387,7 @@ impl Command {
             Command::Import => k(Code::KeyO),
             Command::StartAll => ks(Code::Enter),
             Command::StopAll => ks(Code::Period),
+            Command::ShowShortcuts => bare(Code::F1),
             Command::ShowAttention
             | Command::MessageSelected
             | Command::ShowHistory
@@ -453,6 +460,7 @@ impl Command {
                 ui.palette.set(open);
             }
             Command::ToggleSidebar => ui.toggle_sidebar(),
+            Command::ShowShortcuts => super::shell::shortcuts::open(ui),
             Command::Undo => {
                 let browser = ui.browser_undo.peek().clone();
                 match browser {
@@ -535,13 +543,24 @@ impl Command {
     }
 }
 
+/// Whether `command` still runs while a sheet, menu, the palette or a text field has the keyboard: Quit, and the palette
+/// toggle unless a sheet is open, since the palette reaches pages the sheet covers.
+fn passes_layers(store: Store, command: Command) -> bool {
+    match command {
+        Command::Quit => true,
+        Command::OpenPalette => store.ui.sheet.peek().is_none(),
+        _ => false,
+    }
+}
+
 /// Runs the command whose shortcut the key event is; true when one ran. While a sheet, menu, the palette or a text field
-/// has the keyboard only the palette toggle and Quit go through. A command that cannot run leaves its keys to the page.
+/// has the keyboard only the palette toggle and Quit go through, and the palette toggle not over a sheet. A command that
+/// cannot run leaves its keys to the page.
 pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
     let layered = store.ui.layered() || super::kit::field::typing();
     for command in Command::ALL {
         if command.shortcut().is_some_and(|s| s.matches(e)) {
-            if layered && !matches!(command, Command::OpenPalette | Command::Quit) {
+            if layered && !passes_layers(store, command) {
                 return false;
             }
             if command.available(store) || matches!(command, Command::OpenPalette | Command::Quit | Command::ToggleSidebar) {
@@ -564,7 +583,7 @@ pub fn shortcut(store: Store, e: &KeyboardEventData) -> bool {
 /// while it can run; while a sheet, menu or the palette is open only the palette toggle and Quit.
 #[cfg(target_os = "macos")]
 pub fn for_menu(store: Store, command: Command) -> Option<Command> {
-    let free = |c: Command| matches!(c, Command::OpenPalette | Command::Quit);
+    let free = |c: Command| passes_layers(store, c);
     if store.ui.layered() && !free(command) {
         return None;
     }

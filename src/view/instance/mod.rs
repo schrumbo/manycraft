@@ -176,7 +176,7 @@ pub struct Facts {
     pub expired: Vec<Uuid>,
     /// Accounts whose game of it runs in a batch, with the batch's name; they cannot play it alone now.
     pub busy: Vec<(Uuid, String)>,
-    /// The account Play starts: `solo`, or the first free one while `solo` is busy.
+    /// The account Play starts: `solo`, or the first free one while `solo` is busy or has to sign in again.
     pub pick: Option<Uuid>,
 }
 
@@ -219,14 +219,7 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
     let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
     let expired: Vec<Uuid> = m.accounts.iter().filter(|a| m.sign_in_expired(a.id)).map(|a| a.id).collect();
     let busy: Vec<(Uuid, String)> = m.accounts.iter().filter_map(|a| m.playing_elsewhere(&made.id, a.id, &crate::core::fleet::solo_key(&made, a.id)).map(|place| (a.id, place))).collect();
-    let free = |a: &Uuid| !busy.iter().any(|(b, _)| b == a) && !playing.contains(a);
-    let pick = match solo {
-        Some(s) if busy.iter().any(|(b, _)| *b == s) => {
-            let ids: Vec<Uuid> = m.accounts.iter().map(|a| a.id).filter(|a| free(a)).collect();
-            ids.iter().find(|a| !expired.contains(a)).or(ids.first()).copied()
-        }
-        other => other,
-    };
+    let pick = crate::app::reduce::solo_pick(m, &made);
     Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, expired, busy, pick })
 }
 
@@ -451,6 +444,22 @@ fn use_remembered_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
         tabs.write().insert(id.clone(), *tab);
     });
     tab
+}
+
+/// How far the game of instance `id` played alone has loaded Minecraft before its start, while it does.
+pub fn loading(m: &crate::app::model::Model, id: &str) -> Option<u8> {
+    m.solo_games(id).filter(|g| matches!(g.phase, crate::app::model::Phase::Starting { .. }) && g.memory_wait.is_none()).find_map(|g| m.preparing.get(&g.batch_id).copied())
+}
+
+/// Shows the page of instance `id` on `tab`.
+pub fn show_on(store: Store, id: &str, tab: Tab) {
+    let nav = store.ui.instance;
+    let (mut now, mut tab_for, mut tabs) = (nav.tab, nav.tab_for, nav.tabs);
+    tabs.write().insert(id.to_owned(), tab);
+    tab_for.set(Some(id.to_owned()));
+    now.set(tab);
+    let mut page = store.ui.page;
+    page.set(Page::Instance(id.to_owned()));
 }
 
 /// The instance the page shows, if it shows one.

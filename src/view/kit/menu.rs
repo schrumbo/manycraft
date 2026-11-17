@@ -34,6 +34,7 @@ pub enum Item {
         danger: bool,
         disabled: bool,
         face: Option<Face>,
+        warn: bool,
         keep: bool,
         run: EventHandler<()>,
     },
@@ -43,7 +44,7 @@ pub enum Item {
 impl Item {
     /// An entry named `id` that runs `run`.
     pub fn new(id: impl Into<String>, label: impl Into<String>, run: impl FnMut(()) + 'static) -> Self {
-        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, keep: false, run: EventHandler::new(run) }
+        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, warn: false, keep: false, run: EventHandler::new(run) }
     }
 
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
@@ -64,6 +65,14 @@ impl Item {
     pub fn face(mut self, account: Face) -> Self {
         if let Self::Action { face, .. } = &mut self {
             *face = Some(account);
+        }
+        self
+    }
+
+    /// Marks the entry as needing attention: a warning glyph in front of its detail.
+    pub fn warn(mut self) -> Self {
+        if let Self::Action { warn, .. } = &mut self {
+            *warn = true;
         }
         self
     }
@@ -142,13 +151,16 @@ fn glyphs(text: &str, size: f32) -> f32 {
 }
 
 fn fits(item: &Item) -> f32 {
-    let Item::Action { label, shortcut, face, .. } = item else { return 0. };
+    let Item::Action { label, shortcut, face, warn, .. } = item else { return 0. };
     let mut w = space::XS + iconsize::S + space::XS + glyphs(label, font::BODY) + space::XS + space::S;
     if face.is_some() {
         w += frame::FACE + space::XS;
     }
     if let Some(keys) = shortcut {
         w += space::XL + glyphs(keys, font::CALLOUT);
+    }
+    if *warn {
+        w += iconsize::S + space::XS;
     }
     w
 }
@@ -283,10 +295,10 @@ impl Component for Panel {
             .enumerate()
             .map(|(i, item)| match item {
                 Item::Separator => rect().width(Size::fill()).padding((space::XS, space::S)).child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator)).into_element(),
-                Item::Action { id, label, shortcut, checked, danger, disabled, face, .. } => {
+                Item::Action { id, label, shortcut, checked, danger, disabled, face, warn, .. } => {
                     let mut run = run.clone();
                     let at = q.clone();
-                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, danger: *danger, disabled: *disabled, face: face.clone(), hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
+                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
                 }
             })
             .collect();
@@ -350,6 +362,7 @@ struct Entry {
     danger: bool,
     disabled: bool,
     face: Option<Face>,
+    warn: bool,
     hot: bool,
     on_hover: EventHandler<()>,
     on_press: EventHandler<()>,
@@ -391,6 +404,9 @@ impl Component for Entry {
             .child(line(&t, self.label.clone(), font::BODY, ink))
             .child(spacer())
             .content(Content::flex());
+        if self.warn {
+            e = e.child(icon(&t, Icon::Alert, iconsize::S, if self.disabled { t.text3 } else if self.hot { t.on_accent } else { t.attention_text }));
+        }
         if let Some(k) = &self.shortcut {
             e = e.child(line(&t, k.clone(), font::CALLOUT, if self.hot && !self.disabled { t.on_accent } else { t.text3 }));
         }

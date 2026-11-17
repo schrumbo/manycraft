@@ -2,6 +2,7 @@
 
 pub mod account;
 mod palette;
+pub mod shortcuts;
 mod sidebar;
 mod toolbar;
 
@@ -43,7 +44,7 @@ impl Component for Shell {
             let m = store.model.read();
             m.loaded.then(|| match &page {
                 Page::Grid(Filter::Batch(b)) => m.batch(b).is_some(),
-                Page::Instance(id) => m.instance(id).is_some(),
+                Page::Instance(id) | Page::Browse(id, _) => m.instance(id).is_some(),
                 _ => true,
             })
         };
@@ -68,6 +69,7 @@ impl Component for Shell {
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
             Page::Installing(id) => rect().key(&id.to_string()).width(Size::fill()).height(Size::fill()).child(crate::view::install::InstallPage { id }).into_element(),
             Page::Modpacks => crate::view::sheets::browser::PacksPage.into_element(),
+            Page::Browse(id, kind) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(crate::view::sheets::browser::ContentPage { id, kind }).into_element(),
             Page::Accounts => AccountsPage.into_element(),
             Page::Chat => ChatPage.into_element(),
             Page::Settings => super::settings::SettingsPage.into_element(),
