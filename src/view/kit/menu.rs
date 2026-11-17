@@ -405,7 +405,7 @@ impl Component for Entry {
             .child(spacer())
             .content(Content::flex());
         if self.warn {
-            e = e.child(icon(&t, Icon::Alert, iconsize::S, if self.hot && !self.disabled { t.on_accent } else { t.attention_text }));
+            e = e.child(icon(&t, Icon::Alert, iconsize::S, if self.disabled { t.text3 } else if self.hot { t.on_accent } else { t.attention_text }));
         }
         if let Some(k) = &self.shortcut {
             e = e.child(line(&t, k.clone(), font::CALLOUT, if self.hot && !self.disabled { t.on_accent } else { t.text3 }));

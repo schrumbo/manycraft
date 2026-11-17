@@ -144,7 +144,6 @@ impl Shortcut {
                 Code::Comma => ",".to_owned(),
                 Code::Equal => "+".to_owned(),
                 Code::Minus => "−".to_owned(),
-                Code::Slash => "/".to_owned(),
                 _ => key,
             };
             return format!("{}{}{}{}{key}", if self.ctrl { "⌃" } else { "" }, if self.alt { "⌥" } else { "" }, if self.shift { "⇧" } else { "" }, if self.primary { "⌘" } else { "" });
@@ -367,7 +366,6 @@ impl Command {
             Command::Import => k(Code::KeyO),
             Command::StartAll => ks(Code::Enter),
             Command::StopAll => ks(Code::Period),
-            Command::ShowShortcuts if cfg!(target_os = "macos") => k(Code::Slash),
             Command::ShowShortcuts => bare(Code::F1),
             Command::ShowAttention
             | Command::MessageSelected

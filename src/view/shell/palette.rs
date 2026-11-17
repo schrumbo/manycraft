@@ -81,11 +81,11 @@ fn game_items(store: Store, key: &str) -> Vec<Item> {
         items.push(Item::new("game.reconnect", tr("Neu verbinden"), move |_| store.dispatch(AppEvent::Reconnect(k.clone()))));
     }
     let k = vec![key.to_owned()];
-    items.push(if g.phase.is_active() {
-        Item::new("game.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::Stop(k.clone()))).disabled(!g.phase.stoppable())
-    } else {
-        Item::new("game.start", tr("Starten"), move |_| store.dispatch(AppEvent::Start(k.clone())))
-    });
+    if g.phase.stoppable() {
+        items.push(Item::new("game.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::Stop(k.clone()))));
+    } else if !g.phase.is_active() {
+        items.push(Item::new("game.start", tr("Starten"), move |_| store.dispatch(AppEvent::Start(k.clone()))));
+    }
     let batch = g.batch_id.clone();
     let mut ui = store.ui;
     items.push(Item::new("game.batch", tr("Im Batch zeigen"), move |_| ui.page.set(Page::Grid(Filter::Batch(batch.clone())))));
@@ -150,11 +150,15 @@ fn play_instance(store: Store, i: &Instance) -> Entry {
         Some(account) => crate::view::accounts::sign_in(store, vec![account]),
         None => store.dispatch(AppEvent::PlayInstance { instance: id.clone(), account: None }),
     });
-    let mut e = Entry::new(format!("palette.instance.{}.play", i.id), trf("%@ spielen", &[&i.name]), Icon::Play, None, Target::Extra(run)).sub(instance_sub(i));
-    if expired.is_some() {
-        e.off = commands::sign_in_blocked(store);
+    let id = format!("palette.instance.{}.play", i.id);
+    match expired.and_then(|a| m.account(a)) {
+        Some(account) => {
+            let mut e = Entry::new(id, trf("Anmelden als %@", &[&account.name]), Icon::LogIn, None, Target::Extra(run)).sub(format!("{} · {}", i.name, tr("Anmeldung abgelaufen")));
+            e.off = commands::sign_in_blocked(store);
+            e
+        }
+        None => Entry::new(id, trf("%@ spielen", &[&i.name]), Icon::Play, None, Target::Extra(run)).sub(instance_sub(i)),
     }
-    e
 }
 
 fn entries(store: Store, query: &str, recents: &[String]) -> Vec<Entry> {
@@ -439,6 +443,8 @@ impl Component for PaletteRow {
         let t = use_theme();
         let off = self.entry.off.is_some();
         let spot = use_spot(&self.entry.id, "option", &self.entry.label, !off);
+        let actions_label = tr("Aktionen");
+        let actions_spot = use_spot(&format!("{}.actions", self.entry.id), "button", &actions_label, self.on_actions.is_some());
         let (ink, sub) = match (self.hot, off) {
             (_, true) => (t.text3, t.text3),
             (true, false) => (t.on_accent, t.on_accent),
@@ -493,12 +499,13 @@ impl Component for PaletteRow {
                 .center()
                 .corner_radius(t.shape.small)
                 .cursor(CursorIcon::Pointer)
+                .on_sized(actions_spot)
                 .on_press(move |e: Event<PressEventData>| {
                     e.stop_propagation();
                     open.call(());
                 })
                 .child(icon(&t, Icon::ChevronRight, iconsize::S, sub));
-            r = r.child(WithTip::new(Some(format!("{} (⇥)", tr("Aktionen"))), chevron));
+            r = r.child(WithTip::new(Some(format!("{actions_label} (⇥)")), chevron));
         } else {
             r = r.child(rect().width(Size::px(space::XS)));
         }

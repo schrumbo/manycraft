@@ -1,4 +1,4 @@
-//! Every keyboard shortcut of the window on one sheet, opened with F1, ⌘/ on macOS, or from the palette.
+//! Every keyboard shortcut of the window on one sheet, opened with F1 or from the palette.
 
 use freya::prelude::*;
 

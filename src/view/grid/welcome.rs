@@ -56,11 +56,13 @@ impl Component for Welcome {
         steps = steps.child(step(&t, 2, (false, next == 2), play_label, play.filter(|_| next == 2).map(IntoElement::into_element)));
 
         let mut extra = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
-        if next < 2 {
-            extra = extra.child(Button::new("welcome.import", tr("Aus anderem Launcher übernehmen…")).plain().glyph(Icon::Download).disabled(commands::want_blocked(&Want::Import)).tip(Command::Import.tip()).on_press(move |_| {
+        if next < 2 && commands::can_want(&Want::Import) {
+            let label = tr("Aus anderem Launcher übernehmen…");
+            let tip = Command::Import.shortcut().map_or_else(|| label.clone(), |s| format!("{label} ({})", s.label()));
+            extra = extra.child(Button::new("welcome.import", label).plain().glyph(Icon::Download).tip(tip).on_press(move |_| {
                 commands::want(store, Want::Import);
             }));
-        } else if commands::can_want(&Want::NewBatch) {
+        } else if next >= 2 && commands::can_want(&Want::NewBatch) {
             extra = extra.child(Button::new("welcome.batch", tr("Mehrere Accounts als Batch…")).plain().glyph(Icon::Layers).tip(Command::NewBatch.tip()).on_press(move |_| {
                 commands::want(store, Want::NewBatch);
             }));

@@ -121,12 +121,15 @@ pub fn solo_account(m: &Model, made: &Instance) -> Option<Uuid> {
     made.default_account.filter(|id| m.account(*id).is_some()).or_else(|| active_account(m))
 }
 
-/// The account a plain Play starts `made` with: [`solo_account`], or the first free account that can play while that
-/// one plays `made` in a batch or has to sign in again.
+/// The account a plain Play starts `made` with: the one already playing it alone, else [`solo_account`], or the first
+/// account online nowhere that can play while that one plays `made` in a batch or has to sign in again.
 pub fn solo_pick(m: &Model, made: &Instance) -> Option<Uuid> {
     let solo = solo_account(m, made)?;
+    if let Some(g) = m.solo_games(&made.id).filter(|g| g.phase.is_active()).min_by_key(|g| g.account_id != solo) {
+        return Some(g.account_id);
+    }
     let busy = |a: Uuid| m.playing_elsewhere(&made.id, a, &fleets::solo_key(made, a)).is_some();
-    let free = |a: &Uuid| !busy(*a) && !m.games.get(&fleets::solo_key(made, *a)).is_some_and(|g| g.phase.is_active());
+    let free = |a: &Uuid| !m.games.values().any(|g| g.account_id == *a && g.phase.is_active());
     let working = m.accounts.iter().map(|a| a.id).find(|a| free(a) && !m.sign_in_expired(*a));
     if busy(solo) {
         working.or_else(|| m.accounts.iter().map(|a| a.id).find(free))
@@ -336,7 +339,16 @@ mod tests {
         assert_eq!(m.active_account, Some(expired), "without switching the active one");
         let fx = run(&mut m, &settings(), std::time::Instant::now(), Event::PlayInstance { instance: made.id.clone(), account: None });
         assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.iter().any(|a| a.id == other))), "{fx:?}");
+        assert_eq!(super::solo_pick(&m, &made), Some(other), "a second Play shows the running one");
         m.games.retain(|_, g| !g.alone());
+        let third = uuid::Uuid::from_u128(30);
+        m.accounts.push(crate::core::account::Account { id: third, name: "Drei".into(), kind: AccountKind::Offline, proxy: None, color: None });
+        let mut online = m.games[&key].clone();
+        online.key = "drei".into();
+        online.account_id = third;
+        online.instance_id = "anders".into();
+        online.phase = Phase::Menu;
+        m.games.insert(online.key.clone(), online);
         let mut second = m.games[&key].clone();
         second.key = "zwei".into();
         second.account_id = other;

@@ -275,7 +275,7 @@ impl Flow {
                     Done::Next => self.start(Via::Window),
                     Done::Added => {
                         let left = *self.opened_private.peek();
-                        if !left && self.pending.peek().queue.is_empty() {
+                        if !left && self.pending.peek().queue.is_empty() && self.added.peek().is_empty() {
                             self.done(trf("%@ hinzugefügt", &[&name]), Vec::new(), Start::Microsoft);
                             return;
                         }
@@ -689,6 +689,9 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2], offline: bool) -> Pa
     if offline {
         let (form, ready) = offline_form(flow, t);
         body = body.child(rect().width(Size::fill()).padding((space::S, 0., space::XS, 0.)).child(form));
+        if filled && !open {
+            body = body.child(line(t, trf("Proxy: %@", &[&flow.proxy.read().trim()]), font::CALLOUT, t.text2));
+        }
         primary = Some(("account.add.ok", ready));
     }
     body = body.child(rect().horizontal().child(disclosure));
