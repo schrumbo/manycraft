@@ -715,10 +715,20 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                         app.queue_platform_events(platform_events);
                     }
                 }
+                WindowEvent::RedrawRequested if app.apply_pending_resize() => {
+                    needs_recovery = true;
+                }
                 WindowEvent::RedrawRequested => {
                     let scale_factor = app.effective_scale_factor();
                     hotpath::measure_block!("RedrawRequested", {
                         app.measure_layout(
+                            &mut self.font_collection,
+                            &self.font_manager,
+                            &self.fallback_fonts,
+                            &mut self.plugins,
+                            PluginHandle::new(&self.proxy),
+                        );
+                        app.settle_layout(
                             &mut self.font_collection,
                             &self.font_manager,
                             &self.fallback_fonts,
@@ -749,16 +759,16 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                                     PluginHandle::new(&self.proxy),
                                 );
 
+                                let size = (surface.width(), surface.height());
                                 let kept = app.kept_frame.as_ref().is_some_and(|kept| {
-                                    kept.width() == surface.width()
-                                        && kept.height() == surface.height()
+                                    (kept.width(), kept.height()) == size
                                 });
                                 if !kept {
-                                    app.kept_frame = surface.new_surface_with_dimensions((
-                                        surface.width(),
-                                        surface.height(),
-                                    ));
+                                    app.kept_frame = (app.presented_size == size)
+                                        .then(|| surface.new_surface_with_dimensions(size))
+                                        .flatten();
                                 }
+                                app.presented_size = size;
 
                                 match app.kept_frame.as_mut() {
                                     Some(frame) => {
@@ -920,13 +930,8 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                     });
                 }
                 WindowEvent::Resized(size) => {
-                    if let Err(error) = app.driver.resize(size) {
-                        tracing::warn!(
-                            "Graphics driver lost while resizing ({error:?}), rebuilding on the same window"
-                        );
-                        needs_recovery = true;
-                    }
-
+                    app.pending_resize = Some(size);
+                    app.settle_on_next_render = true;
                     app.window.request_redraw();
 
                     app.process_layout_on_next_render = true;

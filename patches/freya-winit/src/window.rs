@@ -53,6 +53,7 @@ use winit::{
     dpi::{
         LogicalPosition,
         LogicalSize,
+        PhysicalSize,
     },
     event::ElementState,
     event_loop::{
@@ -138,6 +139,12 @@ pub struct AppWindow {
     pub(crate) damage: DamageTracker,
 
     pub(crate) kept_frame: Option<SkiaSurface>,
+
+    pub(crate) pending_resize: Option<PhysicalSize<u32>>,
+
+    pub(crate) presented_size: (i32, i32),
+
+    pub(crate) settle_on_next_render: bool,
 
     pub(crate) dropped_file_paths: Vec<PathBuf>,
 
@@ -463,6 +470,12 @@ impl AppWindow {
 
             kept_frame: None,
 
+            pending_resize: None,
+
+            presented_size: (0, 0),
+
+            settle_on_next_render: false,
+
             dropped_file_paths: Vec::new(),
 
             on_close,
@@ -526,6 +539,16 @@ impl AppWindow {
         plugins: &mut PluginsManager,
         handle: PluginHandle,
     ) -> bool {
+        self.poll_runner_with(plugins, handle, true)
+    }
+
+    /// Polls the runner and applies its mutations; `announce` sends the tree update plugin events.
+    fn poll_runner_with(
+        &mut self,
+        plugins: &mut PluginsManager,
+        handle: PluginHandle,
+        announce: bool,
+    ) -> bool {
         let mut context = std::task::Context::from_waker(&self.waker);
 
         #[cfg(feature = "hotreload")]
@@ -571,13 +594,15 @@ impl AppWindow {
             &mut plugins.tasks_poll_observer(&self.window, handle.clone()),
         );
 
-        plugins.send(
-            PluginEvent::StartedUpdatingTree {
-                window: &self.window,
-                tree: &self.tree,
-            },
-            handle.clone(),
-        );
+        if announce {
+            plugins.send(
+                PluginEvent::StartedUpdatingTree {
+                    window: &self.window,
+                    tree: &self.tree,
+                },
+                handle.clone(),
+            );
+        }
         let mutations = self.runner.sync_and_update();
         let scale_factor = self.effective_scale_factor() as f32;
         let result = self
@@ -601,13 +626,15 @@ impl AppWindow {
                 action: NativeWindowEventAction::User(UserEvent::FocusAccessibilityNode(strategy)),
             }));
         }
-        plugins.send(
-            PluginEvent::FinishedUpdatingTree {
-                window: &self.window,
-                tree: &self.tree,
-            },
-            handle,
-        );
+        if announce {
+            plugins.send(
+                PluginEvent::FinishedUpdatingTree {
+                    window: &self.window,
+                    tree: &self.tree,
+                },
+                handle,
+            );
+        }
         needs_redraw
     }
 
@@ -665,6 +692,38 @@ impl AppWindow {
                 Instant::now(),
             );
         }
+    }
+
+    /// Resizes the graphics surface to the last size the window reported, once per frame however
+    /// many resizes arrived since the last one. Returns whether the driver was lost.
+    pub(crate) fn apply_pending_resize(&mut self) -> bool {
+        let Some(size) = self.pending_resize.take() else {
+            return false;
+        };
+        let Err(error) = self.driver.resize(size) else {
+            return false;
+        };
+        tracing::warn!(
+            "Graphics driver lost while resizing ({error:?}), rebuilding on the same window"
+        );
+        true
+    }
+
+    /// After a resize, lets components react to the new layout (root size, sized events) and
+    /// measures again, so the frame being drawn already shows their final layout.
+    pub(crate) fn settle_layout(
+        &mut self,
+        font_collection: &mut FontCollection,
+        font_manager: &FontMgr,
+        fallback_fonts: &[Cow<'static, str>],
+        plugins: &mut PluginsManager,
+        handle: PluginHandle,
+    ) {
+        if !std::mem::take(&mut self.settle_on_next_render) {
+            return;
+        }
+        self.poll_runner_with(plugins, handle.clone(), false);
+        self.measure_layout(font_collection, font_manager, fallback_fonts, plugins, handle);
     }
 
     /// Applies buffered input and synchronizes its UI updates and layout.
