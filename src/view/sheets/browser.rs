@@ -62,6 +62,7 @@ const AUTHOR_MAX: f32 = 120.;
 const CATEGORY_W: f32 = 168.;
 const SORT_W: f32 = 120.;
 const LOADER_W: f32 = 124.;
+const PACK_TRAIL_W: f32 = 184.;
 const VERSION_W: f32 = 132.;
 const SPLIT_AT: f32 = 1100.;
 const PANE_LIST: f32 = 0.8;
@@ -1147,13 +1148,16 @@ impl Flow {
     }
 
     fn reset_pack_filters(&self) {
+        let filtered = self.pack_filtered();
         if let Some(mut f) = self.scope.filters.clone() {
             f.version.set(String::new());
             f.loader.set(Loader::Vanilla);
         }
         let mut core = self.core;
         core.write().category = None;
-        self.refresh(false);
+        if !filtered {
+            self.refresh(false);
+        }
         self.focus();
     }
 
@@ -1860,7 +1864,6 @@ impl Component for Browser {
         let search = use_hook(AccessibilityId::new_unique);
         let kind = self.scope.kind;
         let paged = self.scope.page;
-        let packs = self.scope.packs();
         let live = use_reactive(&Live { version: self.scope.version.clone(), loader: self.scope.loader.clone(), held: self.scope.held.clone(), dirty: self.scope.dirty });
         let flow = Flow {
             store,
@@ -2246,7 +2249,7 @@ fn skeleton(t: &Theme, kind: Kind) -> Element {
         .cross_align(Alignment::Center)
         .spacing(space::M)
         .child(rect().width(Size::px(control::L)).height(Size::px(control::L)).corner_radius(t.shape.control).background(t.hover))
-        .child(rect().spacing(space::S).child(bar(frame::BAR_NAME)).child(bar(frame::BAR_TEXT)))
+        .child(rect().spacing(space::S).child(bar(frame::BAR_NAME)).child(bar(frame::BAR_TEXT)).children((kind == Kind::Modpack).then(|| bar(frame::BAR_NAME))))
         .into_element()
 }
 
@@ -2289,7 +2292,9 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
     let text = if facts.kind == Kind::Mod && !facts.takes_mods {
         trf("%@ lädt keine Mods. Ressourcenpakete, Shader und Datenpakete gehen trotzdem.", &[&facts.loader])
     } else if facts.kind == Kind::Modpack {
-        if typed.is_empty() { tr("Keine Modpacks mit diesen Filtern gefunden.") } else { trf("Keine Modpacks zu „%@“ mit diesen Filtern gefunden. Versuche einen anderen Suchbegriff.", &[&typed]) }
+        if typed.is_empty() {
+            if categorised || flow.pack_filtered() { tr("Keine Modpacks mit diesen Filtern gefunden.") } else { trf("Keine %@ gefunden.", &[&what]) }
+        } else { trf("Keine Modpacks zu „%@“ mit diesen Filtern gefunden. Versuche einen anderen Suchbegriff.", &[&typed]) }
     } else if categorised {
         trf("Keine %@ in dieser Kategorie. Wähle „Alle Kategorien“.", &[&what])
     } else {
@@ -2308,7 +2313,7 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
         .spacing(space::M)
         .child(icon(t, Icon::Search, iconsize::L, t.text3))
         .child(rect().max_width(Size::px(control::READING)).child(para(t, text, font::CALLOUT, t.text2).text_align(TextAlign::Center)));
-    if !all && widens(facts.kind) && !categorised && facts.takes_mods {
+    if !all && widens(facts.kind) && !categorised && facts.takes_mods && !flow.scope.packs() {
         let widen = flow.clone();
         column = column.child(Button::new("browser.all.show", tr("Alle zeigen")).on_press(move |_| widen.all(true)));
     }
@@ -2457,9 +2462,9 @@ impl Component for ResultList {
                 scroll.scroll_to_y(0);
             }
         });
-        use_side_effect_with_deps(&sel, move |at| {
+        use_side_effect_with_deps(&(sel, row), move |(at, row)| {
             let mut scroll = scroll;
-            let top = *at as f32 * row;
+            let (top, row) = (*at as f32 * *row, *row);
             let bottom = top + row;
             let shown = -scroll.position().y;
             let h = *viewport.peek();
@@ -2470,13 +2475,13 @@ impl Component for ResultList {
             }
         });
         let (flow, count) = (self.view.flow.clone(), self.view.visible.len());
-        use_side_effect_with_deps(&(count, self.view.has_more, self.view.more), move |(count, has_more, more)| {
+        use_side_effect_with_deps(&(count, self.view.has_more, self.view.more, row), move |(count, has_more, more, row)| {
             let shown = -scroll.position().y;
             let h = *viewport.read();
             if h <= 0. || !flow.alive() {
                 return;
             }
-            let last = ((shown + h) / row).ceil().max(0.) as usize;
+            let last = ((shown + h) / *row).ceil().max(0.) as usize;
             if wants_more(*count, last, *has_more, *more) {
                 flow.more();
             }
@@ -2607,7 +2612,11 @@ impl Component for ResultRow {
             .on_press(move |_| click())
             .child(Face { pid: pid.clone(), url: hit.icon_url.clone() })
             .child(text)
-            .child(trail_view(&t, &self.flow, &press_hit, &trail, Some(ix), None));
+            .child(if self.facts.kind == Kind::Modpack {
+                rect().width(Size::px(PACK_TRAIL_W)).horizontal().main_align(Alignment::End).child(trail_view(&t, &self.flow, &press_hit, &trail, Some(ix), None)).into_element()
+            } else {
+                trail_view(&t, &self.flow, &press_hit, &trail, Some(ix), None)
+            });
         row
     }
 }
@@ -2651,9 +2660,12 @@ fn trail_view(t: &Theme, flow: &Flow, hit: &Hit, trail: &Trail, ix: Option<usize
         Trail::Busy { label, reason } => row.child(Button::new(format!("browser.act.{pid}"), label.clone()).glyph(Icon::Plus).busy(true).disabled(Some(reason.clone()))).into_element(),
         Trail::Note(text) => row.child(line(t, text.clone(), font::CALLOUT, t.text3)).into_element(),
         Trail::Open(instance) => {
-            let (mut page, id) = (flow.store.ui.page, instance.clone());
+            let (mut page, id, flow) = (flow.store.ui.page, instance.clone(), flow.clone());
             row.child(status_line(t, Icon::Check, t.success_text, tr("Installiert")))
-                .child(Button::new(format!("browser.open.{pid}"), tr("Öffnen")).on_press(move |_| page.set(crate::view::ui::Page::Instance(id.clone()))))
+                .child(Button::new(format!("browser.open.{pid}"), tr("Öffnen")).on_press(move |_| {
+                    flow.pick_row(ix);
+                    page.set(crate::view::ui::Page::Instance(id.clone()));
+                }))
                 .into_element()
         }
         Trail::Install { label, blocked } => {
