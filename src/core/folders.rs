@@ -346,7 +346,7 @@ pub(super) fn rename_in(root: &Path, id: &str, name: &str, busy: &dyn Fn(&str) -
     if to == from {
         return Ok(Moving { from: from.clone(), to: from, _quiet: None, _naming: naming });
     }
-    let stop = || anyhow::anyhow!(tr("Erst stoppen: Ein Spiel dieser Instanz läuft."));
+    let stop = || anyhow::Error::new(instance::Final(tr("Erst stoppen: Ein Spiel dieser Instanz läuft.")));
     let quiet = lock::try_exclusive(&in_use_lock(root, id))?.ok_or_else(stop)?;
     if busy(id) {
         return Err(stop());
