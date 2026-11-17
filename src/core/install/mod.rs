@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use self::download::{Downloader, Job, join_safe, read_json};
 use self::forge::Flavor;
 use self::meta::{Env, VersionJson};
+use super::compat::Target;
 use super::instance::Loader;
 use super::{net, online, paths};
 
@@ -228,6 +229,27 @@ pub fn latest_loader(loader: &Loader, game: &str) -> Result<String> {
         Loader::Quilt(_) => quilt::latest_loader(&agent, game),
         Loader::Forge(_) | Loader::NeoForge(_) => loader_versions(loader, game)?.default.with_context(|| format!("{} does not support Minecraft {game}", loader.name())),
     }
+}
+
+/// What an instance on `game` with `loader` offers its mods: the game and the Fabric Loader version mods see (Fabric's
+/// own, or the one Quilt stands in for) of the pinned or newest stable loader. Java stays unknown, since an instance may
+/// run on a newer Java than the game asks for; whatever cannot be found out, for example without a connection, is not checked.
+pub fn mod_target(game: &str, loader: &Loader) -> Target {
+    let root = paths::data_dir();
+    let mut target = Target { minecraft: Some(game.to_owned()), quilt: matches!(loader, Loader::Quilt(_)), ..Target::default() };
+    let version = || loader.version().map(str::to_owned).or_else(|| latest_loader(loader, game).ok());
+    match loader {
+        Loader::Fabric(_) => target.fabricloader = version(),
+        Loader::Quilt(_) => {
+            target.quilt_loader = version();
+            target.fabricloader = target.quilt_loader.as_deref().and_then(|q| {
+                let agent = net::agent(None).ok()?;
+                quilt::provided_fabric(&agent, &root.join("libraries"), &root.join("cache").join("loaders"), q).ok().flatten()
+            });
+        }
+        _ => {}
+    }
+    target
 }
 
 /// The newest stable loader of the same kind as `loader` for `game_version`; `None` for kinds Manycraft has no list for, and when only unstable ones exist.

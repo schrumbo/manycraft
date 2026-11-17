@@ -146,7 +146,7 @@
   "Mojang hat keine Versionen geliefert.": "Mojang returned no versions.",
   "Mods werden für %@ angepasst …": "Adjusting mods for %@ …",
   "Standard-Mods werden geladen …": "Loading default mods …",
-  "„%@“ gibt es nicht für %@ und wurde entfernt.": "“%@” is not available for %@ and was removed.",
+  "„%@“ gibt es nicht für %@ und wurde entfernt.": "“%@” isn’t available for %@ and was removed.",
   "„%@“ ließ sich nicht hinzufügen: %@": "“%@” could not be added: %@",
   "Wähle eine Version.": "Choose a version.",
   "Nicht gespeichert: %@": "Not saved: %@",
@@ -944,8 +944,8 @@
   "Zurücksetzen": "Reset",
   "„%@“ zurücksetzen?": "Reset “%@”?",
   "Nicht zurückgesetzt.": "Not reset.",
-  "„%@“ gibt es nicht für %@ und blieb draußen.": "“%@” does not exist for %@ and was left out.",
-  "%lld Mods gibt es nicht für %@ und blieben draußen.": "%lld mods do not exist for %@ and were left out.",
+  "„%@“ gibt es nicht für %@ und blieb draußen.": "“%@” isn’t available for %@ and was left out.",
+  "%lld Mods gibt es nicht für %@ und blieben draußen.": "%lld mods aren’t available for %@ and were left out.",
   "„%@“ lässt sich nicht zurückholen: Mods oder Version wurden inzwischen geändert.": "“%@” cannot be restored: its mods or version changed since.",
   "Der Loader folgt schon der neuesten Version.": "The loader already follows the newest version.",
   "Vanilla hat keinen Loader.": "Vanilla has no loader.",
@@ -1447,5 +1447,12 @@
   "Aufs Handy…": "To your phone…",
   "Meldungen aufs Handy schicken, wenn ein Account dich braucht": "Send alerts to your phone when an account needs you",
   "Einstellungen: Aufs Handy": "Settings: To your phone",
-  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically"
+  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically",
+  "Quilt unterstützt Minecraft %@ noch nicht": "Quilt doesn’t support Minecraft %@ yet",
+  "„%1$@“ läuft nicht mit %2$@ %3$@.": "“%1$@” doesn’t run with %2$@ %3$@.",
+  "„%1$@“ läuft nicht mit Minecraft %2$@.": "“%1$@” doesn’t run with Minecraft %2$@.",
+  "„%1$@“ läuft nicht mit Java %2$@.": "“%1$@” doesn’t run with Java %2$@.",
+  "„%@“ gibt es nicht auf Modrinth.": "“%@” isn’t on Modrinth.",
+  "„%1$@“ gibt es nicht für %2$@ %3$@.": "“%1$@” isn’t available for %2$@ %3$@.",
+  "Für „%@“ nötig": "Required by “%@”"
 }

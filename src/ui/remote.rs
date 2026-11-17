@@ -19,7 +19,7 @@ use crate::core::options::LaunchOptions;
 use crate::core::versions::{GameVersion, Kind};
 use crate::core::modrinth::{self, Defaults, Hit, Support, Update};
 use crate::core::{mrpack, origin, shortcut};
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::core::launchers::{self, Found, Launcher, Library, Take, Unsupported};
 use crate::core::prism::{self, AccountImport, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
@@ -250,7 +250,6 @@ pub(super) fn is_network(e: &anyhow::Error) -> bool {
 }
 
 pub(super) fn auth_text(e: &AuthError) -> String {
-    use crate::core::i18n::{tr, trf};
     match e {
         AuthError::SignInAgain => tr("Die gespeicherte Anmeldung gilt nicht mehr. Melde dich erneut an."),
         AuthError::NoXboxProfile => tr("Dieses Konto hat noch kein Xbox-Profil. Melde dich einmal auf xbox.com an, dann klappt es."),
@@ -595,9 +594,9 @@ pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
         }
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
-            notes.push(format!("skipped lithium: no Fabric version for {game_version}"));
+            notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Lithium", &loader.name(), &game_version]));
         } else if matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
-            notes.push(format!("skipped krypton: no Fabric version for {game_version}"));
+            notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Krypton", &loader.name(), &game_version]));
         }
         return Ok(Defaults { mods, notes });
     }

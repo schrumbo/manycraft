@@ -1181,7 +1181,7 @@ fn local_files(id: &'static str, names: &[String], scroll: &ScrollHandle, max: f
 }
 
 fn default_gaps(found: usize, notes: &[String], version: &str) -> Option<String> {
-    let skipped = notes.iter().filter(|n| n.starts_with("skipped ")).count();
+    let skipped = notes.len();
     (skipped > 0).then(|| trf("%1$lld von %2$lld Performance-Mods für %3$@ verfügbar", &[&found, &(found + skipped), &version]))
 }
 
