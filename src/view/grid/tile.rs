@@ -493,6 +493,7 @@ fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<El
         Phase::Dead { .. } => Some((Icon::Alert, t.text2)),
         Phase::Failed { .. } => Some((Icon::Alert, t.text2)),
         Phase::NetworkLost { .. } | Phase::NoNetwork => Some((Icon::Wifi, t.text3)),
+        Phase::ServerAway { .. } => Some((Icon::Clock, t.text3)),
         _ => None,
     };
     match (glyph, face) {

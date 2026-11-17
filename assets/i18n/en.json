@@ -1894,5 +1894,9 @@
   "Direkt starten geht erst ab Minecraft 1.20.": "Starting straight into it needs Minecraft 1.20 or later.",
   "Standard-Account": "Default account",
   "Standard-Account (%@)": "Default account (%@)",
-  "%@ für diese Instanz festlegen": "Always use %@ for this instance"
+  "%@ für diese Instanz festlegen": "Always use %@ for this instance",
+  "Server weg · verbindet sich wieder, sobald er antwortet": "Server down · reconnects as soon as it answers",
+  "Wartet auf Server": "Waiting for server",
+  "1 wartet, verbindet sich von selbst": "1 waiting, reconnects on its own",
+  "%lld warten, verbinden sich von selbst": "%lld waiting, reconnect on their own"
 }

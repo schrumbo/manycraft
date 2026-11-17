@@ -42,6 +42,7 @@ enum Cmd {
     Stop(Vec<String>),
     Kill(Vec<String>),
     Send(String, ToMod),
+    Probe(String),
 }
 
 /// The fake fleet: a thread that answers commands with plausible updates.
@@ -82,6 +83,10 @@ impl Backend for Fake {
 
     fn known(&self, instances: Vec<(String, String)>) {
         let _ = self.tx.send(Cmd::Known(instances));
+    }
+
+    fn probe(&self, server: String, _proxy: Option<String>) {
+        let _ = self.tx.send(Cmd::Probe(server));
     }
 }
 
@@ -201,6 +206,11 @@ impl<P: Pixels> Sim<P> {
                 }
             }
             Cmd::Send(key, message) => self.message(&key, message),
+            Cmd::Probe(server) => {
+                let up = !self.outage.is_some_and(|(from, to)| (from..to).contains(&Instant::now()));
+                crate::core::drive::note(format!("probe {server}: {}", if up { "up" } else { "down" }));
+                self.at(Duration::from_millis(300), None, Update::ServerProbed { server, up });
+            }
         }
     }
 
@@ -408,7 +418,7 @@ fn touches<P>(update: &Update<P>, key: &str) -> bool {
     match update {
         Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
-        Update::Preparing { .. } | Update::Prepared { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen | Event::Play { .. }) => false,
+        Update::Preparing { .. } | Update::Prepared { .. } | Update::ServerProbed { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen | Event::Play { .. }) => false,
     }
 }
 

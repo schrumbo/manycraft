@@ -1,7 +1,7 @@
 //! Account proxies: parsing `socks5://user:pass@host:1080` or `http://host:8080` and checking that one answers.
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -89,9 +89,20 @@ pub fn check(proxy: &Proxy) -> Result<(), Fault> {
     let mut stream = connect(proxy).ok_or(Fault::Unreachable)?;
     let outcome = match proxy.kind {
         Kind::Socks => socks_hello(&mut stream, proxy),
-        Kind::Http => http_connect(&mut stream, proxy),
+        Kind::Http => http_connect(&mut stream, proxy, CHECK_TARGET),
     };
     outcome.ok_or(Fault::Unreachable).and_then(|accepted| if accepted { Ok(()) } else { Err(Fault::Rejected) })
+}
+
+/// A connection to `to` through the proxy, or none when the proxy does not answer, refuses the sign-in or cannot reach `to`.
+/// Blocks for a few seconds at most: call it off the UI thread.
+pub fn tunnel(proxy: &Proxy, to: SocketAddr) -> Option<TcpStream> {
+    let mut stream = connect(proxy)?;
+    let open = match proxy.kind {
+        Kind::Socks => socks_hello(&mut stream, proxy)? && socks_connect(&mut stream, to)?,
+        Kind::Http => http_tunnel(&mut stream, proxy, &to.to_string())?,
+    };
+    open.then_some(stream)
 }
 
 fn connect(proxy: &Proxy) -> Option<TcpStream> {
@@ -126,14 +137,68 @@ fn socks_hello(stream: &mut TcpStream, proxy: &Proxy) -> Option<bool> {
     }
 }
 
-fn http_connect(stream: &mut TcpStream, proxy: &Proxy) -> Option<bool> {
-    let mut request = format!("CONNECT {CHECK_TARGET} HTTP/1.1\r\nHost: {CHECK_TARGET}\r\n");
+fn socks_connect(stream: &mut TcpStream, to: SocketAddr) -> Option<bool> {
+    let mut request = vec![5, 1, 0];
+    match to.ip() {
+        IpAddr::V4(ip) => {
+            request.push(1);
+            request.extend_from_slice(&ip.octets());
+        }
+        IpAddr::V6(ip) => {
+            request.push(4);
+            request.extend_from_slice(&ip.octets());
+        }
+    }
+    request.extend_from_slice(&to.port().to_be_bytes());
+    stream.write_all(&request).ok()?;
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head).ok()?;
+    if head[0] != 5 {
+        return None;
+    }
+    let rest = match head[3] {
+        1 => 4 + 2,
+        4 => 16 + 2,
+        3 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).ok()?;
+            usize::from(len[0]) + 2
+        }
+        _ => return None,
+    };
+    let mut skip = vec![0u8; rest];
+    stream.read_exact(&mut skip).ok()?;
+    Some(head[1] == 0)
+}
+
+fn http_request(stream: &mut TcpStream, proxy: &Proxy, target: &str) -> Option<()> {
+    let mut request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
     if let Some(user) = &proxy.user {
         let login = format!("{user}:{}", proxy.pass.as_deref().unwrap_or_default());
         request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", base64(login.as_bytes())));
     }
     request.push_str("\r\n");
-    stream.write_all(request.as_bytes()).ok()?;
+    stream.write_all(request.as_bytes()).ok()
+}
+
+fn http_tunnel(stream: &mut TcpStream, proxy: &Proxy, target: &str) -> Option<bool> {
+    http_request(stream, proxy, target)?;
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() > 8192 {
+            return None;
+        }
+        stream.read_exact(&mut byte).ok()?;
+        head.push(byte[0]);
+    }
+    let line = String::from_utf8_lossy(&head);
+    let status: u16 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some((200..300).contains(&status))
+}
+
+fn http_connect(stream: &mut TcpStream, proxy: &Proxy, target: &str) -> Option<bool> {
+    http_request(stream, proxy, target)?;
     let mut buf = [0u8; 64];
     let n = stream.read(&mut buf).ok()?;
     let line = String::from_utf8_lossy(&buf[..n]);

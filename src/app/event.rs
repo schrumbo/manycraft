@@ -33,6 +33,8 @@ pub enum Report {
     SignIn { account: Uuid, valid: bool },
     /// What the check of an account's proxy found after a connection failure; `None` when it works.
     ProxyChecked { key: String, fault: Option<Fault> },
+    /// Whether `server` answered its status ping.
+    ServerProbed { server: String, up: bool },
     /// The game's mod connected from process `pid`.
     Connected { key: String, pid: u32 },
     /// The game's mod stopped answering.
@@ -54,7 +56,7 @@ impl Report {
         match self {
             Report::Launched { key, .. } | Report::Failed { key, .. } | Report::Exited { key, .. } | Report::Seed { key, .. } | Report::ProxyChecked { key, .. } => Some(key),
             Report::Connected { key, .. } | Report::LinkLost { key } | Report::Mod { key, .. } | Report::Frame { key, .. } | Report::Still { key, .. } => Some(key),
-            Report::Preparing { .. } | Report::Prepared { .. } | Report::Reach { .. } | Report::SignIn { .. } | Report::Reopen | Report::PlayRequest { .. } => None,
+            Report::Preparing { .. } | Report::Prepared { .. } | Report::Reach { .. } | Report::ServerProbed { .. } | Report::SignIn { .. } | Report::Reopen | Report::PlayRequest { .. } => None,
         }
     }
 }
@@ -85,6 +87,8 @@ pub enum Event {
     Reports(Vec<Report>),
     /// The reconnect of `key` is due, if no newer reconnect or stop came since `generation`.
     ReconnectDue { key: String, generation: u64 },
+    /// Time to ping `server` again while games wait for it.
+    ProbeDue { server: String },
     /// The restart of `key` after a crash is due, if nothing newer came since `generation`.
     RestartDue { key: String, generation: u64 },
     /// The next join command of `key` is due; the rest follow `delay` apart.

@@ -57,6 +57,8 @@ pub enum Effect {
     /// The game ended: its preview file is closed so the instance folder can be moved or deleted.
     ReleasePreview(String),
     CheckProxy { key: String, url: String },
+    /// Sends one status ping to `server`, through the proxy at `proxy` when given, and answers with a server probe report.
+    Probe { server: String, proxy: Option<String> },
     /// The connection may be gone: check it now.
     SuspectOffline,
     NetworkBack,

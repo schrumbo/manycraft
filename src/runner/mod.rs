@@ -104,6 +104,7 @@ impl Runtime {
                 Update::Seed { key, phase, attempts } => Report::Seed { key, phase, attempts },
                 Update::SignIn { account, valid } => Report::SignIn { account, valid },
                 Update::ProxyChecked { key, fault } => Report::ProxyChecked { key, fault },
+                Update::ServerProbed { server, up } => Report::ServerProbed { server, up },
                 Update::Ipc(Event::Connected { instance, pid, .. }) => Report::Connected { key: instance, pid },
                 Update::Ipc(Event::Message { instance, message }) => Report::Mod { key: instance, message },
                 Update::Ipc(Event::Disconnected { instance }) => Report::LinkLost { key: instance },
@@ -137,6 +138,7 @@ impl Runtime {
             Effect::ReadPreview { key, path } => self.backend.read_preview(key, path),
             Effect::ReleasePreview(key) => self.backend.release_preview(key),
             Effect::CheckProxy { key, url } => self.backend.check_proxy(key, url),
+            Effect::Probe { server, proxy } => self.backend.probe(server, proxy),
             Effect::SuspectOffline => online::suspect(),
             Effect::SaveHistory { path, log } => {
                 if let Some(writer) = &self.history {

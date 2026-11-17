@@ -29,6 +29,10 @@ pub enum Why {
     NetworkLost,
     /// The network came back for a game that waited for it.
     NetworkBack,
+    /// The game lost its server along with most of its batch and waits for it instead of spending tries.
+    ServerAway,
+    /// The server a game waited for answered again.
+    ServerBack,
     /// A test backend sets the phase directly.
     Seed,
     /// A game an earlier manager launched was taken over.
@@ -45,13 +49,15 @@ pub fn allowed(from: &Phase, to: &Phase, why: Why) -> bool {
         Why::Launched => matches!(from, Starting { .. } | Failed { .. }) && matches!(to, Plain | Starting { place: 0, .. }),
         Why::StartFailed => matches!(from, Starting { .. } | NoNetwork | Failed { .. }) && matches!(to, LoginNeeded | NoNetwork | Failed { .. }),
         Why::Connected => matches!(from, Starting { .. }) && *to == Menu,
-        Why::Mod => mod_reports(from) && matches!(to, Menu | Connecting { .. } | Queue { .. } | Playing { .. } | Dead { .. } | Disconnected { .. } | NetworkLost { .. } | Banned { .. } | Restarting { .. } | LoginNeeded),
+        Why::Mod => mod_reports(from) && matches!(to, Menu | Connecting { .. } | Queue { .. } | Playing { .. } | Dead { .. } | Disconnected { .. } | NetworkLost { .. } | ServerAway { .. } | Banned { .. } | Restarting { .. } | LoginNeeded),
         Why::Exit => matches!(to, Stopped | Crashed { .. } | Restarting { .. }),
         Why::Stop => matches!(from, Starting { .. } | Crashed { .. } | Restarting { .. } | Failed { .. } | NoNetwork) && *to == Stopped,
         Why::SignIn => matches!((from, to), (Stopped | Crashed { .. } | Failed { .. }, LoginNeeded) | (LoginNeeded, Stopped)),
         Why::Reconnect => mod_reports(from) && matches!(to, Connecting { .. }),
         Why::NetworkLost => matches!((from, to), (Connecting { .. }, NetworkLost { .. })),
         Why::NetworkBack => matches!((from, to), (NetworkLost { .. }, Connecting { .. })),
+        Why::ServerAway => matches!((from, to), (Connecting { .. } | Disconnected { .. }, ServerAway { .. })),
+        Why::ServerBack => matches!((from, to), (ServerAway { .. }, Connecting { .. })),
     }
 }
 
@@ -85,6 +91,7 @@ mod tests {
             Phase::LoginNeeded,
             Phase::Failed { reason: s() },
             Phase::NetworkLost { server: s() },
+            Phase::ServerAway { server: s() },
             Phase::NoNetwork,
         ]
     }
@@ -140,5 +147,22 @@ mod tests {
         let lost = Phase::NetworkLost { server: "s".into() };
         assert!(allowed(&connecting, &lost, Why::NetworkLost) && allowed(&lost, &connecting, Why::NetworkBack));
         assert!(!allowed(&Phase::Menu, &lost, Why::NetworkLost) && !allowed(&Phase::Stopped, &connecting, Why::NetworkBack));
+    }
+
+    #[test]
+    fn only_games_that_lost_the_server_wait_for_it_and_only_its_answer_wakes_them() {
+        let away = Phase::ServerAway { server: "s".into() };
+        let connecting = Phase::Connecting { server: "s".into() };
+        assert!(allowed(&connecting, &away, Why::ServerAway) && allowed(&away, &connecting, Why::ServerBack));
+        assert!(allowed(&Phase::Disconnected { server: Some("s".into()), reason: String::new() }, &away, Why::ServerAway));
+        for from in all().into_iter().filter(|p| !matches!(p, Phase::Connecting { .. } | Phase::Disconnected { .. })) {
+            assert!(!allowed(&from, &away, Why::ServerAway), "{from:?}");
+        }
+        assert!(!allowed(&lost(), &connecting, Why::ServerBack));
+        assert!(away.is_running() && away.playable() && !away.needs_attention());
+    }
+
+    fn lost() -> Phase {
+        Phase::NetworkLost { server: "s".into() }
     }
 }

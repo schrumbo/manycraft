@@ -64,6 +64,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::ReconnectDue { key, generation } => games::reconnect_due(model, &key, generation, &mut out),
+        Event::ProbeDue { server } => games::probe_due(model, &server, &mut out),
         Event::RestartDue { key, generation } => games::restart_due(model, &key, generation, &mut out),
         Event::LinkLostDue { key } => games::link_lost_due(model, &key, &mut out),
         Event::JoinDue { key, generation, lines, delay } => games::join_due(model, key, generation, lines, delay, &mut out),

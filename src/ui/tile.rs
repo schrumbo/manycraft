@@ -239,7 +239,7 @@ impl Geometry {
 
 /// Whether the game of an instance in `phase` has a window to show.
 pub fn playable(phase: &Phase) -> bool {
-    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+    matches!(phase, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
 }
 
 trait Look {

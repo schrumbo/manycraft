@@ -22,6 +22,7 @@ const KEPT_CHAT: usize = 5000;
 const BACK_STAGGER: Duration = Duration::from_secs(1);
 const BACK_WAIT_SECS: u64 = 2;
 const WAITING_RETRY_SECS: u64 = 60;
+const PROBE_EVERY_SECS: u64 = 5;
 
 /// What a batch of reports leaves to do once every report is in the model, in the order it is done.
 #[derive(Default)]
@@ -230,6 +231,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
                 fx.frames.push(Effect::DropImage(image));
             }
         }
+        Report::ServerProbed { server, up } => on_probed(m, env, fx, server, up),
         Report::ProxyChecked { key, fault } => {
             if m.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })) {
                 m.set_hint(&key, |h| h.proxy = fault);
@@ -293,6 +295,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     s.usage.remove(&key);
     s.unplaced.remove(&key);
     s.joined.remove(&key);
+    s.woken.remove(&key);
     s.adopted.remove(&key);
     let unknown = s.foreign.remove(&key) && code.is_none();
     let ran = s.started.remove(&key).map(|t| env.now.saturating_duration_since(t));
@@ -393,14 +396,17 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     let server_text = server.clone().unwrap_or_default();
     let reason_text = reason.clone().unwrap_or_default();
     let mut event: Option<(Kind, Option<String>, String)> = None;
+    let mut hold = false;
     let to = match kind {
         StateKind::Menu => {
             s.joined.remove(&key);
+            s.woken.remove(&key);
             Phase::Menu
         }
         StateKind::Connecting => Phase::Connecting { server: server_text },
         StateKind::Queue => Phase::Queue { server: server_text },
         StateKind::Playing => {
+            s.woken.remove(&key);
             if let Phase::Playing { since, .. } = i.phase {
                 Phase::Playing { server: server_text, since }
             } else {
@@ -419,6 +425,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
         StateKind::Dead => Phase::Dead { server, reason: reason_text },
         StateKind::Disconnected => {
             s.joined.remove(&key);
+            let woken = s.woken.remove(&key);
             if let Phase::Playing { since, .. } = i.phase
                 && env.now.saturating_duration_since(since) >= STABLE
             {
@@ -433,6 +440,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                 Reaction::SignInAgain if offline => Reaction::NotAllowed,
                 other => other,
             };
+            hold = !woken && server.is_some() && policy.enabled && matches!(cause, DisconnectCause::ServerDown | DisconnectCause::Unknown) && matches!(reaction, Reaction::Retry(_) | Reaction::GiveUp);
             let kind = match cause {
                 DisconnectCause::Banned => Kind::Banned,
                 DisconnectCause::Kicked => Kind::Kicked,
@@ -473,6 +481,102 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     if let Some((kind, server, reason)) = event {
         note(m, env, fx, &key, kind, server, &reason);
     }
+    if hold {
+        hold_outage(m, fx, &key);
+    }
+}
+
+/// Lets the games of `key`'s batch that lost their server together wait for it when they are an outage: they spend no
+/// tries and one status ping per server asks for it instead of a retry from each. Games a server's answer just woke keep
+/// their own course, so a server that answers pings but takes nobody still runs into the cap.
+fn hold_outage(m: &mut Model, fx: &mut Fx, key: &str) {
+    let Some(batch) = m.games.get(key).map(|i| i.batch_id.clone()) else { return };
+    let Some(outage) = m.outage(&batch) else { return };
+    if !outage.keys.iter().any(|k| k == key) {
+        return;
+    }
+    let held: Vec<(String, String, bool)> = outage
+        .keys
+        .into_iter()
+        .filter_map(|k| {
+            let i = m.games.get(&k)?;
+            match &i.phase {
+                Phase::Connecting { server } if !m.session.woken.contains(&k) => Some((k, server.clone(), true)),
+                Phase::Disconnected { server: Some(server), .. } if k == key => Some((k, server.clone(), false)),
+                _ => None,
+            }
+        })
+        .filter(|(_, server, _)| !server.is_empty())
+        .collect();
+    let mut servers: Vec<String> = Vec::new();
+    for (k, server, spent) in held {
+        if let Some(i) = m.games.get_mut(&k)
+            && spent
+        {
+            i.reconnect_attempts = i.reconnect_attempts.saturating_sub(1);
+        }
+        *m.session.reconnects.entry(k.clone()).or_default() += 1;
+        fx.later.retain(|l| !matches!(l, Later::After(_, Event::ReconnectDue { key, .. }) if *key == k));
+        if go(m, &k, Phase::ServerAway { server: server.clone() }, Why::ServerAway, &mut fx.now) && !servers.contains(&server) {
+            servers.push(server);
+        }
+    }
+    for server in servers {
+        probe(m, &server, &mut fx.now);
+    }
+}
+
+/// The games that wait for `server` to answer, in name order.
+fn waiting_for(m: &Model, server: &str) -> Vec<String> {
+    let mut games: Vec<&Game> = m.games.values().filter(|i| !i.stopping && matches!(&i.phase, Phase::ServerAway { server: s } if s == server)).collect();
+    games.sort_by_key(|i| (i.name.to_lowercase(), i.key.clone()));
+    games.into_iter().map(|i| i.key.clone()).collect()
+}
+
+/// Pings `server` unless a ping of it is already on its way.
+fn probe(m: &mut Model, server: &str, out: &mut Vec<Effect>) {
+    if m.session.probes.insert(server.to_owned()) {
+        out.push(Effect::Probe { server: server.to_owned(), proxy: probe_proxy(m, server) });
+    }
+}
+
+/// The proxy the ping of `server` goes through: none when a waiting account plays without one, else the first waiting
+/// account's, so a server never sees this computer's address from a ping when every account hides it.
+fn probe_proxy(m: &Model, server: &str) -> Option<String> {
+    let proxies: Vec<Option<String>> = waiting_for(m, server).iter().filter_map(|k| m.games.get(k)).map(|i| m.account(i.account_id).and_then(|a| a.proxy.clone())).collect();
+    if proxies.iter().any(Option::is_none) { None } else { proxies.into_iter().flatten().next() }
+}
+
+fn on_probed(m: &mut Model, env: &Env, fx: &mut Fx, server: String, up: bool) {
+    let waiting = waiting_for(m, &server);
+    if waiting.is_empty() {
+        m.session.probes.remove(&server);
+        return;
+    }
+    if !up {
+        fx.later.push(Later::After(reconnect::wait(&[PROBE_EVERY_SECS], 0, 20, env.unit()), Event::ProbeDue { server }));
+        return;
+    }
+    m.session.probes.remove(&server);
+    for (nth, key) in waiting.into_iter().enumerate() {
+        let generation = m.session.reconnects.entry(key.clone()).or_default();
+        *generation += 1;
+        let generation = *generation;
+        m.session.woken.insert(key.clone());
+        let delay = BACK_STAGGER * u32::try_from(nth).unwrap_or(u32::MAX) + reconnect::wait(&[BACK_WAIT_SECS], 0, 50, env.unit());
+        fx.later.push(Later::After(delay, Event::ReconnectDue { key: key.clone(), generation }));
+        go(m, &key, Phase::Connecting { server: server.clone() }, Why::ServerBack, &mut fx.now);
+    }
+    m.order_seq += 1;
+}
+
+/// Pings `server` again while games still wait for it.
+pub(super) fn probe_due(m: &mut Model, server: &str, out: &mut Vec<Effect>) {
+    if waiting_for(m, server).is_empty() {
+        m.session.probes.remove(server);
+        return;
+    }
+    out.push(Effect::Probe { server: server.to_owned(), proxy: probe_proxy(m, server) });
 }
 
 fn on_reach(m: &mut Model, env: &Env, fx: &mut Fx, online: bool) {
@@ -773,6 +877,94 @@ mod tests {
         let log = m.history.values().next().unwrap();
         assert_eq!(log.back().unwrap().kind, Kind::Banned);
         assert_eq!(fx.iter().filter(|e| matches!(e, Effect::SaveHistory { .. })).count(), 1);
+    }
+
+    fn probes(fx: &[Effect]) -> usize {
+        fx.iter().filter(|e| matches!(e, Effect::Probe { server, proxy: None } if server == "mc.example:25565")).count()
+    }
+
+    fn farm(n: usize) -> (Model, Vec<String>) {
+        let (mut m, key) = setup(Phase::Playing { server: "mc.example:25565".into(), since: Instant::now() }, AccountKind::Microsoft, &[]);
+        let template = m.games.remove(&key).unwrap();
+        let keys: Vec<String> = (0..n).map(|i| format!("g{i}")).collect();
+        for (i, k) in keys.iter().enumerate() {
+            m.games.insert(k.clone(), super::Game { key: k.clone(), name: format!("Alt{i}"), ..template.clone() });
+        }
+        (m, keys)
+    }
+
+    #[test]
+    fn a_server_restart_spends_no_tries_and_one_ping_wakes_everyone() {
+        let s = settings();
+        let (mut m, keys) = farm(4);
+        let away = Phase::ServerAway { server: "mc.example:25565".into() };
+        let fx = send_state(&mut m, &s, &keys[0], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(matches!(m.games["g0"].phase, Phase::Connecting { .. }) && m.games["g0"].reconnect_attempts == 1, "one drop is a single drop");
+        assert_eq!(probes(&fx), 0);
+        let fx = send_state(&mut m, &s, &keys[1], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(probes(&fx), 1, "one ping for the server, not a retry each");
+        assert!(timers(&fx).iter().all(|(_, e)| !matches!(e, Event::ReconnectDue { .. })));
+        for k in &keys[..2] {
+            assert_eq!(m.games[k].phase, away);
+            assert_eq!(m.games[k].reconnect_attempts, 0, "{k}: the outage gives the try back");
+        }
+        for k in &keys[2..] {
+            let fx = send_state(&mut m, &s, k, StateKind::Disconnected, Some(DisconnectCause::Unknown));
+            assert_eq!(probes(&fx), 0, "a ping is already on its way");
+            assert_eq!(m.games[k].phase, away);
+        }
+        assert!(m.outage(&m.games["g0"].batch_id).is_some());
+        for _ in 0..20 {
+            let fx = report(&mut m, &s, Report::ServerProbed { server: "mc.example:25565".into(), up: false });
+            let waits = timers(&fx);
+            let [(delay, Event::ProbeDue { server })] = waits.as_slice() else { panic!("the next ping waits") };
+            assert!((4..=6).contains(&delay.as_secs()) && server == "mc.example:25565", "{delay:?}");
+            let server = server.clone();
+            let fx = run(&mut m, &s, Instant::now(), Event::ProbeDue { server });
+            assert_eq!(probes(&fx), 1);
+        }
+        assert!(keys.iter().all(|k| m.games[k].phase == away && m.games[k].reconnect_attempts == 0), "a long restart never runs into the cap");
+        let fx = report(&mut m, &s, Report::ServerProbed { server: "mc.example:25565".into(), up: true });
+        let waits: Vec<Duration> = timers(&fx).into_iter().filter(|(_, e)| matches!(e, Event::ReconnectDue { .. })).map(|(d, _)| d).collect();
+        assert_eq!(waits.len(), 4, "everyone reconnects");
+        assert!(waits.windows(2).all(|w| w[0] < w[1]) && waits[3] < Duration::from_secs(8), "staggered within seconds: {waits:?}");
+        assert!(keys.iter().all(|k| matches!(m.games[k].phase, Phase::Connecting { .. })));
+        assert!(m.session.probes.is_empty());
+        send_state(&mut m, &s, &keys[0], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert_eq!(m.games["g0"].reconnect_attempts, 1, "a server that answers but takes nobody still spends tries");
+        assert!(matches!(m.games["g0"].phase, Phase::Connecting { .. }));
+        send_state(&mut m, &s, &keys[1], StateKind::Playing, None);
+        assert!(!m.session.woken.contains("g1"));
+    }
+
+    #[test]
+    fn bans_and_kicks_in_an_outage_still_stop_or_wait_their_own_way() {
+        let s = settings();
+        let (mut m, keys) = farm(4);
+        send_state(&mut m, &s, &keys[0], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        send_state(&mut m, &s, &keys[1], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        send_state(&mut m, &s, &keys[2], StateKind::Disconnected, Some(DisconnectCause::Banned));
+        send_state(&mut m, &s, &keys[3], StateKind::Disconnected, Some(DisconnectCause::Kicked));
+        assert!(matches!(m.games["g2"].phase, Phase::Banned { .. }));
+        assert!(matches!(m.games["g3"].phase, Phase::Connecting { .. }) && m.games["g3"].reconnect_attempts == 1);
+        let fx = report(&mut m, &s, Report::ServerProbed { server: "mc.example:25565".into(), up: true });
+        assert_eq!(timers(&fx).iter().filter(|(_, e)| matches!(e, Event::ReconnectDue { .. })).count(), 2, "only the ones that waited");
+        assert!(matches!(m.games["g2"].phase, Phase::Banned { .. }));
+    }
+
+    #[test]
+    fn a_stopped_wait_ends_its_ping_and_the_ping_hides_behind_proxies_when_all_have_one() {
+        let s = settings();
+        let (mut m, keys) = farm(2);
+        m.accounts[0].proxy = Some("socks5://127.0.0.1:1080".into());
+        send_state(&mut m, &s, &keys[0], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        let fx = send_state(&mut m, &s, &keys[1], StateKind::Disconnected, Some(DisconnectCause::ServerDown));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Probe { proxy: Some(p), .. } if p == "socks5://127.0.0.1:1080")));
+        for k in &keys {
+            m.games.get_mut(k).unwrap().phase = Phase::Stopped;
+        }
+        let fx = report(&mut m, &s, Report::ServerProbed { server: "mc.example:25565".into(), up: false });
+        assert!(timers(&fx).is_empty() && m.session.probes.is_empty());
     }
 
     #[test]

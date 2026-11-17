@@ -53,6 +53,8 @@ pub enum Update<P> {
     Face { account: uuid::Uuid, image: P },
     /// What the check of an account's proxy found after a connection failure; `None` when it works.
     ProxyChecked { key: String, fault: Option<Fault> },
+    /// Whether `server` answered its status ping.
+    ServerProbed { server: String, up: bool },
 }
 
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
@@ -79,6 +81,8 @@ pub trait Backend: Send + Sync {
     fn refresh(&self, _accounts: Vec<Account>) {}
     /// Checks the proxy `url` of instance `key` and reports the result.
     fn check_proxy(&self, _key: String, _url: String) {}
+    /// Pings `server` once, through the proxy at `proxy` when given, and reports whether it answered.
+    fn probe(&self, _server: String, _proxy: Option<String>) {}
     /// The games an earlier manager launched that still run; only the first call returns them.
     fn adopted(&self) -> Vec<fleet::Adoption> {
         Vec::new()
@@ -364,6 +368,21 @@ impl<P: Pixels> Backend for Real<P> {
         });
         if spawned.is_err() {
             lock(&self.checking).clear();
+        }
+    }
+
+    fn probe(&self, server: String, proxy: Option<String>) {
+        let out = self.out.clone();
+        let spawned = std::thread::Builder::new().name("server-ping".into()).spawn(move || {
+            let up = match proxy.as_deref().map(proxy::parse) {
+                Some(Ok(p)) => crate::core::ping::answers(&server, Some(&p)),
+                Some(Err(_)) => false,
+                None => crate::core::ping::answers(&server, None),
+            };
+            let _ = out.send_blocking(Update::ServerProbed { server, up });
+        });
+        if let Err(e) = spawned {
+            eprintln!("server ping: {e}");
         }
     }
 

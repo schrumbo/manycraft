@@ -83,6 +83,10 @@ pub struct Session {
     pub started: HashMap<String, Instant>,
     /// Games that joined a server and have not left it since.
     pub joined: HashSet<String>,
+    /// Servers whose status ping is on its way or waits for its next turn.
+    pub probes: HashSet<String>,
+    /// Games a server's answer woke from waiting that have not reached it yet; their next drop spends a try.
+    pub woken: HashSet<String>,
     /// Whether the saved sign-ins were checked once.
     pub refreshed: bool,
     /// Attention collected per batch for one notification.

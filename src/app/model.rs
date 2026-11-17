@@ -44,6 +44,9 @@ pub enum Phase {
     Failed { reason: String },
     /// In the game, but the network is gone; reconnects to `server` by itself when it is back.
     NetworkLost { server: String },
+    /// In the game, but its server went away together with most of its batch; reconnects to `server` by itself once the
+    /// server answers a status ping again, without spending a try.
+    ServerAway { server: String },
     /// Not started because there was no connection; starts by itself when it is back.
     NoNetwork,
 }
@@ -67,7 +70,7 @@ impl Phase {
     /// The server the instance is on or was last on, when it is known.
     pub fn server(&self) -> Option<&str> {
         match self {
-            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } => Some(server),
+            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } | Phase::ServerAway { server } => Some(server),
             Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.as_deref(),
             _ => None,
         }
@@ -100,7 +103,7 @@ impl Phase {
 
     /// Whether the game window can be swapped in: the mod answers and the game is past its start.
     pub fn playable(&self) -> bool {
-        matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
+        matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
     }
 
     /// What kind of work the user has here, when there is some.
@@ -378,7 +381,11 @@ impl Model {
         let mut dropped: Vec<(u64, &Game)> = mine
             .iter()
             .copied()
-            .filter(|i| matches!(i.phase, Phase::Disconnected { .. }) || (matches!(i.phase, Phase::Connecting { .. }) && i.reconnect_attempts > 0))
+            .filter(|i| match i.phase {
+                Phase::Disconnected { .. } | Phase::ServerAway { .. } => true,
+                Phase::Connecting { .. } => i.reconnect_attempts > 0 || self.session.woken.contains(&i.key),
+                _ => false,
+            })
             .filter_map(|i| {
                 let log = self.history.get(&i.key)?;
                 let run: Vec<&history::Entry> = log.iter().rev().take_while(|e| e.kind != history::Kind::Connected).collect();
@@ -603,7 +610,7 @@ pub fn primary(phase: &Phase, stopping: Stopping) -> Option<Primary> {
         Phase::Dead { .. } => Some(Primary::Respawn),
         Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
         Phase::LoginNeeded => Some(Primary::SignIn),
-        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } => Some(Primary::Play),
+        Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } => Some(Primary::Play),
         Phase::NoNetwork => Some(Primary::Retry),
         Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
         Phase::Restarting { .. } => Some(Primary::Start),
@@ -672,6 +679,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { reason } => trf("Start fehlgeschlagen · %@", &[reason]),
         Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
+        Phase::ServerAway { .. } => tr("Server weg · verbindet sich wieder, sobald er antwortet"),
         Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
     }
 }

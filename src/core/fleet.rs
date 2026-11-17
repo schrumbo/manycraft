@@ -326,7 +326,8 @@ fn early_window_off(text: &str) -> String {
 "
 }
 
-fn resolve_all(server: &str) -> Result<Vec<SocketAddr>> {
+/// The addresses of `server`, with its SRV record when it names no port; cached for a while.
+pub(crate) fn resolve_all(server: &str) -> Result<Vec<SocketAddr>> {
     static RESOLVER: OnceLock<Resolver<SystemDns>> = OnceLock::new();
     RESOLVER.get_or_init(|| Resolver::new(SystemDns::default())).resolve(server, Instant::now())
 }

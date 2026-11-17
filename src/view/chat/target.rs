@@ -86,7 +86,7 @@ pub fn state(phase: &Phase) -> Option<String> {
         Phase::Stopped => tr("aus"),
         Phase::Starting { .. } | Phase::Restarting { .. } => tr("startet"),
         Phase::Menu | Phase::Plain => tr("im Menü"),
-        Phase::Connecting { .. } | Phase::NetworkLost { .. } | Phase::NoNetwork => tr("verbindet"),
+        Phase::Connecting { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::NoNetwork => tr("verbindet"),
         _ => tr("getrennt"),
     })
 }

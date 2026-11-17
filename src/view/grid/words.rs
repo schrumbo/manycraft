@@ -48,6 +48,7 @@ pub fn word(g: &Game, m: &Model) -> String {
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
+        Phase::ServerAway { .. } => tr("Wartet auf Server"),
     }
 }
 
@@ -183,8 +184,12 @@ pub fn outage_line(m: &Model, batch_id: &str, outage: &Outage, named: bool) -> S
         None => tr("Server weg"),
     });
     let games = || outage.keys.iter().filter_map(|k| m.games.get(k));
+    let waiting = games().filter(|g| matches!(g.phase, Phase::ServerAway { .. })).count();
     let back = games().filter(|g| matches!(g.phase, Phase::Connecting { .. })).count();
-    let gave_up = outage.keys.len().saturating_sub(back);
+    let gave_up = outage.keys.len().saturating_sub(back + waiting);
+    if waiting > 0 {
+        parts.push(if waiting == 1 { tr("1 wartet, verbindet sich von selbst") } else { trf("%lld warten, verbinden sich von selbst", &[&waiting]) });
+    }
     if back > 0 {
         parts.push(if back == 1 { tr("1 verbindet sich neu") } else { trf("%lld verbinden sich neu", &[&back]) });
     }

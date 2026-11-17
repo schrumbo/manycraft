@@ -51,6 +51,7 @@ pub mod origin;
 pub mod packs;
 pub mod paths;
 pub mod phone;
+pub mod ping;
 pub mod place;
 pub mod preview;
 pub mod launchers;
