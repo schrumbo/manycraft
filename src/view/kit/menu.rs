@@ -2,17 +2,19 @@
 //! lists scroll and can carry a field that filters them as you type.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
+use freya::animation::*;
 use freya::prelude::*;
 
 use super::field::Field;
 use super::text::{line, spacer};
-use super::{Bounds, use_theme};
+use super::{Bounds, fades, use_theme};
 use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::store::use_store;
-use crate::view::theme::{control, font, frame, level, iconsize, space};
+use crate::view::theme::{control, font, frame, iconsize, level, motion, space};
 use crate::view::ui::Ui;
 
 /// An account's face in front of a menu entry.
@@ -114,18 +116,40 @@ pub struct Menu {
     pub width: f32,
     /// The placeholder of the filter field, for lists long enough to need one.
     pub search: Option<String>,
+    /// Opens over its control with the checked entry on it, like a pop-up button's menu.
+    pop: bool,
+    /// Chooses the entry under the pointer when the button that opened it is let go, after a drag.
+    drag: bool,
+    /// The right edge of the control a menu drops from, which it lines up with when it would overflow the window.
+    edge: Option<f32>,
     serial: u64,
 }
 
 impl Menu {
     /// A menu at the pointer.
     pub fn at(items: Vec<Item>, at: (f32, f32)) -> Self {
-        Self { items, at, width: frame::MENU, search: None, serial: 0 }
+        Self { items, at, width: frame::MENU, search: None, pop: false, drag: false, edge: None, serial: 0 }
     }
 
     /// A menu that drops from `anchor`, as wide as it.
     pub fn under(items: Vec<Item>, anchor: Bounds) -> Self {
-        Self { items, at: (anchor.x, anchor.y + anchor.h + space::XS), width: anchor.w.max(frame::MENU * 0.6), search: None, serial: 0 }
+        Self { items, at: (anchor.x, anchor.y + anchor.h + space::XS), width: anchor.w.max(frame::MENU * 0.6), search: None, pop: false, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
+    }
+
+    /// A menu that opens over `anchor`: its checked entry covers the control and its text starts where the control's
+    /// text does, `inset` from the control's left edge.
+    pub fn over(items: Vec<Item>, anchor: Bounds, inset: f32) -> Self {
+        let lead = LEAD - inset;
+        let row = items.iter().position(|i| matches!(i, Item::Action { checked: true, .. })).map_or(0., |i| top(&items, i));
+        let y = anchor.y + (anchor.h - frame::MENU_ROW) / 2. - space::XS - row;
+        Self { items, at: (anchor.x - lead, y), width: anchor.w + lead, search: None, pop: true, drag: false, edge: None, serial: 0 }
+    }
+
+    /// Lets the entry under the pointer be chosen by letting go of the mouse button that opened the menu, once the pointer
+    /// moved to another entry or the button was held a moment.
+    pub fn dragged(mut self) -> Self {
+        self.drag = true;
+        self
     }
 
     /// Adds a field above the list that filters it by label.
@@ -136,6 +160,9 @@ impl Menu {
 }
 
 const WIDE_GLYPH: f32 = 0.8;
+const LEAD: f32 = space::XS + space::S + iconsize::S + space::XS;
+const TYPED: Duration = Duration::from_millis(900);
+const HELD: Duration = Duration::from_millis(350);
 
 static OPENED: AtomicU64 = AtomicU64::new(0);
 
@@ -150,9 +177,12 @@ fn glyphs(text: &str, size: f32) -> f32 {
     text.chars().map(|c| if c.is_uppercase() || matches!(c, 'm' | 'w' | '…' | '%') { WIDE_GLYPH } else { control::RENAME_GLYPH }).sum::<f32>() * size
 }
 
-fn fits(item: &Item) -> f32 {
+fn fits(item: &Item, lead: bool) -> f32 {
     let Item::Action { label, shortcut, face, warn, .. } = item else { return 0. };
-    let mut w = space::XS + iconsize::S + space::XS + glyphs(label, font::BODY) + space::XS + space::S;
+    let mut w = space::S * 2. + glyphs(label, font::BODY);
+    if lead {
+        w += iconsize::S + space::XS;
+    }
     if face.is_some() {
         w += frame::FACE + space::XS;
     }
@@ -224,6 +254,7 @@ impl Component for Host {
             .width(Size::px(w))
             .height(Size::px(h))
             .on_mouse_down(move |_| ui.menu.set(None))
+            .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .child(rect().key(serial).width(Size::fill()).height(Size::fill()).child(Panel { menu }))
             .into_element()
     }
@@ -240,10 +271,21 @@ impl Component for Panel {
         let ui = use_consume::<Ui>();
         let menu = &self.menu;
         let query = use_state(String::new);
-        let mut hot = use_state(|| (String::new(), None::<usize>));
+        let checked = menu.items.iter().position(|i| matches!(i, Item::Action { checked: true, .. }));
+        let mut hot = use_state(|| (String::new(), if menu.pop { checked } else { None }));
+        let typed = use_state(|| (String::new(), Instant::now()));
+        let born = use_hook(Instant::now);
+        let mut down_in = use_state(|| false);
+        let first = if menu.pop { checked } else { None };
+        let drag = menu.drag;
+        let fade = use_animation(|conf| {
+            conf.on_creation(OnCreation::Run);
+            AnimNum::new(0., 1.).duration(motion::timed(motion::FAST)).ease(Ease::Out)
+        });
         let (w, h) = *ui.window.read();
         let list_max = (frame::MENU_ROW * frame::MENU_ROWS as f32).min(h * 0.6);
-        let start = menu.items.iter().position(|i| matches!(i, Item::Action { checked: true, .. })).map_or(0., |i| (top(&menu.items, i) - list_max / 2. + frame::MENU_ROW / 2.).max(0.));
+        let lead = checked.is_some();
+        let start = checked.map_or(0., |i| (top(&menu.items, i) - list_max / 2. + frame::MENU_ROW / 2.).max(0.));
         let scroll = use_hook(|| ScrollController::new(0, -(start as i32)));
         let q = query.read().clone();
         use_side_effect_with_deps(&q, move |q| {
@@ -265,10 +307,21 @@ impl Component for Panel {
         let list_h = rows.min(list_max);
         let panel_h = list_h + field_h + space::XS * 2.;
         let tallest = menu.items.iter().map(height).sum::<f32>().min(list_max) + field_h + space::XS * 2.;
-        let fit = menu.items.iter().map(fits).fold(0., f32::max) + space::XS * 2. + 2.;
+        let fit = menu.items.iter().map(|i| fits(i, lead)).fold(0., f32::max) + space::XS * 2. + 2.;
         let width = menu.width.max(fit).min(w - space::S * 2.);
-        let x = menu.at.0.min(w - width - space::S).max(space::S);
-        let y = if menu.at.1 + tallest > h - space::S { (menu.at.1 - tallest).max(space::S) } else { menu.at.1 };
+        let x = match menu.edge {
+            Some(edge) if menu.at.0 + width > w - space::S => edge - width,
+            _ => menu.at.0,
+        }
+        .min(w - width - space::S)
+        .max(space::S);
+        let y = if menu.pop {
+            menu.at.1.min(h - space::S - panel_h).max(space::S)
+        } else if menu.at.1 + tallest > h - space::S {
+            (menu.at.1 - tallest).max(space::S)
+        } else {
+            menu.at.1
+        };
         let run = {
             let items = items.clone();
             move |i: usize, mut ui: Ui| {
@@ -298,7 +351,13 @@ impl Component for Panel {
                 Item::Action { id, label, shortcut, checked, danger, disabled, face, warn, .. } => {
                     let mut run = run.clone();
                     let at = q.clone();
-                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
+                    let mut release_run = run.clone();
+                    let release = EventHandler::new(move |_| {
+                        if drag && !*down_in.peek() && (born.elapsed() > HELD || Some(i) != first) {
+                            release_run(i, ui);
+                        }
+                    });
+                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, lead, on_down: EventHandler::new(move |_| down_in.set(true)), on_release: release, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, hot: chosen == Some(i), on_hover: EventHandler::new(move |_| hot.set((at.clone(), Some(i)))), on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
                 }
             })
             .collect();
@@ -307,6 +366,7 @@ impl Component for Panel {
             .a11y_role(AccessibilityRole::Menu)
             .a11y_builder(|n| n.set_modal())
             .width(Size::px(width))
+            .opacity(fade.get().value())
             .padding(space::XS)
             .background(t.raised)
             .corner_radius(t.shape.control + 2.)
@@ -335,6 +395,27 @@ impl Component for Panel {
                             keys_run(i, ui);
                         }
                     }
+                    Key::Character(_) if searching || e.modifiers.intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT) => return,
+                    Key::Character(c) => {
+                        let mut typed = typed;
+                        let (so_far, at) = typed.peek().clone();
+                        let so_far = if at.elapsed() > TYPED { String::new() } else { so_far };
+                        if c == " " && so_far.is_empty() {
+                            if let Some(i) = chosen {
+                                keys_run(i, ui);
+                            }
+                        } else {
+                            let word = format!("{so_far}{}", c.to_lowercase());
+                            let from = if so_far.is_empty() { chosen.map_or(0, |i| i + 1) } else { chosen.unwrap_or(0) };
+                            let n = keys_items.len();
+                            let found = (0..n).map(|k| (from + k) % n).find(|&i| matches!(&keys_items[i], Item::Action { label, disabled: false, .. } if label.to_lowercase().starts_with(&word)));
+                            typed.set((word, Instant::now()));
+                            if let Some(next) = found {
+                                hot.set((keys_q.clone(), Some(next)));
+                                reveal(next, scroll, &keys_items);
+                            }
+                        }
+                    }
                     _ => return,
                 }
                 e.stop_propagation();
@@ -344,12 +425,13 @@ impl Component for Panel {
             panel = panel.child(rect().width(Size::fill()).padding((0., 0., space::XS, 0.)).child(Field::new("menu.search", query).placeholder(placeholder.clone()).glyph(Icon::Search).auto_focus().rows_through()));
         }
         if none_found {
-            entries.insert(0, rect().width(Size::fill()).height(Size::px(frame::MENU_ROW)).padding((0., space::S, 0., space::XS + iconsize::S + space::XS)).cross_align(Alignment::Center).main_align(Alignment::Center).child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)).into_element());
+            entries.insert(0, rect().width(Size::fill()).height(Size::px(frame::MENU_ROW)).padding((0., space::S)).cross_align(Alignment::Center).main_align(Alignment::Center).child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)).into_element());
         }
         if rows <= list_h {
             return panel.children(entries).into_element();
         }
-        panel.child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::px(list_h)).children(entries)).into_element()
+        let edges = fades(t.raised, -scroll.position().y, rows, list_h);
+        panel.child(rect().width(Size::fill()).height(Size::px(list_h)).child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::px(list_h)).children(entries)).children(edges)).into_element()
     }
 }
 
@@ -359,11 +441,14 @@ struct Entry {
     label: String,
     shortcut: Option<String>,
     checked: bool,
+    lead: bool,
     danger: bool,
     disabled: bool,
     face: Option<Face>,
     warn: bool,
     hot: bool,
+    on_down: EventHandler<()>,
+    on_release: EventHandler<()>,
     on_hover: EventHandler<()>,
     on_press: EventHandler<()>,
 }
@@ -384,19 +469,29 @@ impl Component for Entry {
         };
         let hover = self.on_hover.clone();
         let press = self.on_press.clone();
+        let down = self.on_down.clone();
+        let release = self.on_release.clone();
         let mut e = rect()
             .a11y_role(AccessibilityRole::MenuItem)
             .a11y_alt(self.label.clone())
             .width(Size::fill())
             .height(Size::px(frame::MENU_ROW))
-            .padding((0., space::S, 0., space::XS))
+            .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::XS)
             .corner_radius(t.shape.small)
             .on_sized(spot)
             .on_pointer_enter(move |_| hover.call(()))
-            .child(rect().width(Size::px(iconsize::S)).child(if self.checked { icon(&t, Icon::Check, iconsize::S, ink) } else { rect().into_element() }));
+            .on_mouse_down(move |_| down.call(()))
+            .on_mouse_up(move |e: Event<MouseEventData>| {
+                if e.button == Some(MouseButton::Left) {
+                    release.call(());
+                }
+            });
+        if self.lead {
+            e = e.child(rect().width(Size::px(iconsize::S)).child(if self.checked { icon(&t, Icon::Check, iconsize::S, ink) } else { rect().into_element() }));
+        }
         if let Some(f) = &self.face {
             e = e.child(rect().opacity(if self.disabled { 0.5 } else { 1. }).child(crate::view::accounts::head(&t, store, f.id, &f.name, f.color, frame::FACE)));
         }

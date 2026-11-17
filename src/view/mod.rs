@@ -150,6 +150,9 @@ impl App for Root {
                 theme.set(next);
             }
         });
+        let current = theme.read().clone();
+        let mut bars = use_provide_theme(|| scrollbars(&current));
+        use_side_effect_with_deps(&current, move |t| bars.set(scrollbars(t)));
         let root = platform.root_size;
         let ui = use_provide_context(|| {
             let s = *root.peek();
@@ -185,6 +188,26 @@ impl App for Root {
         });
         shell::Shell
     }
+}
+
+fn scrollbars(t: &Theme) -> freya::prelude::Theme {
+    let mut bars = light_theme();
+    bars.set(
+        "scrollbar",
+        ScrollBarThemePreference {
+            background: Color::TRANSPARENT.into(),
+            thumb_background: t.text3.with_af32(0.7).into(),
+            hover_thumb_background: t.text2.with_af32(0.85).into(),
+            active_thumb_background: t.text2.into(),
+            thumb_cross_size: 5f32.into(),
+            expanded_thumb_cross_size: 8f32.into(),
+            opacity: 0f32.into(),
+            expanded_opacity: 0f32.into(),
+            cross_gap: 2f32.into(),
+            expanded_cross_gap: 2f32.into(),
+        },
+    );
+    bars
 }
 
 fn load(library: &Library, id: Option<&str>, dark: bool) -> Theme {

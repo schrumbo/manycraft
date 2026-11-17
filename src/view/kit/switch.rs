@@ -5,7 +5,7 @@ use freya::prelude::*;
 
 use super::text::para;
 use super::tooltip::WithTip;
-use super::{ring, use_theme};
+use super::{blend, ring, use_theme};
 use crate::view::drive::use_spot;
 use crate::view::theme::{font, frame, motion, space};
 
@@ -45,17 +45,24 @@ impl Component for Switch {
         let mut hovered = use_state(|| false);
         let mut pressed = use_state(|| false);
         let on = self.on;
-        let knob = frame::SWITCH_H - space::XXS * 2.;
-        let stretch = if *pressed.read() { space::XS } else { 0. };
-        let travel = frame::SWITCH_W - frame::SWITCH_H - stretch;
+        let down = *pressed.read();
+        let knob = frame::SWITCH_H - frame::SWITCH_INSET * 2.;
+        let travel = frame::SWITCH_W - frame::SWITCH_INSET * 2. - knob;
         let slide = use_animation_with_dependencies(&on, |conf, on| {
             conf.on_creation(OnCreation::Finish);
             conf.on_change(OnChange::Rerun);
             let (from, to) = if *on { (0., 1.) } else { (1., 0.) };
             AnimNum::new(from, to).duration(motion::timed(motion::FAST)).ease(Ease::Out)
         });
+        let grow = use_animation_with_dependencies(&down, |conf, down| {
+            conf.on_creation(OnCreation::Finish);
+            conf.on_change(OnChange::Rerun);
+            let (from, to) = if *down { (0., 1.) } else { (1., 0.) };
+            AnimNum::new(from, to).duration(motion::timed(motion::FAST)).ease(Ease::Out)
+        });
         let at = slide.get().value();
-        let track = if on { t.accent } else { t.separator };
+        let stretch = frame::SWITCH_STRETCH * grow.get().value();
+        let track = blend(t.text3.with_af32(frame::SWITCH_OFF), t.accent, at);
         let toggle = self.on_toggle.clone();
         let mut s = rect()
             .a11y_id(a11y)
@@ -64,7 +71,6 @@ impl Component for Switch {
             .a11y_alt(self.label.clone())
             .width(Size::px(frame::SWITCH_W))
             .height(Size::px(frame::SWITCH_H))
-            .padding(space::XXS)
             .corner_radius(frame::SWITCH_H / 2.)
             .background(track)
             .opacity(if self.disabled { 0.45 } else { 1. })
@@ -74,14 +80,14 @@ impl Component for Switch {
             s = s.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(frame::SWITCH_W)).height(Size::px(frame::SWITCH_H)).corner_radius(frame::SWITCH_H / 2.).background(wash));
         }
         s = s.child(
-                rect()
-                    .position(Position::new_absolute().left(space::XXS + travel * at).top(space::XXS))
-                    .width(Size::px(knob + stretch))
-                    .height(Size::px(knob))
-                    .corner_radius(knob / 2.)
-                    .background(Color::WHITE)
-                    .shadow(Shadow::from((0., 1., 2., 0., Color::BLACK.with_af32(0.25)))),
-            );
+            rect()
+                .position(Position::new_absolute().left(frame::SWITCH_INSET + (travel - stretch) * at).top(frame::SWITCH_INSET))
+                .width(Size::px(knob + stretch))
+                .height(Size::px(knob))
+                .corner_radius(knob / 2.)
+                .background(Color::WHITE)
+                .shadow(Shadow::from((0., 1., 2., 0., Color::BLACK.with_af32(0.3)))),
+        );
         if !self.disabled {
             s = s
                 .cursor(CursorIcon::Pointer)

@@ -54,7 +54,7 @@ pub mod frame {
     /// Width kept for Play and its neighbours at the end of an instance's toolbar, so the tabs stay put when they change.
     pub const HERO: f32 = 400.;
     pub const MENU: f32 = 220.;
-    pub const MENU_ROW: f32 = 26.;
+    pub const MENU_ROW: f32 = 28.;
     /// Rows a long menu shows before it scrolls.
     pub const MENU_ROWS: usize = 12;
     /// The content width from which the instance page shows its inspector beside the tabs.
@@ -67,8 +67,14 @@ pub mod frame {
     pub const TOAST: f32 = 420.;
     pub const TOASTS: usize = 3;
     pub const TOOLTIP: f32 = 280.;
-    pub const SWITCH_W: f32 = 32.;
-    pub const SWITCH_H: f32 = 18.;
+    pub const SWITCH_W: f32 = 44.;
+    pub const SWITCH_H: f32 = 22.;
+    /// The gap between a switch's knob and the edge of its track, on every side.
+    pub const SWITCH_INSET: f32 = 2.;
+    /// How much wider the knob grows while it is pressed.
+    pub const SWITCH_STRETCH: f32 = 4.;
+    /// How strongly the ink of secondary text tints the track of a switch that is off, enough to stand out at 3:1.
+    pub const SWITCH_OFF: f32 = 0.7;
     pub const RING: f32 = 2.;
     pub const RING_GAP: f32 = 2.;
     pub const PROGRESS: f32 = 3.;

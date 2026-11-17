@@ -15,6 +15,7 @@ use crate::ui::remote;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
+use crate::view::kit::check;
 use crate::view::kit::field::{self, Field};
 use crate::view::kit::group::{Line, group, status};
 use crate::view::kit::sheet::{self, Card, Primary};
@@ -37,7 +38,6 @@ const HEAD_H: f32 = control::M;
 const FOOT_H: f32 = font::CAPTION + space::S;
 const BLOCK_GAP: f32 = space::M;
 const BLOCK_INNER: f32 = space::XS;
-const BOX: f32 = iconsize::M;
 const LOOKED_FOR: [Launcher; 7] = [Launcher::Prism, Launcher::MultiMc, Launcher::Modrinth, Launcher::CurseForge, Launcher::AtLauncher, Launcher::GdLauncher, Launcher::Vanilla];
 
 /// Opens the new-instance sheet on Importieren.
@@ -790,25 +790,11 @@ impl Component for Entry {
         if keyed {
             r = r.border(Border::new().fill(t.focus).width(frame::RING).alignment(BorderAlignment::Inner));
         }
-        let lead = if enabled { checkbox(&t, self.on) } else { icon(&t, Icon::CircleAlert, iconsize::M, t.attention_text) };
+        let lead = if enabled { check::mark(&t, self.on) } else { icon(&t, Icon::CircleAlert, iconsize::M, t.attention_text) };
         r.child(lead)
             .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(line(&t, self.title.clone(), font::BODY, ink).font_weight(FontWeight::SEMI_BOLD)).child(line(&t, self.detail.clone(), font::CALLOUT, quiet)))
             .content(Content::flex())
     }
-}
-
-fn checkbox(t: &Theme, on: bool) -> Element {
-    let mut b = rect()
-        .width(Size::px(BOX))
-        .height(Size::px(BOX))
-        .center()
-        .corner_radius(t.shape.small)
-        .background(if on { t.accent } else { Color::TRANSPARENT })
-        .border(Border::new().fill(if on { t.accent } else { t.text3 }).width(t.icon_stroke).alignment(BorderAlignment::Inner));
-    if on {
-        b = b.child(icon(t, Icon::Check, iconsize::XS, t.on_accent));
-    }
-    b.into_element()
 }
 
 #[cfg(test)]

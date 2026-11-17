@@ -268,6 +268,7 @@ impl Component for Host {
             .cross_align(Alignment::Center)
             .padding((frame::SHEET_TOP, space::L, space::L, space::L))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
+            .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .child(rect().offset_y((1. - at) * space::S).child(content))
             .into_element()
     }

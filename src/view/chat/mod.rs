@@ -1165,6 +1165,7 @@ impl Component for Popup {
                 shared.picker.set(false);
                 shared.focus.set(Some(Instant::now()));
             })
+            .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .child(panel)
     }
 }

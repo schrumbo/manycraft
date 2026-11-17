@@ -226,10 +226,7 @@ impl Component for Button {
             }
             b = b.child(label);
         }
-        let b = match wash {
-            Some(wash) => rect().corner_radius(t.shape.control).background(fill).child(b.background(wash)).into_element(),
-            None => b.into_element(),
-        };
+        let b = rect().corner_radius(t.shape.control).background(fill).child(b.background(wash.unwrap_or(Color::TRANSPARENT)));
         WithTip::new(self.disabled.clone().or_else(|| self.tip.clone()), b)
     }
 }

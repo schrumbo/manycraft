@@ -364,6 +364,7 @@ impl Component for Palette {
             .cross_align(Alignment::Center)
             .padding((frame::SHEET_TOP, space::L, space::L, space::L))
             .on_mouse_down(move |_| ui.palette.set(false))
+            .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 let into = keys_list.get(chosen).and_then(|x| x.actions.clone().map(|id| (id, x.label.clone())));
                 let shift = e.modifiers.contains(Modifiers::SHIFT);
