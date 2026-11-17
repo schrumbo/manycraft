@@ -1182,6 +1182,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     }
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(instance, account, &game_dir, ipc_address, key, token)?;
+    extra.jvm.splice(0..0, batch_defaults(target, installed, companion_jar.is_some()));
     if let Some(jar) = companion_jar {
         extra.jvm.push(format!("-javaagent:{}", jar.display()));
     }
@@ -1207,6 +1208,20 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         env: launch::SecretEnv(extra.secrets),
     };
     launch::spawn(&spec)
+}
+
+/// The JVM arguments a game of `target` starts with before the instance's own: the batch defaults for batch games, which
+/// start hidden; none for a game played alone, which runs like in any launcher. Batch games compile with the quick
+/// compiler only while the `companion` keeps them hidden, unless their batch asks for full speed.
+fn batch_defaults(target: &Target, installed: &Installed, companion: bool) -> Vec<String> {
+    let Some(batch) = &target.batch else { return Vec::new() };
+    let major = if target.instance.options.java.is_none() { java_major(installed) } else { None };
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+    launch::batch_jvm(major, cores, companion && !batch.full_speed, &target.instance.jvm_args)
+}
+
+fn java_major(installed: &Installed) -> Option<u32> {
+    installed.profile.java_version.as_ref().and_then(|j| j.major_version)
 }
 
 /// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
@@ -2310,6 +2325,26 @@ mod tests {
             log_config: None,
             downloaded: 0,
         }
+    }
+
+    #[test]
+    fn batch_games_get_the_lean_defaults_and_solo_games_none() {
+        let batch = target("A");
+        let solo = Target::solo(&batch.instance);
+        let java25 = installed_needing("java-runtime-epsilon", 25);
+        let java21 = installed_needing("java-runtime-delta", 21);
+        let quick = "-XX:TieredStopAtLevel=1".to_owned();
+        let headers = "-XX:+UseCompactObjectHeaders".to_owned();
+        assert!(batch_defaults(&batch, &java25, true).contains(&headers) && batch_defaults(&batch, &java25, true).contains(&quick));
+        assert!(!batch_defaults(&batch, &java21, true).contains(&headers));
+        assert!(batch_defaults(&solo, &java25, true).is_empty());
+        assert!(!batch_defaults(&batch, &java25, false).contains(&quick), "without the companion a game may be played at any time");
+        let mut full = batch.clone();
+        full.batch.as_mut().unwrap().full_speed = true;
+        assert!(!batch_defaults(&full, &java25, true).contains(&quick) && batch_defaults(&full, &java25, true).contains(&headers));
+        let mut own_java = batch.clone();
+        own_java.instance.options.java = Some(PathBuf::from("jdk-25"));
+        assert!(!batch_defaults(&own_java, &java25, true).contains(&headers));
     }
 
     fn java_home(dir: &Path, version: &str) -> PathBuf {

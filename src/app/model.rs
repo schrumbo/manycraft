@@ -186,12 +186,14 @@ pub struct Game {
     pub hint: Hint,
     /// Its place in the line of bulk starts that wait for free memory, while it waits there.
     pub memory_wait: Option<u64>,
+    /// The name its memory per game is learned under, fixed by how it was started.
+    pub measured_as: Option<String>,
 }
 
 impl Game {
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, unread_whispers: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None }
     }
 }
 
@@ -403,6 +405,16 @@ impl Model {
     /// The batch with this id.
     pub fn batch(&self, id: &str) -> Option<&Batch> {
         self.batches.iter().find(|b| b.id == id)
+    }
+
+    /// The name the measured memory per game of `owner` is kept under, matching how its games start now.
+    pub fn measure_key(&self, owner: &str) -> String {
+        self.batch(owner).map_or_else(|| owner.to_owned(), Batch::measure_key)
+    }
+
+    /// The memory one game of `owner` was last measured to hold, started the way its games start now.
+    pub fn measured_for(&self, owner: &str) -> Option<u32> {
+        self.measured.get(&self.measure_key(owner)).copied()
     }
 
     /// The instance with this id.

@@ -112,7 +112,17 @@ pub(super) fn launch(m: &mut Model, owner: &str, only: Option<&[String]>, kick: 
     if !restart {
         out.push(Effect::CheckFit { count: u32::try_from(accounts.len()).unwrap_or(u32::MAX), memory_mb: target.memory_mb() });
     }
+    started(m, owner, &target, &accounts);
     out.push(Effect::Start { owner: owner.to_owned(), target, accounts });
+}
+
+fn started(m: &mut Model, owner: &str, target: &Target, accounts: &[Account]) {
+    let measured = m.measure_key(owner);
+    for a in accounts {
+        if let Some(g) = m.games.get_mut(&target.key(a.id)) {
+            g.measured_as = Some(measured.clone());
+        }
+    }
 }
 
 /// Asks for a reading of the free memory, unless one is on its way.
@@ -141,7 +151,7 @@ pub(super) fn memory_waiting(m: &Model) -> bool {
 }
 
 fn cap_of(m: &Model, caps: &mut HashMap<String, u64>, owner: &str) -> u64 {
-    *caps.entry(owner.to_owned()).or_insert_with(|| m.measured.get(owner).map(|mb| u64::from(*mb)).or_else(|| m.target(owner).map(|t| u64::from(t.memory_mb()))).unwrap_or(0))
+    *caps.entry(owner.to_owned()).or_insert_with(|| m.measured_for(owner).map(u64::from).or_else(|| m.target(owner).map(|t| u64::from(t.memory_mb()))).unwrap_or(0))
 }
 
 /// Starts as many waiting games, first in line first, as fit into `memory` beside a reserve and the games still on their way; all when the machine does not tell.
@@ -207,6 +217,7 @@ fn release(m: &mut Model, keys: &[String], out: &mut Vec<Effect>) {
     out.push(Effect::Redraw(Redraw::All));
     for (owner, target, accounts) in by_owner {
         if !accounts.is_empty() {
+            started(m, &owner, &target, &accounts);
             out.push(Effect::Start { owner, target, accounts });
         }
     }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::base::actions::{Cancel, Confirm};
-use gpui_kit::component::{IndexPath, WindowExt};
+use gpui_kit::component::{Disableable, IndexPath, WindowExt};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
@@ -182,6 +182,7 @@ struct BatchSheet {
     background: Background,
     kept_custom: Option<Background>,
     launch_parallel: u32,
+    full_speed: bool,
     advanced: bool,
     memory_max: u32,
     total_ram: u64,
@@ -291,6 +292,7 @@ impl BatchSheet {
         ];
         let original_background = original.as_ref().map_or_else(Background::default, |b| b.background);
         let launch_parallel = original.as_ref().map_or(0, |b| b.launch_parallel);
+        let full_speed = original.as_ref().is_some_and(|b| b.full_speed);
         let free = cx.background_executor().spawn(async { crate::core::fit::system_memory().map(|m| m.free_mb) });
         cx.spawn(async move |this, cx| {
             let free_ram = free.await;
@@ -319,6 +321,7 @@ impl BatchSheet {
             background: original_background,
             kept_custom: None,
             launch_parallel,
+            full_speed,
             advanced: false,
             memory_max,
             total_ram,
@@ -435,6 +438,7 @@ impl BatchSheet {
             accounts: accounts.iter().map(|a| a.id).filter(|id| self.accounts.contains(id)).collect(),
             background: self.background,
             launch_parallel: self.launch_parallel,
+            full_speed: self.full_speed,
         };
         let id = self.original.as_ref().map(|b| b.id.clone());
         self.saving = true;
@@ -540,7 +544,7 @@ impl BatchSheet {
     }
 
     fn memory_open(&self) -> bool {
-        self.advanced || !self.inherit || self.launch_parallel != 0
+        self.advanced || !self.inherit || self.launch_parallel != 0 || self.full_speed
     }
 
     fn each_memory(&self, cx: &App) -> u32 {
@@ -607,6 +611,7 @@ impl BatchSheet {
                 return;
             }
             s.inherit = !s.inherit;
+            s.advanced = true;
             if !s.inherit {
                 s.memory = forms::memory_step(s.instance_memory(cx), 0, s.memory_max);
             }
@@ -627,7 +632,8 @@ impl BatchSheet {
             .key_nav()
             .soft(t.ink.opacity(tint::HOVER), radius::INNER)
             .on_click(cx.listener(move |s, _, _, cx| toggle(s, cx)))
-            .child(Checkbox::new("batch-memory-inherit-check").checked(self.inherit).tab_stop(false).on_click(cx.listener(move |s, _: &bool, _, cx| {
+            .when(self.saving, |d| d.opacity(tint::DISABLED))
+            .child(Checkbox::new("batch-memory-inherit-check").checked(self.inherit).disabled(self.saving).tab_stop(false).on_click(cx.listener(move |s, _: &bool, _, cx| {
                 toggle(s, cx);
                 cx.stop_propagation();
             })))
@@ -654,7 +660,50 @@ impl BatchSheet {
             sheet::note(Some(tr("Pro Account.")), None, t)
         };
         let manual = (!self.inherit).then(|| div().flex().flex_col().gap(px(space::XS)).child(sheet::label(tr("Arbeitsspeicher"), t)).child(stepper));
-        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(inherit).children(manual).child(line.min_h(px(font::CAPTION * font::LINE * 2.)))).children(self.render_ram(cx, t)).child(self.render_launch(active, cx, t))
+        col.child(div().pl(px(space::L)).flex().flex_col().gap(px(space::XS)).child(inherit).children(manual).child(line.min_h(px(font::CAPTION * font::LINE * 2.)))).children(self.render_ram(cx, t)).child(self.render_speed(active, cx, t)).child(self.render_launch(active, cx, t))
+    }
+
+    fn render_speed(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
+        let label = tr("Volle Leistung beim Spielen (mehr Arbeitsspeicher)");
+        let hint = tr("Sonst brauchen Spiele im Hintergrund weniger Arbeitsspeicher, laufen beim Spielen aber langsamer.");
+        let hint = if running { format!("{hint} {}", tr("Gilt beim nächsten Start.")) } else { hint };
+        let toggle = |s: &mut Self, cx: &mut Context<Self>| {
+            if s.saving {
+                return;
+            }
+            s.full_speed = !s.full_speed;
+            s.advanced = true;
+            s.save_error = None;
+            cx.notify();
+        };
+        let check = div()
+            .id("batch-full-speed")
+            .mark("checkbox", label.clone())
+            .self_start()
+            .h(px(control::S))
+            .px(px(space::XS))
+            .ml(px(-space::XS))
+            .flex()
+            .items_center()
+            .gap(px(space::XS))
+            .rounded(px(radius::INNER))
+            .cursor_pointer()
+            .key_nav()
+            .soft(t.ink.opacity(tint::HOVER), radius::INNER)
+            .on_click(cx.listener(move |s, _, _, cx| toggle(s, cx)))
+            .when(self.saving, |d| d.opacity(tint::DISABLED))
+            .child(Checkbox::new("batch-full-speed-check").checked(self.full_speed).disabled(self.saving).tab_stop(false).on_click(cx.listener(move |s, _: &bool, _, cx| {
+                toggle(s, cx);
+                cx.stop_propagation();
+            })))
+            .child(div().text_size(px(font::CALLOUT)).text_color(t.secondary).child(label));
+        div()
+            .pl(px(space::L))
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(check)
+            .child(sheet::note(Some(hint), None, t).line_height(px(font::CAPTION * font::LINE)).min_h(px(font::CAPTION * font::LINE * 2.)))
     }
 
     fn render_launch(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
