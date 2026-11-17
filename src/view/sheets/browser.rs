@@ -14,7 +14,6 @@ use freya::prelude::*;
 
 mod project;
 
-use super::import;
 use super::instance::{self, Load, body_max, problem_view};
 use crate::core::batch::ModRef;
 use crate::core::i18n::{Lang, lang, tr, trf};
@@ -37,8 +36,9 @@ use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
 use crate::view::kit::{after, at_least, button_focused, off_ui, toast, use_theme};
+use crate::view::install::{self, Source};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, frame, iconsize, space};
+use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
 use crate::view::ui::BrowserUndo;
 
 use project::ProjectPage;
@@ -73,9 +73,11 @@ pub fn find(store: Store, id: &str, kind: Kind) {
     instance::open_mods(store, made, Some(kind));
 }
 
-/// Opens the sheet for a new instance straight in the browser on Modpacks.
+/// Shows the Modpacks page, where every pack installs as a new instance.
 pub fn find_modpacks(store: Store) {
-    instance::open_create(store, None, Some(Kind::Modpack));
+    crate::view::kit::sheet::close(store.ui);
+    let mut page = store.ui.page;
+    page.set(crate::view::ui::Page::Modpacks);
 }
 
 /// What the sheet around the browser shares with it: the instance and what is picked, the work in flight, and what Zurück
@@ -83,6 +85,8 @@ pub fn find_modpacks(store: Store) {
 #[derive(Clone, PartialEq)]
 pub(super) struct Scope {
     pub create: bool,
+    /// Shown as the Modpacks page instead of on a sheet.
+    pub page: bool,
     pub made: Option<Instance>,
     pub version: String,
     pub loader: Loader,
@@ -104,7 +108,13 @@ pub(super) struct Scope {
 
 impl Scope {
     fn kinds(&self) -> &'static [Kind] {
-        if self.create { &[Kind::Mod, Kind::Modpack] } else { &Kind::ALL }
+        if self.page {
+            &[Kind::Modpack]
+        } else if self.create {
+            &[Kind::Mod]
+        } else {
+            &Kind::ALL
+        }
     }
 }
 
@@ -628,7 +638,7 @@ fn enter_key(command: bool) -> String {
 fn run_hint(act: Act, modpack: bool, command: bool) -> String {
     let key = enter_key(command);
     match act {
-        Act::Install if modpack => trf("%@ fügt es als Instanz hinzu.", &[&key]),
+        Act::Install if modpack => trf("%@ installiert es.", &[&key]),
         Act::Install => trf("%@ fügt es hinzu.", &[&key]),
         Act::Update => trf("%@ aktualisiert es.", &[&key]),
         Act::Nothing => String::new(),
@@ -735,7 +745,7 @@ fn trail_of(hit: &Hit, f: &Facts) -> Trail {
     let installed = f.kind != Kind::Modpack && f.have.contains(pid);
     let adding = f.adding.contains(pid);
     let busy = adding || (f.kind == Kind::Mod && f.updating.contains(pid));
-    let label = if f.kind == Kind::Modpack { tr("Als Instanz hinzufügen") } else { tr("Hinzufügen") };
+    let label = if f.kind == Kind::Modpack { tr("Installieren") } else { tr("Hinzufügen") };
     if adding && !installed {
         let reason = if f.restoring.contains(pid) { trf("„%@“ wird gerade geändert.", &[&hit.title]) } else { tr("Wird hinzugefügt …") };
         return Trail::Busy { label, reason };
@@ -801,6 +811,7 @@ struct Flow {
     list_epoch: State<u64>,
     body: ScrollController,
     search: AccessibilityId,
+    room: State<f32>,
 }
 
 impl Flow {
@@ -824,7 +835,8 @@ impl Flow {
 
     fn rows(&self) -> i32 {
         let kind = self.core.peek().kind;
-        ((results_height(self.store, kind) / ROW_H) as i32).max(1)
+        let height = if self.scope.page { *self.room.peek() } else { results_height(self.store, kind) };
+        ((height / ROW_H) as i32).max(1)
     }
 
     fn undoable(&self) -> bool {
@@ -1498,31 +1510,15 @@ impl Flow {
             return;
         }
         let filter = if self.core.peek().all { Filter::any(Kind::Modpack) } else { self.filter() };
-        let id = hit.project_id.clone();
-        self.mark(&id, true);
-        self.clear_error();
-        let flow = self.clone();
-        let store = self.store;
-        spawn_in_window(async move {
-            let (work, title) = (id.clone(), hit.title.clone());
-            let result = off_ui(move || catalog::fetch_modpack(&work, &title, &filter)).await;
-            flow.mark(&id, false);
-            if !flow.alive() {
-                return;
-            }
-            if let Some(path) = flow.fail(trf("„%@“ ließ sich nicht laden.", &[&hit.title]), result) {
-                let text = trf("„%@“ wird als neue Instanz angelegt. Den Fortschritt siehst du in der Seitenleiste.", &[&hit.title]);
-                if flow.live.peek().dirty {
-                    import::background(store, path);
-                    let mut notice = flow.notice;
-                    notice.set(Some(Notice::Making(hit.title.clone())));
-                } else {
-                    crate::view::kit::sheet::close(store.ui);
-                    import::open_file(store, path);
-                    toast::show(store.ui, text, None);
-                }
-            }
-        });
+        let source = Source::Pack { project: hit.project_id.clone(), title: hit.title.clone(), icon: hit.icon_url.clone(), filter };
+        if self.scope.page || !self.live.peek().dirty {
+            crate::view::kit::sheet::close(self.store.ui);
+            install::start(self.store, vec![source]);
+        } else {
+            install::begin(self.store, vec![source]);
+            let mut notice = self.notice;
+            notice.set(Some(Notice::Making(hit.title.clone())));
+        }
     }
 
     fn remove(&self, pid: &str) {
@@ -1748,6 +1744,39 @@ pub(super) struct Browser {
     pub scope: Scope,
 }
 
+/// The Modpacks page: Modrinth's packs for any version and loader, each installed as a new instance.
+#[derive(PartialEq)]
+pub struct PacksPage;
+
+impl Component for PacksPage {
+    fn render(&self) -> impl IntoElement {
+        let mods = use_state(Vec::new);
+        let adding = use_state(HashSet::new);
+        let scope = Scope {
+            create: false,
+            page: true,
+            made: None,
+            version: String::new(),
+            loader: Loader::Vanilla,
+            mods,
+            touched: None,
+            adding,
+            updatable: HashSet::new(),
+            updating: HashSet::new(),
+            saving: false,
+            held: None,
+            pending: false,
+            dirty: false,
+            follow: None,
+            kind: Kind::Modpack,
+            on_update: EventHandler::new(|_| {}),
+            back: EventHandler::new(|_| {}),
+            done: EventHandler::new(|_| {}),
+        };
+        Browser { scope }
+    }
+}
+
 impl Component for Browser {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
@@ -1755,12 +1784,13 @@ impl Component for Browser {
         let query = use_state(String::new);
         let search = use_hook(AccessibilityId::new_unique);
         let kind = self.scope.kind;
+        let paged = self.scope.page;
         let live = use_reactive(&Live { version: self.scope.version.clone(), loader: self.scope.loader.clone(), held: self.scope.held.clone(), dirty: self.scope.dirty });
         let flow = Flow {
             store,
             scope: Rc::new(self.scope.clone()),
             live,
-            core: use_state(move || Core::new(kind)),
+            core: use_state(move || Core { all: paged, ..Core::new(kind) }),
             query,
             error: use_state(|| None),
             notice: use_state(|| None),
@@ -1776,6 +1806,7 @@ impl Component for Browser {
             list_epoch: use_state(|| 0),
             body: use_scroll_controller(ScrollConfig::default),
             search,
+            room: use_state(|| RESULTS_HEIGHT),
         };
         let typed = query.read().trim().to_lowercase();
         let again = flow.clone();
@@ -1834,10 +1865,15 @@ impl Component for Browser {
             column = column.child(target_row(&t, &flow, &facts));
         }
         column = column.child(controls(&t, &flow, kind, &typed, category.as_deref(), sort, all, if fresh { total } else { None }));
-        let height = results_height(store, kind);
+        let mut room = flow.room;
         let region = rect()
             .width(Size::fill())
-            .height(Size::px(height))
+            .height(if paged { Size::flex(1.) } else { Size::px(results_height(store, kind)) })
+            .on_sized(move |e: Event<SizedEventData>| {
+                if paged {
+                    room.set_if_modified(e.area.height());
+                }
+            })
             .corner_radius(t.shape.tile)
             .overflow(Overflow::Clip)
             .border(Border::new().fill(t.separator).width(frame::HAIRLINE).alignment(BorderAlignment::Inner))
@@ -1852,6 +1888,45 @@ impl Component for Browser {
             });
         column = column.child(region);
         column = column.child(at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill()));
+        if paged {
+            let (esc, enter, arrive) = (flow.clone(), flow.clone(), flow.clone());
+            use_hook(move || {
+                spawn_in_window(async move {
+                    after(motion::FAST).await;
+                    if arrive.alive() {
+                        arrive.focus();
+                    }
+                });
+            });
+            return rect()
+                .width(Size::fill())
+                .height(Size::fill())
+                .cross_align(Alignment::Center)
+                .padding((space::S, space::L, space::M, space::L))
+                .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                    if enter.store.ui.layered() {
+                        return;
+                    }
+                    match &e.key {
+                        Key::Named(NamedKey::Escape) if esc.page_open() || !esc.query.peek().is_empty() => {
+                            e.stop_propagation();
+                            esc.cancel();
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            e.stop_propagation();
+                            let mut page = esc.store.ui.page;
+                            page.set(crate::view::ui::Page::Grid(crate::view::ui::Filter::All));
+                        }
+                        Key::Named(NamedKey::Enter) if e.modifiers.is_empty() && (field::typing() || enter.page_open() && !enter.other_field_typing() && !button_focused()) => {
+                            e.stop_propagation();
+                            enter.enter(false);
+                        }
+                        _ => {}
+                    }
+                })
+                .child(column.max_width(Size::px(frame::CONTENT_MAX)).height(Size::fill()).content(Content::flex()))
+                .into_element();
+        }
 
         let (done, back_press) = (self.scope.done.clone(), self.scope.back.clone());
         let title = if kind == Kind::Modpack {
@@ -1878,6 +1953,7 @@ impl Component for Browser {
                     enter.enter(false);
                 }
             })
+            .into_element()
     }
 }
 
@@ -2016,7 +2092,7 @@ fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&s
         .child(rect().width(Size::flex(1.)).child(line(t, caption_text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)))
         .child(category_select)
         .child(sort_select);
-    if widens(kind) {
+    if widens(kind) && !flow.scope.page {
         let (flip, label) = (flow.clone(), flow.clone());
         row = row.child(
             rect()
@@ -2457,7 +2533,7 @@ mod tests {
     fn the_hint_names_both_keys_and_the_action() {
         let opens = trf("%@ öffnet „%@“.", &[&enter_key(false), &"Sodium"]);
         assert_eq!(hint_of("Sodium", Act::Install, false), format!("{opens} {}", trf("%@ fügt es hinzu.", &[&enter_key(true)])));
-        assert_eq!(hint_of("Sodium", Act::Install, true), format!("{opens} {}", trf("%@ fügt es als Instanz hinzu.", &[&enter_key(true)])));
+        assert_eq!(hint_of("Sodium", Act::Install, true), format!("{opens} {}", trf("%@ installiert es.", &[&enter_key(true)])));
         assert_eq!(hint_of("Sodium", Act::Update, false), format!("{opens} {}", trf("%@ aktualisiert es.", &[&enter_key(true)])));
         assert_eq!(hint_of("Sodium", Act::Nothing, false), opens);
     }
@@ -2753,11 +2829,11 @@ mod tests {
     fn modpacks_install_as_instances_and_wait_for_unsaved_changes() {
         let mut f = facts(Kind::Modpack);
         let h = fitting(Kind::Modpack, "a");
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Als Instanz hinzufügen"), blocked: None });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: None });
         assert_eq!(act_of(&h, &f), Act::Install);
         f.pending = true;
         assert_eq!(act_of(&h, &f), Act::Nothing);
-        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Als Instanz hinzufügen"), blocked: Some(tr("Sichere zuerst die Änderungen.")) });
+        assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Installieren"), blocked: Some(tr("Sichere zuerst die Änderungen.")) });
     }
 
     #[test]

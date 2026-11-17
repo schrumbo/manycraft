@@ -12,7 +12,7 @@ use crate::core::account::AccountKind;
 use crate::core::batch::{Background, Batch};
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
-use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, Loader};
+use crate::core::instance::{Instance, Loader};
 use crate::ui::forms::{self, Problem};
 use crate::ui::remote::{self, BatchEdit, InstancePick};
 use crate::view::commands::{Want, want};
@@ -240,7 +240,7 @@ impl Seed {
             (None, Some(picked)) => picked.clone(),
             (None, None) => model.accounts.iter().map(|a| a.id).collect(),
         };
-        let own = instance.as_deref().and_then(|id| model.instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory());
+        let own = instance.as_deref().and_then(|id| model.instance(id)).map_or_else(|| crate::core::settings::active().game.memory_mb, |i| i.memory());
         Self {
             instance,
             name: original.map_or_else(|| forms::next_batch_name(&taken), |b| b.name.clone()),
@@ -309,7 +309,7 @@ impl Flow {
 
     fn instance_memory(self) -> u32 {
         let model = self.store.model.peek();
-        self.instance.peek().as_deref().and_then(|id| model.instance(id)).map_or(DEFAULT_MEMORY_MB, |i| i.memory())
+        self.instance.peek().as_deref().and_then(|id| model.instance(id)).map_or_else(|| crate::core::settings::active().game.memory_mb, |i| i.memory())
     }
 
     fn each_memory(self) -> u32 {
@@ -613,7 +613,7 @@ impl Component for BatchSheet {
             let picked = candidates.iter().filter(|c| chosen.contains(&c.id)).count();
             let own = instance.as_deref().and_then(|id| model.instance(id));
             let moved = self.original.as_ref().filter(|b| instance.as_ref() != Some(&b.instance_id)).and_then(|b| model.instance(&b.instance_id)).map(|i| trf("Welten und Screenshots bleiben bei %@.", &[&i.name]));
-            (choices, candidates, running, picked, own.map_or(DEFAULT_MEMORY_MB, |i| i.memory()), moved, own.and_then(|i| companion_hint(&i.game_version)))
+            (choices, candidates, running, picked, own.map_or_else(|| crate::core::settings::active().game.memory_mb, |i| i.memory()), moved, own.and_then(|i| companion_hint(&i.game_version)))
         };
 
         let (name_problem, server_problem, version_problem) = flow.problems();

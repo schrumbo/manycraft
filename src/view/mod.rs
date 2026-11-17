@@ -7,6 +7,7 @@ mod commands;
 pub mod drive;
 mod grid;
 mod icons;
+mod install;
 mod instance;
 mod kit;
 mod menubar;

@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use freya::prelude::*;
 
 use crate::app::event::Event as AppEvent;
-use crate::app::model::{Import, Model, Phase, UpdateStatus, Updates};
+use crate::app::model::{Model, Phase, UpdateStatus, Updates};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::view::accounts::off;
 use crate::view::commands::{self, Command, Want, can_want, want, want_blocked};
 use crate::view::icons::{Icon, icon};
+use crate::view::install::{self, Install, Stage};
 use crate::view::kit::badge::{Tone, badge, dot};
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
@@ -252,7 +253,7 @@ impl Component for Sidebar {
         top = top.child(Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat)));
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
-        if !m.batches.is_empty() || !m.imports.is_empty() || can_want(&Want::NewBatch) {
+        if !m.batches.is_empty() || can_want(&Want::NewBatch) {
             list = list.child(section(&t, tr("Batches")));
             for b in batch_lines(&m) {
                 let to = Page::Grid(Filter::Batch(b.id.clone()));
@@ -270,20 +271,14 @@ impl Component for Sidebar {
                 let row = Row::new(format!("nav.batch.{}", b.id), b.name).glyph(Icon::Layers).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
                 list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(b.hint), row)));
             }
-            for import in m.imports.iter().take(IMPORT_ROWS_MAX) {
-                list = list.child(ImportRow { import: import.clone() });
-            }
-            let more = m.imports.len().saturating_sub(IMPORT_ROWS_MAX);
-            if more > 0 {
-                list = list.child(rect().height(Size::px(frame::ROW)).padding((0., space::S)).main_align(Alignment::Center).child(caption(&t, trf("und %lld weitere", &[&more]))));
-            }
             if can_want(&Want::NewBatch) {
                 list = list.child(new_row(&t, "nav.batch.new", tr("Neuer Batch"), move || {
                     want(store, Want::NewBatch);
                 }));
             }
         }
-        if !m.instances.is_empty() || can_want(&Want::NewInstance) {
+        let installs = store.ui.installs.read().clone();
+        if !m.instances.is_empty() || !installs.is_empty() || can_want(&Want::NewInstance) {
             list = list.child(section(&t, tr("Instanzen")));
             let mut made: Vec<&Instance> = m.instances.iter().collect();
             made.sort_by_cached_key(|i| i.name.to_lowercase());
@@ -309,6 +304,14 @@ impl Component for Sidebar {
                 let picture = crate::view::instance::InstanceIcon { id: i.id.clone(), name: i.name.clone(), picture: i.icon_path(), side: frame::FACE };
                 let row = Row::new(format!("nav.instance.{}", i.id), i.name.clone()).leading(picture).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(instance_items(store, &id), at)));
                 list = list.child(rect().key(&i.id).width(Size::fill()).child(WithTip::new(Some(tip), row)));
+            }
+            for entry in installs.iter().take(IMPORT_ROWS_MAX) {
+                list = list.child(InstallRow { selected: now == Page::Installing(entry.id), entry: entry.clone() });
+            }
+            let more = installs.len().saturating_sub(IMPORT_ROWS_MAX);
+            if let Some(next) = installs.get(IMPORT_ROWS_MAX).map(|i| i.id) {
+                let mut page = store.ui.page;
+                list = list.child(Row::new("nav.install.more", trf("und %lld weitere", &[&more])).glyph(Icon::More).height(frame::ROW).on_press(move |_| page.set(Page::Installing(next))));
             }
             if can_want(&Want::NewInstance) {
                 list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {
@@ -353,42 +356,34 @@ fn new_row(t: &Theme, id: &str, label: String, mut run: impl FnMut() + 'static) 
     Row::new(id, label).leading(icon(t, Icon::Plus, iconsize::S, t.text3)).height(frame::ROW).on_press(move |_| run()).into_element()
 }
 
-struct ImportRow {
-    import: Import,
+#[derive(PartialEq)]
+struct InstallRow {
+    entry: Install,
+    selected: bool,
 }
 
-impl PartialEq for ImportRow {
-    fn eq(&self, other: &Self) -> bool {
-        self.import.id == other.import.id && self.import.name == other.import.name && self.import.percent == other.import.percent && std::sync::Arc::ptr_eq(&self.import.cancel, &other.import.cancel)
-    }
-}
-
-impl Component for ImportRow {
+impl Component for InstallRow {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        let mut asked = use_state(|| false);
-        let flag = self.import.cancel.clone();
-        let stopping = *asked.read() || flag.load(std::sync::atomic::Ordering::SeqCst);
-        let state = if stopping { tr("Bricht ab …") } else { self.import.percent.map_or_else(|| tr("Prüft …"), |p| format!("{p} %")) };
-        let stop = move || {
-            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            if let Some(mut a) = asked.try_write() {
-                *a = true;
-            }
-        };
-        let mut press = stop.clone();
-        let end = rect()
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::XS)
-            .child(count(&t, state, false))
-            .child(Button::icon(format!("nav.import.{}.cancel", self.import.id), Icon::Close, tr("Import abbrechen")).plain().disabled(stopping.then(|| tr("Bricht ab …"))).on_press(move |_| press()));
         let store = use_store();
-        let row = Row::new(format!("nav.import.{}", self.import.id), self.import.name.clone()).leading(icon(&t, Icon::Download, iconsize::S, t.text3)).height(frame::ROW).trailing(end).on_secondary(move |at| {
-            let mut run = stop.clone();
-            menu::open(store.ui, Menu::at(vec![Item::new("import.cancel", tr("Import abbrechen"), move |_| run()).disabled(stopping)], at));
-        });
-        WithTip::new(Some(trf("„%@“ wird als Instanz importiert.", &[&self.import.name])), row)
+        let entry = &self.entry;
+        let id = entry.id;
+        let short = match entry.stage {
+            _ if entry.stopping() => tr("Bricht ab …"),
+            Stage::Queued => tr("Wartet …"),
+            Stage::Running(Some(p)) => format!("{p} %"),
+            Stage::Running(None) | Stage::Failed(_) => String::new(),
+        };
+        let mut page = store.ui.page;
+        let stopping = entry.stopping();
+        let row = Row::new(format!("nav.install.{id}"), entry.name.clone())
+            .leading(install::ring(&t, &entry.stage, iconsize::S))
+            .height(frame::ROW)
+            .selected(self.selected)
+            .trailing(count(&t, short, self.selected))
+            .on_press(move |_| page.set(Page::Installing(id)))
+            .on_secondary(move |at| menu::open(store.ui, Menu::at(vec![Item::new(format!("nav.install.{id}.cancel"), tr("Installation abbrechen"), move |_| install::cancel(store, id)).disabled(stopping)], at)));
+        WithTip::new(Some(entry.state()), row)
     }
 }
 

@@ -65,6 +65,8 @@ impl Component for Shell {
         let content = match page {
             Page::Grid(filter) => GridPage { filter }.into_element(),
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
+            Page::Installing(id) => rect().key(&id.to_string()).width(Size::fill()).height(Size::fill()).child(crate::view::install::InstallPage { id }).into_element(),
+            Page::Modpacks => crate::view::sheets::browser::PacksPage.into_element(),
             Page::Accounts => AccountsPage.into_element(),
             Page::Chat => ChatPage.into_element(),
             Page::Settings => super::settings::SettingsPage.into_element(),
