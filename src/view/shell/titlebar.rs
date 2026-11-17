@@ -151,7 +151,7 @@ impl Component for TitleBar {
             trail_row = trail_row.child(Crumbs { crumb: c, last });
         }
 
-        let mut right = rect().width(Size::flex(1.)).horizontal().cross_align(Alignment::Center).main_align(Alignment::End).spacing(space::S).padding((0., space::S));
+        let mut right = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).main_align(Alignment::End).spacing(space::S).padding((0., space::S));
         right = right.child(Activity);
         right = right.child(Attention);
 
@@ -160,7 +160,7 @@ impl Component for TitleBar {
             start = start.child(Controls { chrome });
         }
         start = start.child(waiting(left, sheet)).child(rect().width(Size::flex(1.)).child(waiting(trail_row, sheet))).content(Content::flex());
-        let mut end = rect().width(Size::flex(1.)).height(Size::fill()).horizontal().cross_align(Alignment::Center).child(waiting(right, sheet));
+        let mut end = rect().width(Size::flex(1.)).height(Size::fill()).horizontal().cross_align(Alignment::Center).child(rect().width(Size::flex(1.)).child(waiting(right, sheet))).content(Content::flex());
         if own && !buttons_left {
             end = end.child(Controls { chrome });
         }

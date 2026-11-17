@@ -340,7 +340,7 @@ mod win {
         if NEXT.load(Ordering::SeqCst) != 0 {
             return;
         }
-        let old = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as usize as isize) };
+        let old = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as *const () as usize as isize) };
         NEXT.store(old, Ordering::SeqCst);
         let margins = MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 1, cyBottomHeight: 0 };
         unsafe {
