@@ -132,11 +132,11 @@ impl Component for LookGroup {
         }
         let shown = *open.read();
         use_focus_return(shown);
-        let card = group(&t, Some(tr("Allgemein")), rows, None);
-        if !shown {
-            return card;
-        }
-        rect().width(Size::fill()).child(card).child(Gallery { library, chosen, dark, appearance, anchor: *anchor.read(), on_close: EventHandler::new(move |_| open.set(false)) }).into_element()
+        rect()
+            .width(Size::fill())
+            .child(group(&t, Some(tr("Allgemein")), rows, None))
+            .maybe_child(shown.then(|| Gallery { library, chosen, dark, appearance, anchor: *anchor.read(), on_close: EventHandler::new(move |_| open.set(false)) }))
+            .into_element()
     }
 }
 

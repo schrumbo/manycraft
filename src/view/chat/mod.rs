@@ -250,6 +250,7 @@ fn set_batch(store: Store, batch: Option<String>) {
     }
     shared.batch.set(batch);
     shared.shown.set(PAGE);
+    shared.top.set(None);
 }
 
 /// Opens the page with the message field focused.
