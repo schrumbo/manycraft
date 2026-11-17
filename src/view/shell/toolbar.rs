@@ -57,7 +57,7 @@ impl Component for Toolbar {
                 let search = ui.search.read();
                 let keys = grid::shown(&m, filter, show, &search);
                 let shelf = if grid::shelf_shown(filter, &search, show, *ui.view.read()) { grid::shelf_running(&m) } else { None };
-                (name, Some(grid::count_line(&m, &keys, shelf)))
+                (name, grid::count_line(&m, &keys, shelf))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
             Page::Installing(id) => ui.installs.read().iter().find(|i| i.id == *id).map_or_else(|| (tr("Instanz"), None), |i| (i.name.clone(), matches!(i.stage, crate::view::install::Stage::Failed(_)).then(|| i.state()))),
@@ -94,7 +94,9 @@ impl Component for Toolbar {
         {
             bar = bar.child(instance::Tabs);
         }
-        if let Page::Grid(filter) = &page {
+        if let Page::Grid(filter) = &page
+            && farm_shown(&m, filter)
+        {
             let view = *ui.view.read();
             let batch = match filter {
                 Filter::Batch(b) => Some(b.clone()),
@@ -180,6 +182,15 @@ impl Component for Toolbar {
             bar = if room >= frame::TOOLBAR_FULL { bar.child(rect().width(Size::px(frame::HERO)).horizontal().main_align(Alignment::End).cross_align(Alignment::Center).child(hero)) } else { bar.child(hero) };
         }
         bar
+    }
+}
+
+/// Whether the grid's tools belong in the toolbar: once the page has games of a batch to size, filter, find and start.
+fn farm_shown(m: &crate::app::model::Model, filter: &Filter) -> bool {
+    match filter {
+        Filter::Attention => true,
+        Filter::All => m.games.values().any(|g| !g.alone()),
+        Filter::Batch(b) => m.games.values().any(|g| g.batch_id == *b),
     }
 }
 

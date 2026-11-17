@@ -15,7 +15,7 @@ use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{ring, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
-use crate::view::ui::{Filter, Page, Show};
+use crate::view::ui::{Filter, Show};
 
 /// Everything the grid page shows above its games for `filter`.
 #[derive(PartialEq)]
@@ -104,9 +104,21 @@ fn run_fix(store: Store, need: Need) {
                 store.dispatch(e);
             }
         }
-        Some((_, Fix::SignIn(_))) => {
-            let mut page = store.ui.page;
-            page.set(Page::Accounts);
+        Some((_, Fix::SignIn(ids))) => crate::view::accounts::sign_in(store, ids),
+        Some((_, Fix::Leave(keys))) => {
+            let groups = {
+                let m = store.model.peek();
+                let mut groups: Vec<(String, Vec<uuid::Uuid>)> = Vec::new();
+                for g in keys.iter().filter_map(|k| m.games.get(k)) {
+                    match groups.iter_mut().find(|(b, _)| *b == g.batch_id) {
+                        Some((_, ids)) => ids.push(g.account_id),
+                        None => groups.push((g.batch_id.clone(), vec![g.account_id])),
+                    }
+                }
+                groups
+            };
+            store.dispatch(AppEvent::Stop(keys));
+            crate::view::accounts::take_out(store, groups);
         }
         None => {}
     }

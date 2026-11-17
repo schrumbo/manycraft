@@ -1,7 +1,10 @@
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use freya::elements::image::ImageHandle;
+use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use super::layout::{self, TWO_LINES};
@@ -221,6 +224,7 @@ impl Component for Tile {
         let mut track = use_state(Track::default);
         super::use_node(&self.key, a11y);
         let preview = use_preview(&self.key);
+        let grayed = use_hook(|| Rc::new(RefCell::new(None::<(u32, ImageHandle)>)));
         let m = store.model.read();
         let Some(game) = m.games.get(&self.key) else {
             return rect().into_element();
@@ -260,7 +264,8 @@ impl Component for Tile {
         let well = mix(t.surface, t.text1, if t.dark { 0.05 } else { 0.1 });
         let mut pic = rect().width(Size::px(w)).height(Size::px(h)).background(well).corner_radius(r).overflow(Overflow::Clip);
         if let Some(handle) = &preview {
-            pic = pic.child(frame_image(handle.clone(), w, h, if attention { DOWN_DIM } else { 1. }));
+            let shown = if stopped { gray_of(&grayed, handle) } else { handle.clone() };
+            pic = pic.child(frame_image(shown, w, h, if attention { DOWN_DIM } else { 1. }));
             if stopped {
                 pic = pic.child(cover(w, h, t.surface.with_af32(t.hidden_dim)));
             }
@@ -315,7 +320,9 @@ impl Component for Tile {
         } else {
             let name = line(&t, self.name.clone(), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
             let mut row = rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(LEAD).child(head).child(name).content(Content::flex());
-            if let Some(c) = signal.filter(|_| !stopped) {
+            if let Some(g) = mark(&game.phase).filter(|_| tinted) {
+                row = row.child(icon(&t, g, iconsize::XS, tone));
+            } else if let Some(c) = signal.filter(|_| !stopped) {
                 row = row.child(dot(c));
             }
             let tip = match &reason {
@@ -484,20 +491,47 @@ fn frame_image(handle: ImageHandle, w: f32, h: f32, opacity: f32) -> impl IntoEl
     image(handle).width(Size::px(w)).height(Size::px(h)).aspect_ratio(AspectRatio::Max).image_cover(ImageCover::Center).opacity(opacity)
 }
 
-fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<Element> {
-    let glyph = match phase {
-        Phase::LoginNeeded => Some((Icon::LogIn, t.text2)),
-        Phase::Banned { .. } => Some((Icon::Ban, t.text2)),
-        Phase::Crashed { .. } => Some((Icon::Crash, t.text2)),
-        Phase::Disconnected { .. } => Some((Icon::Wifi, t.text2)),
-        Phase::Dead { .. } => Some((Icon::Alert, t.text2)),
-        Phase::Failed { .. } => Some((Icon::Alert, t.text2)),
-        Phase::NetworkLost { .. } | Phase::NoNetwork => Some((Icon::Wifi, t.text3)),
-        Phase::ServerAway { .. } => Some((Icon::Clock, t.text3)),
+fn mark(phase: &Phase) -> Option<Icon> {
+    match phase {
+        Phase::LoginNeeded => Some(Icon::LogIn),
+        Phase::Banned { .. } => Some(Icon::Ban),
+        Phase::Crashed { .. } => Some(Icon::Crash),
+        Phase::Disconnected { .. } | Phase::NetworkLost { .. } | Phase::NoNetwork => Some(Icon::Wifi),
+        Phase::Dead { .. } | Phase::Failed { .. } => Some(Icon::Alert),
+        Phase::ServerAway { .. } => Some(Icon::Clock),
         _ => None,
-    };
-    match (glyph, face) {
-        (Some((g, c)), _) => Some(icon(t, g, iconsize::L, c)),
+    }
+}
+
+fn gray_of(cache: &RefCell<Option<(u32, ImageHandle)>>, handle: &ImageHandle) -> ImageHandle {
+    let id = handle.image.unique_id();
+    if let Some((have, gray)) = cache.borrow().as_ref()
+        && *have == id
+    {
+        return gray.clone();
+    }
+    let gray = gray(handle).unwrap_or_else(|| handle.clone());
+    *cache.borrow_mut() = Some((id, gray.clone()));
+    gray
+}
+
+fn gray(handle: &ImageHandle) -> Option<ImageHandle> {
+    let (w, h) = (u32::try_from(handle.image.width()).ok()?, u32::try_from(handle.image.height()).ok()?);
+    if handle.bytes.len() != (w as usize) * (h as usize) * 4 {
+        return None;
+    }
+    let mut px = handle.bytes.to_vec();
+    for p in px.chunks_exact_mut(4) {
+        let y = ((u32::from(p[0]) * 54 + u32::from(p[1]) * 183 + u32::from(p[2]) * 19) >> 8) as u8;
+        p[..3].fill(y);
+    }
+    ImageHandle::from_rgba(w, h, Bytes::from(px), AlphaType::Unpremul)
+}
+
+fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<Element> {
+    let quiet = matches!(phase, Phase::NetworkLost { .. } | Phase::NoNetwork | Phase::ServerAway { .. });
+    match (mark(phase), face) {
+        (Some(g), _) => Some(icon(t, g, iconsize::L, if quiet { t.text3 } else { t.text2 })),
         (None, Some(face)) if *phase != Phase::Stopped => Some(image(face).width(Size::px(space::XXL)).height(Size::px(space::XXL)).opacity(0.5).into_element()),
         _ => None,
     }

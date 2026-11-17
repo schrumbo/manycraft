@@ -222,7 +222,7 @@ impl<P: Pixels> Sim<P> {
                 if self.outage.is_some_and(|(from, to)| (from..to).contains(&(Instant::now() + Duration::from_secs(2)))) {
                     self.at(Duration::from_secs(2), None, server_down(key));
                 } else if self.reconnects.is_multiple_of(4) {
-                    self.at(Duration::from_secs(2), None, state(key, StateKind::Disconnected, Some("Zeitüberschreitung")));
+                    self.at(Duration::from_secs(2), None, state(key, StateKind::Disconnected, Some("Timed out")));
                 } else {
                     self.at(Duration::from_secs(2), None, state(key, StateKind::Playing, None));
                 }
@@ -316,7 +316,7 @@ impl<P: Pixels> Sim<P> {
                 }
                 33 | 34 => {
                     self.at(Duration::ZERO, None, connected(&key));
-                    self.at(Duration::ZERO, None, seed(Phase::Disconnected { server: Some(SERVER.into()), reason: "Zeitüberschreitung".into() }, 3));
+                    self.at(Duration::ZERO, None, seed(Phase::Disconnected { server: Some(SERVER.into()), reason: "Timed out".into() }, 3));
                 }
                 35 => self.at(Duration::ZERO, None, seed(Phase::LoginNeeded, 0)),
                 36 => self.at(Duration::ZERO, None, seed(Phase::Crashed { code: Some(1) }, 0)),

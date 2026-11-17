@@ -82,7 +82,7 @@ pub fn reason(g: &Game, m: &Model) -> Option<String> {
     if let Some(fault) = g.hint.proxy.filter(|_| matches!(g.phase, Phase::Connecting { .. } | Phase::Disconnected { .. })) {
         return Some(proxy_status(fault));
     }
-    let said = |r: &str| Some(r.trim().to_owned()).filter(|r| !r.is_empty());
+    let said = |r: &str| Some(vanilla(r.trim())).filter(|r| !r.is_empty());
     let last = m.history.get(&g.key).and_then(|log| log.back()).filter(|e| e.kind != Kind::Connected);
     match &g.phase {
         Phase::Disconnected { reason, .. } | Phase::Dead { reason, .. } | Phase::Banned { reason, .. } | Phase::Failed { reason } => said(reason),
@@ -95,6 +95,16 @@ pub fn reason(g: &Game, m: &Model) -> Option<String> {
         Phase::LoginNeeded => Some(tr("Anmeldung abgelaufen")),
         Phase::Stopped => last.filter(|e| e.kind == Kind::Banned).and_then(|e| said(&e.reason)),
         _ => None,
+    }
+}
+
+/// The few disconnect reasons the game itself writes in English, in the app's language; a server's own words stay as they are.
+fn vanilla(reason: &str) -> String {
+    match reason {
+        "Timed out" => tr("Zeitüberschreitung"),
+        "Server closed" => tr("Server geschlossen"),
+        "Disconnected" => tr("Getrennt"),
+        other => other.to_owned(),
     }
 }
 
@@ -222,11 +232,13 @@ pub fn need_label(need: Need, count: usize) -> String {
 pub enum Fix {
     /// Hands these events to the core.
     Events(Vec<Event>),
-    /// The accounts need signing in again on the accounts page.
+    /// The accounts need signing in again, one after another.
     SignIn(Vec<Uuid>),
+    /// Stops these games and takes their accounts out of their batches.
+    Leave(Vec<String>),
 }
 
-/// The one action that fixes `need` for all of `keys`, with its label; none for banned accounts or offline sign-ins.
+/// The one action that fixes `need` for all of `keys`, with its label; none for offline sign-ins.
 pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
     let many = keys.len() > 1;
     let pick = |all: &str, one: &str| if many { tr(all) } else { tr(one) };
@@ -245,7 +257,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
         Need::Crashed | Need::Failed => (pick("Alle starten", "Starten"), Fix::Events(vec![Event::StartMany(keys.to_vec())])),
-        Need::Banned => return None,
+        Need::Banned => (tr("Aus Batch nehmen"), Fix::Leave(keys.to_vec())),
     })
 }
 

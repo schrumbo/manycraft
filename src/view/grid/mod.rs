@@ -459,21 +459,23 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
     col.into_element()
 }
 
-/// The word for how many games the page shows, for the toolbar; `shelf` counts the running games played alone on the shelf
-/// above, when the page shows one.
-pub fn count_line(m: &Model, shown: &[String], shelf: Option<usize>) -> String {
+/// How many of the games the page shows run, "47 von 200 laufen", for the toolbar, counted as the sidebar counts them;
+/// `shelf` counts the running games played alone on the shelf above, when the page shows one. None when it shows none.
+pub fn count_line(m: &Model, shown: &[String], shelf: Option<usize>) -> Option<String> {
     let games = || shown.iter().filter_map(|k| m.games.get(k));
-    let keys = shown.len();
-    let running = games().filter(|g: &&Game| g.phase.has_process()).count() + shelf.unwrap_or(0);
+    let total = shown.len() + shelf.unwrap_or(0);
+    if total == 0 {
+        return None;
+    }
+    let running = games().filter(|g: &&Game| g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention()).count() + shelf.unwrap_or(0);
     let attention = games().filter(|g| g.phase.needs_attention()).count();
-    let mut parts = if keys == 0 && shelf.is_some() { Vec::new() } else { vec![if keys == 1 { tr("1 Account") } else { trf("%lld Accounts", &[&keys]) }] };
-    parts.push(if running == 1 { tr("1 läuft") } else { trf("%lld laufen", &[&running]) });
+    let mut parts = vec![trf("%lld von %lld laufen", &[&running, &total])];
     if attention == 1 {
         parts.push(tr("1 braucht dich"));
     } else if attention > 1 {
         parts.push(trf("%lld brauchen dich", &[&attention]));
     }
-    parts.join(" · ")
+    Some(parts.join(" · "))
 }
 
 /// The tile sizes as the toolbar offers them.

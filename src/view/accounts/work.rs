@@ -236,6 +236,43 @@ fn offer_undo(store: Store, removed: Vec<Removed>) {
     }));
 }
 
+/// Takes the accounts of each batch in `groups` out of it, then offers to put them back.
+pub fn take_out(store: Store, groups: Vec<(String, Vec<Uuid>)>) {
+    let n: usize = groups.iter().map(|(_, ids)| ids.len()).sum();
+    let name = match groups.as_slice() {
+        [(batch, _)] => store.model.peek().batch(batch).map(|b| b.name.clone()),
+        _ => None,
+    };
+    let work = groups.clone();
+    off("leave-batch", move || work.iter().try_for_each(|(batch, ids)| remote::leave_batch(batch, ids)), move |result| {
+        store.reload(true);
+        match result {
+            Ok(()) => {
+                let text = match (n, name) {
+                    (1, Some(name)) => trf("1 Account aus „%@“ genommen", &[&name]),
+                    (n, Some(name)) => trf("%1$lld Accounts aus „%2$@“ genommen", &[&n, &name]),
+                    (1, None) => tr("1 Account aus seinem Batch genommen"),
+                    (n, None) => trf("%lld Accounts aus ihren Batches genommen", &[&n]),
+                };
+                let back = Rc::new(RefCell::new(Some(groups)));
+                let id = toast::show(store.ui, text, Some(EventHandler::new(move |_| {
+                    let Some(groups) = back.borrow_mut().take() else { return };
+                    off("join-batch", move || groups.iter().try_for_each(|(batch, ids)| remote::join_batch(batch, ids).map(|_| ())), move |result| {
+                        if let Err(e) = result {
+                            toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht wieder aufgenommen."), &e).text, None);
+                        }
+                        store.reload(true);
+                    });
+                })));
+                crate::view::commands::name_undo(store, id, tr("Aus Batch nehmen"));
+            }
+            Err(e) => {
+                toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht herausgenommen."), &e).text, None);
+            }
+        }
+    });
+}
+
 /// Adds the accounts of `ids` to batch `batch`, then offers to take them out again.
 pub fn add_to_batch(store: Store, batch: String, ids: Vec<Uuid>) {
     let name = store.model.peek().batch(&batch).map(|b| b.name.clone()).unwrap_or_default();

@@ -5,6 +5,8 @@ mod list;
 mod table;
 mod work;
 
+pub(crate) use work::take_out;
+
 use std::collections::BTreeSet;
 use std::time::Instant;
 

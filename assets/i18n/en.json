@@ -1935,5 +1935,14 @@
   "Server weg · verbindet sich wieder, sobald er antwortet": "Server down · reconnects as soon as it answers",
   "Wartet auf Server": "Waiting for server",
   "1 wartet, verbindet sich von selbst": "1 waiting, reconnects on its own",
-  "%lld warten, verbinden sich von selbst": "%lld waiting, reconnect on their own"
+  "%lld warten, verbinden sich von selbst": "%lld waiting, reconnect on their own",
+  "Aus Batch nehmen": "Remove from batch",
+  "1 Account aus „%@“ genommen": "Removed 1 account from “%@”",
+  "%1$lld Accounts aus „%2$@“ genommen": "Removed %1$lld accounts from “%2$@”",
+  "1 Account aus seinem Batch genommen": "Removed 1 account from its batch",
+  "%lld Accounts aus ihren Batches genommen": "Removed %lld accounts from their batches",
+  "Die Accounts wurden nicht wieder aufgenommen.": "The accounts weren't added back.",
+  "Die Accounts wurden nicht herausgenommen.": "The accounts weren't removed.",
+  "Zeitüberschreitung": "Timed out",
+  "Server geschlossen": "Server closed"
 }

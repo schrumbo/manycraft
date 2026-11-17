@@ -1,7 +1,8 @@
-//! Toasts: a short note at the bottom of the window, with Rückgängig for what can be undone. At most three at once.
+//! Toasts: a short note at the bottom of the window, with Rückgängig for what can be undone. At most three at once; a toast
+//! under the pointer stays.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use freya::prelude::*;
 
@@ -14,7 +15,9 @@ use crate::view::theme::{font, frame, level, iconsize, space};
 use crate::view::ui::Ui;
 
 const PLAIN: Duration = Duration::from_secs(4);
-const UNDOABLE: Duration = Duration::from_secs(8);
+const UNDOABLE: Duration = Duration::from_secs(10);
+const GRACE: Duration = Duration::from_secs(3);
+const HELD: Duration = Duration::from_millis(500);
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -28,43 +31,61 @@ pub struct Toast {
     pub action: Option<(String, EventHandler<()>)>,
     /// Stays when newer toasts push out older ones, for undoing what is hard to get back.
     pub keep: bool,
+    held: bool,
+    until: Instant,
 }
 
 /// Shows `text`; with `undo`, Rückgängig and Strg+Z take the change back while the toast is up.
 pub fn show(ui: Ui, text: impl Into<String>, undo: Option<EventHandler<()>>) -> u64 {
-    add(ui, text.into(), undo, false)
+    push(ui, text.into(), undo, None, false)
 }
 
 /// Shows `text` with an `undo` that newer toasts never push out, for deletions and resets.
 pub fn show_kept(ui: Ui, text: impl Into<String>, undo: EventHandler<()>) -> u64 {
-    add(ui, text.into(), Some(undo), true)
+    push(ui, text.into(), Some(undo), None, true)
 }
 
 /// Shows `text` with a button `label` that runs `run` and closes the toast.
 pub fn show_action(ui: Ui, text: impl Into<String>, label: impl Into<String>, run: EventHandler<()>) -> u64 {
-    push(ui, Toast { id: NEXT.fetch_add(1, Ordering::Relaxed), text: text.into(), undo: None, action: Some((label.into(), run)), keep: false })
+    push(ui, text.into(), None, Some((label.into(), run)), false)
 }
 
-fn add(ui: Ui, text: String, undo: Option<EventHandler<()>>, keep: bool) -> u64 {
-    push(ui, Toast { id: NEXT.fetch_add(1, Ordering::Relaxed), text, undo, action: None, keep })
-}
-
-fn push(mut ui: Ui, toast: Toast) -> u64 {
-    let id = toast.id;
-    let wait = if toast.undo.is_some() || toast.action.is_some() { UNDOABLE } else { PLAIN };
+fn push(mut ui: Ui, text: String, undo: Option<EventHandler<()>>, action: Option<(String, EventHandler<()>)>, keep: bool) -> u64 {
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let until = Instant::now() + if undo.is_some() || action.is_some() { UNDOABLE } else { PLAIN };
     {
         let mut toasts = ui.toasts.write();
-        toasts.push(toast);
+        toasts.push(Toast { id, text, undo, action, keep, held: false, until });
         while toasts.len() > frame::TOASTS {
             let Some(oldest) = toasts.iter().position(|t| !t.keep) else { break };
             toasts.remove(oldest);
         }
     }
     spawn_in_window(async move {
-        after(wait).await;
-        dismiss(ui, id);
+        loop {
+            let Some((held, until)) = ui.toasts.peek().iter().find(|t| t.id == id).map(|t| (t.held, t.until)) else { return };
+            let now = Instant::now();
+            if !held && now >= until {
+                dismiss(ui, id);
+                return;
+            }
+            after(if held { HELD } else { until - now }).await;
+        }
     });
     id
+}
+
+fn hold(mut ui: Ui, id: u64, held: bool) {
+    if !ui.toasts.peek().iter().any(|t| t.id == id && t.held != held) {
+        return;
+    }
+    let mut toasts = ui.toasts.write();
+    if let Some(t) = toasts.iter_mut().find(|t| t.id == id) {
+        t.held = held;
+        if !held {
+            t.until = t.until.max(Instant::now() + GRACE);
+        }
+    }
 }
 
 /// Removes toast `id`.
@@ -110,6 +131,8 @@ impl Component for Host {
                 .background(t.raised)
                 .corner_radius(t.shape.control + 2.)
                 .shadow(t.elevation.float.clone())
+                .on_pointer_enter(move |_| hold(ui, id, true))
+                .on_pointer_leave(move |_| hold(ui, id, false))
                 .child(super::at_least(40. - space::XS * 2., line(&t, toast.text.clone(), font::BODY, t.text1)))
                 .child(spacer())
                 .content(Content::flex());
