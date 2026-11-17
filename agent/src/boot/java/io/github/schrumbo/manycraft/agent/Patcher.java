@@ -264,7 +264,7 @@ final class Patcher implements ClassFileTransformer {
 			}
 		}
 		if (!optional.isEmpty()) {
-			Agent.log("optional hooks not found in " + name + ": " + String.join(", ", optional));
+			Agent.log("optional hooks absent in " + name + ": " + String.join(", ", optional));
 		}
 		if (!missing.isEmpty()) {
 			Agent.log("hooks not found in " + name + ": " + String.join(", ", missing));

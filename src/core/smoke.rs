@@ -501,6 +501,7 @@ mod tests {
         let log = "[manycraft-agent] hooks not found in net/minecraft/client/Options: save (options)\nfine\n[x/WARN]: Hud has none of a, b, the companion leaves it alone\n";
         assert_eq!(faults(log).len(), 2);
         assert!(faults("[manycraft-agent] patched 17 features").is_empty());
+        assert!(faults("[manycraft-agent] optional hooks absent in net/minecraft/client/gui/Gui: extractRenderState (hud)").is_empty());
     }
 
     #[test]
