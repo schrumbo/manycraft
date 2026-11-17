@@ -220,7 +220,7 @@ pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
         Page::Instance(id) => Some((winstate::Page::Instance, Some(id.clone()))),
         Page::Accounts => Some((winstate::Page::Accounts, None)),
         Page::Chat => Some((winstate::Page::Chat, None)),
-        Page::Settings => None,
+        Page::Settings | Page::Installing(_) | Page::Modpacks => None,
     }
 }
 
