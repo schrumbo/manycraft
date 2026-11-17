@@ -334,6 +334,7 @@ impl Component for Shots {
             });
         });
 
+        let _ = width.read();
         let chosen = grid.current().is_some();
         let mut extras = Vec::new();
         if chosen {
