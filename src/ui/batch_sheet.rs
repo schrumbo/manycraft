@@ -664,8 +664,8 @@ impl BatchSheet {
     }
 
     fn render_speed(&self, running: bool, cx: &mut Context<Self>, t: &Theme) -> Div {
-        let label = tr("Volle Leistung beim Spielen (mehr Arbeitsspeicher)");
-        let hint = tr("Sonst brauchen Spiele im Hintergrund weniger Arbeitsspeicher, laufen beim Spielen aber langsamer.");
+        let label = tr("Schneller beim Spielen (mehr Arbeitsspeicher)");
+        let hint = tr("Spiele im Hintergrund brauchen dann mehr Arbeitsspeicher.");
         let hint = if running { format!("{hint} {}", tr("Gilt beim nächsten Start.")) } else { hint };
         let toggle = |s: &mut Self, cx: &mut Context<Self>| {
             if s.saving {
