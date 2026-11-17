@@ -233,7 +233,13 @@ impl Component for Sidebar {
         let up = store.ui.instance.up.read().clone();
         let m = store.model.read();
         let attention = m.attention_count(None);
-        let go = move |to: Page| move |_| page.set(to.clone());
+        let mut drawer = store.ui.drawer;
+        let go = move |to: Page| {
+            move |_| {
+                drawer.set_if_modified(false);
+                page.set(to.clone());
+            }
+        };
 
         let mut top = rect().width(Size::fill()).spacing(1.);
         top = top.child(Row::new("nav.all", tr("Alle")).glyph(Icon::Grid).height(frame::ROW).selected(now == Page::Grid(Filter::All)).trailing(count(&t, m.games.values().filter(|g| !g.alone()).count().to_string(), now == Page::Grid(Filter::All))).on_press(go(Page::Grid(Filter::All))));

@@ -29,9 +29,7 @@ struct Entry {
     glyph: Icon,
     shortcut: Option<String>,
     target: Target,
-    /// The instance whose actions Tab or → opens.
     actions: Option<String>,
-    /// Why the entry cannot run now; shown in place of its shortcut.
     off: Option<String>,
 }
 
@@ -156,6 +154,7 @@ impl Component for Palette {
         let query = use_state(String::new);
         let mut hot = use_state(|| 0usize);
         let mut drill = use_state(|| None::<(String, String)>);
+        let back = use_state(|| (String::new(), 0usize));
         let open = *ui.palette.read();
         crate::view::kit::use_focus_return(open);
         let mut q = query;
@@ -180,15 +179,17 @@ impl Component for Palette {
         let keys_list = list.clone();
         let (w, h) = *ui.window.read();
         let enter = move |id: String, name: String| {
-            let (mut q, mut hot, mut drill) = (q, hot, drill);
+            let (mut q, mut hot, mut drill, mut back) = (q, hot, drill, back);
+            back.set((q.peek().clone(), *hot.peek()));
             q.set(String::new());
             hot.set(0);
             drill.set(Some((id, name)));
         };
         let leave = move || {
             let (mut q, mut hot, mut drill) = (q, hot, drill);
-            q.set(String::new());
-            hot.set(0);
+            let (query, row) = back.peek().clone();
+            q.set(query);
+            hot.set(row);
             drill.set(None);
         };
         let rows = list.iter().enumerate().skip(first).take(frame::PALETTE_ROWS).map(|(i, e)| {
@@ -205,7 +206,7 @@ impl Component for Palette {
             Some((_, name)) => trf("Aktionen für %@", &[name]),
             None => tr("Befehl, Instanz, Account oder Batch"),
         };
-        let mut head = rect().width(Size::fill()).padding(space::S).horizontal().cross_align(Alignment::Center).spacing(space::XS).content(Content::flex());
+        let mut head = rect().width(Size::fill()).padding(space::S).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex());
         if let Some((_, name)) = &inside {
             head = head
                 .child(Button::icon("palette.back", Icon::ChevronLeft, tr("Zurück")).plain().tip(format!("{} (←)", tr("Zurück"))).on_press(move |_| leave()))
@@ -218,7 +219,12 @@ impl Component for Palette {
             let shift = modifiers.contains(Modifiers::SHIFT);
             match key {
                 Key::Named(NamedKey::Tab) if shift && drilled => leave(),
-                Key::Named(NamedKey::Tab | NamedKey::ArrowRight) if !shift && modifiers.is_empty() && into.is_some() => {
+                Key::Named(NamedKey::Tab) if modifiers.is_empty() && into.is_some() => {
+                    if let Some((id, name)) = into.clone() {
+                        enter(id, name);
+                    }
+                }
+                Key::Named(NamedKey::ArrowRight) if modifiers.is_empty() && empty_query && into.is_some() => {
                     if let Some((id, name)) = into.clone() {
                         enter(id, name);
                     }
@@ -255,7 +261,13 @@ impl Component for Palette {
                     Key::Named(NamedKey::ArrowUp) => hot.set(chosen.saturating_sub(1)),
                     Key::Named(NamedKey::Tab) if shift && drilled => leave(),
                     Key::Named(NamedKey::Tab) if shift => hot.set(chosen.saturating_sub(1)),
-                    Key::Named(NamedKey::Tab | NamedKey::ArrowRight) if into.is_some() => {
+                    Key::Named(NamedKey::Tab) if e.modifiers.is_empty() && into.is_some() => {
+                        e.prevent_default();
+                        if let Some((id, name)) = into {
+                            enter(id, name);
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowRight) if e.modifiers.is_empty() && empty_query && into.is_some() => {
                         e.prevent_default();
                         if let Some((id, name)) = into {
                             enter(id, name);
@@ -346,6 +358,7 @@ impl Component for PaletteRow {
                 .height(Size::px(control::S))
                 .center()
                 .corner_radius(t.shape.small)
+                .cursor(CursorIcon::Pointer)
                 .on_press(move |e: Event<PressEventData>| {
                     e.stop_propagation();
                     open.call(());

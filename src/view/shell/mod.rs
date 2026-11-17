@@ -34,18 +34,25 @@ impl Component for Shell {
         let t = use_theme();
         let store = use_store();
         let mut ui = store.ui;
+        crate::view::kit::use_focus_return(*ui.drawer.read() && !*ui.sidebar.read());
         let page = ui.page.read().clone();
-        let missing = {
+        let mut seen = use_state(|| None::<Page>);
+        let mut booted = use_state(|| false);
+        let found = {
             let m = store.model.read();
-            m.loaded
-                && match &page {
-                    Page::Grid(Filter::Batch(b)) => m.batch(b).is_none(),
-                    Page::Instance(id) => m.instance(id).is_none(),
-                    _ => false,
-                }
+            m.loaded.then(|| match &page {
+                Page::Grid(Filter::Batch(b)) => m.batch(b).is_some(),
+                Page::Instance(id) => m.instance(id).is_some(),
+                _ => true,
+            })
         };
-        use_side_effect_with_deps(&missing, move |missing| {
-            if *missing {
+        use_side_effect_with_deps(&(page.clone(), found), move |(page, found)| {
+            let Some(found) = *found else { return };
+            let first = !*booted.peek();
+            booted.set_if_modified(true);
+            if found {
+                seen.set_if_modified(Some(page.clone()));
+            } else if first || seen.peek().as_ref() == Some(page) {
                 ui.page.set(Page::Grid(Filter::All));
             }
         });
@@ -110,6 +117,9 @@ fn drawer(t: &super::theme::Theme, ui: super::ui::Ui) -> Element {
     rect()
         .position(Position::new_global().left(0.).top(0.))
         .layer(Layer::OverlayLevel(level::DRAWER))
+        .a11y_role(AccessibilityRole::Dialog)
+        .a11y_alt(tr("Seitenleiste"))
+        .a11y_builder(|n| n.set_modal())
         .width(Size::px(w))
         .height(Size::px(h))
         .horizontal()
@@ -119,9 +129,30 @@ fn drawer(t: &super::theme::Theme, ui: super::ui::Ui) -> Element {
         .into_element()
 }
 
+type Kept = (Option<(winstate::Page, Option<String>)>, bool);
+
 fn remember(page: &Page, sidebar: bool) {
+    static WRITER: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Kept>>> = std::sync::OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Kept>();
+        std::thread::spawn(move || {
+            while let Ok(mut next) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    next = newer;
+                }
+                write_kept(next);
+            }
+        });
+        std::sync::Mutex::new(tx)
+    });
+    if let Ok(tx) = writer.lock() {
+        let _ = tx.send((super::ui::kept(page), sidebar));
+    }
+}
+
+fn write_kept((kept, sidebar): Kept) {
     let mut saved = winstate::load();
-    let (kind, batch) = super::ui::kept(page).unwrap_or_else(|| (saved.page, saved.batch.clone()));
+    let (kind, batch) = kept.unwrap_or_else(|| (saved.page, saved.batch.clone()));
     if (saved.page, &saved.batch, saved.sidebar) == (kind, &batch, sidebar) {
         return;
     }

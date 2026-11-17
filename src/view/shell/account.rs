@@ -51,11 +51,11 @@ pub fn open(store: Store, anchor: Bounds) {
     menu::open(store.ui, if many { menu.searchable(tr("Account suchen")) } else { menu });
 }
 
-/// Opens the account switcher where the sidebar shows the active account, or under the toolbar while the sidebar is
-/// hidden or not laid out yet.
+/// Opens the account switcher where the sidebar or its drawer shows the active account, or under the toolbar while
+/// neither is shown or laid out yet.
 pub fn open_from_keys(store: Store) {
     let at = *store.ui.account_at.peek();
-    let anchor = match at.filter(|_| *store.ui.sidebar.peek()) {
+    let anchor = match at.filter(|_| *store.ui.sidebar.peek() || *store.ui.drawer.peek()) {
         Some(b) => b,
         None => {
             let w = store.ui.window.peek().0;

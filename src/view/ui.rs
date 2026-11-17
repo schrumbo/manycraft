@@ -169,7 +169,6 @@ impl Ui {
         }
     }
 
-    /// Whether a layer above the content takes the keyboard: a sheet, the palette or a menu.
     /// Whether the window is too narrow for the sidebar's column.
     pub fn narrow(&self) -> bool {
         self.window.peek().0 < frame::SIDEBAR_FOLD
@@ -197,6 +196,7 @@ impl Ui {
         }
     }
 
+    /// Whether a layer above the content takes the keyboard: a sheet, the palette or a menu.
     pub fn layered(&self) -> bool {
         self.sheet.peek().is_some() || *self.palette.peek() || self.menu.peek().is_some()
     }

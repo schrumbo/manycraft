@@ -21,7 +21,7 @@ use super::kit::segmented::{Segment, Segmented};
 use super::kit::text::{caption, heading, line, para, secondary, spacer, strong};
 use super::kit::{Bounds, at_least, held, use_theme};
 use super::store::{Store, use_store};
-use super::theme::{Theme, font, frame, iconsize, space};
+use super::theme::{Theme, font, frame, iconsize, level, space};
 use super::ui::Page;
 use crate::app::model::{Game, Model, Phase, rank, status, stopped_ban};
 use crate::core::account::{Account, AccountKind, COLORS};
@@ -573,7 +573,7 @@ impl Component for AccountsPage {
             if !wide {
                 floating = floating.max_width(Size::px(PAGE_MAX));
             }
-            page = page.child(rect().position(Position::new_absolute().left(0.).bottom(space::L)).width(Size::fill()).padding((0., pad)).cross_align(Alignment::Center).child(floating));
+            page = page.child(rect().position(Position::new_absolute().left(0.).bottom(space::L)).layer(Layer::Relative(level::FLOAT)).width(Size::fill()).padding((0., pad)).cross_align(Alignment::Center).child(floating));
         }
         page.into_element()
     }

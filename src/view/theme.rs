@@ -14,6 +14,8 @@ pub mod level {
     pub const MENU: u8 = 4;
     pub const TOAST: u8 = 5;
     pub const TIP: u8 = 6;
+    /// Lifts a bar that floats over the page above page content of any depth, still under every overlay level.
+    pub const FLOAT: i16 = 512;
 }
 
 /// Fixed sizes of the window's frame around the content.

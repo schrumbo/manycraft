@@ -16,7 +16,8 @@ use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
 /// Whether the grid of all still greets: before the first account, the first instance or the first game played alone.
 pub fn due(m: &Model) -> bool {
-    m.loaded && m.batches.is_empty() && (m.accounts.is_empty() || m.instances.is_empty() || !m.games.values().any(|g| g.alone()))
+    let played = m.games.values().any(|g| g.alone()) || m.instances.iter().any(|i| i.last_account.is_some());
+    m.loaded && m.batches.is_empty() && (m.accounts.is_empty() || m.instances.is_empty() || !played)
 }
 
 /// The welcome card with the steps Account hinzufügen, Instanz erstellen and Spielen.
@@ -85,14 +86,11 @@ impl Component for Welcome {
         if any {
             card = card.child(extra);
         }
-        rect()
-            .width(Size::fill())
-            .height(Size::fill())
-            .center()
-            .padding(space::L)
-            .spacing(space::M)
-            .child(card)
-            .child(caption(&t, tr("Prüfe die Regeln deines Servers, bevor du mehrere Accounts nutzt.")))
+        let mut page = rect().width(Size::fill()).height(Size::fill()).center().padding(space::L).spacing(space::M).child(card);
+        if next == 2 {
+            page = page.child(caption(&t, tr("Prüfe die Regeln deines Servers, bevor du mehrere Accounts nutzt.")));
+        }
+        page
     }
 }
 
@@ -105,6 +103,8 @@ fn step(t: &Theme, index: usize, (done, now): (bool, bool), label: String, actio
     } else {
         mark.border(Border::new().fill(t.separator).width(frame::BOX_EDGE).alignment(BorderAlignment::Inner)).child(line(t, (index + 1).to_string(), font::CALLOUT, t.text3))
     };
+    let state = if done { tr("Erledigt") } else if now { tr("Als Nächstes") } else { tr("Später") };
+    let alt = format!("{label} · {state}");
     let text = if done {
         secondary(t, label).width(Size::flex(1.))
     } else if now {
@@ -112,10 +112,9 @@ fn step(t: &Theme, index: usize, (done, now): (bool, bool), label: String, actio
     } else {
         line(t, label, font::BODY, t.text3).width(Size::flex(1.))
     };
-    let state = if done { tr("Erledigt") } else if now { tr("Als Nächstes") } else { tr("Später") };
     let mut row = rect()
         .a11y_role(AccessibilityRole::ListItem)
-        .a11y_alt(format!("{} · {state}", text_of(index)))
+        .a11y_alt(alt)
         .width(Size::fill())
         .height(Size::px(control::L))
         .horizontal()
@@ -128,12 +127,4 @@ fn step(t: &Theme, index: usize, (done, now): (bool, bool), label: String, actio
         row = row.child(a);
     }
     row.into_element()
-}
-
-fn text_of(index: usize) -> String {
-    match index {
-        0 => tr("Account hinzufügen"),
-        1 => tr("Instanz erstellen"),
-        _ => tr("Spielen"),
-    }
 }
