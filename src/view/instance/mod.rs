@@ -7,6 +7,7 @@ mod logs;
 mod logs_lines;
 mod logs_viewer;
 mod mods;
+mod packlist;
 mod play;
 mod shots;
 mod shots_parts;
@@ -40,15 +41,20 @@ use crate::app::event::Event;
 use crate::app::model::{Game, Model};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
+use crate::core::modrinth::Kind;
 
 const SPLIT: f32 = frame::INSPECTOR_SPLIT;
 const INSPECTOR: f32 = frame::INSPECTOR;
 const CONTENT_MAX: f32 = frame::CONTENT_MAX;
 
+const TAB_DIGITS: [Code; 7] = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5, Code::Digit6, Code::Digit7];
+
 /// The tabs of the instance page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Mods,
+    Packs,
+    Shaders,
     Worlds,
     Shots,
     Logs,
@@ -56,12 +62,17 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Mods, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings];
+    /// The tabs of an instance in order; shader packs need a loader that takes mods.
+    pub fn shown(takes_mods: bool) -> Vec<Tab> {
+        [Tab::Mods, Tab::Packs, Tab::Shaders, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings].into_iter().filter(|t| takes_mods || *t != Tab::Shaders).collect()
+    }
 
     /// The id the drive tool and spots use.
     pub fn key(self) -> &'static str {
         match self {
             Tab::Mods => "mods",
+            Tab::Packs => "resourcepacks",
+            Tab::Shaders => "shaders",
             Tab::Worlds => "worlds",
             Tab::Shots => "screenshots",
             Tab::Logs => "logs",
@@ -72,6 +83,8 @@ impl Tab {
     pub fn label(self) -> String {
         match self {
             Tab::Mods => tr("Mods"),
+            Tab::Packs => tr("Ressourcenpakete"),
+            Tab::Shaders => tr("Shader"),
             Tab::Worlds => tr("Welten"),
             Tab::Shots => tr("Screenshots"),
             Tab::Logs => tr("Protokolle"),
@@ -82,6 +95,8 @@ impl Tab {
     fn glyph(self) -> Icon {
         match self {
             Tab::Mods => Icon::Layers,
+            Tab::Packs => Icon::Palette,
+            Tab::Shaders => Icon::Sparkles,
             Tab::Worlds => Icon::Grid,
             Tab::Shots => Icon::Fit,
             Tab::Logs => Icon::Rows,
@@ -365,6 +380,8 @@ impl Component for InstancePage {
 fn tab_entry(tab: Tab, name: &str) -> String {
     match tab {
         Tab::Mods => trf("Mods von %@", &[&name]),
+        Tab::Packs => trf("Ressourcenpakete von %@", &[&name]),
+        Tab::Shaders => trf("Shader von %@", &[&name]),
         Tab::Worlds => trf("Welten von %@", &[&name]),
         Tab::Shots => trf("Screenshots von %@", &[&name]),
         Tab::Logs => trf("Protokolle von %@", &[&name]),
@@ -388,6 +405,8 @@ fn tab_body(t: &super::theme::Theme, store: Store, tab: Tab, f: Facts) -> Elemen
                 .into_element()
         }
         Tab::Mods => mods::Mods { facts: f }.into_element(),
+        Tab::Packs => packlist::Packs { facts: f, kind: Kind::ResourcePack }.into_element(),
+        Tab::Shaders => packlist::Packs { facts: f, kind: Kind::Shader }.into_element(),
         Tab::Worlds => worlds::Worlds { facts: f }.into_element(),
         Tab::Shots => shots::Shots { facts: f }.into_element(),
         Tab::Logs => logs::Logs { facts: f }.into_element(),
@@ -426,10 +445,8 @@ fn gone(t: &super::theme::Theme, store: Store, loaded: bool) -> impl IntoElement
 pub fn shown_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
     let nav = store.ui.instance;
     let now = *nav.tab.read();
-    if nav.tab_for.read().as_deref() == Some(id) {
-        return now;
-    }
-    nav.tabs.peek().get(id).copied().unwrap_or(if takes_mods { Tab::Mods } else { Tab::Worlds })
+    let tab = if nav.tab_for.read().as_deref() == Some(id) { now } else { nav.tabs.peek().get(id).copied().unwrap_or(if takes_mods { Tab::Mods } else { Tab::Worlds }) };
+    if tab == Tab::Shaders && !takes_mods { Tab::Worlds } else { tab }
 }
 
 fn use_remembered_tab(store: Store, id: &str, takes_mods: bool) -> Tab {
@@ -479,9 +496,9 @@ pub fn extras(store: Store) -> Vec<Extra> {
     let mut push = |key: &str, label: String, glyph: Icon, shortcut: Option<Shortcut>, run: EventHandler<()>| {
         list.push(Extra { id: format!("instance.{key}"), label, glyph, shortcut, run });
     };
-    for (n, tab) in Tab::ALL.into_iter().enumerate() {
+    for (n, tab) in Tab::shown(f.made.loader.takes_mods()).into_iter().enumerate() {
         let mut nav = store.ui.instance.tab;
-        let code = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5][n];
+        let code = TAB_DIGITS[n];
         push(&format!("tab.{}", tab.key()), tab_entry(tab, &name), tab.glyph(), Some(Shortcut::alt(code)), EventHandler::new(move |_| nav.set(tab)));
     }
     let rename_id = id.clone();

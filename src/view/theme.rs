@@ -74,6 +74,12 @@ pub mod frame {
     pub const CONTENT_MAX: f32 = 760.;
     /// The width of the welcome card on the first run.
     pub const WELCOME: f32 = 440.;
+    /// The width of the welcome card of the Start page.
+    pub const START_WELCOME: f32 = 640.;
+    /// The side of the instance picture in the hero of the Start page.
+    pub const HERO_FACE: f32 = 72.;
+    /// The width of the version select of Schnell spielen.
+    pub const QUICK_SELECT: f32 = 160.;
     /// The widest the Start page gets.
     pub const START: f32 = 1120.;
     pub const TOAST: f32 = 420.;

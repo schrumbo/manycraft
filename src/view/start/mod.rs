@@ -28,8 +28,6 @@ use crate::view::theme::{Theme, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
 const RECENT_MAX: usize = 8;
-const FACE: f32 = 72.;
-const WELCOME_W: f32 = 640.;
 
 /// The instances played, newest first, at most `limit`.
 pub fn recent<'a>(list: &'a [Instance], infos: &Infos, limit: usize) -> Vec<&'a Instance> {
@@ -70,16 +68,15 @@ fn status(f: &Facts, played: Option<SystemTime>) -> (Tone, String) {
     if f.accounts.is_empty() {
         return (Tone::Attention, tr("Füge zuerst einen Account hinzu."));
     }
-    if f.none_free() {
-        let places = places(f);
-        let text = if places.is_empty() { tr("Alle Accounts spielen diese Instanz gerade.") } else { trf("Alle Accounts spielen gerade im Batch „%@“.", &[&places.join("“, „")]) };
-        return (Tone::Attention, text);
-    }
     if f.stopping.is_some() {
         return (Tone::Calm, tr("Wird gestoppt…"));
     }
     if !f.stoppable.is_empty() {
         return (Tone::Live, tr("Läuft"));
+    }
+    if f.none_free() {
+        let places = places(f);
+        return (Tone::Attention, trf("Alle Accounts spielen gerade im Batch „%@“.", &[&places.join("“, „")]));
     }
     if let Some(who) = f.pick.filter(|a| f.expired.contains(a)).and_then(|a| f.name_of(a)) {
         return (Tone::Attention, trf("Die Anmeldung von %@ ist abgelaufen.", &[&who]));
@@ -194,14 +191,14 @@ impl Component for ResumeCard {
         }
         note = note.child(line(&t, text, font::CALLOUT, ink).max_lines(2));
         let mut actions = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
-        if let Some(f) = f.as_ref().filter(|f| f.none_free()) {
+        if let Some(f) = f.as_ref().filter(|f| f.none_free() && f.stoppable.is_empty()) {
             let batch = places(f).first().and_then(|place| f.batches.iter().find(|(_, name)| name == place)).map(|(id, _)| id.clone());
             if let Some(batch) = batch {
                 actions = actions.child(Button::new("start.batch.open", tr("Zum Batch")).tall().on_press(move |_| go(store, Page::Grid(Filter::Batch(batch.clone())))));
             }
         }
         let id = self.id.clone();
-        actions = actions.child(Button::new("start.open", tr("Instanz öffnen")).tall().on_press(move |_| go(store, Page::Instance(id.clone())))).child(Hero { id: self.id.clone(), room: self.room - FACE * 2. });
+        actions = actions.child(Button::new("start.open", tr("Instanz öffnen")).tall().on_press(move |_| go(store, Page::Instance(id.clone())))).child(Hero { id: self.id.clone(), room: self.room - frame::HERO_FACE * 2. });
         rect()
             .width(Size::fill())
             .padding(space::L)
@@ -210,7 +207,7 @@ impl Component for ResumeCard {
             .cross_align(Alignment::Center)
             .background(t.raised)
             .corner_radius(t.shape.tile)
-            .child(InstanceIcon { id: self.id.clone(), name: self.name.clone(), picture: self.picture.clone(), side: FACE })
+            .child(InstanceIcon { id: self.id.clone(), name: self.name.clone(), picture: self.picture.clone(), side: frame::HERO_FACE })
             .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(heading(&t, self.name.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis)).child(secondary(&t, self.what.clone())).child(note))
             .content(Content::flex())
             .child(actions)
@@ -346,7 +343,7 @@ impl Component for Welcome {
         }
         let mut card = rect()
             .width(Size::fill())
-            .max_width(Size::px(WELCOME_W))
+            .max_width(Size::px(frame::START_WELCOME))
             .padding(space::XL)
             .spacing(space::M)
             .background(t.raised)

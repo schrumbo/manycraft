@@ -2125,5 +2125,18 @@
   "Minecraft %@ ohne Mods starten": "Start Minecraft %@ without mods",
   "Wird angelegt …": "Creating…",
   "Die Instanz wird angelegt.": "The instance is being created.",
-  "%@ mit %lld Instanzen gefunden": "%@ with %lld instances found"
+  "%@ mit %lld Instanzen gefunden": "%@ with %lld instances found",
+  "Ressourcenpakete von %@": "Resource packs of %@",
+  "Shader von %@": "Shaders of %@",
+  "„%@“ wurde nicht entfernt.": "“%@” was not removed.",
+  "„%@“ wurde nicht umgeschaltet.": "“%@” was not switched.",
+  "Noch keine Shader": "No shaders yet",
+  "Shader ändern das Licht und die Schatten im Spiel.": "Shaders change the light and shadows in the game.",
+  "Noch keine Ressourcenpakete": "No resource packs yet",
+  "Ressourcenpakete ändern, wie das Spiel aussieht und klingt.": "Resource packs change how the game looks and sounds.",
+  "%lld installiert": "%lld installed",
+  "Shader brauchen %@. Ohne laden sie nicht.": "Shaders need %@. They do not load without it.",
+  "%@ hinzufügen…": "Add %@…",
+  "%@ einschalten": "Turn on %@",
+  "Ordner": "Folder"
 }
