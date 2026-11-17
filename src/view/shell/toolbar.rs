@@ -60,6 +60,8 @@ impl Component for Toolbar {
                 (name, Some(grid::count_line(&m, &keys, shelf)))
             }
             Page::Instance(id) => (m.instance(id).map_or_else(|| tr("Instanz"), |i| i.name.clone()), None),
+            Page::Installing(id) => ui.installs.read().iter().find(|i| i.id == *id).map_or_else(|| (tr("Instanz"), None), |i| (i.name.clone(), matches!(i.stage, crate::view::install::Stage::Failed(_)).then(|| i.state()))),
+            Page::Modpacks => (tr("Modpacks"), Some(tr("Von Modrinth, jedes wird eine eigene Instanz"))),
             Page::Accounts => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
             Page::Chat => (tr("Chat"), None),
             Page::Settings => (tr("Einstellungen"), None),
@@ -170,6 +172,9 @@ impl Component for Toolbar {
             bar = bar.child(crate::view::chat::Tools { room });
         }
         bar = bar.child(Button::icon("toolbar.palette", Icon::Keyboard, tr("Befehle")).plain().tip(shortcut_tip(Command::OpenPalette)).on_press(move |_| Command::OpenPalette.run(store)));
+        if let Page::Installing(id) = &page {
+            bar = bar.child(rect().width(Size::px(frame::HERO.min(room / 2.))).horizontal().cross_align(Alignment::Center).child(crate::view::install::PlaySlot { id: *id }));
+        }
         if let Page::Instance(id) = &page {
             let hero = instance::Hero { id: id.clone(), room };
             bar = if room >= frame::TOOLBAR_FULL { bar.child(rect().width(Size::px(frame::HERO)).horizontal().main_align(Alignment::End).cross_align(Alignment::Center).child(hero)) } else { bar.child(hero) };

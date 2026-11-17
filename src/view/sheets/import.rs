@@ -4,17 +4,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use freya::prelude::*;
 
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
-use crate::core::instance::Instance;
 use crate::core::launchers::{Found, Launcher, Library, Take, Unsupported};
-use crate::core::mrpack::Refused;
-use crate::ui::forms::explain_as;
+use crate::ui::instance_files::bytes;
 use crate::ui::remote;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
@@ -24,11 +20,12 @@ use crate::view::kit::group::{Line, group, status};
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
-use crate::view::kit::text::{caption, line, para, strong};
-use crate::view::kit::{after, off_thread, off_ui, ring, toast, use_arrows, use_theme};
+use crate::view::kit::text::{line, para};
+use crate::view::install::{self, Source};
+use crate::view::kit::{fades, off_thread, off_ui, ring, use_arrows, use_theme};
 use crate::view::native;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, frame, iconsize, motion, space};
+use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
 const FILTER_FROM: usize = 8;
 const LIST_MIN: f32 = 140.;
@@ -40,7 +37,6 @@ const FOOT_H: f32 = font::CAPTION + space::S;
 const BLOCK_GAP: f32 = space::M;
 const BLOCK_INNER: f32 = space::XS;
 const BOX: f32 = iconsize::M;
-const FAILED_MAX: f32 = 180.;
 const LOOKED_FOR: [Launcher; 7] = [Launcher::Prism, Launcher::MultiMc, Launcher::Modrinth, Launcher::CurseForge, Launcher::AtLauncher, Launcher::GdLauncher, Launcher::Vanilla];
 
 /// Opens the import sheet.
@@ -48,41 +44,15 @@ pub fn open(store: Store) {
     if store.ui.sheet.peek().is_some() {
         return;
     }
-    sheet::open(store.ui, Import { file: None });
+    sheet::open(store.ui, Import);
 }
 
-/// Opens the import sheet and imports the pack or Prism export at `path` at once.
+/// Installs the pack or Prism export at `path` as a new instance, with its progress on the instance's page.
 pub fn open_file(store: Store, path: PathBuf) {
-    if store.ui.sheet.peek().is_some() {
-        return;
-    }
-    sheet::open(store.ui, Import { file: Some(path) });
-}
-
-/// Imports the pack at `path` as a new instance with no sheet; a toast says how it went.
-pub fn background(store: Store, path: PathBuf) {
-    let job = Job::File(path.clone());
-    let cancel = Arc::new(AtomicBool::new(false));
-    let work = Arc::clone(&cancel);
-    spawn_in_window(async move {
-        let result = off_ui(move || remote::import_instance(&path, &work, &|_, _| {})).await;
-        let text = match result {
-            Some(result) => match outcome(&job, result, &cancel) {
-                Outcome::Made(name) => {
-                    store.reload(true);
-                    trf("„%@“ importiert.", &[&name])
-                }
-                Outcome::Failed(why) | Outcome::Left(why) => why,
-                Outcome::Stopped => return,
-            },
-            None => crate::ui::forms::unexplained(),
-        };
-        toast::show(store.ui, text, None);
-    });
+    install::start(store, vec![Source::File(path)]);
 }
 
 type Profile = (PathBuf, String);
-type Token = Rc<RefCell<Arc<AtomicBool>>>;
 
 fn profile_key(found: &Found) -> String {
     format!("{}|{}", found.key(), found.game_dir.display())
@@ -132,14 +102,14 @@ fn merge(libs: &mut Vec<Library>, known: &mut HashMap<String, Profile>, found: V
 struct Shown {
     lib: usize,
     launcher: Launcher,
-    root: String,
+    root: Option<String>,
     items: Vec<(usize, Found)>,
 }
 
 fn shown(libs: &[Library], query: &str) -> Vec<Shown> {
     libs.iter()
         .enumerate()
-        .map(|(lib, l)| Shown { lib, launcher: l.launcher, root: l.root.display().to_string(), items: l.instances.iter().cloned().enumerate().filter(|(_, i)| query.is_empty() || i.name.to_lowercase().contains(query)).collect() })
+        .map(|(lib, l)| Shown { lib, launcher: l.launcher, root: l.root.is_absolute().then(|| l.root.display().to_string()), items: l.instances.iter().cloned().enumerate().filter(|(_, i)| query.is_empty() || i.name.to_lowercase().contains(query)).collect() })
         .filter(|s| !s.items.is_empty())
         .collect()
 }
@@ -148,8 +118,8 @@ fn keys(list: &[Shown]) -> Vec<String> {
     list.iter().flat_map(|s| &s.items).filter(|(_, i)| i.importable()).map(|(_, i)| i.key()).collect()
 }
 
-fn block_height(rows: usize) -> f32 {
-    HEAD_H + BLOCK_INNER + rows as f32 * ROW_H + rows.saturating_sub(1) as f32 * frame::HAIRLINE + BLOCK_INNER + FOOT_H
+fn block_height(rows: usize, foot: bool) -> f32 {
+    HEAD_H + BLOCK_INNER + rows as f32 * ROW_H + rows.saturating_sub(1) as f32 * frame::HAIRLINE + if foot { BLOCK_INNER + FOOT_H } else { 0. }
 }
 
 fn top_of(list: &[Shown], key: &str) -> Option<(f32, f32)> {
@@ -162,7 +132,7 @@ fn top_of(list: &[Shown], key: &str) -> Option<(f32, f32)> {
                 return Some(if at == 0 { (top, row - top + ROW_H) } else { (row, ROW_H) });
             }
         }
-        top += block_height(s.items.len()) + BLOCK_GAP;
+        top += block_height(s.items.len(), s.root.is_some()) + BLOCK_GAP;
     }
     None
 }
@@ -184,172 +154,6 @@ fn subtitle(found: &Found) -> String {
     }
 }
 
-fn is_cancelled(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.downcast_ref::<Refused>() == Some(&Refused::Cancelled))
-}
-
-fn local_io(e: &anyhow::Error) -> bool {
-    let io = e.chain().find_map(|c| c.downcast_ref::<std::io::Error>());
-    let network = e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some()) || ["cannot download", "cannot look the mods up", "cannot find the Fabric loader"].iter().any(|m| format!("{e:#}").contains(m));
-    io.is_some_and(|i| !matches!(i.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull)) && !network
-}
-
-fn explain(label: &str, e: &anyhow::Error) -> String {
-    let Some(refused) = e.chain().find_map(|c| c.downcast_ref::<Refused>()) else {
-        let what = trf("„%@“ nicht importiert.", &[&label]);
-        return if local_io(e) { format!("{what} {}", tr("Die Datei ist beschädigt oder lässt sich nicht lesen.")) } else { explain_as(what, e).text };
-    };
-    match refused {
-        Refused::NotAPack => trf("„%@“ ist kein Modpack von Modrinth. Wähle eine .mrpack-Datei.", &[&label]),
-        Refused::NoLoader => trf("„%@“ bringt Mods mit, nennt aber keinen Mod-Loader. Nichts wurde importiert.", &[&label]),
-        Refused::NoGame => trf("„%@“ nennt keine Minecraft-Version.", &[&label]),
-        Refused::Host(_) => trf("„%@“ lädt Dateien von einer Seite, die Manycraft nicht kennt. Nichts wurde importiert.", &[&label]),
-        Refused::Hash(_) => trf("Eine Datei aus „%@“ kam verändert an. Nichts wurde importiert. Versuche es noch einmal.", &[&label]),
-        Refused::Path(_) => trf("„%@“ enthält Dateien, die außerhalb des Instanzordners landen würden. Nichts wurde importiert.", &[&label]),
-        Refused::Prism(_) => trf("„%@“ lässt sich nicht übernehmen.", &[&label]),
-        Refused::Unknown => trf("„%@“ ist weder ein Modpack von Modrinth noch etwas aus Prism. Wähle eine .mrpack-Datei, einen Prism-Export oder einen Prism-Instanzordner.", &[&label]),
-        Refused::Cancelled => String::new(),
-    }
-}
-
-#[derive(Clone, PartialEq)]
-enum Job {
-    Found(Found),
-    File(PathBuf),
-}
-
-impl Job {
-    fn label(&self) -> String {
-        match self {
-            Job::Found(found) => found.name.clone(),
-            Job::File(path) => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string()),
-        }
-    }
-
-    fn shown(&self) -> String {
-        match self {
-            Job::Found(found) => found.name.clone(),
-            Job::File(path) => path.file_stem().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| self.label()),
-        }
-    }
-
-    fn gone(&self) -> bool {
-        matches!(self, Job::File(path) if !path.exists())
-    }
-}
-
-enum Outcome {
-    Made(String),
-    Failed(String),
-    Left(String),
-    Stopped,
-}
-
-enum Report {
-    Began(usize),
-    Percent(u8),
-    Ended(Outcome),
-    Finished,
-}
-
-#[derive(Clone, PartialEq)]
-struct Run {
-    total: usize,
-    at: usize,
-    name: String,
-    percent: Option<u8>,
-    stopping: bool,
-}
-
-#[derive(Clone, PartialEq)]
-struct Failure {
-    job: Job,
-    why: String,
-    again: bool,
-}
-
-impl Failure {
-    fn new(job: &Job, why: String) -> Self {
-        Self { job: job.clone(), why, again: true }
-    }
-}
-
-#[derive(Clone, Default, PartialEq)]
-struct Summary {
-    made: Vec<String>,
-    failed: Vec<Failure>,
-    stopped: bool,
-}
-
-impl Summary {
-    fn record(&mut self, outcome: Outcome, job: &Job) {
-        match outcome {
-            Outcome::Made(name) => self.made.push(name),
-            Outcome::Failed(why) => self.failed.push(Failure::new(job, why)),
-            Outcome::Left(why) => self.failed.push(Failure { again: false, ..Failure::new(job, why) }),
-            Outcome::Stopped => self.stopped = true,
-        }
-    }
-
-    fn made_text(&self) -> Option<String> {
-        match self.made.as_slice() {
-            [] => None,
-            [one] => Some(trf("„%@“ importiert.", &[one])),
-            many => Some(trf("%lld Instanzen importiert.", &[&many.len()])),
-        }
-    }
-
-    fn again(&self) -> Vec<Job> {
-        self.failed.iter().filter(|f| f.again).map(|f| f.job.clone()).collect()
-    }
-
-    fn toast(&self) -> Option<String> {
-        if self.stopped {
-            return Some(if self.made.is_empty() { tr("Import abgebrochen.") } else { trf("Import abgebrochen. %lld sind schon importiert.", &[&self.made.len()]) });
-        }
-        self.made_text()
-    }
-}
-
-#[derive(Clone, PartialEq)]
-enum Phase {
-    Pick,
-    Running(Run),
-    Done(Summary),
-}
-
-fn outcome(job: &Job, result: anyhow::Result<Instance>, cancel: &AtomicBool) -> Outcome {
-    let stopped = cancel.load(Ordering::SeqCst);
-    match result {
-        Ok(made) if stopped => match remote::drop_import(&made) {
-            Ok(()) => Outcome::Stopped,
-            Err(e) => Outcome::Left(explain_as(trf("„%@“ wurde abgebrochen, ließ sich aber nicht ganz entfernen.", &[&job.label()]), &e).text),
-        },
-        Ok(made) => Outcome::Made(made.name),
-        Err(e) if stopped || is_cancelled(&e) => Outcome::Stopped,
-        Err(_) if job.gone() => Outcome::Failed(trf("„%@“ ist nicht mehr da. Wurde die Datei verschoben?", &[&job.label()])),
-        Err(e) => Outcome::Failed(explain(&job.label(), &e)),
-    }
-}
-
-fn work(jobs: &[Job], take: Take, cancel: &AtomicBool, tx: &async_channel::Sender<Report>) {
-    for (at, job) in jobs.iter().enumerate() {
-        if cancel.load(Ordering::SeqCst) {
-            break;
-        }
-        let _ = tx.send_blocking(Report::Began(at));
-        let progress = |done: usize, total: usize| {
-            let _ = tx.try_send(Report::Percent((done * 100).checked_div(total).unwrap_or(0).min(100) as u8));
-        };
-        let result = match job {
-            Job::Found(found) => remote::import_found(found, take, cancel, &progress),
-            Job::File(path) => remote::import_instance(path, cancel, &progress),
-        };
-        let _ = tx.send_blocking(Report::Ended(outcome(job, result, cancel)));
-    }
-    let _ = tx.send_blocking(Report::Finished);
-}
-
 type Ids = Rc<RefCell<HashMap<String, AccessibilityId>>>;
 
 fn id_of(ids: &Ids, key: &str) -> AccessibilityId {
@@ -359,7 +163,6 @@ fn id_of(ids: &Ids, key: &str) -> AccessibilityId {
 #[derive(Clone, Copy)]
 struct Flow {
     store: Store,
-    phase: State<Phase>,
     libs: State<Option<Vec<Library>>>,
     known: State<HashMap<String, Profile>>,
     chosen: State<HashSet<String>>,
@@ -372,12 +175,12 @@ struct Flow {
     failed: State<Option<String>>,
     scanning: State<bool>,
     picking: State<bool>,
-    cancel: State<Token>,
+    saves: State<HashMap<PathBuf, Option<u64>>>,
 }
 
 impl Flow {
     fn alive(self) -> bool {
-        self.phase.try_peek().is_some()
+        self.libs.try_peek().is_some()
     }
 
     fn total(self) -> usize {
@@ -398,15 +201,6 @@ impl Flow {
         let chosen: HashSet<String> = self.chosen.peek().iter().filter(|k| seen.contains(*k)).cloned().collect();
         let libs = self.libs.peek();
         picked(libs.as_deref().unwrap_or_default(), &chosen, &self.known.peek())
-    }
-
-    fn fresh(self) -> Arc<AtomicBool> {
-        let cell = self.cancel.peek().clone();
-        let mut slot = cell.borrow_mut();
-        slot.store(true, Ordering::SeqCst);
-        let token = Arc::new(AtomicBool::new(false));
-        *slot = Arc::clone(&token);
-        token
     }
 
     fn scan(mut self) {
@@ -500,7 +294,7 @@ impl Flow {
     }
 
     fn pick_files(mut self) {
-        if *self.picking.peek() || *self.scanning.peek() || !matches!(*self.phase.peek(), Phase::Pick) {
+        if *self.picking.peek() || *self.scanning.peek() {
             return;
         }
         self.picking.set(true);
@@ -511,7 +305,7 @@ impl Flow {
                 return;
             }
             self.picking.set(false);
-            self.run(paths.into_iter().map(Job::File).collect());
+            self.hand_over(paths.into_iter().map(Source::File).collect());
         });
     }
 
@@ -544,114 +338,47 @@ impl Flow {
     }
 
     fn start(self) {
-        if *self.picking.peek() || !matches!(*self.phase.peek(), Phase::Pick) {
+        if *self.picking.peek() {
             return;
         }
-        self.run(self.picked().into_iter().map(Job::Found).collect());
-    }
-
-    fn run(self, jobs: Vec<Job>) {
-        if matches!(*self.phase.peek(), Phase::Pick) {
-            self.begin(jobs);
-        }
-    }
-
-    fn begin(mut self, jobs: Vec<Job>) {
-        let Some(first) = jobs.first() else { return };
-        let token = self.fresh();
         let take = Take { settings: *self.settings.peek(), worlds: *self.worlds.peek() };
-        self.phase.set(Phase::Running(Run { total: jobs.len(), at: 0, name: first.shown(), percent: None, stopping: false }));
-        let (tx, rx) = async_channel::unbounded();
-        let work_jobs = jobs.clone();
-        let work_token = Arc::clone(&token);
-        if std::thread::Builder::new().name("import".into()).spawn(move || work(&work_jobs, take, &work_token, &tx)).is_err() {
-            let why = tr("Der Import ließ sich nicht starten.");
-            self.finished(Summary { failed: jobs.iter().map(|j| Failure::new(j, why.clone())).collect(), ..Summary::default() });
-            return;
-        }
-        spawn_in_window(async move { self.follow(jobs, token, rx).await });
+        self.hand_over(self.picked().into_iter().map(|f| Source::Found(f, take)).collect());
     }
 
-    async fn follow(mut self, jobs: Vec<Job>, token: Arc<AtomicBool>, rx: async_channel::Receiver<Report>) {
-        let mut run = Run { total: jobs.len(), at: 0, name: jobs.first().map(Job::shown).unwrap_or_default(), percent: None, stopping: false };
-        let mut summary = Summary::default();
-        let mut ended = 0;
-        let mut over = false;
-        while !over {
-            let Ok(first) = rx.recv().await else { break };
-            let mut batch = vec![first];
-            while let Ok(next) = rx.try_recv() {
-                batch.push(next);
+    fn measure(mut self, dirs: Vec<PathBuf>) {
+        let missing: Vec<PathBuf> = dirs.into_iter().filter(|d| !self.saves.peek().contains_key(d)).collect();
+        if missing.is_empty() {
+            return;
+        }
+        {
+            let mut saves = self.saves.write();
+            for dir in &missing {
+                saves.insert(dir.clone(), None);
             }
-            for report in batch {
-                match report {
-                    Report::Began(at) => {
-                        run.at = at;
-                        run.percent = None;
-                        if let Some(job) = jobs.get(at) {
-                            run.name = job.shown();
-                        }
-                    }
-                    Report::Percent(p) => run.percent = Some(p),
-                    Report::Ended(done) => {
-                        ended += 1;
-                        if let Some(job) = jobs.get(run.at) {
-                            summary.record(done, job);
-                        }
-                    }
-                    Report::Finished => over = true,
-                }
-            }
+        }
+        spawn_in_window(async move {
+            let measured = off_ui(move || missing.into_iter().map(|d| (crate::core::worlds::size(&d.join("saves")), d)).collect::<Vec<_>>()).await.unwrap_or_default();
             if !self.alive() {
-                if !summary.made.is_empty() {
-                    self.store.reload(true);
-                }
                 return;
             }
-            if over {
-                break;
+            let mut saves = self.saves.write();
+            for (size, dir) in measured {
+                saves.insert(dir, Some(size));
             }
-            run.stopping |= token.load(Ordering::SeqCst);
-            self.phase.set_if_modified(Phase::Running(run.clone()));
-            after(motion::FAST).await;
-        }
-        summary.stopped |= token.load(Ordering::SeqCst);
-        if !over && !summary.stopped {
-            let why = tr("Der Import ist unerwartet abgebrochen.");
-            summary.failed.extend(jobs.iter().skip(ended).map(|j| Failure::new(j, why.clone())));
-        }
-        self.finished(summary);
+        });
     }
 
-    fn finished(mut self, summary: Summary) {
-        if !summary.made.is_empty() {
-            self.store.reload(true);
-        }
-        if !self.alive() {
+    fn worlds_size(self) -> Option<u64> {
+        let saves = self.saves.read();
+        self.picked().iter().map(|f| saves.get(&f.game_dir).copied().flatten()).sum::<Option<u64>>().filter(|n| *n > 0)
+    }
+
+    fn hand_over(self, sources: Vec<Source>) {
+        if sources.is_empty() {
             return;
         }
-        if summary.failed.is_empty() {
-            sheet::close(self.store.ui);
-            if let Some(text) = summary.toast() {
-                toast::show(self.store.ui, text, None);
-            }
-            return;
-        }
-        self.phase.set(Phase::Done(summary));
-    }
-
-    fn stop(mut self) {
-        self.cancel.peek().borrow().store(true, Ordering::SeqCst);
-        let running = matches!(&*self.phase.peek(), Phase::Running(r) if !r.stopping);
-        if running && let Phase::Running(run) = &mut *self.phase.write() {
-            run.stopping = true;
-        }
-    }
-
-    fn retry(self, jobs: Vec<Job>) {
-        if matches!(*self.phase.peek(), Phase::Done(_)) {
-            self.begin(jobs);
-        }
+        sheet::close(self.store.ui);
+        install::start(self.store, sources);
     }
 }
 
@@ -660,20 +387,14 @@ fn primary_held(m: Modifiers) -> bool {
 }
 
 #[derive(PartialEq)]
-struct Import {
-    file: Option<PathBuf>,
-}
+struct Import;
 
 impl Component for Import {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        let cell: Token = use_hook(|| Rc::new(RefCell::new(Arc::new(AtomicBool::new(false)))));
-        let held = Rc::clone(&cell);
-        use_drop(move || held.borrow().store(true, Ordering::SeqCst));
         let flow = Flow {
             store,
-            phase: use_state(|| Phase::Pick),
             libs: use_state(|| None),
             known: use_state(HashMap::new),
             chosen: use_state(HashSet::new),
@@ -681,20 +402,20 @@ impl Component for Import {
             ids: use_state(Ids::default),
             filter: use_state(String::new),
             settings: use_state(|| true),
-            worlds: use_state(|| false),
+            worlds: use_state(|| true),
             note: use_state(|| None),
             failed: use_state(|| None),
             scanning: use_state(|| false),
             picking: use_state(|| false),
-            cancel: use_state(move || cell),
+            saves: use_state(HashMap::new),
         };
         let scroll = use_scroll_controller(ScrollConfig::default);
         let viewport = use_state(|| 0f32);
-        let file = self.file.clone();
-        use_hook(move || match file {
-            Some(path) => flow.run(vec![Job::File(path)]),
-            None => flow.scan(),
-        });
+        let content = use_state(|| 0f32);
+        use_hook(move || flow.scan());
+        let worlds_on = *flow.worlds.read();
+        let dirs: Vec<PathBuf> = if worlds_on { flow.picked().into_iter().map(|f| f.game_dir).collect() } else { Vec::new() };
+        use_side_effect_with_deps(&dirs, move |dirs| flow.measure(dirs.clone()));
         let typed = flow.filter.read().clone();
         use_side_effect_with_deps(&typed, move |_| {
             let mut reveal = flow.reveal;
@@ -718,68 +439,40 @@ impl Component for Import {
                 scroll.scroll_to_y(-((top + height - h).ceil() as i32));
             }
         });
-        let phase = flow.phase.read().clone();
-        let mut card = Card::new("import", tr("Aus anderem Launcher importieren")).width(frame::SHEET);
-        match &phase {
-            Phase::Pick => {
-                let (_, window_h) = *store.ui.window.read();
-                let list_max = (window_h - CHROME).clamp(LIST_MIN, LIST_MAX);
-                let loading = flow.libs.read().is_none();
-                let count = flow.picked().len();
-                let scanning = *flow.scanning.read();
-                let picking = *flow.picking.read();
-                let blocked = if loading {
-                    Some(tr("Suche Launcher …"))
-                } else if picking {
-                    Some(tr("Datei wird gewählt …"))
-                } else if count == 0 {
-                    Some(tr("Wähle mindestens eine Instanz."))
-                } else {
-                    None
-                };
-                let label = match count {
-                    0 => tr("Importieren"),
-                    1 => tr("Instanz importieren"),
-                    n => trf("%lld Instanzen importieren", &[&n]),
-                };
-                let waiting = if loading { Some(tr("Suche Launcher …")) } else { scanning.then(|| tr("Der Ordner wird gerade durchsucht.")) };
-                let folder = Button::new("import.folder", if scanning { tr("Suche …") } else { tr("Ordner wählen…") }).glyph(Icon::Folder).disabled(waiting).on_press(move |_| flow.choose_folder());
-                card = card
-                    .message(tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."))
-                    .body(pick_body(flow, &t, &list, scroll, viewport, list_max, loading))
-                    .leading(folder)
-                    .primary(Primary { label, disabled: blocked, danger: false, busy: false, run: EventHandler::new(move |_| flow.start()) })
-                    .primary_id("import.start");
-            }
-            Phase::Running(run) => {
-                let stopping = run.stopping;
-                card = card
-                    .body(running_body(&t, run))
-                    .primary(Primary { label: tr("Importieren"), disabled: Some(tr("Wird importiert …")), danger: false, busy: !stopping, run: EventHandler::new(|_| {}) })
-                    .primary_id("import.start")
-                    .secondary(Primary { label: tr("Abbrechen"), disabled: stopping.then(|| tr("Bricht ab …")), danger: false, busy: false, run: EventHandler::new(move |_| flow.stop()) })
-                    .secondary_id("import.cancel")
-                    .on_escape(move |_| flow.stop());
-            }
-            Phase::Done(summary) => {
-                let jobs = summary.again();
-                card = card.body(done_body(&t, summary)).primary(Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(store.ui)) });
-                card = if jobs.is_empty() {
-                    card.inform()
-                } else {
-                    card.secondary(Primary { label: tr("Erneut versuchen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| flow.retry(jobs.clone())) }).secondary_id("import.retry")
-                };
-            }
-        }
-        card
+        let (_, window_h) = *store.ui.window.read();
+        let list_max = (window_h - CHROME).clamp(LIST_MIN, LIST_MAX);
+        let loading = flow.libs.read().is_none();
+        let count = flow.picked().len();
+        let scanning = *flow.scanning.read();
+        let picking = *flow.picking.read();
+        let blocked = if loading {
+            Some(tr("Suche Launcher …"))
+        } else if picking {
+            Some(tr("Datei wird gewählt …"))
+        } else if count == 0 {
+            Some(tr("Wähle mindestens eine Instanz."))
+        } else {
+            None
+        };
+        let label = match count {
+            0 => tr("Importieren"),
+            1 => tr("Instanz importieren"),
+            n => trf("%lld Instanzen importieren", &[&n]),
+        };
+        let waiting = if loading { Some(tr("Suche Launcher …")) } else { scanning.then(|| tr("Der Ordner wird gerade durchsucht.")) };
+        let folder = Button::new("import.folder", if scanning { tr("Suche …") } else { tr("Ordner wählen…") }).glyph(Icon::Folder).disabled(waiting).on_press(move |_| flow.choose_folder());
+        Card::new("import", tr("Aus anderem Launcher importieren"))
+            .width(frame::SHEET)
+            .message(tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."))
+            .body(pick_body(flow, &t, &list, (scroll, viewport, content), list_max, loading))
+            .leading(folder)
+            .primary(Primary { label, disabled: blocked, danger: false, busy: false, run: EventHandler::new(move |_| flow.start()) })
+            .primary_id("import.start")
     }
 }
 
-fn pick_body(flow: Flow, t: &Theme, list: &[Shown], scroll: ScrollController, mut viewport: State<f32>, list_max: f32, loading: bool) -> Element {
+fn pick_body(flow: Flow, t: &Theme, list: &[Shown], (scroll, mut viewport, mut content): (ScrollController, State<f32>, State<f32>), list_max: f32, loading: bool) -> Element {
     let mut body = rect().width(Size::fill()).spacing(space::M).on_global_key_down(move |e: Event<KeyboardEventData>| {
-        if !matches!(*flow.phase.peek(), Phase::Pick) {
-            return;
-        }
         if let Key::Character(c) = &e.key
             && c.eq_ignore_ascii_case("a")
             && primary_held(e.modifiers)
@@ -805,7 +498,7 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], scroll: ScrollController, mu
         return body.child(nothing(t)).into_element();
     }
     if total > FILTER_FROM {
-        let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(Field::new("import.filter", flow.filter).placeholder(tr("Instanzen filtern")).glyph(Icon::Search).width(Size::flex(1.)));
+        let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(Field::new("import.filter", flow.filter).placeholder(tr("Instanzen filtern")).glyph(Icon::Search).rows_through().width(Size::flex(1.)));
         if !flow.filter.read().is_empty() {
             let mut filter = flow.filter;
             head = head.child(Button::icon("import.filter.clear", Icon::Close, tr("Filter löschen")).plain().on_press(move |_| filter.set(String::new())));
@@ -822,11 +515,18 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], scroll: ScrollController, mu
         let chosen = flow.chosen.read().clone();
         let ids = flow.ids.read().clone();
         let order = keys(list);
-        let mut column = rect().width(Size::fill()).spacing(BLOCK_GAP);
+        let mut column = rect().width(Size::fill()).spacing(BLOCK_GAP).on_sized(move |e: Event<SizedEventData>| content.set_if_modified(e.area.height()));
         for s in list {
             column = column.child(library(flow, t, s, &chosen, &ids, &order));
         }
-        body = body.child(rect().width(Size::fill()).on_sized(move |e: Event<SizedEventData>| viewport.set_if_modified(e.area.height())).child(ScrollView::new_controlled(scroll).width(Size::fill()).max_height(Size::px(list_max)).child(column)));
+        let edges = fades(t.raised, -scroll.position().y, *content.read(), *viewport.read());
+        body = body.child(
+            rect()
+                .width(Size::fill())
+                .on_sized(move |e: Event<SizedEventData>| viewport.set_if_modified(e.area.height()))
+                .child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::auto()).max_height(Size::px(list_max)).child(column))
+                .children(edges),
+        );
     }
     body.child(options(flow, t)).into_element()
 }
@@ -886,7 +586,7 @@ fn library(flow: Flow, t: &Theme, s: &Shown, chosen: &HashSet<String>, ids: &Ids
         .spacing(BLOCK_INNER)
         .child(head)
         .child(group(t, None, rows, None))
-        .child(rect().width(Size::fill()).height(Size::px(FOOT_H)).padding((0., space::XS)).child(line(t, s.root.clone(), font::CAPTION, t.text3)))
+        .maybe_child(s.root.clone().map(|root| rect().width(Size::fill()).height(Size::px(FOOT_H)).padding((0., space::XS)).child(line(t, root, font::CAPTION, t.text3))))
         .into_element()
 }
 
@@ -956,7 +656,11 @@ fn options(flow: Flow, t: &Theme) -> Element {
     let (mut s, mut w) = (flow.settings, flow.worlds);
     let (mut s_switch, mut w_switch) = (flow.settings, flow.worlds);
     let label = tr("Einstellungen und Ressourcenpakete");
-    let mut worlds_line = Line::new("import.take.worlds", tr("Welten")).control(Switch::new("import.take.worlds.switch", tr("Welten"), worlds).on_toggle(move |on| w_switch.set(on))).on_press(move |_| {
+    let title = match flow.worlds_size().filter(|_| worlds) {
+        Some(n) => trf("Welten · %@", &[&bytes(n)]),
+        None => tr("Welten"),
+    };
+    let mut worlds_line = Line::new("import.take.worlds", title).control(Switch::new("import.take.worlds.switch", tr("Welten"), worlds).on_toggle(move |on| w_switch.set(on))).on_press(move |_| {
         let on = !*w.peek();
         w.set(on);
     });
@@ -978,68 +682,6 @@ fn options(flow: Flow, t: &Theme) -> Element {
         ],
         None,
     )
-}
-
-fn running_body(t: &Theme, run: &Run) -> Element {
-    let state = if run.stopping { tr("Bricht ab …") } else { run.percent.map_or_else(|| tr("Prüft …"), |p| format!("{p} %")) };
-    let state = line(t, state, font::CALLOUT, t.text2).font_tabular();
-    let state = if run.stopping || run.percent.is_none() { spinner::beside(state) } else { state.into_element() };
-    let mut foot = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(rect().width(Size::flex(1.)).child(state));
-    if run.total > 1 {
-        foot = foot.child(caption(t, trf("%1$lld von %2$lld", &[&(run.at + 1), &run.total])).font_tabular());
-    }
-    rect()
-        .width(Size::fill())
-        .padding((space::S, 0.))
-        .spacing(space::S)
-        .child(para(t, trf("„%@“ wird als Instanz importiert.", &[&run.name]), font::BODY, t.text1))
-        .child(bar(t, run.percent))
-        .child(foot)
-        .into_element()
-}
-
-fn bar(t: &Theme, percent: Option<u8>) -> Element {
-    let share = f32::from(percent.unwrap_or(0).min(100));
-    rect()
-        .width(Size::fill())
-        .height(Size::px(frame::PROGRESS))
-        .corner_radius(frame::PROGRESS / 2.)
-        .background(t.separator)
-        .overflow(Overflow::Clip)
-        .child(rect().width(Size::percent(share)).height(Size::px(frame::PROGRESS)).background(t.accent))
-        .into_element()
-}
-
-fn done_body(t: &Theme, summary: &Summary) -> Element {
-    let mut column = rect().width(Size::fill()).spacing(space::M);
-    if let Some(text) = summary.made_text() {
-        column = column.child(
-            rect()
-                .width(Size::fill())
-                .horizontal()
-                .spacing(space::XS)
-                .content(Content::flex())
-                .child(rect().padding((space::XXS, 0., 0., 0.)).child(icon(t, Icon::CircleCheck, iconsize::S, t.success_text)))
-                .child(para(t, text, font::CALLOUT, t.success_text).width(Size::flex(1.))),
-        );
-    }
-    if summary.stopped {
-        column = column.child(status(t, tr("Abgebrochen. Der Rest wurde nicht importiert."), t.text2));
-    }
-    let rows: Vec<Element> = summary
-        .failed
-        .iter()
-        .map(|f| {
-            rect()
-                .width(Size::fill())
-                .padding((space::M, space::L))
-                .spacing(space::XXS)
-                .child(strong(t, f.job.label(), font::BODY, t.text1))
-                .child(para(t, f.why.clone(), font::CALLOUT, t.danger_text))
-                .into_element()
-        })
-        .collect();
-    column.child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(FAILED_MAX)).child(group(t, Some(tr("Nicht importiert")), rows, None))).into_element()
 }
 
 #[derive(PartialEq)]
@@ -1216,7 +858,7 @@ mod tests {
         let list = shown(&libs, "");
         assert_eq!(top_of(&list, "prism:a"), Some((0., HEAD_H + BLOCK_INNER + ROW_H)));
         assert_eq!(top_of(&list, "prism:b"), Some((HEAD_H + BLOCK_INNER + ROW_H + frame::HAIRLINE, ROW_H)));
-        assert_eq!(top_of(&list, "prism:c").map(|(top, _)| top), Some(block_height(2) + BLOCK_GAP));
+        assert_eq!(top_of(&list, "prism:c").map(|(top, _)| top), Some(block_height(2, false) + BLOCK_GAP));
         assert_eq!(top_of(&list, "prism:none"), None);
     }
 
@@ -1249,47 +891,5 @@ mod tests {
         assert!(added);
         assert_eq!(fresh, vec!["prism:n".to_owned()]);
         assert_eq!(libs[0].instances.len(), 2);
-    }
-
-    #[test]
-    fn the_summary_sorts_outcomes_and_words_the_toast() {
-        let job = Job::File("pack.mrpack".into());
-        let mut s = Summary::default();
-        assert_eq!(s.toast(), None);
-        s.record(Outcome::Made("Farm".into()), &job);
-        assert!(s.toast().is_some_and(|t| t.contains("Farm")));
-        s.record(Outcome::Made("Base".into()), &job);
-        assert!(s.toast().is_some_and(|t| t.contains('2')));
-        s.record(Outcome::Failed("kaputt".into()), &job);
-        assert_eq!(s.failed.len(), 1);
-        s.record(Outcome::Left("links".into()), &job);
-        assert_eq!(s.failed.len(), 2);
-        assert_eq!(s.again().len(), 1);
-        s.record(Outcome::Stopped, &job);
-        assert!(s.stopped && s.toast().is_some_and(|t| t.contains('2')));
-    }
-
-    #[test]
-    fn a_file_job_is_labelled_by_its_name_and_shown_without_extension() {
-        let job = Job::File(PathBuf::from("some/dir/Farm Pack.mrpack"));
-        assert_eq!(job.label(), "Farm Pack.mrpack");
-        assert_eq!(job.shown(), "Farm Pack");
-        assert!(job.gone());
-    }
-
-    #[test]
-    fn a_cancelled_import_explains_nothing_and_is_not_a_failure() {
-        let e = anyhow::Error::new(Refused::Cancelled);
-        assert!(is_cancelled(&e));
-        assert!(explain("x", &e).is_empty());
-        let stopped = AtomicBool::new(false);
-        assert!(matches!(outcome(&Job::File("x.mrpack".into()), Err(e), &stopped), Outcome::Stopped));
-    }
-
-    #[test]
-    fn every_refusal_is_explained_with_the_name() {
-        for refused in [Refused::NotAPack, Refused::NoLoader, Refused::NoGame, Refused::Unknown] {
-            assert!(explain("Farm", &anyhow::Error::new(refused)).contains("Farm"));
-        }
     }
 }

@@ -44,6 +44,11 @@ pub fn no_connection(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some_and(unreachable) || c.downcast_ref::<std::io::Error>().is_some_and(cut))
 }
 
+/// Whether `e` is a 404 answer.
+pub fn not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| matches!(c.downcast_ref::<ureq::Error>(), Some(ureq::Error::StatusCode(404))))
+}
+
 fn cut(e: &std::io::Error) -> bool {
     e.get_ref().and_then(|inner| inner.downcast_ref::<ureq::Error>()).is_some_and(unreachable)
         || matches!(

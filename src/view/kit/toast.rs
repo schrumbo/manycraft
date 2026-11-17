@@ -24,6 +24,8 @@ pub struct Toast {
     pub id: u64,
     pub text: String,
     pub undo: Option<EventHandler<()>>,
+    /// A button that goes on from here, such as Spielen once an instance is ready; Strg+Z never reaches it.
+    pub action: Option<(String, EventHandler<()>)>,
     /// Stays when newer toasts push out older ones, for undoing what is hard to get back.
     pub keep: bool,
 }
@@ -38,12 +40,21 @@ pub fn show_kept(ui: Ui, text: impl Into<String>, undo: EventHandler<()>) -> u64
     add(ui, text.into(), Some(undo), true)
 }
 
-fn add(mut ui: Ui, text: String, undo: Option<EventHandler<()>>, keep: bool) -> u64 {
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let wait = if undo.is_some() { UNDOABLE } else { PLAIN };
+/// Shows `text` with a button `label` that runs `run` and closes the toast.
+pub fn show_action(ui: Ui, text: impl Into<String>, label: impl Into<String>, run: EventHandler<()>) -> u64 {
+    push(ui, Toast { id: NEXT.fetch_add(1, Ordering::Relaxed), text: text.into(), undo: None, action: Some((label.into(), run)), keep: false })
+}
+
+fn add(ui: Ui, text: String, undo: Option<EventHandler<()>>, keep: bool) -> u64 {
+    push(ui, Toast { id: NEXT.fetch_add(1, Ordering::Relaxed), text, undo, action: None, keep })
+}
+
+fn push(mut ui: Ui, toast: Toast) -> u64 {
+    let id = toast.id;
+    let wait = if toast.undo.is_some() || toast.action.is_some() { UNDOABLE } else { PLAIN };
     {
         let mut toasts = ui.toasts.write();
-        toasts.push(Toast { id, text, undo, keep });
+        toasts.push(toast);
         while toasts.len() > frame::TOASTS {
             let Some(oldest) = toasts.iter().position(|t| !t.keep) else { break };
             toasts.remove(oldest);
@@ -109,6 +120,12 @@ impl Component for Host {
                 card = card.child(Button::new(format!("toast.{id}.undo"), tr("Rückgängig")).plain().glyph(Icon::Undo).on_press(move |_| {
                     dismiss(ui, id);
                     undo.call(());
+                }));
+            }
+            if let Some((label, run)) = toast.action.clone() {
+                card = card.child(Button::new(format!("toast.{id}.action"), label).plain().on_press(move |_| {
+                    dismiss(ui, id);
+                    run.call(());
                 }));
             }
             card.child(

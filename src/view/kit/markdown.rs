@@ -1,6 +1,8 @@
 //! Markdown for project descriptions: a small parser into blocks and styled runs, and a renderer in the theme's fonts.
 //! Links open in the browser; text is not selectable.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Range;
 
 use freya::engine::prelude::{RectHeightStyle, RectWidthStyle};
@@ -424,8 +426,130 @@ fn parse(lines: &[&str], depth: usize) -> Vec<Block> {
     out
 }
 
+fn label_key(label: &str) -> String {
+    label.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+fn definition(line: &str) -> Option<(String, String)> {
+    if indent_of(line) >= MAX_INDENT {
+        return None;
+    }
+    let rest = line.trim_start().strip_prefix('[')?;
+    let (label, url) = rest.split_once("]:")?;
+    let target = url.split_whitespace().next()?;
+    let target = target.strip_prefix('<').and_then(|t| t.strip_suffix('>')).unwrap_or(target);
+    (!label.trim().is_empty() && !label.contains('[') && !label.starts_with('^')).then(|| (label_key(label), target.to_owned()))
+}
+
+fn closing(c: &[char], at: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut j = at;
+    while j < c.len().min(at + MAX_CLOSER) {
+        match c[j] {
+            '\\' => j += 1,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+fn resolve(text: &str, defs: &HashMap<String, String>, depth: usize) -> String {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < c.len() {
+        match c[i] {
+            '\\' => {
+                out.extend(c[i..c.len().min(i + 2)].iter());
+                i += 2;
+                continue;
+            }
+            '`' => {
+                let end = code_span(&c, i).map_or(i + run_len(&c, i, '`'), |(_, end)| end);
+                out.extend(c[i..end].iter());
+                i = end;
+                continue;
+            }
+            '[' if depth < MAX_NESTING => {}
+            other => {
+                out.push(other);
+                i += 1;
+                continue;
+            }
+        }
+        let Some(close) = closing(&c, i) else {
+            out.push('[');
+            i += 1;
+            continue;
+        };
+        let inner: String = c[i + 1..close].iter().collect();
+        let shown = resolve(&inner, defs, depth + 1);
+        let after = close + 1;
+        let full = (c.get(after) == Some(&'[')).then(|| closing(&c, after)).flatten().map(|end| {
+            let label: String = c[after + 1..end].iter().collect();
+            (if label.trim().is_empty() { label_key(&inner) } else { label_key(&label) }, end + 1)
+        });
+        let target = match full {
+            Some((key, next)) => defs.get(&key).map(|url| (url, next)),
+            None if c.get(after) != Some(&'(') => defs.get(&label_key(&inner)).map(|url| (url, after)),
+            None => None,
+        };
+        match target {
+            Some((url, next)) => {
+                out.push_str(&format!("[{shown}]({url})"));
+                i = next;
+            }
+            None => {
+                out.push_str(&format!("[{shown}]"));
+                i = after;
+            }
+        }
+    }
+    out
+}
+
+fn references(text: &str) -> Cow<'_, str> {
+    let mut defs = HashMap::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        if let Some((mark, run)) = fence {
+            if fence_of(line).is_some_and(|(m, r)| m == mark && r >= run) && line.trim().chars().all(|c| c == mark) {
+                fence = None;
+            }
+            kept.push((line, true));
+            continue;
+        }
+        if let Some(open) = fence_of(line) {
+            fence = Some(open);
+            kept.push((line, true));
+            continue;
+        }
+        match definition(line) {
+            Some((key, url)) => {
+                defs.entry(key).or_insert(url);
+            }
+            None => kept.push((line, false)),
+        }
+    }
+    if defs.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(kept.into_iter().map(|(line, code)| if code { line.to_owned() } else { resolve(line, &defs, 0) }).collect::<Vec<_>>().join("\n"))
+}
+
 /// The blocks of `text`: headings, paragraphs joined across line breaks, lists, quotes, code fences and rules.
+/// Reference links (`[text][ref]`, `[ref]`) are resolved against their `[ref]: url` lines, which are not shown.
 pub fn blocks(text: &str) -> Vec<Block> {
+    let text = references(text);
     let lines: Vec<&str> = text.lines().collect();
     parse(&lines, 0)
 }
@@ -695,6 +819,18 @@ mod tests {
     fn a_code_fence_keeps_its_text_as_written() {
         let got = blocks("```rust\n  let x = **1**;\n\n# not a heading\n- not a list\n```\nafter");
         assert_eq!(got, vec![Block::Code("  let x = **1**;\n\n# not a heading\n- not a list".to_owned()), Block::Paragraph(vec![plain("after")])]);
+    }
+
+    #[test]
+    fn reference_links_resolve_and_their_definitions_hide() {
+        let got = blocks("See [the wiki][w], [Docs] and [Site][].\n\n[w]: https://example.com/wiki\n[docs]: <https://example.com/docs> \"Docs\"\n[site]: https://example.com");
+        assert_eq!(got, vec![Block::Paragraph(vec![plain("See "), linked("the wiki", "https://example.com/wiki"), plain(", "), linked("Docs", "https://example.com/docs"), plain(" and "), linked("Site", "https://example.com"), plain(".")])]);
+    }
+
+    #[test]
+    fn unknown_references_and_code_stay_as_written() {
+        assert_eq!(blocks("[x] and `[w]`\n\n[w]: https://example.com"), vec![Block::Paragraph(vec![plain("[x] and "), code("[w]")])]);
+        assert_eq!(blocks("```\n[w]: https://example.com\n```"), vec![Block::Code("[w]: https://example.com".to_owned())]);
     }
 
     #[test]

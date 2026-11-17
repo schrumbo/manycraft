@@ -1,8 +1,8 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 
 use super::meta::VersionJson;
-use super::{Versions, newest_first};
+use super::{Versions, newest_first, offered, unsupported};
 use crate::core::net;
 
 const LOADERS_URL: &str = "https://meta.quiltmc.org/v3/versions/loader";
@@ -19,10 +19,10 @@ struct Loader {
 
 /// Quilt loaders for `game`, newest first; the newest without a pre-release tag is the default.
 pub fn versions(agent: &ureq::Agent, game: &str) -> Result<Versions> {
-    let entries: Vec<Entry> = net::get_json(agent, &format!("{LOADERS_URL}/{game}"))?;
+    let entries: Vec<Entry> = offered("Quilt", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}")))?;
     let found = pick(entries);
     if found.list.is_empty() {
-        bail!("Quilt does not support Minecraft {game}");
+        return Err(unsupported("Quilt", game));
     }
     Ok(found)
 }
@@ -35,7 +35,7 @@ fn pick(entries: Vec<Entry>) -> Versions {
 
 /// Newest stable Quilt loader for `game`.
 pub fn latest_loader(agent: &ureq::Agent, game: &str) -> Result<String> {
-    versions(agent, game)?.default.with_context(|| format!("Quilt does not support Minecraft {game}"))
+    versions(agent, game)?.default.ok_or_else(|| unsupported("Quilt", game))
 }
 
 /// Quilt's launcher profile for a game and loader version.
