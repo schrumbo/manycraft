@@ -690,7 +690,7 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2], offline: bool) -> Pa
         let (form, ready) = offline_form(flow, t);
         body = body.child(rect().width(Size::fill()).padding((space::S, 0., space::XS, 0.)).child(form));
         if filled && !open {
-            body = body.child(line(t, trf("Proxy: %@", &[&flow.proxy.read().trim()]), font::CALLOUT, t.text2));
+            body = body.child(line(t, trf("Proxy: %@", &[&forms::proxy_display(flow.proxy.read().trim())]), font::CALLOUT, t.text2));
         }
         primary = Some(("account.add.ok", ready));
     }
