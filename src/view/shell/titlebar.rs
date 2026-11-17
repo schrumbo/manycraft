@@ -17,7 +17,7 @@ use crate::view::kit::{Bounds, ring, use_theme};
 use crate::view::drive::use_spot;
 use crate::view::native::frame::{self, Cover, Heard, Zone};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{font, frame as size, iconsize, space};
+use crate::view::theme::{WAITING, font, frame as size, iconsize, space};
 use crate::view::ui::{Filter, Page, Pane};
 
 use super::controls::{Controls, Edges};
@@ -25,7 +25,7 @@ use super::controls::{Controls, Edges};
 const MAC_LIGHTS: f32 = 78.;
 const PALETTE_W: f32 = 340.;
 const CRUMB_CHAR: f32 = 7.;
-const WAITING: f32 = 0.45;
+const CAPTIONS_LEFT: f32 = 3. * size::CAPTION_ROUND + 2. * size::CAPTION_GAP + space::S + space::M;
 
 /// One step of the breadcrumb; the ones before the last lead back.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,18 +108,23 @@ impl Component for TitleBar {
         };
         let lights = if cfg!(target_os = "macos") { MAC_LIGHTS } else { 0. };
         let (_, buttons_left) = frame::buttons();
-        let room = (window - PALETTE_W) / 2. - lights - size::TITLEBAR * 3. - space::L;
+        let captions = if buttons_left && frame::own_buttons(frame::chrome()) { CAPTIONS_LEFT } else { 0. };
+        let room = (window - PALETTE_W) / 2. - lights - captions - size::TITLEBAR * 3. - space::L;
         let crumbs = fit(trail(&page, &names), room.max(120.));
         let mut chrome = use_state(frame::chrome);
         let own = frame::own_buttons(*chrome.read());
         let mut palette = ui.palette;
+        let mut menu_open = ui.menu;
         use_hook(move || {
             let heard = frame::heard();
             spawn(async move {
                 while let Ok(h) = heard.recv().await {
                     match h {
                         Heard::Chrome(c) => chrome.set_if_modified(c),
-                        Heard::Bar => palette.set_if_modified(false),
+                        Heard::Bar => {
+                            palette.set_if_modified(false);
+                            menu_open.set_if_modified(None);
+                        }
                     }
                 }
             });
@@ -167,22 +172,20 @@ impl Component for TitleBar {
             .horizontal()
             .cross_align(Alignment::Center)
             .on_sized(move |e: Event<SizedEventData>| bar_zone(&e))
-            .on_pointer_down(move |_| palette.set_if_modified(false))
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                palette.set_if_modified(false);
+                menu_open.set_if_modified(None);
+                if cfg!(target_os = "linux") && e.button == Some(MouseButton::Right) {
+                    frame::window_menu(e.global_location.x, e.global_location.y);
+                }
+            })
             .child(start.content(Content::flex()))
             .child(waiting(Palette, sheet))
             .child(end.content(Content::flex()))
             .child(Edges { chrome })
             .content(Content::flex());
-        if !cfg!(target_os = "windows") {
+        if frame::draws_drag() {
             bar = bar.window_drag();
-        }
-        if cfg!(target_os = "linux") {
-            bar = bar.on_pointer_down(|e: Event<PointerEventData>| {
-                if e.button() == Some(MouseButton::Right) {
-                    let at = e.global_location();
-                    frame::window_menu(at.x, at.y);
-                }
-            });
         }
         bar
     }
@@ -194,7 +197,7 @@ fn waiting(child: impl IntoElement, sheet: bool) -> Element {
         return child.into_element();
     }
     let mut cover = rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::fill()).height(Size::fill());
-    if !cfg!(target_os = "windows") {
+    if frame::draws_drag() {
         cover = cover.window_drag();
     }
     rect().opacity(WAITING).child(child).child(cover).into_element()

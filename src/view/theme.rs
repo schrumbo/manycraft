@@ -20,12 +20,16 @@ pub mod level {
     pub const FLOAT: i16 = 512;
 }
 
-/// Fixed sizes of the window's frame around the content.
 /// The Windows close button under the pointer, as Windows 11 paints it in every theme.
 pub const CLOSE_HOVER: Color = Color::from_rgb(0xC4, 0x2B, 0x1C);
 /// The Windows close button held down.
 pub const CLOSE_PRESS: Color = Color::from_argb(0xE6, 0xC4, 0x2B, 0x1C);
+/// The glyph on the Windows close button while it is red.
+pub const CLOSE_INK: Color = Color::WHITE;
+/// How strongly the title bar's own controls show while a sheet waits for an answer.
+pub const WAITING: f32 = 0.45;
 
+/// Fixed sizes of the window's frame around the content.
 pub mod frame {
     /// The height of the title bar over both columns.
     pub const TITLEBAR: f32 = 38.;
@@ -38,8 +42,8 @@ pub mod frame {
     /// The side of a Linux window button, and the gap between them.
     pub const CAPTION_ROUND: f32 = 24.;
     pub const CAPTION_GAP: f32 = 8.;
-    /// How far into the window a Linux edge resizes it.
-    pub const EDGE: f32 = 5.;
+    /// How far into the window a Linux edge resizes it; corners take twice that.
+    pub const EDGE: f32 = 6.;
     /// The narrowest and widest the user drags the sidebar.
     pub const SIDEBAR_MIN: f32 = 200.;
     pub const SIDEBAR_MAX: f32 = 320.;

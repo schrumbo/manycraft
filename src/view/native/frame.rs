@@ -67,6 +67,7 @@ thread_local! {
     static NEXT: Cell<u64> = const { Cell::new(0) };
     static SCALE: Cell<f32> = const { Cell::new(1.) };
     static COVER: Cell<Cover> = const { Cell::new(Cover::None) };
+    static POPOVERS: Cell<u32> = const { Cell::new(0) };
     static CHROME: Cell<Chrome> = const { Cell::new(Chrome { maximized: false, inactive: false, hover: None, pressed: None, framed: false }) };
 }
 
@@ -108,6 +109,13 @@ pub fn set_scale(scale: f32) {
 /// Notes what lies over the title bar.
 pub fn set_cover(cover: Cover) {
     COVER.with(|c| c.set(cover));
+}
+
+/// Hands the title bar's clicks to the calling full-window popover while it lives, so a click there closes it instead of
+/// moving the window; the window buttons stay live.
+pub fn use_popover() {
+    use_hook(|| POPOVERS.with(|p| p.set(p.get() + 1)));
+    use_drop(|| POPOVERS.with(|p| p.set(p.get().saturating_sub(1))));
 }
 
 /// Marks the element this measures as `zone` while the calling component lives.
@@ -152,7 +160,7 @@ pub fn zone_in(zones: impl IntoIterator<Item = (Zone, Bounds)>, cover: Cover, x:
 /// The zone under `(x, y)` in device pixels from the top left of the window's content.
 pub fn zone_at(x: f32, y: f32) -> Option<Zone> {
     let scale = SCALE.with(Cell::get);
-    let cover = COVER.with(Cell::get);
+    let cover = if POPOVERS.with(Cell::get) > 0 { Cover::Menu } else { COVER.with(Cell::get) };
     ZONES.with(|z| zone_in(z.borrow().values().copied(), cover, x / scale, y / scale))
 }
 
@@ -176,6 +184,12 @@ pub fn toggle_maximize() {
         return;
     }
     with_window(|w| w.set_maximized(!w.is_maximized()));
+}
+
+/// Whether the bar moves the window through Freya: everywhere but Windows, whose hit test does it, and never in a driven
+/// instance, whose double click would maximize it onto the owner's screen.
+pub fn draws_drag() -> bool {
+    !cfg!(target_os = "windows") && !drive::on()
 }
 
 /// Opens the system's window menu at `(x, y)` in logical pixels.

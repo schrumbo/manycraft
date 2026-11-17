@@ -160,6 +160,7 @@ struct Gallery {
 impl Component for Gallery {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
+        crate::view::native::frame::use_popover();
         let store = use_store();
         let p = use_prefs();
         let look = use_consume::<Look>();

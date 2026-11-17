@@ -249,10 +249,10 @@ impl Component for Host {
         let (w, h) = *ui.window.read();
         let serial = menu.serial;
         rect()
-            .position(Position::new_global().left(0.).top(0.))
+            .position(Position::new_global().left(0.).top(frame::CHROME))
             .layer(Layer::OverlayLevel(level::MENU))
             .width(Size::px(w))
-            .height(Size::px(h))
+            .height(Size::px((h - frame::CHROME).max(0.)))
             .on_mouse_down(move |_| ui.menu.set(None))
             .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .child(rect().key(serial).width(Size::fill()).height(Size::fill()).child(Panel { menu }))
@@ -372,7 +372,7 @@ impl Component for Panel {
             })
             .collect();
         let mut panel = rect()
-            .position(Position::new_absolute().left(x).top(y))
+            .position(Position::new_absolute().left(x).top(y - frame::CHROME))
             .a11y_role(AccessibilityRole::Menu)
             .a11y_builder(|n| n.set_modal())
             .width(Size::px(width))

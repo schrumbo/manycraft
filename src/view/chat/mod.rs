@@ -1100,6 +1100,7 @@ struct Popup {
 impl Component for Popup {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
+        crate::view::native::frame::use_popover();
         let store = use_store();
         let mut shared = store.ui.chat;
         let (w, h) = *store.ui.window.read();

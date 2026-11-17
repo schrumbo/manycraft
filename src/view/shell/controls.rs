@@ -6,6 +6,7 @@ use freya::winit::window::ResizeDirection;
 use freya_winit::WinitPlatformExt;
 
 use crate::app::event::Event as AppEvent;
+use crate::core::drive;
 use crate::core::i18n::tr;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
@@ -13,7 +14,7 @@ use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::use_theme;
 use crate::view::native::frame::{self, Caption, Chrome, Zone};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{CLOSE_HOVER, CLOSE_PRESS, frame as size, iconsize, level, space};
+use crate::view::theme::{CLOSE_HOVER, CLOSE_INK, CLOSE_PRESS, frame as size, iconsize, level, space};
 use crate::view::ui::Ui;
 
 /// The window buttons, in the order and on the side the desktop wants them.
@@ -94,7 +95,7 @@ impl Component for WinButton {
             (false, true, false) => t.hover,
             _ => Color::TRANSPARENT,
         };
-        let ink = if close && hover { Color::WHITE } else if c.inactive { t.text3 } else { t.text1 };
+        let ink = if close && hover { CLOSE_INK } else if c.inactive { t.text3 } else { t.text1 };
         rect()
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(name)
@@ -152,6 +153,7 @@ impl Component for RoundButton {
             .width(Size::px(size::CAPTION_ROUND))
             .height(Size::px(size::CAPTION_ROUND))
             .corner_radius(size::CAPTION_ROUND / 2.)
+            .cursor(CursorIcon::Pointer)
             .center()
             .background(fill)
             .on_sized(move |e: Event<SizedEventData>| {
@@ -188,16 +190,16 @@ impl Component for Edges {
             return rect().into_element();
         }
         let (w, h) = *ui.window.read();
-        let e = size::EDGE;
+        let (e, c) = (size::EDGE, size::EDGE * 2.);
         let bands = [
-            (0., 0., e, e, ResizeDirection::NorthWest, CursorIcon::NwResize),
-            (e, 0., w - 2. * e, e, ResizeDirection::North, CursorIcon::NResize),
-            (w - e, 0., e, e, ResizeDirection::NorthEast, CursorIcon::NeResize),
-            (w - e, e, e, h - 2. * e, ResizeDirection::East, CursorIcon::EResize),
-            (w - e, h - e, e, e, ResizeDirection::SouthEast, CursorIcon::SeResize),
-            (e, h - e, w - 2. * e, e, ResizeDirection::South, CursorIcon::SResize),
-            (0., h - e, e, e, ResizeDirection::SouthWest, CursorIcon::SwResize),
-            (0., e, e, h - 2. * e, ResizeDirection::West, CursorIcon::WResize),
+            (0., 0., c, c, ResizeDirection::NorthWest, CursorIcon::NwResize),
+            (c, 0., w - 2. * c, e, ResizeDirection::North, CursorIcon::NResize),
+            (w - c, 0., c, c, ResizeDirection::NorthEast, CursorIcon::NeResize),
+            (w - e, c, e, h - 2. * c, ResizeDirection::East, CursorIcon::EResize),
+            (w - c, h - c, c, c, ResizeDirection::SouthEast, CursorIcon::SeResize),
+            (c, h - e, w - 2. * c, e, ResizeDirection::South, CursorIcon::SResize),
+            (0., h - c, c, c, ResizeDirection::SouthWest, CursorIcon::SwResize),
+            (0., c, e, h - 2. * c, ResizeDirection::West, CursorIcon::WResize),
         ];
         let mut layer = rect();
         for (x, y, bw, bh, direction, cursor) in bands {
@@ -213,6 +215,9 @@ impl Component for Edges {
                             return;
                         }
                         ev.stop_propagation();
+                        if drive::fenced("resize", "main window") {
+                            return;
+                        }
                         Platform::get().with_window(Platform::window_id(), move |window| {
                             let _ = window.drag_resize_window(direction);
                         });
