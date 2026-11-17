@@ -9,7 +9,8 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use super::batch::ModRef;
-use super::i18n::tr;
+use super::compat::{Miss, Needs, Target};
+use super::i18n::{tr, trf};
 use super::instance::{Instance, Loader};
 use super::{install, net, online, paths};
 
@@ -22,6 +23,8 @@ const POOL_THREADS: usize = 8;
 const HASH_CHUNK: usize = 200;
 const PROJECT_CHUNK: usize = 100;
 const KEPT_PAGES: usize = 300;
+const KEPT_JARS: usize = 100;
+const CHECKED: usize = 8;
 /// How many results one search page holds.
 pub const PAGE: usize = 20;
 const CHANGELOGS: usize = 5;
@@ -341,6 +344,8 @@ trait Source: Sync {
     fn version(&self, id: &str) -> Result<Version>;
     fn versions_by_hash(&self, hashes: &[String]) -> Result<HashMap<String, Version>>;
     fn projects(&self, ids: &[String]) -> Result<Vec<Project>>;
+    fn target(&self, game_version: &str, loader: &Loader) -> Target;
+    fn needs(&self, found: &ModRef, quilt: bool) -> Result<Needs>;
 }
 
 struct Api {
@@ -381,6 +386,31 @@ impl Source for Api {
     fn projects(&self, ids: &[String]) -> Result<Vec<Project>> {
         net::get_json(&self.agent, &format!("{API}/projects?ids={}", encode(&serde_json::json!(ids).to_string())))
     }
+
+    fn target(&self, game_version: &str, loader: &Loader) -> Target {
+        if checked(loader) { install::mod_target(game_version, loader) } else { Target::default() }
+    }
+
+    fn needs(&self, found: &ModRef, quilt: bool) -> Result<Needs> {
+        let Some(path) = cached_jar(&jar_cache(), &found.sha1) else { return Ok(Needs::default()) };
+        if !path.is_file() {
+            net::fetch_verified(&self.agent, &found.url, &path, Some(&found.sha1)).with_context(|| format!("cannot download {}", found.title))?;
+            prune(&jar_cache(), KEPT_JARS);
+        }
+        Ok(std::fs::File::open(&path).ok().and_then(|file| Needs::read(std::io::BufReader::new(file), quilt).ok()).unwrap_or_default())
+    }
+}
+
+fn checked(loader: &Loader) -> bool {
+    matches!(loader, Loader::Fabric(_) | Loader::Quilt(_))
+}
+
+fn jar_cache() -> PathBuf {
+    paths::data_dir().join("cache").join("jars")
+}
+
+fn cached_jar(cache: &Path, sha1: &str) -> Option<PathBuf> {
+    (sha1.len() == 40 && sha1.bytes().all(|b| b.is_ascii_hexdigit())).then(|| cache.join(format!("{}.jar", sha1.to_ascii_lowercase())))
 }
 
 fn encode(s: &str) -> String {
@@ -465,11 +495,52 @@ fn fits(version: &Version, game_version: &str, loader: &Loader) -> bool {
     version.loaders.iter().any(|l| keys(loader).contains(&l.as_str())) && version.game_versions.iter().any(|g| g == game_version)
 }
 
+#[cfg(test)]
 fn newest<'a>(versions: &'a [Version], game_version: &str, loader: &Loader) -> Option<&'a Version> {
-    versions
-        .iter()
-        .filter(|v| fits(v, game_version, loader))
-        .max_by(|a, b| rank(&a.version_type).cmp(&rank(&b.version_type)).then_with(|| a.date_published.cmp(&b.date_published)))
+    ranked(versions, game_version, loader).into_iter().next()
+}
+
+fn ranked<'a>(versions: &'a [Version], game_version: &str, loader: &Loader) -> Vec<&'a Version> {
+    let mut fit: Vec<&Version> = versions.iter().filter(|v| fits(v, game_version, loader)).collect();
+    fit.sort_by(|a, b| rank(&b.version_type).cmp(&rank(&a.version_type)).then_with(|| b.date_published.cmp(&a.date_published)));
+    fit
+}
+
+enum Pick<'a> {
+    Found(&'a Version, ModRef),
+    Misfit(Miss),
+    Missing,
+}
+
+fn pick<'a>(src: &dyn Source, title: &str, versions: &'a [Version], game_version: &str, loader: &Loader, target: &Target, stop: impl Fn(&Version) -> bool) -> Result<Pick<'a>> {
+    let mut misfit = None;
+    for version in ranked(versions, game_version, loader).into_iter().take(CHECKED) {
+        if stop(version) {
+            break;
+        }
+        let found = mod_ref(title, version)?;
+        if !checked(loader) {
+            return Ok(Pick::Found(version, found));
+        }
+        match src.needs(&found, target.quilt)?.check(target) {
+            Ok(()) => return Ok(Pick::Found(version, found)),
+            Err(miss) => {
+                misfit.get_or_insert(miss);
+            }
+        }
+    }
+    Ok(misfit.map_or(Pick::Missing, Pick::Misfit))
+}
+
+fn misfit_note(title: &str, miss: Miss, game_version: &str, loader: &Loader, target: &Target) -> String {
+    match miss {
+        Miss::Loader => {
+            let version = if target.quilt { &target.quilt_loader } else { &target.fabricloader };
+            trf("„%1$@“ läuft nicht mit %2$@ %3$@.", &[&title, &loader.name(), &version.as_deref().unwrap_or_default()])
+        }
+        Miss::Minecraft => trf("„%1$@“ läuft nicht mit Minecraft %2$@.", &[&title, &game_version]),
+        Miss::Java => trf("„%1$@“ läuft nicht mit Java %2$@.", &[&title, &target.java.unwrap_or_default()]),
+    }
 }
 
 fn mod_ref(title: &str, version: &Version) -> Result<ModRef> {
@@ -504,18 +575,27 @@ fn dependencies_of<'a>(version: &'a Version, kind: &'a str) -> impl Iterator<Ite
     version.dependencies.iter().filter(move |d| d.dependency_type == kind)
 }
 
+#[cfg(test)]
 fn lookup(src: &dyn Source, key: &str, game_version: &str, loader: &Loader) -> Result<Entry> {
-    let project = src.project(key)?.ok_or_else(|| Unavailable(format!("{key} is not on Modrinth")))?;
+    lookup_for(src, key, game_version, loader, &src.target(game_version, loader))
+}
+
+fn lookup_for(src: &dyn Source, key: &str, game_version: &str, loader: &Loader, target: &Target) -> Result<Entry> {
+    let project = src.project(key)?.ok_or_else(|| Unavailable(trf("„%@“ gibt es nicht auf Modrinth.", &[&key])))?;
     let versions = src.versions(&project.id, game_version, loader)?;
-    let version = newest(&versions, game_version, loader).ok_or_else(|| Unavailable(format!("{} has no {} version for {game_version}", project.title, loader.name())))?;
+    let (version, found) = match pick(src, &project.title, &versions, game_version, loader, target, |_| false)? {
+        Pick::Found(version, found) => (version, found),
+        Pick::Misfit(miss) => return Err(Unavailable(misfit_note(&project.title, miss, game_version, loader, target)).into()),
+        Pick::Missing => return Err(Unavailable(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&project.title, &loader.name(), &game_version])).into()),
+    };
     Ok(Entry {
-        found: mod_ref(&project.title, version)?,
+        found,
         required: dependencies_of(version, "required").cloned().collect(),
         incompatible: dependencies_of(version, "incompatible").filter_map(|d| d.project_id.clone()).collect(),
     })
 }
 
-fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>, game_version: &str, loader: &Loader) -> Result<()> {
+fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>, game_version: &str, loader: &Loader, target: &Target) -> Result<()> {
     let mut i = 0;
     while i < entries.len() {
         let parent = entries[i].found.title.clone();
@@ -529,7 +609,7 @@ fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>
             if seen.contains(&project_id) {
                 continue;
             }
-            let entry = lookup(src, &project_id, game_version, loader).with_context(|| format!("required by {parent}"))?;
+            let entry = lookup_for(src, &project_id, game_version, loader, target).with_context(|| trf("Für „%@“ nötig", &[&parent]))?;
             seen.insert(entry.found.project_id.clone());
             entries.push(entry);
         }
@@ -550,28 +630,33 @@ fn check_compatible(entries: &[Entry]) -> Result<()> {
 }
 
 fn resolve_all<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str, loader: &Loader) -> Result<(Vec<Entry>, usize)> {
+    resolve_for(src, roots, game_version, loader, &src.target(game_version, loader))
+}
+
+fn resolve_for<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str, loader: &Loader, target: &Target) -> Result<(Vec<Entry>, usize)> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for root in roots {
-        let entry = lookup(src, root.as_ref(), game_version, loader)?;
+        let entry = lookup_for(src, root.as_ref(), game_version, loader, target)?;
         if seen.insert(entry.found.project_id.clone()) {
             entries.push(entry);
         }
     }
     let requested = entries.len();
-    expand(src, &mut entries, &mut seen, game_version, loader)?;
+    expand(src, &mut entries, &mut seen, game_version, loader, target)?;
     check_compatible(&entries)?;
     Ok((entries, requested))
 }
 
 fn defaults_from(src: &dyn Source, game_version: &str, loader: &Loader) -> Result<Defaults> {
+    let target = src.target(game_version, loader);
     let slot = |choices: &&[&str]| -> Result<Result<Vec<Entry>, String>> {
         let mut first = None;
         for slug in *choices {
-            match resolve_all(src, &[slug], game_version, loader) {
+            match resolve_for(src, &[slug], game_version, loader, &target) {
                 Ok((found, _)) => return Ok(Ok(found)),
                 Err(e) if is_unavailable(&e) => {
-                    first.get_or_insert_with(|| format!("skipped {slug}: {e:#}"));
+                    first.get_or_insert_with(|| format!("{e:#}"));
                 }
                 Err(e) => return Err(e),
             }
@@ -593,19 +678,15 @@ fn defaults_from(src: &dyn Source, game_version: &str, loader: &Loader) -> Resul
 }
 
 fn updates_from(src: &dyn Source, game_version: &str, loader: &Loader, mods: &[ModRef]) -> Result<Vec<Update>> {
+    let target = src.target(game_version, loader);
     let check = |current: &ModRef| -> Result<Option<Update>> {
         let versions = src.versions(&current.project_id, game_version, loader)?;
-        let Some(latest) = newest(&versions, game_version, loader) else {
+        let published = versions.iter().find(|v| v.id == current.version_id).map(|v| v.date_published.as_str());
+        let reached = |v: &Version| v.id == current.version_id || published.is_some_and(|date| v.date_published.as_str() <= date);
+        let Pick::Found(latest, found) = pick(src, &current.title, &versions, game_version, loader, &target, reached)? else {
             return Ok(None);
         };
-        if latest.id == current.version_id {
-            return Ok(None);
-        }
-        let published = versions.iter().find(|v| v.id == current.version_id).map(|v| v.date_published.as_str());
-        if published.is_some_and(|date| latest.date_published.as_str() <= date) {
-            return Ok(None);
-        }
-        Ok(Some(Update { current: current.clone(), latest: mod_ref(&current.title, latest)?, changelog: changelog_since(&versions, latest, published, game_version, loader) }))
+        Ok(Some(Update { current: current.clone(), latest: found, changelog: changelog_since(&versions, latest, published, game_version, loader) }))
     };
     let found = pool()?.install(|| mods.par_iter().map(check).collect::<Result<Vec<_>>>())?;
     Ok(found.into_iter().flatten().collect())
@@ -753,7 +834,7 @@ fn place_local(local: &[String], disabled: &HashSet<String>, dir: &Path) -> Resu
     Ok(())
 }
 
-fn place(agent: &ureq::Agent, m: &ModRef, off: bool, dir: &Path) -> Result<bool> {
+fn place(agent: &ureq::Agent, jars: Option<&Path>, m: &ModRef, off: bool, dir: &Path) -> Result<bool> {
     let (on_path, off_path) = (dir.join(&m.file_name), dir.join(format!("{}{DISABLED}", m.file_name)));
     let (want, other) = if off { (off_path, on_path) } else { (on_path, off_path) };
     let right = |path: &Path| -> Result<bool> { Ok(path.is_file() && net::file_sha1(path)?.eq_ignore_ascii_case(&m.sha1)) };
@@ -764,7 +845,10 @@ fn place(agent: &ureq::Agent, m: &ModRef, off: bool, dir: &Path) -> Result<bool>
         rename(&other, &want)?;
         return Ok(false);
     }
-    net::fetch_verified(agent, &m.url, &want, Some(&m.sha1)).with_context(|| format!("cannot download {}", m.title))?;
+    let cached = jars.and_then(|jars| cached_jar(jars, &m.sha1)).filter(|path| path.is_file());
+    if !cached.is_some_and(|path| net::copy_verified(&path, &want, &m.sha1).unwrap_or(false)) {
+        net::fetch_verified(agent, &m.url, &want, Some(&m.sha1)).with_context(|| format!("cannot download {}", m.title))?;
+    }
     if other.is_file() {
         std::fs::remove_file(&other).with_context(|| format!("cannot delete {}", other.display()))?;
     }
@@ -790,7 +874,12 @@ pub(super) fn is_managed(managed: &HashMap<String, String>, name: &str, path: &P
     managed.get(&name.to_lowercase()).is_some_and(|hash| net::file_sha1(path).is_ok_and(|actual| actual == *hash))
 }
 
+#[cfg(test)]
 fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
+    sync_from(agent, None, mods, local, disabled, dir, ledger)
+}
+
+fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
     let local_keys: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
     let off: HashSet<String> = disabled.iter().map(|name| name.to_lowercase()).collect();
     let mut keep = HashSet::new();
@@ -809,7 +898,7 @@ fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &
     keep.extend(local_keys);
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     place_local(local, &off, dir)?;
-    let fetched = pool()?.install(|| jobs.par_iter().map(|m| place(agent, m, off.contains(&m.file_name.to_lowercase()), dir)).collect::<Result<Vec<_>>>())?;
+    let fetched = pool()?.install(|| jobs.par_iter().map(|m| place(agent, jars, m, off.contains(&m.file_name.to_lowercase()), dir)).collect::<Result<Vec<_>>>())?;
     let managed = read_ledger(ledger);
     for (name, file) in list_jars(dir)? {
         if keep.contains(&name) || name == super::fleet::COMPANION_FILE {
@@ -945,8 +1034,10 @@ fn prune(dir: &Path, kept: usize) {
 }
 
 /// The newest version of a mod (slug or project id) for `game_version` and `loader`, releases before betas before alphas.
+/// Versions whose `fabric.mod.json` or `quilt.mod.json` asks for another loader, game or Java version are passed over.
 pub fn resolve(slug_or_id: &str, game_version: &str, loader: &Loader) -> Result<ModRef> {
-    Ok(lookup(&Api::new()?, slug_or_id, game_version, loader)?.found)
+    let api = Api::new()?;
+    Ok(lookup_for(&api, slug_or_id, game_version, loader, &api.target(game_version, loader))?.found)
 }
 
 /// Resolves every mod in `list` and, recursively, its required dependencies, each project once.
@@ -958,7 +1049,7 @@ pub fn resolve_with_dependencies<S: AsRef<str>>(list: &[S], game_version: &str, 
 
 /// For Fabric and Quilt Fabric API, Lithium, FerriteCore, ModernFix, Krypton and Sodium, for Forge and NeoForge Lithium,
 /// FerriteCore and ModernFix, for Vanilla none, each with its dependencies.
-/// A default without a version for `game_version` is skipped and explained in `notes`.
+/// A default without a version for `game_version` and the loader is skipped and explained in `notes`, one sentence each.
 pub fn default_mods(game_version: &str, loader: &Loader) -> Result<Defaults> {
     if defaults_for(loader).is_empty() {
         return Ok(Defaults { mods: Vec::new(), notes: Vec::new() });
@@ -1011,11 +1102,12 @@ fn sync_locked(instance: &Instance) -> Result<usize> {
             _ => match resolve(FABRIC_API, &instance.game_version, &instance.loader) {
                 Ok(found) => mods.push(found),
                 Err(e) if net::no_connection(&e) && present.is_some() => local.extend(present),
+                Err(e) if is_unavailable(&e) => eprintln!("{e:#}"),
                 Err(e) => return Err(e.context("Fabric API could not be found")),
             },
         }
     }
-    sync_into(&net::agent(None)?, &mods, &local, &instance.disabled, &instance.mods_dir(), &instance.dir().join(LEDGER))
+    sync_from(&net::agent(None)?, Some(&jar_cache()), &mods, &local, &instance.disabled, &instance.mods_dir(), &instance.dir().join(LEDGER))
 }
 
 fn fabric_api_on_disk(dir: &Path) -> Option<String> {
@@ -1222,14 +1314,18 @@ Connection: close
         };
     }
 
+    #[derive(Default)]
     struct Fixtures {
         projects: Vec<(String, String, Project)>,
         versions: Vec<Version>,
+        target: Target,
+        jars: HashMap<String, Vec<u8>>,
+        opened: std::sync::Mutex<Vec<String>>,
     }
 
     impl Fixtures {
         fn recorded() -> Self {
-            let mut fx = Self { projects: Vec::new(), versions: Vec::new() };
+            let mut fx = Self::default();
             for (slug, project, versions) in [
                 ("lithium", fixture!("project_lithium"), fixture!("versions_lithium")),
                 ("sodium", fixture!("project_sodium"), fixture!("versions_sodium")),
@@ -1256,7 +1352,7 @@ Connection: close
         }
 
         fn synthetic(mods: &[(&str, &[(&str, &str)])]) -> Self {
-            let mut fx = Self { projects: Vec::new(), versions: Vec::new() };
+            let mut fx = Self::default();
             for (slug, deps) in mods {
                 let deps: Vec<String> = deps.iter().map(|(id, kind)| format!(r#"{{"project_id":"{id}","version_id":null,"dependency_type":"{kind}"}}"#)).collect();
                 let project = format!(r#"{{"id":"id-{slug}","slug":"{slug}","title":"T-{slug}"}}"#);
@@ -1303,6 +1399,125 @@ Connection: close
             assert!(ids.len() <= PROJECT_CHUNK);
             Ok(self.projects.iter().filter(|(_, id, _)| ids.contains(id)).map(|(_, id, p)| Project { id: id.clone(), title: p.title.clone() }).collect())
         }
+
+        fn target(&self, _game_version: &str, _loader: &Loader) -> Target {
+            self.target.clone()
+        }
+
+        fn needs(&self, found: &ModRef, quilt: bool) -> Result<Needs> {
+            self.opened.lock().unwrap().push(found.version_id.clone());
+            match self.jars.get(&found.sha1) {
+                Some(jar) => Needs::read(std::io::Cursor::new(jar.clone()), quilt),
+                None => Ok(Needs::default()),
+            }
+        }
+    }
+
+    fn fabric_jar(depends: &str) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(format!(r#"{{"schemaVersion":1,"id":"m","version":"1","depends":{depends}}}"#).as_bytes()).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn snapshot_api(loaders: &[&str]) -> Fixtures {
+        let mut fx = Fixtures::default();
+        let project = r#"{"id":"P7dR8mSH","slug":"fabric-api","title":"Fabric API"}"#;
+        let mut versions = Vec::new();
+        for (i, loader) in loaders.iter().enumerate() {
+            let sha1 = format!("{i:040}");
+            versions.push(format!(
+                r#"{{"id":"v{i}","project_id":"P7dR8mSH","version_number":"0.16{i}","version_type":"release","date_published":"2026-11-0{}T00:00:00Z","game_versions":["26.4-snapshot-7"],"loaders":["fabric"],"files":[{{"url":"https://x/{i}.jar","filename":"api-{i}.jar","primary":true,"hashes":{{"sha1":"{sha1}"}}}}]}}"#,
+                9 - i
+            ));
+            fx.jars.insert(sha1, fabric_jar(&format!(r#"{{"fabricloader":"{loader}","minecraft":"~26.4-","java":">=25"}}"#)));
+        }
+        fx.add("fabric-api", project, &format!("[{}]", versions.join(",")));
+        fx.target = Target { minecraft: Some("26.4-snapshot-7".into()), java: Some(25), fabricloader: Some("0.19.5".into()), quilt_loader: Some("0.30.2".into()), quilt: true };
+        fx
+    }
+
+    const SNAPSHOT: &str = "26.4-snapshot-7";
+
+    #[test]
+    fn quilt_gets_the_newest_fabric_api_whose_loader_range_it_meets() {
+        let fx = snapshot_api(&[">=0.20.0", ">=0.20.0", ">=0.16 <0.20", ">=0.15"]);
+        let found = lookup(&fx, "fabric-api", SNAPSHOT, &Loader::Quilt(None)).unwrap().found;
+        assert_eq!(found.version_id, "v2");
+        assert_eq!(*fx.opened.lock().unwrap(), ["v0", "v1", "v2"]);
+    }
+
+    #[test]
+    fn fabric_with_a_new_enough_loader_keeps_the_newest() {
+        let mut fx = snapshot_api(&[">=0.20.0", ">=0.16"]);
+        fx.target = Target { minecraft: Some(SNAPSHOT.into()), java: Some(25), fabricloader: Some("0.20.1".into()), ..Target::default() };
+        assert_eq!(lookup(&fx, "fabric-api", SNAPSHOT, &fabric()).unwrap().found.version_id, "v0");
+    }
+
+    #[test]
+    fn no_fitting_version_skips_the_mod_with_a_note_that_names_the_loader() {
+        let fx = snapshot_api(&[">=0.20.0", ">=0.20.0", ">=0.20.0"]);
+        let err = lookup(&fx, "fabric-api", SNAPSHOT, &Loader::Quilt(None)).unwrap_err();
+        assert!(is_unavailable(&err));
+        assert_eq!(err.to_string(), "„Fabric API“ läuft nicht mit Quilt 0.30.2.");
+        let mut fx = snapshot_api(&[">=0.20.0"]);
+        fx.add("lithium", r#"{"id":"id-l","slug":"lithium","title":"Lithium"}"#, r#"[{"id":"vl","project_id":"id-l","version_type":"release","date_published":"2026-11-01T00:00:00Z","game_versions":["26.4-snapshot-7"],"loaders":["fabric"],"files":[{"url":"https://x/l.jar","filename":"l.jar","primary":true,"hashes":{"sha1":"11"}}],"dependencies":[{"project_id":"P7dR8mSH","dependency_type":"required"}]}]"#);
+        let defaults = defaults_from(&fx, SNAPSHOT, &Loader::Quilt(None)).unwrap();
+        assert!(defaults.mods.is_empty(), "{:?}", titles(&defaults.mods));
+        assert!(defaults.notes.contains(&"„Fabric API“ läuft nicht mit Quilt 0.30.2.".to_owned()), "{:?}", defaults.notes);
+        assert!(defaults.notes.contains(&"Für „Lithium“ nötig: „Fabric API“ läuft nicht mit Quilt 0.30.2.".to_owned()), "{:?}", defaults.notes);
+    }
+
+    #[test]
+    fn only_the_newest_eight_are_opened_before_giving_up() {
+        let fx = snapshot_api(&[">=0.20.0"; 9]);
+        assert!(lookup(&fx, "fabric-api", SNAPSHOT, &Loader::Quilt(None)).is_err());
+        assert_eq!(fx.opened.lock().unwrap().len(), CHECKED);
+    }
+
+    #[test]
+    fn game_and_java_ranges_are_checked_and_forge_opens_no_jar() {
+        let mut fx = snapshot_api(&[">=0.15"]);
+        fx.target.minecraft = Some("26.5-snapshot-1".into());
+        assert_eq!(lookup(&fx, "fabric-api", SNAPSHOT, &Loader::Quilt(None)).unwrap_err().to_string(), "„Fabric API“ läuft nicht mit Minecraft 26.4-snapshot-7.");
+        fx.target.minecraft = Some(SNAPSHOT.into());
+        fx.target.java = Some(21);
+        assert_eq!(lookup(&fx, "fabric-api", SNAPSHOT, &Loader::Quilt(None)).unwrap_err().to_string(), "„Fabric API“ läuft nicht mit Java 21.");
+        fx.opened.lock().unwrap().clear();
+        for v in &mut fx.versions {
+            v.loaders = vec!["forge".into()];
+        }
+        assert_eq!(lookup(&fx, "fabric-api", SNAPSHOT, &Loader::Forge(None)).unwrap().found.version_id, "v0");
+        assert!(fx.opened.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_update_skips_a_newer_version_the_loader_cannot_run_and_never_opens_older_ones() {
+        let fx = snapshot_api(&[">=0.20.0", ">=0.16", ">=0.16"]);
+        let current = mod_ref("Fabric API", &fx.versions[2]).unwrap();
+        let updates = updates_from(&fx, SNAPSHOT, &Loader::Quilt(None), std::slice::from_ref(&current)).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].latest.version_id, "v1");
+        fx.opened.lock().unwrap().clear();
+        let newest_fit = mod_ref("Fabric API", &fx.versions[1]).unwrap();
+        assert!(updates_from(&fx, SNAPSHOT, &Loader::Quilt(None), &[newest_fit]).unwrap().is_empty());
+        assert_eq!(*fx.opened.lock().unwrap(), ["v0"]);
+    }
+
+    #[test]
+    fn a_cached_jar_is_copied_instead_of_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (jars, mods) = (dir.path().join("jars"), dir.path().join("mods"));
+        std::fs::create_dir_all(&jars).unwrap();
+        let bytes = b"cached jar";
+        let sha1 = sha1_hex(bytes);
+        std::fs::write(cached_jar(&jars, &sha1).unwrap(), bytes).unwrap();
+        let m = ModRef { project_id: "p".into(), version_id: "v".into(), title: "T".into(), file_name: "t.jar".into(), url: "http://127.0.0.1:9/t.jar".into(), sha1 };
+        let (agent, lookups) = super::net::fake::agent(None, std::time::Duration::from_secs(1));
+        assert!(place(&agent, Some(&jars), &m, false, &mods).unwrap());
+        assert_eq!(std::fs::read(mods.join("t.jar")).unwrap(), bytes);
+        assert_eq!(lookups.count(), 0);
+        assert!(cached_jar(&jars, "../../evil").is_none());
     }
 
     fn fabric() -> Loader {
@@ -1465,7 +1680,7 @@ Connection: close
         let defaults = defaults_from(&fx, "26.3", &fabric()).unwrap();
         assert_eq!(titles(&defaults.mods), FABRIC_TITLES);
         assert_eq!(defaults.notes.len(), 1);
-        assert!(defaults.notes[0].contains("modernfix") && defaults.notes[0].contains("26.3"), "{:?}", defaults.notes);
+        assert!(defaults.notes[0].to_lowercase().contains("modernfix") && defaults.notes[0].contains("26.3"), "{:?}", defaults.notes);
     }
 
     #[test]

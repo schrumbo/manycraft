@@ -62,6 +62,14 @@ fn read_entry<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str, limit: u64) -
     Ok(Some(bytes))
 }
 
+pub(super) fn zip<R: Read + Seek>(jar: R) -> Result<ZipArchive<R>> {
+    ZipArchive::new(jar).context("not a jar")
+}
+
+pub(super) fn text_in<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<Option<String>> {
+    read_text(zip, name)
+}
+
 fn read_text<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<Option<String>> {
     Ok(read_entry(zip, name, MAX_ENTRY)?.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
 }
@@ -105,7 +113,7 @@ fn manifest_version(manifest: &str) -> Option<String> {
     })
 }
 
-fn json(text: &str) -> Result<Value> {
+pub(super) fn json(text: &str) -> Result<Value> {
     let text = text.trim_start_matches('\u{feff}');
     serde_json::from_str(text).or_else(|first| serde_json::from_str(&text.replace(['\n', '\r', '\t'], " ")).map_err(|_| first)).context("invalid mod metadata")
 }

@@ -1447,5 +1447,12 @@
   "Aufs Handy…": "To your phone…",
   "Meldungen aufs Handy schicken, wenn ein Account dich braucht": "Send alerts to your phone when an account needs you",
   "Einstellungen: Aufs Handy": "Settings: To your phone",
-  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically"
+  "Einstellungen: Automatisch neu verbinden": "Settings: Reconnect automatically",
+  "Quilt unterstützt Minecraft %@ noch nicht": "Quilt doesn’t support Minecraft %@ yet",
+  "„%1$@“ läuft nicht mit %2$@ %3$@.": "“%1$@” doesn’t run with %2$@ %3$@.",
+  "„%1$@“ läuft nicht mit Minecraft %2$@.": "“%1$@” doesn’t run with Minecraft %2$@.",
+  "„%1$@“ läuft nicht mit Java %2$@.": "“%1$@” doesn’t run with Java %2$@.",
+  "„%@“ gibt es nicht auf Modrinth.": "“%@” isn’t on Modrinth.",
+  "„%1$@“ gibt es nicht für %2$@ %3$@.": "“%1$@” isn’t available for %2$@ %3$@.",
+  "Für „%@“ nötig": "Required by “%@”"
 }
