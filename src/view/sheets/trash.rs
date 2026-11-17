@@ -12,7 +12,7 @@ use crate::core::i18n::{tr, trf};
 use crate::ui::forms::explain_as;
 use crate::ui::instance_files::{bytes, when};
 use crate::view::icons::{Icon, icon};
-use crate::view::kit::button::Button;
+use crate::view::kit::button::{Button, Look};
 use crate::view::kit::group::{group, status};
 use crate::view::kit::text::{caption, heading, line, para, spacer};
 use crate::view::kit::{after, at_least, off_thread, toast, use_theme};
@@ -197,7 +197,6 @@ impl Component for TrashPage {
                 if ticket.try_peek().is_none_or(|t| *t != n) {
                     return;
                 }
-                busy.write().clear();
                 load.set(match items {
                     Ok(items) => Load::Ready(items.into_iter().map(Entry).collect()),
                     Err(e) => Load::Failed(explain_as(tr("Der Papierkorb lässt sich nicht lesen."), &e).text),
@@ -226,7 +225,7 @@ impl Component for TrashPage {
                 .height(Size::fill())
                 .center()
                 .spacing(space::M)
-                .child(icon(&t, Icon::Trash, iconsize::L * 2., t.text3))
+                .child(icon(&t, Icon::Trash, iconsize::HERO, t.text3))
                 .child(heading(&t, tr("Der Papierkorb ist leer.")))
                 .child(caption(&t, tr("Was du löschst oder ersetzt, bleibt hier 7 Tage.")))
                 .into_element(),
@@ -253,16 +252,20 @@ impl Component for TrashPage {
                                 .spacing(space::S)
                                 .child(caption(&t, tr("Kann nicht rückgängig gemacht werden.")))
                                 .child(Button::new(format!("trash.{at}.keep"), tr("Abbrechen")).on_press(move |_| confirm.set(None)))
-                                .child(Button::new(format!("trash.{at}.purge"), tr("Löschen")).danger().on_press(move |_| {
+                                .child(Button::new(format!("trash.{at}.purge"), tr("Löschen")).danger().disabled((working || locked).then(|| tr("Einen Moment …"))).on_press(move |_| {
                                     confirm.set(None);
                                     let k = key(&doomed);
-                                    busy.write().insert(k);
+                                    busy.write().insert(k.clone());
                                     let item = doomed.clone();
-                                    let Some(rx) = off_thread("trash-delete", move || bin::delete(&item)) else { return };
+                                    let Some(rx) = off_thread("trash-delete", move || bin::delete(&item)) else {
+                                        busy.write().remove(&k);
+                                        return;
+                                    };
                                     spawn_in_window(async move {
                                         if let Ok(Err(e)) = rx.recv().await {
                                             toast::show(store.ui, explain_as(tr("Nicht gelöscht."), &e).text, None);
                                         }
+                                        busy.write().remove(&k);
                                         reload();
                                     });
                                 }))
@@ -272,9 +275,11 @@ impl Component for TrashPage {
                             let picked = item.clone();
                             let back = Button::new(format!("trash.{at}.restore"), tr("Wiederherstellen")).disabled(reason).on_press(move |_| match put_back(store, picked.clone()) {
                                 Ok(()) => {
-                                    busy.write().insert(key(&picked));
+                                    let k = key(&picked);
+                                    busy.write().insert(k.clone());
                                     spawn_in_window(async move {
                                         after(RECHECK).await;
+                                        busy.write().remove(&k);
                                         reload();
                                     });
                                 }
@@ -284,7 +289,7 @@ impl Component for TrashPage {
                             });
                             let ask = k.clone();
                             let purge = Button::new(format!("trash.{at}.delete"), tr("Endgültig löschen"))
-                                .plain()
+                                .look(Look::PlainDanger)
                                 .disabled((working || locked).then(|| tr("Einen Moment …")))
                                 .on_press(move |_| confirm.set(Some(ask.clone())));
                             rect().horizontal().cross_align(Alignment::Center).spacing(space::XS).child(purge).child(back).into_element()
@@ -303,7 +308,7 @@ impl Component for TrashPage {
                     .child(spacer())
                     .content(Content::flex());
                 if !*asking.read() {
-                    head = head.child(Button::new("trash.empty", tr("Papierkorb leeren…")).plain().disabled(locked.then(|| tr("Wird geleert …"))).on_press(move |_| asking.set(true)));
+                    head = head.child(Button::new("trash.empty", tr("Papierkorb leeren…")).look(Look::PlainDanger).disabled(locked.then(|| tr("Wird geleert …"))).on_press(move |_| asking.set(true)));
                 }
                 let mut column = rect().width(Size::fill()).max_width(Size::px(PAGE)).spacing(space::M).child(head);
                 if *asking.read() {

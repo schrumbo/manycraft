@@ -76,7 +76,6 @@ impl Button {
         self
     }
 
-    /// Shows the turning arc in place of the glyph while a short wait runs.
     /// Shows the button as a toggle that is on while `on`.
     pub fn on(mut self, on: bool) -> Self {
         if on {
@@ -85,6 +84,7 @@ impl Button {
         self
     }
 
+    /// Shows the turning arc in place of the glyph while a short wait runs.
     pub fn busy(mut self, busy: bool) -> Self {
         self.busy = busy;
         self

@@ -94,25 +94,33 @@ pub fn longest(lines: &[Line]) -> usize {
 
 /// The rows `lines` take wrapped at `cols` characters, in order: the line each row shows and the byte range of it.
 pub fn wrap_rows(lines: &[Line], cols: usize) -> Vec<(usize, Range<usize>)> {
-    let cols = cols.max(1);
     let mut rows = Vec::with_capacity(lines.len());
     for (at, line) in lines.iter().enumerate() {
-        let text = &*line.text;
-        let mut start = 0;
-        let mut cuts = text.char_indices().map(|(i, _)| i).skip(cols).step_by(cols).peekable();
-        while let Some(end) = cuts.next() {
-            rows.push((at, start..end));
-            start = end;
-        }
-        rows.push((at, start..text.len()));
+        rows.extend(wrapped(&line.text, cols).into_iter().map(|r| (at, r)));
     }
     rows
 }
 
 /// The first row of line `at` when every line before it wraps at `cols` characters.
 pub fn first_row(lines: &[Line], at: usize, cols: usize) -> usize {
+    lines.iter().take(at).map(|l| wrapped(&l.text, cols).len()).sum()
+}
+
+fn wrapped(text: &str, cols: usize) -> Vec<Range<usize>> {
     let cols = cols.max(1);
-    lines.iter().take(at).map(|l| l.text.chars().count().div_ceil(cols).max(1)).sum()
+    let mut rows = Vec::new();
+    let mut start = 0;
+    loop {
+        let rest = &text[start..];
+        let Some((cut, _)) = rest.char_indices().nth(cols) else {
+            rows.push(start..text.len());
+            return rows;
+        };
+        let space = if rest[cut..].starts_with(' ') { Some(cut + 1) } else { rest[..cut].rfind(' ').filter(|s| *s > 0 && rest[..*s].chars().count() >= cols / 2).map(|s| s + 1) };
+        let end = start + space.unwrap_or(cut);
+        rows.push(start..end);
+        start = end;
+    }
 }
 
 /// `text` cut to `chars` characters with an ellipsis.
@@ -189,6 +197,21 @@ mod tests {
 
     fn lines(text: &str) -> Vec<Line> {
         split(text)
+    }
+
+    #[test]
+    fn wrapped_rows_break_at_spaces_cover_every_byte_and_agree_with_first_row() {
+        let log = lines("short\n\nalpha beta gamma delta\nüüüüüüüüüüüü\nx");
+        let rows = wrap_rows(&log, 10);
+        let texts: Vec<&str> = rows.iter().map(|(at, r)| &log[*at].text[r.clone()]).collect();
+        assert_eq!(texts, ["short", "", "alpha beta ", "gamma ", "delta", "üüüüüüüüüü", "üü", "x"]);
+        for (at, line) in log.iter().enumerate() {
+            let own: Vec<&Range<usize>> = rows.iter().filter(|(l, _)| *l == at).map(|(_, r)| r).collect();
+            assert_eq!(own.first().map(|r| r.start), Some(0));
+            assert_eq!(own.last().map(|r| r.end), Some(line.text.len()));
+            assert!(own.windows(2).all(|w| w[0].end == w[1].start));
+            assert_eq!(rows.iter().position(|(l, _)| *l == at), Some(first_row(&log, at, 10)));
+        }
     }
 
     #[test]

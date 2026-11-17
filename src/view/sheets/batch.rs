@@ -246,11 +246,10 @@ struct Seed {
 impl Seed {
     fn new(store: Store, original: Option<&Batch>, preselect: Option<&String>, picked: Option<&HashSet<Uuid>>, memory_max: u32) -> Self {
         let model = store.model.peek();
-        let first = recent(&model);
         let instance = match (original, preselect) {
             (Some(b), _) => Some(b.instance_id.clone()),
-            (None, Some(id)) => Some(id.clone()).filter(|id| model.instance(id).is_some()).or(first),
-            (None, None) => first,
+            (None, Some(id)) => Some(id.clone()).filter(|id| model.instance(id).is_some()).or_else(|| recent(&model)),
+            (None, None) => recent(&model),
         };
         let accounts = match (original, picked) {
             (Some(b), _) => b.accounts.iter().copied().collect(),

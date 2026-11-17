@@ -6,7 +6,7 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 use super::logs_lines::{Line, capped, first_row, longest, option_label, ordered, scan, search, split};
-use super::logs_viewer::{Hits, Viewer, row};
+use super::logs_viewer::{Hits, Viewer, Wrapped, row};
 use super::shots_parts::{Same, centered};
 use super::{Facts, use_extras};
 use crate::core::i18n::{tr, trf};
@@ -92,9 +92,11 @@ struct Ctx {
     controller: ScrollController,
     wrap: State<bool>,
     cols: State<usize>,
+    wrapped: State<Wrapped>,
 }
 
-fn at_end(c: ScrollController) -> bool {
+/// Whether the log shows its last line.
+pub(super) fn at_end(c: ScrollController) -> bool {
     match *c.bounds.peek() {
         Some((content, view)) => content.height <= view.height || -c.position().y >= content.height - view.height - row(),
         None => true,
@@ -104,7 +106,8 @@ fn at_end(c: ScrollController) -> bool {
 fn reveal(ctx: Ctx, line: usize) {
     let mut c = ctx.controller;
     let view = c.bounds.peek().map_or(0., |(_, view)| view.height);
-    let shown = if *ctx.wrap.peek() && *ctx.cols.peek() > 0 { first_row(&ctx.doc.peek().lines.0, line, *ctx.cols.peek()) } else { line };
+    let cols = *ctx.cols.peek();
+    let shown = if *ctx.wrap.peek() && cols > 0 { ctx.wrapped.peek().row_of(line, cols).unwrap_or_else(|| first_row(&ctx.doc.peek().lines.0, line, cols)) } else { line };
     let top = (shown as f32 * row() - (view - row()) / 2.).max(0.);
     c.scroll_to_y(-(top as i32));
 }
@@ -254,13 +257,14 @@ struct Follow {
     controller: ScrollController,
     wrap: State<bool>,
     cols: State<usize>,
+    wrapped: State<Wrapped>,
     load: u64,
     path: PathBuf,
 }
 
 impl Component for Follow {
     fn render(&self) -> impl IntoElement {
-        let ctx = Ctx { doc: self.doc, stick: self.stick, found: self.found, controller: self.controller, wrap: self.wrap, cols: self.cols };
+        let ctx = Ctx { doc: self.doc, stick: self.stick, found: self.found, controller: self.controller, wrap: self.wrap, cols: self.cols, wrapped: self.wrapped };
         let (load, path) = (self.load, self.path.clone());
         use_hook(move || {
             spawn(async move {
@@ -330,7 +334,8 @@ impl Component for Logs {
         let controller = use_scroll_controller(ScrollConfig::default);
         let mut wrap = use_state(|| true);
         let cols = use_state(|| 0usize);
-        let ctx = Ctx { doc, stick, found, controller, wrap, cols };
+        let wrapped = use_state(Wrapped::default);
+        let ctx = Ctx { doc, stick, found, controller, wrap, cols, wrapped };
 
         let (account_now, pick_now) = (scanned.read().account, *pick.read());
         let _ = account_now;
@@ -568,9 +573,12 @@ impl Component for Logs {
         bar = bar.child(spacer());
         if has {
             let wrapped = *wrap.read();
-            let label = if wrapped { tr("Lange Zeilen abschneiden") } else { tr("Lange Zeilen umbrechen") };
-            bar = bar.child(Button::icon("instance.logs.wrap", Icon::Wrap, label).on(wrapped).on_press(move |_| {
+            bar = bar.child(Button::icon("instance.logs.wrap", Icon::Wrap, tr("Lange Zeilen umbrechen")).on(wrapped).on_press(move |_| {
                 let next = !*wrap.peek();
+                if at_end(controller) {
+                    let mut stick = stick;
+                    stick.set(true);
+                }
                 wrap.set(next);
             }));
             let (find, all) = (open_find, copy_all);
@@ -697,6 +705,8 @@ impl Component for Logs {
                 lines: state.lines.clone(),
                 wrap: *wrap.read(),
                 cols,
+                stick,
+                wrapped,
                 version: state.version,
                 longest: state.longest,
                 hits: if *find_open.read() { hits.list.clone() } else { Same(Arc::new(Vec::new())) },
@@ -706,6 +716,12 @@ impl Component for Logs {
             }
             .into_element(),
         };
+        if running && latest && state.status == Status::Ready
+            && let Some(path) = file_now.clone()
+        {
+            let follow = Follow { doc, stick, found, controller, wrap, cols, wrapped, load: state.load, path };
+            column = column.child(rect().key(state.load).child(follow));
+        }
         column.child(rect().width(Size::fill()).height(Size::flex(1.)).child(viewer)).content(Content::flex()).into_element()
     }
 }

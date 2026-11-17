@@ -238,38 +238,50 @@ fn offer_undo(store: Store, removed: Vec<Removed>) {
 
 /// Takes the accounts of each batch in `groups` out of it, then offers to put them back.
 pub fn take_out(store: Store, groups: Vec<(String, Vec<Uuid>)>) {
-    let n: usize = groups.iter().map(|(_, ids)| ids.len()).sum();
-    let name = match groups.as_slice() {
-        [(batch, _)] => store.model.peek().batch(batch).map(|b| b.name.clone()),
-        _ => None,
+    let names: Vec<(String, Option<String>)> = {
+        let m = store.model.peek();
+        groups.iter().map(|(batch, _)| (batch.clone(), m.batch(batch).map(|b| b.name.clone()))).collect()
     };
-    let work = groups.clone();
-    off("leave-batch", move || work.iter().try_for_each(|(batch, ids)| remote::leave_batch(batch, ids)), move |result| {
-        store.reload(true);
-        match result {
-            Ok(()) => {
-                let text = match (n, name) {
-                    (1, Some(name)) => trf("1 Account aus „%@“ genommen", &[&name]),
-                    (n, Some(name)) => trf("%1$lld Accounts aus „%2$@“ genommen", &[&n, &name]),
-                    (1, None) => tr("1 Account aus seinem Batch genommen"),
-                    (n, None) => trf("%lld Accounts aus ihren Batches genommen", &[&n]),
-                };
-                let back = Rc::new(RefCell::new(Some(groups)));
-                let id = toast::show(store.ui, text, Some(EventHandler::new(move |_| {
-                    let Some(groups) = back.borrow_mut().take() else { return };
-                    off("join-batch", move || groups.iter().try_for_each(|(batch, ids)| remote::join_batch(batch, ids).map(|_| ())), move |result| {
-                        if let Err(e) = result {
-                            toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht wieder aufgenommen."), &e).text, None);
-                        }
-                        store.reload(true);
-                    });
-                })));
-                crate::view::commands::name_undo(store, id, tr("Aus Batch nehmen"));
-            }
-            Err(e) => {
-                toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht herausgenommen."), &e).text, None);
+    off("leave-batch", move || {
+        let mut done: Vec<(String, Vec<(Uuid, usize)>)> = Vec::new();
+        for (batch, ids) in &groups {
+            match remote::leave_batch(batch, ids) {
+                Ok(places) if places.is_empty() => {}
+                Ok(places) => done.push((batch.clone(), places)),
+                Err(e) => return (done, Some(e)),
             }
         }
+        (done, None)
+    }, move |(done, error)| {
+        store.reload(true);
+        if let Some(e) = error {
+            toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht herausgenommen."), &e).text, None);
+        }
+        if done.is_empty() {
+            return;
+        }
+        let n: usize = done.iter().map(|(_, places)| places.len()).sum();
+        let name = match done.as_slice() {
+            [(batch, _)] => names.iter().find(|(b, _)| b == batch).and_then(|(_, name)| name.clone()),
+            _ => None,
+        };
+        let text = match (n, name) {
+            (1, Some(name)) => trf("1 Account aus „%@“ genommen", &[&name]),
+            (n, Some(name)) => trf("%1$lld Accounts aus „%2$@“ genommen", &[&n, &name]),
+            (1, None) => tr("1 Account aus seinem Batch genommen"),
+            (n, None) => trf("%lld Accounts aus ihren Batches genommen", &[&n]),
+        };
+        let back = Rc::new(RefCell::new(Some(done)));
+        let id = toast::show(store.ui, text, Some(EventHandler::new(move |_| {
+            let Some(done) = back.borrow_mut().take() else { return };
+            off("join-batch", move || done.iter().try_for_each(|(batch, places)| remote::rejoin_batch(batch, places)), move |result| {
+                if let Err(e) = result {
+                    toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht wieder aufgenommen."), &e).text, None);
+                }
+                store.reload(true);
+            });
+        })));
+        crate::view::commands::name_undo(store, id, tr("Aus Batch nehmen"));
     });
 }
 

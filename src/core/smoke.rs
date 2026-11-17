@@ -95,8 +95,7 @@ struct Progress {
     chat: bool,
 }
 
-/// Ends the game with this process however it ends: on Windows every child shares a job that closes with it, elsewhere
-/// an interrupt or termination stops the watch so the game is killed before the process exits.
+/// Ends the game with this process however it ends on Windows: every child shares a job that closes with it.
 fn tie_games() {
     #[cfg(windows)]
     unsafe {
@@ -113,13 +112,22 @@ fn tie_games() {
             AssignProcessToJobObject(job, GetCurrentProcess());
         }
     }
+}
+
+/// Once the game runs, the first interrupt or termination stops the watch so the game is killed before the process
+/// exits; a second one ends the process at once.
+fn stop_on_signal() {
     #[cfg(unix)]
     unsafe {
         extern "C" fn stop(_: libc::c_int) {
             STOPPED.store(true, Ordering::SeqCst);
         }
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = stop as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESETHAND;
+        libc::sigemptyset(&raw mut action.sa_mask);
         for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-            libc::signal(signal, stop as extern "C" fn(libc::c_int) as libc::sighandler_t);
+            libc::sigaction(signal, &raw const action, std::ptr::null_mut());
         }
     }
 }
@@ -165,6 +173,7 @@ fn run(args: &[String]) -> Result<i32> {
         }
     };
     let started = fleet.start_batch(&target, std::slice::from_ref(&account), companion, &report)?;
+    stop_on_signal();
     let key = match started.into_iter().next().map(|(_, outcome)| outcome) {
         Some(Ok(key)) => key,
         Some(Err(e)) => bail!("the game did not start: {e:#}"),

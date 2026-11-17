@@ -11,10 +11,11 @@ use crate::core::i18n::{tr, trf};
 use crate::ui::theme::{files, tint};
 use crate::view::drive::use_spot;
 use crate::view::kit::text::{caption, mono};
-use crate::view::kit::use_theme;
+use crate::view::kit::{after, use_theme};
 use crate::view::theme::{Theme, font, space};
 
 const MONO_ADVANCE: f32 = 0.62;
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// How many characters of the log font fit in `width`.
 pub fn columns(width: f32) -> usize {
@@ -28,6 +29,50 @@ pub fn row() -> f32 {
 
 /// Hits of a search: the line and the byte range of each, in line order.
 pub type Hits = Same<Vec<(usize, Range<usize>)>>;
+
+/// The wrapped rows of a log, kept between frames so appended lines wrap alone.
+#[derive(Clone, Default)]
+pub struct Wrapped(Rc<RefCell<Option<Kept>>>);
+
+struct Kept {
+    cols: usize,
+    lines: usize,
+    last: Option<Arc<str>>,
+    rows: Same<Vec<(usize, Range<usize>)>>,
+}
+
+impl Wrapped {
+    /// The first row of line `at` at `cols` characters, when those rows are kept.
+    pub fn row_of(&self, at: usize, cols: usize) -> Option<usize> {
+        self.0.borrow().as_ref().filter(|k| k.cols == cols).map(|k| k.rows.0.partition_point(|(l, _)| *l < at))
+    }
+
+    fn rows(&self, lines: &[Line], cols: usize) -> Same<Vec<(usize, Range<usize>)>> {
+        let mut held = self.0.borrow_mut();
+        let last = lines.last().map(|l| l.text.clone());
+        if let Some(k) = held.as_mut().filter(|k| k.cols == cols)
+            && let Some(now) = k.last.as_ref().and_then(|old| lines.iter().rposition(|l| Arc::ptr_eq(&l.text, old)))
+            && now < k.lines
+        {
+            let shift = k.lines - 1 - now;
+            if shift > 0 || now + 1 < lines.len() {
+                let rows = Arc::make_mut(&mut k.rows.0);
+                if shift > 0 {
+                    let gone = rows.partition_point(|(l, _)| *l < shift);
+                    rows.drain(..gone);
+                    rows.iter_mut().for_each(|(l, _)| *l -= shift);
+                }
+                rows.extend(wrap_rows(&lines[now + 1..], cols).into_iter().map(|(l, r)| (l + now + 1, r)));
+                k.lines = lines.len();
+                k.last = last;
+            }
+            return k.rows.clone();
+        }
+        let rows = Same(Arc::new(wrap_rows(lines, cols)));
+        *held = Some(Kept { cols, lines: lines.len(), last, rows: rows.clone() });
+        rows
+    }
+}
 
 #[derive(PartialEq)]
 struct Rows {
@@ -90,6 +135,8 @@ pub struct Viewer {
     pub lines: Same<Vec<Line>>,
     pub wrap: bool,
     pub cols: State<usize>,
+    pub stick: State<bool>,
+    pub wrapped: State<Wrapped>,
     pub version: u64,
     pub longest: usize,
     pub hits: Hits,
@@ -107,20 +154,10 @@ impl Component for Viewer {
         let height = row();
         let width = self.longest as f32 * font::CALLOUT * MONO_ADVANCE + space::S * 2.;
         let mut cols = self.cols;
+        let mut stick = self.stick;
         let fit = *cols.read();
-        let cache = use_hook(|| Rc::new(RefCell::new(None::<((usize, u64, usize), Same<Vec<(usize, Range<usize>)>>)>)));
-        let rows = (self.wrap && fit > 0).then(|| {
-            let key = (Arc::as_ptr(&self.lines.0) as *const () as usize, self.version, fit);
-            let mut held = cache.borrow_mut();
-            match held.as_ref() {
-                Some((have, rows)) if *have == key => rows.clone(),
-                _ => {
-                    let rows = Same(Arc::new(wrap_rows(&self.lines.0, fit)));
-                    *held = Some((key, rows.clone()));
-                    rows
-                }
-            }
-        });
+        let measured = use_hook(|| Rc::new(std::cell::Cell::new(0usize)));
+        let rows = (self.wrap && fit > 0).then(|| self.wrapped.peek().rows(&self.lines.0, fit));
         let count = rows.as_ref().map_or(self.lines.0.len(), |r| r.0.len());
         let data = Rows { theme: t.clone(), lines: self.lines.clone(), rows, version: self.version, hits: self.hits.clone(), current: self.current, width };
         let keys = move |e: Event<KeyboardEventData>| {
@@ -148,7 +185,22 @@ impl Component for Viewer {
             .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
             .overflow(Overflow::Clip)
             .on_sized(move |e: Event<SizedEventData>| {
-                cols.set_if_modified(columns(e.area.width()));
+                let fit = columns(e.area.width());
+                let was = measured.replace(fit);
+                if fit != *cols.peek() && fit != was {
+                    let measured = measured.clone();
+                    let settle = if *cols.peek() == 0 { std::time::Duration::ZERO } else { SETTLE };
+                    spawn_in_window(async move {
+                        after(settle).await;
+                        if measured.get() != fit || cols.try_peek().is_none_or(|c| *c == fit) {
+                            return;
+                        }
+                        if super::logs::at_end(controller) {
+                            stick.set(true);
+                        }
+                        cols.set(fit);
+                    });
+                }
                 spot(e);
             })
             .on_mouse_down(move |_| a11y.request_focus())
@@ -157,5 +209,27 @@ impl Component for Viewer {
             frame = frame.child(rect().width(Size::fill()).padding((space::XS, space::S)).child(caption(&t, trf("Ältere Zeilen stehen nur in der Datei. Gezeigt werden die letzten %lld.", &[&files::LOG_LINES]))));
         }
         frame.child(rect().width(Size::fill()).height(Size::flex(1.)).padding((space::XS, 0.)).child(VirtualScrollView::new_with_data_controlled(data, line_at, controller).length(count).item_size(height).scroll_with_arrows(false).width(Size::fill()).height(Size::fill()))).content(Content::flex())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::logs_lines::split;
+    use super::*;
+
+    #[test]
+    fn kept_rows_follow_appends_and_a_dropped_front_like_a_fresh_wrap() {
+        let kept = Wrapped::default();
+        let mut lines = split("one two three four\nfive\nsix seven eight nine ten");
+        assert_eq!(kept.rows(&lines, 8).0.as_slice(), wrap_rows(&lines, 8).as_slice());
+        lines.extend(split("eleven twelve thirteen\nfourteen"));
+        assert_eq!(kept.rows(&lines, 8).0.as_slice(), wrap_rows(&lines, 8).as_slice());
+        lines.drain(..2);
+        lines.extend(split("fifteen sixteen"));
+        assert_eq!(kept.rows(&lines, 8).0.as_slice(), wrap_rows(&lines, 8).as_slice());
+        assert_eq!(kept.row_of(2, 8), wrap_rows(&lines, 8).iter().position(|(l, _)| *l == 2));
+        assert_eq!(kept.rows(&lines, 5).0.as_slice(), wrap_rows(&lines, 5).as_slice());
+        let fresh = split("one two three four\nfive");
+        assert_eq!(kept.rows(&fresh, 5).0.as_slice(), wrap_rows(&fresh, 5).as_slice());
     }
 }

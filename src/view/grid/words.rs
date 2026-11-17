@@ -257,7 +257,14 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
         Need::Crashed | Need::Failed => (pick("Alle starten", "Starten"), Fix::Events(vec![Event::StartMany(keys.to_vec())])),
-        Need::Banned => (tr("Aus Batch nehmen"), Fix::Leave(keys.to_vec())),
+        Need::Banned => {
+            let batched: Vec<String> = keys.iter().filter(|k| m.games.get(*k).is_some_and(|g| m.batch(&g.batch_id).is_some())).cloned().collect();
+            if batched.is_empty() {
+                return None;
+            }
+            let label = if batched.len() > 1 { tr("Alle aus Batch nehmen") } else { tr("Aus Batch nehmen") };
+            (label, Fix::Leave(batched))
+        }
     })
 }
 

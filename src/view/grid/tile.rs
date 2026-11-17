@@ -320,7 +320,7 @@ impl Component for Tile {
         } else {
             let name = line(&t, self.name.clone(), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
             let mut row = rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(LEAD).child(head).child(name).content(Content::flex());
-            if let Some(g) = mark(&game.phase).filter(|_| tinted) {
+            if let Some(g) = mark(&game.phase) {
                 row = row.child(icon(&t, g, iconsize::XS, tone));
             } else if let Some(c) = signal.filter(|_| !stopped) {
                 row = row.child(dot(c));

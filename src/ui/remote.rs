@@ -484,12 +484,32 @@ pub fn join_batch(batch_id: &str, ids: &[Uuid]) -> Result<Vec<Uuid>> {
 }
 
 /// Takes the accounts of `ids` out of batch `batch_id` again, for undoing [`join_batch`].
-pub fn leave_batch(batch_id: &str, ids: &[Uuid]) -> Result<()> {
+pub fn leave_batch(batch_id: &str, ids: &[Uuid]) -> Result<Vec<(Uuid, usize)>> {
     saved(|| {
-        let Some(mut b) = batch::load_all()?.into_iter().find(|b| b.id == batch_id) else { return Ok(()) };
-        let before = b.accounts.len();
-        b.accounts.retain(|a| !ids.contains(a));
-        if b.accounts.len() != before {
+        let Some(mut b) = batch::load_all()?.into_iter().find(|b| b.id == batch_id) else { return Ok(Vec::new()) };
+        let places: Vec<(Uuid, usize)> = b.accounts.iter().enumerate().filter(|(_, a)| ids.contains(a)).map(|(at, a)| (*a, at)).collect();
+        if !places.is_empty() {
+            b.accounts.retain(|a| !ids.contains(a));
+            batch::save(&b)?;
+        }
+        Ok(places)
+    })
+}
+
+/// Puts accounts back into batch `batch_id` at the places [`leave_batch`] took them from.
+pub fn rejoin_batch(batch_id: &str, places: &[(Uuid, usize)]) -> Result<()> {
+    saved(|| {
+        let known = account::load()?;
+        let mut b = batch::load_all()?.into_iter().find(|b| b.id == batch_id).ok_or_else(|| gone(crate::core::i18n::tr("Diesen Batch gibt es nicht mehr.")))?;
+        let mut places = places.to_vec();
+        places.sort_by_key(|(_, at)| *at);
+        let mut changed = false;
+        for (id, at) in places {
+            if known.iter().any(|a| a.id == id) {
+                changed |= b.rejoin(id, at);
+            }
+        }
+        if changed {
             batch::save(&b)?;
         }
         Ok(())
@@ -963,7 +983,7 @@ pub fn delete_batch(b: &Batch) -> Result<String> {
     saved(|| fleet::delete_batch(b))
 }
 
-/// Brings a deleted batch back as it was, from the Papierkorb when it lies there; refuses plainly when its instance is gone.
+/// Brings a deleted batch back from the Papierkorb; refuses plainly when its instance or its Papierkorb entry is gone.
 pub fn restore_batch(b: &Batch) -> Result<()> {
     saved(|| {
         if !setup::load_all()?.iter().any(|i| i.id == b.instance_id) {
@@ -971,7 +991,8 @@ pub fn restore_batch(b: &Batch) -> Result<()> {
         }
         match batch::trashed()?.into_iter().find(|t| t.batch.id == b.id) {
             Some(t) => batch::untrash(&t.entry).map(|_| ()),
-            None => batch::restore(b),
+            None if batch::load_all()?.iter().any(|x| x.id == b.id) => Ok(()),
+            None => Err(gone(tr("Das liegt nicht mehr im Papierkorb."))),
         }
     })
 }
