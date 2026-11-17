@@ -62,14 +62,25 @@ pub fn plain(runs: &[Run]) -> String {
     runs.iter().map(|r| r.text.as_str()).collect()
 }
 
-/// `text` with private-use characters, which only a resource pack can draw, replaced by U+FFFD.
+/// `text` without private-use characters, which only a resource pack can draw, and without the double space one leaves behind.
 pub fn printable(text: &str) -> std::borrow::Cow<'_, str> {
     let private = |c: char| matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}');
-    if text.chars().any(private) {
-        std::borrow::Cow::Owned(text.chars().map(|c| if private(c) { '\u{FFFD}' } else { c }).collect())
-    } else {
-        std::borrow::Cow::Borrowed(text)
+    if !text.chars().any(private) {
+        return std::borrow::Cow::Borrowed(text);
     }
+    let mut out = String::with_capacity(text.len());
+    let mut dropped = false;
+    for c in text.chars() {
+        if private(c) {
+            dropped = true;
+        } else if c == ' ' && dropped && out.chars().last().is_none_or(|p| p == ' ') {
+            continue;
+        } else {
+            out.push(c);
+            dropped = false;
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Whether a line needs runs to show as the game does: styled runs came, or the text holds `§` codes.
@@ -133,8 +144,12 @@ mod tests {
     }
 
     #[test]
-    fn private_use_characters_become_replacement_marks() {
-        assert_eq!(printable("a\u{E000}b\u{F8FF}c\u{F0001}"), "a\u{FFFD}b\u{FFFD}c\u{FFFD}");
+    fn private_use_characters_are_dropped_without_a_double_space() {
+        assert_eq!(printable("a\u{E000}b\u{F8FF}c\u{F0001}"), "abc");
+        assert_eq!(printable("[VIP] \u{E000} Notch"), "[VIP] Notch");
+        assert_eq!(printable("\u{E000} Notch"), "Notch");
+        assert_eq!(printable("a  b \u{E001}"), "a  b ");
+        assert_eq!(printable("\u{E000}"), "");
         assert!(matches!(printable("hallo ★ 你好 😀"), std::borrow::Cow::Borrowed(_)));
     }
 
