@@ -1918,7 +1918,6 @@
   "In dieser Datei ist keine Welt.": "There is no world in this file.",
   "Wird exportiert…": "Exporting…",
   "Exportieren…": "Export…",
-  "Zum Spiel wechseln": "Switch to game",
   "Standard-Account verwenden": "Use default account",
   "Updates prüfen": "Check for updates",
   "Erst nach dem Beenden änderbar": "Can be changed once the game has quit",
@@ -2146,5 +2145,16 @@
   "Shader brauchen %@. Ohne laden sie nicht.": "Shaders need %@. They do not load without it.",
   "%@ hinzufügen…": "Add %@…",
   "%@ einschalten": "Turn on %@",
-  "Ordner": "Folder"
+  "Ordner": "Folder",
+  "Startet …": "Starting …",
+  "Stoppt …": "Stopping …",
+  "Zum Spiel": "Go to game",
+  "Erneut spielen": "Play again",
+  "Das Spiel startet.": "The game is starting.",
+  "Läuft seit %@": "Running for %@",
+  "Von Batch %@ genutzt": "Used by batch %@",
+  "Start fehlgeschlagen": "Start failed",
+  "„%@“ erneut spielen": "Play “%@” again",
+  "%1$lld laufen seit %2$@": "%1$lld running for %2$@",
+  "„%@“ sofort beenden · Nicht Gespeichertes geht verloren": "Force quit “%@” · Unsaved progress is lost"
 }

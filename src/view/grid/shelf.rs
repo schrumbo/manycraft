@@ -15,7 +15,7 @@ use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
 use crate::view::drive::use_spot;
 use crate::view::icons::Icon;
-use crate::view::instance::InstanceIcon;
+use crate::view::instance::{InstanceIcon, Mini};
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Menu};
 use crate::view::kit::text::{body, secondary};
@@ -213,11 +213,7 @@ impl Component for Card {
             .child(secondary(&t, status).max_lines(1).text_overflow(TextOverflow::Ellipsis));
         c = c.child(InstanceIcon { id: e.id.clone(), name: e.name.clone(), picture: e.picture.clone(), side }).child(text).content(Content::flex());
         if *hovered.read() {
-            let id = e.id.clone();
-            let action = match e.running.clone() {
-                Some(key) => Button::icon(format!("shelf.{id}.stop"), Icon::Stop, tr("Stoppen")).not_focusable().tip(trf("„%@“ stoppen", &[&e.name])).on_press(move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))),
-                None => Button::icon(format!("shelf.{id}.play"), Icon::Play, tr("Spielen")).primary().not_focusable().tip(trf("„%@“ spielen", &[&e.name])).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: id.clone(), account: None })),
-            };
+            let action = Mini { id: e.id.clone(), name: e.name.clone(), spot: "shelf".into(), plain: false };
             c = c.child(action);
         }
         c

@@ -1,6 +1,7 @@
 //! The page of one instance: its tabs on the left, and on the right what runs, how to play it and what to do with it.
 
 pub(crate) mod actions;
+mod crash;
 mod icon;
 mod inspector;
 mod logs;
@@ -26,7 +27,7 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 pub use self::icon::InstanceIcon;
-pub use self::play::Hero;
+pub use self::play::{Hero, Mini, play_now};
 pub use self::title::{Tabs, Title};
 use self::inspector::{Inspector, Strip};
 use super::commands::{Extra, Shortcut};
@@ -38,7 +39,7 @@ use super::store::{Store, use_store};
 use super::theme::{frame, iconsize, space};
 use super::ui::{Filter, Page};
 use crate::app::event::Event;
-use crate::app::model::{Game, Model};
+use crate::app::model::{Game, Model, Phase};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::core::modrinth::Kind;
@@ -132,6 +133,8 @@ pub struct Nav {
     /// When each running game was first seen running, by key.
     pub up: State<HashMap<String, Instant>>,
     pub advanced: State<bool>,
+    /// Per instance: when Play was last pressed, so a second press right after is ignored.
+    pub played: State<HashMap<String, Instant>>,
     /// Counts changes to instance files on disk, so tabs read them again.
     pub changed: State<u64>,
     /// What the shown tab adds to the palette, such as commands on its selection; set through [`use_extras`].
@@ -157,6 +160,7 @@ impl Nav {
             notes: State::create(HashMap::new()),
             up: State::create(HashMap::new()),
             advanced: State::create(false),
+            played: State::create(HashMap::new()),
             changed: State::create(0),
             tab_extras: State::create(Vec::new()),
             queue: State::create(VecDeque::new()),
@@ -187,12 +191,28 @@ pub struct Facts {
     pub stopping: Option<(String, bool)>,
     /// What went wrong with its last game played alone, while none runs.
     pub trouble: Option<String>,
+    /// Which end its last game played alone came to, while none runs.
+    pub ended: Option<Ended>,
+    /// Games played alone that are on their way: no window yet, or waiting for a restart; by key.
+    pub launching: Vec<String>,
+    /// How far Minecraft's files are installed for the game on its way, while they are.
+    pub loading: Option<u8>,
+    /// What the games played alone that run hold in memory, in MB; 0 before the first reading.
+    pub memory_mb: u64,
     /// Accounts that have to sign in again before they can play.
     pub expired: Vec<Uuid>,
     /// Accounts whose game of it runs in a batch, with the batch's name; they cannot play it alone now.
     pub busy: Vec<(Uuid, String)>,
     /// The account Play starts: `solo`, or the first free one while `solo` is busy or has to sign in again.
     pub pick: Option<Uuid>,
+}
+
+/// How a game played alone ended without the person stopping it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    Crashed,
+    Failed,
+    SignIn,
 }
 
 impl Facts {
@@ -231,11 +251,24 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
     } else {
         None
     };
+    let ended = if live.is_empty() {
+        m.solo_games(&made.id).find(|g| Some(g.account_id) == solo && g.phase.needs_attention()).and_then(|g| match g.phase {
+            Phase::Crashed { .. } => Some(Ended::Crashed),
+            Phase::Failed { .. } => Some(Ended::Failed),
+            Phase::LoginNeeded => Some(Ended::SignIn),
+            _ => None,
+        })
+    } else {
+        None
+    };
+    let launching: Vec<String> = live.iter().filter(|g| !g.stopping && matches!(g.phase, Phase::Starting { .. } | Phase::Restarting { .. })).map(|g| g.key.clone()).collect();
+    let memory_mb = live.iter().filter_map(|g| m.session.usage.get(&g.key)).sum();
+    let loading = loading(m, &made.id);
     let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
     let expired: Vec<Uuid> = m.accounts.iter().filter(|a| m.sign_in_expired(a.id)).map(|a| a.id).collect();
     let busy: Vec<(Uuid, String)> = m.accounts.iter().filter_map(|a| m.playing_elsewhere(&made.id, a.id, &crate::core::fleet::solo_key(&made, a.id)).map(|place| (a.id, place))).collect();
     let pick = crate::app::reduce::solo_pick(m, &made);
-    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, expired, busy, pick })
+    Some(Facts { made, batches, accounts, solo, pinned, running, playing, stoppable, stopping, trouble, ended, launching, loading, memory_mb, expired, busy, pick })
 }
 
 /// Why changes to the instance wait: work on it, or games that run.
@@ -285,6 +318,20 @@ pub fn uptime_text(since: Instant) -> Option<String> {
     })
 }
 
+/// "Läuft seit 12 Min. · 1,8 GB" for the games of the instance played alone that run, since `since`; nothing while
+/// none has a window.
+pub fn running_line(f: &Facts, since: Option<Instant>) -> Option<String> {
+    let running = f.stoppable.iter().filter(|(k, _)| !f.launching.contains(k)).count();
+    let head = match (running, since.and_then(uptime_text)) {
+        (0, _) => return None,
+        (1, None) => tr("Läuft"),
+        (1, Some(up)) => trf("Läuft seit %@", &[&up]),
+        (n, None) => trf("%lld laufen", &[&n]),
+        (n, Some(up)) => trf("%1$lld laufen seit %2$@", &[&n, &up]),
+    };
+    Some(if f.memory_mb > 0 { format!("{head} · {}", crate::ui::forms::memory_label(u32::try_from(f.memory_mb).unwrap_or(u32::MAX))) } else { head })
+}
+
 /// "Minecraft 26.3 · Fabric · 12 Mods" for the toolbar, without what the name already says.
 pub fn subtitle(made: &Instance) -> String {
     let mut parts = Vec::new();
@@ -318,7 +365,7 @@ impl Component for Uptime {
     fn render(&self) -> impl IntoElement {
         let store = use_store();
         let mut up = store.ui.instance.up;
-        let running: Vec<String> = store.model.read().games.values().filter(|g| g.phase.is_running()).map(|g| g.key.clone()).collect();
+        let running: Vec<String> = store.model.read().games.values().filter(|g| g.phase.is_running() && !matches!(g.phase, Phase::Starting { .. })).map(|g| g.key.clone()).collect();
         use_side_effect_with_deps(&running, move |running| {
             let now = Instant::now();
             let fresh = up.peek().len() != running.len() || running.iter().any(|k| !up.peek().contains_key(k));
@@ -503,10 +550,10 @@ pub fn extras(store: Store) -> Vec<Extra> {
     }
     let rename_id = id.clone();
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
-    let play_key = Some(Shortcut::primary(Code::KeyR));
+    let play_key = Some(Shortcut::primary(Code::Enter));
     let pick = play::pick(&f).filter(|_| f.stoppable.is_empty() && f.stopping.is_none());
-    if let Some((key, _)) = f.stoppable.first().cloned().filter(|_| crate::core::game_window::CAN_RAISE) {
-        push("raise", tr("Zum Spiel wechseln"), Icon::External, play_key, EventHandler::new(move |_| store.dispatch(Event::Raise(key.clone()))));
+    if let Some((key, _)) = f.stoppable.iter().find(|(k, _)| !f.launching.contains(k)).cloned().filter(|_| crate::core::game_window::CAN_RAISE) {
+        push("raise", tr("Zum Spiel"), Icon::External, play_key, EventHandler::new(move |_| store.dispatch(Event::Raise(key.clone()))));
     }
     for (account, who) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a) && f.busy_in(*a).is_none()) {
         let (instance, account) = (id.clone(), *account);
@@ -514,7 +561,7 @@ pub fn extras(store: Store) -> Vec<Extra> {
         if f.expired.contains(&account) {
             push(&format!("play.{account}"), trf("Anmelden als %@", &[who]), Icon::LogIn, play_key.filter(|_| first), EventHandler::new(move |_| crate::view::accounts::sign_in(store, vec![account])));
         } else {
-            push(&format!("play.{account}"), trf("Spielen als %@", &[who]), Icon::Play, play_key.filter(|_| first), EventHandler::new(move |_| store.dispatch(Event::PlayInstance { instance: instance.clone(), account: Some(account) })));
+            push(&format!("play.{account}"), trf("Spielen als %@", &[who]), Icon::Play, play_key.filter(|_| first), EventHandler::new(move |_| play::play_now(store, &instance, Some(account))));
         }
     }
     if let Some(solo) = f.solo.filter(|_| f.accounts.len() > 1) {
@@ -559,8 +606,39 @@ pub fn use_extras(extras: Vec<Extra>) {
 
 #[cfg(test)]
 mod tests {
-    use super::version_text;
+    use super::{Ended, Facts, running_line, version_text};
     use crate::core::versions::{GameVersion, Kind};
+
+    fn facts(stoppable: &[&str], launching: &[&str], memory_mb: u64) -> Facts {
+        Facts {
+            made: crate::core::instance::Instance::new("A", "26.3", crate::core::instance::Loader::Vanilla),
+            batches: Vec::new(),
+            accounts: Vec::new(),
+            solo: None,
+            pinned: false,
+            running: true,
+            playing: Vec::new(),
+            stoppable: stoppable.iter().map(|k| ((*k).to_owned(), String::new())).collect(),
+            stopping: None,
+            trouble: None,
+            ended: None::<Ended>,
+            launching: launching.iter().map(|k| (*k).to_owned()).collect(),
+            loading: None,
+            memory_mb,
+            expired: Vec::new(),
+            busy: Vec::new(),
+            pick: None,
+        }
+    }
+
+    #[test]
+    fn the_running_line_names_uptime_and_memory_only_for_games_with_a_window() {
+        assert_eq!(running_line(&facts(&[], &[], 0), None), None);
+        assert_eq!(running_line(&facts(&["k"], &["k"], 900), None), None);
+        assert_eq!(running_line(&facts(&["k"], &[], 0), None), Some(crate::core::i18n::tr("Läuft")));
+        assert!(running_line(&facts(&["k"], &[], 1843), None).is_some_and(|t| t.ends_with(" GB") && t.contains(" · ")));
+        assert!(running_line(&facts(&["a", "b"], &[], 0), None).is_some_and(|t| t.contains('2')));
+    }
 
     #[test]
     fn every_kind_has_one_name_in_every_picker() {
