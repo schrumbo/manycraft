@@ -20,7 +20,7 @@ use crate::view::theme::{font, frame, iconsize, space};
 fn reason(dir: &std::path::Path, account: Option<Uuid>) -> Option<String> {
     let (_, _, files) = super::logs_lines::scan(dir, &[], account);
     let since = files.iter().find(|f| f.kind == Kind::Latest).and_then(|f| logs::born(&f.path)).and_then(|at| at.duration_since(SystemTime::UNIX_EPOCH).ok()).and_then(|d| i64::try_from(d.as_secs()).ok());
-    files.into_iter().filter(|f| f.kind == Kind::Crash && since.is_none_or(|s| f.modified >= s - 1)).max_by_key(|f| f.modified).and_then(|f| f.reason)
+    files.into_iter().filter(|f| f.kind == Kind::Crash && since.is_some_and(|s| f.modified >= s - 1)).max_by_key(|f| f.modified).and_then(|f| f.reason)
 }
 
 /// "Abgestürzt" or "Start fehlgeschlagen" with its reason and Protokoll ansehen.
@@ -35,18 +35,19 @@ impl Component for Banner {
         let store = use_store();
         let mut tab = store.ui.instance.tab;
         let mut found = use_state(|| None::<(String, Option<String>)>);
+        let mut latest = use_state(String::new);
         let f = facts(&store.model.read(), &self.id);
         let crashed = f.as_ref().is_some_and(|f| f.ended == Some(Ended::Crashed));
         let key = format!("{}|{:?}|{}", self.id, f.as_ref().and_then(|f| f.solo), f.as_ref().and_then(|f| f.trouble.clone()).unwrap_or_default());
         let (dir, account) = (f.as_ref().map(|f| f.made.dir()), f.as_ref().and_then(|f| f.solo));
-        use_side_effect_with_deps(&(key.clone(), crashed), move |(key, crashed)| {
-            let (key, dir) = (key.clone(), dir.clone());
-            if !*crashed || dir.is_none() {
-                return;
-            }
+        use_side_effect_with_deps(&(key.clone(), crashed, dir, account), move |(key, crashed, dir, account)| {
+            let (key, account) = (key.clone(), *account);
+            let Some(dir) = dir.clone().filter(|_| *crashed) else { return };
+            latest.set(key.clone());
             spawn(async move {
-                let Some(dir) = dir else { return };
-                if let Some(read) = off_ui(move || reason(&dir, account)).await {
+                if let Some(read) = off_ui(move || reason(&dir, account)).await
+                    && *latest.peek() == key
+                {
                     found.set(Some((key, read)));
                 }
             });

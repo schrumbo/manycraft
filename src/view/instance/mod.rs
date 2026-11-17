@@ -252,9 +252,7 @@ pub fn facts(m: &Model, id: &str) -> Option<Facts> {
         None
     };
     let ended = if live.is_empty() {
-        let mut gone: Vec<&Game> = m.solo_games(&made.id).filter(|g| g.phase.needs_attention()).collect();
-        gone.sort_by_key(|g| Some(g.account_id) != solo);
-        gone.first().and_then(|g| match g.phase {
+        m.solo_games(&made.id).find(|g| Some(g.account_id) == solo && g.phase.needs_attention()).and_then(|g| match g.phase {
             Phase::Crashed { .. } => Some(Ended::Crashed),
             Phase::Failed { .. } => Some(Ended::Failed),
             Phase::LoginNeeded => Some(Ended::SignIn),
@@ -554,8 +552,8 @@ pub fn extras(store: Store) -> Vec<Extra> {
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));
     let play_key = Some(Shortcut::primary(Code::Enter));
     let pick = play::pick(&f).filter(|_| f.stoppable.is_empty() && f.stopping.is_none());
-    if let Some((key, _)) = f.stoppable.first().cloned().filter(|_| crate::core::game_window::CAN_RAISE) {
-        push("raise", tr("Zum Spiel wechseln"), Icon::External, play_key, EventHandler::new(move |_| store.dispatch(Event::Raise(key.clone()))));
+    if let Some((key, _)) = f.stoppable.iter().find(|(k, _)| !f.launching.contains(k)).cloned().filter(|_| crate::core::game_window::CAN_RAISE) {
+        push("raise", tr("Zum Spiel"), Icon::External, play_key, EventHandler::new(move |_| store.dispatch(Event::Raise(key.clone()))));
     }
     for (account, who) in f.accounts.iter().filter(|(a, _)| !f.playing.contains(a) && f.busy_in(*a).is_none()) {
         let (instance, account) = (id.clone(), *account);

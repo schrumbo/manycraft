@@ -371,7 +371,7 @@ impl Component for Mini {
                 Button::icon(format!("{key}.cancel"), Icon::Stop, trf("„%@“ abbrechen", &[&name])).disabled(keys.is_empty().then(|| starting())).on_press(move |_| stop_keys(store, keys.clone()))
             }
             Play::Running { keys, .. } => Button::icon(format!("{key}.stop"), Icon::Stop, trf("„%@“ stoppen", &[&name])).on_press(move |_| stop_keys(store, keys.clone())),
-            Play::Stopping { key: game, overdue: true } => Button::icon(format!("{key}.stop"), Icon::Stop, tr("Sofort beenden")).danger().on_press(move |_| stop_keys(store, vec![game.clone()])),
+            Play::Stopping { key: game, overdue: true } => Button::icon(format!("{key}.stop"), Icon::Stop, trf("„%@“ sofort beenden · Nicht Gespeichertes geht verloren", &[&name])).danger().on_press(move |_| stop_keys(store, vec![game.clone()])),
             Play::Stopping { .. } => Button::icon(format!("{key}.stop"), Icon::Stop, tr("Stoppt …")).busy(true).disabled(Some(saving())),
         };
         let button = if self.plain { button.plain() } else { button };
