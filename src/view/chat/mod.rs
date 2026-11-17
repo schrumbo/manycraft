@@ -21,9 +21,11 @@ use super::kit::field::Field;
 use super::kit::select::Select;
 use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
-use super::kit::{Bounds, ring, use_theme};
+use super::kit::menu::{self, Item, Menu};
+use super::kit::{Bounds, open_external, ring, toast, use_theme};
+use super::native;
 use super::store::{Store, use_store};
-use super::theme::{Theme, color, control, font, frame, iconsize, space};
+use super::theme::{Theme, color, control, font, frame, iconsize, level, space};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{ChatLine, Model};
 use crate::core::batch::MAX_CHAT_CHARS;
@@ -44,6 +46,8 @@ const POPUP_ROWS: f32 = 10.;
 const TAG_MAX: f32 = 180.;
 const MENTION_MIN: usize = 3;
 const HEARD_MAX: usize = 3;
+const LINK_SHOWN: usize = 40;
+const GLYPH: f32 = 0.5;
 const READING: f32 = control::READING;
 
 /// The page's state, kept while other pages show so the draft, the history and the recipient survive.
@@ -62,6 +66,8 @@ pub struct Shared {
     pub rejected: State<Option<(String, String)>>,
     /// How many of the newest lines the list holds.
     pub shown: State<usize>,
+    /// The first line held while the list is scrolled away from the newest, so arriving lines do not push it out.
+    pub top: State<Option<u64>>,
     pub focus: State<Option<Instant>>,
     /// Whether the recipient pop-up is open, its filter and the entry lit in it.
     pub picker: State<bool>,
@@ -91,6 +97,7 @@ impl Shared {
             sent: State::create(None),
             rejected: State::create(None),
             shown: State::create(PAGE),
+            top: State::create(None),
             focus: State::create(None),
             picker: State::create(false),
             query: State::create(String::new()),
@@ -243,6 +250,7 @@ fn set_batch(store: Store, batch: Option<String>) {
     }
     shared.batch.set(batch);
     shared.shown.set(PAGE);
+    shared.top.set(None);
 }
 
 /// Opens the page with the message field focused.
@@ -334,7 +342,11 @@ impl Component for ChatPage {
             }
         } else {
             let shown = (*shared.shown.read()).min(ids.len());
-            let older = ids.len() - shown;
+            let mut older = ids.len() - shown;
+            if let Some(top) = *shared.top.read() {
+                older = older.min(ids.partition_point(|id| *id < top));
+            }
+            let back = older.checked_sub(1).map(|last| ids[last.saturating_sub(PAGE - 1)]);
             let window: Vec<ChatLine> = ids[older..].iter().filter_map(|id| m.chat.get((id - base) as usize).cloned()).collect();
             let names = if m.batches.len() > 1 && batch.is_none() { m.batches.iter().map(|b| (b.id.clone(), b.name.clone())).collect() } else { Vec::new() };
             let running = running_by_batch(&m);
@@ -352,7 +364,7 @@ impl Component for ChatPage {
                 })
                 .collect();
             let mark = mark_at.and_then(|at| ids[older..].iter().skip(1).find(|id| **id >= at).copied());
-            Lines { rows, older, mark }.into_element()
+            Lines { rows, older, back, mark }.into_element()
         };
         let mut main = rect().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
         if broadcast {
@@ -477,6 +489,8 @@ struct Line {
 struct Lines {
     rows: Vec<Line>,
     older: usize,
+    /// The line "ältere Zeilen" reaches back to.
+    back: Option<u64>,
     /// The first line that came while the page was away, marked as new.
     mark: Option<u64>,
 }
@@ -489,6 +503,13 @@ impl Component for Lines {
         let mut follow = use_state(|| true);
         let mut away = use_state(|| None::<u64>);
         let mut tall = use_state(|| (0f32, 0f32));
+        let mut known = use_state(HashMap::<u64, f32>::new);
+        let mut measured = use_state(|| 0f32);
+        let mut top = store.ui.chat.top;
+        let first = self.rows.first().map(|r| r.id);
+        let mut head = use_state(|| first);
+        use_side_effect_with_deps(&first, move |first| head.set(*first));
+        use_drop(move || top.set(None));
         use_side_effect(move || {
             let Some((content, viewport)) = *scroll.bounds.read() else { return };
             let y = scroll.position().y;
@@ -507,35 +528,60 @@ impl Component for Lines {
                     (m.chat_base() + m.chat.len() as u64).checked_sub(1)
                 };
                 away.set(if at_end { None } else { newest });
+                top.set(if at_end { None } else { *head.peek() });
             }
         });
         let at_end = *follow.read();
         let fresh = away.read().map_or(0, |from| self.rows.iter().filter(|r| r.id > from).count());
         let now = now();
-        let mut list = rect().width(Size::fill()).padding((space::S, space::S, space::M, space::S));
+        let mut entries = vec![Entry::Edge(space::S)];
         if self.older > 0 {
-            let mut shown = store.ui.chat.shown;
-            let more = self.older.min(PAGE);
-            list = list.child(rect().width(Size::fill()).padding(space::S).center().child(Button::new("chat.older", if more == 1 { tr("1 ältere Zeile zeigen") } else { trf("%lld ältere Zeilen zeigen", &[&more]) }).plain().on_press(move |_| {
-                let now = *shown.peek();
-                shown.set(now + PAGE);
-            })));
+            entries.push(Entry::Older(self.older.min(PAGE), self.back));
         }
         let mut before: Option<i64> = None;
         for r in &self.rows {
             let mut stamp = before.is_none_or(|b| b.div_euclid(60) != r.line.at.div_euclid(60));
             if before.is_none_or(|b| !same_day(b, r.line.at)) {
-                list = list.child(separator(&t, day_title(r.line.at, now), t.text3, t.separator));
+                entries.push(Entry::Day(r.id, day_title(r.line.at, now)));
                 stamp = true;
             }
             if self.mark == Some(r.id) {
-                list = list.child(separator(&t, tr("Neue Zeilen"), t.accent_text, t.accent.with_af32(0.5)));
+                entries.push(Entry::Fresh(r.id));
                 stamp = true;
             }
             before = Some(r.line.at);
-            list = list.child(Row { row: r.clone(), stamp }.into_element());
+            entries.push(Entry::Line(r.clone(), stamp));
         }
-        let mut wrap = rect().width(Size::fill()).height(Size::fill()).child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(list));
+        entries.push(Entry::Edge(space::M));
+        let width = *measured.read();
+        let sizes = entries.iter().map(|e| known.read().get(&e.key()).copied().unwrap_or_else(|| e.guess(width))).collect::<Vec<f32>>();
+        let n = entries.len();
+        let theme = t.clone();
+        let shown = store.ui.chat.shown;
+        let list = VirtualScrollView::new_with_data_controlled(
+            entries,
+            move |item: VirtualItem, entries: &Vec<Entry>| {
+                let entry = &entries[item.index];
+                let key = entry.key();
+                rect().key(key).width(Size::fill()).padding((0., space::S)).on_sized(move |e: Event<SizedEventData>| remember_height(known, key, Bounds::of(&e).h)).child(entry.draw(&theme, shown, top)).into_element()
+            },
+            scroll,
+        )
+        .length(n)
+        .item_size(move |i: usize| sizes.get(i).copied().unwrap_or(0.))
+        .width(Size::fill())
+        .height(Size::fill());
+        let mut wrap = rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .on_sized(move |e: Event<SizedEventData>| {
+                let w = Bounds::of(&e).w;
+                if (w - *measured.peek()).abs() >= 1. {
+                    measured.set(w);
+                    known.write().clear();
+                }
+            })
+            .child(list);
         if !at_end {
             let label = match fresh {
                 0 => tr("Zu den neuesten"),
@@ -545,6 +591,7 @@ impl Component for Lines {
             wrap = wrap.child(
                 rect()
                     .position(Position::new_absolute().left(0.).bottom(space::M))
+                    .layer(Layer::Relative(level::FLOAT))
                     .width(Size::fill())
                     .main_align(Alignment::Center)
                     .horizontal()
@@ -552,10 +599,79 @@ impl Component for Lines {
                         scroll.scroll_to(ScrollPosition::End, Direction::Vertical);
                         follow.set(true);
                         away.set(None);
+                        top.set(None);
                     })),
             );
         }
         wrap
+    }
+}
+
+/// One item of the virtual list: a chat line, a day or new-lines divider, the button for older lines, or room at an end.
+#[derive(Clone, PartialEq)]
+enum Entry {
+    Edge(f32),
+    Older(usize, Option<u64>),
+    Day(u64, String),
+    Fresh(u64),
+    Line(Line, bool),
+}
+
+impl Entry {
+    fn key(&self) -> u64 {
+        match self {
+            Self::Edge(h) => u64::MAX - u64::from(*h > space::S),
+            Self::Older(..) => u64::MAX - 2,
+            Self::Day(id, _) => id * 4 + 1,
+            Self::Fresh(id) => id * 4 + 2,
+            Self::Line(l, _) => l.id * 4,
+        }
+    }
+
+    /// The height before the item was laid out once: one line per row, more for long text in a narrow list.
+    fn guess(&self, width: f32) -> f32 {
+        match self {
+            Self::Edge(h) => *h,
+            Self::Older(..) => control::M + space::S * 2.,
+            Self::Day(..) | Self::Fresh(_) => space::S * 2. + font::CAPTION * font::LINE,
+            Self::Line(l, _) => {
+                let text = (width - TIME_W - space::M * 3. - space::S * 2.).max(font::BODY * 8.);
+                let per_line = (text / (font::BODY * GLYPH)).max(1.);
+                let lines = (shown(&l.line).chars().count() as f32 / per_line).ceil().max(1.);
+                (space::XXS + 1.) * 2. + lines * font::BODY * frame::PARA_LINE
+            }
+        }
+    }
+
+    fn draw(&self, t: &Theme, mut shown: State<usize>, mut top: State<Option<u64>>) -> Element {
+        let back = match self {
+            Self::Older(_, back) => *back,
+            _ => None,
+        };
+        match self {
+            Self::Edge(h) => rect().height(Size::px(*h)).into_element(),
+            Self::Older(more, _) => rect()
+                .width(Size::fill())
+                .padding(space::S)
+                .center()
+                .child(Button::new("chat.older", if *more == 1 { tr("1 ältere Zeile zeigen") } else { trf("%lld ältere Zeilen zeigen", &[more]) }).plain().on_press(move |_| {
+                    let now = *shown.peek();
+                    shown.set(now + PAGE);
+                    if top.peek().is_some() {
+                        top.set(back);
+                    }
+                }))
+                .into_element(),
+            Self::Day(_, title) => separator(t, title.clone(), t.text3, t.separator),
+            Self::Fresh(_) => separator(t, tr("Neue Zeilen"), t.accent_text, t.accent.with_af32(0.5)),
+            Self::Line(row, stamp) => Row { row: row.clone(), stamp: *stamp }.into_element(),
+        }
+    }
+}
+
+fn remember_height(mut known: State<HashMap<u64, f32>>, key: u64, h: f32) {
+    if known.peek().get(&key).is_none_or(|k| (k - h).abs() >= 0.5) {
+        known.write().insert(key, h);
     }
 }
 
@@ -569,6 +685,7 @@ struct Row {
 impl Component for Row {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
+        let mut hovered = use_state(|| false);
         let r = &self.row;
         let l = &r.line;
         let base = if l.from.is_none() { t.text2 } else { t.text1 };
@@ -590,17 +707,30 @@ impl Component for Row {
             from => format!("{}: {text}", from.as_deref().unwrap_or(&l.account)),
         };
         let spot = use_spot(&format!("chat.line.{}", r.id), "chat-line", &summary, true);
+        let store = use_store();
+        let found = links(&l.text);
+        let copied = summary.clone();
+        let alt = if r.heard.is_none() && r.seen > 1 { format!("{summary} · {}", trf("Gesehen von %lld Accounts", &[&r.seen])) } else { summary };
         let mut row = rect()
             .on_sized(spot)
             .a11y_role(AccessibilityRole::ListItem)
-            .a11y_alt(summary)
+            .a11y_alt(alt)
             .width(Size::fill())
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_secondary_down(move |e: Event<PressEventData>| {
+                if let PressEventData::Mouse(m) = &*e {
+                    let at = (m.global_location.x as f32, m.global_location.y as f32);
+                    menu::open(store.ui, Menu::at(line_menu(store, &found, copied.clone()), at));
+                }
+            })
             .padding((space::XXS + 1., space::M))
             .horizontal()
             .spacing(space::M)
             .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).maybe_child(self.stamp.then(|| caption(&t, clock(l.at)).font_tabular())))
             .child(body);
-        if r.heard.is_some() || r.batch.is_some() {
+        let seen = (r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
+        if r.heard.is_some() || r.batch.is_some() || seen.is_some() {
             let mut tags = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).max_width(Size::px(TAG_MAX * 2.));
             if let Some(b) = &r.batch {
                 tags = tags.child(rect().max_width(Size::px(TAG_MAX)).child(caption(&t, b.clone())));
@@ -610,11 +740,60 @@ impl Component for Row {
                 let names = rect().max_width(Size::px(TAG_MAX)).a11y_alt(tip.clone()).child(caption(&t, h.names.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
                 tags = tags.child(WithTip::new(Some(tip), names));
             }
+            if let Some(tip) = seen {
+                let ink = if *hovered.read() { t.text3 } else { Color::TRANSPARENT };
+                tags = tags.child(WithTip::new(Some(tip.clone()), rect().a11y_alt(tip).child(caption(&t, format!("{}×", r.seen)).color(ink).font_tabular())));
+            }
             row = row.child(tags);
         }
-        let tip = (r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
-        WithTip::new(tip, row.content(Content::flex()))
+        row.content(Content::flex())
     }
+}
+
+/// The web addresses in `text`, in order and once each, without the punctuation that closes a sentence.
+fn links(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let word = word.trim_start_matches(['(', '<', '[', '"', '\'']);
+        if !(word.starts_with("https://") || word.starts_with("http://")) {
+            continue;
+        }
+        let closing = ['.', ',', '!', '?', ':', ';', '>', ']', '"', '\''];
+        let mut url = word.trim_end_matches(closing);
+        while url.ends_with(')') && url.matches(')').count() > url.matches('(').count() {
+            url = url[..url.len() - 1].trim_end_matches(closing);
+        }
+        if url.len() > "https://".len() && !found.iter().any(|f| f == url) {
+            found.push(url.to_owned());
+        }
+    }
+    found
+}
+
+fn line_menu(store: Store, links: &[String], text: String) -> Vec<Item> {
+    let mut items: Vec<Item> = links
+        .iter()
+        .enumerate()
+        .map(|(i, url)| {
+            let label = if links.len() == 1 { tr("Link öffnen") } else { trf("%@ öffnen", &[&clip_link(url)]) };
+            let url = url.clone();
+            Item::new(format!("chat.line.link.{i}"), label, move |_| open_external("open url", url.clone()))
+        })
+        .collect();
+    if !items.is_empty() {
+        items.push(Item::Separator);
+    }
+    items.push(Item::new("chat.line.copy", tr("Zeile kopieren"), move |_| {
+        if !native::copy_text(text.clone()) {
+            toast::show(store.ui, tr("Der Text wurde nicht kopiert."), None);
+        }
+    }));
+    items
+}
+
+fn clip_link(url: &str) -> String {
+    let bare = url.trim_start_matches("https://").trim_start_matches("http://");
+    if bare.chars().count() > LINK_SHOWN { format!("{}…", bare.chars().take(LINK_SHOWN).collect::<String>()) } else { bare.to_owned() }
 }
 
 /// The spans for `runs` in their colours, each made readable on the page, with the person's names in `marks` in accent,
@@ -649,10 +828,11 @@ fn spans(t: &Theme, runs: &[Run], marks: &[(usize, usize)], base: Color) -> Vec<
             if run.italic {
                 span = span.font_slant(FontSlant::Italic);
             }
-            if run.strike {
-                span = span.text_decoration(TextDecoration::LineThrough);
-            } else if run.underline {
-                span = span.text_decoration(TextDecoration::Underline);
+            match (run.strike, run.underline) {
+                (true, true) => span = span.text_decoration(TextDecoration::UnderlineLineThrough),
+                (true, false) => span = span.text_decoration(TextDecoration::LineThrough),
+                (false, true) => span = span.text_decoration(TextDecoration::Underline),
+                (false, false) => {}
             }
             out.push(span);
             if cut {
@@ -756,6 +936,8 @@ impl Component for Composer {
         let t = use_theme();
         let store = use_store();
         let mut shared = store.ui.chat;
+        let mut lift = store.ui.toast_lift;
+        use_drop(move || lift.set(0.));
         let field = use_a11y();
         let focus_at = *shared.focus.read();
         use_side_effect_with_deps(&focus_at, move |at| {
@@ -835,8 +1017,9 @@ impl Component for Composer {
             .child(send_button.on_press(move |_| send(store)));
         let note = match shared.rejected.read().clone() {
             Some((_, why)) => Some(line(&t, why, font::CAPTION, t.danger_text)),
-            None => hint.map(|h| caption(&t, h)),
+            None => hint.map(|h| caption(&t, h).max_lines(1).text_overflow(TextOverflow::Ellipsis)),
         };
+        let note = rect().width(Size::fill()).height(Size::px((font::CAPTION * font::LINE).ceil())).maybe_child(note);
         let keys_list = suggest.as_ref().map(|(_, l)| l.clone());
         let mut col = rect()
             .width(Size::fill())
@@ -871,6 +1054,7 @@ impl Component for Composer {
                         None => return,
                     }
                     e.stop_propagation();
+                    e.prevent_default();
                     return;
                 }
                 let delta = match e.key {
@@ -879,10 +1063,12 @@ impl Component for Composer {
                     _ => return,
                 };
                 e.stop_propagation();
+                e.prevent_default();
                 step_history(store, delta);
             })
+            .on_sized(move |e: Event<SizedEventData>| lift.set_if_modified(Bounds::of(&e).h))
             .child(row)
-            .maybe_child(note);
+            .child(note);
         if !joins.is_empty() {
             let names: Vec<&str> = joins.iter().map(|j| j.split_whitespace().next().unwrap_or_default()).collect();
             col = col.child(caption(&t, trf("Beim Betreten sendet jeder Account: %@", &[&names.join(", ")])).max_lines(1).text_overflow(TextOverflow::Ellipsis));
@@ -953,6 +1139,7 @@ impl Component for Popup {
                     None => return,
                 }
                 e.stop_propagation();
+                e.prevent_default();
             })
             .child(Field::new("chat.sendas.search", shared.query).placeholder(tr("Account oder Batch suchen")).glyph(Icon::Search).auto_focus().rows_through());
         panel = if list.is_empty() {
@@ -971,7 +1158,7 @@ impl Component for Popup {
         };
         rect()
             .position(Position::new_global().left(0.).top(0.))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::MENU))
             .width(Size::px(w))
             .height(Size::px(h))
             .on_mouse_down(move |_| {
@@ -1006,7 +1193,7 @@ impl Component for Suggestions {
         let hot = self.hot.or_else(|| (!self.list.is_empty()).then_some(0));
         let mut panel = rect()
             .position(Position::new_global().left(x).top(y))
-            .layer(Layer::Overlay)
+            .layer(Layer::OverlayLevel(level::MENU))
             .a11y_role(AccessibilityRole::ListBox)
             .a11y_alt(tr("Senden als"))
             .width(Size::px(width))
@@ -1127,10 +1314,19 @@ fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &st
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clock, day_title, heard_by, in_scope, line_problem, mentions, now, recall_step, same_day, unique};
+    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clip_link, clock, day_title, heard_by, in_scope, line_problem, links, mentions, now, recall_step, same_day, unique};
 
     fn line(batch: &str) -> ChatLine {
         ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into(), runs: Vec::new() }
+    }
+
+    #[test]
+    fn links_are_found_once_without_closing_punctuation() {
+        assert_eq!(links("see https://example.org/a, and (http://x.io/b). again https://example.org/a"), ["https://example.org/a", "http://x.io/b"]);
+        assert!(links("no link here, https:// alone or ftp://x").is_empty());
+        assert_eq!(links("(https://en.wikipedia.org/wiki/Java_(language))."), ["https://en.wikipedia.org/wiki/Java_(language)"]);
+        assert_eq!(clip_link("https://example.org/"), "example.org/");
+        assert!(clip_link(&format!("https://example.org/{}", "a".repeat(80))).ends_with('…'));
     }
 
     #[test]

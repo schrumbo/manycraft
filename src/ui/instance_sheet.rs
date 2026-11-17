@@ -25,7 +25,7 @@ use super::widgets::{ContainScroll, KeyNav, TakeFocus, icon, segment, segmented}
 use crate::core::batch::ModRef;
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
-use crate::core::instance::{self as setup, DEFAULT_MEMORY_MB, LOADERS, Loader};
+use crate::core::instance::{self as setup, LOADERS, Loader};
 use crate::core::modrinth::{self, Update};
 use crate::core::snapshot::Reason;
 use crate::core::versions::{GameVersion, Kind};
@@ -165,7 +165,7 @@ impl InstanceSheet {
         };
         let total_ram = forms::total_ram_mb();
         let memory_max = forms::memory_max(total_ram);
-        let memory = forms::memory_step(DEFAULT_MEMORY_MB, 0, memory_max);
+        let memory = forms::memory_step(crate::core::settings::active().game.memory_mb, 0, memory_max);
         let version = setup.as_ref().map(|i| i.game_version.clone()).unwrap_or_default();
         let loader = setup.as_ref().map_or_else(Loader::default, |i| i.loader.clone());
         let initial: Vec<GameVersion> = if version.is_empty() { Vec::new() } else { vec![GameVersion { id: version.clone(), kind: Kind::Release }] };
@@ -1165,7 +1165,7 @@ fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: 
         name: name.trim().to_owned(),
         game_version: version.to_owned(),
         loader: loader.clone(),
-        memory_mb,
+        memory_mb: (memory_mb != crate::core::settings::active().game.memory_mb).then_some(memory_mb),
         jvm_args: args.split_whitespace().map(str::to_owned).collect(),
         options: Default::default(),
         mods: if loader.takes_mods() { mods } else { Vec::new() },

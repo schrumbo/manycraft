@@ -58,7 +58,8 @@ fn main() {
         }
         Err(e) => eprintln!("manager lock: {e:#}"),
     }
-    core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
+    let lang = std::env::var("MANYCRAFT_LANG").ok().filter(|l| !l.is_empty()).or_else(|| core::settings::loaded().language.clone());
+    core::i18n::init(lang.as_deref().unwrap_or_default());
     #[cfg(feature = "freya")]
     view::run(core::shortcut::Play::parse(&args));
     #[cfg(not(feature = "freya"))]

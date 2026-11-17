@@ -104,8 +104,12 @@ pub struct Instance {
     /// File names (as listed in `mods` or `local_mods`) of mods that are switched off; in the shared mods folder their file ends in `.disabled`.
     #[serde(default)]
     pub disabled: Vec<String>,
+    /// The memory of [`Instance::own_memory`]; older versions read only this.
     #[serde(default = "default_memory")]
     pub memory_mb: u32,
+    /// Whether `memory_mb` is the instance's own choice even where it equals the old default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub memory_own: bool,
     #[serde(default)]
     pub jvm_args: Vec<String>,
     #[serde(default, skip_serializing_if = "LaunchOptions::is_default")]
@@ -123,6 +127,22 @@ fn default_memory() -> u32 {
 }
 
 impl Instance {
+    /// The memory this instance chose itself; `None` follows the launcher default.
+    pub fn own_memory(&self) -> Option<u32> {
+        (self.memory_own || self.memory_mb != DEFAULT_MEMORY_MB).then_some(self.memory_mb)
+    }
+
+    /// The memory each game of this instance gets: its own, else the launcher default.
+    pub fn memory(&self) -> u32 {
+        self.own_memory().unwrap_or_else(|| super::settings::active().game.memory_mb)
+    }
+
+    /// Makes `mb` the instance's own memory, or with `None` lets it follow the launcher default.
+    pub fn set_memory(&mut self, mb: Option<u32>) {
+        self.memory_mb = mb.unwrap_or(DEFAULT_MEMORY_MB);
+        self.memory_own = mb.is_some();
+    }
+
     /// A new instance for `game_version` with `loader`, a fresh id and no mods.
     pub fn new(name: &str, game_version: &str, loader: Loader) -> Self {
         Self {
@@ -135,6 +155,7 @@ impl Instance {
             local_mods: Vec::new(),
             disabled: Vec::new(),
             memory_mb: DEFAULT_MEMORY_MB,
+            memory_own: false,
             jvm_args: Vec::new(),
             options: LaunchOptions::default(),
             last_account: None,
@@ -604,6 +625,21 @@ mod tests {
         save_in(dir.path(), &b).unwrap();
         save_in(dir.path(), &a).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![a, b]);
+    }
+
+    #[test]
+    fn memory_follows_the_launcher_default_until_the_instance_picks_its_own() {
+        let mut i = Instance::new("A", "26.3", Loader::Vanilla);
+        assert_eq!((i.own_memory(), i.memory()), (None, crate::core::settings::active().game.memory_mb));
+        i.set_memory(Some(DEFAULT_MEMORY_MB));
+        assert_eq!(i.own_memory(), Some(DEFAULT_MEMORY_MB));
+        let back: Instance = serde_json::from_str(&serde_json::to_string(&i).unwrap()).unwrap();
+        assert_eq!(back.own_memory(), Some(DEFAULT_MEMORY_MB));
+        i.set_memory(None);
+        let json = serde_json::to_string(&i).unwrap();
+        assert!(!json.contains("memory_own") && json.contains(&format!("\"memory_mb\":{DEFAULT_MEMORY_MB}")));
+        let old: Instance = serde_json::from_str(r#"{"id":"a1","name":"A","game_version":"26.3","memory_mb":3072}"#).unwrap();
+        assert_eq!(old.own_memory(), Some(3072));
     }
 
     #[test]

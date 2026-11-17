@@ -359,6 +359,11 @@ impl Component for Input {
                     .with_select_all_on_double_click(is_masked)
             },
         );
+        use_hook(move || {
+            let mut editor = editable.editor_mut().write();
+            let end = editor.len_utf16_cu();
+            editor.move_cursor_to(end);
+        });
         let mut is_dragging = use_state(|| false);
         let mut value = self.value.clone();
 
@@ -410,6 +415,8 @@ impl Component for Input {
             editor.set(&value.read());
             editor.editor_history_mut().clear();
             editor.clear_selection();
+            let end = editor.len_utf16_cu();
+            editor.move_cursor_to(end);
         }
 
         let mode = self.mode;

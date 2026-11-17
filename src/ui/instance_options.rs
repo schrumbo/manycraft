@@ -14,7 +14,7 @@ use gpui_kit::*;
 use super::{Change, InstancePage, Job};
 use crate::core::drive;
 use crate::core::i18n::{tr, trf};
-use crate::core::instance::{DEFAULT_MEMORY_MB, Instance};
+use crate::core::instance::Instance;
 use crate::core::javas::{Java, mismatch};
 use crate::core::options::{self, Gpu, LaunchOptions, Renderer, WindowSize};
 use crate::ui::drive::Mark;
@@ -408,7 +408,8 @@ impl InstancePage {
     /// The settings inside "Erweitert".
     pub(super) fn render_options(&mut self, made: &Instance, memory: Div, cx: &mut Context<Self>, t: &Theme) -> Div {
         let now = self.options_now(made);
-        let memory_reset = (self.pending_memory().unwrap_or(made.memory_mb) != DEFAULT_MEMORY_MB).then(|| self.reset_button("memory-reset", tr("Arbeitsspeicher"), cx, |s, cx| s.enqueue(Job::Save(Change::Memory(DEFAULT_MEMORY_MB)), cx), t));
+        let standard = crate::core::settings::active().game.memory_mb;
+        let memory_reset = (self.pending_memory().unwrap_or_else(|| made.memory()) != standard).then(|| self.reset_button("memory-reset", tr("Arbeitsspeicher"), cx, move |s, cx| s.enqueue(Job::Save(Change::Memory(standard)), cx), t));
         let memory = self.setting("memory", tr("Arbeitsspeicher"), memory_reset, memory, Some(tr("Pro Account.")), None, t);
 
         let (java_hint, java_problem) = self.java_note(made, now.java.as_ref());

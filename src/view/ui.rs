@@ -119,6 +119,8 @@ pub struct Ui {
     /// Where the sidebar shows the active account, for the switcher opened from the keyboard.
     pub account_at: State<Option<Bounds>>,
     pub toasts: State<Vec<Toast>>,
+    /// How far toasts keep above the window's bottom edge, for a bar pinned there such as the chat composer.
+    pub toast_lift: State<f32>,
     pub tip: State<Option<Tip>>,
     /// The removal the open content browser would undo next; the palette and Ctrl or Cmd+Z reach it from here.
     pub browser_undo: State<Option<BrowserUndo>>,
@@ -168,6 +170,7 @@ impl Ui {
             menu: State::create(None),
             account_at: State::create(None),
             toasts: State::create(Vec::new()),
+            toast_lift: State::create(0.),
             tip: State::create(None),
             browser_undo: State::create(None),
             all_versions: State::create(crate::core::settings::loaded().all_versions),

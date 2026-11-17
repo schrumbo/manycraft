@@ -5,7 +5,7 @@ use std::rc::Rc;
 use freya::prelude::*;
 
 use super::{Prefs, use_prefs};
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{self, tr, trf};
 use crate::core::settings::Appearance;
 use crate::core::themes::{self, Library, Origin, Token};
 use crate::view::Look;
@@ -13,13 +13,17 @@ use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::group::{Line, group, note, status};
+use crate::view::kit::select::Select;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::line;
-use crate::view::kit::{off_thread, open_external, ring, toast, use_theme};
+use crate::view::kit::{Bounds, off_thread, open_external, ring, toast, use_focus_return, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{color, font, iconsize, space};
+use crate::view::theme::{Theme, color, font, iconsize, level, space};
+use crate::view::ui::Ui;
 
 const COLUMNS: usize = 4;
+const GALLERY_W: f32 = 640.;
+const GALLERY_MIN_H: f32 = 420.;
 const SWATCH_H: f32 = 64.;
 const SWATCH_PAD: f32 = space::XS + 2.;
 const SWATCH_INSET: f32 = 2.;
@@ -61,20 +65,36 @@ fn choose(p: Prefs, mut look: Look, appearance: Appearance, theme: Option<String
     look.choice.set_if_modified((appearance, theme));
 }
 
-/// The appearance, the theme picker and the user's own theme files.
+const LANGS: [Option<&str>; 3] = [None, Some("de"), Some("en")];
+
+fn set_language(p: Prefs, mut theme: State<Rc<Theme>>, code: Option<&'static str>) {
+    p.change(move |s| s.language = code.map(str::to_string));
+    i18n::init(code.unwrap_or_default());
+    let same = (**theme.peek()).clone();
+    theme.set(Rc::new(same));
+}
+
+/// Language, light or dark, and the theme, whose gallery opens over the page.
 #[derive(PartialEq)]
 pub struct LookGroup;
 
 impl Component for LookGroup {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
-        let store = use_store();
         let p = use_prefs();
         let look = use_consume::<Look>();
+        let drawn = use_consume::<State<Rc<Theme>>>();
+        let mut anchor = use_state(Bounds::default);
+        let mut open = use_state(|| false);
         let s = p.read();
         let library = look.library.read().clone();
         let chosen = library.chosen(s.theme.as_deref()).map(|c| c.id.clone()).unwrap_or_default();
         let appearance = s.appearance;
+        let languages = vec![tr("Automatisch"), "Deutsch".to_string(), "English".to_string()];
+        let at_lang = LANGS.iter().position(|l| *l == s.language.as_deref()).unwrap_or(0);
+        let language = Line::new("settings.language.row", tr("Sprache"))
+            .control(Select::new("settings.language", tr("Sprache"), languages, at_lang).on_choose(move |i| set_language(p, drawn, LANGS[i.min(2)])))
+            .into_element();
         let modes = [Appearance::System, Appearance::Light, Appearance::Dark];
         let segments = vec![
             Segment { id: "settings.look.system".into(), label: tr("Automatisch"), tip: Some(tr("Folgt dem System")) },
@@ -87,29 +107,19 @@ impl Component for LookGroup {
             .control(Segmented::new(tr("Hell oder dunkel"), segments, at).on_choose(move |i| choose(p, look, modes[i.min(2)], theme_id.clone())))
             .into_element();
         let dark = wants_dark(appearance, t.dark);
-        let mut pick = Line::new("settings.theme.row", tr("Theme")).below(Picker { library: library.clone(), chosen: chosen.clone(), dark, appearance });
-        if let Some(c) = library.get(&chosen)
+        let current = library.get(&chosen);
+        let name = current.map(label).unwrap_or_default();
+        let mut pick = Line::new("settings.theme.row", trf("Theme: %@", &[&name])).control(
+            rect()
+                .on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e)))
+                .child(Button::new("settings.theme.all", tr("Alle Themes…")).on_press(move |_| open.set(true))),
+        );
+        if let Some(c) = current
             && !c.has(dark)
         {
             pick = pick.hint(if dark { trf("%@ gibt es nur hell.", &[&label(c)]) } else { trf("%@ gibt es nur dunkel.", &[&label(c)]) });
         }
-        let template = library.get(&chosen).cloned();
-        let own = Line::new("settings.theme.own", tr("Eigene Themes"))
-            .hint(tr("Jede JSON-Datei im Themes-Ordner erscheint hier. Eine Kopie eines Themes ist der schnellste Anfang."))
-            .control(
-                rect()
-                    .horizontal()
-                    .spacing(space::S)
-                    .child(Button::new("settings.theme.copy", tr("Kopieren")).tip(tr("Legt das gewählte Theme als eigene Datei in den Themes-Ordner")).disabled(template.is_none().then(|| tr("Kein Theme gewählt"))).on_press(move |_| {
-                        if let Some(source) = &template {
-                            copy(store, look, p, appearance, source.clone());
-                        }
-                    }))
-                    .child(Button::new("settings.theme.folder", tr("Ordner öffnen")).on_press(move |_| open_folder()))
-                    .child(Button::icon("settings.theme.reload", Icon::Refresh, tr("Themes neu laden")).on_press(move |_| look.reload())),
-            )
-            .into_element();
-        let mut rows = vec![mode, pick.into_element(), own];
+        let mut rows = vec![language, mode, pick.into_element()];
         for broken in &library.broken {
             let first = broken.errors.first().cloned().unwrap_or_default();
             rows.push(
@@ -120,7 +130,91 @@ impl Component for LookGroup {
                     .into_element(),
             );
         }
-        group(&t, Some(tr("Erscheinungsbild")), rows, None)
+        let shown = *open.read();
+        use_focus_return(shown);
+        rect()
+            .width(Size::fill())
+            .child(group(&t, Some(tr("Allgemein")), rows, None))
+            .maybe_child(shown.then(|| Gallery { library, chosen, dark, appearance, anchor: *anchor.read(), on_close: EventHandler::new(move |_| open.set(false)) }))
+            .into_element()
+    }
+}
+
+/// Every theme as a card, over the page under the button that opened it; picking applies at once and keeps it open.
+#[derive(PartialEq)]
+struct Gallery {
+    library: Rc<Library>,
+    chosen: String,
+    dark: bool,
+    appearance: Appearance,
+    anchor: Bounds,
+    on_close: EventHandler<()>,
+}
+
+impl Component for Gallery {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let p = use_prefs();
+        let look = use_consume::<Look>();
+        let ui = use_consume::<Ui>();
+        let (w, h) = *ui.window.read();
+        let width = GALLERY_W.min(w - space::L * 2.);
+        let x = (self.anchor.x + self.anchor.w - width).clamp(space::L, (w - width - space::L).max(space::L));
+        let below = self.anchor.y + self.anchor.h + space::XS;
+        let (y, max_h) = if h - below - space::L >= GALLERY_MIN_H { (below, h - below - space::L) } else { (space::L, h - space::L * 2.) };
+        let template = self.library.get(&self.chosen).cloned();
+        let appearance = self.appearance;
+        let close = self.on_close.clone();
+        let keys = self.on_close.clone();
+        let own = rect()
+            .width(Size::fill())
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .padding((space::S, 0., 0., 0.))
+            .child(rect().width(Size::flex(1.)).spacing(space::XXS).child(line(&t, tr("Eigene Themes"), font::CALLOUT, t.text1)).child(note(&t, tr("Jede Theme-Datei im Themes-Ordner erscheint hier."))))
+            .child(Button::new("settings.theme.copy", tr("Kopieren")).tip(tr("Legt das gewählte Theme als eigene Datei in den Themes-Ordner")).disabled(template.is_none().then(|| tr("Kein Theme gewählt"))).on_press(move |_| {
+                if let Some(source) = &template {
+                    copy(store, look, p, appearance, source.clone());
+                }
+            }))
+            .child(Button::new("settings.theme.folder", tr("Ordner öffnen")).on_press(move |_| open_folder()))
+            .child(Button::icon("settings.theme.reload", Icon::Refresh, tr("Themes neu laden")).on_press(move |_| look.reload()))
+            .content(Content::flex());
+        let panel = rect()
+            .position(Position::new_absolute().left(x).top(y))
+            .a11y_role(AccessibilityRole::Dialog)
+            .a11y_alt(tr("Alle Themes"))
+            .a11y_builder(|n| n.set_modal())
+            .width(Size::px(width))
+            .padding(space::M)
+            .background(t.raised)
+            .corner_radius(t.shape.control + 2.)
+            .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Outer))
+            .shadow(t.elevation.float.clone())
+            .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
+            .child(
+                ScrollView::new()
+                    .width(Size::fill())
+                    .height(Size::auto())
+                    .max_height(Size::px(max_h - space::M * 2.))
+                    .child(rect().width(Size::fill()).spacing(space::S).child(Picker { library: self.library.clone(), chosen: self.chosen.clone(), dark: self.dark, appearance }).child(own)),
+            );
+        rect()
+            .position(Position::new_global().left(0.).top(0.))
+            .layer(Layer::OverlayLevel(level::MENU))
+            .width(Size::px(w))
+            .height(Size::px(h))
+            .on_mouse_down(move |_| close.call(()))
+            .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                if e.key == Key::Named(NamedKey::Escape) {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    keys.call(());
+                }
+            })
+            .child(panel)
     }
 }
 
@@ -172,6 +266,7 @@ impl Component for Picker {
         let mut grid = rect()
             .a11y_id(a11y)
             .a11y_focusable(true)
+            .a11y_auto_focus(true)
             .a11y_role(AccessibilityRole::RadioGroup)
             .a11y_alt(tr("Theme"))
             .width(Size::fill())
@@ -191,6 +286,7 @@ impl Component for Picker {
                     _ => return,
                 };
                 e.stop_propagation();
+                e.prevent_default();
                 if next != at {
                     choose(p, look, appearance, Some(keyed[next].clone()));
                 }

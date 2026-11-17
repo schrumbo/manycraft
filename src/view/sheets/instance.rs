@@ -12,7 +12,7 @@ use crate::core::companion;
 use crate::core::fit::{self, Fit, Memory};
 use crate::core::i18n::{tr, trf};
 use crate::core::install::Versions;
-use crate::core::instance::{DEFAULT_MEMORY_MB, Instance, Loader};
+use crate::core::instance::{Instance, Loader};
 use crate::core::modrinth::{Kind as ModKind, Update};
 use crate::core::settings;
 use crate::core::snapshot::Reason;
@@ -95,7 +95,7 @@ fn followed_name(typed: &str, auto: &str, version: &str, taken: &[&str]) -> Opti
     (!version.is_empty() && typed.trim() == auto).then(|| forms::unique_name(&trf("Minecraft %@", &[&version]), taken))
 }
 
-fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: u32, args: &str, mods: Vec<ModRef>, with_mods: bool) -> InstanceEdit {
+fn build_edit(name: &str, version: &str, loader: &Loader, memory_mb: Option<u32>, args: &str, mods: Vec<ModRef>, with_mods: bool) -> InstanceEdit {
     InstanceEdit {
         name: name.trim().to_owned(),
         game_version: version.to_owned(),
@@ -503,7 +503,7 @@ impl Make {
 
     fn edit(self) -> InstanceEdit {
         let loader = self.loader.peek().clone();
-        build_edit(&self.name.peek(), &self.version.peek(), &loader, *self.memory.peek(), &self.args.peek(), self.mods.peek().clone(), *self.with_mods.peek())
+        build_edit(&self.name.peek(), &self.version.peek(), &loader, Some(*self.memory.peek()).filter(|mb| *mb != crate::core::settings::active().game.memory_mb), &self.args.peek(), self.mods.peek().clone(), *self.with_mods.peek())
     }
 
     fn create(mut self) {
@@ -570,7 +570,7 @@ impl Component for Create {
             list: use_state(Vec::new),
             versions: use_state(|| Load::Loading),
             supported: use_state(|| None),
-            memory: use_state(move || forms::memory_step(DEFAULT_MEMORY_MB, 0, memory_max)),
+            memory: use_state(move || forms::memory_step(crate::core::settings::active().game.memory_mb, 0, memory_max)),
             advanced: use_state(|| false),
             args: use_state(String::new),
             free: use_state(|| None),
@@ -1545,26 +1545,26 @@ mod tests {
 
     #[test]
     fn every_mod_loader_keeps_the_mods() {
-        let fabric = build_edit(" Farm ", "26.3", &Loader::Fabric(None), 2048, "", vec![a_mod()], true);
+        let fabric = build_edit(" Farm ", "26.3", &Loader::Fabric(None), Some(2048), "", vec![a_mod()], true);
         assert_eq!(fabric.name, "Farm");
         assert_eq!(fabric.mods.len(), 1);
         for loader in [Loader::Quilt(None), Loader::Forge(None), Loader::NeoForge(None)] {
-            assert_eq!(build_edit("Farm", "26.3", &loader, 2048, "", vec![a_mod()], true).mods.len(), 1);
+            assert_eq!(build_edit("Farm", "26.3", &loader, Some(2048), "", vec![a_mod()], true).mods.len(), 1);
         }
-        assert!(build_edit("Farm", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()], true).mods.is_empty());
-        assert!(build_edit("Farm", "26.3", &Loader::Fabric(None), 2048, "", vec![a_mod()], false).mods.is_empty());
+        assert!(build_edit("Farm", "26.3", &Loader::Vanilla, Some(2048), "", vec![a_mod()], true).mods.is_empty());
+        assert!(build_edit("Farm", "26.3", &Loader::Fabric(None), Some(2048), "", vec![a_mod()], false).mods.is_empty());
     }
 
     #[test]
     fn the_picked_loader_version_is_saved_and_vanilla_takes_no_mods() {
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(Some("0.17.1".into())), 2048, "", Vec::new(), true).loader, Loader::Fabric(Some("0.17.1".into())));
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, "", Vec::new(), true).loader, Loader::Fabric(None));
-        assert!(build_edit("A", "26.3", &Loader::Vanilla, 2048, "", vec![a_mod()], true).mods.is_empty());
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(Some("0.17.1".into())), Some(2048), "", Vec::new(), true).loader, Loader::Fabric(Some("0.17.1".into())));
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), Some(2048), "", Vec::new(), true).loader, Loader::Fabric(None));
+        assert!(build_edit("A", "26.3", &Loader::Vanilla, Some(2048), "", vec![a_mod()], true).mods.is_empty());
     }
 
     #[test]
     fn java_arguments_split_on_whitespace() {
-        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), 2048, " -Xss1M  -Dx=1 ", Vec::new(), true).jvm_args, ["-Xss1M", "-Dx=1"]);
+        assert_eq!(build_edit("A", "26.3", &Loader::Fabric(None), Some(2048), " -Xss1M  -Dx=1 ", Vec::new(), true).jvm_args, ["-Xss1M", "-Dx=1"]);
     }
 
     #[test]

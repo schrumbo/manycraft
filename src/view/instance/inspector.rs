@@ -314,7 +314,7 @@ impl Component for Inspector {
                 list = list.child(fact(&t, tr("Zuletzt gespielt"), text));
             }
         }
-        list = list.child(fact(&t, tr("Arbeitsspeicher"), forms::memory_label(f.made.memory_mb)));
+        list = list.child(fact(&t, tr("Arbeitsspeicher"), forms::memory_label(f.made.memory())));
         col = col.child(list);
         if let Some(newest) = news {
             let (id, to) = (f.made.id.clone(), newest.clone());

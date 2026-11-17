@@ -571,6 +571,10 @@ impl AccessibilityTree {
                 TextDecoration::Underline => builder.set_underline(decoration),
                 TextDecoration::Overline => builder.set_overline(decoration),
                 TextDecoration::LineThrough => builder.set_strikethrough(decoration),
+                TextDecoration::UnderlineLineThrough => {
+                    builder.set_underline(decoration);
+                    builder.set_strikethrough(decoration);
+                }
                 TextDecoration::None => {}
             }
         }

@@ -9,6 +9,11 @@ use crate::view::theme::{Theme, control, font, space};
 
 /// A group of `rows` under `title`, with `footer` below the card.
 pub fn group(t: &Theme, title: Option<String>, rows: Vec<Element>, footer: Option<String>) -> Element {
+    titled(t, title, None, rows, footer)
+}
+
+/// A group as [`group`] draws it, with `subhead` under the title saying what the whole group is about.
+pub fn titled(t: &Theme, title: Option<String>, subhead: Option<String>, rows: Vec<Element>, footer: Option<String>) -> Element {
     let count = rows.len();
     let mut card = rect().width(Size::fill()).background(t.raised).corner_radius(t.shape.tile).border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner)).overflow(Overflow::Clip);
     for (i, r) in rows.into_iter().enumerate() {
@@ -19,7 +24,11 @@ pub fn group(t: &Theme, title: Option<String>, rows: Vec<Element>, footer: Optio
     }
     let mut column = rect().width(Size::fill()).spacing(space::S);
     if let Some(title) = title {
-        column = column.child(rect().padding((0., space::XS)).child(line(t, title, font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD)));
+        let mut head = rect().padding((0., space::XS)).spacing(space::XXS).child(line(t, title, font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD));
+        if let Some(sub) = subhead {
+            head = head.child(para(t, sub, font::CAPTION, t.text3));
+        }
+        column = column.child(head);
     }
     column = column.child(card);
     if let Some(f) = footer {

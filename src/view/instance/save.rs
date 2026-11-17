@@ -39,7 +39,7 @@ impl OptionChange {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
     Name(String),
-    Memory(u32),
+    Memory(Option<u32>),
     JvmArgs(Vec<String>),
     LoaderVersion(Option<String>),
     Option(OptionChange),
@@ -99,8 +99,8 @@ pub fn enqueue(store: Store, id: &str, job: Job) {
     }
 }
 
-/// The memory a queued or running save will set on instance `id`; a component that asks redraws when the queue moves.
-pub fn pending_memory(store: Store, id: &str) -> Option<u32> {
+/// The memory a queued or running save will set on instance `id`, `Some(None)` for the launcher default; a component that asks redraws when the queue moves.
+pub fn pending_memory(store: Store, id: &str) -> Option<Option<u32>> {
     let nav = store.ui.instance;
     let queue = nav.queue.read();
     let saving = nav.saving.read();
