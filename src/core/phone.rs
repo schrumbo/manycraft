@@ -140,7 +140,7 @@ fn fenced() -> bool {
 }
 
 fn entry(slot: Slot) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(account::KEYCHAIN_SERVICE, slot.account()).map_err(|_| tr("Der Passwortspeicher des Systems ist nicht erreichbar."))
+    keyring::Entry::new(account::keychain_service(), slot.account()).map_err(|_| tr("Der Passwortspeicher des Systems ist nicht erreichbar."))
 }
 
 /// Reads a secret; empty when none is stored. A driven or tested app keeps secrets in memory instead.

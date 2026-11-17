@@ -328,9 +328,6 @@ fn roll_back(plan: &Plan) -> Result<()> {
     }
 }
 
-#[cfg(windows)]
-const UNINSTALL: &str =r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft";
-
 /// Makes the version Windows lists for Manycraft under Apps match the files in place; nothing changes without an installed entry.
 #[cfg(windows)]
 fn show_version(version: &str) {
@@ -344,7 +341,7 @@ fn uninstall_key() -> String {
     if let Some(key) = std::env::var("MANYCRAFT_UNINSTALL_KEY").ok().filter(|k| !k.trim().is_empty()) {
         return key;
     }
-    UNINSTALL.to_owned()
+    crate::core::channel::uninstall_key().to_owned()
 }
 
 #[cfg(not(windows))]

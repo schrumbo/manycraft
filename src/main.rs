@@ -74,7 +74,7 @@ fn gpui(args: &[String]) {
     app.on_reopen(ui::state::show_grid);
     app.run(|cx: &mut App| {
         #[cfg(windows)]
-        cx.set_app_identity(core::APP_ID, "Manycraft");
+        cx.set_app_identity(core::channel::app_id(), core::channel::name());
         gpui_kit::init(cx);
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
         ui::theme::watch_focus(cx);

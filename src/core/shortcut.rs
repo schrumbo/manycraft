@@ -6,13 +6,17 @@ use anyhow::{Context, Result, bail};
 
 const PLAY_FLAG: &str = "--play";
 #[cfg(any(test, all(unix, not(target_os = "macos"))))]
-const DESKTOP_MARKER: &str = "X-Manycraft-Shortcut=true";
+fn desktop_marker() -> &'static str {
+    if super::channel::is_beta() { "X-Manycraft-Beta-Shortcut=true" } else { "X-Manycraft-Shortcut=true" }
+}
 const ACCOUNT_FLAG: &str = "--account";
 const NAME_MAX: usize = 80;
 const FALLBACK_NAME: &str = "Manycraft";
 const FREE_NAMES: usize = 99;
 #[cfg(any(test, target_os = "macos"))]
-const BUNDLE_ID: &str = "io.github.schrumbo.manycraft.shortcut";
+fn bundle_id() -> String {
+    format!("{}.shortcut", super::channel::app_id())
+}
 
 /// An instance to play and, when the shortcut names one, the account to play it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +171,7 @@ mod windows_link {
 #[cfg(target_os = "macos")]
 fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let app = free_path(dir, stem, "app", &|p| std::fs::read_to_string(p.join("Contents").join("Info.plist")).is_ok_and(|t| t.contains(BUNDLE_ID)))?;
+    let app = free_path(dir, stem, "app", &|p| std::fs::read_to_string(p.join("Contents").join("Info.plist")).is_ok_and(|t| t.contains(&bundle_id())))?;
     let building = dir.join(format!(".{stem}.shortcut-building"));
     let _ = std::fs::remove_dir_all(&building);
     let (macos, contents) = (building.join("Contents").join("MacOS"), building.join("Contents"));
@@ -186,7 +190,7 @@ fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Resu
 #[cfg(all(unix, not(target_os = "macos")))]
 fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let path = free_path(dir, stem, "desktop", &|p| std::fs::read_to_string(p).is_ok_and(|t| t.lines().any(|l| l == DESKTOP_MARKER)))?;
+    let path = free_path(dir, stem, "desktop", &|p| std::fs::read_to_string(p).is_ok_and(|t| t.lines().any(|l| l == desktop_marker())))?;
     std::fs::write(&path, desktop_entry(name, exe, args))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     Ok(path)
@@ -208,7 +212,7 @@ fn desktop_entry(name: &str, exe: &Path, args: &[String]) -> String {
         format!("\"{inner}\"")
     };
     let exec = std::iter::once(escape(&exe.to_string_lossy())).chain(args.iter().map(|a| escape(a))).collect::<Vec<_>>().join(" ");
-    format!("[Desktop Entry]\nType=Application\nName={}\nComment={}\nExec={exec}\nTerminal=false\nCategories=Game;\n{DESKTOP_MARKER}\n", field(name), field(name))
+    format!("[Desktop Entry]\nType=Application\nName={}\nComment={}\nExec={exec}\nTerminal=false\nCategories=Game;\n{}\n", field(name), field(name), desktop_marker())
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -226,7 +230,7 @@ fn bundle_plist(name: &str) -> String {
         '>' => "&gt;".chars().collect(),
         c => vec![c],
     }).collect();
-    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n<key>CFBundleExecutable</key><string>launcher</string>\n<key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>\n<key>CFBundleName</key><string>{xml}</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>LSUIElement</key><true/>\n</dict>\n</plist>\n")
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n<key>CFBundleExecutable</key><string>launcher</string>\n<key>CFBundleIdentifier</key><string>{}</string>\n<key>CFBundleName</key><string>{xml}</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>LSUIElement</key><true/>\n</dict>\n</plist>\n", bundle_id())
 }
 
 #[cfg(test)]
@@ -270,7 +274,7 @@ mod tests {
         assert!(entry.contains("Exec=\"/opt/many craft/manycraft\" \"--play\" \"0a1b2c3d4e5f60718293a4b5c6d7e8f9\" \"--account\" \"acc-1\"\n"));
         let tricky = desktop_entry("x", Path::new("/a\"b$c"), &[]);
         assert!(tricky.contains("Exec=\"/a\\\\\"b\\\\$c\""));
-        assert!(desktop_entry("x", Path::new("/x"), &[]).lines().any(|l| l == DESKTOP_MARKER));
+        assert!(desktop_entry("x", Path::new("/x"), &[]).lines().any(|l| l == desktop_marker()));
         assert!(desktop_entry("A\\B", Path::new("/x"), &[]).contains("Name=A\\\\B\n"));
     }
 

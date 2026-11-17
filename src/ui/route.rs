@@ -97,15 +97,31 @@ mod tests {
 
     #[test]
     fn the_app_identity_matches_the_packaging() {
-        let id = crate::core::APP_ID;
+        let (stable, beta) = ("io.github.schrumbo.manycraft", "io.github.schrumbo.manycraft.beta");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
         let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
-        assert!(read("macos/Info.plist").contains(&format!("<string>{id}</string>")));
-        assert!(read("linux/manycraft.desktop").contains(&format!("StartupWMClass={id}")));
+        assert_eq!(crate::core::channel::app_id(), if crate::core::channel::is_beta() { beta } else { stable });
+        for (id, plist, desktop) in [(stable, "macos/Info.plist", "linux/manycraft.desktop"), (beta, "macos/InfoBeta.plist", "linux/manycraft-beta.desktop")] {
+            assert!(read(plist).contains(&format!("<string>{id}</string>")));
+            assert!(read(desktop).contains(&format!("StartupWMClass={id}")));
+        }
         let installer = read("windows/installer.nsi");
-        assert!(installer.contains(&format!("!define APP_ID \"{id}\"")));
+        for id in [stable, beta] {
+            assert!(installer.contains(&format!("!define APP_ID \"{id}\"")));
+        }
         let key = "HKCU \"Software\\Classes\\AppUserModelId\\${APP_ID}\"";
         assert!(installer.contains(&format!("WriteRegStr {key} \"DisplayName\"")));
         assert!(installer.contains(&format!("DeleteRegKey {key}")));
+    }
+
+    #[test]
+    fn the_install_entry_matches_the_installer() {
+        let installer = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/windows/installer.nsi")).unwrap();
+        assert!(installer.contains("!define UNINSTALL_KEY \"Manycraft\""));
+        assert!(installer.contains("!define UNINSTALL_KEY \"ManycraftBeta\""));
+        assert!(installer.contains("!define ASSET_TAG \"-beta\""));
+        assert!(installer.contains("-windows-x64${ASSET_TAG}.exe"));
+        #[cfg(windows)]
+        assert!(crate::core::channel::uninstall_key().ends_with(if crate::core::channel::is_beta() { "\\ManycraftBeta" } else { "\\Manycraft" }));
     }
 }

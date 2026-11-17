@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Manycraft Beta
+GenericName=Minecraft Manager
+Comment=One window for all your Minecraft instances
+Exec=manycraft
+Icon=manycraft
+Terminal=false
+Categories=Game;Utility;
+StartupWMClass=io.github.schrumbo.manycraft.beta

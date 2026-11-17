@@ -65,7 +65,7 @@ pub fn open(cx: &mut App) {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         display_id: display,
         window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
-        app_id: Some(crate::core::APP_ID.into()),
+        app_id: Some(crate::core::channel::app_id().into()),
         ..Default::default()
     };
     let options = super::chrome::window_options(options, title());

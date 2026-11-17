@@ -97,6 +97,8 @@ def feature_sets():
     sets = [["--features", "freya-proto"] if "freya-proto =" in text else []]
     if re.search(r"^freya = ", text, re.M):
         sets.append(["--features", "freya"])
+    if re.search(r'^default = \["freya"\]', text, re.M):
+        sets.append(["--no-default-features"])
     return sets
 
 

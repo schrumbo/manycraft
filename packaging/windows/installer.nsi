@@ -1,11 +1,21 @@
 ﻿Unicode true
 !include "MUI2.nsh"
 
-!define APP_ID "io.github.schrumbo.manycraft"
+!ifdef BETA
+  !define APP_ID "io.github.schrumbo.manycraft.beta"
+  !define APP_NAME "Manycraft Beta"
+  !define UNINSTALL_KEY "ManycraftBeta"
+  !define ASSET_TAG "-beta"
+!else
+  !define APP_ID "io.github.schrumbo.manycraft"
+  !define APP_NAME "Manycraft"
+  !define UNINSTALL_KEY "Manycraft"
+  !define ASSET_TAG ""
+!endif
 
-Name "Manycraft"
-OutFile "Manycraft-Setup-${VERSION}-windows-x64.exe"
-InstallDir "$LOCALAPPDATA\Programs\Manycraft"
+Name "${APP_NAME}"
+OutFile "Manycraft-Setup-${VERSION}-windows-x64${ASSET_TAG}.exe"
+InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
@@ -26,8 +36,8 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "German"
 !insertmacro MUI_LANGUAGE "English"
 
-LangString KeptText ${LANG_GERMAN} "Manycraft wurde entfernt.$\r$\n$\r$\nInstanzen, Welten und Accounts bleiben in $LOCALAPPDATA\Manycraft.$\r$\n$\r$\nDie Anmeldungen der Accounts bleiben in der Windows-Anmeldeinformationsverwaltung, auch wenn du die Daten löschst. Entferne die Accounts vorher in Manycraft, um sie mitzulöschen."
-LangString KeptText ${LANG_ENGLISH} "Manycraft has been removed.$\r$\n$\r$\nInstances, worlds and accounts stay in $LOCALAPPDATA\Manycraft.$\r$\n$\r$\nAccount sign-ins stay in Windows Credential Manager, even if you delete the data. Remove the accounts in Manycraft first to delete them too."
+LangString KeptText ${LANG_GERMAN} "${APP_NAME} wurde entfernt.$\r$\n$\r$\nInstanzen, Welten und Accounts bleiben in $LOCALAPPDATA\${APP_NAME}.$\r$\n$\r$\nDie Anmeldungen der Accounts bleiben in der Windows-Anmeldeinformationsverwaltung, auch wenn du die Daten löschst. Entferne die Accounts vorher in Manycraft, um sie mitzulöschen."
+LangString KeptText ${LANG_ENGLISH} "${APP_NAME} has been removed.$\r$\n$\r$\nInstances, worlds and accounts stay in $LOCALAPPDATA\${APP_NAME}.$\r$\n$\r$\nAccount sign-ins stay in Windows Credential Manager, even if you delete the data. Remove the accounts in Manycraft first to delete them too."
 LangString RemoveText ${LANG_GERMAN} "Auch diese Daten löschen"
 LangString RemoveText ${LANG_ENGLISH} "Also delete this data"
 
@@ -35,30 +45,30 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "..\..\target\release\manycraft.exe"
   File "..\icons\manycraft.ico"
-  CreateShortcut "$SMPROGRAMS\Manycraft.lnk" "$INSTDIR\manycraft.exe" "" "$INSTDIR\manycraft.ico"
-  WriteRegStr HKCU "Software\Classes\AppUserModelId\${APP_ID}" "DisplayName" "Manycraft"
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\manycraft.exe" "" "$INSTDIR\manycraft.ico"
+  WriteRegStr HKCU "Software\Classes\AppUserModelId\${APP_ID}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKCU "Software\Classes\AppUserModelId\${APP_ID}" "IconUri" "$INSTDIR\manycraft.ico"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "DisplayName" "Manycraft"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "DisplayIcon" "$INSTDIR\manycraft.ico"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft" "Publisher" "Schrumbo"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\manycraft.ico"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_KEY}" "Publisher" "Schrumbo"
 SectionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\manycraft.exe"
   Delete "$INSTDIR\manycraft.ico"
   Delete "$INSTDIR\Uninstall.exe"
-  Delete "$SMPROGRAMS\Manycraft.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}.lnk"
   RMDir "$INSTDIR"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Manycraft"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_KEY}"
   DeleteRegKey HKCU "Software\Classes\AppUserModelId\${APP_ID}"
 SectionEnd
 
 Function un.RemoveData
   StrCmp $LOCALAPPDATA "" done
-  IfFileExists "$LOCALAPPDATA\Manycraft\*.*" 0 +2
-  nsExec::Exec '"$SYSDIR\cmd.exe" /c rmdir /s /q "$LOCALAPPDATA\Manycraft"'
+  IfFileExists "$LOCALAPPDATA\${APP_NAME}\*.*" 0 +2
+  nsExec::Exec '"$SYSDIR\cmd.exe" /c rmdir /s /q "$LOCALAPPDATA\${APP_NAME}"'
   done:
 FunctionEnd

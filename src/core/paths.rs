@@ -7,7 +7,7 @@ pub fn data_dir() -> PathBuf {
         return dir;
     }
     match dirs::data_local_dir() {
-        Some(dir) => dir.join("Manycraft"),
+        Some(dir) => dir.join(super::channel::data_folder()),
         None => panic!("no local data folder: set HOME (Linux, macOS) or LOCALAPPDATA (Windows)"),
     }
 }

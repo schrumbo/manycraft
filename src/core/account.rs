@@ -10,8 +10,10 @@ use uuid::Uuid;
 use super::{paths, store};
 
 const FILE: &str = "accounts.json";
-/// The keychain service every secret of Manycraft is stored under.
-pub const KEYCHAIN_SERVICE: &str = "Manycraft";
+/// The keychain service every secret of this build is stored under.
+pub fn keychain_service() -> &'static str {
+    super::channel::keychain_service()
+}
 
 /// How an account signs in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,11 +162,11 @@ pub fn read_session(id: Uuid) -> Result<Option<String>> {
 }
 
 fn entry(id: Uuid) -> Result<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, &id.to_string()).context("system keychain is not available")
+    keyring::Entry::new(keychain_service(), &id.to_string()).context("system keychain is not available")
 }
 
 fn session_entry(id: Uuid) -> Result<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("{id}.session")).context("system keychain is not available")
+    keyring::Entry::new(keychain_service(), &format!("{id}.session")).context("system keychain is not available")
 }
 
 fn parse(bytes: &[u8], path: &Path) -> Result<Vec<Account>> {
@@ -438,6 +440,6 @@ mod tests {
         let id = Uuid::from_u128(7);
         let entry = entry(id).unwrap();
         assert!(format!("{entry:?}").contains(&id.to_string()));
-        assert!(format!("{entry:?}").contains(KEYCHAIN_SERVICE));
+        assert!(format!("{entry:?}").contains(keychain_service()));
     }
 }
