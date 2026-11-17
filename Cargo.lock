@@ -5019,7 +5019,7 @@ dependencies = [
 
 [[package]]
 name = "manycraft"
-version = "0.10.0-beta.3"
+version = "0.10.0-beta.4"
 dependencies = [
  "anyhow",
  "async-channel",
