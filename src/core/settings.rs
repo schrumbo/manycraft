@@ -151,6 +151,9 @@ pub struct Settings {
     /// `de` or `en`; none follows the system.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Whether the window wears the desktop's own frame on Linux instead of the app's title bar buttons.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub system_frame: bool,
     /// Fields a newer version wrote that this one does not know, written back unchanged.
     #[serde(flatten)]
     pub kept: serde_json::Map<String, serde_json::Value>,
@@ -158,7 +161,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, kept: serde_json::Map::new() }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
     }
 }
 

@@ -77,6 +77,7 @@ pub enum Icon {
     Spinner,
     Info,
     Pencil,
+    Square,
 }
 
 impl Icon {
@@ -117,6 +118,7 @@ impl Icon {
             Self::Undo => r#"<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>"#,
             Self::Fit => r#"<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>"#,
             Self::Minus => r#"<path d="M5 12h14"/>"#,
+            Self::Square => r#"<rect width="14" height="14" x="5" y="5" rx="2"/>"#,
             Self::Keyboard => r#"<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>"#,
             Self::Rows => r#"<path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/>"#,
             Self::Wrap => r#"<path d="m16 16-3 3 3 3"/><path d="M3 12h14.5a1 1 0 0 1 0 7H13"/><path d="M3 19h6"/><path d="M3 5h18"/>"#,

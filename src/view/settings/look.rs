@@ -120,6 +120,12 @@ impl Component for LookGroup {
             pick = pick.hint(if dark { trf("%@ gibt es nur hell.", &[&label(c)]) } else { trf("%@ gibt es nur dunkel.", &[&label(c)]) });
         }
         let mut rows = vec![language, mode, pick.into_element()];
+        if cfg!(target_os = "linux") {
+            rows.push(super::toggle(p, "settings.system_frame", tr("Fensterrahmen vom System"), tr("Zeigt die Titelleiste und die Fensterknöpfe deines Desktops."), s.system_frame, |s, on| {
+                s.system_frame = on;
+                crate::view::native::frame::set_system_frame(on, true);
+            }));
+        }
         for broken in &library.broken {
             let first = broken.errors.first().cloned().unwrap_or_default();
             rows.push(

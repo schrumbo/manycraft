@@ -1,5 +1,7 @@
 //! The manager window as the operating system sees it: where it is, and getting it out of the way of a game.
 
+pub mod frame;
+
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 #[cfg(not(target_os = "windows"))]
@@ -59,6 +61,8 @@ impl FreyaPlugin for Follow {
         match event {
             PluginEvent::WindowCreated { window, .. } => {
                 super::menubar::install(self.told.clone());
+                #[cfg(target_os = "macos")]
+                frame::place_lights(window);
                 #[cfg(not(target_os = "windows"))]
                 note(window);
                 #[cfg(target_os = "windows")]
@@ -68,9 +72,20 @@ impl FreyaPlugin for Follow {
             }
             #[cfg(not(target_os = "windows"))]
             PluginEvent::WindowEvent { window, event } => match event {
-                WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => note(window),
-                WindowEvent::Focused(true) => {
-                    let _ = self.told.try_send(Told::Activated);
+                WindowEvent::Moved(_) => note(window),
+                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    note(window);
+                    let maximized = window.is_maximized();
+                    frame::update(|c| c.maximized = maximized);
+                    #[cfg(target_os = "macos")]
+                    frame::place_lights(window);
+                }
+                WindowEvent::Focused(focused) => {
+                    let focused = *focused;
+                    frame::update(|c| c.inactive = !focused);
+                    if focused {
+                        let _ = self.told.try_send(Told::Activated);
+                    }
                 }
                 _ => {}
             },
@@ -146,10 +161,21 @@ pub fn attach(window: &freya::winit::window::Window) {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(RawWindowHandle::Win32(h)) = window.window_handle().map(|h| h.as_raw()) {
             HWND.store(h.hwnd.get(), Ordering::SeqCst);
+            frame::fold(h.hwnd.get() as windows_sys::Win32::Foundation::HWND);
         }
     }
     #[cfg(not(target_os = "windows"))]
     let _ = window;
+}
+
+/// Gives the window's content `w` by `h` device pixels.
+pub fn set_inner(window: &freya::winit::window::Window, w: u32, h: u32) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = hwnd() {
+        frame::set_inner(hwnd, w, h);
+        return;
+    }
+    let _ = window.request_inner_size(freya::winit::dpi::PhysicalSize::new(w, h));
 }
 
 /// The native handle of the manager window, for the drive tool; zero before the window exists.

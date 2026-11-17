@@ -14,14 +14,32 @@ pub mod level {
     pub const MENU: u8 = 4;
     pub const TOAST: u8 = 5;
     pub const TIP: u8 = 6;
+    /// The edges that resize a window without the system's frame, over everything.
+    pub const EDGE: u8 = 7;
     /// Lifts a bar that floats over the page above page content of any depth, still under every overlay level.
     pub const FLOAT: i16 = 512;
 }
 
 /// Fixed sizes of the window's frame around the content.
+/// The Windows close button under the pointer, as Windows 11 paints it in every theme.
+pub const CLOSE_HOVER: Color = Color::from_rgb(0xC4, 0x2B, 0x1C);
+/// The Windows close button held down.
+pub const CLOSE_PRESS: Color = Color::from_argb(0xE6, 0xC4, 0x2B, 0x1C);
+
 pub mod frame {
     /// The height of the title bar over both columns.
     pub const TITLEBAR: f32 = 38.;
+    /// The title bar with its bottom line: what overlays leave uncovered.
+    pub const CHROME: f32 = TITLEBAR + 1.;
+    /// The width of a Windows window button.
+    pub const CAPTION_W: f32 = 46.;
+    /// The size of a Windows window button glyph.
+    pub const CAPTION_GLYPH: f32 = 10.;
+    /// The side of a Linux window button, and the gap between them.
+    pub const CAPTION_ROUND: f32 = 24.;
+    pub const CAPTION_GAP: f32 = 8.;
+    /// How far into the window a Linux edge resizes it.
+    pub const EDGE: f32 = 5.;
     /// The narrowest and widest the user drags the sidebar.
     pub const SIDEBAR_MIN: f32 = 200.;
     pub const SIDEBAR_MAX: f32 = 320.;

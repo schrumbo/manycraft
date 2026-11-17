@@ -15,13 +15,17 @@ use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::text::{caption, line};
 use crate::view::kit::{Bounds, ring, use_theme};
 use crate::view::drive::use_spot;
+use crate::view::native::frame::{self, Cover, Heard, Zone};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{font, frame, iconsize, space};
+use crate::view::theme::{font, frame as size, iconsize, space};
 use crate::view::ui::{Filter, Page, Pane};
+
+use super::controls::{Controls, Edges};
 
 const MAC_LIGHTS: f32 = 78.;
 const PALETTE_W: f32 = 340.;
 const CRUMB_CHAR: f32 = 7.;
+const WAITING: f32 = 0.45;
 
 /// One step of the breadcrumb; the ones before the last lead back.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,10 +107,31 @@ impl Component for TitleBar {
             Names { instance, batch, tab: ui.instance.tab.read().label() }
         };
         let lights = if cfg!(target_os = "macos") { MAC_LIGHTS } else { 0. };
-        let room = (window - lights - PALETTE_W - 2. * frame::TITLEBAR * 3.) / 2.;
+        let (_, buttons_left) = frame::buttons();
+        let room = (window - PALETTE_W) / 2. - lights - size::TITLEBAR * 3. - space::L;
         let crumbs = fit(trail(&page, &names), room.max(120.));
+        let mut chrome = use_state(frame::chrome);
+        let own = frame::own_buttons(*chrome.read());
+        let mut palette = ui.palette;
+        use_hook(move || {
+            let heard = frame::heard();
+            spawn(async move {
+                while let Ok(h) = heard.recv().await {
+                    match h {
+                        Heard::Chrome(c) => chrome.set_if_modified(c),
+                        Heard::Bar => palette.set_if_modified(false),
+                    }
+                }
+            });
+        });
+        use_side_effect(move || frame::set_scale(*Platform::get().current_window().scale_factor.read() as f32));
+        let sheet = ui.sheet.read().is_some();
+        let menu = ui.menu.read().is_some();
+        frame::set_cover(if menu { Cover::Menu } else if sheet { Cover::Sheet } else { Cover::None });
+        let mut bar_zone = frame::use_zone(Zone::Bar);
+        let mut left_zone = frame::use_zone(Zone::Control);
 
-        let mut left = rect().horizontal().cross_align(Alignment::Center).spacing(space::XXS);
+        let mut left = rect().horizontal().cross_align(Alignment::Center).spacing(space::XXS).on_sized(move |e: Event<SizedEventData>| left_zone(&e));
         left = left
             .child(Button::icon("titlebar.sidebar", Icon::Sidebar, tr("Seitenleiste")).plain().tip(Command::ToggleSidebar.tip()).on_press(move |_| Command::ToggleSidebar.run(store)))
             .child(Button::icon("titlebar.back", Icon::ChevronLeft, tr("Zurück")).plain().tip(Command::GoBack.tip()).disabled((!back).then(|| tr("Nichts, wohin es zurückgeht."))).on_press(move |_| Command::GoBack.run(store)))
@@ -121,25 +146,58 @@ impl Component for TitleBar {
             trail_row = trail_row.child(Crumbs { crumb: c, last });
         }
 
-        let mut right = rect().horizontal().cross_align(Alignment::Center).main_align(Alignment::End).spacing(space::S).padding((0., space::S));
+        let mut right = rect().width(Size::flex(1.)).horizontal().cross_align(Alignment::Center).main_align(Alignment::End).spacing(space::S).padding((0., space::S));
         right = right.child(Activity);
         right = right.child(Attention);
 
-        rect()
+        let mut start = rect().width(Size::flex(1.)).height(Size::fill()).horizontal().cross_align(Alignment::Center).padding((0., 0., 0., if own && buttons_left { 0. } else { space::S + lights }));
+        if own && buttons_left {
+            start = start.child(Controls { chrome });
+        }
+        start = start.child(waiting(left, sheet)).child(rect().width(Size::flex(1.)).child(waiting(trail_row, sheet))).content(Content::flex());
+        let mut end = rect().width(Size::flex(1.)).height(Size::fill()).horizontal().cross_align(Alignment::Center).child(waiting(right, sheet));
+        if own && !buttons_left {
+            end = end.child(Controls { chrome });
+        }
+        let mut bar = rect()
             .a11y_role(AccessibilityRole::Toolbar)
             .width(Size::fill())
-            .height(Size::px(frame::TITLEBAR))
+            .height(Size::px(size::TITLEBAR))
             .background(t.sidebar)
             .horizontal()
             .cross_align(Alignment::Center)
-            .padding((0., 0., 0., space::S + lights))
-            .window_drag()
-            .child(left)
-            .child(rect().width(Size::flex(1.)).child(trail_row))
-            .child(Palette)
-            .child(rect().width(Size::flex(1.)).child(right))
-            .content(Content::flex())
+            .on_sized(move |e: Event<SizedEventData>| bar_zone(&e))
+            .on_pointer_down(move |_| palette.set_if_modified(false))
+            .child(start.content(Content::flex()))
+            .child(waiting(Palette, sheet))
+            .child(end.content(Content::flex()))
+            .child(Edges { chrome })
+            .content(Content::flex());
+        if !cfg!(target_os = "windows") {
+            bar = bar.window_drag();
+        }
+        if cfg!(target_os = "linux") {
+            bar = bar.on_pointer_down(|e: Event<PointerEventData>| {
+                if e.button() == Some(MouseButton::Right) {
+                    let at = e.global_location();
+                    frame::window_menu(at.x, at.y);
+                }
+            });
+        }
+        bar
     }
+}
+
+/// `child` while a sheet waits for an answer: dimmed, and its clicks only move the window.
+fn waiting(child: impl IntoElement, sheet: bool) -> Element {
+    if !sheet {
+        return child.into_element();
+    }
+    let mut cover = rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::fill()).height(Size::fill());
+    if !cfg!(target_os = "windows") {
+        cover = cover.window_drag();
+    }
+    rect().opacity(WAITING).child(child).child(cover).into_element()
 }
 
 #[derive(PartialEq)]
@@ -153,16 +211,18 @@ impl Component for Crumbs {
         let t = use_theme();
         let store = use_store();
         let mut hovered = use_state(|| false);
+        let mut zone = frame::use_zone(if self.crumb.to.is_some() && !self.last { Zone::Control } else { Zone::Bar });
         let c = &self.crumb;
         let ink = if self.last { t.text1 } else if *hovered.read() && c.to.is_some() { t.text1 } else { t.text2 };
         let weight = if self.last { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
         let text = line(&t, c.label.clone(), font::BODY, ink).font_weight(weight).max_lines(1).text_overflow(TextOverflow::Ellipsis);
         let Some(to) = c.to.clone().filter(|_| !self.last) else {
-            return rect().max_width(Size::px(220.)).child(text).into_element();
+            return rect().max_width(Size::px(220.)).on_sized(move |e: Event<SizedEventData>| zone(&e)).child(text).into_element();
         };
         let mut page = store.ui.page;
         rect()
             .max_width(Size::px(220.))
+            .on_sized(move |e: Event<SizedEventData>| zone(&e))
             .cursor(CursorIcon::Pointer)
             .a11y_role(AccessibilityRole::Link)
             .a11y_alt(c.label.clone())
@@ -184,7 +244,8 @@ impl Component for Palette {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
-        let spot = use_spot("titlebar.palette", "button", &tr("Suchen oder Befehl …"), true);
+        let mut spot = use_spot("titlebar.palette", "button", &tr("Suchen oder Befehl …"), true);
+        let mut zone = frame::use_zone(Zone::Control);
         let keys = Command::OpenPalette.keys();
         let mut field = rect()
             .a11y_id(a11y)
@@ -192,7 +253,7 @@ impl Component for Palette {
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(tr("Suchen oder Befehl …"))
             .width(Size::px(PALETTE_W))
-            .height(Size::px(frame::TITLEBAR - space::S * 1.5))
+            .height(Size::px(size::TITLEBAR - space::S * 1.5))
             .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
@@ -201,7 +262,10 @@ impl Component for Palette {
             .background(if *hovered.read() { t.hover } else { t.raised })
             .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
             .cursor(CursorIcon::Pointer)
-            .on_sized(spot)
+            .on_sized(move |e: Event<SizedEventData>| {
+                zone(&e);
+                spot(e);
+            })
             .on_pointer_over(move |_| hovered.set(true))
             .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
@@ -284,12 +348,13 @@ impl Component for ActivityChip {
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
         let mut spot = use_spot("titlebar.activity", "button", &label, true);
+        let mut zone = frame::use_zone(Zone::Control);
         let mut chip = rect()
             .a11y_id(a11y)
             .a11y_focusable(true)
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(label.clone())
-            .height(Size::px(frame::TITLEBAR - space::M))
+            .height(Size::px(size::TITLEBAR - space::M))
             .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
@@ -299,6 +364,7 @@ impl Component for ActivityChip {
             .cursor(CursorIcon::Pointer)
             .on_sized(move |e: Event<SizedEventData>| {
                 at.set_if_modified(Bounds::of(&e));
+                zone(&e);
                 spot(e);
             })
             .on_pointer_over(move |_| hovered.set(true))
@@ -357,21 +423,25 @@ impl Component for AttentionChip {
         let focus = use_focus(a11y);
         let mut page = store.ui.page;
         let label = if n == 1 { tr("1 braucht dich") } else { trf("%lld brauchen dich", &[&n]) };
-        let spot = use_spot("titlebar.attention", "button", &label, true);
+        let mut spot = use_spot("titlebar.attention", "button", &label, true);
+        let mut zone = frame::use_zone(Zone::Control);
         let mut chip = rect()
             .a11y_id(a11y)
             .a11y_focusable(true)
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(label.clone())
-            .height(Size::px(frame::TITLEBAR - space::M))
+            .height(Size::px(size::TITLEBAR - space::M))
             .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::XS)
             .corner_radius(t.shape.control)
-            .background(t.attention.with_af32(frame::NOTICE_WASH))
+            .background(t.attention.with_af32(size::NOTICE_WASH))
             .cursor(CursorIcon::Pointer)
-            .on_sized(spot)
+            .on_sized(move |e: Event<SizedEventData>| {
+                zone(&e);
+                spot(e);
+            })
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_pointer_down(|e: Event<PointerEventData>| e.stop_propagation())
             .on_press(move |_| page.set(Page::Grid(Filter::Attention)))

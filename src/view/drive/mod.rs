@@ -184,7 +184,7 @@ async fn run(store: Store, b: &Value) -> Result<Value, String> {
             let (w, h) = (b["w"].as_f64().ok_or("w missing")?, b["h"].as_f64().ok_or("h missing")?);
             let s = f64::from(scale());
             Platform::get().with_window(Platform::window_id(), move |window| {
-                let _ = window.request_inner_size(freya::winit::dpi::PhysicalSize::new((w * s).round() as u32, (h * s).round() as u32));
+                crate::view::native::set_inner(window, (w * s).round() as u32, (h * s).round() as u32);
             });
             settle().await;
             Ok(json!({}))

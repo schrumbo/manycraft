@@ -5,6 +5,7 @@ pub mod history;
 mod palette;
 pub mod shortcuts;
 mod sidebar;
+mod controls;
 mod titlebar;
 mod toolbar;
 
@@ -155,13 +156,13 @@ fn drawer(t: &super::theme::Theme, ui: super::ui::Ui) -> Element {
     let (w, h) = *ui.window.read();
     let mut open = ui.drawer;
     rect()
-        .position(Position::new_global().left(0.).top(0.))
+        .position(Position::new_global().left(0.).top(frame::CHROME))
         .layer(Layer::OverlayLevel(level::DRAWER))
         .a11y_role(AccessibilityRole::Dialog)
         .a11y_alt(tr("Seitenleiste"))
         .a11y_builder(|n| n.set_modal())
         .width(Size::px(w))
-        .height(Size::px(h))
+        .height(Size::px((h - frame::CHROME).max(0.)))
         .horizontal()
         .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
         .child(rect().height(Size::fill()).shadow(t.elevation.float.clone()).child(Sidebar { overlay: true }))

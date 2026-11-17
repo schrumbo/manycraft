@@ -259,14 +259,14 @@ impl Component for Host {
         let at = fade.get().value();
         let (w, h) = *ui.window.read();
         rect()
-            .position(Position::new_global().left(0.).top(0.))
+            .position(Position::new_global().left(0.).top(frame::CHROME))
             .layer(Layer::OverlayLevel(level::SHEET))
             .width(Size::px(w))
-            .height(Size::px(h))
+            .height(Size::px((h - frame::CHROME).max(0.)))
             .background(t.scrim)
             .opacity(at)
             .cross_align(Alignment::Center)
-            .padding((frame::SHEET_TOP, space::L, space::L, space::L))
+            .padding((frame::SHEET_TOP - frame::CHROME, space::L, space::L, space::L))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .child(rect().offset_y((1. - at) * space::S).child(content))

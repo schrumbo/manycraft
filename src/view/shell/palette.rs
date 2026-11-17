@@ -356,13 +356,13 @@ impl Component for Palette {
         };
         let head = head.child(Field::new("palette.query", query).placeholder(placeholder).glyph(Icon::Search).rows_through().claim(claim).width(Size::flex(1.)).auto_focus());
         rect()
-            .position(Position::new_global().left(0.).top(0.))
+            .position(Position::new_global().left(0.).top(frame::CHROME))
             .layer(Layer::OverlayLevel(level::PALETTE))
             .width(Size::px(w))
-            .height(Size::px(h))
+            .height(Size::px((h - frame::CHROME).max(0.)))
             .background(t.scrim.with_a(t.scrim.a() / 2))
             .cross_align(Alignment::Center)
-            .padding((frame::SHEET_TOP, space::L, space::L, space::L))
+            .padding((frame::SHEET_TOP - frame::CHROME, space::L, space::L, space::L))
             .on_mouse_down(move |_| ui.palette.set(false))
             .on_wheel(|e: Event<WheelEventData>| e.stop_propagation())
             .on_global_key_down(move |e: Event<KeyboardEventData>| {

@@ -101,10 +101,13 @@ pub fn run(play: Option<Play>) {
     let away = cfg!(target_os = "windows") && crate::core::drive::away();
     let (told, hears) = async_channel::unbounded();
     let close = told.clone();
+    native::frame::set_system_frame(crate::core::settings::loaded().system_frame, false);
     let window = WindowConfig::new_app(Root { play, hears })
         .with_size(size.0, size.1)
         .with_min_size(MIN.0, MIN.1)
         .with_title("Manycraft")
+        .with_decorations(!cfg!(target_os = "linux") || native::frame::system_frame())
+        .with_window_attributes(|attributes, _| native::frame::attributes(attributes))
         .with_shown(!away)
         .with_on_close(move |_, _| {
             let _ = close.try_send(native::Told::Close);
@@ -113,10 +116,10 @@ pub fn run(play: Option<Play>) {
         .with_window_handle(move |window| {
             let os = window.scale_factor();
             *OS_SCALE.lock().unwrap_or_else(|e| e.into_inner()) = os;
-            if let Some(device) = scale {
-                let _ = window.request_inner_size(freya::winit::dpi::PhysicalSize::new((size.0 * device).round() as u32, (size.1 * device).round() as u32));
-            }
             native::attach(window);
+            if let Some(device) = scale {
+                native::set_inner(window, (size.0 * device).round() as u32, (size.1 * device).round() as u32);
+            }
         });
     launch(LaunchConfig::new().with_plugin(drive::Watch).with_plugin(native::Follow::new(told)).with_plugin(signals::Watch::default()).with_window(window));
 }
