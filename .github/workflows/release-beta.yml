@@ -269,9 +269,9 @@ jobs:
       - name: Publish as a pre-release, never as the latest release
         run: |
           TAG="v${{ needs.prepare.outputs.version }}"
-          gh release edit "$TAG" --draft=false --prerelease --latest=false
           PRE=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)
           if [ "$PRE" != "true" ]; then
             echo "::error::$TAG is not marked as a pre-release. Stable installs would be offered it."
             exit 1
           fi
+          gh release edit "$TAG" --draft=false --prerelease --latest=false

@@ -101,9 +101,9 @@ pub fn create(play: &Play, name: &str, exe: &Path, dir: &Path) -> Result<PathBuf
 fn make(stem: &str, name: &str, exe: &Path, args: &[String], dir: &Path) -> Result<PathBuf> {
     let line = args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(" ");
     let (target, dir, stem, description) = (exe.to_path_buf(), dir.to_path_buf(), stem.to_owned(), name.to_owned());
-    let own = exe.file_name().map(|n| n.to_owned());
+    let own = exe.to_string_lossy().to_lowercase();
     std::thread::spawn(move || {
-        let path = free_path(&dir, &stem, "lnk", &|p| windows_link::read(p).is_ok_and(|(target, args)| Path::new(&target).file_name() == own.as_deref() && args.split(' ').any(|a| a == PLAY_FLAG)))?;
+        let path = free_path(&dir, &stem, "lnk", &|p| windows_link::read(p).is_ok_and(|(target, args)| target.to_lowercase() == own && args.split(' ').any(|a| a == PLAY_FLAG)))?;
         windows_link::write(&path, &target, &line, &description)?;
         Ok(path)
     })
