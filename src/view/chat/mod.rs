@@ -66,6 +66,8 @@ pub struct Shared {
     pub rejected: State<Option<(String, String)>>,
     /// How many of the newest lines the list holds.
     pub shown: State<usize>,
+    /// The first line held while the list is scrolled away from the newest, so arriving lines do not push it out.
+    pub top: State<Option<u64>>,
     pub focus: State<Option<Instant>>,
     /// Whether the recipient pop-up is open, its filter and the entry lit in it.
     pub picker: State<bool>,
@@ -95,6 +97,7 @@ impl Shared {
             sent: State::create(None),
             rejected: State::create(None),
             shown: State::create(PAGE),
+            top: State::create(None),
             focus: State::create(None),
             picker: State::create(false),
             query: State::create(String::new()),
@@ -338,7 +341,11 @@ impl Component for ChatPage {
             }
         } else {
             let shown = (*shared.shown.read()).min(ids.len());
-            let older = ids.len() - shown;
+            let mut older = ids.len() - shown;
+            if let Some(top) = *shared.top.read() {
+                older = older.min(ids.partition_point(|id| *id < top));
+            }
+            let back = older.checked_sub(1).map(|last| ids[last.saturating_sub(PAGE - 1)]);
             let window: Vec<ChatLine> = ids[older..].iter().filter_map(|id| m.chat.get((id - base) as usize).cloned()).collect();
             let names = if m.batches.len() > 1 && batch.is_none() { m.batches.iter().map(|b| (b.id.clone(), b.name.clone())).collect() } else { Vec::new() };
             let running = running_by_batch(&m);
@@ -356,7 +363,7 @@ impl Component for ChatPage {
                 })
                 .collect();
             let mark = mark_at.and_then(|at| ids[older..].iter().skip(1).find(|id| **id >= at).copied());
-            Lines { rows, older, mark }.into_element()
+            Lines { rows, older, back, mark }.into_element()
         };
         let mut main = rect().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
         if broadcast {
@@ -481,6 +488,8 @@ struct Line {
 struct Lines {
     rows: Vec<Line>,
     older: usize,
+    /// The line "ältere Zeilen" reaches back to.
+    back: Option<u64>,
     /// The first line that came while the page was away, marked as new.
     mark: Option<u64>,
 }
@@ -495,6 +504,11 @@ impl Component for Lines {
         let mut tall = use_state(|| (0f32, 0f32));
         let mut known = use_state(HashMap::<u64, f32>::new);
         let mut measured = use_state(|| 0f32);
+        let mut top = store.ui.chat.top;
+        let first = self.rows.first().map(|r| r.id);
+        let mut head = use_state(|| first);
+        use_side_effect_with_deps(&first, move |first| head.set(*first));
+        use_drop(move || top.set(None));
         use_side_effect(move || {
             let Some((content, viewport)) = *scroll.bounds.read() else { return };
             let y = scroll.position().y;
@@ -513,6 +527,7 @@ impl Component for Lines {
                     (m.chat_base() + m.chat.len() as u64).checked_sub(1)
                 };
                 away.set(if at_end { None } else { newest });
+                top.set(if at_end { None } else { *head.peek() });
             }
         });
         let at_end = *follow.read();
@@ -520,7 +535,7 @@ impl Component for Lines {
         let now = now();
         let mut entries = vec![Entry::Edge(space::S)];
         if self.older > 0 {
-            entries.push(Entry::Older(self.older.min(PAGE)));
+            entries.push(Entry::Older(self.older.min(PAGE), self.back));
         }
         let mut before: Option<i64> = None;
         for r in &self.rows {
@@ -547,7 +562,7 @@ impl Component for Lines {
             move |item: VirtualItem, entries: &Vec<Entry>| {
                 let entry = &entries[item.index];
                 let key = entry.key();
-                rect().key(key).width(Size::fill()).padding((0., space::S)).on_sized(move |e: Event<SizedEventData>| remember_height(known, key, Bounds::of(&e).h)).child(entry.draw(&theme, shown)).into_element()
+                rect().key(key).width(Size::fill()).padding((0., space::S)).on_sized(move |e: Event<SizedEventData>| remember_height(known, key, Bounds::of(&e).h)).child(entry.draw(&theme, shown, top)).into_element()
             },
             scroll,
         )
@@ -575,6 +590,7 @@ impl Component for Lines {
             wrap = wrap.child(
                 rect()
                     .position(Position::new_absolute().left(0.).bottom(space::M))
+                    .layer(Layer::Relative(level::FLOAT))
                     .width(Size::fill())
                     .main_align(Alignment::Center)
                     .horizontal()
@@ -582,6 +598,7 @@ impl Component for Lines {
                         scroll.scroll_to(ScrollPosition::End, Direction::Vertical);
                         follow.set(true);
                         away.set(None);
+                        top.set(None);
                     })),
             );
         }
@@ -593,7 +610,7 @@ impl Component for Lines {
 #[derive(Clone, PartialEq)]
 enum Entry {
     Edge(f32),
-    Older(usize),
+    Older(usize, Option<u64>),
     Day(u64, String),
     Fresh(u64),
     Line(Line, bool),
@@ -603,7 +620,7 @@ impl Entry {
     fn key(&self) -> u64 {
         match self {
             Self::Edge(h) => u64::MAX - u64::from(*h > space::S),
-            Self::Older(_) => u64::MAX - 2,
+            Self::Older(..) => u64::MAX - 2,
             Self::Day(id, _) => id * 4 + 1,
             Self::Fresh(id) => id * 4 + 2,
             Self::Line(l, _) => l.id * 4,
@@ -614,7 +631,7 @@ impl Entry {
     fn guess(&self, width: f32) -> f32 {
         match self {
             Self::Edge(h) => *h,
-            Self::Older(_) => control::M + space::S * 2.,
+            Self::Older(..) => control::M + space::S * 2.,
             Self::Day(..) | Self::Fresh(_) => space::S * 2. + font::CAPTION * font::LINE,
             Self::Line(l, _) => {
                 let text = (width - TIME_W - space::M * 3. - space::S * 2.).max(font::BODY * 8.);
@@ -625,16 +642,23 @@ impl Entry {
         }
     }
 
-    fn draw(&self, t: &Theme, mut shown: State<usize>) -> Element {
+    fn draw(&self, t: &Theme, mut shown: State<usize>, mut top: State<Option<u64>>) -> Element {
+        let back = match self {
+            Self::Older(_, back) => *back,
+            _ => None,
+        };
         match self {
             Self::Edge(h) => rect().height(Size::px(*h)).into_element(),
-            Self::Older(more) => rect()
+            Self::Older(more, _) => rect()
                 .width(Size::fill())
                 .padding(space::S)
                 .center()
                 .child(Button::new("chat.older", if *more == 1 { tr("1 ältere Zeile zeigen") } else { trf("%lld ältere Zeilen zeigen", &[more]) }).plain().on_press(move |_| {
                     let now = *shown.peek();
                     shown.set(now + PAGE);
+                    if top.peek().is_some() {
+                        top.set(back);
+                    }
                 }))
                 .into_element(),
             Self::Day(_, title) => separator(t, title.clone(), t.text3, t.separator),

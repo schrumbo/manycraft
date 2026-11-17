@@ -261,10 +261,14 @@ fn top_of(heights: &[f32; SECTIONS + 1], wide: bool, i: usize) -> f32 {
 
 /// Which section the reader is in: the last one whose title passed the top, or the one just picked while the page is at its end.
 fn current(heights: &[f32; SECTIONS + 1], wide: bool, y: f32, viewport: f32, end: bool, picked: Option<usize>) -> usize {
-    if end && let Some(p) = picked.filter(|p| top_of(heights, wide, *p) < y + viewport) {
+    let reading = y + space::XL + (viewport / 3.).max(1.);
+    if let Some(p) = picked.filter(|p| {
+        let top = top_of(heights, wide, *p);
+        top < if end { y + viewport } else { reading } && top + 1. >= y
+    }) {
         return p;
     }
-    (0..SECTIONS).rev().find(|i| top_of(heights, wide, *i) <= y + space::XL + 1.).unwrap_or(0)
+    (0..SECTIONS).rev().find(|i| top_of(heights, wide, *i) <= reading).unwrap_or(0)
 }
 
 /// The sections of the page as a list beside it when there is room, or as a row of chips above it; picking one scrolls there.
