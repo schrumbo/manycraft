@@ -4,9 +4,7 @@ use crate::core::drive;
 
 /// The name the notifications go out under.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn aumid() -> &'static str {
-    crate::core::channel::app_id()
-}
+const AUMID: &str = "io.github.schrumbo.manycraft";
 
 /// Shows a notification with `title` and `body` that replaces the one of the same `tag`; a click on it sends `tag` to `clicks`.
 pub fn show(tag: &str, title: &str, body: &str, clicks: &async_channel::Sender<String>) {
@@ -58,11 +56,11 @@ mod os {
         if let Some(n) = NOTIFIER.with_borrow(Clone::clone) {
             return Ok(n);
         }
-        let named = windows_registry::CURRENT_USER.create(format!(r"Software\Classes\AppUserModelId\{}", super::aumid())).and_then(|key| key.set_string("DisplayName", crate::core::channel::name()));
+        let named = windows_registry::CURRENT_USER.create(format!(r"Software\Classes\AppUserModelId\{}", super::AUMID)).and_then(|key| key.set_string("DisplayName", "Manycraft"));
         if let Err(e) = named {
             eprintln!("notification name: {e}");
         }
-        let n = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(super::aumid()))?;
+        let n = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(super::AUMID))?;
         NOTIFIER.with_borrow_mut(|slot| *slot = Some(n.clone()));
         Ok(n)
     }
@@ -98,11 +96,11 @@ mod os {
         {
             static APP: std::sync::Once = std::sync::Once::new();
             APP.call_once(|| {
-                let _ = notify_rust::set_application(super::aumid());
+                let _ = notify_rust::set_application(super::AUMID);
             });
         }
         let mut note = notify_rust::Notification::new();
-        note.appname(crate::core::channel::name()).summary(title).body(body).action("default", "default");
+        note.appname("Manycraft").summary(title).body(body).action("default", "default");
         #[cfg(not(target_os = "macos"))]
         if let Some(id) = SHOWN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().get(tag) {
             note.id(*id);

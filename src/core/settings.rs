@@ -57,11 +57,13 @@ impl Default for CrashRestart {
 pub struct Notifications {
     /// One per batch when an account is disconnected, banned, crashed or needs to sign in.
     pub attention: bool,
+    /// Kept for Manycraft 0.9, which notifies whispers when set; unused here.
+    pub whispers: bool,
 }
 
 impl Default for Notifications {
     fn default() -> Self {
-        Self { attention: true }
+        Self { attention: true, whispers: true }
     }
 }
 

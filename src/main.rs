@@ -37,6 +37,14 @@ impl AssetSource for Assets {
 fn main() {
     core::drive::check();
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if args.first().is_none_or(|a| a != "apply-update")
+        && let Err(e) = core::backup::before_first_start(env!("CARGO_PKG_VERSION"))
+    {
+        if !core::updater::install::boot(env!("CARGO_PKG_VERSION")) {
+            refuse_start(&e, !args.first().is_some_and(|a| core::cli::is_command(a)));
+        }
+        std::process::exit(1);
+    }
     if let Some(code) = core::cli::run(&args) {
         std::process::exit(code);
     }
@@ -74,7 +82,7 @@ fn gpui(args: &[String]) {
     app.on_reopen(ui::state::show_grid);
     app.run(|cx: &mut App| {
         #[cfg(windows)]
-        cx.set_app_identity(core::channel::app_id(), core::channel::name());
+        cx.set_app_identity(core::APP_ID, "Manycraft");
         gpui_kit::init(cx);
         ui::theme::apply(ui::theme::Theme::plain(false), None, cx);
         ui::theme::watch_focus(cx);
@@ -102,6 +110,19 @@ fn gpui(args: &[String]) {
             ui::state::request_play(play.instance, play.account, cx);
         }
     });
+}
+
+fn refuse_start(error: &anyhow::Error, window: bool) {
+    core::cli::attach_console();
+    eprintln!("backup before the first start: {error:#}");
+    #[cfg(feature = "freya")]
+    if window {
+        core::i18n::init(&std::env::var("MANYCRAFT_LANG").unwrap_or_default());
+        let text = core::i18n::trf("Vor dem ersten Start dieser Version sichert Manycraft deine Accounts, Instanzen, Batches und Einstellungen. Das hat nicht geklappt, deshalb wurde nichts verändert. Prüfe, ob genug Speicherplatz frei ist, und starte Manycraft dann erneut.\n\nDetails: %@", &[&format!("{error:#}")]);
+        rfd::MessageDialog::new().set_level(rfd::MessageLevel::Error).set_title(core::i18n::tr("Manycraft kann nicht starten")).set_description(text).set_buttons(rfd::MessageButtons::Ok).show();
+    }
+    #[cfg(not(feature = "freya"))]
+    let _ = window;
 }
 
 fn log_panics() {

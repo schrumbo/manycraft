@@ -32,8 +32,8 @@ fn settings_written_by_the_beta_keep_every_setting_this_version_knows() {
     let s = store::load::<Settings>(&fixture("settings.json")).unwrap().unwrap().sanitized();
     assert!(!s.reconnect.enabled && s.reconnect.backoff_secs == [5, 20] && s.reconnect.patient_secs == [120] && s.reconnect.max_attempts == 9);
     assert!(!s.crash_restart.enabled && s.crash_restart.max_attempts == 2);
-    assert!(!s.merged_chat && !s.broadcast && !s.notifications.attention);
-    assert!(s.phone.enabled && s.phone.service == Service::Ntfy && s.phone.telegram_chat == "12345" && s.phone.reconnected);
+    assert!(!s.merged_chat && !s.broadcast && !s.notifications.attention && !s.notifications.whispers);
+    assert!(s.phone.enabled && s.phone.service == Service::Ntfy && s.phone.telegram_chat == "12345" && s.phone.reconnected && s.phone.whispers);
     assert!(!s.auto_update && s.prereleases && !s.game_badge && !s.prevent_sleep && s.tray_explained && s.swap_explained);
     assert_eq!(s.preview_rate, PreviewRate::Smooth);
 }
@@ -98,6 +98,7 @@ fn saving_here_keeps_what_only_the_beta_knows() {
         ("plain instance", written_back::<instance::Instance>("instance-follows-default.json")),
         ("batch", written_back::<batch::Batch>("batch.json")),
         ("window", written_back::<Saved>("window.json")),
+        ("measured", written_back::<HashMap<String, u32>>("measured.json")),
     ];
     for (name, (written, fixture)) in pairs {
         assert_eq!(written, fixture, "{name}");
