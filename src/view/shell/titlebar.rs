@@ -326,14 +326,16 @@ impl Component for Palette {
         if !icon_only {
             field = field.child(rect().width(Size::flex(1.)).child(line(&t, tr("Suchen oder Befehl …"), font::CALLOUT, t.text3).max_lines(1)));
         }
-        if !keys.is_empty() {
+        let bare = keys.is_empty();
+        if !bare {
             field = field.child(caption(&t, keys));
         }
         if let Some(border) = ring(&t, focus()) {
             field = field.border(border);
         }
-        if icon_only {
-            return WithTip::new(Some(tr("Suchen oder Befehl …")), field).into_element();
+        if icon_only || bare {
+            let tip = format!("{} ({})", tr("Suchen oder Befehl …"), Command::OpenPalette.keys());
+            return WithTip::new(Some(tip), field).into_element();
         }
         field.into_element()
     }

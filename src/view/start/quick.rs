@@ -113,7 +113,7 @@ impl Component for QuickPlay {
         match versions.read().clone() {
             Versions::Loading => {
                 actions = actions
-                    .child(Select::new("start.quick.version", tr("Minecraft-Version"), vec![tr("Lädt …")], 0).width(frame::QUICK_SELECT).disabled(Some(tr("Die Versionen werden geladen."))))
+                    .child(Select::new("start.quick.version", tr("Minecraft-Version"), vec![tr("Lädt …")], 0).width(frame::QUICK_SELECT).focus_on(store.ui.focus_quick).disabled(Some(tr("Die Versionen werden geladen."))))
                     .child(Button::new("start.quick.play", tr("Spielen")).glyph(Icon::Play).primary().tall().busy(true).disabled(Some(tr("Die Versionen werden geladen."))));
             }
             Versions::Failed => {

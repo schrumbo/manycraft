@@ -43,7 +43,7 @@ impl Select {
         self
     }
 
-    /// Takes the keyboard when `at` is set to a moment within the last second, also when the select is made after it.
+    /// Takes the keyboard once when `at` is set to a moment within the last ten seconds, as soon as the select is enabled.
     pub fn focus_on(mut self, at: State<Option<Instant>>) -> Self {
         self.focus = Some(at);
         self
@@ -63,9 +63,14 @@ impl Component for Select {
         super::use_arrows(a11y);
         let focus = use_focus(a11y);
         let focus_at = self.focus.and_then(|at| *at.read());
-        use_side_effect_with_deps(&focus_at, move |at| {
-            if at.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
+        let ready = self.disabled.is_none();
+        let focus_state = self.focus;
+        use_side_effect_with_deps(&(focus_at, ready), move |(at, ready)| {
+            if *ready && at.is_some_and(|at| at.elapsed() < Duration::from_secs(10)) {
                 a11y.request_focus();
+                if let Some(mut state) = focus_state {
+                    state.set(None);
+                }
             }
         });
         let mut bounds = use_state(Bounds::default);

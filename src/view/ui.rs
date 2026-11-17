@@ -137,8 +137,6 @@ pub struct Ui {
     pub search: State<String>,
     /// Set when the search field should take the keyboard.
     pub focus_search: State<Option<Instant>>,
-    /// The chat sequence number up to which the person has seen the chat, for the sidebar's unread badge.
-    pub chat_read: State<u64>,
     /// Set when the Start page's Schnell spielen card should take the keyboard.
     pub focus_quick: State<Option<Instant>>,
     /// The games picked in the grid, by key.
@@ -203,7 +201,6 @@ impl Ui {
             tile_w: State::create(0.),
             search: State::create(String::new()),
             focus_search: State::create(None),
-            chat_read: State::create(0),
             focus_quick: State::create(None),
             selection: State::create(BTreeSet::new()),
             cursor: State::create(None),

@@ -489,6 +489,7 @@ impl Flow {
         }
         let on = !*self.full_speed.peek();
         self.full_speed.set(on);
+        self.advanced.set(true);
         self.clear_error();
     }
 

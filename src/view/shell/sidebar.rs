@@ -25,10 +25,11 @@ fn count(t: &Theme, text: String, selected: bool) -> Element {
     line(t, text, font::CAPTION, if selected { t.accent_text } else { t.text3 }).into_element()
 }
 
-/// How many chat lines from players arrived after sequence number `read`.
+/// How many chat lines from players other than the person's own accounts arrived after sequence number `read`.
 pub fn unread(m: &Model, read: u64) -> usize {
     let from = read.max(m.chat_base()) - m.chat_base();
-    m.chat.iter().skip(from as usize).filter(|l| l.from.is_some()).count()
+    let own: Vec<String> = m.accounts.iter().map(|a| a.name.to_lowercase()).collect();
+    m.chat.iter().skip(from as usize).filter(|l| l.from.as_ref().is_some_and(|f| !own.contains(&f.to_lowercase()))).count()
 }
 
 fn unread_label(n: usize) -> String {
@@ -258,13 +259,6 @@ impl Component for Sidebar {
         let m = store.model.read();
         let mut drawer = ui.drawer;
         let in_chat = now == Page::Chat;
-        let chat_seq = m.chat_seq;
-        let mut chat_read = ui.chat_read;
-        use_side_effect_with_deps(&(in_chat, chat_seq), move |(in_chat, seq)| {
-            if *in_chat {
-                chat_read.set_if_modified(*seq);
-            }
-        });
         let go = move |to: Page| {
             move |_| {
                 drawer.set_if_modified(false);
@@ -356,7 +350,7 @@ impl Component for Sidebar {
         }
         if people {
             let (r, tip) = row("nav.chat", tr("Chat"), Icon::Message, now == Page::Chat, Some(Command::OpenChat));
-            let new = if in_chat { 0 } else { unread(&m, *ui.chat_read.read()) };
+            let new = if in_chat { 0 } else { unread(&m, ui.chat.left_at.read().unwrap_or(0)) };
             let r = if new > 0 {
                 if rail { r.compact(true, Some(dot(t.accent))) } else { r.trailing(badge(&t, unread_label(new), Tone::Accent)) }
             } else {
@@ -547,6 +541,7 @@ mod tests {
         assert_eq!(unread(&m, 4), 0);
         assert_eq!(unread(&m, 9), 0);
         m.push_chat(line(Some("w")), 4);
+        assert_eq!(unread(&m, 2), 3);
         assert_eq!(unread(&m, 0), m.chat.iter().filter(|l| l.from.is_some()).count());
     }
 
