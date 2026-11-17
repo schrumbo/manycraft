@@ -141,6 +141,8 @@ pub struct Ui {
     pub accounts: accounts::Shared,
     /// What the Chat page shows and is about to send.
     pub chat: chat::Shared,
+    /// How the grid groups its games, and the last mass stop to undo.
+    pub grid_view: crate::view::grid::mass::Shared,
     /// What the instance page keeps while it is not shown.
     pub instance: Nav,
 }
@@ -183,6 +185,7 @@ impl Ui {
             installing: State::create(false),
             accounts: accounts::Shared::create(),
             chat: chat::Shared::create(),
+            grid_view: crate::view::grid::mass::Shared::create(),
             instance: Nav::create(),
         }
     }

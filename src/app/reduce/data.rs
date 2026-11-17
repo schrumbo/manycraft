@@ -109,6 +109,19 @@ fn rebuild(m: &mut Model) {
     m.order_seq += 1;
 }
 
+/// Drops the stopped games whose account left their batch while they ran; they stayed only until they stopped.
+pub(super) fn drop_left(m: &mut Model) {
+    let before = m.games.len();
+    let batches = &m.batches;
+    m.games.retain(|_, g| g.phase != Phase::Stopped || g.alone() || batches.iter().any(|b| b.id == g.batch_id && b.accounts.contains(&g.account_id)));
+    if m.games.len() != before {
+        let games = &m.games;
+        m.history.retain(|k, _| games.contains_key(k));
+        m.frames.retain(|k, _| games.contains_key(k));
+        m.order_seq += 1;
+    }
+}
+
 /// Takes over the games an earlier manager launched that still run; those without a tile are let go.
 fn adopt(m: &mut Model, env: &Env, adopted: Vec<Adoption>, out: &mut Vec<Effect>) {
     let (mut placed, mut dropped) = (Vec::new(), Vec::new());

@@ -226,6 +226,20 @@ pub fn batch_name_for(server: &str, taken: &[&str]) -> String {
     unique_name(&base, taken)
 }
 
+/// The host of `server` without its port, for naming a batch after it; None for an IP address, an empty or broken
+/// address.
+pub fn server_host(server: &str) -> Option<String> {
+    let server = server.trim();
+    if server.is_empty() || server.starts_with('[') || server_problem(server).is_some() {
+        return None;
+    }
+    let host = server.rsplit_once(':').map_or(server, |(host, _)| host).trim_end_matches('.');
+    if host.parse::<std::net::IpAddr>().is_ok() || !host.chars().any(|c| c.is_alphabetic()) {
+        return None;
+    }
+    Some(host.chars().take(NAME_MAX - 5).collect())
+}
+
 const SECOND_LEVEL: [&str; 7] = ["co", "com", "net", "org", "ac", "edu", "gov"];
 
 /// What keeps a name of a pasted list from becoming an offline account.
@@ -416,6 +430,12 @@ mod tests {
 
     #[test]
     fn a_batch_takes_its_name_from_the_server_host() {
+        assert_eq!(server_host("play.example.net"), Some("play.example.net".to_owned()));
+        assert_eq!(server_host(" mc.example.net:25570 "), Some("mc.example.net".to_owned()));
+        assert_eq!(server_host("127.0.0.1:25565"), None);
+        assert_eq!(server_host("[::1]:25565"), None);
+        assert_eq!(server_host("10.0.0.7"), None);
+        assert_eq!(server_host(""), None);
         assert_eq!(batch_name_for("play.example.net", &[]), "example");
         assert_eq!(batch_name_for("mc.example.net:25570", &[]), "example");
         assert_eq!(batch_name_for("play.example.co.uk", &[]), "example");

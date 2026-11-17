@@ -260,6 +260,9 @@ impl Store {
     }
 
     fn dispatch_with(mut self, event: Event, mut images: Vec<Option<Raw>>) {
+        if super::grid::mass::ends(&event) {
+            super::grid::mass::forget(self, None);
+        }
         let env = runner::env();
         let quiet = matches!(event, Event::Reports(_) | Event::Watch(_) | Event::Visible(_) | Event::ShotsDue { .. } | Event::UsageDue | Event::Usage(_));
         let mut effects = Vec::new();
@@ -384,14 +387,7 @@ impl Store {
                     game_window::tint(pid, account);
                 }
             }
-            Effect::Stopped(keys) => {
-                let (text, what) = match keys.as_slice() {
-                    [one] => self.model.peek().games.get(one).map_or_else(|| (tr("Gestoppt"), tr("Stoppen")), |g| (trf("%@ gestoppt", &[&g.name]), trf("%@ stoppen", &[&g.name]))),
-                    many => (trf("%lld gestoppt", &[&many.len()]), trf("%lld stoppen", &[&many.len()])),
-                };
-                let id = toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(keys.clone())))));
-                super::commands::name_undo(self, id, what);
-            }
+            Effect::Stopped(keys) => super::grid::mass::stopped(self, keys),
             Effect::Closed(key) => {
                 let Some((text, what)) = self.model.peek().games.get(&key).map(|g| (trf("„%@“ beendet.", &[&g.name]), trf("„%@“ beenden", &[&g.name]))) else { return };
                 let id = toast::show(self.ui, text, Some(EventHandler::new(move |_| self.dispatch(Event::StartAgain(vec![key.clone()])))));
@@ -544,6 +540,7 @@ impl Store {
         match signal {
             Signal::Hidden(hidden) => self.side().borrow_mut().hidden = hidden,
             Signal::Focused(focused) => {
+                toast::window_focused(focused);
                 {
                     let side = self.side();
                     let mut side = side.borrow_mut();

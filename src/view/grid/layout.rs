@@ -164,9 +164,80 @@ fn fit(count: usize, inner_w: f32, inner_h: f32, gap: f32) -> f32 {
     best
 }
 
+/// Where the groups of a grid grouped by batch sit, in content coordinates: each group's header top and the top left of
+/// each tile of the open groups, in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sections {
+    pub headers: Vec<f32>,
+    pub tiles: Vec<(f32, f32)>,
+    /// Where each group ends, for pushing its sticky header up.
+    pub ends: Vec<f32>,
+    pub content_h: f32,
+}
+
+/// Lays out groups of `(count, folded)` with `grid`'s columns and tile size, each under a header of height `header`.
+pub fn sections(grid: &Grid, groups: &[(usize, bool)], pad: f32, header: f32) -> Sections {
+    let columns = grid.columns.max(1);
+    let mut out = Sections::default();
+    let mut y = pad;
+    for (i, &(count, folded)) in groups.iter().enumerate() {
+        if i > 0 {
+            y += grid.gap;
+        }
+        out.headers.push(y);
+        y += header;
+        if !folded && count > 0 {
+            for j in 0..count {
+                out.tiles.push((grid.left + (j % columns) as f32 * (grid.tile_w + grid.gap), y + (j / columns) as f32 * (grid.tile_h + grid.gap)));
+            }
+            let rows = count.div_ceil(columns);
+            y += rows as f32 * grid.tile_h + (rows - 1) as f32 * grid.gap;
+        }
+        out.ends.push(y);
+    }
+    out.content_h = y + pad;
+    out
+}
+
+/// The tile a step up or down from tile `at` lands on among tiles placed at `places`: the nearest in the next row that
+/// way, closest in x; `at` itself at the edge.
+pub fn vertical(places: &[(f32, f32)], at: usize, down: bool) -> usize {
+    let Some(&(x, y)) = places.get(at) else { return at };
+    let ahead = |py: f32| if down { py > y } else { py < y };
+    let row = places.iter().map(|p| p.1).filter(|py| ahead(*py)).fold(None, |best: Option<f32>, py| Some(best.map_or(py, |b| if down { b.min(py) } else { b.max(py) })));
+    let Some(row) = row else { return at };
+    places.iter().enumerate().filter(|(_, p)| p.1 == row).min_by(|a, b| (a.1.0 - x).abs().total_cmp(&(b.1.0 - x).abs())).map_or(at, |(i, _)| i)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sections_stack_groups_under_their_headers_and_skip_folded_tiles() {
+        let g = layout(10, TileSize::Medium, 1200., 800., 12., 16.);
+        let s = sections(&g, &[(4, false), (5, true), (2, false)], 16., 32.);
+        assert_eq!(s.headers.len(), 3);
+        assert_eq!(s.tiles.len(), 6, "the folded group places no tiles");
+        assert_eq!(s.headers[0], 16.);
+        assert_eq!(s.tiles[0], (g.left, 48.));
+        assert_eq!(s.tiles[3].1, 48. + g.tile_h + 12., "the fourth tile starts the second row of three");
+        assert_eq!(s.ends[0], 48. + 2. * g.tile_h + 12.);
+        assert_eq!(s.headers[1], s.ends[0] + 12.);
+        assert_eq!(s.ends[1], s.headers[1] + 32., "a folded group is only its header");
+        assert_eq!(s.tiles[4], (g.left, s.headers[2] + 32.));
+        assert_eq!(s.content_h, s.ends[2] + 16.);
+    }
+
+    #[test]
+    fn vertical_steps_cross_group_rows_by_position() {
+        let places = [(0., 0.), (100., 0.), (200., 0.), (0., 100.), (0., 250.), (100., 250.)];
+        assert_eq!(vertical(&places, 2, true), 3, "down from the third column lands on the short row's only tile");
+        assert_eq!(vertical(&places, 3, true), 4);
+        assert_eq!(vertical(&places, 5, false), 3);
+        assert_eq!(vertical(&places, 1, false), 1, "the top row stays");
+        assert_eq!(vertical(&places, 5, true), 5, "the bottom row stays");
+    }
 
     #[test]
     fn fixed_sizes_keep_their_width_and_centre_the_block() {

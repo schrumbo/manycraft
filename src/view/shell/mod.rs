@@ -9,6 +9,7 @@ mod toolbar;
 use freya::prelude::*;
 
 use self::palette::Palette;
+pub use self::sidebar::instance_items;
 use self::sidebar::Sidebar;
 use self::toolbar::Toolbar;
 use super::accounts::AccountsPage;

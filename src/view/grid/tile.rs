@@ -16,6 +16,7 @@ use crate::core::i18n::{tr, trf};
 use crate::view::commands::Command;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
+use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::line;
 use crate::view::kit::tooltip::WithTip;
@@ -320,7 +321,10 @@ impl Component for Tile {
         } else {
             let name = line(&t, self.name.clone(), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.));
             let mut row = rect().width(Size::fill()).height(Size::px(NAME_ROW)).horizontal().cross_align(Alignment::Center).spacing(LEAD).child(head).child(name).content(Content::flex());
-            if let Some(g) = mark(&game.phase) {
+            if let Some(word) = words::short(game, &m) {
+                let ink = if severe || stopped_ban(game, &m).is_some() { t.danger_text } else { t.attention_text };
+                row = row.child(line(&t, word, font::CAPTION, ink).font_weight(FontWeight::SEMI_BOLD).max_lines(1));
+            } else if let Some(g) = mark(&game.phase) {
                 row = row.child(icon(&t, g, iconsize::XS, tone));
             } else if let Some(c) = signal.filter(|_| !stopped) {
                 row = row.child(dot(c));
@@ -449,8 +453,25 @@ impl Component for History {
         let store = use_store();
         let spot = use_spot(&format!("history.{}", self.key), "popover", &tr("Verlauf"), true);
         let moments = words::moments(&self.key, &store.model.read());
+        let mass = store.ui.grid_view.mass.read().clone().filter(|m| m.keys.contains(&self.key));
         let mut list = rect().width(Size::fill()).spacing(space::XS);
-        if moments.is_empty() {
+        if let Some(mass) = &mass {
+            let others = mass.keys.len().saturating_sub(1);
+            let with = if others == 0 { tr("von dir") } else { trf("mit %lld anderen", &[&others]) };
+            list = list.child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(space::S)
+                    .child(line(&t, words::when(mass.at), font::CALLOUT, t.text3).width(Size::px(HISTORY_WHEN)).max_lines(1))
+                    .child(line(&t, tr("Gestoppt"), font::CALLOUT, t.text1).font_weight(FontWeight::MEDIUM).max_lines(1))
+                    .child(line(&t, with, font::CALLOUT, t.text2).width(Size::flex(1.)).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+                    .child(Button::new(format!("history.{}.undo", self.key), tr("Rückgängig")).plain().tip(trf("Rückgängig: %@", &[&mass.what])).on_press(move |_| super::mass::undo(store)))
+                    .content(Content::flex()),
+            );
+        }
+        if moments.is_empty() && mass.is_none() {
             list = list.child(line(&t, tr("Noch nichts passiert."), font::CALLOUT, t.text2));
         }
         for m in moments {
@@ -478,7 +499,7 @@ impl Component for History {
     }
 }
 
-const HISTORY_W: f32 = 320.;
+pub(super) const HISTORY_W: f32 = 360.;
 const HISTORY_WHEN: f32 = 72.;
 
 fn primary_of(store: Store, key: &str) -> Option<Primary> {
@@ -551,7 +572,8 @@ fn face_chip(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, si
 pub(super) fn face_view(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, playing: bool) -> Element {
     let mut r = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).child(face_chip(t, account, face, frame::FACE));
     if playing {
-        r = r.child(rect().position(Position::new_absolute().right(0.).bottom(0.)).width(Size::px(frame::DOT)).height(Size::px(frame::DOT)).corner_radius(frame::DOT).background(t.success).border(Border::new().fill(t.surface).width(1.5).alignment(BorderAlignment::Inner)));
+        let out = -frame::DOT / 2.;
+        r = r.child(rect().position(Position::new_absolute().right(out).bottom(out)).width(Size::px(frame::DOT)).height(Size::px(frame::DOT)).corner_radius(frame::DOT).background(t.success).border(Border::new().fill(t.surface).width(1.5).alignment(BorderAlignment::Outer)));
     }
     r.into_element()
 }

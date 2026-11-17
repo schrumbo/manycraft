@@ -3,9 +3,15 @@
 //! below.
 
 mod bar;
+mod groups;
 pub mod layout;
+pub mod mass;
+mod moves;
+pub use moves::{ask_move, leave};
+mod shelf;
 mod strips;
 pub mod table;
+pub mod tools;
 mod tile;
 mod welcome;
 pub mod words;
@@ -34,14 +40,31 @@ use crate::app::model::{Game, Model};
 use crate::core::fleet;
 use crate::core::i18n::{tr, trf};
 
-const SHELF_CARD: f32 = 220.;
-const SHELF_H: f32 = 64.;
 const HISTORY_ROOM: f32 = 260.;
 
 thread_local! {
     static NODES: RefCell<HashMap<String, AccessibilityId>> = RefCell::default();
     static PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
     static ANCHOR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static PLACES: RefCell<Vec<(f32, f32)>> = RefCell::default();
+    static ORDER: RefCell<(u64, Rc<Vec<String>>)> = RefCell::default();
+}
+
+/// Every game's key in the core's order, sorted again only when a game's key, rank or name changed.
+fn order(m: &Model) -> Rc<Vec<String>> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for g in m.games.values() {
+        (&g.key, crate::app::model::rank(&g.phase), &g.name).hash(&mut h);
+    }
+    let sig = h.finish();
+    ORDER.with(|o| {
+        let mut o = o.borrow_mut();
+        if o.0 != sig || o.1.len() != m.games.len() {
+            *o = (sig, Rc::new(m.sorted(None).into_iter().map(|g| g.key.clone()).collect()));
+        }
+        o.1.clone()
+    })
 }
 
 /// Notes the focus node of the tile or row of game `key`, and takes the keyboard when a key press moved there.
@@ -77,8 +100,10 @@ pub fn shown(m: &Model, filter: &Filter, show: Show, search: &str) -> Vec<String
         Filter::Batch(b) => Some(b.as_str()),
         _ => None,
     };
-    m.sorted(batch)
-        .into_iter()
+    order(m)
+        .iter()
+        .filter_map(|k| m.games.get(k))
+        .filter(|g| batch.is_none_or(|b| g.batch_id == b))
         .filter(|g| fleet::solo_instance(&g.batch_id).is_none())
         .filter(|g| *filter != Filter::Attention || g.phase.needs_attention())
         .filter(|g| words::fits(g, show))
@@ -117,10 +142,15 @@ pub fn shown_keys(store: Store) -> Vec<String> {
     let m = store.model.peek();
     let show = show_of(&m, &filter, *store.ui.show.peek());
     let mut keys = shown(&m, &filter, show, &store.ui.search.peek());
-    if *store.ui.view.peek() == View::Table {
+    let view = *store.ui.view.peek();
+    if view == View::Table {
         table::sort(&m, &mut keys, *store.ui.sort.peek());
     }
-    keys
+    let shared = store.ui.grid_view;
+    match groups::of(&m, &filter, view, *shared.grouped.peek(), &shared.folded.peek(), &keys) {
+        Some(groups) => groups::open_keys(&groups),
+        None => keys,
+    }
 }
 
 /// Moves the cursor with the arrow keys, Home, End and the page keys, Shift extending the selection; Delete stops the
@@ -164,6 +194,7 @@ pub fn key(store: Store, e: &KeyboardEventData) -> bool {
         (Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown | NamedKey::PageDown), None) => 0,
         (Key::Named(NamedKey::ArrowLeft), Some(i)) => i.saturating_sub(1),
         (Key::Named(NamedKey::ArrowRight), Some(i)) => (i + 1).min(last),
+        (Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown), Some(i)) if PLACES.with(|p| p.borrow().len()) == keys.len() => PLACES.with(|p| layout::vertical(&p.borrow(), i, e.key == Key::Named(NamedKey::ArrowDown))),
         (Key::Named(NamedKey::ArrowUp), Some(i)) => i.checked_sub(columns).unwrap_or(i),
         (Key::Named(NamedKey::ArrowDown), Some(i)) => if i + columns <= last { i + columns } else { i },
         (Key::Named(NamedKey::PageUp), Some(i)) => i.saturating_sub(page),
@@ -192,30 +223,14 @@ pub fn key(store: Store, e: &KeyboardEventData) -> bool {
     true
 }
 
+/// Whether the grid of all still greets with the welcome card, the one call to action of a first run.
+pub fn greeting(m: &Model) -> bool {
+    welcome::due(m)
+}
+
 /// Whether the page shows the shelf of instances played alone above its tiles.
 pub fn shelf_shown(filter: &Filter, search: &str, show: Show, view: View) -> bool {
     *filter == Filter::All && search.is_empty() && show == Show::All && view == View::Tiles
-}
-
-/// How many games played alone have a process, for the toolbar's count; None while the shelf is empty.
-pub fn shelf_running(m: &Model) -> Option<usize> {
-    let shelf = shelf(m);
-    (!shelf.is_empty()).then(|| m.games.values().filter(|g| g.alone() && g.phase.has_process()).count())
-}
-
-/// Instances played alone, most recently played first.
-fn shelf(m: &Model) -> Vec<(String, String, Option<String>)> {
-    let mut list: Vec<(String, String, Option<String>)> = m
-        .instances
-        .iter()
-        .filter(|i| m.solo_games(&i.id).next().is_some())
-        .map(|i| {
-            let running = m.solo_games(&i.id).find(|g| g.phase.is_active()).map(|g| g.key.clone());
-            (i.id.clone(), i.name.clone(), running)
-        })
-        .collect();
-    list.sort_by_key(|(_, name, running)| (running.is_none(), name.to_lowercase()));
-    list
 }
 
 /// Where the cursor sits in the scrolled content: its top and bottom, the view's height and how far it can scroll.
@@ -259,17 +274,26 @@ impl Component for GridPage {
         if view == View::Table {
             table::sort(&m, &mut keys, *ui.sort.read());
         }
-        let shelf = if shelf_shown(&self.filter, &search, show, view) { shelf(&m) } else { Vec::new() };
+        let shared = ui.grid_view;
+        let groups = groups::of(&m, &self.filter, view, *shared.grouped.read(), &shared.folded.read(), &keys);
+        if let Some(groups) = &groups {
+            keys = groups::open_keys(groups);
+        }
+        let shelf = if shelf_shown(&self.filter, &search, show, view) { shelf::count(&m) } else { 0 };
         let size = *ui.size.read();
         let Bounds { w, h, .. } = *area.read();
-        let shelf_h = if shelf.is_empty() { 0. } else { SHELF_H + space::XL + font::CALLOUT + space::S };
-        let grid = layout(keys.len(), size, w, (h - shelf_h).max(0.), gap, t.grid_pad);
+        let shelf_h = shelf::height(shelf);
+        let heads = groups.as_ref().map_or(0., |g| g.len() as f32 * (groups::HEADER + gap));
+        let grid = layout(keys.len(), size, w, (h - shelf_h - heads).max(0.), gap, t.grid_pad);
+        let sections = groups.as_ref().map(|g| layout::sections(&grid, &g.iter().map(|g| (g.keys.len(), g.folded)).collect::<Vec<_>>(), t.grid_pad, groups::HEADER));
+        let place = |i: usize| sections.as_ref().and_then(|s| s.tiles.get(i).copied()).unwrap_or_else(|| grid.origin(i, t.grid_pad));
+        PLACES.with(|p| *p.borrow_mut() = sections.as_ref().map(|s| s.tiles.clone()).unwrap_or_default());
         if view == View::Tiles && *ui.tile_w.peek() != grid.tile_w {
             ui.tile_w.set(grid.tile_w);
         }
         let bar_room = if ui.selection.read().len() >= 2 { control::L + space::L * 2. } else { 0. };
         let (content, per_row, row_h) = match view {
-            View::Tiles => (grid.content_h + shelf_h + bar_room, grid.columns.max(1), grid.tile_h + gap),
+            View::Tiles => (sections.as_ref().map_or(grid.content_h, |s| s.content_h) + shelf_h + bar_room, grid.columns.max(1), grid.tile_h + gap),
             View::Table => (ROW * (keys.len() as f32 + 1.) + bar_room, 1, ROW),
         };
         let page_rows = ((h - if view == View::Table { ROW } else { 0. }) / row_h.max(1.)).floor().max(1.) as usize;
@@ -283,16 +307,24 @@ impl Component for GridPage {
         let at = top.read().clamp(0., max_top);
         *reveal.borrow_mut() = cursor.as_ref().and_then(|c| keys.iter().position(|k| k == c)).map(|i| match view {
             View::Tiles => {
-                let (_, y) = grid.origin(i, t.grid_pad);
-                (y + shelf_h - t.grid_pad, y + shelf_h + grid.tile_h + t.grid_pad, h, max_top)
+                let (_, y) = place(i);
+                let under = if sections.is_some() { groups::HEADER } else { 0. };
+                (y + shelf_h - t.grid_pad - under, y + shelf_h + grid.tile_h + t.grid_pad, h, max_top)
             }
             View::Table => (i as f32 * ROW, (i as f32 + 2.) * ROW, h, max_top),
         });
         let (first, last) = match view {
-            View::Tiles => {
-                let rows = grid.visible_rows(t.grid_pad, (at - shelf_h).max(0.), h);
-                (rows.start * grid.columns, (rows.end * grid.columns).min(keys.len()))
-            }
+            View::Tiles => match &sections {
+                Some(s) => {
+                    let band = at - shelf_h;
+                    let first = s.tiles.partition_point(|(_, y)| y + grid.tile_h < band);
+                    (first, s.tiles.partition_point(|(_, y)| *y <= band + h).max(first))
+                }
+                None => {
+                    let rows = grid.visible_rows(t.grid_pad, (at - shelf_h).max(0.), h);
+                    (rows.start * grid.columns, (rows.end * grid.columns).min(keys.len()))
+                }
+            },
             View::Table => (((at / ROW).floor() as usize).min(keys.len()), (((at + h) / ROW).ceil() as usize).min(keys.len())),
         };
         let on_screen: Option<HashSet<String>> = (view == View::Tiles).then(|| keys[first.min(last)..last].iter().cloned().collect());
@@ -348,7 +380,7 @@ impl Component for GridPage {
         if !m.loaded {
             return column.child(page.child(rect().center().width(Size::fill()).height(Size::fill()).child(secondary(&t, tr("Lädt …"))))).into_element();
         }
-        if keys.is_empty() && shelf.is_empty() {
+        if keys.is_empty() && shelf == 0 && groups.as_ref().is_none_or(Vec::is_empty) {
             return column.child(page.child(empty(&t, &self.filter, show, &search, store, &m))).into_element();
         }
 
@@ -356,18 +388,53 @@ impl Component for GridPage {
             let batches = !matches!(self.filter, Filter::Batch(_)) && m.batches.len() > 1;
             page = page.child(Table { keys: keys.clone(), top: at, h, batches });
         } else {
-            if !shelf.is_empty() && at < shelf_h {
+            if shelf > 0 && at < shelf_h {
                 page = page.child(
                     rect()
                         .position(Position::new_absolute().left(grid.left.min(t.grid_pad)).top(t.grid_pad - at))
                         .spacing(space::S)
                         .child(line(&t, tr("Zuletzt gespielt"), font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD))
-                        .child(rect().horizontal().spacing(gap).children(shelf.into_iter().map(|(id, name, running)| card(&t, store, id, name, running).into_element()))),
+                        .child(shelf::Shelf { width: (w - t.grid_pad * 2.).max(0.), gap }),
                 );
             }
+            let mut heads: Vec<(usize, Element)> = Vec::new();
+            if let (Some(groups), Some(s)) = (&groups, &sections) {
+                let band_w = grid.columns.max(1) as f32 * (grid.tile_w + gap) - gap;
+                let mut start = 0;
+                for (g, group) in groups.iter().enumerate() {
+                    let from = start;
+                    if !group.folded {
+                        start += group.keys.len();
+                    }
+                    let (head, end) = (s.headers[g] + shelf_h - at, s.ends[g] + shelf_h - at);
+                    if end < 0. || head > h {
+                        continue;
+                    }
+                    let y = head.max(0.).min(end - groups::HEADER);
+                    let stuck = y > head;
+                    let (left, width, inset) = if stuck { (0., w, grid.left) } else { (grid.left, band_w, 0.) };
+                    heads.push((
+                        from,
+                        rect().key(&format!("group.{}", group.id)).position(Position::new_absolute().left(left).top(y)).layer(Layer::Relative(super::theme::frame::FADE_LAYER)).child(groups::Header {
+                            id: group.id.clone(),
+                            name: group.name.clone(),
+                            line: count_line(&m, &group.keys),
+                            folded: group.folded,
+                            width,
+                            inset,
+                            stuck,
+                        })
+                        .into_element(),
+                    ));
+                }
+            }
+            let mut heads = heads.into_iter().peekable();
             for (i, key) in keys.iter().enumerate().take(last).skip(first) {
+                while let Some((_, head)) = heads.next_if(|(from, _)| *from <= i) {
+                    page = page.child(head);
+                }
                 let Some(game) = m.games.get(key) else { continue };
-                let (x, y) = grid.origin(i, t.grid_pad);
+                let (x, y) = place(i);
                 page = page.child(
                     rect()
                         .key(key)
@@ -375,12 +442,13 @@ impl Component for GridPage {
                         .child(Tile { key: key.clone(), name: game.name.clone(), width: grid.tile_w, height: grid.tile_h, index: i }),
                 );
             }
+            page = page.children(heads.map(|(_, head)| head));
             let open = ui.history.read().clone();
             if let Some((key, i)) = open.and_then(|k| keys.iter().position(|x| *x == k).map(|i| (k, i))) {
-                let (x, y) = grid.origin(i, t.grid_pad);
+                let (x, y) = place(i);
                 let tile_top = y + shelf_h - at;
                 let below = tile_top + grid.tile_h + space::XS;
-                let left = x.min((w - HISTORY_ROOM * 1.25).max(0.));
+                let left = x.min((w - tile::HISTORY_W - space::M).max(0.));
                 let at_y = if h - below >= HISTORY_ROOM || tile_top < HISTORY_ROOM { Position::new_absolute().left(left).top(below) } else { Position::new_absolute().left(left).bottom(h - tile_top + space::XS) };
                 page = page.child(rect().position(at_y).child(History { key }));
             }
@@ -395,35 +463,15 @@ impl Component for GridPage {
     }
 }
 
-fn card(t: &super::theme::Theme, store: Store, id: String, name: String, running: Option<String>) -> impl IntoElement {
-    let status = if running.is_some() { tr("Läuft") } else { tr("Gestoppt") };
-    let play_id = id.clone();
-    let action = match running {
-        Some(key) => Button::icon(format!("shelf.{id}.stop"), Icon::Stop, tr("Stoppen")).tip(tr("Stoppen")).on_press(move |_| store.dispatch(AppEvent::Stop(vec![key.clone()]))),
-        None => Button::icon(format!("shelf.{id}.play"), Icon::Play, tr("Spielen")).primary().tip(tr("Spielen")).on_press(move |_| store.dispatch(AppEvent::PlayInstance { instance: play_id.clone(), account: None })),
-    };
-    let mut c = rect()
-        .width(Size::px(SHELF_CARD))
-        .height(Size::px(SHELF_H))
-        .padding((0., space::M))
-        .horizontal()
-        .cross_align(Alignment::Center)
-        .spacing(space::S)
-        .background(t.raised)
-        .corner_radius(t.shape.tile);
-    if let Some(shadow) = t.elevation.card.clone() {
-        c = c.shadow(shadow);
-    }
-    c.child(rect().width(Size::flex(1.)).spacing(2.).child(body(t, name).max_lines(1).text_overflow(TextOverflow::Ellipsis)).child(secondary(t, status)))
-        .content(Content::flex())
-        .child(action)
-}
-
 fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, store: Store, m: &Model) -> Element {
     let searching = !search.trim().is_empty();
     if *filter == Filter::All && show == Show::All && !searching && welcome::due(m) {
         return welcome::Welcome.into_element();
     }
+    let empty_batch = match filter {
+        Filter::Batch(id) if !m.accounts.is_empty() => m.batch(id).map(|b| (b.id.clone(), b.name.clone())),
+        _ => None,
+    };
     let unstarted = *filter == Filter::All && m.batches.is_empty() && !m.accounts.is_empty() && !m.games.values().any(|g| g.alone() && g.phase.is_active());
     let (glyph, title, text) = if searching {
         (Icon::Search, tr("Nichts gefunden"), trf("Zu „%@“ passt keiner.", &[&search.trim()]))
@@ -433,6 +481,8 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
         (Icon::Check, tr("Nichts gestoppt"), tr("Alle sind wach."))
     } else if *filter == Filter::Attention {
         (Icon::Check, tr("Alles läuft"), tr("Kein Account braucht dich gerade."))
+    } else if let Some((_, name)) = &empty_batch {
+        (Icon::Layers, trf("„%@“ ist leer", &[name]), tr("Wähle Accounts, die in diesem Batch spielen sollen."))
     } else if unstarted {
         (Icon::Grid, tr("Noch nichts gestartet"), tr("Spiel eine Instanz allein oder schick mehrere Accounts als Batch los."))
     } else {
@@ -446,6 +496,11 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
         col.child(Button::new("grid.empty.every", tr("Alle anzeigen")).tall().on_press(move |_| ui.show.set(Show::All)))
     } else if *filter == Filter::Attention {
         col.child(Button::new("grid.empty.all", tr("Alle anzeigen")).tall().on_press(move |_| ui.page.set(Page::Grid(Filter::All))))
+    } else if let Some((id, _)) = empty_batch {
+        let want = commands::Want::EditBatch(id);
+        col.child(Button::new("grid.empty.pick", tr("Accounts wählen…")).glyph(Icon::UserPlus).primary().tall().disabled(commands::want_blocked(&want)).on_press(move |_| {
+            commands::want(store, want.clone());
+        }))
     } else if unstarted {
         let (label, want, command) = if m.instances.is_empty() { (tr("Neue Instanz"), commands::Want::NewInstance, commands::Command::NewInstance) } else { (tr("Neuer Batch…"), commands::Want::NewBatch, commands::Command::NewBatch) };
         col.child(Button::new("grid.empty.start", label).glyph(Icon::Plus).primary().tall().disabled(commands::want_blocked(&want)).tip(command.tip()).on_press(move |_| {
@@ -459,15 +514,15 @@ fn empty(t: &super::theme::Theme, filter: &Filter, show: Show, search: &str, sto
     col.into_element()
 }
 
-/// How many of the games the page shows run, "47 von 200 laufen", for the toolbar, counted as the sidebar counts them;
-/// `shelf` counts the running games played alone on the shelf above, when the page shows one. None when it shows none.
-pub fn count_line(m: &Model, shown: &[String], shelf: Option<usize>) -> Option<String> {
+/// How many of the games the page shows run, "47 von 200 laufen · 2 brauchen dich", for the toolbar and the group
+/// headers, counted as the sidebar counts them: games of batches only. None when it shows none.
+pub fn count_line(m: &Model, shown: &[String]) -> Option<String> {
     let games = || shown.iter().filter_map(|k| m.games.get(k));
-    let total = shown.len() + shelf.unwrap_or(0);
+    let total = shown.len();
     if total == 0 {
         return None;
     }
-    let running = games().filter(|g: &&Game| g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention()).count() + shelf.unwrap_or(0);
+    let running = games().filter(|g: &&Game| g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention()).count();
     let attention = games().filter(|g| g.phase.needs_attention()).count();
     let mut parts = vec![trf("%lld von %lld laufen", &[&running, &total])];
     if attention == 1 {

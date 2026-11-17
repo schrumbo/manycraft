@@ -32,6 +32,7 @@ pub enum Column {
 }
 
 const SINCE_W: f32 = 112.;
+const STATUS_W: f32 = 136.;
 const ATTEMPTS_W: f32 = 64.;
 /// The width of the preview of the row under the pointer.
 pub const PREVIEW_W: f32 = 192.;
@@ -71,6 +72,7 @@ impl Column {
             Column::Server => Size::flex(1.5),
             Column::Since => Size::px(SINCE_W),
             Column::Attempts => Size::px(ATTEMPTS_W),
+            Column::Status => Size::px(STATUS_W),
             _ => Size::flex(1.2),
         }
     }

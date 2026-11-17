@@ -244,16 +244,22 @@ impl Component for Sidebar {
 
         let mut top = rect().width(Size::fill()).spacing(1.);
         top = top.child(Row::new("nav.all", tr("Alle")).glyph(Icon::Grid).height(frame::ROW).selected(now == Page::Grid(Filter::All)).trailing(count(&t, m.games.values().filter(|g| !g.alone()).count().to_string(), now == Page::Grid(Filter::All))).on_press(go(Page::Grid(Filter::All))));
-        let mut need = Row::new("nav.attention", tr("Brauchen dich")).glyph(Icon::Alert).height(frame::ROW).selected(now == Page::Grid(Filter::Attention)).on_press(go(Page::Grid(Filter::Attention)));
-        if attention > 0 {
-            need = need.trailing(badge(&t, attention.to_string(), Tone::Attention));
+        let people = !m.accounts.is_empty();
+        let greeting = crate::view::grid::greeting(&m);
+        if people {
+            let mut need = Row::new("nav.attention", tr("Brauchen dich")).glyph(Icon::Alert).height(frame::ROW).selected(now == Page::Grid(Filter::Attention)).on_press(go(Page::Grid(Filter::Attention)));
+            if attention > 0 {
+                need = need.trailing(badge(&t, attention.to_string(), Tone::Attention));
+            }
+            top = top.child(need);
         }
-        top = top.child(need);
         top = top.child(Row::new("nav.accounts", tr("Accounts")).glyph(Icon::Users).height(frame::ROW).selected(now == Page::Accounts).trailing(count(&t, m.accounts.len().to_string(), now == Page::Accounts)).on_press(go(Page::Accounts)));
-        top = top.child(Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat)));
+        if people {
+            top = top.child(Row::new("nav.chat", tr("Chat")).glyph(Icon::Message).height(frame::ROW).selected(now == Page::Chat).on_press(go(Page::Chat)));
+        }
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
-        if !m.batches.is_empty() || can_want(&Want::NewBatch) {
+        if !m.batches.is_empty() || (can_want(&Want::NewBatch) && !greeting) {
             list = list.child(section(&t, tr("Batches")));
             for b in batch_lines(&m) {
                 let to = Page::Grid(Filter::Batch(b.id.clone()));
@@ -271,21 +277,21 @@ impl Component for Sidebar {
                 let row = Row::new(format!("nav.batch.{}", b.id), b.name).glyph(Icon::Layers).height(frame::ROW).selected(selected).trailing(end).on_press(go(to)).on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
                 list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(b.hint), row)));
             }
-            if can_want(&Want::NewBatch) {
+            if can_want(&Want::NewBatch) && !greeting {
                 list = list.child(new_row(&t, "nav.batch.new", tr("Neuer Batch"), move || {
                     want(store, Want::NewBatch);
                 }));
             }
         }
         let installs = store.ui.installs.read().clone();
-        if !m.instances.is_empty() || !installs.is_empty() || can_want(&Want::NewInstance) {
+        if !m.instances.is_empty() || !installs.is_empty() || (can_want(&Want::NewInstance) && !greeting) {
             list = list.child(section(&t, tr("Instanzen")));
             let mut made: Vec<&Instance> = m.instances.iter().collect();
             made.sort_by_cached_key(|i| i.name.to_lowercase());
             for i in made {
                 let to = Page::Instance(i.id.clone());
                 let selected = now == to || matches!(&now, Page::Browse(id, _) if *id == i.id);
-                let running = m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active());
+                let running = m.solo_games(&i.id).any(|g| g.phase.is_active());
                 let since = m.solo_games(&i.id).filter(|g| g.phase.is_active()).filter_map(|g| up.get(&g.key)).min().copied();
                 let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
                 if let Some(p) = crate::view::instance::loading(&m, &i.id) {
@@ -315,7 +321,7 @@ impl Component for Sidebar {
                 let mut page = store.ui.page;
                 list = list.child(Row::new("nav.install.more", trf("und %lld weitere", &[&more])).glyph(Icon::More).height(frame::ROW).on_press(move |_| page.set(Page::Installing(next))));
             }
-            if can_want(&Want::NewInstance) {
+            if can_want(&Want::NewInstance) && !greeting {
                 list = list.child(new_row(&t, "nav.instance.new", tr("Neue Instanz"), move || {
                     want(store, Want::NewInstance);
                 }));

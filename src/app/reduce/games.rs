@@ -324,6 +324,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
         if !matches!(i.phase, Phase::LoginNeeded | Phase::Restarting { .. }) {
             go(m, &key, Phase::Stopped, Why::Exit, &mut fx.now);
         }
+        super::data::drop_left(m);
         if let Some(group) = restart {
             m.session.restart_ready.entry(group).or_default().push(key);
             if let Some(keys) = fleet::restart_done(m, group) {
@@ -1109,6 +1110,18 @@ mod tests {
         m.games.get_mut(&key).unwrap().phase = Phase::Playing { server: "mc.example".into(), since: Instant::now() };
         let stale = m.session.joins.get(&key).copied().unwrap_or_default().wrapping_sub(1);
         assert!(run(&mut m, &s, Instant::now(), Event::JoinDue { key: key.clone(), generation: stale, lines: vec!["/home".into()], delay: Duration::ZERO }).is_empty());
+    }
+
+    #[test]
+    fn a_game_whose_account_left_its_batch_goes_once_it_stopped() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Playing { server: "mc.example".into(), since: Instant::now() }, AccountKind::Offline, &[]);
+        m.session.pids.insert(key.clone(), 1);
+        run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        m.batches[0].accounts.clear();
+        assert!(m.games.contains_key(&key), "kept while it still runs");
+        exited(&mut m, &s, &key, Some(0));
+        assert!(!m.games.contains_key(&key) && !m.history.contains_key(&key));
     }
 
     #[test]
