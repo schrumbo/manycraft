@@ -12,7 +12,7 @@ use freya::prelude::*;
 
 use self::palette::Palette;
 use self::sidebar::{Grip, Sidebar};
-pub use self::sidebar::{instance_items, open_folder};
+pub use self::sidebar::{instance_items, open_folder, swatch};
 use self::titlebar::TitleBar;
 use self::toolbar::Toolbar;
 use super::accounts::AccountsPage;

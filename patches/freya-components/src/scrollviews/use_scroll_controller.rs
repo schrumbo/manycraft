@@ -206,6 +206,12 @@ impl ScrollController {
         Point2D::new(x as f32, y as f32)
     }
 
+    /// Reads the current scroll position in pixels without subscribing the caller to it, for effects that must not re-run on every scroll.
+    pub fn peek_position(&self) -> Point2D {
+        let (x, y) = *self.scroll.peek();
+        Point2D::new(x as f32, y as f32)
+    }
+
     /// Scrolls the horizontal axis to `to` pixels. Returns whether the position actually changed.
     pub fn scroll_to_x(&mut self, to: i32) -> bool {
         let to = self.bounded_position(to, Direction::Horizontal);

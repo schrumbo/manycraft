@@ -10,6 +10,7 @@ mod moves;
 pub use moves::{ask_move, leave};
 mod shelf;
 mod strips;
+pub use strips::{fix_of, run_fix};
 pub mod table;
 pub mod tools;
 mod tile;

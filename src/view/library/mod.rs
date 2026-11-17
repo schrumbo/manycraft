@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use freya::prelude::*;
 
-pub use self::card::Wall;
+pub use self::card::{CARD_W, Wall};
 pub use self::groups::assign;
 pub use self::info::{Info, Infos, ago, use_infos};
 use crate::core::i18n::{tr, trf};

@@ -60,7 +60,7 @@ impl Component for Table {
             let Some(at) = *at else { return };
             let mut scroll = scroll;
             let top = at as f32 * ROW_H;
-            let shown = -(scroll.position().y);
+            let shown = -(scroll.peek_position().y);
             let h = *viewport.peek();
             if top < shown {
                 scroll.scroll_to_y(-(top as i32));

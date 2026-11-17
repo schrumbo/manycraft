@@ -44,7 +44,7 @@ impl Component for List {
             let mut scroll = scroll;
             let top: f32 = (0..at).map(size).sum();
             let bottom = top + size(at);
-            let shown = -(scroll.position().y);
+            let shown = -(scroll.peek_position().y);
             let h = *viewport.peek();
             if top < shown {
                 scroll.scroll_to_y(-(top as i32));
