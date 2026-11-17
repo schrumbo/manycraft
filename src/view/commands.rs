@@ -113,6 +113,11 @@ impl Shortcut {
         k(code)
     }
 
+    /// Alt, or Option on macOS, with `code`.
+    pub const fn alt(code: Code) -> Self {
+        Shortcut { code, primary: false, shift: false, alt: true, ctrl: false }
+    }
+
     /// `code` alone.
     pub const fn bare(code: Code) -> Self {
         bare(code)

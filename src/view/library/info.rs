@@ -44,9 +44,8 @@ pub fn use_infos(store: Store) {
     let m = store.model.read();
     let ids: Vec<String> = m.instances.iter().map(|i| i.id.clone()).collect();
     let active = m.games.values().filter(|g| g.alone() && g.phase.is_active()).count();
-    let instances = m.instances.clone();
     drop(m);
-    use_side_effect_with_deps(&(ids, active), move |_| refresh(store, instances.clone()));
+    use_side_effect_with_deps(&(ids, active), move |_| refresh(store, store.model.peek().instances.clone()));
 }
 
 /// "vor 2 Std." for a time in the past.

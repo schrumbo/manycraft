@@ -254,13 +254,22 @@ struct Activity;
 
 impl Component for Activity {
     fn render(&self) -> impl IntoElement {
+        if tasks(use_store()).is_empty() {
+            return rect().into_element();
+        }
+        ActivityChip.into_element()
+    }
+}
+
+#[derive(PartialEq)]
+struct ActivityChip;
+
+impl Component for ActivityChip {
+    fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
         let mut at = use_state(Bounds::default);
         let list = tasks(store);
-        if list.is_empty() {
-            return rect().into_element();
-        }
         let n = list.len();
         let progress = list.iter().find_map(|task| match task.cancel {
             TaskKind::Install(id) => store.ui.installs.read().iter().find(|e| e.id == id).and_then(|e| match e.stage {
@@ -329,12 +338,21 @@ struct Attention;
 
 impl Component for Attention {
     fn render(&self) -> impl IntoElement {
+        if use_store().model.read().attention_count(None) == 0 {
+            return rect().into_element();
+        }
+        AttentionChip.into_element()
+    }
+}
+
+#[derive(PartialEq)]
+struct AttentionChip;
+
+impl Component for AttentionChip {
+    fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
         let n = store.model.read().attention_count(None);
-        if n == 0 {
-            return rect().into_element();
-        }
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut page = store.ui.page;

@@ -236,11 +236,18 @@ impl Component for Tools {
         let mut mode = shared.mode;
         let mut sort_at = use_state(Bounds::default);
         let mut more_at = use_state(Bounds::default);
+        let search_a11y = use_a11y();
+        let focus_at = *store.ui.focus_search.read();
+        use_side_effect_with_deps(&focus_at, move |at| {
+            if at.is_some() {
+                search_a11y.request_focus();
+            }
+        });
         let any = !store.model.read().instances.is_empty();
         let compact = self.room < frame::TOOLBAR_FULL;
         let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
         if any {
-            row = row.child(Field::new("library.filter", shared.query).glyph(Icon::Search).placeholder(tr("Instanzen filtern")).width(Size::px(if compact { frame::SEARCH_NARROW } else { frame::SEARCH })));
+            row = row.child(Field::new("library.filter", shared.query).glyph(Icon::Search).placeholder(tr("Instanzen filtern")).width(Size::px(if compact { frame::SEARCH_NARROW } else { frame::SEARCH })).a11y(search_a11y));
             let now = *sort.read();
             let label = trf("Sortieren: %@", &[&now.label()]);
             let open = move |_| {

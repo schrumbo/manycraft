@@ -82,8 +82,8 @@ impl Component for GroupSheet {
         let store = use_store();
         let id = self.id.clone();
         let made = store.model.read().instance(&id).cloned();
+        let value = use_state(|| made.as_ref().and_then(|i| i.group.clone()).unwrap_or_default());
         let Some(made) = made else { return Card::new("library.group.sheet", tr("Gruppe")).inform().primary(Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(store.ui)) }).width(frame::SHEET_NARROW).into_element() };
-        let value = use_state(|| made.group.clone().unwrap_or_default());
         let existing: Vec<String> = group_names(&store.model.read().instances);
         let typed = value.read().clone();
         let save = {

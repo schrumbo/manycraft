@@ -125,7 +125,7 @@ impl Component for Tabs {
         let now = super::shown_tab(store, &id, takes_mods);
         let chosen = super::Tab::ALL.iter().position(|t| *t == now).unwrap_or(0);
         let digits = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5];
-        let items = super::Tab::ALL.iter().zip(digits).map(|(t, code)| Segment { id: format!("instance.tab.{}", t.key()), label: t.label(), tip: Some(Shortcut::primary(code).label()) }).collect();
+        let items = super::Tab::ALL.iter().zip(digits).map(|(t, code)| Segment { id: format!("instance.tab.{}", t.key()), label: t.label(), tip: Some(Shortcut::alt(code).label()) }).collect();
         Segmented::new(tr("Bereich"), items, chosen).on_choose(move |i| {
             if let Some(t) = super::Tab::ALL.get(i) {
                 tab.set(*t);

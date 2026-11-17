@@ -482,7 +482,7 @@ pub fn extras(store: Store) -> Vec<Extra> {
     for (n, tab) in Tab::ALL.into_iter().enumerate() {
         let mut nav = store.ui.instance.tab;
         let code = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5][n];
-        push(&format!("tab.{}", tab.key()), tab_entry(tab, &name), tab.glyph(), Some(Shortcut::primary(code)), EventHandler::new(move |_| nav.set(tab)));
+        push(&format!("tab.{}", tab.key()), tab_entry(tab, &name), tab.glyph(), Some(Shortcut::alt(code)), EventHandler::new(move |_| nav.set(tab)));
     }
     let rename_id = id.clone();
     push("rename", trf("%@ umbenennen…", &[&name]), Icon::Settings, Some(Shortcut::bare(Code::F2)), EventHandler::new(move |_| actions::begin_rename(store, &rename_id)));

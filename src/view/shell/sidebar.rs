@@ -71,13 +71,17 @@ pub fn batch_items(store: Store, id: &str) -> Vec<Item> {
     }
     let b = id.to_owned();
     let mut start = Item::new("batch.start", tr("Starten"), move |_| store.dispatch(AppEvent::StartBatch(b.clone()))).disabled(stopped == 0);
-    if let Some(k) = keys(Command::StartSelected) {
+    if stopped == 0 {
+        start = start.shortcut(tr("Kein Spiel zum Starten"));
+    } else if let Some(k) = keys(Command::StartSelected) {
         start = start.shortcut(k);
     }
     items.push(start);
     let b = id.to_owned();
     let mut stop = Item::new("batch.stop", tr("Stoppen"), move |_| store.dispatch(AppEvent::StopBatch(b.clone()))).disabled(stoppable == 0);
-    if let Some(k) = keys(Command::StopSelected) {
+    if stoppable == 0 {
+        stop = stop.shortcut(tr("Nichts läuft"));
+    } else if let Some(k) = keys(Command::StopSelected) {
         stop = stop.shortcut(k);
     }
     items.push(stop);

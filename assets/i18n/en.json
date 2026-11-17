@@ -2086,5 +2086,7 @@
   "Noch nie gespielt": "Never played",
   "Weiterspielen": "Continue playing",
   "Zuletzt %@": "Last played %@",
-  "%lld/%lld laufen": "%lld/%lld running"
+  "%lld/%lld laufen": "%lld/%lld running",
+  "Kein Spiel zum Starten": "No game to start",
+  "Nichts läuft": "Nothing is running"
 }

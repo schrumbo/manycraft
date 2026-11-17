@@ -180,8 +180,8 @@ impl Ui {
         Self {
             window: State::create(size),
             page: State::create(page.clone()),
-            sidebar: State::create(saved.sidebar && size.0 >= frame::SIDEBAR_FOLD),
-            sidebar_wanted: State::create(saved.sidebar),
+            sidebar: State::create(size.0 >= frame::SIDEBAR_FOLD),
+            sidebar_wanted: State::create(true),
             drawer: State::create(false),
             sidebar_w: State::create(saved.sidebar_width),
             rail: State::create(saved.rail),
