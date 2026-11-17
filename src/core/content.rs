@@ -109,13 +109,15 @@ fn saved_in(root: &Path, id: &str) -> Result<Instance> {
 }
 
 fn shared<T>(root: &Path, id: &str, work: impl FnOnce(&Path, Instance) -> Result<T>) -> Result<T> {
+    existing(root, id)?;
+    let _hold = instance::hold_in(root, id).with_context(|| tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
     let dir = existing(root, id)?;
     with_mods_lock(&dir, || work(&dir, saved_in(root, id)?))
 }
 
 fn exclusive<T>(root: &Path, id: &str, work: impl FnOnce(&Path, Instance) -> Result<T>) -> Result<T> {
-    let dir = existing(root, id)?;
     let _quiet = instance::quiet_in(root, id)?;
+    let dir = existing(root, id)?;
     with_mods_lock(&dir, || work(&dir, saved_in(root, id)?))
 }
 

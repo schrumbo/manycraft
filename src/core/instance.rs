@@ -269,7 +269,7 @@ pub(super) fn load_all_in(root: &Path) -> Result<Vec<Instance>> {
             found.push((entry.file_name(), instance));
         }
     }
-    let kept = folders::settle(root, &found.iter().map(|(f, i)| (f.clone(), i.id.clone())).collect::<Vec<_>>());
+    let kept = folders::settle(root, &found.iter().map(|(f, i)| (f.clone(), i.id.clone(), i.name.clone())).collect::<Vec<_>>());
     let mut instances: Vec<Instance> = found.into_iter().filter(|(f, _)| kept.contains(f)).map(|(_, i)| i).collect();
     instances.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
     Ok(instances)
@@ -282,6 +282,7 @@ pub(super) fn save_in(root: &Path, instance: &Instance) -> Result<()> {
     match folders::find_fresh(root, &instance.id) {
         Some(dir) => save_into(root, &dir, instance),
         None => {
+            folders::may_create(root, &instance.id)?;
             let dir = folders::create(root, &instance.name)?;
             save_into(root, &dir, instance).inspect_err(|_| {
                 let _ = std::fs::remove_dir(&dir);
@@ -766,7 +767,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (made, root) = trashed_setup(dir.path());
         let entry = trash_in(&root, &made, 7).unwrap();
-        save_in(&root, &made).unwrap();
+        save_into(&root, &folders::create(&root, &made.name).unwrap(), &made).unwrap();
         let again = dir_in(&root, &made.id);
         assert!(untrash_in(&root, &entry).is_err());
         assert!(root.join(TRASH).join(&entry).join(FILE).is_file());

@@ -142,40 +142,48 @@ fn read(root: &Path) -> Vec<(OsString, io::Result<Option<Head>>)> {
 }
 
 fn refresh(root: &Path, index: &mut Index) {
-    let now = Instant::now();
-    let mut next: HashMap<String, (OsString, Instant)> = HashMap::new();
+    let mut found = Vec::new();
     for (folder, head) in read(root) {
-        let id = match head {
-            Ok(Some(head)) => head.id,
-            Ok(None) => continue,
-            Err(_) => match index.folders.iter().find(|(_, (f, _))| *f == folder) {
-                Some((id, _)) => id.clone(),
-                None => continue,
-            },
-        };
-        let earlier = index.folders.get(&id).is_some_and(|(f, _)| *f == folder);
-        if earlier || !next.contains_key(&id) {
-            next.insert(id, (folder, now));
+        match head {
+            Ok(Some(head)) => found.push((folder, head.id, head.name)),
+            Ok(None) => {}
+            Err(_) => {
+                if let Some((id, _)) = index.folders.iter().find(|(_, (f, _))| *f == folder) {
+                    found.push((folder, id.clone(), String::new()));
+                }
+            }
         }
     }
-    index.folders = next;
+    index.folders = pick(index, &found);
+}
+
+fn fits(folder: &OsStr, name: &str) -> bool {
+    let (folder, base) = (fold(folder), sanitize(name).to_lowercase());
+    folder == base || folder.rsplit_once(' ').is_some_and(|(stem, n)| !stem.is_empty() && n.parse::<u32>().is_ok_and(|n| n >= 2) && base.starts_with(stem))
+}
+
+fn pick(index: &Index, found: &[(OsString, String, String)]) -> HashMap<String, (OsString, Instant)> {
+    let now = Instant::now();
+    let rank = |folder: &OsString, id: &str, name: &str| (index.folders.get(id).is_some_and(|(f, _)| f == folder), folder == OsStr::new(id), fits(folder, name));
+    let mut sorted: Vec<&(OsString, String, String)> = found.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut best: HashMap<String, (OsString, (bool, bool, bool))> = HashMap::new();
+    for (folder, id, name) in sorted {
+        let this = rank(folder, id, name);
+        if best.get(id).is_none_or(|(_, had)| this > *had) {
+            best.insert(id.clone(), (folder.clone(), this));
+        }
+    }
+    best.into_iter().map(|(id, (folder, _))| (id, (folder, now))).collect()
 }
 
 /// Records which folders under `root` the instances read from them are in, one per id, and returns the folders kept:
-/// of two folders with the same id the one known before wins, else the first by name.
-pub(super) fn settle(root: &Path, found: &[(OsString, String)]) -> HashSet<OsString> {
+/// of two folders with the same id the one known before wins, then one named after its id, then one named after its
+/// instance, then the first by name.
+pub(super) fn settle(root: &Path, found: &[(OsString, String, String)]) -> HashSet<OsString> {
     let mut all = registry();
     let index = all.entry(root.to_path_buf()).or_default();
-    let now = Instant::now();
-    let mut next: HashMap<String, (OsString, Instant)> = HashMap::new();
-    let mut sorted: Vec<&(OsString, String)> = found.iter().collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    for (folder, id) in sorted {
-        let earlier = index.folders.get(id).is_some_and(|(f, _)| f == folder);
-        if earlier || !next.contains_key(id) {
-            next.insert(id.clone(), (folder.clone(), now));
-        }
-    }
+    let next = pick(index, found);
     index.missed.retain(|id, _| !next.contains_key(id));
     let kept = next.values().map(|(f, _)| f.clone()).collect();
     index.folders = next;
@@ -269,6 +277,20 @@ pub(super) fn naming(root: &Path) -> Result<lock::Guard> {
 /// A free path under `root` for an instance called `name`, not made yet; hold [`naming`] until it exists.
 pub(super) fn claim(root: &Path, name: &str) -> PathBuf {
     root.join(free_in(root, &sanitize(name), None))
+}
+
+/// Refuses a new folder for `id` while its instance may still be there: in the trash, or in a folder that could not
+/// be read just now.
+pub(super) fn may_create(root: &Path, id: &str) -> Result<()> {
+    let entry = format!("{id}-");
+    let trashed = fs::read_dir(instance::trash_dir(root)).is_ok_and(|d| d.filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with(&entry)));
+    if trashed {
+        bail!(instance::Final(tr("Diese Instanz gibt es nicht mehr.")));
+    }
+    if let Some((folder, Err(e))) = read(root).into_iter().find(|(_, head)| head.is_err()) {
+        bail!("cannot read {}: {e}", root.join(folder).display());
+    }
+    Ok(())
 }
 
 /// Makes an empty folder under `root` for an instance called `name`, named so no entry there has that name, and returns it.
@@ -498,6 +520,21 @@ pub fn cli(args: &[String]) -> i32 {
         eprintln!("{problem}");
     }
     i32::from(!report.problems.is_empty() || report.waiting > 0)
+}
+
+/// Moves every instance back to a folder named after its id, before going back to a Manycraft older than 0.9.4. Fails
+/// with the reason in everyday German while one stays in its named folder; what moved stays moved, and the next start
+/// of this version moves everything again.
+pub fn undo_all() -> Result<()> {
+    let report = undo_in(&paths::instances_dir(), &running);
+    if report.waiting > 0 {
+        bail!(instance::Final(tr("Stoppe zuerst alle Spiele. Solange sie laufen, bleiben ihre Instanzen in ihren Ordnern, und die ältere Version fände sie nicht.")));
+    }
+    if !report.problems.is_empty() {
+        bail!(instance::Final(report.problems.join("
+")));
+    }
+    Ok(())
 }
 
 /// Moves every instance back to a folder named after its id, as Manycraft before 0.9.4 expects them, logged like the
@@ -914,5 +951,31 @@ mod tests {
         assert_eq!(report.moved, 0);
         assert_eq!(report.problems.len(), 1);
         assert!(dir.path().join("Neu").join(instance::FILE).is_file());
+    }
+
+    #[test]
+    fn a_late_save_does_not_bring_back_a_trashed_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = Instance::new("Farm", "26.3", Loader::Vanilla);
+        instance::save_in(dir.path(), &made).unwrap();
+        let entry = instance::trash_in(dir.path(), &made, 5).unwrap();
+        let refused = instance::save_in(dir.path(), &made).unwrap_err();
+        assert!(refused.chain().any(|c| c.is::<instance::Final>()));
+        assert!(named(dir.path()).is_empty());
+        assert_eq!(instance::untrash_in(dir.path(), &entry).unwrap().id, made.id);
+    }
+
+    #[test]
+    fn a_copy_made_by_hand_does_not_win_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut made = Instance::new("Farm", "26.3", Loader::Vanilla);
+        instance::save_in(dir.path(), &made).unwrap();
+        instance::copy_tree(&dir.path().join("Farm"), &dir.path().join("A copy")).unwrap();
+        made.name = "Technik".into();
+        instance::save_renamed_in(dir.path(), &made, &idle).unwrap();
+        registry().remove(dir.path());
+        assert_eq!(instance::dir_in(dir.path(), &made.id), dir.path().join("Technik"));
+        registry().remove(dir.path());
+        assert_eq!(instance::load_all_in(dir.path()).unwrap()[0].name, "Technik");
     }
 }

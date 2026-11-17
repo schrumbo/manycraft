@@ -1461,5 +1461,6 @@
   "Die Instanz „%@“ liegt in mehr als einem Ordner und bleibt, wo sie ist.": "The instance “%@” is in more than one folder and stays where it is.",
   "Ein anderes Programm nutzt gerade Dateien der Instanz. Schließe es und versuch es noch einmal.": "Another program is using files of the instance. Close it and try again.",
   "Erst stoppen, dann umbenennen": "Stop first, then rename",
-  "Erst stoppen: Ein Spiel dieser Instanz läuft.": "Stop first: a game of this instance is running."
+  "Erst stoppen: Ein Spiel dieser Instanz läuft.": "Stop first: a game of this instance is running.",
+  "Stoppe zuerst alle Spiele. Solange sie laufen, bleiben ihre Instanzen in ihren Ordnern, und die ältere Version fände sie nicht.": "Stop all games first. While they run, their instances stay in their folders, and the older version would not find them."
 }
