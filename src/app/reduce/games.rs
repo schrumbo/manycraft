@@ -852,7 +852,7 @@ mod tests {
         let s = settings();
         let (mut m, key) = setup(phase, AccountKind::Offline, &["/login pw"]);
         let (account, batch, instance) = (m.games[&key].account_id, m.games[&key].batch_id.clone(), m.games[&key].instance_id.clone());
-        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41 }]);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41, plain: false }]);
         (m, key)
     }
 
@@ -1309,9 +1309,21 @@ mod tests {
         let account = m.games[&solo].account_id;
         let made = m.instances[0].clone();
         let key = fleet::solo_key(&made, account);
-        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42 }]);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42, plain: false }]);
         assert_eq!(m.games[&key].batch_id, fleet::solo_owner(&made.id));
         assert_eq!(m.games[&key].phase, Phase::Menu);
+    }
+
+    #[test]
+    fn an_adopted_game_without_the_companion_is_plain_and_not_out_of_contact() {
+        let s = settings();
+        let (mut m, solo) = adopted(Phase::Stopped);
+        let account = m.games[&solo].account_id;
+        let made = m.instances[0].clone();
+        let key = fleet::solo_key(&made, account);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 43, plain: true }]);
+        assert_eq!(m.games[&key].phase, Phase::Plain);
+        assert!(!m.hint(&key).link_lost);
     }
 
     #[test]
