@@ -397,9 +397,15 @@ impl Component for GridPage {
                         .child(shelf::Shelf { width: (w - t.grid_pad * 2.).max(0.), gap }),
                 );
             }
+            let mut heads: Vec<(usize, Element)> = Vec::new();
             if let (Some(groups), Some(s)) = (&groups, &sections) {
                 let band_w = grid.columns.max(1) as f32 * (grid.tile_w + gap) - gap;
+                let mut start = 0;
                 for (g, group) in groups.iter().enumerate() {
+                    let from = start;
+                    if !group.folded {
+                        start += group.keys.len();
+                    }
                     let (head, end) = (s.headers[g] + shelf_h - at, s.ends[g] + shelf_h - at);
                     if end < 0. || head > h {
                         continue;
@@ -407,7 +413,8 @@ impl Component for GridPage {
                     let y = head.max(0.).min(end - groups::HEADER);
                     let stuck = y > head;
                     let (left, width, inset) = if stuck { (0., w, grid.left) } else { (grid.left, band_w, 0.) };
-                    page = page.child(
+                    heads.push((
+                        from,
                         rect().key(&format!("group.{}", group.id)).position(Position::new_absolute().left(left).top(y)).layer(Layer::Relative(super::theme::frame::FADE_LAYER)).child(groups::Header {
                             id: group.id.clone(),
                             name: group.name.clone(),
@@ -416,11 +423,16 @@ impl Component for GridPage {
                             width,
                             inset,
                             stuck,
-                        }),
-                    );
+                        })
+                        .into_element(),
+                    ));
                 }
             }
+            let mut heads = heads.into_iter().peekable();
             for (i, key) in keys.iter().enumerate().take(last).skip(first) {
+                while let Some((_, head)) = heads.next_if(|(from, _)| *from <= i) {
+                    page = page.child(head);
+                }
                 let Some(game) = m.games.get(key) else { continue };
                 let (x, y) = place(i);
                 page = page.child(
@@ -430,6 +442,7 @@ impl Component for GridPage {
                         .child(Tile { key: key.clone(), name: game.name.clone(), width: grid.tile_w, height: grid.tile_h, index: i }),
                 );
             }
+            page = page.children(heads.map(|(_, head)| head));
             let open = ui.history.read().clone();
             if let Some((key, i)) = open.and_then(|k| keys.iter().position(|x| *x == k).map(|i| (k, i))) {
                 let (x, y) = place(i);

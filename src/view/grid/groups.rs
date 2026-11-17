@@ -109,7 +109,7 @@ impl Component for Header {
                 a11y.request_focus();
                 toggle();
             });
-        r = r.background(if *hovered.read() { t.hover } else if self.stuck { t.surface } else { Color::TRANSPARENT });
+        r = r.background(if *hovered.read() { t.hover } else { Color::TRANSPARENT });
         if let Some(border) = ring(&t, focus()) {
             r = r.border(border);
         }
@@ -119,6 +119,9 @@ impl Component for Header {
             .child(line(&t, self.name.clone(), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD).max_lines(1));
         if let Some(l) = &self.line {
             r = r.child(line(&t, format!("· {l}"), font::CALLOUT, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.))).content(Content::flex());
+        }
+        if self.stuck {
+            return rect().background(t.surface).child(r);
         }
         r
     }

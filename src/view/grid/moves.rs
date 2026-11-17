@@ -106,7 +106,7 @@ pub fn move_to(store: Store, to: String, keys: Vec<String>) {
                     let back = remote::leave_batch(&target, &added).and_then(|_| left.iter().try_for_each(|(from, places)| remote::rejoin_batch(from, places)));
                     return Err(match back {
                         Ok(()) => e,
-                        Err(b) => b.context(tr("Ein Teil wurde verschoben und ließ sich nicht zurücknehmen. Prüfe die Batches.")),
+                        Err(b) => b.context(forms::Plain(tr("Ein Teil wurde verschoben und ließ sich nicht zurücknehmen. Prüfe die Batches."))),
                     });
                 }
             }
@@ -117,7 +117,8 @@ pub fn move_to(store: Store, to: String, keys: Vec<String>) {
         let (added, left) = match result {
             Ok(done) => done,
             Err(e) => {
-                toast::show(store.ui, forms::explain_as(tr("Die Accounts wurden nicht verschoben."), &e).text, None);
+                let text = if e.downcast_ref::<forms::Plain>().is_some() { forms::explain(&e).text } else { forms::explain_as(tr("Die Accounts wurden nicht verschoben."), &e).text };
+                toast::show(store.ui, text, None);
                 return;
             }
         };
