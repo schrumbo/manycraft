@@ -1995,7 +1995,7 @@
   "In Batch verschieben…": "Move to batch…",
   "In Batch verschieben": "Move to batch",
   "%1$lld in %2$@ gestoppt": "Stopped %1$lld in %2$@",
-  "%1$lld in %2$@ stoppen": "Stop %1$lld in %2$@",
+  "%1$@ stoppen (%2$lld)": "Stop %1$@ (%2$lld)",
   "von dir": "by you",
   "mit %lld anderen": "with %lld others",
   "1 Account nach „%@“ verschoben": "Moved 1 account to “%@”",

@@ -42,7 +42,7 @@ impl Shared {
     }
 }
 
-/// "15 in Farm gestoppt" and "15 in Farm stoppen" for the games of `keys`, naming the batch when they share one; one
+/// "15 in Farm gestoppt" and "Farm stoppen (15)" for the games of `keys`, naming the batch when they share one; one
 /// game by its name.
 pub fn words(m: &Model, keys: &[String]) -> (String, String) {
     if let [one] = keys {
@@ -52,7 +52,7 @@ pub fn words(m: &Model, keys: &[String]) -> (String, String) {
     let first = keys.first().and_then(|k| m.games.get(k)).map(|g| g.batch_id.as_str());
     let shared = first.filter(|b| keys.iter().all(|k| m.games.get(k).is_some_and(|g| g.batch_id == *b))).and_then(|b| m.batch(b));
     match shared {
-        Some(b) => (trf("%1$lld in %2$@ gestoppt", &[&n, &b.name]), trf("%1$lld in %2$@ stoppen", &[&n, &b.name])),
+        Some(b) => (trf("%1$lld in %2$@ gestoppt", &[&n, &b.name]), trf("%1$@ stoppen (%2$lld)", &[&b.name, &n])),
         None => (trf("%lld gestoppt", &[&n]), trf("%lld stoppen", &[&n])),
     }
 }
