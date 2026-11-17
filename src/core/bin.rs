@@ -74,7 +74,7 @@ fn read(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
 
 pub(super) fn list_in(root: &Path) -> Result<Vec<Item>> {
     let mut out = Vec::new();
-    let names = |id: &str| name_of(&root.join(id).join(instance::FILE));
+    let names = |id: &str| name_of(&instance::dir_in(root, id).join(instance::FILE));
     if let Some(entries) = read(&root.join(TRASH))? {
         for e in entries.filter_map(Result::ok) {
             let Some(entry) = e.file_name().to_str().map(str::to_owned) else { continue };
@@ -94,9 +94,15 @@ pub(super) fn list_in(root: &Path) -> Result<Vec<Item>> {
     }
     if let Some(folders) = read(root)? {
         for folder in folders.filter_map(Result::ok) {
-            let Some(id) = folder.file_name().to_str().filter(|n| instance::valid_id(n)).map(str::to_owned) else { continue };
+            if folder.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let Ok(entries) = std::fs::read_dir(folder.path().join(TRASH)) else { continue };
-            let name = names(&id);
+            let Some(made) = store::load::<Instance>(&folder.path().join(instance::FILE)).ok().flatten() else { continue };
+            if instance::dir_in(root, &made.id) != folder.path() {
+                continue;
+            }
+            let (id, name) = (made.id, made.name);
             for e in entries.filter_map(Result::ok) {
                 let Some(entry) = e.file_name().to_str().map(str::to_owned) else { continue };
                 let path = e.path();
@@ -126,7 +132,7 @@ pub(super) fn list_in(root: &Path) -> Result<Vec<Item>> {
 
 pub(super) fn delete_in(root: &Path, item: &Item) -> Result<()> {
     let path = path_in(root, item)?;
-    let dir = root.join(&item.instance);
+    let dir = instance::dir_in(root, &item.instance);
     let _held = if matches!(item.what, What::Instance) || !dir.is_dir() { None } else { Some(lock::exclusive(&dir.join(MODS_LOCK))?) };
     if path.join(KEEP).exists() {
         bail!("{} is kept", path.display());
@@ -165,7 +171,8 @@ fn path_in(root: &Path, item: &Item) -> Result<PathBuf> {
     }
     Ok(match item.what {
         What::Instance | What::Reset(_) => root.join(TRASH).join(&item.entry),
-        What::Mods(_) | What::File { .. } | What::Batch => root.join(&item.instance).join(TRASH).join(&item.entry),
+        What::Mods(_) | What::File { .. } => instance::existing_in(root, &item.instance)?.join(TRASH).join(&item.entry),
+        What::Batch => root.join(&item.instance).join(TRASH).join(&item.entry),
     })
 }
 
@@ -191,7 +198,7 @@ mod tests {
         let gone = Instance::new("Alt", "26.3", Loader::Vanilla);
         save_in(root, &gone).unwrap();
         let entry = instance::trash_in(root, &gone, 1_000).unwrap();
-        let dir = root.join(&made.id);
+        let dir = crate::core::instance::dir_in(root, &made.id);
         std::fs::create_dir_all(dir.join(TRASH).join("2000")).unwrap();
         std::fs::write(dir.join(TRASH).join("2000").join("a.jar"), b"jar").unwrap();
         std::fs::create_dir_all(dir.join(TRASH).join("3000-0").join("item")).unwrap();

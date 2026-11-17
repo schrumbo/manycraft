@@ -58,6 +58,22 @@ fn remember(path: &Path, bytes: Option<&[u8]>) {
     SEEN.with(|seen| seen.borrow_mut().insert(path.to_path_buf(), fingerprint(bytes)));
 }
 
+/// Carries what this thread last read of `from` over to `to`, after the folder holding it moved there.
+pub fn moved(from: &Path, to: &Path) {
+    SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        match seen.remove(from) {
+            Some(read) => seen.insert(to.to_path_buf(), read),
+            None => seen.remove(to),
+        };
+    });
+}
+
+/// Forgets what this thread last read of `path`, for a file that now belongs to something else.
+pub fn forget(path: &Path) {
+    SEEN.with(|seen| seen.borrow_mut().remove(path));
+}
+
 fn suffixed(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().map(std::ffi::OsString::from).unwrap_or_default();
     name.push(suffix);

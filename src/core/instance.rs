@@ -9,11 +9,10 @@ use uuid::Uuid;
 
 use super::batch::ModRef;
 use super::options::LaunchOptions;
-use super::{paths, store};
+use super::{folders, paths, store};
 
 /// File holding an instance in its folder.
 pub const FILE: &str = "instance.json";
-const IN_USE: &str = "in-use.lock";
 /// Memory a new instance gets.
 pub const DEFAULT_MEMORY_MB: u32 = 2048;
 const GAMES: &str = "games";
@@ -123,6 +122,9 @@ pub struct Instance {
     /// The Modrinth project of the modpack this instance was installed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pack: Option<String>,
+    /// Fields a newer version wrote that this one does not know, written back unchanged.
+    #[serde(flatten)]
+    pub kept: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_memory() -> u32 {
@@ -164,12 +166,14 @@ impl Instance {
             last_account: None,
             default_account: None,
             pack: None,
+            kept: serde_json::Map::new(),
         }
     }
 
-    /// Folder holding `instance.json`, the shared folders, the templates and the game folders.
+    /// Folder holding `instance.json`, the shared folders, the templates and the game folders, found by the id in
+    /// its `instance.json`. An instance that has no folder (any more) gets a path no instance is in.
     pub fn dir(&self) -> PathBuf {
-        instances_dir().join(&self.id)
+        dir_in(&instances_dir(), &self.id)
     }
 
     /// The picture the instance shows in place of its initial, when it has one.
@@ -244,6 +248,22 @@ impl Instance {
     }
 }
 
+pub(super) fn dir_in(root: &Path, id: &str) -> PathBuf {
+    folders::find(root, id).unwrap_or_else(|| root.join(id))
+}
+
+/// The folder of instance `id`, checked against its `instance.json`; an error when it has none.
+pub fn existing(id: &str) -> Result<PathBuf> {
+    existing_in(&instances_dir(), id)
+}
+
+pub(super) fn existing_in(root: &Path, id: &str) -> Result<PathBuf> {
+    if !valid_id(id) {
+        bail!("invalid instance id {id:?}");
+    }
+    folders::find_fresh(root, id).with_context(|| super::i18n::tr("Diese Instanz gibt es nicht mehr."))
+}
+
 /// `games/` inside the instance folder `dir`.
 pub fn games_dir(dir: &Path) -> PathBuf {
     dir.join(GAMES)
@@ -281,16 +301,19 @@ pub(super) fn load_all_in(root: &Path) -> Result<Vec<Instance>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", root.display())),
     };
-    let mut instances = Vec::new();
+    let mut found = Vec::new();
     for entry in entries {
-        let file = entry?.path().join(FILE);
-        if !store::exists(&file) {
+        let entry = entry?;
+        let file = entry.path().join(FILE);
+        if entry.file_name().to_string_lossy().starts_with('.') || !store::exists(&file) {
             continue;
         }
         if let Some(instance) = store::load::<Instance>(&file)? {
-            instances.push(instance);
+            found.push((entry.file_name(), instance));
         }
     }
+    let kept = folders::settle(root, &found.iter().map(|(f, i)| (f.clone(), i.id.clone(), i.name.clone())).collect::<Vec<_>>());
+    let mut instances: Vec<Instance> = found.into_iter().filter(|(f, _)| kept.contains(f)).map(|(_, i)| i).collect();
     instances.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
     Ok(instances)
 }
@@ -299,10 +322,31 @@ pub(super) fn save_in(root: &Path, instance: &Instance) -> Result<()> {
     if !valid_id(&instance.id) {
         bail!("invalid instance id {:?}", instance.id);
     }
-    let file = root.join(&instance.id).join(FILE);
+    match folders::find_fresh(root, &instance.id) {
+        Some(dir) => save_into(root, &dir, instance),
+        None => {
+            folders::may_create(root, &instance.id)?;
+            let dir = folders::create(root, &instance.name)?;
+            save_into(root, &dir, instance).inspect_err(|_| {
+                let _ = std::fs::remove_dir(&dir);
+            })
+        }
+    }
+}
+
+/// Saves `instance` into `dir`, a folder under `root` that holds it or was just made for it.
+pub(super) fn save_into(root: &Path, dir: &Path, instance: &Instance) -> Result<()> {
+    if !valid_id(&instance.id) {
+        bail!("invalid instance id {:?}", instance.id);
+    }
+    let file = dir.join(FILE);
     let created = std::fs::symlink_metadata(&file).is_err();
+    if created {
+        store::forget(&file);
+    }
     store::write::<Instance>(&file, &serde_json::to_vec_pretty(instance)?, |_| Ok(()))?;
-    if created && let Err(e) = super::origin::record(root, instance) {
+    folders::remember(root, &instance.id, dir);
+    if created && let Err(e) = super::origin::record(dir, instance) {
         eprintln!("the start of {} was not kept: {e:#}", instance.name);
     }
     Ok(())
@@ -324,7 +368,7 @@ pub fn set_icon(id: &str, source: Option<&Path>) -> Result<Instance> {
 
 pub(super) fn set_icon_in(root: &Path, id: &str, source: Option<&Path>) -> Result<Instance> {
     let mut made = load_all_in(root)?.into_iter().find(|i| i.id == id).ok_or_else(|| Final(super::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
-    let dir = root.join(&made.id);
+    let dir = existing_in(root, &made.id)?;
     let old = made.icon.clone().filter(|n| icon_name(n));
     made.icon = match source {
         None => None,
@@ -372,6 +416,23 @@ pub(super) fn set_pack_in(root: &Path, id: &str, project: &str) -> Result<Instan
     Ok(made)
 }
 
+/// Saves `instance` under its new name and moves its folder to match. Refused while a game of it runs; a save that
+/// fails moves the folder back.
+pub fn save_renamed(instance: &Instance) -> Result<()> {
+    save_renamed_in(&instances_dir(), instance, &folders::running)
+}
+
+pub(super) fn save_renamed_in(root: &Path, instance: &Instance, busy: &dyn Fn(&str) -> bool) -> Result<()> {
+    let moving = folders::rename_in(root, &instance.id, &instance.name, busy)?;
+    if let Err(e) = save_into(root, &moving.to, instance) {
+        if let Err(back) = moving.undo(root, &instance.id) {
+            eprintln!("{} stays in {}: {back:#}", instance.name, moving.to.display());
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// Whether `id` can name a folder without escaping it.
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())
@@ -391,7 +452,9 @@ pub(super) fn delete_in(root: &Path, instance: &Instance) -> Result<()> {
     if !valid_id(&instance.id) {
         bail!("invalid instance id {:?}", instance.id);
     }
-    let dir = root.join(&instance.id);
+    let Some(dir) = folders::find_fresh(root, &instance.id) else { return Ok(()) };
+    folders::verify(&dir, &instance.id)?;
+    folders::forget(root, &instance.id);
     for file in [store::backup_path(&dir.join(FILE)), dir.join(FILE)] {
         match std::fs::remove_file(file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("cannot delete {}", dir.display())),
@@ -420,15 +483,15 @@ pub(super) fn trash_in(root: &Path, instance: &Instance, millis: u64) -> Result<
     }
     let entry = format!("{}-{millis}", instance.id);
     let trash = root.join(TRASH);
-    let (from, to) = (root.join(&instance.id), trash.join(&entry));
-    if std::fs::symlink_metadata(&from).is_err() {
-        bail!(super::i18n::tr("Diese Instanz gibt es nicht mehr."));
-    }
+    let from = existing_in(root, &instance.id)?;
+    folders::verify(&from, &instance.id)?;
+    let to = trash.join(&entry);
     if std::fs::symlink_metadata(&to).is_ok() {
         bail!("trash entry {entry} exists already");
     }
     std::fs::create_dir_all(&trash).with_context(|| format!("cannot create {}", trash.display()))?;
-    std::fs::rename(&from, &to).with_context(|| format!("cannot move {} to the trash", from.display()))?;
+    folders::move_dir(&from, &to).with_context(|| format!("cannot move {} to the trash", from.display()))?;
+    folders::forget(root, &instance.id);
     Ok(entry)
 }
 
@@ -453,14 +516,17 @@ pub fn untrash(entry: &str) -> Result<Instance> {
 pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Instance> {
     let missing = || Final(super::i18n::tr("Die Instanz liegt nicht mehr im Papierkorb."));
     let (id, _) = parse_entry(entry).ok_or_else(|| anyhow::Error::new(missing()).context(format!("invalid trash entry {entry:?}")))?;
-    let (from, to) = (root.join(TRASH).join(entry), root.join(id));
-    if std::fs::symlink_metadata(&to).is_ok() {
+    let from = root.join(TRASH).join(entry);
+    let _naming = folders::naming(root)?;
+    if folders::find_fresh(root, id).is_some() {
         bail!(Final(super::i18n::tr("Es gibt schon eine Instanz mit dieser Kennung.")));
     }
     if std::fs::symlink_metadata(&from).is_err() {
         bail!(missing());
     }
-    std::fs::rename(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
+    let name = [from.join(FILE), store::backup_path(&from.join(FILE))].iter().find_map(|f| std::fs::read(f).ok().and_then(|b| serde_json::from_slice::<Instance>(&b).ok())).map(|i| i.name).unwrap_or_default();
+    let to = folders::claim(root, &name);
+    folders::move_dir(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
     let file = to.join(FILE);
     let damaged = |e: anyhow::Error| {
         let text = Final(super::i18n::tr("Die Instanz im Papierkorb ist beschädigt. Ihre Dateien bleiben dort unverändert."));
@@ -476,7 +542,14 @@ pub(super) fn untrash_in(root: &Path, entry: &str) -> Result<Instance> {
         Err((false, e)) => Err(damaged(e)),
     };
     match loaded {
-        Ok(instance) => Ok(instance),
+        Ok(instance) if instance.id == id => {
+            folders::remember(root, id, &to);
+            Ok(instance)
+        }
+        Ok(_) => {
+            let _ = std::fs::rename(&to, &from);
+            Err(damaged(anyhow::anyhow!("the instance file names another instance")))
+        }
         Err(e) => {
             let _ = std::fs::rename(&to, &from);
             Err(e)
@@ -534,12 +607,15 @@ pub(super) fn hold_in(root: &Path, id: &str) -> Option<super::lock::Guard> {
     if !valid_id(id) {
         return None;
     }
-    super::lock::try_shared(&root.join(id).join(IN_USE)).ok().flatten()
+    super::lock::try_shared(&folders::in_use_lock(root, id)).ok().flatten()
 }
 
 /// Takes the exclusive hold on instance `id`; refused with a short reason while a game of it runs, here or in another window.
 pub(super) fn quiet_in(root: &Path, id: &str) -> Result<super::lock::Guard> {
-    super::lock::try_exclusive(&root.join(id).join(IN_USE))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))
+    if !valid_id(id) {
+        bail!("invalid instance id {id:?}");
+    }
+    super::lock::try_exclusive(&folders::in_use_lock(root, id))?.with_context(|| super::i18n::tr("Gerade laufen Spiele. Stoppe sie zuerst."))
 }
 
 pub(super) fn parse_entry(entry: &str) -> Option<(&str, u64)> {
@@ -572,13 +648,13 @@ pub(super) fn clone_in(root: &Path, source: &Instance, name: &str) -> Result<Ins
         bail!("invalid instance id {:?}", source.id);
     }
     let made = Instance { id: Uuid::new_v4().simple().to_string(), name: name.to_owned(), last_account: None, ..source.clone() };
-    let (from, to) = (root.join(&source.id), root.join(&made.id));
+    let from = existing_in(root, &source.id)?;
+    let to = folders::create(root, &made.name)?;
     let copied = (|| -> Result<()> {
-        std::fs::create_dir_all(&to).with_context(|| format!("cannot create {}", to.display()))?;
         for item in COPIED.iter().copied().chain(made.icon.as_deref().filter(|n| icon_name(n))) {
             copy_tree(&from.join(item), &to.join(item))?;
         }
-        save_in(root, &made)
+        save_into(root, &to, &made)
     })();
     if let Err(e) = copied {
         let _ = std::fs::remove_dir_all(&to);
@@ -619,15 +695,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let made = Instance::new("Gone", "26.3", Loader::Vanilla);
         save_in(dir.path(), &made).unwrap();
-        let games = games_dir(&dir.path().join(&made.id));
+        let games = games_dir(&dir_in(dir.path(), &made.id));
         std::fs::create_dir_all(games.join(Uuid::from_u128(1).simple().to_string())).unwrap();
         std::fs::create_dir_all(games.join(Uuid::from_u128(2).simple().to_string())).unwrap();
         std::fs::write(games.join("stray.txt"), "x").unwrap();
         delete_in(dir.path(), &made).unwrap();
-        assert!(!dir.path().join(&made.id).exists());
+        assert!(!dir_in(dir.path(), &made.id).exists());
         delete_in(dir.path(), &made).unwrap();
         let blocked = Instance::new("Blocked", "26.3", Loader::Vanilla);
-        std::fs::create_dir_all(dir.path().join(&blocked.id).join(FILE)).unwrap();
+        save_in(dir.path(), &blocked).unwrap();
+        std::fs::create_dir_all(store::backup_path(&dir_in(dir.path(), &blocked.id).join(FILE)).join("held")).unwrap();
         assert!(delete_in(dir.path(), &blocked).is_err());
     }
 
@@ -713,9 +790,9 @@ mod tests {
         let b = Instance::new("b", "26.3", Loader::Vanilla);
         save_in(dir.path(), &a).unwrap();
         save_in(dir.path(), &b).unwrap();
-        std::fs::create_dir_all(dir.path().join(&a.id).join("games").join("x").join("saves")).unwrap();
+        std::fs::create_dir_all(dir_in(dir.path(), &a.id).join("games").join("x").join("saves")).unwrap();
         delete_in(dir.path(), &a).unwrap();
-        assert!(!dir.path().join(&a.id).exists());
+        assert!(!dir_in(dir.path(), &a.id).exists());
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![b]);
     }
 
@@ -726,7 +803,7 @@ mod tests {
         a.memory_mb = 3072;
         a.last_account = Some(Uuid::from_u128(1));
         save_in(dir.path(), &a).unwrap();
-        let src = dir.path().join(&a.id);
+        let src = dir_in(dir.path(), &a.id);
         std::fs::create_dir_all(src.join("mods")).unwrap();
         std::fs::create_dir_all(src.join("config").join("deep")).unwrap();
         std::fs::write(src.join("mods").join("a.jar"), b"jar").unwrap();
@@ -735,7 +812,7 @@ mod tests {
 ").unwrap();
         std::fs::create_dir_all(src.join("games").join("x").join("saves")).unwrap();
         let b = clone_in(dir.path(), &a, "Farm 2").unwrap();
-        let dst = dir.path().join(&b.id);
+        let dst = dir_in(dir.path(), &b.id);
         assert_ne!(a.id, b.id);
         assert_eq!((b.name.as_str(), b.memory_mb, &b.loader, b.last_account), ("Farm 2", 3072, &a.loader, None));
         assert_eq!(std::fs::read(dst.join("mods").join("a.jar")).unwrap(), b"jar");
@@ -752,7 +829,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let made = Instance::new("Farm", "26.3", Loader::Vanilla);
         save_in(dir.path(), &made).unwrap();
-        let home = dir.path().join(&made.id);
+        let home = dir_in(dir.path(), &made.id);
         let png = dir.path().join("Pack Logo.PNG");
         image::RgbaImage::new(2, 2).save_with_format(&png, image::ImageFormat::Png).unwrap();
         std::fs::write(home.join("icon.png"), b"the user's own").unwrap();
@@ -761,7 +838,7 @@ mod tests {
         assert!(name.starts_with("icon-") && name.ends_with(".png") && home.join(&name).is_file(), "{name}");
         assert_eq!(load_all_in(dir.path()).unwrap()[0].icon, first.icon);
         let copy = clone_in(dir.path(), &first, "Farm 2").unwrap();
-        assert!(dir.path().join(&copy.id).join(&name).is_file());
+        assert!(dir_in(dir.path(), &copy.id).join(&name).is_file());
         std::thread::sleep(Duration::from_millis(5));
         let second = set_icon_in(dir.path(), &made.id, Some(&png)).unwrap();
         assert!(second.icon != first.icon && !home.join(&name).exists());
@@ -781,7 +858,7 @@ mod tests {
         let root = dir.join("instances");
         let made = Instance::new("Farm", "26.3", Loader::Fabric(None));
         save_in(&root, &made).unwrap();
-        let home = root.join(&made.id);
+        let home = dir_in(&root, &made.id);
         let world = home.join("games").join("x").join("saves").join("W").join("region");
         std::fs::create_dir_all(&world).unwrap();
         std::fs::write(world.join("r.0.0.mca"), [0u8, 159, 146, 150, 255]).unwrap();
@@ -797,13 +874,13 @@ mod tests {
         let (made, root) = trashed_setup(dir.path());
         let entry = trash_in(&root, &made, 1234).unwrap();
         assert_eq!(entry, format!("{}-1234", made.id));
-        assert!(!root.join(&made.id).exists());
+        assert!(!dir_in(&root, &made.id).exists());
         assert!(load_all_in(&root).unwrap().is_empty());
         assert!(root.join(TRASH).join(&entry).join(FILE).is_file());
         let back = untrash_in(&root, &entry).unwrap();
         assert_eq!(back, made);
         assert!(!root.join(TRASH).join(&entry).exists());
-        let home = root.join(&made.id);
+        let home = dir_in(&root, &made.id);
         assert_eq!(std::fs::read(home.join("games").join("x").join("saves").join("W").join("region").join("r.0.0.mca")).unwrap(), [0u8, 159, 146, 150, 255]);
         assert_eq!(std::fs::read(home.join("games").join("x").join("options.txt")).unwrap(), b"fov:1");
         assert_eq!(std::fs::read(home.join("mods").join("a.jar")).unwrap(), b"jar");
@@ -814,15 +891,15 @@ mod tests {
     fn two_deletes_of_one_id_are_two_entries_and_untrash_takes_the_given_one() {
         let dir = tempfile::tempdir().unwrap();
         let (made, root) = trashed_setup(dir.path());
-        std::fs::write(root.join(&made.id).join("marker.txt"), "first").unwrap();
+        std::fs::write(dir_in(&root, &made.id).join("marker.txt"), "first").unwrap();
         let first = trash_in(&root, &made, 100).unwrap();
-        std::fs::create_dir_all(root.join(&made.id)).unwrap();
-        std::fs::write(root.join(&made.id).join(FILE), serde_json::to_vec(&made).unwrap()).unwrap();
-        std::fs::write(root.join(&made.id).join("marker.txt"), "second").unwrap();
+        std::fs::create_dir_all(dir_in(&root, &made.id)).unwrap();
+        std::fs::write(dir_in(&root, &made.id).join(FILE), serde_json::to_vec(&made).unwrap()).unwrap();
+        std::fs::write(dir_in(&root, &made.id).join("marker.txt"), "second").unwrap();
         let second = trash_in(&root, &made, 200).unwrap();
         assert_ne!(first, second);
         untrash_in(&root, &second).unwrap();
-        assert_eq!(std::fs::read(root.join(&made.id).join("marker.txt")).unwrap(), b"second");
+        assert_eq!(std::fs::read(dir_in(&root, &made.id).join("marker.txt")).unwrap(), b"second");
         assert_eq!(std::fs::read(root.join(TRASH).join(&first).join("marker.txt")).unwrap(), b"first");
     }
 
@@ -832,7 +909,7 @@ mod tests {
         let (made, root) = trashed_setup(dir.path());
         std::fs::create_dir_all(root.join(TRASH).join(format!("{}-5", made.id))).unwrap();
         assert!(trash_in(&root, &made, 5).is_err());
-        assert!(root.join(&made.id).join(FILE).is_file());
+        assert!(dir_in(&root, &made.id).join(FILE).is_file());
         let ghost = Instance::new("Ghost", "26.3", Loader::Vanilla);
         assert!(trash_in(&root, &ghost, 5).is_err());
     }
@@ -842,10 +919,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (made, root) = trashed_setup(dir.path());
         let entry = trash_in(&root, &made, 7).unwrap();
-        std::fs::create_dir_all(root.join(&made.id)).unwrap();
+        save_into(&root, &folders::create(&root, &made.name).unwrap(), &made).unwrap();
+        let again = dir_in(&root, &made.id);
         assert!(untrash_in(&root, &entry).is_err());
         assert!(root.join(TRASH).join(&entry).join(FILE).is_file());
-        assert!(!root.join(&made.id).join(FILE).exists());
+        assert_eq!(dir_in(&root, &made.id), again);
+        delete_in(&root, &made).unwrap();
         assert!(untrash_in(&root, "nothere-1").is_err());
     }
 
@@ -856,7 +935,7 @@ mod tests {
         let entry = trash_in(&root, &made, 9).unwrap();
         std::fs::write(root.join(TRASH).join(&entry).join(FILE), "{").unwrap();
         assert!(untrash_in(&root, &entry).is_err());
-        assert!(!root.join(&made.id).exists());
+        assert!(!dir_in(&root, &made.id).exists());
         assert!(root.join(TRASH).join(&entry).join("mods").join("a.jar").is_file());
     }
 
@@ -868,7 +947,7 @@ mod tests {
         let entry = trash_in(&root, &made, 9).unwrap();
         std::fs::write(root.join(TRASH).join(&entry).join(FILE), "{").unwrap();
         assert_eq!(untrash_in(&root, &entry).unwrap(), made);
-        assert_eq!(std::fs::read(root.join(&made.id).join(FILE)).unwrap(), b"{");
+        assert_eq!(std::fs::read(dir_in(&root, &made.id).join(FILE)).unwrap(), b"{");
         assert_eq!(load_all_in(&root).unwrap(), vec![made]);
     }
 
@@ -880,7 +959,7 @@ mod tests {
         let entry = trash_in(&root, &made, 9).unwrap();
         std::fs::write(root.join(TRASH).join(&entry).join(FILE), br#"{"id":5}"#).unwrap();
         assert!(untrash_in(&root, &entry).unwrap_err().downcast_ref::<Final>().is_some());
-        assert!(!root.join(&made.id).exists());
+        assert!(!dir_in(&root, &made.id).exists());
         assert_eq!(std::fs::read(root.join(TRASH).join(&entry).join(FILE)).unwrap(), br#"{"id":5}"#);
     }
 
@@ -890,7 +969,7 @@ mod tests {
         let made = Instance::new("A", "26.3", Loader::Vanilla);
         save_in(dir.path(), &made).unwrap();
         save_in(dir.path(), &Instance { memory_mb: made.memory_mb + 512, ..made.clone() }).unwrap();
-        let file = dir.path().join(&made.id).join(FILE);
+        let file = dir_in(dir.path(), &made.id).join(FILE);
         std::fs::write(&file, b"{\"id\":").unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![made.clone()]);
         assert_eq!(std::fs::read(store::damaged_path(&file)).unwrap(), b"{\"id\":");
@@ -900,7 +979,7 @@ mod tests {
         assert!(load_all_in(dir.path()).unwrap_err().downcast_ref::<store::Untouched>().is_some());
         assert_eq!(std::fs::read(&file).unwrap(), br#"{"id":5}"#);
         delete_in(dir.path(), &made).unwrap();
-        assert!(!dir.path().join(&made.id).exists());
+        assert!(!dir_in(dir.path(), &made.id).exists());
         assert!(load_all_in(dir.path()).unwrap().is_empty());
     }
 
@@ -997,7 +1076,7 @@ mod tests {
         assert!(is_final(untrash_in(&root, "bad entry").unwrap_err()));
         std::fs::write(root.join(TRASH).join(&entry).join(FILE), "{").unwrap();
         assert!(is_final(untrash_in(&root, &entry).unwrap_err()));
-        std::fs::create_dir_all(root.join(&made.id)).unwrap();
+        std::fs::create_dir_all(dir_in(&root, &made.id)).unwrap();
         assert!(is_final(untrash_in(&root, &entry).unwrap_err()));
     }
 

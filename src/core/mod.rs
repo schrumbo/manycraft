@@ -11,14 +11,18 @@ pub mod chat_text;
 pub mod cli;
 #[allow(dead_code)]
 pub mod companion;
+pub mod compat;
 #[allow(dead_code)]
 pub mod content;
+#[cfg(test)]
+mod downgrade;
 #[allow(dead_code)]
 pub mod drive;
 pub mod drive_link;
 #[allow(dead_code)]
 pub mod fit;
 pub mod fleet;
+pub mod folders;
 pub mod game_icon;
 pub mod game_window;
 pub mod gpu;

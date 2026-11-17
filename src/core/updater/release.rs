@@ -67,7 +67,8 @@ struct RawAsset {
     size: u64,
 }
 
-/// The newest release in a GitHub release list that is newer than `current`, skipping drafts, `skipped`, and pre-releases unless `prerelease`.
+/// The newest release in a GitHub release list that is newer than `current`, skipping drafts, `skipped`, and pre-releases
+/// (by flag or by version) unless `prerelease`.
 pub fn newest(list: serde_json::Value, current: &str, prerelease: bool, skipped: Option<&str>) -> Result<Option<Release>> {
     let list: Vec<Raw> = match list {
         serde_json::Value::Array(_) => serde_json::from_value(list),
@@ -76,7 +77,7 @@ pub fn newest(list: serde_json::Value, current: &str, prerelease: bool, skipped:
     .context("unexpected answer from the release list")?;
     let best = list
         .into_iter()
-        .filter(|r| !r.draft && (prerelease || !r.prerelease) && is_newer(&r.tag_name, current) && skipped.is_none_or(|s| !same(&r.tag_name, s)))
+        .filter(|r| !r.draft && (prerelease || !(r.prerelease || is_prerelease(&r.tag_name))) && is_newer(&r.tag_name, current) && !passed_over(&r.tag_name, skipped))
         .max_by(|a, b| order(&a.tag_name, &b.tag_name));
     Ok(best.map(|r| Release {
         version: r.tag_name.trim().trim_start_matches(['v', 'V']).to_owned(),
@@ -178,6 +179,16 @@ pub fn same(a: &str, b: &str) -> bool {
     matches!((parse(a), parse(b)), (Some(a), Some(b)) if compare(&a, &b).is_eq())
 }
 
+/// Whether `version` stays unoffered after going back from `skipped`: that version itself, and any pre-release not above it.
+pub fn passed_over(version: &str, skipped: Option<&str>) -> bool {
+    skipped.is_some_and(|s| same(version, s) || (is_prerelease(version) && !is_newer(version, s)))
+}
+
+/// Whether `version` carries a pre-release tag, like `0.10.0-beta.2`.
+pub fn is_prerelease(version: &str) -> bool {
+    parse(version).is_some_and(|v| v.pre.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +231,74 @@ mod tests {
         assert!(!same("0.10.0-beta.1", "0.10.0"));
         assert!(same("v0.5", "0.5.0"));
         assert!(!same("0.5.1", "0.5.0"));
+    }
+
+    #[test]
+    fn pre_releases_order_like_semver() {
+        assert!(is_newer("0.10.0-beta.1", "0.9.4"));
+        assert!(is_newer("0.10.0-beta.2", "0.10.0-beta.1"));
+        assert!(is_newer("0.10.0-beta.10", "0.10.0-beta.9"));
+        assert!(is_newer("0.10.0-rc.1", "0.10.0-beta.9"));
+        assert!(is_newer("0.10.0", "0.10.0-beta.9"));
+        assert!(is_newer("v0.10.0", "0.10.0-beta.2"));
+        assert!(!is_newer("0.10.0-beta.2", "0.10.0"));
+        assert!(!is_newer("0.10.0-beta.1", "0.10.0-beta.2"));
+        assert!(!is_newer("0.10.0-beta.1", "0.10.0-beta.1"));
+        assert!(!is_newer("0.9.4", "0.10.0-beta.1"));
+        assert!(!is_newer("0.10.0-", "0.9.0"));
+        assert!(!is_newer("0.10.0-beta..1", "0.9.0"));
+        assert!(same("v0.10.0-beta.1", "0.10.0-beta.1"));
+        assert!(same("0.10.0-beta.1+build.7", "0.10.0-beta.1"));
+        assert!(!same("0.10.0-beta.1", "0.10.0-beta.2"));
+        assert!(!same("0.10.0-beta.2", "0.10.0"));
+        assert!(is_prerelease("v0.10.0-beta.2") && !is_prerelease("0.10.0") && !is_prerelease("0.9.4+build") && !is_prerelease("nightly"));
+    }
+
+    #[test]
+    fn an_opted_in_install_walks_from_the_release_through_the_betas_to_the_final() {
+        let beta = |n: u32| raw(&format!("v0.10.0-beta.{n}"), false, true);
+        let betas = json!([beta(2), beta(1), raw("v0.9.4", false, false), raw("v0.9.3", false, false)]);
+        assert_eq!(newest(betas.clone(), "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.2");
+        assert_eq!(newest(betas.clone(), "0.10.0-beta.1", true, None).unwrap().unwrap().version, "0.10.0-beta.2");
+        assert_eq!(newest(betas.clone(), "0.10.0-beta.2", true, None).unwrap(), None);
+        assert_eq!(newest(json!([beta(1), beta(2)]), "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.2", "list order does not matter");
+        let released = json!([raw("v0.10.0", false, false), beta(3), beta(2), raw("v0.9.4", false, false)]);
+        assert_eq!(newest(released.clone(), "0.9.4", true, None).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(released.clone(), "0.10.0-beta.2", true, None).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(released.clone(), "0.10.0-beta.2", false, None).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(released, "0.10.0", true, None).unwrap(), None);
+    }
+
+    #[test]
+    fn without_opting_in_no_pre_release_is_ever_offered() {
+        let beta = |n: u32| raw(&format!("v0.10.0-beta.{n}"), false, true);
+        let list = json!([beta(2), beta(1), raw("v0.9.4", false, false), raw("v0.9.3", false, false)]);
+        assert_eq!(newest(list.clone(), "0.9.3", false, None).unwrap().unwrap().version, "0.9.4");
+        assert_eq!(newest(list, "0.9.4", false, None).unwrap(), None);
+        let unflagged = json!([raw("v0.10.0-beta.3", false, false), raw("v0.9.4", false, false)]);
+        assert_eq!(newest(unflagged.clone(), "0.9.3", false, None).unwrap().unwrap().version, "0.9.4", "a pre-release version counts even without the flag");
+        assert_eq!(newest(unflagged, "0.9.4", true, None).unwrap().unwrap().version, "0.10.0-beta.3");
+        assert_eq!(newest(json!([beta(2), raw("v0.9.4", false, false)]), "0.9.4", true, Some("0.10.0-beta.2")).unwrap(), None, "a version gone back from stays skipped");
+    }
+
+    #[test]
+    fn going_back_from_a_beta_passes_over_the_older_betas_too() {
+        let beta = |n: u32| raw(&format!("v0.10.0-beta.{n}"), false, true);
+        let list = json!([beta(2), beta(1), raw("v0.9.4", false, false)]);
+        assert_eq!(newest(list, "0.9.4", true, Some("0.10.0-beta.2")).unwrap(), None, "beta.1 is not offered after leaving beta.2");
+        let later = json!([raw("v0.10.0", false, false), beta(3), beta(1)]);
+        assert_eq!(newest(later.clone(), "0.9.4", true, Some("0.10.0-beta.2")).unwrap().unwrap().version, "0.10.0");
+        assert_eq!(newest(json!([beta(3), beta(1)]), "0.9.4", true, Some("0.10.0-beta.2")).unwrap().unwrap().version, "0.10.0-beta.3", "a newer beta is offered again");
+        assert!(passed_over("0.10.0-beta.1", Some("0.10.0-beta.1")) && !passed_over("0.9.5", Some("0.10.0-beta.2")) && !passed_over("0.10.0-beta.1", None));
+    }
+
+    #[test]
+    fn a_beta_with_standard_names_installs_like_any_update() {
+        let names = ["Manycraft-Setup-0.10.0-beta.2-windows-x64.exe", "Manycraft-0.10.0-beta.2-macos-universal.dmg", "Manycraft-0.10.0-beta.2-linux-x86_64.AppImage"];
+        let all: Vec<Asset> = names.iter().flat_map(|n| [n.to_string(), format!("{n}.sha256"), format!("{n}.minisig")]).map(|n| asset(&n)).collect();
+        assert_eq!(pick_tagged(&all, Kind::Installer, "x86_64", "").map(|a| a.name.as_str()), Some(names[0]));
+        assert_eq!(pick_tagged(&all, Kind::Bundle, "aarch64", "").map(|a| a.name.as_str()), Some(names[1]));
+        assert_eq!(pick_tagged(&all, Kind::AppImage, "x86_64", "").map(|a| a.name.as_str()), Some(names[2]));
     }
 
     #[test]

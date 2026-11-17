@@ -42,6 +42,7 @@ const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
 /// How long a stopped game may take to save and quit before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(30);
+const LINKED: [&str; 5] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks"];
 const QUIT_POLL: Duration = Duration::from_millis(100);
 const TURN_POLL: Duration = Duration::from_millis(100);
 const EVENT_POLL: Duration = Duration::from_millis(250);
@@ -163,9 +164,39 @@ impl Shared {
 /// Readies the game folder of `account` in `instance` and returns it: shared `mods`, `config`, `resourcepacks`,
 /// `shaderpacks` and `datapacks` linked in, `options.txt` and `servers.dat` from the instance templates, an old companion gone from the shared mods folder.
 pub fn prepare(instance: &Instance, account: &Account) -> Result<PathBuf> {
+    instance::existing(&instance.id)?;
     let dir = instance.game_dir(account.id);
     prepare_in(&dir, &Shared::of(instance), &instance.other_games(account.id))?;
     Ok(dir)
+}
+
+/// Points every link in the game folders of the instance folder `instance_dir` that leads to a shared folder at that
+/// folder in `instance_dir` again, after the instance folder moved. Only links change; real folders stay as they are.
+pub fn relink(instance_dir: &Path) -> Result<()> {
+    let games = super::instance::games_dir(instance_dir);
+    let entries = match fs::read_dir(&games) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", games.display())),
+    };
+    let mut first = Ok(());
+    for game in entries.filter_map(Result::ok) {
+        for name in LINKED {
+            let path = game.path().join(name);
+            let target = instance_dir.join(name);
+            let linked = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) || is_junction(&path);
+            if !linked || points_to(&path, &target) {
+                continue;
+            }
+            let renewed = fs::create_dir_all(&target).with_context(|| format!("cannot create {}", target.display())).and_then(|()| remove_link(&path)).and_then(|()| create_link(&target, &path).with_context(|| format!("cannot link {} to {}", path.display(), target.display())));
+            if let Err(e) = renewed
+                && first.is_ok()
+            {
+                first = Err(e);
+            }
+        }
+    }
+    first
 }
 
 fn prepare_in(dir: &Path, shared: &Shared, siblings: &[PathBuf]) -> Result<()> {
@@ -624,8 +655,9 @@ struct Held {
 }
 
 impl Held {
-    fn new(child: Child, instance: &str) -> Self {
-        Self { child, in_use: install::clean::in_use().ok(), instance_in_use: instance::hold(instance) }
+    fn launch(instance: &str, launch: impl FnOnce() -> Result<Child>) -> Result<Box<dyn Process>> {
+        let hold = instance::hold(instance).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
+        Ok(Box::new(Self { child: launch()?, in_use: install::clean::in_use().ok(), instance_in_use: Some(hold) }))
     }
 }
 
@@ -881,7 +913,7 @@ impl Fleet {
         let ipc_address = self.ipc.address();
         let ipc_file = self.ipc_file();
         let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
+            Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token))
         };
         Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
@@ -891,6 +923,7 @@ impl Fleet {
     /// built-in companion agent for the instance's game.
     pub fn prepare_launch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         let instance = &target.instance;
+        let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
         }
@@ -911,7 +944,7 @@ impl Fleet {
         let ipc_address = self.ipc.address();
         let ipc_file = self.ipc_file();
         self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Ok(Box::new(Held::new(launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token)?, &prepared.target.instance.id)))
+            Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token))
         })
     }
 
@@ -1232,6 +1265,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     }
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token)?;
+    extra.jvm.splice(0..0, batch_defaults(target, installed, companion_jar.is_some()));
     if let Some(jar) = companion_jar {
         extra.jvm.push(format!("-javaagent:{}", jar.display()));
     }
@@ -1261,6 +1295,20 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         env: launch::SecretEnv(extra.secrets),
     };
     launch::spawn(&spec)
+}
+
+/// The JVM arguments a game of `target` starts with before the instance's own: the batch defaults for batch games, which
+/// start hidden; none for a game played alone, which runs like in any launcher. Batch games compile with the quick
+/// compiler only while the `companion` keeps them hidden, unless their batch asks for full speed.
+fn batch_defaults(target: &Target, installed: &Installed, companion: bool) -> Vec<String> {
+    let Some(batch) = &target.batch else { return Vec::new() };
+    let major = if target.instance.options.java.is_none() { java_major(installed) } else { None };
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+    launch::batch_jvm(major, cores, companion && !batch.full_speed, &target.instance.jvm_args)
+}
+
+fn java_major(installed: &Installed) -> Option<u32> {
+    installed.profile.java_version.as_ref().and_then(|j| j.major_version)
 }
 
 /// The addresses of `server` on this machine, plus one stand-in for its name so that accounts behind a proxy, which
@@ -2377,6 +2425,26 @@ mod tests {
             log_config: None,
             downloaded: 0,
         }
+    }
+
+    #[test]
+    fn batch_games_get_the_lean_defaults_and_solo_games_none() {
+        let batch = target("A");
+        let solo = Target::solo(&batch.instance);
+        let java25 = installed_needing("java-runtime-epsilon", 25);
+        let java21 = installed_needing("java-runtime-delta", 21);
+        let quick = "-XX:TieredStopAtLevel=1".to_owned();
+        let headers = "-XX:+UseCompactObjectHeaders".to_owned();
+        assert!(batch_defaults(&batch, &java25, true).contains(&headers) && batch_defaults(&batch, &java25, true).contains(&quick));
+        assert!(!batch_defaults(&batch, &java21, true).contains(&headers));
+        assert!(batch_defaults(&solo, &java25, true).is_empty());
+        assert!(!batch_defaults(&batch, &java25, false).contains(&quick), "without the companion a game may be played at any time");
+        let mut full = batch.clone();
+        full.batch.as_mut().unwrap().full_speed = true;
+        assert!(!batch_defaults(&full, &java25, true).contains(&quick) && batch_defaults(&full, &java25, true).contains(&headers));
+        let mut own_java = batch.clone();
+        own_java.instance.options.java = Some(PathBuf::from("jdk-25"));
+        assert!(!batch_defaults(&own_java, &java25, true).contains(&headers));
     }
 
     fn java_home(dir: &Path, version: &str) -> PathBuf {

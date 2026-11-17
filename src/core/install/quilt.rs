@@ -1,11 +1,16 @@
-use anyhow::{Result, bail};
+use std::io::Cursor;
+use std::path::Path;
+
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::meta::VersionJson;
 use super::{Versions, newest_first, offered, unsupported};
-use crate::core::net;
+use crate::core::{modmeta, net};
 
 const LOADERS_URL: &str = "https://meta.quiltmc.org/v3/versions/loader";
+const MAVEN: &str = "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-loader";
 
 #[derive(Deserialize)]
 struct Entry {
@@ -40,11 +45,38 @@ pub fn latest_loader(agent: &ureq::Agent, game: &str) -> Result<String> {
 
 /// Quilt's launcher profile for a game and loader version.
 pub fn profile(agent: &ureq::Agent, game: &str, loader: &str) -> Result<VersionJson> {
-    let profile: VersionJson = net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json"))?;
+    let profile: VersionJson = offered("Quilt", game, net::get_json(agent, &format!("{LOADERS_URL}/{game}/{loader}/profile/json")))?;
     if profile.main_class.is_none() {
         bail!("Quilt returned a profile without a main class");
     }
     Ok(profile)
+}
+
+/// The Fabric Loader version Quilt loader `version` stands in for, from its jar: the installed one in `libraries`, else
+/// downloaded once; the answer is kept in `cache`. `None` when the jar does not say.
+pub fn provided_fabric(agent: &ureq::Agent, libraries: &Path, cache: &Path, version: &str) -> Result<Option<String>> {
+    if version.is_empty() || !version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_')) {
+        bail!("unexpected Quilt version {version:?}");
+    }
+    let kept = cache.join(format!("quilt-loader-{version}.provides"));
+    if let Ok(text) = std::fs::read_to_string(&kept) {
+        return Ok(Some(text.trim().to_owned()).filter(|v| !v.is_empty()));
+    }
+    let name = format!("quilt-loader-{version}.jar");
+    let installed = libraries.join("org").join("quiltmc").join("quilt-loader").join(version).join(&name);
+    let bytes = match std::fs::read(&installed) {
+        Ok(bytes) => bytes,
+        Err(_) => net::get_bytes(agent, &format!("{MAVEN}/{version}/{name}"))?,
+    };
+    let mut zip = modmeta::zip(Cursor::new(bytes))?;
+    let text = modmeta::text_in(&mut zip, "quilt.mod.json")?.with_context(|| format!("{name} has no quilt.mod.json"))?;
+    let found = provided(&modmeta::json(&text)?);
+    let _ = net::write_atomic(&kept, found.as_deref().unwrap_or_default().as_bytes());
+    Ok(found)
+}
+
+fn provided(root: &Value) -> Option<String> {
+    root.pointer("/quilt_loader/provides")?.as_array()?.iter().find(|p| p.get("id").and_then(Value::as_str) == Some("fabricloader"))?.get("version")?.as_str().map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -60,6 +92,30 @@ mod tests {
         let found = pick(entries(&["0.20.0-beta.9", "0.24.0", "0.30.0", "0.29.2", "0.30.2", "0.31.0-beta.1", "0.30.10"]));
         assert_eq!(found.list, ["0.31.0-beta.1", "0.30.10", "0.30.2", "0.30.0", "0.29.2", "0.24.0", "0.20.0-beta.9"]);
         assert_eq!(found.default.as_deref(), Some("0.30.10"));
+    }
+
+    #[test]
+    fn the_provided_fabric_loader_comes_from_quilt_mod_json() {
+        let root: Value = serde_json::from_str(r#"{"quilt_loader":{"id":"quilt_loader","provides":[{"id":"other","version":"1"},{"id":"fabricloader","version":"0.19.2"}]}}"#).unwrap();
+        assert_eq!(provided(&root).as_deref(), Some("0.19.2"));
+        assert_eq!(provided(&serde_json::json!({"quilt_loader":{"id":"quilt_loader"}})), None);
+    }
+
+    #[test]
+    fn the_installed_jar_is_read_and_the_answer_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let (libraries, cache) = (dir.path().join("libraries"), dir.path().join("cache"));
+        let jar_dir = libraries.join("org/quiltmc/quilt-loader/0.30.2");
+        std::fs::create_dir_all(&jar_dir).unwrap();
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("quilt.mod.json", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, br#"{"quilt_loader":{"provides":[{"id":"fabricloader","version":"0.19.5"}]}}"#).unwrap();
+        std::fs::write(jar_dir.join("quilt-loader-0.30.2.jar"), zip.finish().unwrap().into_inner()).unwrap();
+        let agent = net::agent(None).unwrap();
+        assert_eq!(provided_fabric(&agent, &libraries, &cache, "0.30.2").unwrap().as_deref(), Some("0.19.5"));
+        std::fs::remove_dir_all(&libraries).unwrap();
+        assert_eq!(provided_fabric(&agent, &libraries, &cache, "0.30.2").unwrap().as_deref(), Some("0.19.5"));
+        assert!(provided_fabric(&agent, &libraries, &cache, "../x").is_err());
     }
 
     #[test]

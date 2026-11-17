@@ -507,6 +507,7 @@ impl Flow {
             accounts: self.store.model.peek().accounts.iter().map(|a| a.id).filter(|id| chosen.contains(id)).collect(),
             background: *self.background.peek(),
             launch_parallel: *self.launch_parallel.peek(),
+            full_speed: self.original.peek().as_ref().is_some_and(|b| b.full_speed),
         };
         let id = self.original.peek().as_ref().map(|b| b.id.clone());
         let store = self.store;

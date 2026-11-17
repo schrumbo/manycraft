@@ -243,8 +243,8 @@ pub(super) fn copy_instance(spec: &Spec, root: &Path, lookup: Lookup, cancel: &A
         copies.push((jar, dest));
     }
 
-    let dest = root.join(&batch.id);
-    let copied = copy_files(spec, &dest, &copies, &check, &mut step).and_then(|()| made::save_in(root, &batch));
+    let dest = crate::core::folders::create(root, &batch.name)?;
+    let copied = copy_files(spec, &dest, &copies, &check, &mut step).and_then(|()| made::save_into(root, &dest, &batch));
     if let Err(e) = copied {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(snapshot(src.path()), before);
         assert_eq!((made.game_version.as_str(), &made.loader), ("1.20.1", &Loader::Forge(Some("47.2.0".into()))));
         assert_eq!((made.mods.len(), made.local_mods.clone()), (1, vec!["mine.jar".to_owned()]));
-        let dest = out.path().join(&made.id);
+        let dest = crate::core::instance::dir_in(out.path(), &made.id);
         assert_eq!(fs::read(dest.join("mods").join("sodium-0.6.jar")).unwrap(), b"sodium bytes");
         assert_eq!(fs::read(dest.join("config").join("a.toml")).unwrap(), b"a=1");
         assert_eq!(fs::read(dest.join("resourcepacks").join("pack.zip")).unwrap(), b"zip");
@@ -437,11 +437,11 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let found = farm(src.path());
         let bare = run(&found, Take::default(), out.path()).unwrap();
-        let dest = out.path().join(&bare.id);
+        let dest = crate::core::instance::dir_in(out.path(), &bare.id);
         assert!(!dest.join("options.txt").exists() && !dest.join("resourcepacks").exists() && !dest.join(SAVES_SEED).exists());
         assert!(dest.join("mods").is_dir() && dest.join("config").is_dir());
         let full = run(&found, Take { settings: true, worlds: true }, out.path()).unwrap();
-        assert_eq!(fs::read(out.path().join(&full.id).join(SAVES_SEED).join("World One").join("level.dat")).unwrap(), b"level");
+        assert_eq!(fs::read(crate::core::instance::dir_in(out.path(), &full.id).join(SAVES_SEED).join("World One").join("level.dat")).unwrap(), b"level");
     }
 
     #[test]

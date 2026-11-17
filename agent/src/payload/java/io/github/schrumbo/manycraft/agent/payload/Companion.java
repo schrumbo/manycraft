@@ -100,9 +100,9 @@ final class Companion implements Bridge {
 		}
 		if (smoke != null) {
 			BackgroundController bg = background;
-			smoke.count(System.nanoTime()).ifPresent(fps -> {
+			smoke.count(System.nanoTime()).ifPresent(w -> {
 				boolean hidden = bg != null && bg.hidden();
-				LOGGER.info("manycraft smoke fps {} hidden {}", Math.round(fps), hidden);
+				LOGGER.info("manycraft smoke fps {} hidden {} worst {} ms slow {}", Math.round(w.fps()), hidden, w.worstMs(), w.slow());
 				if (hidden && ++smokeHiddenSamples == SMOKE_SAVE_AFTER) {
 					((Minecraft) minecraft).options.save();
 					LOGGER.info("manycraft smoke saved options while hidden");
@@ -193,11 +193,6 @@ final class Companion implements Bridge {
 	}
 
 	@Override
-	public void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt) {
-		chat.onChat((Component) decorated, (PlayerChatMessage) signed, (GameProfile) sender, (ChatType.Bound) bound, (Instant) receivedAt);
-	}
-
-	@Override
 	public void overlayChat(Object message) {
 		chat.onOverlay((Component) message);
 	}
@@ -205,6 +200,11 @@ final class Companion implements Bridge {
 	@Override
 	public void disguisedChat(Object message, Object bound) {
 		chat.onDisguised((Component) message, (ChatType.Bound) bound);
+	}
+
+	@Override
+	public void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt) {
+		chat.onChat((Component) decorated, (PlayerChatMessage) signed, (GameProfile) sender, (ChatType.Bound) bound, (Instant) receivedAt);
 	}
 
 	@Override

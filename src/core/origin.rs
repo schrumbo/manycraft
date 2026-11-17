@@ -71,13 +71,13 @@ fn read_raw(file: &Path) -> Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
-fn origin_dir(root: &Path, id: &str) -> PathBuf {
-    root.join(id).join(DIR)
+fn origin_dir(dir: &Path) -> PathBuf {
+    dir.join(DIR)
 }
 
-/// Keeps what the just created `made` holds in its folder under `root`, unless that was kept before.
-pub(super) fn record(root: &Path, made: &Instance) -> Result<()> {
-    let (dir, target) = (root.join(&made.id), origin_dir(root, &made.id));
+/// Keeps what the just created `made` holds in its folder `dir`, unless that was kept before.
+pub(super) fn record(dir: &Path, made: &Instance) -> Result<()> {
+    let target = origin_dir(dir);
     if std::fs::symlink_metadata(&target).is_ok() {
         return Ok(());
     }
@@ -112,12 +112,12 @@ pub fn load(made: &Instance) -> Result<Origin> {
 
 /// Whether the start of `made` was kept; without it a reset leaves mods, config and packs empty.
 pub fn is_kept(made: &Instance) -> bool {
-    store::exists(&origin_dir(&instance::instances_dir(), &made.id).join(FILE))
+    store::exists(&origin_dir(&made.dir()).join(FILE))
 }
 
 
 pub(super) fn load_in(root: &Path, made: &Instance) -> Result<Origin> {
-    let file = origin_dir(root, &made.id).join(FILE);
+    let file = origin_dir(&instance::dir_in(root, &made.id)).join(FILE);
     match read_raw(&file)? {
         None => Ok(Origin { game_version: made.game_version.clone(), loader: made.loader.clone(), mods: Vec::new(), local_mods: Vec::new() }),
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| anyhow::Error::new(Final(super::i18n::tr("Der Anfangszustand dieser Instanz ist beschädigt. Ihre Dateien bleiben unverändert."))).context(format!("{} is damaged: {e}", file.display()))),
@@ -137,13 +137,13 @@ pub(super) fn reset_in(root: &Path, made: &Instance, mods: Vec<ModRef>, millis: 
         bail!("invalid instance id {:?}", made.id);
     }
     let origin = load_in(root, made)?;
-    let dir = root.join(&made.id);
+    let dir = instance::existing_in(root, &made.id)?;
     let _held = lock::exclusive(&dir.join(MODS_LOCK))?;
     let staging = dir.join(format!(".reset-{millis}"));
     let _ = std::fs::remove_dir_all(&staging);
     let local = origin.local_mods_for(&made.loader);
     let built = (|| -> Result<()> {
-        let kept = origin_dir(root, &made.id);
+        let kept = origin_dir(&dir);
         for name in SWAPPED {
             let to = staging.join(name);
             std::fs::create_dir_all(&to).with_context(|| format!("cannot create {}", to.display()))?;
@@ -214,7 +214,7 @@ pub(super) fn unreset_in(root: &Path, now: &Instance, before: &Instance, entry: 
     if !entry.starts_with(&format!("{}-", now.id)) || !entry.ends_with(SUFFIX) || !SWAPPED.iter().any(|name| exists(&from.join(name))) {
         bail!(Final(super::i18n::tr("Der Stand vor dem Zurücksetzen liegt nicht mehr im Papierkorb.")));
     }
-    let dir = root.join(&now.id);
+    let dir = instance::existing_in(root, &now.id)?;
     let _held = lock::exclusive(&dir.join(MODS_LOCK))?;
     let kept = instance::trash_dir(root).join(format!("{}-{millis}{SUFFIX}", now.id));
     exchange(&dir, &from, &kept)?;
@@ -300,18 +300,18 @@ mod tests {
         let mut made = Instance::new("Farm", "26.2", Loader::Fabric(Some("0.17".into())));
         made.mods = vec![mod_ref("a")];
         made.local_mods = vec!["mine.jar".into()];
-        let dir = root.join(&made.id);
+        let dir = crate::core::folders::create(root, &made.name).unwrap();
         write(&dir.join("mods/mine.jar"), "mine");
         write(&dir.join("mods/a.jar"), "a");
         write(&dir.join("config/sodium.json"), "{\"first\":true}");
         write(&dir.join("resourcepacks/faithful.zip"), "pack");
         write(&dir.join("shaderpacks/bsl.zip"), "shader");
-        save_in(root, &made).unwrap();
+        crate::core::instance::save_into(root, &dir, &made).unwrap();
         made
     }
 
     fn mess_up(root: &Path, made: &Instance) -> Instance {
-        let dir = root.join(&made.id);
+        let dir = crate::core::instance::dir_in(root, &made.id);
         write(&dir.join("mods/extra.jar"), "extra");
         write(&dir.join("config/sodium.json"), "{\"first\":false}");
         write(&dir.join("config/new.json"), "new");
@@ -329,7 +329,7 @@ mod tests {
     fn a_new_instance_keeps_what_it_started_with_and_later_saves_leave_it() {
         let dir = tempfile::tempdir().unwrap();
         let made = pack_instance(dir.path());
-        let kept = origin_dir(dir.path(), &made.id);
+        let kept = origin_dir(&crate::core::instance::dir_in(dir.path(), &made.id));
         assert_eq!(read(&kept.join("config/sodium.json")), "{\"first\":true}");
         assert_eq!(read(&kept.join("mods/mine.jar")), "mine");
         assert!(!kept.join("mods/a.jar").exists());
@@ -345,7 +345,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let made = pack_instance(dir.path());
         let root = dir.path();
-        let folder = root.join(&made.id);
+        let folder = crate::core::instance::dir_in(root, &made.id);
         write(&folder.join("options.txt"), "fov:90");
         write(&folder.join("servers.dat"), "servers");
         let account = games_dir(&folder).join("a1");
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!((read(&folder.join("options.txt")), read(&folder.join("servers.dat"))), ("fov:90".to_owned(), "servers".to_owned()));
         assert_eq!((read(&account.join("saves/World/level.dat")), read(&account.join("screenshots/one.png"))), ("world".to_owned(), "shot".to_owned()));
         assert_eq!(read(&instance::trash_dir(root).join(&entry).join("config/new.json")), "new");
-        assert!(!root.join(&made.id).join(".reset-1000").exists());
+        assert!(!crate::core::instance::dir_in(root, &made.id).join(".reset-1000").exists());
     }
 
     #[test]
@@ -369,7 +369,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let made = pack_instance(dir.path());
         let root = dir.path();
-        let folder = root.join(&made.id);
+        let folder = crate::core::instance::dir_in(root, &made.id);
         let now = mess_up(root, &made);
         let (after, entry) = reset_in(root, &now, vec![mod_ref("a")], 1000).unwrap();
         let kept: ResetMeta = serde_json::from_slice(&std::fs::read(instance::trash_dir(root).join(&entry).join(RESET_META)).unwrap()).unwrap();
@@ -391,7 +391,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let made = pack_instance(root);
-        let folder = root.join(&made.id);
+        let folder = crate::core::instance::dir_in(root, &made.id);
         let mut now = mess_up(root, &made);
         now.disabled = vec!["a.jar".into(), "b.jar".into()];
         save_in(root, &now).unwrap();
@@ -409,7 +409,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let made = pack_instance(dir.path());
         let root = dir.path();
-        let folder = root.join(&made.id);
+        let folder = crate::core::instance::dir_in(root, &made.id);
         let now = mess_up(root, &made);
         let (after, entry) = reset_in(root, &now, vec![mod_ref("a")], 1000).unwrap();
         let file = folder.join(instance::FILE);
@@ -438,7 +438,7 @@ mod tests {
         }
         let err = unreset_in(root, &after, &now, &entry, 2000).unwrap_err();
         assert!(err.chain().any(|c| c.is::<Final>()));
-        assert_eq!(read(&root.join(&made.id).join("config/sodium.json")), "{\"first\":true}");
+        assert_eq!(read(&crate::core::instance::dir_in(root, &made.id).join("config/sodium.json")), "{\"first\":true}");
     }
 
     #[test]
@@ -446,12 +446,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let made = pack_instance(root);
-        let folder = root.join(&made.id);
-        std::fs::write(origin_dir(root, &made.id).join(FILE), "{").unwrap();
+        let folder = crate::core::instance::dir_in(root, &made.id);
+        std::fs::write(origin_dir(&crate::core::instance::dir_in(root, &made.id)).join(FILE), "{").unwrap();
         let refused = reset_in(root, &made, Vec::new(), 1000).unwrap_err();
         assert!(refused.chain().any(|c| c.is::<Final>()));
         assert_eq!(read(&folder.join("mods/a.jar")), "a");
-        std::fs::remove_dir_all(origin_dir(root, &made.id)).unwrap();
+        std::fs::remove_dir_all(origin_dir(&crate::core::instance::dir_in(root, &made.id))).unwrap();
         let (next, _) = reset_in(root, &made, Vec::new(), 2000).unwrap();
         assert!(next.mods.is_empty() && next.local_mods.is_empty());
         assert!(!folder.join("mods/a.jar").exists() && !folder.join("config/sodium.json").exists());
@@ -463,7 +463,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let made = pack_instance(root);
-        let folder = root.join(&made.id);
+        let folder = crate::core::instance::dir_in(root, &made.id);
         let away = root.join("away");
         let replacement = root.join("replacement");
         write(&replacement.join("config/x"), "x");

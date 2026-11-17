@@ -578,13 +578,19 @@ fn entries(this: &MainWindow, cx: &App) -> Vec<Entry> {
         if matches!(made.loader, Loader::Fabric(Some(_)) | Loader::Quilt(Some(_))) {
             out.push(entry(Group::Instances, "refresh-cw", trf("Loader von %@ aktualisieren…", &[name]), detail.clone(), Box::new(UpdateLoader(id.clone())), cx));
         }
+        let running = m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active());
         let mut reset = entry(Group::Instances, "rotate-ccw", trf("%@ zurücksetzen…", &[name]), detail.clone(), Box::new(ResetInstance(id.clone())), cx);
-        if m.games.values().any(|g| g.instance_id == made.id && g.phase.is_active()) {
+        if running {
             reset.detail = Some(tr("Stoppe zuerst die laufenden Spiele."));
             reset.enabled = false;
         }
         out.push(reset);
-        out.push(entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx));
+        let mut rename = entry(Group::Instances, "pencil", trf("%@ umbenennen…", &[name]), detail.clone(), Box::new(RenameInstance(id.clone())), cx);
+        if running {
+            rename.detail = Some(tr("Erst stoppen"));
+            rename.enabled = false;
+        }
+        out.push(rename);
         out.push(entry(Group::Instances, "copy", trf("%@ klonen", &[name]), detail.clone(), Box::new(CloneInstance(id.clone())), cx));
         out.push(entry(Group::Instances, "folder-open", trf("Ordner von %@ öffnen", &[name]), detail.clone(), Box::new(OpenInstanceFolder(id.clone())), cx));
         out.extend(super::instance_files::tab_entries(made, cx));

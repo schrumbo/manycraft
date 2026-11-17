@@ -307,18 +307,6 @@ public final class Hooks {
 		}
 	}
 
-	public static void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt) {
-		Bridge b = bridge;
-		if (b == null) {
-			return;
-		}
-		try {
-			b.playerChat(bound, signed, decorated, sender, receivedAt);
-		} catch (Throwable e) {
-			Agent.fault("chat", e);
-		}
-	}
-
 	public static void overlayChat(Object message) {
 		Bridge b = bridge;
 		if (b == null) {
@@ -338,6 +326,18 @@ public final class Hooks {
 		}
 		try {
 			b.disguisedChat(message, bound);
+		} catch (Throwable e) {
+			Agent.fault("chat", e);
+		}
+	}
+
+	public static void playerChat(Object bound, Object signed, Object decorated, Object sender, Object receivedAt) {
+		Bridge b = bridge;
+		if (b == null) {
+			return;
+		}
+		try {
+			b.playerChat(bound, signed, decorated, sender, receivedAt);
 		} catch (Throwable e) {
 			Agent.fault("chat", e);
 		}

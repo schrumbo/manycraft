@@ -34,23 +34,24 @@ pub(super) fn due(m: &mut Model, out: &mut Vec<Effect>) {
     out.push(Effect::ReadUsage(pids));
 }
 
-/// What each running game holds now. Games settled on a server teach their batch its figure, kept when it moved by more than 5 %.
+/// What each running game holds now. Games this session started and settled on a server teach their batch its figure, kept when it moved by more than 5 %.
 pub(super) fn read(m: &mut Model, env: &Env, readings: Vec<(String, u64)>, out: &mut Vec<Effect>) {
     let before = tenths(m);
     m.session.usage = readings.into_iter().filter(|(k, mb)| *mb > 0 && m.session.pids.contains_key(k)).collect();
-    let mut per: HashMap<&str, (u64, u64)> = HashMap::new();
+    let mut per: HashMap<String, (u64, u64)> = HashMap::new();
     for (key, mb) in &m.session.usage {
         let Some(g) = m.games.get(key) else { continue };
+        let Some(measured) = &g.measured_as else { continue };
         if matches!(g.phase, Phase::Playing { since, .. } if env.now.saturating_duration_since(since) >= SETTLED) {
-            let e = per.entry(g.batch_id.as_str()).or_default();
+            let e = per.entry(measured.clone()).or_default();
             *e = (e.0 + mb, e.1 + 1);
         }
     }
     let mut learned = false;
-    for (batch, (sum, n)) in per {
+    for (key, (sum, n)) in per {
         let each = u32::try_from(sum / n).unwrap_or(u32::MAX);
-        if m.measured.get(batch).is_none_or(|old| u64::from(each.abs_diff(*old)) * 20 > u64::from(*old)) {
-            m.measured.insert(batch.to_owned(), each);
+        if m.measured.get(&key).is_none_or(|old| u64::from(each.abs_diff(*old)) * 20 > u64::from(*old)) {
+            m.measured.insert(key, each);
             learned = true;
         }
     }
@@ -85,7 +86,7 @@ mod tests {
         let mut m = Model::default();
         let games = [("a", Phase::Playing { server: "s".into(), since: now - SETTLED }), ("b", Phase::Playing { server: "s".into(), since: now }), ("c", Phase::Menu)];
         for (i, (key, phase)) in games.into_iter().enumerate() {
-            m.games.insert(key.into(), Game { phase, ..Game::new(key.into(), "batch".into(), "i".into(), uuid::Uuid::from_u128(i as u128), key.into()) });
+            m.games.insert(key.into(), Game { phase, measured_as: Some("batch".into()), ..Game::new(key.into(), "batch".into(), "i".into(), uuid::Uuid::from_u128(i as u128), key.into()) });
             m.session.pids.insert(key.into(), i as u32 + 1);
         }
         m
@@ -122,5 +123,38 @@ mod tests {
         assert!(!fx.iter().any(|e| matches!(e, Effect::SaveMeasured(_))));
         run(&mut m, &s, now, Event::Usage(vec![("a".into(), 1600)]));
         assert_eq!(m.measured.get("batch"), Some(&1600));
+    }
+
+    #[test]
+    fn a_batch_at_full_speed_learns_a_figure_of_its_own() {
+        let s = settings();
+        let now = Instant::now();
+        let mut m = fleet(now);
+        let mut b = crate::core::batch::Batch::new("Farm", "i");
+        b.id = "batch".into();
+        b.full_speed = true;
+        m.batches.push(b);
+        m.measured.insert("batch".into(), 1100);
+        m.games.get_mut("a").unwrap().measured_as = Some(m.measure_key("batch"));
+        assert_eq!(m.measured_for("batch"), None, "the lean figure does not count for full speed");
+        run(&mut m, &s, now, Event::Usage(vec![("a".into(), 1400)]));
+        assert_eq!((m.measured_for("batch"), m.measured.get("batch")), (Some(1400), Some(&1100)));
+    }
+
+    #[test]
+    fn a_game_started_lean_teaches_the_lean_figure_after_the_batch_switched_to_full_speed() {
+        let s = settings();
+        let now = Instant::now();
+        let mut m = fleet(now);
+        let mut b = crate::core::batch::Batch::new("Farm", "i");
+        b.id = "batch".into();
+        b.full_speed = true;
+        m.batches.push(b);
+        m.games.get_mut("a").unwrap().measured_as = Some("batch".into());
+        run(&mut m, &s, now, Event::Usage(vec![("a".into(), 1000)]));
+        assert_eq!((m.measured.get("batch"), m.measured_for("batch")), (Some(&1000), None));
+        m.games.get_mut("a").unwrap().measured_as = None;
+        run(&mut m, &s, now, Event::Usage(vec![("a".into(), 3000)]));
+        assert_eq!(m.measured.get("batch"), Some(&1000), "a game taken over from an earlier session does not say how it started");
     }
 }

@@ -142,15 +142,23 @@ def clippy_with(scope, features):
 
 
 def tests():
-    nextest = ["cargo", "nextest", "run", "--no-tests", "pass", "--status-level", "fail", "--failure-output", "final", "--no-input-handler"]
+    nextest = ["cargo", "nextest", "run", "--no-fail-fast", "--no-tests", "pass", "--status-level", "fail", "--failure-output", "final", "--no-input-handler"]
     runs = [nextest]
     if len(feature_sets()) > 1:
         runs.append([*nextest, "--features", "freya", "--bin", "manycraft", "-E", "test(/^view::/)"])
     out = []
     for args in runs:
         run = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if run.returncode:
-            out += (run.stdout + run.stderr).strip().splitlines()[-30:]
+        if run.returncode == 0:
+            continue
+        lines = (run.stdout + run.stderr).strip().splitlines()
+        summary = []
+        for i, line in enumerate(lines):
+            if re.match(r"\s*FAIL \[", line):
+                summary.append(line.strip())
+            elif "panicked at" in line:
+                summary.append("  " + line.strip() + (" " + lines[i + 1].strip() if i + 1 < len(lines) else ""))
+        out += list(dict.fromkeys(summary)) or lines[-30:]
     return out
 
 

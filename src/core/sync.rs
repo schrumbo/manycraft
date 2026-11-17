@@ -75,7 +75,7 @@ impl Roots {
     }
 
     fn instance(&self, instance: &str) -> PathBuf {
-        self.instances.join(instance)
+        super::instance::dir_in(&self.instances, instance)
     }
 
     fn game(&self, instance: &str, account: &str) -> PathBuf {

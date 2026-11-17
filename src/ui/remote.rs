@@ -19,7 +19,7 @@ use crate::core::options::LaunchOptions;
 use crate::core::versions::{GameVersion, Kind};
 use crate::core::modrinth::{self, Defaults, Hit, Support, Update};
 use crate::core::{mrpack, origin, shortcut};
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::core::launchers::{self, Found, Launcher, Library, Take, Unsupported};
 use crate::core::prism::{self, AccountImport, PrismAccount};
 use crate::core::{browser, drive, fleet, install, webauth};
@@ -250,7 +250,6 @@ pub fn is_network(e: &anyhow::Error) -> bool {
 }
 
 pub(super) fn auth_text(e: &AuthError) -> String {
-    use crate::core::i18n::{tr, trf};
     match e {
         AuthError::SignInAgain => tr("Die gespeicherte Anmeldung gilt nicht mehr. Melde dich erneut an."),
         AuthError::NoXboxProfile => tr("Dieses Konto hat noch kein Xbox-Profil. Melde dich einmal auf xbox.com an, dann klappt es."),
@@ -673,9 +672,9 @@ pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
         }
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
-            notes.push(format!("skipped lithium: no Fabric version for {game_version}"));
+            notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Lithium", &loader.name(), &game_version]));
         } else if matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
-            notes.push(format!("skipped krypton: no Fabric version for {game_version}"));
+            notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Krypton", &loader.name(), &game_version]));
         }
         return Ok(Defaults { mods, notes });
     }
@@ -717,6 +716,8 @@ pub struct BatchEdit {
     pub background: Background,
     /// How many games may load at once; 0 lets the machine decide.
     pub launch_parallel: u32,
+    /// Games keep the full compiler.
+    pub full_speed: bool,
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`, and returns it.
@@ -765,6 +766,7 @@ fn apply(b: &mut Batch, instance_id: String, edit: BatchEdit, known: &HashSet<Uu
     b.accounts = edit.accounts.into_iter().filter(|id| known.contains(id)).chain(unseen).collect();
     b.background = edit.background;
     b.launch_parallel = edit.launch_parallel;
+    b.full_speed = edit.full_speed;
 }
 
 /// What the instance sheet and page change on an instance; everything else stays as saved.
@@ -834,8 +836,13 @@ pub fn save_instance(id: &str, base: &InstanceEdit, edit: InstanceEdit) -> Resul
             taken_name(&merged.name, Some(id))?;
         }
         let gpu_before = made.options.gpu;
+        let renamed = made.name != merged.name.trim();
         edited(&mut made, merged);
-        setup::save(&made)?;
+        if renamed {
+            setup::save_renamed(&made)?;
+        } else {
+            setup::save(&made)?;
+        }
         if gpu_before.is_some() && made.options.gpu.is_none() {
             let _ = crate::core::gpu::release(&made.id);
         }
@@ -1247,11 +1254,11 @@ mod tests {
         let mut b = Batch::new("Farm", "i1");
         b.join_commands = vec!["/home".into()];
         b.memory_override = Some(3000);
-        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4 };
+        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4, full_speed: true };
         apply(&mut b, "i2".into(), edit(None), &HashSet::from([me]));
         assert_eq!((b.name.as_str(), b.instance_id.as_str(), b.memory_override, b.accounts.as_slice()), ("Lobby", "i2", None, &[me][..]));
         assert_eq!(b.join_commands, ["/home"]);
-        assert_eq!((b.background, b.launch_parallel), (Background::Balanced, 4));
+        assert_eq!((b.background, b.launch_parallel, b.full_speed), (Background::Balanced, 4, true));
         apply(&mut b, "i2".into(), edit(Some(2048)), &HashSet::from([me]));
         assert_eq!(b.memory_override, Some(2048));
     }
@@ -1348,7 +1355,7 @@ mod tests {
         let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut b = Batch::new("Farm", "i1");
         b.accounts = vec![shown, unseen];
-        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0 };
+        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false };
         apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
         assert_eq!(b.accounts, [unseen]);
     }

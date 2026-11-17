@@ -332,7 +332,7 @@ impl MainWindow {
         }
         let mut per: Vec<(u32, u32)> = m.batches.iter().filter_map(|b| {
             let n = scope.iter().filter(|i| i.batch_id == b.id).count();
-            let each = m.measured.get(&b.id).copied().unwrap_or_else(|| b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory())));
+            let each = m.measured_for(&b.id).unwrap_or_else(|| b.memory(m.instance(&b.instance_id).map_or(crate::core::instance::DEFAULT_MEMORY_MB, |i| i.memory())));
             (n > 0).then(|| (u32::try_from(n).unwrap_or(u32::MAX), each))
         }).collect();
         per.sort_unstable();

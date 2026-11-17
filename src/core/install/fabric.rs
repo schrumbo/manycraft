@@ -48,7 +48,11 @@ pub fn stable_loader(agent: &ureq::Agent, game: &str) -> Result<Option<String>> 
 
 /// Newest Quilt loader for `game` that is not a pre-release.
 pub fn stable_quilt(agent: &ureq::Agent, game: &str) -> Result<Option<String>> {
-    let entries: Vec<Entry> = net::get_json(agent, &format!("{QUILT_URL}/{game}"))?;
+    let entries: Vec<Entry> = match net::get_json(agent, &format!("{QUILT_URL}/{game}")) {
+        Ok(entries) => entries,
+        Err(e) if net::not_found(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     Ok(entries.into_iter().map(|e| e.loader.version).find(|v| !v.contains('-')))
 }
 

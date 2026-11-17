@@ -146,9 +146,9 @@ final class Patcher implements ClassFileTransformer {
 			new Hook("chat", "handleSystemMessage", "(Lnet/minecraft/network/chat/Component;Z*", head(b -> b.aload(1).iload(2).invokestatic(HOOKS, "systemChat", type(CD_void, CD_Object, CD_boolean)))),
 			new Hook("chat", "showMessageToPlayer", "(Lnet/minecraft/network/chat/ChatType$Bound;Lnet/minecraft/network/chat/PlayerChatMessage;Lnet/minecraft/network/chat/Component;Lcom/mojang/authlib/GameProfile;ZLjava/time/Instant;)Z",
 				head(b -> b.aload(1).aload(2).aload(3).aload(4).aload(6).invokestatic(HOOKS, "playerChat", type(CD_void, CD_Object, CD_Object, CD_Object, CD_Object, CD_Object)))),
-			new Hook("chat", "handleDisguisedChatMessage", "(Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/ChatType$Bound;)V",
-				head(b -> b.aload(1).aload(2).invokestatic(HOOKS, "disguisedChat", type(CD_void, CD_Object, CD_Object)))),
-			new Hook("chat", "handleOverlay", "(Lnet/minecraft/network/chat/Component;)V", head(b -> b.aload(1).invokestatic(HOOKS, "overlayChat", type(CD_void, CD_Object))), true));
+			new Hook("disguised", "handleDisguisedChatMessage", "(Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/ChatType$Bound;*",
+				head(b -> b.aload(1).aload(2).invokestatic(HOOKS, "disguisedChat", type(CD_void, CD_Object, CD_Object))), true),
+			new Hook("chat", "handleOverlay", "(Lnet/minecraft/network/chat/Component;*", head(b -> b.aload(1).invokestatic(HOOKS, "overlayChat", type(CD_void, CD_Object))), true));
 		add(t, "net/minecraft/client/gui/Hud",
 			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Gui",
@@ -236,6 +236,7 @@ final class Patcher implements ClassFileTransformer {
 		}
 		boolean any = false;
 		List<String> missing = new ArrayList<>();
+		List<String> optional = new ArrayList<>();
 		Map<String, Integer> alternatives = new HashMap<>();
 		Set<String> alternativeHit = new HashSet<>();
 		for (int i = 0; i < list.size(); i++) {
@@ -252,12 +253,18 @@ final class Patcher implements ClassFileTransformer {
 			any |= ok;
 			Hook h = list.get(i);
 			if (h.alternative() && !ok && (alternatives.get(h.feature()) < 2 || alternativeHit.contains(h.feature()))) {
+				if (!alternativeHit.contains(h.feature())) {
+					optional.add((h.method() == null ? "*" : h.method()) + " (" + h.feature() + ")");
+				}
 				continue;
 			}
 			Patches.record(h.feature(), ok);
 			if (!ok) {
 				missing.add((h.method() == null ? "*" : h.method()) + " (" + h.feature() + ")");
 			}
+		}
+		if (!optional.isEmpty()) {
+			Agent.log("optional hooks absent in " + name + ": " + String.join(", ", optional));
 		}
 		if (!missing.isEmpty()) {
 			Agent.log("hooks not found in " + name + ": " + String.join(", ", missing));
