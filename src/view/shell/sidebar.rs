@@ -122,7 +122,7 @@ pub fn instance_items(store: Store, id: &str) -> Vec<Item> {
     let i = id.to_owned();
     let alone: Vec<String> = m.solo_games(id).filter(|g| g.phase.is_active()).map(|g| g.key.clone()).collect();
     let mut items = vec![if alone.is_empty() {
-        let who = crate::app::reduce::solo_account(&m, made).and_then(|a| m.account(a)).map(|a| (a.id, a.name.clone()));
+        let who = crate::app::reduce::solo_pick(&m, made).and_then(|a| m.account(a)).map(|a| (a.id, a.name.clone()));
         match who {
             Some((account, name)) if m.sign_in_expired(account) => {
                 let blocked = commands::sign_in_blocked(store);

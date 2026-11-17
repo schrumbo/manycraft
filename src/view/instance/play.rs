@@ -37,7 +37,7 @@ fn account_items(store: Store, f: &Facts) -> Vec<Item> {
             Item::new(format!("instance.play.as.{id}"), name.clone(), |_| {}).shortcut(tr("Läuft")).disabled(true)
         } else if f.expired.contains(account) {
             let blocked = crate::view::commands::sign_in_blocked(store);
-            Item::new(format!("instance.play.as.{id}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![id])).disabled(blocked.is_some()).shortcut(blocked.unwrap_or_else(|| tr("Anmelden")))
+            Item::new(format!("instance.play.as.{id}"), name.clone(), move |_| crate::view::accounts::sign_in(store, vec![id])).disabled(blocked.is_some()).warn().shortcut(blocked.unwrap_or_else(|| format!("{} · {}", tr("Anmeldung abgelaufen"), tr("Anmelden"))))
         } else {
             let tag = if kind == Some(AccountKind::Microsoft) { tr("Microsoft") } else { tr("Offline") };
             Item::new(format!("instance.play.as.{id}"), name.clone(), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: instance.clone(), account: Some(id) })).shortcut(tag)
@@ -84,9 +84,15 @@ impl Component for AccountChip {
         };
         let keys_open = open.clone();
         let mut press_open = open;
-        let instead = f.solo.filter(|s| Some(*s) != f.pick).and_then(|s| Some((f.name_of(s)?.to_owned(), f.busy_in(s)?.to_owned())));
+        let instead = f.solo.filter(|s| Some(*s) != f.pick).and_then(|s| {
+            let who = f.name_of(s)?.to_owned();
+            match f.busy_in(s) {
+                Some(place) => Some(trf("statt %1$@ (läuft in %2$@)", &[&who, &place])),
+                None => f.expired.contains(&s).then(|| trf("statt %@ (Anmeldung abgelaufen)", &[&who])),
+            }
+        });
         let tip = match instead {
-            Some((who, place)) => trf("statt %1$@ (läuft in %2$@)", &[&who, &place]),
+            Some(why) => why,
             None if self.compact => label.clone(),
             None => tr("Account wählen"),
         };
@@ -202,11 +208,11 @@ impl Component for Hero {
         }
         let (instance, pick) = (f.made.id.clone(), f.pick);
         let main = match pick.filter(|a| f.expired.contains(a)) {
-            Some(account) => Button::new("instance.play", trf("Anmelden als %@", &[&f.name_of(account).unwrap_or_default()]))
+            Some(account) => Button::new("instance.play", tr("Anmelden"))
                 .glyph(Icon::LogIn)
                 .primary()
                 .tall()
-                .tip(tr("Die Anmeldung ist abgelaufen."))
+                .tip(trf("Die Anmeldung von %@ ist abgelaufen.", &[&f.name_of(account).unwrap_or_default()]))
                 .disabled(want_blocked(&Want::SignInAgain(Vec::new())))
                 .on_press(move |_| crate::view::accounts::sign_in(store, vec![account])),
             None => Button::new("instance.play", tr("Spielen")).glyph(Icon::Play).primary().tall().tip(tip(tr("Spielen"), Shortcut::primary(Code::KeyR))).on_press(move |_| {

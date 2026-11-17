@@ -2,6 +2,7 @@
 
 pub mod account;
 mod palette;
+pub mod shortcuts;
 mod sidebar;
 mod toolbar;
 

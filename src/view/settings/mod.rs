@@ -119,12 +119,12 @@ fn attempts(p: Prefs, id: &str, label: String, value: u32, requires: Option<&str
     Line::new(format!("{id}.row"), label).dim(!enabled).control(stepper).into_element()
 }
 
-fn keycap(t: &Theme, text: String) -> Element {
+pub(crate) fn keycap(t: &Theme, text: String) -> Element {
     rect().height(Size::px(control::S)).min_width(Size::px(control::S)).padding((0., space::S)).center().corner_radius(t.shape.small).background(t.control).child(line(t, text, font::CALLOUT, t.text1)).into_element()
 }
 
 /// The keys of a chord like `ctrl+alt+right` as this system's keyboard prints them.
-fn chord_keys(chord: &str) -> Vec<String> {
+pub(crate) fn chord_keys(chord: &str) -> Vec<String> {
     let mac = cfg!(target_os = "macos");
     chord
         .split('+')

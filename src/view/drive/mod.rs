@@ -477,6 +477,7 @@ fn parse_key(name: &str) -> Option<(Key, Modifiers, Code)> {
         "end" => named(NamedKey::End, Code::End),
         "pageup" => named(NamedKey::PageUp, Code::PageUp),
         "pagedown" => named(NamedKey::PageDown, Code::PageDown),
+        "f1" => named(NamedKey::F1, Code::F1),
         "f2" => named(NamedKey::F2, Code::F2),
         "." | "period" => Some((Key::Character(".".into()), Code::Period)),
         "," | "comma" => Some((Key::Character(",".into()), Code::Comma)),
