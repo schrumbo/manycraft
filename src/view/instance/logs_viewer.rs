@@ -159,6 +159,14 @@ impl Component for Viewer {
         let measured = use_hook(|| Rc::new(std::cell::Cell::new(0usize)));
         let rows = (self.wrap && fit > 0).then(|| self.wrapped.peek().rows(&self.lines.0, fit));
         let count = rows.as_ref().map_or(self.lines.0.len(), |r| r.0.len());
+        use_side_effect_with_deps(&count, move |count| {
+            let mut c = controller;
+            let bounds = *c.bounds.peek();
+            if let (true, Some((mut content, view))) = (*stick.peek(), bounds) {
+                content.height = *count as f32 * height;
+                c.apply_layout(content, view);
+            }
+        });
         let data = Rows { theme: t.clone(), lines: self.lines.clone(), rows, version: self.version, hits: self.hits.clone(), current: self.current, width };
         let keys = move |e: Event<KeyboardEventData>| {
             let mut c = controller;
