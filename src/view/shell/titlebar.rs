@@ -24,6 +24,12 @@ use super::controls::{Controls, Edges};
 
 const MAC_LIGHTS: f32 = 78.;
 const PALETTE_W: f32 = 340.;
+const PALETTE_ICON: f32 = size::TITLEBAR - space::S * 1.5;
+const PALETTE_KEYS_FROM: f32 = 260.;
+const PALETTE_LABEL_FROM: f32 = 150.;
+const CRUMB_ROOM: f32 = 96.;
+const ACTIVITY_W: f32 = 56.;
+const CHIP_PAD: f32 = 36.;
 const CRUMB_CHAR: f32 = 7.;
 const CAPTIONS_LEFT: f32 = 3. * size::CAPTION_ROUND + 2. * size::CAPTION_GAP + space::S + space::M;
 
@@ -63,6 +69,12 @@ pub fn trail(page: &Page, names: &Names) -> Vec<Crumb> {
         Page::Settings(Pane::General) => vec![crumb(tr("Einstellungen"), None)],
         Page::Settings(Pane::Accounts) => vec![crumb(tr("Einstellungen"), Some(Page::Settings(Pane::General))), crumb(tr("Accounts"), None)],
     }
+}
+
+/// How wide the palette field is in a window `window` wide when the left side needs `left` and the right side `right`
+/// beside it: its full width when both fit, else what remains, down to a lone glyph.
+pub fn palette_width(window: f32, left: f32, right: f32) -> f32 {
+    (window - 2. * left.max(right)).clamp(PALETTE_ICON, PALETTE_W)
 }
 
 fn width_of(c: &Crumb) -> f32 {
@@ -109,10 +121,16 @@ impl Component for TitleBar {
         let lights = if cfg!(target_os = "macos") { MAC_LIGHTS } else { 0. };
         let (_, buttons_left) = frame::buttons();
         let captions = if buttons_left && frame::own_buttons(frame::chrome()) { CAPTIONS_LEFT } else { 0. };
-        let room = (window - PALETTE_W) / 2. - lights - captions - size::TITLEBAR * 3. - space::L;
-        let crumbs = fit(trail(&page, &names), room.max(120.));
         let mut chrome = use_state(frame::chrome);
         let own = frame::own_buttons(*chrome.read());
+        let (attention, busy) = (store.model.read().attention_count(None), !tasks(store).is_empty());
+        let chips = if attention > 0 { CHIP_PAD + CRUMB_CHAR * if attention == 1 { 14. } else { 16. } } else { 0. } + if busy { ACTIVITY_W } else { 0. };
+        let own_w = if !own { 0. } else if cfg!(target_os = "windows") { 3. * size::CAPTION_W } else { CAPTIONS_LEFT };
+        let left_need = lights + if buttons_left { own_w } else { 0. } + size::TITLEBAR * 3. + CRUMB_ROOM;
+        let right_need = chips + if buttons_left { 0. } else { own_w } + space::S;
+        let field = palette_width(window, left_need, right_need);
+        let room = (window - field) / 2. - lights - captions - size::TITLEBAR * 3. - space::L;
+        let crumbs = fit(trail(&page, &names), room.max(CRUMB_ROOM));
         let mut palette = ui.palette;
         let mut menu_open = ui.menu;
         use_hook(move || {
@@ -181,7 +199,7 @@ impl Component for TitleBar {
                 }
             })
             .child(start.content(Content::flex()))
-            .child(waiting(Palette, sheet, shut))
+            .child(waiting(Palette { width: field }, sheet, shut))
             .child(end.content(Content::flex()))
             .child(Edges { chrome })
             .content(Content::flex());
@@ -252,7 +270,9 @@ impl Component for Crumbs {
 }
 
 #[derive(PartialEq)]
-struct Palette;
+struct Palette {
+    width: f32,
+}
 
 impl Component for Palette {
     fn render(&self) -> impl IntoElement {
@@ -263,17 +283,20 @@ impl Component for Palette {
         let mut hovered = use_state(|| false);
         let mut spot = use_spot("titlebar.palette", "button", &tr("Suchen oder Befehl …"), true);
         let mut zone = frame::use_zone(Zone::Control);
-        let keys = Command::OpenPalette.keys();
+        let width = self.width;
+        let icon_only = width < PALETTE_LABEL_FROM;
+        let keys = if width < PALETTE_KEYS_FROM { String::new() } else { Command::OpenPalette.keys() };
         let mut field = rect()
             .a11y_id(a11y)
             .a11y_focusable(true)
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(tr("Suchen oder Befehl …"))
-            .width(Size::px(PALETTE_W))
+            .width(Size::px(width))
             .height(Size::px(size::TITLEBAR - space::S * 1.5))
-            .padding((0., space::S))
+            .padding((0., if icon_only { 0. } else { space::S }))
             .horizontal()
             .cross_align(Alignment::Center)
+            .main_align(if icon_only { Alignment::Center } else { Alignment::Start })
             .spacing(space::S)
             .corner_radius(t.shape.control)
             .background(if *hovered.read() { t.hover } else { t.raised })
@@ -287,17 +310,32 @@ impl Component for Palette {
             .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_pointer_down(|e: Event<PointerEventData>| e.stop_propagation())
-            .on_press(move |_| Command::OpenPalette.run(store))
+            .on_press(move |_| {
+                let mut menu = store.ui.menu;
+                if store.ui.sheet.peek().is_some() {
+                    return;
+                }
+                if menu.peek().is_some() {
+                    menu.set(None);
+                    return;
+                }
+                Command::OpenPalette.run(store);
+            })
             .child(icon(&t, Icon::Search, iconsize::S, t.text3))
-            .child(rect().width(Size::flex(1.)).child(line(&t, tr("Suchen oder Befehl …"), font::CALLOUT, t.text3).max_lines(1)))
             .content(Content::flex());
+        if !icon_only {
+            field = field.child(rect().width(Size::flex(1.)).child(line(&t, tr("Suchen oder Befehl …"), font::CALLOUT, t.text3).max_lines(1)));
+        }
         if !keys.is_empty() {
             field = field.child(caption(&t, keys));
         }
         if let Some(border) = ring(&t, focus()) {
             field = field.border(border);
         }
-        field
+        if icon_only {
+            return WithTip::new(Some(tr("Suchen oder Befehl …")), field).into_element();
+        }
+        field.into_element()
     }
 }
 

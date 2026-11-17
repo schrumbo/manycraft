@@ -2146,5 +2146,6 @@
   "Shader brauchen %@. Ohne laden sie nicht.": "Shaders need %@. They do not load without it.",
   "%@ hinzufügen…": "Add %@…",
   "%@ einschalten": "Turn on %@",
-  "Ordner": "Folder"
+  "Ordner": "Folder",
+  "%lld ungelesen": "%lld unread"
 }

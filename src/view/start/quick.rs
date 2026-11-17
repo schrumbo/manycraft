@@ -127,7 +127,7 @@ impl Component for QuickPlay {
                 let picked = chosen.read().clone().filter(|v| ids.contains(v)).or_else(|| default_version(&list, &self.infos, &ids)).unwrap_or_default();
                 let at = ids.iter().position(|v| *v == picked).unwrap_or(0);
                 let options = ids.clone();
-                actions = actions.child(Select::new("start.quick.version", tr("Minecraft-Version"), ids, at).width(frame::QUICK_SELECT).on_choose(move |i| chosen.set(options.get(i).cloned())));
+                actions = actions.child(Select::new("start.quick.version", tr("Minecraft-Version"), ids, at).width(frame::QUICK_SELECT).focus_on(store.ui.focus_quick).on_choose(move |i| chosen.set(options.get(i).cloned())));
                 actions = if accounts == 0 {
                     actions.child(Button::new("start.quick.play", tr("Account hinzufügen")).glyph(Icon::UserPlus).primary().tall().disabled(want_blocked(&Want::AddAccount)).on_press(move |_| {
                         want(store, Want::AddAccount);
