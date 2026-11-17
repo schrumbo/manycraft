@@ -6,7 +6,7 @@ use freya::prelude::*;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
 use crate::core::modrinth::Kind;
-use crate::view::commands::{self, Extra, Shortcut, Want};
+use crate::view::commands::{self, Command, Extra, Shortcut, Want};
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::chip::Chip;
@@ -61,7 +61,11 @@ fn problem(kind: Kind, made: &Instance) -> Option<String> {
 }
 
 fn choose(store: Store) {
-    sheet::open(store.ui, Targets);
+    if store.model.peek().instances.is_empty() {
+        commands::want(store, Want::NewInstance);
+    } else {
+        sheet::open(store.ui, Targets);
+    }
 }
 
 /// The page's commands for the palette: pick the instance content is added to.
@@ -128,11 +132,11 @@ impl Component for DiscoverPage {
         if kind != Kind::Modpack
             && let Some(made) = &made
         {
-            bar = bar.child(Chip::new("discover.target", trf("Für: %@", &[&made.name])).on(true).on_press(move |_| choose(store)).on_remove(move |_| pick.write().target = None));
+            bar = bar.child(Chip::new("discover.target.chip", trf("Für: %@", &[&made.name])).on(true).on_press(move |_| choose(store)).on_remove(move |_| pick.write().target = None));
         }
         let body = match (&made, kind) {
             (_, Kind::Modpack) => rect().key("packs").width(Size::fill()).height(Size::fill()).child(PacksPage).into_element(),
-            (Some(made), kind) => rect().key(format!("{}:{}", made.id, kind.project_type())).width(Size::fill()).height(Size::fill()).child(ContentPage { id: made.id.clone(), kind, outer: true }).into_element(),
+            (Some(made), kind) => rect().key(&made.id).width(Size::fill()).height(Size::fill()).child(ContentPage { id: made.id.clone(), kind, outer: true }).into_element(),
             (None, _) => ask(&t, store),
         };
         rect()
@@ -150,7 +154,7 @@ fn ask(t: &Theme, store: Store) -> Element {
         (
             tr("Noch keine Instanz"),
             tr("Lege zuerst eine Instanz an, dann kannst du Inhalte hinzufügen."),
-            Button::new("discover.new", tr("Neue Instanz")).primary().on_press(move |_| {
+            Button::new("discover.new", tr("Neue Instanz")).glyph(Icon::Plus).primary().disabled(commands::want_blocked(&Want::NewInstance)).tip(Command::NewInstance.tip()).on_press(move |_| {
                 commands::want(store, Want::NewInstance);
             }),
         )
@@ -158,7 +162,7 @@ fn ask(t: &Theme, store: Store) -> Element {
         (
             tr("Zu welcher Instanz?"),
             tr("Mods, Ressourcenpakete, Shader und Datenpakete kommen in eine Instanz. Du kannst sie jederzeit wechseln."),
-            Button::new("discover.pick", tr("Instanz wählen …")).primary().on_press(move |_| choose(store)),
+            Button::new("discover.pick", tr("Instanz wählen")).primary().on_press(move |_| choose(store)),
         )
     };
     rect()

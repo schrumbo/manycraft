@@ -1902,6 +1902,13 @@ impl Component for Browser {
         let mut slot = store.ui.browser_undo;
         use_side_effect_with_deps(&top, move |top| slot.set(top.clone().map(|label| BrowserUndo { label, run: undo_run.clone() })));
         use_drop(move || slot.set(None));
+        let outer = self.scope.outer;
+        let follow = flow.clone();
+        use_side_effect_with_deps(&self.scope.kind, move |k| {
+            if outer {
+                follow.tab(*k);
+            }
+        });
         let shelf = flow.clone();
         use_hook(move || shelf.shelf());
         let back = *store.back.read();
