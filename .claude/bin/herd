@@ -1,6 +1,6 @@
 #!/bin/bash
 set -u
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/AppData/Local/Microsoft/WinGet/Links:$HOME/AppData/Local/Programs/herdr-core:$PATH"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/AppData/Local/Microsoft/WinGet/Links:$HOME/AppData/Local/Programs/herdr-core:$HOME/AppData/Local/agy/bin:$PATH"
 ROOT=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
 cmd="${1:-help}"
 [ $# -gt 0 ] && shift
@@ -25,9 +25,26 @@ remove() {
 case "$cmd" in
   new)
     name="${1:?name}"; shift
-    model=sonnet
-    if [ "${1:-}" = "--model" ]; then model="$2"; shift 2; fi
+    cli="${HERD_CLI:-claude}"
+    model=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --model) model="$2"; shift 2 ;;
+        --cli) cli="$2"; shift 2 ;;
+        *) break ;;
+      esac
+    done
     task="${1:?task}"
+    if [ "$cli" = "agy" ]; then
+      case "${model:-flash}" in
+        haiku|flash_lite|fast) model="gemini-3.8-flash-low" ;;
+        sonnet|flash) model="gemini-3.8-flash-high" ;;
+        opus|pro) model="gemini-4-neon-high" ;;
+        fable|xhigh) model="gemini-4-neon-xhigh" ;;
+      esac
+    else
+      model="${model:-sonnet}"
+    fi
     [ "$(helpers)" -ge "${HERD_MAX:-4}" ] && { echo "already $(helpers) helpers; land or remove one first (HERD_MAX=${HERD_MAX:-4})" >&2; exit 1; }
     wt="$ROOT/.claude/worktrees/$name"
     git -C "$ROOT" worktree add -q -b "herd/$name" "$wt" HEAD || exit 1
@@ -39,15 +56,19 @@ case "$cmd" in
     reach="${HC_TERMINAL_ID:-}"
     prompt="You work alone in the git worktree $wt on branch herd/$name. Only touch this worktree. Follow the ship skill. Commit only on branch herd/$name at stable points, no co-author; never push, merge or touch main. Do not start other hc agents. Builds take a machine-wide lock, so cargo may wait for another helper's build; that is normal, do not cancel it. Task: $task"
     [ -n "$reach" ] && prompt="$prompt Report the result or any blocker with: hc send $reach \"<text>\""
-    hc run --bg --json --name "$name" --cwd "$wt" --label herd=1 -- claude --model "$model" --permission-mode "${HERD_MODE:-auto}" "$prompt" | jq -c '{address, name}'
-    for _ in $(seq 1 30); do
-      screen=$(hc read --lines 30 "$name" 2>/dev/null)
-      case "$screen" in
-        *"trust this folder"*) hc keys "$name" down enter >/dev/null; break ;;
-        *"$name"*"Task:"*) break ;;
-      esac
-      perl -e 'select(undef,undef,undef,0.5)'
-    done
+    if [ "$cli" = "agy" ]; then
+      hc run --bg --json --name "$name" --cwd "$wt" --label herd=1 -- agy --model "$model" --mode "${HERD_MODE:-auto}" --dangerously-skip-permissions -i "$prompt" | jq -c '{address, name}'
+    else
+      hc run --bg --json --name "$name" --cwd "$wt" --label herd=1 -- claude --model "$model" --permission-mode "${HERD_MODE:-auto}" "$prompt" | jq -c '{address, name}'
+      for _ in $(seq 1 30); do
+        screen=$(hc read --lines 30 "$name" 2>/dev/null)
+        case "$screen" in
+          *"trust this folder"*) hc keys "$name" down enter >/dev/null; break ;;
+          *"$name"*"Task:"*) break ;;
+        esac
+        perl -e 'select(undef,undef,undef,0.5)'
+      done
+    fi
     ;;
   ls)
     git -C "$ROOT" worktree list | grep 'herd/' || echo "no helpers"

@@ -1,0 +1,30 @@
+{
+  "manycraft-lifecycle": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node ./hooks/session-start.cjs",
+        "timeout": 120
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "invoke_subagent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/post-subagent.cjs",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/stop-gate.cjs",
+        "timeout": 590
+      }
+    ]
+  }
+}
