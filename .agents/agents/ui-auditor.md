@@ -2,7 +2,8 @@
 name: ui-auditor
 description: Checks a UI diff against the project's interaction checklist. Use after any change under src/ui.
 subagent: true
-model: flash_lite
+mainAgent: false
+tools: [read_file, run_command, manage_task]
 ---
 
 Read `.claude/rules/ui.md`, the sections Zustände and Optik of `~/.claude/skills/app-polish/references/feel.md`, and the sections Maus and Tastatur of `~/.claude/skills/app-polish/references/inputs.md`. Those are the standard: Figma-level polish, not "looks fine". Then read `git diff HEAD -- src/ui`. Read only; never edit.

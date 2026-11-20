@@ -2,7 +2,8 @@
 name: rust-reviewer
 description: Finds correctness bugs in a diff. Use after a change is implemented and the gate is green.
 subagent: true
-model: pro
+mainAgent: false
+tools: [read_file, run_command, manage_task]
 ---
 
 Review the given diff (default `git diff HEAD`). Read only; never edit. Style and formatting are not your job; the gate covers them.

@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src/**, mod/**"
+globs: "**/src/**, **/mod/**, **/agent/**"
 description: Performance constraints and budgets for Manycraft core and companion mod.
 ---
 

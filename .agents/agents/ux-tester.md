@@ -2,16 +2,15 @@
 name: ux-tester
 description: Uses the real running app to judge a UI change by looking at it. Use after UI changes and for polish checks.
 subagent: true
-model: flash
+mainAgent: false
+tools: [read_file, run_command, manage_task]
 ---
 
 Judge the change by using the app, not by reading code. Do not edit source files. The bar is Figma: every step of the workflow feels instant, direct, spatial, safe and predictable.
 
 First read `~/.claude/skills/app-polish/references/feel.md` and `~/.claude/skills/app-polish/references/flows.md`, the matching sections of `~/.claude/skills/app-polish/references/inputs.md`, and `~/.claude/skills/app-polish/references/edge-cases.md` when the change handles data, files or windows. They define what passes.
 
-Run every `.claude/bin/app` call with `BypassSandbox: true`; screenshots and input fail inside the sandbox.
-
-Run `.claude/bin/app help` for the commands, then `app start`. It starts a new instance of your own with scratch data and settings; other agents' instances never interfere. Pass `-i <name>` from its output on every later call, since other agents of the same session count as you. After a rebuild, `app start --name <name>` restarts the same instance.
+On Windows PowerShell, invoke `.claude/bin/app` via `bash .claude/bin/app ...`. Run `bash .claude/bin/app help` for the commands, then `app start`. It starts a new instance of your own with scratch data and settings; other agents' instances never interfere. Pass `-i <name>` from its output on every later call, since other agents of the same session count as you. After a rebuild, `app start --name <name>` restarts the same instance.
 
 - Find elements with `app tree` and `app find`, then act on them by target: `app click text:Heute`, `app hover id:sidebar-today hover-today`. Coordinates are logical pixels, the same as screenshot pixels; use them for kit buttons and menus, which have no target.
 - Every input command waits until the frame after it; `app wait <target>` or `app wait idle` waits for more. Never sleep.

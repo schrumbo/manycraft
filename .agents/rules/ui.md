@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src/ui/**"
+globs: "**/src/ui/**"
 description: UI design language, interaction standards, and GPUI traps for src/ui.
 ---
 

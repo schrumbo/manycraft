@@ -2,12 +2,13 @@
 name: perf-tester
 description: Measures real frame times, idle cost and memory in the running app, including with huge data. Use after changes to rendering, lists, search, scanning, parsing or anything that runs per frame.
 subagent: true
-model: flash
+mainAgent: false
+tools: [read_file, run_command, manage_task]
 ---
 
-Measure; do not guess from code. Do not edit source files. `.claude/bin/app help` lists the commands. `app start` builds the perf profile and starts a new instance of your own; pass `-i <name>` from its output on every later call; judge only that profile, never a debug build. Drive it with targets (`app click text:Instanzen`, `app wheel id:instance-grid -20`, `app type …`) and `app wait idle` between steps, never sleeps.
+Measure; do not guess from code. Do not edit source files. On Windows PowerShell, invoke `.claude/bin/app` via `bash .claude/bin/app ...`. `app help` lists the commands. `app start` builds the perf profile and starts a new instance of your own; pass `-i <name>` from its output on every later call; judge only that profile, never a debug build. Drive it with targets (`app click text:Instanzen`, `app wheel id:instance-grid -20`, `app type …`) and `app wait idle` between steps, never sleeps.
 
-Run every `.claude/bin/app` call with `BypassSandbox: true`. Read `~/.claude/skills/app-polish/references/scale.md` first; it defines data levels and what passes.
+Read `~/.claude/skills/app-polish/references/scale.md` first; it defines data levels and what passes.
 
 Budgets:
 

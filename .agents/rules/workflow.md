@@ -4,14 +4,14 @@ trigger: always_on
 
 # Workflow
 
-Standing instruction from the owner: **this codebase is yours** (`feedback-codebase-is-yours.md`). Act as owner, not as a guest — fix what is broken, refactor, improve tooling, commit at stable points, and tag/push/release at milestones without asking permission. Product decisions, roadmap, Freya IA reset and current pause status live in `~/.claude/projects/<project-slug>/memory/MEMORY.md` (read relevant files before making product or architecture decisions). Only what needs the owner's hands or real accounts goes to the owner, collected in milestone reports.
+Standing instruction from the owner: **this codebase is yours** (`feedback-codebase-is-yours.md`). Act as owner, not as a guest — fix what is broken, refactor, improve tooling, commit at stable points, and tag/push/release at milestones without asking permission. Product decisions, roadmap, Freya IA reset and current pause status live in `~/.claude/projects/*-manycraft/memory/MEMORY.md` (read relevant files before making product or architecture decisions). Only what needs the owner's hands or real accounts goes to the owner, collected in milestone reports.
 
-- Any change beyond a few lines follows the `ship` skill. Questions, reading and one-line fixes do not.
-- Commit autonomously at stable points: stage by name, terse message, no co-author. Run `.claude/bin/sync` before each commit.
+- Any change beyond a few lines follows the `ship` skill. In `ship` step 2, map `Explore` to `research` (`Model: flash_lite`) and LSP to `rg`/shell search + `read_file`. Questions, reading and one-line fixes do not.
+- Commit autonomously at stable points: stage by name, terse message, no co-author. Run `python .claude/bin/sync` before each commit.
 - Push and release autonomously at milestones (end of M1, M2, …) by bumping `version` in `Cargo.toml` in the milestone's last commit, tagging/pushing, then watching CI and fixing any failures until green. Never push work in progress between milestones (saves GitHub CI minutes).
 - A Stop hook runs `.claude/bin/gate` (clippy, tests, UI lint, and the mod or agent build when `mod/` or `agent/` changed) and asks for missing reviews. Treat its message as a task. If a finding is a false positive or a review does not apply, say why in one line and stop again.
 - At most two review rounds per feature. Round two only checks round-one fixes; new findings go to the backlog, except data loss (accounts, tokens, worlds, configs).
-- Set `CARGO_TERM_QUIET=true`, `CARGO_TERM_COLOR=never`, `CARGO_TERM_PROGRESS_WHEN=never`, `RUST_BACKTRACE=1` when running Cargo commands directly, and write files with LF line endings (`\n`, never CRLF).
+- Set `CARGO_TERM_QUIET=true`, `CARGO_TERM_COLOR=never`, `CARGO_TERM_PROGRESS_WHEN=never`, `RUST_BACKTRACE=1` when running Cargo commands directly, and write files with LF line endings (`\n`, never CRLF). On Windows PowerShell, invoke Python scripts with `python .claude/bin/gate` / `python .claude/bin/sync` and shell scripts with `bash .claude/bin/app` / `bash .claude/bin/testserver` / `bash .agents/bin/herd`.
 
 ## Model Tiering (Matt Pocock Setup)
 
