@@ -1,0 +1,3 @@
+#!/bin/bash
+export HERD_CLI=agy
+exec "$(dirname "$0")/../../.claude/bin/herd" "$@"
