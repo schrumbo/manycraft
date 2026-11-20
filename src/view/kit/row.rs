@@ -18,6 +18,7 @@ pub struct Row {
     leading: Option<Element>,
     trailing: Option<Element>,
     selected: bool,
+    disabled: bool,
     compact: Option<Option<Element>>,
     height: f32,
     on_press: Option<EventHandler<()>>,
@@ -26,7 +27,7 @@ pub struct Row {
 
 impl Row {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), detail: None, glyph: None, leading: None, trailing: None, selected: false, compact: None, height: frame::ROW, on_press: None, on_secondary: None }
+        Self { id: id.into(), title: title.into(), detail: None, glyph: None, leading: None, trailing: None, selected: false, disabled: false, compact: None, height: frame::ROW, on_press: None, on_secondary: None }
     }
 
     /// A second, quieter line under the title.
@@ -55,6 +56,11 @@ impl Row {
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -87,14 +93,15 @@ impl Component for Row {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
-        let spot = use_spot(&self.id, "row", &self.title, true);
-        let press = self.on_press.clone();
-        let secondary = self.on_secondary.clone();
-        let fill = if self.selected { t.selection } else if *hovered.read() { t.hover } else { Color::TRANSPARENT };
-        let ink = if self.selected { t.accent_text } else { t.text1 };
+        let spot = use_spot(&self.id, "row", &self.title, !self.disabled);
+        let disabled = self.disabled;
+        let press = (!disabled).then(|| self.on_press.clone()).flatten();
+        let secondary = (!disabled).then(|| self.on_secondary.clone()).flatten();
+        let fill = if self.selected { t.selection } else if !disabled && *hovered.read() { t.hover } else { Color::TRANSPARENT };
+        let ink = if self.selected { t.accent_text } else if disabled { t.text3 } else { t.text1 };
         let mut r = rect()
             .a11y_id(a11y)
-            .a11y_focusable(true)
+            .a11y_focusable(!disabled)
             .a11y_role(AccessibilityRole::ListItem)
             .a11y_alt(self.title.clone())
             .width(Size::fill())
@@ -105,11 +112,19 @@ impl Component for Row {
             .spacing(space::S)
             .corner_radius(t.shape.small + 2.)
             .background(fill)
+            .opacity(if disabled { 0.55 } else { 1. })
             .on_sized(spot)
             .cursor(if press.is_some() { CursorIcon::Pointer } else { CursorIcon::Default })
-            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_enter(move |_| {
+                if !disabled {
+                    hovered.set(true);
+                }
+            })
             .on_pointer_leave(move |_| hovered.set_if_modified(false))
             .on_all_press(move |e: Event<PressEventData>| {
+                if disabled {
+                    return;
+                }
                 if let PressEventData::Mouse(m) = &*e
                     && m.button != Some(MouseButton::Left)
                 {

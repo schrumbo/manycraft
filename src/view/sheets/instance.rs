@@ -685,6 +685,7 @@ impl Component for Create {
                 follow: Some((flow.version, flow.loader)),
                 kind: ModKind::Mod,
                 filters: None,
+                untargeted: None,
                 on_update: EventHandler::new(|_| {}),
                 back: EventHandler::new(move |_| flow.leave_search()),
                 done: EventHandler::new(move |_| flow.leave_search()),

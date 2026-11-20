@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const AGENT_SOURCES: [&str; 4] = ["src", "build.gradle", "gradle.properties", "settings.gradle"];
 
@@ -40,7 +40,8 @@ fn build_agent() -> PathBuf {
     if !jar.is_file() || newer_sources(&module, &jar, &AGENT_SOURCES) {
         let gradlew = module.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
         let status = Command::new(&gradlew)
-            .args(["agentJar", "-q", "--console=plain"])
+            .args(["agentJar", "-q", "--console=plain", "--no-daemon"])
+            .stdin(Stdio::null())
             .current_dir(&module)
             .status()
             .unwrap_or_else(|e| panic!("cannot run {}: {e}; install JDK 25 or set MANYCRAFT_AGENT_JAR", gradlew.display()));

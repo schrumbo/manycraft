@@ -405,6 +405,7 @@ impl Component for ContentPage {
             follow: None,
             kind: self.kind,
             filters: None,
+            untargeted: None,
             on_update: EventHandler::new(move |pid: String| keep.update(pid)),
             back: EventHandler::new(move |_| {
                 if !outer {

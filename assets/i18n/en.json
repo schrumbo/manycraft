@@ -2163,5 +2163,8 @@
   "Für: %@": "For: %@",
   "Noch keine Instanz": "No instance yet",
   "Lege zuerst eine Instanz an, dann kannst du Inhalte hinzufügen.": "Create an instance first, then you can add content.",
-  "Mods, Ressourcenpakete, Shader und Datenpakete kommen in eine Instanz. Du kannst sie jederzeit wechseln.": "Mods, resource packs, shaders and data packs go into an instance. You can switch it at any time."
+  "Mods, Ressourcenpakete, Shader und Datenpakete kommen in eine Instanz. Du kannst sie jederzeit wechseln.": "Mods, resource packs, shaders and data packs go into an instance. You can switch it at any time.",
+  "Keine passende Instanz vorhanden.": "No compatible instance found.",
+  "Wähle oben eine Welt oder füge Global Packs hinzu.": "Choose a world above or add Global Packs.",
+  "Filter: %@": "Filter: %@"
 }

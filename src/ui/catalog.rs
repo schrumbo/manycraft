@@ -351,7 +351,7 @@ fn canned_search(search: &Search, offset: usize) -> Result<Page> {
     if q.contains("offline") {
         bail!("failed to lookup address");
     }
-    let game = search.filter.game_version.clone().unwrap_or_default();
+    let game = search.filter.game_version.as_deref().filter(|v| !v.is_empty()).unwrap_or("26.3").to_owned();
     let mut hits: Vec<Hit> = if many { many_hits(search.filter.kind, &game) } else { kind_hits(search.filter.kind, &game) };
     if !many {
         hits.retain(|h| h.title.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q));
@@ -471,6 +471,7 @@ fn canned_details(hit: &Hit) -> Details {
 }
 
 fn canned_versions(project_id: &str, kind: Kind, game: &str) -> Vec<Version> {
+    let game = if game.is_empty() { "26.3" } else { game };
     let loaders: Vec<String> = match kind {
         Kind::Mod | Kind::Modpack => vec!["fabric".into(), "quilt".into()],
         Kind::ResourcePack => vec!["minecraft".into()],

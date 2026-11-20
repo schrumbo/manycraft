@@ -47,17 +47,19 @@ impl Component for Chip {
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
         let mut pressed = use_state(|| false);
-        let spot = use_spot(&self.id, "chip", &self.label, true);
+        let spot = use_spot(&self.id, "chip", &self.label, self.on_press.is_some() || self.on_remove.is_some());
         let ink = if self.on { t.accent_text } else { t.text1 };
         let fill = if self.on { t.selection } else { t.control };
-        let wash = if *pressed.read() { Some(t.press) } else if *hovered.read() { Some(t.hover) } else { None };
+        let clickable = self.on_press.is_some();
+        let wash = if !clickable { None } else if *pressed.read() { Some(t.press) } else if *hovered.read() { Some(t.hover) } else { None };
         let press = self.on_press.clone();
         let remove = self.on_remove.clone();
         let keys = remove.clone();
+        let focusable = clickable || remove.is_some();
         let mut c = rect()
             .a11y_id(a11y)
-            .a11y_focusable(true)
-            .a11y_role(AccessibilityRole::Button)
+            .a11y_focusable(focusable)
+            .a11y_role(if clickable { AccessibilityRole::Button } else { AccessibilityRole::GenericContainer })
             .a11y_alt(self.label.clone())
             .horizontal()
             .cross_align(Alignment::Center)
@@ -65,20 +67,27 @@ impl Component for Chip {
             .padding((0., if remove.is_some() { space::XS } else { space::S }, 0., space::S))
             .spacing(space::XS)
             .corner_radius(t.shape.chip)
-            .cursor(CursorIcon::Pointer)
+            .cursor(if clickable { CursorIcon::Pointer } else { CursorIcon::Default })
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_enter(move |_| {
+                if clickable {
+                    hovered.set(true);
+                }
+            })
             .on_pointer_leave(move |_| {
                 hovered.set_if_modified(false);
                 pressed.set_if_modified(false);
             })
             .on_mouse_down(move |e: Event<MouseEventData>| {
-                if e.button == Some(MouseButton::Left) {
+                if clickable && e.button == Some(MouseButton::Left) {
                     pressed.set(true);
                 }
             })
             .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_all_press(move |e: Event<PressEventData>| {
+                if !clickable {
+                    return;
+                }
                 if let PressEventData::Mouse(m) = &*e
                     && m.button != Some(MouseButton::Left)
                 {
@@ -100,7 +109,7 @@ impl Component for Chip {
             })
             .child(line(&t, self.label.clone(), font::CALLOUT, ink).font_weight(FontWeight::MEDIUM));
         if let Some(h) = remove {
-            c = c.child(rect().padding(space::XXS).corner_radius(t.shape.small).on_press(move |e: Event<PressEventData>| {
+            c = c.child(rect().padding(space::XXS).corner_radius(t.shape.small).cursor(CursorIcon::Pointer).on_press(move |e: Event<PressEventData>| {
                 e.stop_propagation();
                 h.call(());
             }).child(icon(&t, Icon::Close, iconsize::XS, t.text2)));

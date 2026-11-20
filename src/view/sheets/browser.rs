@@ -30,6 +30,7 @@ use crate::ui::remote;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
+use crate::view::kit::chip::Chip;
 use crate::view::kit::field::{self, Field};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
@@ -126,6 +127,8 @@ pub(super) struct Scope {
     pub follow: Option<(State<String>, State<Loader>)>,
     pub kind: Kind,
     pub filters: Option<PackFilters>,
+    /// Set when browsing non-modpack kinds in Entdecken before an instance has been chosen; called on Hinzufügen.
+    pub untargeted: Option<EventHandler<(Hit, Option<Version>)>>,
     pub on_update: EventHandler<String>,
     pub back: EventHandler<()>,
     pub done: EventHandler<()>,
@@ -133,7 +136,7 @@ pub(super) struct Scope {
 
 impl Scope {
     fn packs(&self) -> bool {
-        self.page && self.made.is_none()
+        self.page && self.made.is_none() && self.untargeted.is_none()
     }
 
     fn kinds(&self) -> &'static [Kind] {
@@ -292,6 +295,18 @@ fn version_blocked(f: &Facts) -> Option<String> {
 }
 
 fn fit_name(f: &Facts) -> String {
+    if f.untargeted {
+        let mut parts = Vec::new();
+        if !f.version.is_empty() {
+            parts.push(format!("Minecraft {}", f.version));
+        }
+        if f.kind == Kind::Shader {
+            parts.push("Iris".to_owned());
+        } else if f.loader != Loader::Vanilla.name() {
+            parts.push(f.loader.clone());
+        }
+        return if parts.is_empty() { kind_name(f.kind) } else { parts.join(" · ") };
+    }
     format!("Minecraft {} · {}", f.version, f.loader)
 }
 
@@ -705,11 +720,15 @@ struct Facts {
     pack: Pack,
     global_needed: bool,
     pending: bool,
+    untargeted: bool,
     made: HashMap<String, String>,
 }
 
 impl Facts {
     fn install_blocked(&self) -> Option<String> {
+        if self.untargeted {
+            return None;
+        }
         match self.kind {
             Kind::Mod => {
                 if self.version.is_empty() {
@@ -738,6 +757,9 @@ fn act_of(hit: &Hit, f: &Facts) -> Act {
         return Act::Nothing;
     }
     let fits = hit.fits(&f.filter) == Support::Fits;
+    if f.untargeted {
+        return if fits { Act::Install } else { Act::Nothing };
+    }
     match f.kind {
         Kind::Mod => {
             if f.have.contains(pid) {
@@ -938,12 +960,13 @@ impl Flow {
         } else {
             HashMap::new()
         };
-        let global_needed = kind == Kind::DataPack && val(self.target, subscribe).is_none() && !self.global_packs(subscribe);
+        let untargeted = self.scope.untargeted.is_some();
+        let global_needed = !untargeted && kind == Kind::DataPack && val(self.target, subscribe).is_none() && !self.global_packs(subscribe);
         Facts {
             kind,
             version: self.scope.version.clone(),
             loader: self.scope.loader.name().to_owned(),
-            takes_mods: self.scope.loader.takes_mods(),
+            takes_mods: untargeted || self.scope.loader.takes_mods(),
             filter: filter_for(kind, &self.scope.version, &self.scope.loader),
             have,
             updatable,
@@ -955,6 +978,7 @@ impl Flow {
             pack,
             global_needed,
             pending: self.scope.pending,
+            untargeted,
             made,
         }
     }
@@ -1285,6 +1309,12 @@ impl Flow {
     }
 
     fn run(&self, hit: Hit, act: Act) {
+        if act == Act::Install
+            && let Some(pick) = &self.scope.untargeted
+        {
+            pick.call((hit, None));
+            return;
+        }
         let kind = self.core.peek().kind;
         match (kind, act) {
             (_, Act::Nothing) => {}
@@ -1320,6 +1350,10 @@ impl Flow {
         let f = self.facts(false);
         let pid = &hit.project_id;
         if f.kind == Kind::Modpack || version.project_id != *pid || f.adding.contains(pid) || !modrinth::version_fits(version, &f.filter) || version_blocked(&f).is_some() {
+            return;
+        }
+        if let Some(pick) = &self.scope.untargeted {
+            pick.call((hit.clone(), Some(version.clone())));
             return;
         }
         if self.installed_version(pid, false).as_deref() == Some(version.id.as_str()) {
@@ -1851,6 +1885,58 @@ impl Component for PacksPage {
             follow: None,
             kind: Kind::Modpack,
             filters: Some(filters),
+            untargeted: None,
+            on_update: EventHandler::new(|_| {}),
+            back: EventHandler::new(|_| {}),
+            done: EventHandler::new(|_| {}),
+        };
+        Browser { scope }
+    }
+}
+
+/// Entdecken for non-modpack kinds before an instance is chosen: browses Modrinth freely and calls `on_pick` on Hinzufügen.
+#[derive(PartialEq)]
+pub struct DiscoverBrowsePage {
+    pub kind: Kind,
+    pub on_pick: EventHandler<(Hit, Option<Version>)>,
+}
+
+impl Component for DiscoverBrowsePage {
+    fn render(&self) -> impl IntoElement {
+        let mods = use_state(Vec::new);
+        let adding = use_state(HashSet::new);
+        let filters = PackFilters { version: use_state(String::new), loader: use_state(|| Loader::Vanilla), catalog: use_state(Vec::new) };
+        let mut catalog = filters.catalog;
+        use_hook(move || {
+            spawn_in_window(async move {
+                if let Some(Ok(list)) = off_ui(remote::catalog).await
+                    && catalog.try_peek().is_some()
+                {
+                    catalog.set(list);
+                }
+            });
+        });
+        let (version, loader) = (filters.version.read().clone(), filters.loader.read().clone());
+        let scope = Scope {
+            create: false,
+            page: true,
+            outer: true,
+            made: None,
+            version,
+            loader,
+            mods,
+            touched: None,
+            adding,
+            updatable: HashSet::new(),
+            updating: HashSet::new(),
+            saving: false,
+            held: None,
+            pending: false,
+            dirty: false,
+            follow: None,
+            kind: self.kind,
+            filters: Some(filters),
+            untargeted: Some(self.on_pick.clone()),
             on_update: EventHandler::new(|_| {}),
             back: EventHandler::new(|_| {}),
             done: EventHandler::new(|_| {}),
@@ -1920,6 +2006,54 @@ impl Component for Browser {
             (c.kind, c.sort_for(&typed), c.category.clone(), c.all && widens(c.kind), c.page().map(|p| p.total), c.status.clone(), c.more, c.sel, c.epoch, c.has_more(), c.page().and_then(|p| p.saved), c.page().cloned(), c.visible.clone(), c.fresh())
         };
         let facts = Rc::new(flow.facts(true));
+        let latest_flow = use_hook(|| Rc::new(RefCell::new(flow.clone())));
+        *latest_flow.borrow_mut() = flow.clone();
+        let worlds_loaded = flow.worlds.read().is_some();
+        let pending_ready = match facts.kind {
+            Kind::Mod => true,
+            Kind::DataPack => worlds_loaded && (facts.pack == Pack::Ready || facts.pack == Pack::Failed || facts.global_needed),
+            Kind::ResourcePack | Kind::Shader => facts.pack == Pack::Ready || facts.pack == Pack::Failed,
+            Kind::Modpack => false,
+        };
+        let pending_key = (
+            self.scope.outer,
+            self.scope.made.as_ref().map(|m| m.id.clone()),
+            facts.kind,
+            pending_ready,
+            facts.pack,
+            facts.global_needed,
+        );
+        let latest = latest_flow.clone();
+        use_side_effect_with_deps(&pending_key, move |(outer, made_id, k, ready, _, _)| {
+            if !*outer || !*ready {
+                return;
+            }
+            let Some(id) = made_id.as_ref() else { return };
+            let current = latest.borrow().clone();
+            let mut discover = current.store.ui.discover;
+            let matches = discover.peek().pending.as_ref().is_some_and(|p| p.instance == *id && p.kind == *k);
+            if !matches {
+                return;
+            }
+            let Some(pending) = discover.write().pending.take() else { return };
+            let f = current.facts(false);
+            if let Some(why) = f.held {
+                toast::show(current.store.ui, why, None);
+                return;
+            }
+            if f.global_needed {
+                toast::show(current.store.ui, tr("Wähle oben eine Welt oder füge Global Packs hinzu."), None);
+                return;
+            }
+            if f.pack == Pack::Failed {
+                toast::show(current.store.ui, tr("Erst muss klar sein, was schon installiert ist."), None);
+                return;
+            }
+            match pending.version {
+                Some(v) => current.add_version(&pending.hit, &v),
+                None => current.run(pending.hit, Act::Install),
+            }
+        });
         let open = flow.open.read().clone();
         let pane = paged && store.ui.window.read().0 >= SPLIT_AT;
         let detail = open.is_some() && !pane;
@@ -1953,10 +2087,10 @@ impl Component for Browser {
         column = column.child(field);
         if open.is_none() {
             column = column.child(rect().width(Size::fill()).height(Size::px(font::CAPTION * font::LINE)).child(caption(&t, selected.unwrap_or_default())));
-            if kind == Kind::DataPack {
+            if kind == Kind::DataPack && self.scope.untargeted.is_none() {
                 column = column.child(target_row(&t, &flow, &facts));
             }
-            column = column.child(controls(&t, &flow, kind, &typed, category.as_deref(), sort, all, if fresh { total } else { None }));
+            column = column.child(controls(&t, &flow, &facts, kind, &typed, category.as_deref(), sort, all, if fresh { total } else { None }));
         }
         let mut room = flow.room;
         let (listed, aside) = if pane { (None, open) } else { (open, None) };
@@ -2005,7 +2139,7 @@ impl Component for Browser {
                         return;
                     }
                     match &e.key {
-                        Key::Named(NamedKey::Escape) if esc.page_open() || !esc.query.peek().is_empty() || !esc.scope.packs() => {
+                        Key::Named(NamedKey::Escape) if esc.page_open() || !esc.query.peek().is_empty() || (!esc.scope.packs() && esc.scope.untargeted.is_none()) => {
                             e.stop_propagation();
                             esc.cancel();
                         }
@@ -2164,7 +2298,7 @@ fn target_row(t: &Theme, flow: &Flow, facts: &Facts) -> Element {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&str>, sort: Sort, all: bool, total: Option<usize>) -> Element {
+fn controls(t: &Theme, flow: &Flow, facts: &Facts, kind: Kind, typed: &str, category: Option<&str>, sort: Sort, all: bool, total: Option<usize>) -> Element {
     let caption_text = if typed.is_empty() && category.is_none() {
         tr("Beliebt")
     } else if let Some(total) = total {
@@ -2204,10 +2338,32 @@ fn controls(t: &Theme, flow: &Flow, kind: Kind, typed: &str, category: Option<&s
         .content(Content::flex())
         .child(rect().width(Size::flex(1.)).child(line(t, caption_text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)));
     if let Some(filters) = flow.scope.filters.clone() {
-        row = row.child(loader_select(flow, &filters)).child(version_select(flow, &filters));
+        if matches!(kind, Kind::Modpack | Kind::Mod) {
+            row = row.child(loader_select(flow, &filters));
+        }
+        row = row.child(version_select(flow, &filters));
+    } else if flow.scope.page && flow.scope.made.is_some() {
+        let wide = widens(kind);
+        if all && wide {
+            let restore = flow.clone();
+            row = row.child(Chip::new("browser.filter.restore", trf("Filter: %@", &[&fit_name(facts)])).on(false).on_press(move |_| restore.all(false)));
+        } else {
+            if !facts.version.is_empty() {
+                let mut chip = Chip::new("browser.filter.version", facts.version.clone()).on(true);
+                if wide {
+                    let drop = flow.clone();
+                    chip = chip.on_remove(move |_| drop.all(true));
+                }
+                row = row.child(chip);
+            }
+            if kind == Kind::Mod && facts.takes_mods {
+                let drop = flow.clone();
+                row = row.child(Chip::new("browser.filter.loader", facts.loader.clone()).on(true).on_remove(move |_| drop.all(true)));
+            }
+        }
     }
     row = row.child(category_select).child(sort_select);
-    if widens(kind) && !flow.scope.packs() {
+    if widens(kind) && !flow.scope.packs() && flow.scope.untargeted.is_none() && !(flow.scope.page && flow.scope.made.is_some()) {
         let (flip, label) = (flow.clone(), flow.clone());
         row = row.child(
             rect()
@@ -2308,7 +2464,7 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
     } else if categorised {
         trf("Keine %@ in dieser Kategorie. Wähle „Alle Kategorien“.", &[&what])
     } else {
-        match (typed.is_empty(), all) {
+        match (typed.is_empty(), all || facts.version.is_empty()) {
             (true, false) => trf("Keine %@ für Minecraft %@ gefunden.", &[&what, &facts.version]),
             (true, true) => trf("Keine %@ gefunden.", &[&what]),
             (false, false) => trf("Keine %@ zu „%@“ für %@. Versuche einen anderen Suchbegriff.", &[&what, &typed, &facts.version]),
@@ -2323,11 +2479,11 @@ fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, 
         .spacing(space::M)
         .child(icon(t, Icon::Search, iconsize::L, t.text3))
         .child(rect().max_width(Size::px(control::READING)).child(para(t, text, font::CALLOUT, t.text2).text_align(TextAlign::Center)));
-    if !all && widens(facts.kind) && !categorised && facts.takes_mods && !flow.scope.packs() {
+    if !all && widens(facts.kind) && !categorised && facts.takes_mods && !flow.scope.packs() && flow.scope.untargeted.is_none() {
         let widen = flow.clone();
         column = column.child(Button::new("browser.all.show", tr("Alle zeigen")).on_press(move |_| widen.all(true)));
     }
-    if facts.kind == Kind::Modpack && (categorised || flow.pack_filtered()) {
+    if (facts.kind == Kind::Modpack || flow.scope.untargeted.is_some()) && (categorised || flow.pack_filtered()) {
         let reset = flow.clone();
         column = column.child(Button::new("browser.filters.reset", tr("Filter zurücksetzen")).on_press(move |_| reset.reset_pack_filters()));
     }
@@ -2757,6 +2913,7 @@ mod tests {
             pack: Pack::Ready,
             global_needed: false,
             pending: false,
+            untargeted: false,
             made: HashMap::new(),
         }
     }
@@ -2938,6 +3095,33 @@ mod tests {
         let h = fitting(Kind::Mod, "a");
         assert_eq!(act_of(&h, &f), Act::Nothing);
         assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: Some(tr("Wähle zuerst eine Version.")) });
+    }
+
+    #[test]
+    fn untargeted_discover_browsing_offers_add_without_instance() {
+        for kind in [Kind::Mod, Kind::ResourcePack, Kind::Shader, Kind::DataPack] {
+            let mut f = facts(kind);
+            f.version.clear();
+            f.pack = Pack::None;
+            f.untargeted = true;
+            f.filter = filter_for(kind, "", &Loader::Vanilla);
+            let h = fitting(kind, "a");
+            assert_eq!(act_of(&h, &f), Act::Install);
+            assert_eq!(trail_of(&h, &f), Trail::Install { label: tr("Hinzufügen"), blocked: None });
+            assert_eq!(version_blocked(&f), None);
+        }
+        let mut m = facts(Kind::Mod);
+        m.untargeted = true;
+        m.version.clear();
+        m.loader = Loader::Vanilla.name().to_owned();
+        assert_eq!(fit_name(&m), tr("Mods"));
+        m.version = "1.21.4".into();
+        assert_eq!(fit_name(&m), "Minecraft 1.21.4");
+        let mut s = facts(Kind::Shader);
+        s.untargeted = true;
+        s.version.clear();
+        s.loader = Loader::Vanilla.name().to_owned();
+        assert_eq!(fit_name(&s), "Iris");
     }
 
     #[test]

@@ -57,6 +57,18 @@ case "$cmd" in
     prompt="You work alone in the git worktree $wt on branch herd/$name. Only touch this worktree. Follow the ship skill. Commit only on branch herd/$name at stable points, no co-author; never push, merge or touch main. Do not start other hc agents. Builds take a machine-wide lock, so cargo may wait for another helper's build; that is normal, do not cancel it. Task: $task"
     [ -n "$reach" ] && prompt="$prompt Report the result or any blocker with: hc send $reach \"<text>\""
     if [ "$cli" = "agy" ]; then
+      python3 -c '
+import json, os, sys
+from pathlib import Path
+p = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+wt = os.path.normpath(sys.argv[1])
+data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+tw = data.setdefault("trustedWorkspaces", [])
+if not any(os.path.normcase(os.path.normpath(x)) == os.path.normcase(wt) for x in tw):
+    tw.append(wt)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+' "$(command -v cygpath >/dev/null && cygpath -w "$wt" || echo "$wt")" 2>/dev/null || true
       hc run --bg --json --name "$name" --cwd "$wt" --label herd=1 -- agy --model "$model" --mode "${HERD_MODE:-auto}" --dangerously-skip-permissions -i "$prompt" | jq -c '{address, name}'
     else
       hc run --bg --json --name "$name" --cwd "$wt" --label herd=1 -- claude --model "$model" --permission-mode "${HERD_MODE:-auto}" "$prompt" | jq -c '{address, name}'
