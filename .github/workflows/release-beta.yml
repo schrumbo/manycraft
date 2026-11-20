@@ -233,7 +233,12 @@ jobs:
 
   sign:
     needs: [prepare, macos, windows, linux]
-    if: needs.prepare.outputs.publish == 'true'
+    if: >-
+      always() &&
+      needs.prepare.outputs.publish == 'true' &&
+      needs.windows.result == 'success' &&
+      needs.linux.result == 'success' &&
+      (needs.macos.result == 'success' || needs.macos.result == 'failure' || needs.macos.result == 'cancelled')
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -254,16 +259,28 @@ jobs:
           mkdir files && cd files
           gh release download "v$VERSION"
           rm -f ./*.minisig
+          count=0
           for f in *; do
+            [ -f "$f" ] || continue
+            count=$((count + 1))
             if ! printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$KEY" -m "$f" -t "Manycraft $VERSION $f" > /dev/null; then
               echo "::error::Signing $f failed. Check that MINISIGN_PASSWORD fits the key."
               exit 1
             fi
           done
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No release files were downloaded to sign."
+            exit 1
+          fi
           gh release upload "v$VERSION" ./*.minisig --clobber
 
   publish:
-    needs: [prepare, test, sign]
+    needs: [prepare, test, sign, macos]
+    if: >-
+      always() &&
+      needs.prepare.outputs.publish == 'true' &&
+      needs.test.result == 'success' &&
+      needs.sign.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Publish as a pre-release, never as the latest release
@@ -273,5 +290,8 @@ jobs:
           if [ "$PRE" != "true" ]; then
             echo "::error::$TAG is not marked as a pre-release. Stable installs would be offered it."
             exit 1
+          fi
+          if [ "${{ needs.macos.result }}" != "success" ]; then
+            echo "::warning::Publishing $TAG without the macOS build (macos job result: ${{ needs.macos.result }})."
           fi
           gh release edit "$TAG" --draft=false --prerelease --latest=false
