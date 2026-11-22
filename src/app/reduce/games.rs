@@ -342,7 +342,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     let reason = tr("Unerwartet beendet");
     let banned = matches!(i.phase, Phase::Banned { .. });
     let to = match reconnect::restart(tried, policy, env.unit()) {
-        Decision::Retry(_) if banned => Phase::Crashed { code },
+        Decision::Retry(_) if banned || i.alone() => Phase::Crashed { code },
         Decision::Retry(delay) => {
             s.crash_restarts.insert(key.clone(), tried + 1);
             let generation = s.reconnects.entry(key.clone()).or_default();
@@ -1392,6 +1392,19 @@ mod tests {
         assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(1) });
         assert!(timers(&fx).is_empty());
         assert_eq!(m.history[&key].iter().filter(|e| e.kind == Kind::Crashed).count(), 4);
+    }
+
+    #[test]
+    fn a_game_played_alone_is_never_started_again_after_it_ended() {
+        let s = settings();
+        let (mut m, solo) = adopted(Phase::Stopped);
+        let account = m.games[&solo].account_id;
+        let made = m.instances[0].clone();
+        let key = fleet::solo_key(&made, account);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42, plain: false }]);
+        let fx = exited(&mut m, &s, &key, Some(-1));
+        assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(-1) });
+        assert!(!timers(&fx).iter().any(|(_, e)| matches!(e, Event::RestartDue { .. })));
     }
 
     #[test]

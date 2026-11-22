@@ -60,6 +60,7 @@ class PatcherTest {
 		Patcher.table(true).values().stream().flatMap(List::stream).filter(h -> !h.alternative()).forEach(h -> assertTrue(Patches.has(h.feature()), h.feature()));
 		assertTrue(Patches.has(Patches.CORE));
 		assertTrue(Patches.has("close"));
+		assertTrue(Patches.has("quit"));
 		assertTrue(Patches.has("hud"));
 	}
 

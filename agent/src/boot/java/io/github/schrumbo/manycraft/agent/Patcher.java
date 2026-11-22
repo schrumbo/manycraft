@@ -116,7 +116,8 @@ final class Patcher implements ClassFileTransformer {
 				b.invokestatic(HOOKS, "title", type(CD_String)).dup().ifnull(original).areturn().labelBinding(original);
 				b.pop();
 			})),
-			new Hook("pause", "pauseIfInactive", "()V", cancel(b -> b.invokestatic(HOOKS, "managed", type(CD_boolean)))));
+			new Hook("pause", "pauseIfInactive", "()V", cancel(b -> b.invokestatic(HOOKS, "managed", type(CD_boolean)))),
+			new Hook("quit", "stop", "()V", head(b -> b.invokestatic(HOOKS, "closeRequested", type(CD_void)))));
 		add(t, "net/minecraft/client/renderer/GameRenderer",
 			new Hook("render", "render", null, Patcher::guardRender));
 		add(t, "com/mojang/blaze3d/platform/Window",
