@@ -2166,5 +2166,11 @@
   "Mods, Ressourcenpakete, Shader und Datenpakete kommen in eine Instanz. Du kannst sie jederzeit wechseln.": "Mods, resource packs, shaders and data packs go into an instance. You can switch it at any time.",
   "Keine passende Instanz vorhanden.": "No compatible instance found.",
   "Wähle oben eine Welt oder füge Global Packs hinzu.": "Choose a world above or add Global Packs.",
-  "Filter: %@": "Filter: %@"
+  "Filter: %@": "Filter: %@",
+  "Garderobe": "Wardrobe",
+  "Skins und Umhänge": "Skins and capes",
+  "Hier liegen bald alle Skins und Umhänge zum Wechseln.": "All your skins and capes will live here, ready to switch.",
+  "Version und Loader wählen, Mods später.": "Pick a version and loader, add mods later.",
+  "Ein fertiges Paket von Modrinth, das zur eigenen Instanz wird.": "A ready-made pack from Modrinth that becomes its own instance.",
+  "Instanzen aus Prism, Modrinth oder einem anderen Launcher übernehmen.": "Bring over instances from Prism, Modrinth or another launcher."
 }

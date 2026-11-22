@@ -10,7 +10,7 @@ use crate::view::accounts::off;
 use crate::view::commands::{self, Command, Want, can_want, want, want_blocked};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
-use crate::view::kit::badge::{Tone, badge, dot};
+use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::row::Row;
@@ -30,10 +30,6 @@ pub fn unread(m: &Model, read: u64) -> usize {
     let from = read.max(m.chat_base()) - m.chat_base();
     let own: Vec<String> = m.accounts.iter().map(|a| a.name.to_lowercase()).collect();
     m.chat.iter().skip(from as usize).filter(|l| l.from.as_ref().is_some_and(|f| !own.contains(&f.to_lowercase()))).count()
-}
-
-fn unread_label(n: usize) -> String {
-    if n > 99 { "99+".to_owned() } else { n.to_string() }
 }
 
 fn open_with_system(target: &std::ffi::OsStr) -> std::io::Result<()> {
@@ -258,7 +254,6 @@ impl Component for Sidebar {
         let width = if rail { frame::RAIL } else { *ui.sidebar_w.read() };
         let m = store.model.read();
         let mut drawer = ui.drawer;
-        let in_chat = now == Page::Chat;
         let go = move |to: Page| {
             move |_| {
                 drawer.set_if_modified(false);
@@ -282,40 +277,32 @@ impl Component for Sidebar {
         top = top.child(WithTip::new(tip, r.on_press(go(Page::Library))));
         let (r, tip) = row("nav.discover", tr("Entdecken"), Icon::Compass, now == Page::Discover, Some(Command::ShowDiscover));
         top = top.child(WithTip::new(tip, r.on_press(go(Page::Discover))));
+        let (r, tip) = row("nav.wardrobe", tr("Garderobe"), Icon::Shirt, now == Page::Wardrobe, Some(Command::ShowWardrobe));
+        top = top.child(WithTip::new(tip, r.on_press(go(Page::Wardrobe))));
+
+        let can_batch = can_want(&Want::NewBatch);
+        let on_batches = matches!(now, Page::Grid(Filter::All | Filter::Attention) | Page::Chat);
+        let new_chat = if now == Page::Chat { 0 } else { unread(&m, ui.chat.left_at.read().unwrap_or(0)) };
+        let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
+        if attention > 0 {
+            end = end.child(dot(t.attention));
+        }
+        if new_chat > 0 {
+            end = end.child(dot(t.accent));
+        }
+        if !batches.is_empty() {
+            end = end.child(count(&t, format!("{running}/{games}"), on_batches));
+        }
+        if !rail && can_batch {
+            end = end.child(Button::icon("nav.batches.add", Icon::Plus, tr("Neuer Batch")).plain().tip(Command::NewBatch.tip()).disabled(want_blocked(&Want::NewBatch)).on_press(move |_| {
+                want(store, Want::NewBatch);
+            }));
+        }
+        let mark = (attention > 0).then(|| dot(t.attention)).or_else(|| (new_chat > 0).then(|| dot(t.accent)));
+        let r = Row::new("nav.batches", tr("Batches")).glyph(Icon::Layers).height(frame::ROW).selected(on_batches).trailing(end).compact(rail, mark).on_press(go(Page::Grid(Filter::All)));
+        top = top.child(WithTip::new(Some(if rail { tr("Batches") } else { Command::ShowAll.tip() }), r));
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
-        let can_batch = can_want(&Want::NewBatch);
-        let people = !m.accounts.is_empty();
-        if rail {
-            if !batches.is_empty() || can_batch || people {
-                list = list.child(rect().width(Size::fill()).padding((space::S, space::M)).child(hairline(&t)));
-            }
-        } else if !batches.is_empty() || can_batch {
-            let add = Button::icon("nav.batches.add", Icon::Plus, tr("Neuer Batch")).plain().tip(Command::NewBatch.tip()).disabled(want_blocked(&Want::NewBatch)).on_press(move |_| {
-                want(store, Want::NewBatch);
-            });
-            list = list.child(
-                rect()
-                    .width(Size::fill())
-                    .padding((space::M, 0., 0., space::S))
-                    .horizontal()
-                    .cross_align(Alignment::Center)
-                    .child(rect().width(Size::flex(1.)).child(line(&t, tr("Batches"), font::CAPTION, t.text3).font_weight(FontWeight::SEMI_BOLD)))
-                    .content(Content::flex())
-                    .child(add),
-            );
-        }
-        if batches.len() >= 2 {
-            let selected = matches!(now, Page::Grid(Filter::All | Filter::Attention));
-            let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
-            if attention > 0 {
-                end = end.child(dot(t.attention));
-            }
-            end = end.child(count(&t, format!("{running}/{games}"), selected));
-            let mark = (attention > 0).then(|| dot(t.attention));
-            let r = Row::new("nav.all", tr("Alle Batches")).glyph(Icon::Grid).height(frame::ROW).selected(selected).trailing(end).compact(rail, mark).on_press(go(Page::Grid(Filter::All)));
-            list = list.child(WithTip::new(Some(if rail { tr("Alle Batches") } else { Command::ShowAll.tip() }), r));
-        }
         for b in batches {
             let to = Page::Grid(Filter::Batch(b.id.clone()));
             let selected = now == to;
@@ -340,24 +327,6 @@ impl Component for Sidebar {
                 .on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
             let tip = if rail { format!("{} · {}", b.name, b.hint) } else { b.hint.clone() };
             list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(tip), r)));
-        }
-        if m.batches.is_empty() && can_batch {
-            let blocked = want_blocked(&Want::NewBatch);
-            let r = Row::new("nav.batch.new", tr("Neuer Batch")).leading(icon(&t, Icon::Plus, iconsize::S, t.text3)).height(frame::ROW).compact(rail, None).on_press(move |_| {
-                want(store, Want::NewBatch);
-            });
-            list = list.child(WithTip::new(blocked.or_else(|| Some(Command::NewBatch.tip())), r));
-        }
-        if people {
-            let (r, tip) = row("nav.chat", tr("Chat"), Icon::Message, now == Page::Chat, Some(Command::OpenChat));
-            let new = if in_chat { 0 } else { unread(&m, ui.chat.left_at.read().unwrap_or(0)) };
-            let r = if new > 0 {
-                if rail { r.compact(true, Some(dot(t.accent))) } else { r.trailing(badge(&t, unread_label(new), Tone::Accent)) }
-            } else {
-                r
-            };
-            let tip = if new > 0 { Some(format!("{} · {}", tip.unwrap_or_else(|| tr("Chat")), trf("%lld ungelesen", &[&new]))) } else { tip };
-            list = list.child(WithTip::new(tip, r.on_press(go(Page::Chat))));
         }
 
         let mut foot = rect().width(Size::fill()).spacing(1.);

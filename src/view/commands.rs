@@ -24,6 +24,7 @@ pub enum Command {
     ShowStart,
     ShowLibrary,
     ShowDiscover,
+    ShowWardrobe,
     GoBack,
     GoForward,
     LibraryAsGrid,
@@ -187,7 +188,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 61] = [
+    pub const ALL: [Command; 62] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -216,6 +217,7 @@ impl Command {
         Command::ShowStart,
         Command::ShowLibrary,
         Command::ShowDiscover,
+        Command::ShowWardrobe,
         Command::GoBack,
         Command::GoForward,
         Command::LibraryAsGrid,
@@ -261,6 +263,7 @@ impl Command {
             Command::ShowStart => "ShowStart",
             Command::ShowLibrary => "ShowLibrary",
             Command::ShowDiscover => "ShowDiscover",
+            Command::ShowWardrobe => "ShowWardrobe",
             Command::GoBack => "GoBack",
             Command::GoForward => "GoForward",
             Command::LibraryAsGrid => "LibraryAsGrid",
@@ -324,6 +327,7 @@ impl Command {
             Command::ShowStart => tr("Start"),
             Command::ShowLibrary => tr("Instanzen"),
             Command::ShowDiscover => tr("Entdecken"),
+            Command::ShowWardrobe => tr("Garderobe"),
             Command::GoBack => tr("Zurück"),
             Command::GoForward => tr("Vor"),
             Command::LibraryAsGrid => tr("Instanzen als Raster"),
@@ -390,6 +394,7 @@ impl Command {
             Command::ShowStart => Icon::Home,
             Command::ShowLibrary => Icon::Package,
             Command::ShowDiscover => Icon::Compass,
+            Command::ShowWardrobe => Icon::Shirt,
             Command::GoBack => Icon::ChevronLeft,
             Command::GoForward => Icon::ChevronRight,
             Command::LibraryAsGrid => Icon::Grid,
@@ -424,6 +429,7 @@ impl Command {
             Command::ShowStart => k(Code::Digit1),
             Command::ShowLibrary => k(Code::Digit2),
             Command::ShowDiscover => k(Code::Digit3),
+            Command::ShowWardrobe => k(Code::Digit4),
             Command::GoBack => k(Code::BracketLeft),
             Command::GoForward => k(Code::BracketRight),
             Command::LibraryAsGrid => ka(Code::Digit1),
@@ -565,6 +571,7 @@ impl Command {
             Command::ShowStart => ui.page.set(Page::Start),
             Command::ShowLibrary => ui.page.set(Page::Library),
             Command::ShowDiscover => ui.page.set(Page::Discover),
+            Command::ShowWardrobe => ui.page.set(Page::Wardrobe),
             Command::GoBack => super::shell::history::back(store),
             Command::GoForward => super::shell::history::forward(store),
             Command::LibraryAsGrid => ui.library.mode.set(super::library::Mode::Grid),

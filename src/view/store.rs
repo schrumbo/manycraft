@@ -198,7 +198,7 @@ impl Store {
         spawn(async move {
             while let Ok(told) = told.recv().await {
                 match told {
-                    native::Told::Close if cfg!(target_os = "macos") => native::hide(None),
+                    native::Told::Close if cfg!(target_os = "macos") => native::hide(),
                     native::Told::Close => self.dispatch(Event::CloseWindow),
                     native::Told::Activated if self.model.peek().playing.is_some() => self.dispatch(Event::ShowGrid),
                     native::Told::Activated => {}
@@ -357,10 +357,10 @@ impl Store {
                     self.dispatch(Event::NotShown(Box::new(*unshown)));
                 }
             }
-            Effect::HideManager => native::hide(runtime.and_then(|rt| rt.borrow().place)),
+            Effect::HideManager => native::hide(),
             Effect::ShowManager => {
                 self.unstow();
-                native::show(runtime.as_ref().and_then(|rt| rt.borrow().place));
+                native::show();
                 if let Some(rt) = runtime {
                     self.spread(&rt);
                 }
@@ -659,7 +659,7 @@ impl Store {
             self.set_away();
             native::stow();
         } else {
-            native::hide(None);
+            native::hide();
         }
     }
 
