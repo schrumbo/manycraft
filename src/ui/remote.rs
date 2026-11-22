@@ -17,7 +17,7 @@ use crate::core::instance::{self as setup, Loader};
 use crate::core::javas::Java;
 use crate::core::options::LaunchOptions;
 use crate::core::versions::{GameVersion, Kind};
-use crate::core::modrinth::{self, Defaults, Hit, Support, Update};
+use crate::core::modrinth::{self, Defaults, Hit, Resolved, Support, Update};
 use crate::core::{mrpack, origin, shortcut};
 use crate::core::i18n::{tr, trf};
 use crate::core::launchers::{self, Found, Launcher, Library, Take, Unsupported};
@@ -618,47 +618,67 @@ pub fn loader_versions(loader: &Loader, game: &str) -> Result<install::Versions>
     install::loader_versions(loader, game)
 }
 
-/// `project_ids` resolved for `game_version` and `loader`, with their required dependencies.
-pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+/// `project_ids` resolved for `game_version` and `loader`, with their required dependencies; a dependency without a build
+/// for them is left out and named in `skipped`.
+pub fn resolve_noted(project_ids: &[String], game_version: &str, loader: &Loader) -> Result<Resolved> {
     if drive::fenced("modrinth resolve", project_ids.join(",")) && !drive::live() {
-        std::thread::sleep(CANNED_DELAY);
-        let hits = canned_hits(game_version);
-        let mut out: Vec<ModRef> = Vec::new();
-        for id in project_ids {
-            let id = match id.as_str() {
-                "YL57xq9U" => "iris",
-                "NRLPy2mk" => "global-packs",
-                other => other,
-            };
-            let hit = hits.iter().find(|h| h.project_id == id || h.slug == id).with_context(|| format!("{id} has no version for {game_version}"))?;
-            out.push(canned_ref(&hit.slug, &hit.title, game_version));
-            if hit.slug == "iris" {
-                out.push(canned_ref("sodium", "Sodium", game_version));
-            }
-        }
-        let mut seen = std::collections::HashSet::new();
-        out.retain(|m| seen.insert(m.project_id.clone()));
-        return Ok(out);
+        return canned_resolve(project_ids, game_version, true);
     }
     modrinth::resolve_with_dependencies(project_ids, game_version, loader)
 }
 
-/// `version` of the mod `title` for `game_version` and `loader`, whatever newer ones exist, with its required dependencies.
-pub fn resolve_version(version: &modrinth::Version, title: &str, game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+/// `project_ids` resolved for `game_version` and `loader`, with their required dependencies.
+pub fn resolve(project_ids: &[String], game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+    Ok(resolve_noted(project_ids, game_version, loader)?.mods)
+}
+
+/// `version` of the mod `title` for `game_version` and `loader`, whatever newer ones exist, with its required dependencies;
+/// one without a build for them is left out and named in `skipped`.
+pub fn resolve_version(version: &modrinth::Version, title: &str, game_version: &str, loader: &Loader) -> Result<Resolved> {
     if drive::fenced("modrinth resolve version", &version.id) && !drive::live() {
         let needs: Vec<String> = version.dependencies.iter().filter(|d| d.dependency_type == "required").filter_map(|d| d.project_id.clone()).collect();
         if needs.is_empty() {
             std::thread::sleep(CANNED_DELAY);
         }
-        let mut out = vec![modrinth::version_ref(title, version)?];
+        let mut found = Resolved { mods: vec![modrinth::version_ref(title, version)?], skipped: Vec::new() };
         if !needs.is_empty() {
-            out.extend(resolve(&needs, game_version, loader)?);
+            let deps = canned_resolve(&needs, game_version, false)?;
+            found.mods.extend(deps.mods);
+            found.skipped = deps.skipped;
         }
         let mut seen = std::collections::HashSet::new();
-        out.retain(|m| seen.insert(m.project_id.clone()));
-        return Ok(out);
+        found.mods.retain(|m| seen.insert(m.project_id.clone()));
+        return Ok(found);
     }
     modrinth::resolve_version(&version.id, game_version, loader)
+}
+
+fn canned_resolve(project_ids: &[String], game_version: &str, strict: bool) -> Result<Resolved> {
+    std::thread::sleep(CANNED_DELAY);
+    let hits = canned_hits(game_version);
+    let mut found = Resolved::default();
+    for id in project_ids {
+        let id = match id.as_str() {
+            "YL57xq9U" => "iris",
+            "NRLPy2mk" => "global-packs",
+            other => other,
+        };
+        let Some(hit) = hits.iter().find(|h| h.project_id == id || h.slug == id) else {
+            let note = format!("{id} has no version for {game_version}");
+            if strict {
+                bail!(note);
+            }
+            found.skipped.push(note);
+            continue;
+        };
+        found.mods.push(canned_ref(&hit.slug, &hit.title, game_version));
+        if hit.slug == "iris" {
+            found.mods.push(canned_ref("sodium", "Sodium", game_version));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    found.mods.retain(|m| seen.insert(m.project_id.clone()));
+    Ok(found)
 }
 
 /// The mods every new batch starts with, and why any is missing for `game_version`.
