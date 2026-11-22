@@ -2,6 +2,8 @@
 set -u
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/AppData/Local/Microsoft/WinGet/Links:$HOME/AppData/Local/Programs/herdr-core:$HOME/AppData/Local/agy/bin:$PATH"
 ROOT=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+HERE=$(git rev-parse --show-toplevel)
+BASE=$(git -C "$HERE" rev-parse --abbrev-ref HEAD)
 cmd="${1:-help}"
 [ $# -gt 0 ] && shift
 
@@ -47,7 +49,7 @@ case "$cmd" in
     fi
     [ "$(helpers)" -ge "${HERD_MAX:-4}" ] && { echo "already $(helpers) helpers; land or remove one first (HERD_MAX=${HERD_MAX:-4})" >&2; exit 1; }
     wt="$ROOT/.claude/worktrees/$name"
-    git -C "$ROOT" worktree add -q -b "herd/$name" "$wt" HEAD || exit 1
+    git -C "$ROOT" worktree add -q -b "herd/$name" "$wt" "$(git -C "$HERE" rev-parse HEAD)" || exit 1
     grep -qx '/.cargo/' "$ROOT/.git/info/exclude" || echo '/.cargo/' >> "$ROOT/.git/info/exclude"
     mkdir -p "$wt/.cargo"
     wrapper=$(command -v sccache || echo sccache); command -v cygpath >/dev/null && wrapper=$(cygpath -m "$wrapper")
@@ -76,6 +78,7 @@ if not any(os.path.normcase(os.path.normpath(x)) == os.path.normcase(wt) for x i
         screen=$(hc read --lines 30 "$name" 2>/dev/null)
         case "$screen" in
           *"trust this folder"*) hc keys "$name" down enter >/dev/null; break ;;
+          *"turn on Code Mode"*) hc keys "$name" enter >/dev/null ;;
           *"$name"*"Task:"*) break ;;
         esac
         perl -e 'select(undef,undef,undef,0.5)'
@@ -88,7 +91,7 @@ if not any(os.path.normcase(os.path.normpath(x)) == os.path.normcase(wt) for x i
   status)
     for wt in $(git -C "$ROOT" worktree list --porcelain | awk '/^worktree /{w=$2} /^branch refs\/heads\/herd\//{print w}'); do
       name=$(basename "$wt")
-      ahead=$(git -C "$ROOT" rev-list --count "main..herd/$name")
+      ahead=$(git -C "$ROOT" rev-list --count "$BASE..herd/$name")
       dirty=$(git -C "$wt" status --porcelain | grep -vc '^??')
       last=$(hc read --lines 40 "$name" 2>/dev/null | grep -vE '^\s*$|─|^❯|auto mode|Update available|Tip:|\[hc\]' | tail -1 | sed 's/^ *//' | cut -c1-110)
       printf '%-10s %2s commits  %2s uncommitted  %s\n' "$name" "$ahead" "$dirty" "${last:-(not running)}"
@@ -100,19 +103,19 @@ if not any(os.path.normcase(os.path.normpath(x)) == os.path.normcase(wt) for x i
     name="${1:?name}"
     branch="herd/$name"
     wt="$ROOT/.claude/worktrees/$name"
-    cd "$ROOT" || exit 1
+    cd "$HERE" || exit 1
     "$ROOT/.claude/bin/sync" | tail -1
-    [ "$(git rev-list --count "main..$branch")" -gt 0 ] || { echo "$branch has nothing to land" >&2; exit 1; }
+    [ "$(git rev-list --count "$BASE..$branch")" -gt 0 ] || { echo "$branch has nothing to land" >&2; exit 1; }
     [ -z "$(git -C "$wt" status --porcelain | grep -v '^??')" ] || { echo "$name has uncommitted changes:" >&2; git -C "$wt" status --short >&2; exit 1; }
     if [ -s "$ROOT/.git/info/personal" ]; then
-      hits=$(git diff "main...$branch" | grep -nE "^\+.*($(paste -sd'|' "$ROOT/.git/info/personal"))")
+      hits=$(git diff "$BASE...$branch" | grep -nE "^\+.*($(paste -sd'|' "$ROOT/.git/info/personal"))")
       [ -n "$hits" ] && { echo "personal data in the diff:" >&2; echo "$hits" | head -5 >&2; exit 1; }
     else
       echo "warning: no .git/info/personal (one pattern per line), personal data not checked" >&2
     fi
-    hits=$(git diff "main...$branch" -- src | grep -nE '^\+\s*//[^/!]')
+    hits=$(git diff "$BASE...$branch" -- src | grep -nE '^\+\s*//[^/!]')
     [ -n "$hits" ] && { echo "code comments in the diff:" >&2; echo "$hits" | head -5 >&2; exit 1; }
-    git diff --quiet && git diff --cached --quiet || { echo "main has uncommitted changes; commit them first" >&2; exit 1; }
+    git diff --quiet && git diff --cached --quiet || { echo "$BASE has uncommitted changes; commit them first" >&2; exit 1; }
     git merge --no-ff --no-commit "$branch" >/dev/null 2>&1
     conflicts=$(git diff --name-only --diff-filter=U)
     [ -n "$conflicts" ] && { echo "conflicts, resolve them, then commit and herd rm $name:" >&2; echo "$conflicts" >&2; exit 1; }
