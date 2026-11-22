@@ -77,6 +77,43 @@ pub fn add_mods(store: Store, id: String) {
     content::show(store, &id, tab);
 }
 
+thread_local! {
+    static REQUESTED: RefCell<Option<(String, Hit)>> = const { RefCell::new(None) };
+}
+
+/// Shows the page of the Modrinth project `project_id` over the Mods page of instance `id` on the tab of `kind`.
+pub fn open_project(store: Store, id: &str, kind: Kind, project_id: &str, title: &str) {
+    if store.model.peek().instance(id).is_none() {
+        return;
+    }
+    let hit = Hit {
+        title: title.to_owned(),
+        slug: project_id.to_owned(),
+        project_id: project_id.to_owned(),
+        description: String::new(),
+        downloads: 0,
+        icon_url: None,
+        author: String::new(),
+        versions: Vec::new(),
+        categories: Vec::new(),
+    };
+    REQUESTED.with(|r| *r.borrow_mut() = Some((id.to_owned(), hit)));
+    content::show(store, id, kind);
+}
+
+fn requested(id: &str) -> Option<Hit> {
+    REQUESTED.with(|r| {
+        let mut r = r.borrow_mut();
+        match r.take() {
+            Some((wanted, hit)) if wanted == id => Some(hit),
+            other => {
+                *r = other;
+                None
+            }
+        }
+    })
+}
+
 /// Shows the Mods page of instance `id` on the tab of `kind`.
 pub fn find(store: Store, id: &str, kind: Kind) {
     if store.model.peek().instance(id).is_some() {
@@ -2009,6 +2046,12 @@ impl Component for Browser {
         });
         let shelf = flow.clone();
         use_hook(move || shelf.shelf());
+        let asked = flow.clone();
+        use_side_effect_with_deps(&self.scope.made.as_ref().map(|m| m.id.clone()), move |id| {
+            if let Some(hit) = id.as_deref().and_then(requested) {
+                asked.open_page(hit);
+            }
+        });
         let back = *store.back.read();
         let retry = flow.clone();
         use_side_effect_with_deps(&back, move |_| retry.retry());

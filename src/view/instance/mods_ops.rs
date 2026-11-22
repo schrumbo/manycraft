@@ -11,6 +11,7 @@ use crate::app::event::Event as Msg;
 use crate::core::content::{self, Outcome, Trashed};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
+use crate::core::modrinth::Kind;
 use crate::ui::forms::{self, Problem};
 use crate::view::commands::{Extra, Shortcut};
 use crate::view::icons::Icon;
@@ -673,6 +674,15 @@ impl Ctx {
             let ctx = self.clone();
             items.push(Item::new("instance.mods.menu.fix", tr("Doppelte Mods bereinigen"), move |_| ctx.fix_all()).disabled(locked));
         }
+        if let [only] = chosen.as_slice()
+            && self.project_of(only).is_some()
+        {
+            let (show, web, file) = (self.clone(), self.clone(), only.clone());
+            let web_file = file.clone();
+            items.insert(0, Item::Separator);
+            items.insert(0, Item::new("instance.mods.menu.web", tr("Auf Modrinth öffnen"), move |_| web.show_on_modrinth(&web_file)));
+            items.insert(0, Item::new("instance.mods.menu.project", tr("Readme und Versionen"), move |_| show.show_project(&file)));
+        }
         let (copy, remove, files) = (self.clone(), self.clone(), chosen.clone());
         items.push(Item::Separator);
         items.push(Item::new("instance.mods.menu.copy", tr("Modliste kopieren"), move |_| copy.copy_list()));
@@ -690,6 +700,10 @@ impl Ctx {
         items.push(Item::new("instance.mods.more.copy", tr("Modliste kopieren"), move |_| ctx.copy_list()).disabled(data.entries().is_empty()));
         let ctx = self.clone();
         items.push(Item::new("instance.mods.more.bisect", tr("Fehlerhaften Mod finden…"), move |_| ctx.ask_bisect()).disabled(bisecting));
+        let ctx = self.clone();
+        items.push(Item::new("instance.mods.more.updates", tr("Nach Updates suchen"), move |_| ctx.check_updates()).disabled(self.why_updates().is_some()));
+        let ctx = self.clone();
+        items.push(Item::new("instance.mods.more.folder", tr("Mods-Ordner öffnen"), move |_| ctx.open_folder()));
         if data.analysis.dups > 0 {
             let ctx = self.clone();
             items.push(Item::Separator);
@@ -758,7 +772,43 @@ impl Ctx {
     }
 
     pub(super) fn check_updates(&self) {
-        super::updates::check(self);
+        super::updates::check(self, false);
+    }
+
+    pub(super) fn check_updates_quietly(&self) {
+        super::updates::check(self, true);
+    }
+
+    fn project_of(&self, file: &str) -> Option<(String, String)> {
+        let data = self.data.peek().clone();
+        let e = data.entry(file)?;
+        match &e.source {
+            content::Source::Modrinth { project_id, .. } => Some((project_id.clone(), e.name())),
+            content::Source::Own => None,
+        }
+    }
+
+    /// Shows the readme and versions of the Modrinth project `file` came from.
+    pub(super) fn show_project(&self, file: &str) {
+        if let Some((project, name)) = self.project_of(file) {
+            crate::view::sheets::browser::open_project(self.store, &self.id, Kind::Mod, &project, &name);
+        }
+    }
+
+    fn show_on_modrinth(&self, file: &str) {
+        if let Some((project, _)) = self.project_of(file) {
+            crate::view::kit::open_external("modrinth", format!("https://modrinth.com/{}/{project}", Kind::Mod.project_type()));
+        }
+    }
+
+    pub(super) fn open_folder(&self) {
+        let Some(dir) = self.store.model.peek().instance(&self.id).map(Instance::mods_dir) else { return };
+        spawn_in_window(async move {
+            let made = dir.clone();
+            if let Some(Ok(())) = off_ui(move || std::fs::create_dir_all(&made)).await {
+                native::open(&dir);
+            }
+        });
     }
 }
 

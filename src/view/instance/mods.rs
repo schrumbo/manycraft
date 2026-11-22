@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use freya::prelude::*;
@@ -18,7 +18,7 @@ use crate::view::kit::{Bounds, off_ui, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use list::{Data, Row, Sort};
-use row::{INSET, ModRow, ROW, Section, Trail};
+use row::{ModRow, ROW, Section, Trail};
 
 #[path = "mods_list.rs"]
 mod list;
@@ -116,11 +116,14 @@ struct Cache {
     query: String,
     sort: Sort,
     rows: Rc<Vec<Row>>,
+    marked: updates::Found,
+    marks: Rc<HashMap<String, String>>,
 }
 
 struct View {
     data: Rc<Data>,
     rows: Rc<Vec<Row>>,
+    marks: Rc<HashMap<String, String>>,
     selected: Rc<HashSet<String>>,
     cursor: Option<String>,
     locked: Option<String>,
@@ -129,7 +132,7 @@ struct View {
 
 impl PartialEq for View {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.data, &other.data) && Rc::ptr_eq(&self.rows, &other.rows) && Rc::ptr_eq(&self.selected, &other.selected) && self.cursor == other.cursor && self.locked == other.locked
+        Rc::ptr_eq(&self.data, &other.data) && Rc::ptr_eq(&self.rows, &other.rows) && Rc::ptr_eq(&self.marks, &other.marks) && Rc::ptr_eq(&self.selected, &other.selected) && self.cursor == other.cursor && self.locked == other.locked
     }
 }
 
@@ -149,6 +152,10 @@ impl View {
                 };
                 let selected = self.selected.contains(&e.file);
                 let cursor = self.cursor.as_deref() == Some(e.file.as_str());
+                let project = match &e.source {
+                    crate::core::content::Source::Modrinth { project_id, .. } => Some(project_id),
+                    crate::core::content::Source::Own => None,
+                };
                 rect()
                     .key(&e.file)
                     .width(Size::fill())
@@ -168,6 +175,8 @@ impl View {
                         cursor,
                         locked: self.locked.clone(),
                         trail,
+                        project: project.is_some(),
+                        update: project.and_then(|id| self.marks.get(id).cloned()),
                     })
                     .into_element()
             }
@@ -254,12 +263,20 @@ impl Component for Mods {
             });
         });
 
+        let quiet = ctx.clone();
+        use_side_effect_with_deps(&(made.id.clone(), list::key_of(made)), move |_| quiet.check_updates_quietly());
+
         let scan = ctx.data.read().clone();
+        let looked = ctx.found.read().clone();
         let text = ctx.query.read().clone();
         let needle = text.trim().to_lowercase();
         let order = *ctx.sort.read();
-        let rows = {
+        let (rows, marks) = {
             let mut c = cache.borrow_mut();
+            if c.marked != looked {
+                c.marks = Rc::new(updates::marks(&looked));
+                c.marked = looked;
+            }
             let fresh = c.data.as_ref().is_some_and(|d| Rc::ptr_eq(d, &scan)) && c.query == needle && c.sort == order;
             if !fresh {
                 c.rows = Rc::new(list::rows(&scan, &needle, order));
@@ -267,7 +284,7 @@ impl Component for Mods {
                 c.query = needle.clone();
                 c.sort = order;
             }
-            c.rows.clone()
+            (c.rows.clone(), c.marks.clone())
         };
         let chosen = ctx.selected.read().clone();
         let focused = list_focus.is_focused();
@@ -336,13 +353,6 @@ impl Component for Mods {
                 })
         };
 
-        let updates_why = made.mods.is_empty().then(|| tr("Keine Mods von Modrinth."));
-        let checking = matches!(*found.read(), updates::Found::Checking);
-        let check = {
-            let ctx = ctx.clone();
-            Button::new("instance.mods.updates", tr("Updates prüfen")).glyph(Icon::Refresh).busy(checking).disabled(updates_why).on_press(move |_| ctx.check_updates())
-        };
-
         let mut more_bounds = use_state(Bounds::default);
         let more = {
             let ctx = ctx.clone();
@@ -351,7 +361,7 @@ impl Component for Mods {
             }))
         };
 
-        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(check).child(more);
+        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(more);
         if !scan.entries().is_empty() || loading {
             let run = add.run.clone();
             bar = bar.child(Button::new("instance.mods.add", add.label.clone()).primary().glyph(add.glyph).disabled(add.disabled.clone()).on_press(move |_| run.call(())));
@@ -380,7 +390,7 @@ impl Component for Mods {
             let button = Button::new("instance.mods.empty.clear", tr("Filter löschen")).on_press(move |_| clear.clear_filter()).into_element();
             empty(&t, Icon::Search, trf("Kein Mod passt zu „%@“.", &[&text.trim()]), String::new(), Some(button))
         } else {
-            let view = View { data: scan.clone(), rows: rows.clone(), selected: chosen.clone(), cursor: at, locked: lock.clone(), ctx: ctx.clone() };
+            let view = View { data: scan.clone(), rows: rows.clone(), marks: marks.clone(), selected: chosen.clone(), cursor: at, locked: lock.clone(), ctx: ctx.clone() };
             let (view_h, view_b) = (ctx.viewport, ctx.bounds);
             VirtualScrollView::new_with_data_controlled(view, |item, view: &View| view.item(item.index), ctx.scroll)
                 .length(rows.len())
@@ -404,10 +414,6 @@ impl Component for Mods {
                 .a11y_alt(tr("Mods"))
                 .width(Size::fill())
                 .height(Size::flex(1.))
-                .padding(INSET)
-                .corner_radius(t.shape.tile)
-                .overflow(Overflow::Clip)
-                .border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner))
                 .on_key_down(move |e: Event<KeyboardEventData>| {
                     if keys.key_down(&e, keys.list_focus.is_focused()) {
                         e.stop_propagation();

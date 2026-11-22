@@ -1,36 +1,23 @@
 use freya::prelude::*;
-use uuid::Uuid;
 
-use super::{Facts, actions, links, uptime_text, use_minute};
-use crate::app::event::Event as AppEvent;
+use super::{Facts, actions, links, use_minute};
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::install;
 use crate::core::instance::{Instance, Loader};
-use crate::ui::forms;
 use crate::ui::remote;
-use crate::view::commands::{Shortcut, Want, want_blocked};
+use crate::view::commands::Shortcut;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
-use crate::view::kit::menu::{self, Face, Item, Menu};
-use crate::view::kit::text::{caption, hairline, line, spacer};
-use crate::view::kit::{Bounds, after, off_ui, ring, use_theme};
+use crate::view::kit::menu::{self, Item, Menu};
+use crate::view::kit::text::{caption, line};
+use crate::view::kit::{Bounds, off_ui, ring, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, frame, iconsize, space};
+use crate::view::theme::{Theme, control, font, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Worlds {
-    count: usize,
-    last: Option<i64>,
-}
-
-fn played(ms: i64) -> Option<String> {
-    Some(crate::ui::instance_files::when(ms / 1000)).filter(|s| !s.is_empty())
-}
 
 fn status(t: &Theme, store: Store, f: &Facts, id: &str) -> (Color, String) {
     if let Some(b) = store.ui.instance.busy.read().get(id) {
@@ -76,7 +63,7 @@ fn batch_links(t: &Theme, batches: &[(String, String)]) -> Option<Element> {
         return None;
     }
     let intro = if batches.len() == 1 { tr("In 1 Batch:") } else { trf("In %lld Batches:", &[&batches.len()]) };
-    let mut row = rect().horizontal().width(Size::fill()).cross_align(Alignment::Center).spacing(space::XS).child(line(t, intro, font::CALLOUT, t.text2));
+    let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS).child(line(t, intro, font::CALLOUT, t.text2));
     for (id, name) in batches {
         row = row.child(Link { id: id.clone(), name: name.clone(), to: Page::Grid(Filter::Batch(id.clone())) });
     }
@@ -129,27 +116,6 @@ impl Component for Link {
     }
 }
 
-fn fact(t: &Theme, label: String, value: String) -> Element {
-    rect()
-        .width(Size::fill())
-        .horizontal()
-        .cross_align(Alignment::Center)
-        .spacing(space::S)
-        .child(line(t, label, font::CALLOUT, t.text2))
-        .child(spacer())
-        .child(line(t, value, font::CALLOUT, t.text1).max_lines(1).text_overflow(TextOverflow::Ellipsis))
-        .content(Content::flex())
-        .into_element()
-}
-
-fn loader_value(made: &Instance) -> String {
-    match (&made.loader, made.loader.version()) {
-        (Loader::Vanilla, _) => tr("Vanilla"),
-        (l, Some(v)) => format!("{} {v}", l.name()),
-        (l, None) => trf("%@ · neueste", &[&l.name()]),
-    }
-}
-
 fn use_loader_news(made: &Instance) -> Option<String> {
     let mut news = use_state(|| None::<(String, String)>);
     let key = format!("{}|{}|{}|{}", made.id, made.game_version, made.loader.name(), made.loader.version().unwrap_or_default());
@@ -167,27 +133,6 @@ fn use_loader_news(made: &Instance) -> Option<String> {
         });
     });
     news.read().as_ref().filter(|(k, _)| *k == key).map(|(_, v)| v.clone())
-}
-
-fn use_worlds(store: Store, made: &Instance) -> Option<Worlds> {
-    let mut found = use_state(|| None::<(String, Worlds)>);
-    let changed = *store.ui.instance.changed.read();
-    let deps = (made.id.clone(), changed);
-    let dir = made.dir();
-    use_side_effect_with_deps(&deps, move |(id, _)| {
-        let (id, dir) = (id.clone(), dir.clone());
-        spawn(async move {
-            let read = off_ui(move || {
-                let list = crate::core::worlds::list(&dir);
-                Worlds { count: list.len(), last: list.iter().filter_map(|w| w.level.last_played).max() }
-            })
-            .await;
-            if let Some(w) = read {
-                found.set(Some((id, w)));
-            }
-        });
-    });
-    found.read().as_ref().filter(|(id, _)| *id == made.id).map(|(_, w)| *w)
 }
 
 /// The page's notices for instance `id`: why its last change was not saved, with a button that hides it.
@@ -278,77 +223,7 @@ impl Component for More {
     }
 }
 
-/// The column beside the tabs: what runs, the facts and what to do with the instance.
-#[derive(PartialEq)]
-pub struct Inspector {
-    pub id: String,
-}
-
-impl Component for Inspector {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = use_store();
-        let f = super::facts(&store.model.read(), &self.id);
-        use_minute(store, true);
-        let fallback = Instance::new("", "", Loader::Vanilla);
-        let made = f.as_ref().map_or(&fallback, |f| &f.made).clone();
-        let news = use_loader_news(&made);
-        let worlds = use_worlds(store, &made);
-        let Some(f) = f else { return rect().into_element() };
-        let (color, text) = status(&t, store, &f, &self.id);
-
-        let mut col = rect().width(Size::fill()).padding(space::L).spacing(space::M);
-        col = col.child(status_row(&t, color, text));
-        if let Some(links) = batch_links(&t, &f.batches) {
-            col = col.child(links);
-        }
-        for n in notices(&t, store, &self.id) {
-            col = col.child(n);
-        }
-        col = col.child(hairline(&t));
-        let mut list = rect().width(Size::fill()).spacing(space::S);
-        list = list.child(fact(&t, tr("Minecraft"), f.made.game_version.clone())).child(fact(&t, tr("Loader"), loader_value(&f.made)));
-        if f.made.loader.takes_mods() {
-            list = list.child(fact(&t, tr("Mods"), (f.made.mods.len() + f.made.local_mods.len()).to_string()));
-        }
-        if let Some(w) = worlds {
-            list = list.child(fact(&t, tr("Welten"), w.count.to_string()));
-            if let Some(text) = w.last.and_then(played) {
-                list = list.child(fact(&t, tr("Zuletzt gespielt"), text));
-            }
-        }
-        list = list.child(fact(&t, tr("Arbeitsspeicher"), forms::memory_label(f.made.memory())));
-        col = col.child(list);
-        if let Some(newest) = news {
-            let (id, to) = (f.made.id.clone(), newest.clone());
-            col = col.child(
-                rect()
-                    .width(Size::fill())
-                    .horizontal()
-                    .cross_align(Alignment::Center)
-                    .spacing(space::XS)
-                    .child(icon(&t, Icon::Download, iconsize::S, t.accent_text))
-                    .child(line(&t, trf("%@ %@ ist verfügbar.", &[&f.made.loader.name(), &newest]), font::CALLOUT, t.text1).width(Size::flex(1.)))
-                    .content(Content::flex())
-                    .child(Button::new("instance.loader.update", tr("Aktualisieren")).plain().on_press(move |_| actions::ask_loader(store, &id, &to))),
-            );
-        }
-        if let Some(hint) = companion_hint(&f.made.game_version) {
-            col = col.child(caption(&t, hint));
-        }
-        col = col.child(hairline(&t));
-        let mut acts = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS);
-        for a in actions::all(store, &f).into_iter().filter(|a| matches!(a.key, "folder" | "clone")) {
-            let run = a.run.clone();
-            acts = acts.child(Button::new(format!("instance.{}", a.key), a.label).glyph(a.glyph).plain().disabled(a.disabled).on_press(move |_| run.call(())));
-        }
-        acts = acts.child(More { facts: f.clone(), rename: false, all: false });
-        col = col.child(acts);
-        ScrollView::new().width(Size::fill()).height(Size::fill()).drag_scrolling(false).child(col).into_element()
-    }
-}
-
-/// The inspector folded into one line above the tabs, for narrow windows: status and a menu of actions.
+/// The line above the tabs: what the instance is doing, the batches it is in, news for its loader and a menu of actions.
 #[derive(PartialEq)]
 pub struct Strip {
     pub id: String,
@@ -359,9 +234,19 @@ impl Component for Strip {
         let t = use_theme();
         let store = use_store();
         use_minute(store, true);
-        let Some(f) = super::facts(&store.model.read(), &self.id) else { return rect().into_element() };
+        let f = super::facts(&store.model.read(), &self.id);
+        let fallback = Instance::new("", "", Loader::Vanilla);
+        let news = use_loader_news(f.as_ref().map_or(&fallback, |f| &f.made));
+        let Some(f) = f else { return rect().into_element() };
         let (color, text) = status(&t, store, &f, &self.id);
-        rect()
+        let mut left = rect().width(Size::flex(1.)).horizontal().cross_align(Alignment::Center).spacing(space::L).child(status_row(&t, color, text));
+        if let Some(links) = batch_links(&t, &f.batches) {
+            left = left.child(links);
+        }
+        if let Some(hint) = companion_hint(&f.made.game_version) {
+            left = left.child(caption(&t, hint));
+        }
+        let mut strip = rect()
             .width(Size::fill())
             .height(Size::px(control::L + space::S * 2.))
             .padding((0., space::L))
@@ -369,9 +254,15 @@ impl Component for Strip {
             .cross_align(Alignment::Center)
             .spacing(space::S)
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }).alignment(BorderAlignment::Inner))
-            .child(rect().width(Size::flex(1.)).child(status_row(&t, color, text)))
-            .content(Content::flex())
-            .child(More { facts: f.clone(), rename: true, all: true })
-            .into_element()
+            .child(left)
+            .content(Content::flex());
+        if let Some(newest) = news {
+            let (id, to) = (f.made.id.clone(), newest.clone());
+            strip = strip
+                .child(icon(&t, Icon::Download, iconsize::S, t.accent_text))
+                .child(line(&t, trf("%@ %@ ist verfügbar.", &[&f.made.loader.name(), &newest]), font::CALLOUT, t.text1).max_lines(1))
+                .child(Button::new("instance.loader.update", tr("Aktualisieren")).plain().on_press(move |_| actions::ask_loader(store, &id, &to)));
+        }
+        strip.child(More { facts: f.clone(), rename: true, all: true }).into_element()
     }
 }

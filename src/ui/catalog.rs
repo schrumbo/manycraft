@@ -467,6 +467,10 @@ fn canned_details(hit: &Hit) -> Details {
         updated: "2026-11-02T10:15:00Z".into(),
         gallery: (1..=3).map(|n| Shot { url: format!("https://cdn.modrinth.com/canned/{}-{n}.png", hit.slug), title: Some(format!("Bild {n}")), featured: n == 1, ordering: n }).collect(),
         icon_url: None,
+        source_url: Some(format!("https://github.com/example/{}", hit.slug)),
+        wiki_url: Some("https://example.org/wiki".into()),
+        issues_url: Some(format!("https://github.com/example/{}/issues", hit.slug)),
+        discord_url: None,
     }
 }
 

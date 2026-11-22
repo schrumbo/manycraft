@@ -8,19 +8,21 @@ use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use super::Ctx;
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
+use crate::view::kit::badge::{Tone, badge};
 use crate::view::kit::button::Button;
 use crate::view::kit::switch::Switch;
-use crate::view::kit::text::{caption, line, strong};
+use crate::view::kit::text::{line, strong};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::use_theme;
-use crate::view::theme::{control, font, frame, iconsize, space};
+use crate::view::theme::{control, font, iconsize, space};
 
+/// The side of a mod's icon.
+pub(in crate::view::instance) const FACE: f32 = control::L + space::S;
 /// The height of one row of the list.
-pub(super) const ROW: f32 = control::L + space::S;
-const FACE: f32 = control::M;
+pub(super) const ROW: f32 = FACE + space::M;
 const THUMB: u32 = 64;
 const MAX_ICON_BYTES: u64 = 4 * 1024 * 1024;
 const CACHED: usize = 600;
@@ -80,8 +82,9 @@ pub(in crate::view::instance) async fn load(path: PathBuf) -> Option<ImageHandle
 
 /// The icon of a mod, decoded off the UI thread and kept; a glyph while it loads or when there is none.
 #[derive(PartialEq)]
-pub(super) struct Face {
+pub(in crate::view::instance) struct Face {
     pub icon: Option<PathBuf>,
+    pub glyph: Icon,
 }
 
 impl Component for Face {
@@ -105,10 +108,10 @@ impl Component for Face {
                 }
             }
         });
-        let slot = rect().width(Size::px(FACE)).height(Size::px(FACE)).corner_radius(t.shape.control).overflow(Overflow::Clip).center();
+        let slot = rect().width(Size::px(FACE)).height(Size::px(FACE)).corner_radius(t.shape.tile).overflow(Overflow::Clip).center();
         match shown.read().clone() {
             Some(face) => slot.child(image(face).width(Size::px(FACE)).height(Size::px(FACE)).aspect_ratio(AspectRatio::Max).image_cover(ImageCover::Center)),
-            None => slot.background(t.raised).child(icon(&t, Icon::Layers, iconsize::S, t.text3)),
+            None => slot.background(t.raised).child(icon(&t, self.glyph, iconsize::M, t.text3)),
         }
     }
 }
@@ -146,6 +149,8 @@ pub(super) struct ModRow {
     pub cursor: bool,
     pub locked: Option<String>,
     pub trail: Trail,
+    pub project: bool,
+    pub update: Option<String>,
 }
 
 impl Component for ModRow {
@@ -185,7 +190,7 @@ impl Component for ModRow {
                 e.stop_propagation();
                 press_ctx.click(&press_file);
             })
-            .child(rect().opacity(dim).child(Face { icon: self.icon.clone() }))
+            .child(rect().opacity(dim).child(Face { icon: self.icon.clone(), glyph: Icon::Layers }))
             .child(text)
             .content(Content::flex());
 
@@ -219,6 +224,20 @@ impl Component for ModRow {
         if self.cursor && !self.selected {
             row = row.border(Border::new().fill(t.focus).width(1.).alignment(BorderAlignment::Inner));
         }
+        if let Some(label) = &self.update {
+            let tip = if label.is_empty() { tr("Neue Version verfügbar") } else { trf("Neu: %@", &[label]) };
+            row = row.child(WithTip::new(Some(tip), badge(&t, tr("Update"), Tone::Accent)));
+        }
+        if self.project {
+            let shown = *hovered.read() || self.selected || self.cursor;
+            let slot = rect().width(Size::px(control::M)).height(Size::px(control::M));
+            let (ctx, file) = (ctx.clone(), file.clone());
+            row = row.child(if shown {
+                slot.child(Button::icon(format!("instance.mods.info.{lower}"), Icon::Info, tr("Readme und Details")).plain().on_press(move |_| ctx.show_project(&file)))
+            } else {
+                slot
+            });
+        }
         match &self.trail {
             Trail::None => {}
             Trail::Fix { newest } => {
@@ -241,6 +260,3 @@ impl Component for ModRow {
         row.content(Content::flex())
     }
 }
-
-/// Space around the list inside its frame, so the first and last row do not touch its border.
-pub(super) const INSET: f32 = frame::RING_GAP;

@@ -91,8 +91,6 @@ pub mod frame {
     /// Rows a long menu shows before it scrolls.
     pub const MENU_ROWS: usize = 12;
     /// The content width from which the instance page shows its inspector beside the tabs.
-    pub const INSPECTOR_SPLIT: f32 = 860.;
-    pub const INSPECTOR: f32 = 300.;
     /// The widest the content of an instance tab grows.
     pub const CONTENT_MAX: f32 = 760.;
     /// The width of the welcome card on the first run.

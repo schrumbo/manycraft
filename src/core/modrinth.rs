@@ -324,6 +324,15 @@ pub struct Details {
     pub gallery: Vec<Shot>,
     #[serde(default)]
     pub icon_url: Option<String>,
+    /// The project's own pages: where its source, wiki, bug tracker and Discord live.
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub wiki_url: Option<String>,
+    #[serde(default)]
+    pub issues_url: Option<String>,
+    #[serde(default)]
+    pub discord_url: Option<String>,
 }
 
 /// One picture of a project's gallery.

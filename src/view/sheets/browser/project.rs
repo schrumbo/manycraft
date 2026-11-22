@@ -436,6 +436,10 @@ impl Component for ProjectPage {
             }
         };
 
+        let loaded_icon = match &*pg.details.read() {
+            Load::Ready(body) => body.details.icon_url.clone(),
+            _ => None,
+        };
         let (downloads, updated, saved) = match &*pg.details.read() {
             Load::Ready(body) => (body.details.downloads, Some(day(&body.details.updated)), body.saved),
             _ => (hit.downloads, None, None),
@@ -468,7 +472,7 @@ impl Component for ProjectPage {
             .cross_align(Alignment::Center)
             .spacing(space::M)
             .content(Content::flex())
-            .child(Face { pid: hit.project_id.clone(), url: hit.icon_url.clone() })
+            .child(Face { pid: hit.project_id.clone(), url: hit.icon_url.clone().or(loaded_icon) })
             .child(heading)
             .child(trail_view(&t, &self.flow, hit, &trail, None, hint));
 
@@ -563,9 +567,31 @@ fn about(t: &Theme, pg: &Pg) -> Element {
             if !body.details.description.is_empty() {
                 column = column.child(para(t, body.details.description.clone(), font::BODY, t.text2));
             }
-            column.child(markdown::view(t, &body.blocks, t.text1)).into_element()
+            column.child(links(pg, &body.details)).child(markdown::view(t, &body.blocks, t.text1)).into_element()
         }
     }
+}
+
+fn web_url(url: &Option<String>) -> Option<String> {
+    url.as_deref().map(str::trim).filter(|u| u.starts_with("https://")).map(str::to_owned)
+}
+
+/// The project's own pages next to its page on Modrinth.
+fn links(pg: &Pg, details: &Details) -> Element {
+    let mut row = rect().width(Size::fill()).horizontal().spacing(space::XS).content(Content::wrap_spacing(space::XS));
+    let pages = [
+        ("source", tr("Quellcode"), web_url(&details.source_url)),
+        ("wiki", tr("Wiki"), web_url(&details.wiki_url)),
+        ("issues", tr("Fehler melden"), web_url(&details.issues_url)),
+        ("discord", tr("Discord"), web_url(&details.discord_url)),
+    ];
+    for (key, label, url) in pages {
+        if let Some(url) = url {
+            row = row.child(Button::new(format!("browser.project.link.{key}"), label).glyph(Icon::External).on_press(move |_| open_external(key, url.clone())));
+        }
+    }
+    let url = web_page(pg, false);
+    row.child(Button::new("browser.project.link.modrinth", tr("Auf Modrinth")).glyph(Icon::External).on_press(move |_| open_external("modrinth", url.clone()))).into_element()
 }
 
 fn gallery(t: &Theme, pg: &Pg) -> Element {

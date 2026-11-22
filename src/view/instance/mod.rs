@@ -29,7 +29,7 @@ use uuid::Uuid;
 pub use self::icon::InstanceIcon;
 pub use self::play::{Hero, Mini, play_now};
 pub use self::title::{Tabs, Title};
-use self::inspector::{Inspector, Strip};
+use self::inspector::Strip;
 use super::commands::{Extra, Shortcut};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
@@ -44,8 +44,6 @@ use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::core::modrinth::Kind;
 
-const SPLIT: f32 = frame::INSPECTOR_SPLIT;
-const INSPECTOR: f32 = frame::INSPECTOR;
 const CONTENT_MAX: f32 = frame::CONTENT_MAX;
 
 const TAB_DIGITS: [Code; 7] = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5, Code::Digit6, Code::Digit7];
@@ -399,28 +397,20 @@ impl Component for InstancePage {
             return gone(&t, store, m.loaded).into_element();
         };
         let room = ui.window.read().0 - ui.sidebar_room();
-        let wide = room >= SPLIT;
-        let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
-            rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, store, tab, f.clone())),
-        );
-        let mut left = rect().width(Size::flex(1.)).height(Size::fill());
-        if !wide {
-            left = left.child(Strip { id: self.id.clone() });
-            for n in inspector::notices(&t, store, &self.id) {
-                left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
-            }
+        let body = rect().width(Size::fill()).height(Size::fill()).child(tab_body(&t, store, tab, f.clone()));
+        let content = if matches!(tab, Tab::Mods | Tab::Packs | Tab::Shaders) {
+            rect().width(Size::fill()).height(Size::flex(1.)).child(body)
+        } else {
+            rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(body.max_width(Size::px(CONTENT_MAX)))
+        };
+        let mut page = rect().width(Size::fill()).height(Size::fill()).child(Strip { id: self.id.clone() });
+        for n in inspector::notices(&t, store, &self.id) {
+            page = page.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
         }
         if room < frame::TOOLBAR_TABS {
-            left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
+            page = page.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
         }
-        left = left.child(content).content(Content::flex());
-        let mut page = rect().width(Size::fill()).height(Size::fill()).horizontal().child(left);
-        if wide {
-            page = page
-                .child(rect().width(Size::px(1.)).height(Size::fill()).background(t.separator))
-                .child(rect().width(Size::px(INSPECTOR)).height(Size::fill()).background(t.sidebar).child(Inspector { id: self.id.clone() }));
-        }
-        page.content(Content::flex()).into_element()
+        page.child(content).content(Content::flex()).into_element()
     }
 }
 
