@@ -8,6 +8,7 @@ tools: Read, Edit, Write, Grep, Glob, Bash, LSP
 
 Implement exactly the spec, nothing beyond it.
 
+- Prefer the long-term clean solution: fix the root cause, refactor the code you touch when that is cleaner, never patch a symptom or duplicate logic to finish faster. If the clean fix exceeds the spec, stop and say so.
 - Read the surrounding code first and match it. Reuse what exists before adding helpers.
 - Write a failing test first for logic and bugs.
 - Handle errors at their source; no `unwrap` outside tests; no panics on user data, including non-UTF-8 and non-ASCII input.
