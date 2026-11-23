@@ -257,6 +257,7 @@ mod tests {
         let (mut m, key, s) = connection_only();
         connected(&mut m, &s, &key);
         report(&mut m, &s, rules(&key, "Be kind."));
+        run(&mut m, &s, Instant::now(), Event::AnswerRules { keys: vec![key.clone()], accept: false });
         report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example:25565"), Some(DisconnectCause::PackDeclined)));
         assert!(matches!(&m.games[&key].phase, Phase::Disconnected { reason, .. } if reason.contains("Regeln") && !reason.contains("Ressourcenpaket")), "{:?}", m.games[&key].phase);
     }

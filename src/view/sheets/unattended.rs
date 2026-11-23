@@ -18,14 +18,14 @@ pub fn set(u: Unattended) -> bool {
 
 /// The run mode choice, the screenshot interval of hidden games and the resource pack policy, all for `game`'s version;
 /// `proxied` counts the picked accounts with a proxy.
-pub fn section(t: &Theme, state: State<Unattended>, game: &str, running: bool, lock: &Option<String>, proxied: usize) -> Element {
+pub fn section(t: &Theme, state: State<Unattended>, advanced: State<bool>, game: &str, running: bool, lock: &Option<String>, proxied: usize) -> Element {
     let u = *state.read();
-    let mut column = rect().width(Size::fill()).spacing(space::M).child(modes(t, state, u, game, running, lock, proxied));
+    let mut column = rect().width(Size::fill()).spacing(space::M).child(modes(t, state, advanced, u, game, running, lock, proxied));
     if u.mode == RunMode::Hidden {
-        column = column.child(screenshots(t, state, u, lock));
+        column = column.child(screenshots(t, state, advanced, u, lock));
     }
     if u.mode != RunMode::Connection {
-        column = column.child(packs(t, state, u, running, lock));
+        column = column.child(packs(t, state, advanced, u, running, lock));
     }
     column.into_element()
 }
@@ -65,7 +65,7 @@ fn sentence(mode: RunMode) -> String {
     }
 }
 
-fn modes(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, running: bool, lock: &Option<String>, proxied: usize) -> Element {
+fn modes(t: &Theme, mut state: State<Unattended>, mut advanced: State<bool>, u: Unattended, game: &str, running: bool, lock: &Option<String>, proxied: usize) -> Element {
     let all = offered();
     let segments = all
         .iter()
@@ -91,6 +91,7 @@ fn modes(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, run
             && (*m == state.peek().mode || unsupported(*m, &game_owned).is_none())
         {
             state.write().mode = *m;
+            advanced.set(true);
         }
     });
     let mut text = sentence(u.mode);
@@ -110,7 +111,7 @@ fn modes(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, run
     block.into_element()
 }
 
-fn screenshots(t: &Theme, mut state: State<Unattended>, u: Unattended, lock: &Option<String>) -> Element {
+fn screenshots(t: &Theme, mut state: State<Unattended>, mut advanced: State<bool>, u: Unattended, lock: &Option<String>) -> Element {
     let choices: Vec<Option<u32>> = std::iter::once(None).chain(SCREENSHOT_MINUTES.into_iter().map(Some)).collect();
     let labels = choices
         .iter()
@@ -124,13 +125,14 @@ fn screenshots(t: &Theme, mut state: State<Unattended>, u: Unattended, lock: &Op
     let picker = Select::new("batch.screenshots", tr("Screenshots"), labels, at).width(FIELD_W - space::L).disabled(lock.clone()).on_choose(move |i| {
         if let Some(c) = choices.get(i) {
             state.write().screenshots = *c;
+            advanced.set(true);
         }
     });
     let text = tr("Beim Betreten des Servers kommt einer von selbst, weitere über die Kachel. Jeder Screenshot kostet kurz Leistung.");
     block().child(title_text(t, tr("Screenshots"))).child(picker).child(hint(t, text)).into_element()
 }
 
-fn packs(t: &Theme, mut state: State<Unattended>, u: Unattended, running: bool, lock: &Option<String>) -> Element {
+fn packs(t: &Theme, mut state: State<Unattended>, mut advanced: State<bool>, u: Unattended, running: bool, lock: &Option<String>) -> Element {
     let name = |p: Packs| match p {
         Packs::Ask => tr("Fragen"),
         Packs::Accept => tr("Annehmen"),
@@ -155,6 +157,7 @@ fn packs(t: &Theme, mut state: State<Unattended>, u: Unattended, running: bool, 
     let control = Segmented::new(tr("Ressourcenpakete vom Server"), segments, chosen).disabled(lock.clone()).on_choose(move |n| {
         if let Some(p) = Packs::ALL.get(n) {
             state.write().packs = *p;
+            advanced.set(true);
         }
     });
     let text = match u.packs {
