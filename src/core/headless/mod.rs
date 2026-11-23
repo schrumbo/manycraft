@@ -1,7 +1,7 @@
 //! Connection-only accounts: a small protocol client keeps an account on a server without starting the game.
 //! It reports to the same channel as a game's companion, so the rest of the app treats both alike.
 //!
-//! The client is honest: it says it is `manycraft`, never moves, and sends only what the protocol asks of it (keep-alive,
+//! The client reports the `vanilla` brand like an unmodded game, never moves, and sends only what the protocol asks of it (keep-alive,
 //! pong, teleport and chunk batch confirmations, the loaded world, client settings with view distance 2, configuration
 //! answers) plus what the user wrote. It speaks Minecraft 26.3 (protocol 777). Packet ids and the English texts it
 //! shows come from the game's own data generator: `.claude/bin/headless-packets` regenerates `v777.rs` from a server jar.
