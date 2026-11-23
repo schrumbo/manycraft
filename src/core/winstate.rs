@@ -17,10 +17,10 @@ const FILE: &str = "window.json";
 pub enum Page {
     #[default]
     Start,
+    #[serde(alias = "chat")]
     Grid,
     Instance,
     Accounts,
-    Chat,
     Library,
     Discover,
 }
@@ -127,7 +127,7 @@ mod tests {
     use super::*;
 
     fn saved() -> Saved {
-        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Chat, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true, chat_open: true }
+        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Instance, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true, chat_open: true }
     }
 
     #[test]
@@ -147,6 +147,14 @@ mod tests {
         assert_eq!(load_from(&file), Saved::default());
         std::fs::write(&file, b"{\"page\":\"somewhere\"}").unwrap();
         assert_eq!(load_from(&file), Saved::default());
+    }
+
+    #[test]
+    fn the_chat_page_of_older_versions_opens_the_grid_of_all_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        std::fs::write(&file, b"{\"page\":\"chat\",\"batch\":null,\"maximized\":true}").unwrap();
+        assert_eq!(load_from(&file), Saved { page: Page::Grid, maximized: true, ..Saved::default() });
     }
 
     #[test]

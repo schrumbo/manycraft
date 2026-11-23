@@ -25,13 +25,6 @@ fn count(t: &Theme, text: String, selected: bool) -> Element {
     line(t, text, font::CAPTION, if selected { t.accent_text } else { t.text3 }).into_element()
 }
 
-/// How many chat lines from players other than the person's own accounts arrived after sequence number `read`.
-pub fn unread(m: &Model, read: u64) -> usize {
-    let from = read.max(m.chat_base()) - m.chat_base();
-    let own: Vec<String> = m.accounts.iter().map(|a| a.name.to_lowercase()).collect();
-    m.chat.iter().skip(from as usize).filter(|l| l.from.as_ref().is_some_and(|f| !own.contains(&f.to_lowercase()))).count()
-}
-
 fn open_with_system(target: &std::ffi::OsStr) -> std::io::Result<()> {
     let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     std::process::Command::new(opener).arg(target).spawn()?.wait().map(drop)
@@ -281,8 +274,9 @@ impl Component for Sidebar {
         top = top.child(WithTip::new(tip, r.on_press(go(Page::Wardrobe))));
 
         let can_batch = can_want(&Want::NewBatch);
-        let on_batches = matches!(now, Page::Grid(Filter::All | Filter::Attention) | Page::Chat);
-        let new_chat = if now == Page::Chat { 0 } else { unread(&m, ui.chat.left_at.read().unwrap_or(0)) };
+        let on_batches = matches!(now, Page::Grid(Filter::All | Filter::Attention));
+        let _ = store.chat.read();
+        let new_chat = crate::view::chat::unread(&m, *ui.chat.left_at.read(), None);
         let mut end = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
         if attention > 0 {
             end = end.child(dot(t.attention));
@@ -499,25 +493,6 @@ fn update_row(t: &Theme, store: Store, updates: &Updates, launching: bool) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn line(from: Option<&str>) -> crate::app::model::ChatLine {
-        crate::app::model::ChatLine { instance: "i".into(), account: "a".into(), batch: "b".into(), also: Vec::new(), at: 0, from: from.map(str::to_owned), text: "hi".into(), runs: Vec::new() }
-    }
-
-    #[test]
-    fn only_player_lines_after_the_last_seen_one_are_unread() {
-        let mut m = Model::default();
-        for from in [Some("x"), None, Some("y"), Some("z")] {
-            m.push_chat(line(from), 100);
-        }
-        assert_eq!(unread(&m, 0), 3);
-        assert_eq!(unread(&m, 2), 2);
-        assert_eq!(unread(&m, 4), 0);
-        assert_eq!(unread(&m, 9), 0);
-        m.push_chat(line(Some("w")), 4);
-        assert_eq!(unread(&m, 2), 3);
-        assert_eq!(unread(&m, 0), m.chat.iter().filter(|l| l.from.is_some()).count());
-    }
 
     #[test]
     fn dragging_the_edge_clamps_the_width_to_its_range() {

@@ -18,7 +18,6 @@ use super::drive::use_spot;
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::field::Field;
-use super::kit::select::Select;
 use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
 use super::kit::menu::{self, Item, Menu};
@@ -40,8 +39,6 @@ const KEPT_HISTORY: usize = 100;
 const SHOWN_CHARS: usize = 600;
 const PAGE: usize = 200;
 const TIME_W: f32 = 40.;
-const PICKER_W: f32 = 200.;
-const PICKER_NARROW: f32 = 150.;
 const CHIP_MAX: f32 = 220.;
 const POPUP_W: f32 = 320.;
 const POPUP_ROWS: f32 = 10.;
@@ -59,7 +56,6 @@ const HEAD_H: f32 = 40.;
 /// The page's state, kept while other pages show so the draft, the history and the recipient survive.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Shared {
-    pub batch: State<Option<String>>,
     /// Whether the chat sidebar of the batch pages is open.
     pub open: State<bool>,
     /// The batch the picked recipient was picked for; another batch makes the lines follow it again.
@@ -89,15 +85,14 @@ pub struct Shared {
     /// Where the recipient control and the message field are, for the pop-ups above them.
     pub chip_at: State<Bounds>,
     pub field_at: State<Bounds>,
-    /// The sequence number of the first line that arrived after the page was left.
-    pub left_at: State<Option<u64>>,
+    /// The sequence number of the first line that arrived after the chat was last in view; 0 counts every line of this run.
+    pub left_at: State<u64>,
 }
 
 impl Shared {
     /// Empty state: everything shown, everyone gets the next line.
     pub fn create() -> Self {
         Self {
-            batch: State::create(None),
             open: State::create(winstate::load().chat_open),
             scope: State::create(None),
             target: State::create(None),
@@ -118,17 +113,9 @@ impl Shared {
             at_closed: State::create(None),
             chip_at: State::create(Bounds::default()),
             field_at: State::create(Bounds::default()),
-            left_at: State::create(None),
+            left_at: State::create(0),
         }
     }
-}
-
-/// The batch picker's entries: all batches, then each by name.
-fn batch_choices(m: &Model) -> Vec<(String, Option<String>)> {
-    let mut out = vec![(tr("Batches"), None)];
-    let names = unique(m.batches.iter().map(|b| b.name.clone()).collect());
-    out.extend(m.batches.iter().zip(names).map(|(b, name)| (name, Some(b.id.clone()))));
-    out
 }
 
 /// The recipient in use: the one picked while it still exists, else the batch in `scope`, else everyone. A picked one that
@@ -254,17 +241,6 @@ fn recall_last(store: Store) {
     shared.focus.set(Some(Instant::now()));
 }
 
-/// Picks the batch the page shows; a recipient the person picked stays.
-fn set_batch(store: Store, batch: Option<String>) {
-    let mut shared = store.ui.chat;
-    if *shared.batch.peek() == batch {
-        return;
-    }
-    shared.batch.set(batch);
-    shared.shown.set(PAGE);
-    shared.top.set(None);
-}
-
 /// Whether the chat has a sidebar to show in on `page`.
 pub fn available(page: &Page) -> bool {
     matches!(page, Page::Grid(_))
@@ -308,16 +284,14 @@ pub fn set_open(store: Store, open: bool) {
 pub fn focus(store: Store) {
     let mut ui = store.ui;
     let page = ui.page.peek().clone();
-    if page != Page::Chat && !available(&page) {
+    if !available(&page) {
         let only = {
             let m = store.model.peek();
             (m.batches.len() == 1).then(|| m.batches[0].id.clone())
         };
         ui.page.set(Page::Grid(only.map_or(Filter::All, Filter::Batch)));
     }
-    if page != Page::Chat {
-        set_open(store, true);
-    }
+    set_open(store, true);
     let mut at = ui.chat.focus;
     at.set(Some(Instant::now()));
 }
@@ -347,39 +321,6 @@ pub fn extras(store: Store) -> Vec<Extra> {
         out.push(Extra { id: "chat.toall".into(), label: tr("An alle senden"), glyph: Icon::Send, shortcut: None, run: EventHandler::new(move |_| pick(store, Target::All)) });
     }
     out
-}
-
-/// The page's control in the toolbar: the batch shown, when there are several.
-#[derive(PartialEq)]
-pub struct Tools {
-    pub room: f32,
-}
-
-impl Component for Tools {
-    fn render(&self) -> impl IntoElement {
-        let store = use_store();
-        let shared = store.ui.chat;
-        let m = store.model.read();
-        if !settings::active().merged_chat || m.batches.len() < 2 {
-            return rect().into_element();
-        }
-        let choices = batch_choices(&m);
-        let chosen = choices.iter().position(|(_, id)| *id == *shared.batch.read()).unwrap_or(0);
-        let ids: Vec<Option<String>> = choices.iter().map(|(_, id)| id.clone()).collect();
-        let width = if self.room >= frame::TOOLBAR_SEARCH { PICKER_W } else { PICKER_NARROW };
-        Select::new("chat.batch", tr("Batch"), choices.into_iter().map(|(l, _)| l).collect(), chosen).width(width).on_choose(move |i| set_batch(store, ids.get(i).cloned().flatten())).into_element()
-    }
-}
-
-/// The Chat page: the whole chat of the batch picked in the toolbar.
-#[derive(PartialEq)]
-pub struct ChatPage;
-
-impl Component for ChatPage {
-    fn render(&self) -> impl IntoElement {
-        let scope = use_store().ui.chat.batch.read().clone();
-        Conversation { scope }
-    }
 }
 
 /// The chat sidebar of the grid pages: a title with the batch it shows, and the conversation.
@@ -438,11 +379,11 @@ impl Component for Conversation {
         let t = use_theme();
         let store = use_store();
         let shared = store.ui.chat;
-        let mark_at = use_hook(|| *shared.left_at.peek());
+        let mark_at = use_hook(|| Some(*shared.left_at.peek()).filter(|at| *at > 0));
         use_drop(move || {
             let m = store.model.peek();
             let mut left = store.ui.chat.left_at;
-            left.set(Some(m.chat_base() + m.chat.len() as u64));
+            left.set(newest(&m));
         });
         use_side_effect_with_deps(&self.scope, move |scope| {
             let mut shared = store.ui.chat;
@@ -458,7 +399,7 @@ impl Component for Conversation {
         let now = newest(&store.model.peek());
         use_side_effect_with_deps(&now, move |now| {
             let mut left = store.ui.chat.left_at;
-            left.set(Some(*now));
+            left.set(*now);
         });
         let m = store.model.read();
         let batch = self.scope.clone().filter(|b| m.batch(b).is_some());
@@ -1419,30 +1360,6 @@ fn line_problem(text: &str) -> Option<String> {
     (n > MAX_CHAT_CHARS).then(|| trf("Zu lang: %lld von höchstens %lld Zeichen.", &[&n, &MAX_CHAT_CHARS]))
 }
 
-/// `labels` with later repeats numbered, so every one picks exactly one thing.
-fn unique(labels: Vec<String>) -> Vec<String> {
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut taken: HashSet<String> = labels.iter().cloned().collect();
-    labels
-        .into_iter()
-        .map(|l| {
-            let n = seen.entry(l.clone()).or_insert(0);
-            *n += 1;
-            if *n == 1 {
-                return l;
-            }
-            let mut k = *n;
-            loop {
-                let candidate = format!("{l} ({k})");
-                if taken.insert(candidate.clone()) {
-                    return candidate;
-                }
-                k += 1;
-            }
-        })
-        .collect()
-}
-
 /// Where the arrow keys move in the history of sent lines: the new position and the text to show.
 /// Up from the field goes to the newest entry, down past it brings back what was being typed.
 fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &str, draft: &str) -> (Option<usize>, String) {
@@ -1465,7 +1382,7 @@ fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &st
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clip_link, clock, day_title, heard_by, in_scope, line_problem, links, mentions, newest, now, recall_step, same_day, scope_of, unique, unread};
+    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clip_link, clock, day_title, heard_by, in_scope, line_problem, links, mentions, newest, now, recall_step, same_day, scope_of, unread};
     use crate::view::ui::Filter;
 
     fn line(batch: &str) -> ChatLine {
@@ -1548,16 +1465,6 @@ mod tests {
         assert_eq!(day_title(at, at), crate::core::i18n::tr("Heute"));
         assert_eq!(day_title(at - 24 * 3600, at), crate::core::i18n::tr("Gestern"));
         assert_ne!(day_title(at - 5 * 24 * 3600, at), crate::core::i18n::tr("Heute"));
-    }
-
-    #[test]
-    fn repeated_labels_get_numbers() {
-        let labels = unique(vec!["Farm".into(), "Alex".into(), "Farm".into(), "Farm".into()]);
-        assert_eq!(labels, ["Farm", "Alex", "Farm (2)", "Farm (3)"]);
-        assert_eq!(unique(vec!["A".into(), "A".into(), "A (2)".into()]), ["A", "A (3)", "A (2)"]);
-        let many = unique(vec!["Farm".into(), "Farm".into(), "Farm".into(), "Farm (2)".into()]);
-        let distinct: std::collections::HashSet<_> = many.iter().collect();
-        assert_eq!(distinct.len(), many.len());
     }
 
     #[test]

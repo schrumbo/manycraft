@@ -46,7 +46,6 @@ impl Component for Toolbar {
                 Some(i) => (trf("Mods für %@", &[&i.name]), Some(crate::view::sheets::browser::content_line(i, m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active())))),
                 None => (tr("Mods"), None),
             },
-            Page::Chat => (tr("Chat"), None),
             Page::Settings(Pane::General) => (tr("Einstellungen"), None),
             Page::Settings(Pane::Accounts) => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
         };
@@ -91,9 +90,6 @@ impl Component for Toolbar {
                 }
             }
             _ => {}
-        }
-        if page == Page::Chat {
-            bar = bar.child(crate::view::chat::Tools { room });
         }
         if let Page::Instance(id) = &page {
             let hero = instance::Hero { id: id.clone(), room };

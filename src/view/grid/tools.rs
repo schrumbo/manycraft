@@ -87,17 +87,7 @@ impl Component for Aside {
         let _ = store.chat.read();
         let open = *ui.chat.open.read();
         let scope = chat::scope_of(&self.filter);
-        let (now, unread) = {
-            let m = store.model.read();
-            (chat::newest(&m), chat::unread(&m, ui.chat.left_at.read().unwrap_or(u64::MAX), scope.as_deref()))
-        };
-        use_side_effect_with_deps(&(), move |_| {
-            let mut left = store.ui.chat.left_at;
-            if left.peek().is_none() {
-                left.set(Some(now));
-            }
-        });
-        let unread = if open { 0 } else { unread };
+        let unread = if open { 0 } else { chat::unread(&store.model.read(), *ui.chat.left_at.read(), scope.as_deref()) };
         let mut tip = if open { tr("Chat ausblenden") } else { with_keys(tr("Chat einblenden"), Command::OpenChat) };
         if unread > 0 {
             tip = format!("{tip} · {}", trf("%lld ungelesen", &[&unread]));

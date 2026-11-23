@@ -38,7 +38,6 @@ pub enum Page {
     Instance(String),
     /// Mods and other content from Modrinth for one instance, by instance id, on the tab of a kind.
     Browse(String, Kind),
-    Chat,
     Settings(Pane),
 }
 
@@ -170,7 +169,7 @@ pub struct Ui {
     pub installing: State<bool>,
     /// What the Accounts page shows and has picked.
     pub accounts: accounts::Shared,
-    /// What the Chat page shows and is about to send.
+    /// What the chat sidebar shows and is about to send.
     pub chat: chat::Shared,
     /// How the grid groups its games, and the last mass stop to undo.
     pub grid_view: crate::view::grid::mass::Shared,
@@ -279,7 +278,6 @@ pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
         Page::Grid(Filter::Batch(b)) => Some((winstate::Page::Grid, Some(b.clone()))),
         Page::Grid(_) => Some((winstate::Page::Grid, None)),
         Page::Instance(id) | Page::Browse(id, _) => Some((winstate::Page::Instance, Some(id.clone()))),
-        Page::Chat => Some((winstate::Page::Chat, None)),
         Page::Wardrobe | Page::Settings(_) => None,
     }
 }
@@ -291,7 +289,6 @@ fn restored(page: winstate::Page, batch: Option<String>) -> Page {
         (winstate::Page::Instance, Some(id)) => Page::Instance(id),
         (winstate::Page::Library, _) => Page::Library,
         (winstate::Page::Discover, _) => Page::Discover,
-        (winstate::Page::Chat, _) => Page::Chat,
         _ => Page::Start,
     }
 }
@@ -302,7 +299,7 @@ mod tests {
 
     #[test]
     fn every_kept_page_comes_back_after_a_restart() {
-        for page in [Page::Start, Page::Library, Page::Discover, Page::Grid(Filter::All), Page::Grid(Filter::Batch("b".into())), Page::Instance("i".into()), Page::Chat] {
+        for page in [Page::Start, Page::Library, Page::Discover, Page::Grid(Filter::All), Page::Grid(Filter::Batch("b".into())), Page::Instance("i".into())] {
             let (kind, batch) = kept(&page).unwrap();
             assert_eq!(restored(kind, batch), page);
         }
