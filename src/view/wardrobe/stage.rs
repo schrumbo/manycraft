@@ -91,12 +91,9 @@ fn arms_text(model: Arms) -> String {
 
 fn preview(t: &Theme, ctl: Ctl, account: &Account, look: Option<&Look>, scale: f32) -> Element {
     let mut card = rect().width(Size::fill()).padding(space::L).background(t.well).corner_radius(t.shape.control).cross_align(Alignment::Center).spacing(space::M);
-    let Some(look) = look else {
+    let Some(look) = look.filter(|l| l.known || l.skin.is_some()) else {
         return card.height(Size::px(32. * scale + space::L * 2.)).center().child(spinner::waiting(t, tr("Lädt …"))).into_element();
     };
-    if !look.known && look.skin.is_none() {
-        return card.height(Size::px(32. * scale + space::L * 2.)).center().child(spinner::waiting(t, tr("Lädt …"))).into_element();
-    }
     match ctl.views() {
         Some((front, back)) => {
             card = card.child(rect().horizontal().spacing(space::XL).child(pixels(front, 16. * scale, 32. * scale)).child(pixels(back, 16. * scale, 32. * scale)));
@@ -125,7 +122,7 @@ fn pending_text(p: Pending) -> String {
 }
 
 fn capes(t: &Theme, ctl: Ctl, look: &Look, lane: &Lane) -> Element {
-    let failed = |key: String| lane.failure.as_ref().filter(|f| f.key == key).map(|f| (tr("Nicht geändert"), f.problem.text.clone()));
+    let failed = |key: String| lane.failed(&key).map(|f| (tr("Nicht geändert"), f.problem.text.clone()));
     let mut column = rect().width(Size::fill()).spacing(space::S).child(strong(t, tr("Umhang"), font::CALLOUT, t.text2));
     if look.capes.is_empty() {
         return column.child(secondary(t, tr("Dieser Account besitzt noch keinen Umhang."))).into_element();
@@ -202,7 +199,7 @@ pub fn stage(t: &Theme, ctl: Ctl, m: &Model, width: Size, wide: bool) -> Element
     let store = ctl.store;
     let id = account.id;
     let lane = ctl.lane();
-    if let Some(failure) = &lane.failure {
+    if let Some(failure) = lane.failure() {
         let mut strip = rect().width(Size::fill()).spacing(space::S).child(problem_view(t, "wardrobe.error", &failure.problem, ctl.details));
         if failure.signin {
             strip = strip.child(rect().horizontal().child(Button::new("wardrobe.signin", tr("Erneut anmelden")).primary().on_press(move |_| sign_in(store, vec![id]))));

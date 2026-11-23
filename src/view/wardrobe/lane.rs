@@ -19,7 +19,7 @@ pub enum Op {
 }
 
 impl Op {
-    fn slot(&self) -> Option<u8> {
+    pub fn slot(&self) -> Option<u8> {
         match self {
             Self::Refresh => None,
             Self::Skin { .. } => Some(0),
@@ -57,6 +57,7 @@ pub enum Pending {
 #[derive(Clone, PartialEq)]
 pub struct Failure {
     pub key: String,
+    pub slot: u8,
     pub problem: Problem,
     pub signin: bool,
 }
@@ -66,12 +67,20 @@ pub struct Failure {
 pub struct Lane {
     pub look: Option<Look>,
     pub jobs: Vec<Job>,
-    pub failure: Option<Failure>,
+    pub failures: Vec<Failure>,
     pub load: Option<(Problem, bool)>,
 }
 
 fn bare(microsoft: bool) -> Look {
     Look { skin: None, model: Model::Classic, worn: None, capes: Vec::<Owns>::new(), cape: None, microsoft, known: false, fetched: 0 }
+}
+
+fn matches(look: &Look, op: &Op) -> bool {
+    match op {
+        Op::Refresh => false,
+        Op::Skin { file, model, .. } => look.worn.as_deref() == Some(file.as_str()) && look.model == *model,
+        Op::Cape(id) => look.cape == *id,
+    }
 }
 
 fn apply(look: &mut Look, op: &Op) {
@@ -92,8 +101,11 @@ impl Lane {
     pub fn push(&mut self, id: u64, op: Op) {
         let slot = op.slot();
         if slot.is_some() {
-            self.failure = None;
+            self.failures.retain(|f| Some(f.slot) != slot);
             self.jobs.retain(|j| j.running || j.op.slot() != slot);
+            if !self.jobs.iter().any(|j| j.op.slot() == slot) && self.look.as_ref().is_some_and(|l| matches(l, &op)) {
+                return;
+            }
             if self.jobs.iter().rev().find(|j| j.op.slot() == slot).is_some_and(|j| j.op.key() == op.key()) {
                 return;
             }
@@ -118,6 +130,39 @@ impl Lane {
         let job = self.jobs.first_mut()?;
         job.running = true;
         Some(job.clone())
+    }
+
+    /// Records a refusal; a newer one for the same slot replaces the older.
+    pub fn fail(&mut self, failure: Failure) {
+        self.failures.retain(|f| f.slot != failure.slot);
+        self.failures.push(failure);
+    }
+
+    /// The refusal of the change called `key`, while the person has not asked again.
+    pub fn failed(&self, key: &str) -> Option<&Failure> {
+        self.failures.iter().find(|f| f.key == key)
+    }
+
+    /// The newest refusal.
+    pub fn failure(&self) -> Option<&Failure> {
+        self.failures.last()
+    }
+
+    /// Lets go of everything that has not started, for when the login behind it is dead.
+    pub fn drop_waiting(&mut self) {
+        self.jobs.retain(|j| j.running);
+    }
+
+    /// Lets go of waiting changes that the confirmed look already has.
+    pub fn prune(&mut self) {
+        if let Some(look) = &self.look {
+            self.jobs.retain(|j| j.running || !matches(look, &j.op));
+        }
+    }
+
+    /// Whether the skin `file` is worn or on its way to be worn, so it must stay in the library.
+    pub fn holds(&self, file: &str) -> bool {
+        self.look.as_ref().is_some_and(|l| l.worn.as_deref() == Some(file)) || self.jobs.iter().any(|j| matches!(&j.op, Op::Skin { file: f, .. } if f == file))
     }
 
     pub fn step(&mut self, id: u64, step: Step) {
@@ -259,13 +304,67 @@ mod tests {
     }
 
     #[test]
-    fn asking_again_clears_the_last_refusal() {
+    fn asking_again_clears_the_refusal_of_that_slot_only() {
         let mut lane = Lane::default();
-        lane.failure = Some(Failure { key: "skin:a".into(), problem: Problem::plain("no"), signin: false });
+        lane.fail(Failure { key: "skin:a".into(), slot: 0, problem: Problem::plain("no"), signin: false });
         lane.push(1, Op::Refresh);
-        assert!(lane.failure.is_some());
-        lane.push(2, skin("a"));
-        assert!(lane.failure.is_none());
+        assert!(lane.failure().is_some());
+        lane.push(2, Op::Cape(None));
+        assert!(lane.failed("skin:a").is_some());
+        lane.push(3, skin("a"));
+        assert!(lane.failure().is_none());
+    }
+
+    #[test]
+    fn a_newer_refusal_replaces_the_older_of_its_slot() {
+        let mut lane = Lane::default();
+        lane.fail(Failure { key: "skin:a".into(), slot: 0, problem: Problem::plain("no"), signin: false });
+        lane.fail(Failure { key: "cape:c".into(), slot: 1, problem: Problem::plain("no"), signin: false });
+        lane.fail(Failure { key: "skin:b".into(), slot: 0, problem: Problem::plain("no"), signin: false });
+        assert_eq!(lane.failures.len(), 2);
+        assert!(lane.failed("skin:a").is_none() && lane.failed("skin:b").is_some() && lane.failed("cape:c").is_some());
+    }
+
+    #[test]
+    fn going_back_to_the_confirmed_look_queues_nothing() {
+        let mut lane = Lane { look: Some(look("x")), ..Lane::default() };
+        lane.push(1, Op::Cape(Some("c".into())));
+        lane.next();
+        lane.push(2, skin("y"));
+        lane.push(3, skin("x"));
+        assert_eq!(files(&lane), ["cape:c"]);
+        lane.push(4, Op::Cape(None));
+        assert_eq!(files(&lane), ["cape:c", "cape:"]);
+    }
+
+    #[test]
+    fn a_waiting_change_the_confirmed_look_already_has_is_dropped() {
+        let mut lane = Lane { look: Some(look("x")), ..Lane::default() };
+        lane.push(1, skin("y"));
+        lane.next();
+        lane.push(2, skin("x"));
+        assert_eq!(files(&lane), ["skin:y", "skin:x"]);
+        lane.finish(1);
+        lane.prune();
+        assert!(lane.jobs.is_empty());
+    }
+
+    #[test]
+    fn a_dead_login_drops_what_waits_but_not_what_runs() {
+        let mut lane = Lane::default();
+        lane.push(1, skin("a"));
+        lane.next();
+        lane.push(2, Op::Cape(None));
+        lane.push(3, Op::Refresh);
+        lane.drop_waiting();
+        assert_eq!(files(&lane), ["skin:a"]);
+    }
+
+    #[test]
+    fn a_skin_that_is_worn_or_on_its_way_is_held() {
+        let mut lane = Lane { look: Some(look("x")), ..Lane::default() };
+        lane.push(1, skin("y"));
+        assert!(lane.holds("x") && lane.holds("y") && !lane.holds("z"));
     }
 
     #[test]

@@ -54,9 +54,9 @@ fn hang(ctl: Ctl, lane: &Lane, hung: &Hung, worn: bool, width: f32) -> Element {
     let model = hung.skin.model;
     let press_file = file.clone();
     let pending = lane.skin_pending(&file).map(pending_text);
-    let failed = lane.failure.as_ref().filter(|f| f.key == format!("skin:{file}")).map(|f| (tr("Nicht geändert"), f.problem.text.clone()));
+    let failed = lane.failed(&format!("skin:{file}")).map(|f| (tr("Nicht geändert"), f.problem.text.clone()));
     let microsoft = ctl.account().is_some_and(|a| a.kind == crate::core::account::AccountKind::Microsoft);
-    let keep = worn.then(keep_text);
+    let keep = lane.holds(&file).then(keep_text);
     let menu_file = file.clone();
     let menu_name = name.clone();
     let menu_keep = keep.is_some();
@@ -71,7 +71,7 @@ fn hang(ctl: Ctl, lane: &Lane, hung: &Hung, worn: bool, width: f32) -> Element {
             Item::new("wardrobe.menu.rename", tr("Umbenennen…"), move |_| rename::open(ctl, rename_file.clone(), rename_name.clone())),
             Item::new("wardrobe.menu.model", if model == Arms::Slim { tr("Klassische Arme") } else { tr("Schlanke Arme") }, move |_| ctl.set_model(&model_file, if model == Arms::Slim { Arms::Classic } else { Arms::Slim })),
             Item::Separator,
-            Item::new("wardrobe.menu.remove", tr("Entfernen"), move |_| ctl.remove(&remove_file)).danger().disabled(menu_keep),
+            Item::new("wardrobe.menu.remove", tr("Entfernen"), move |_| ctl.remove(&remove_file)).danger().shortcut(tr("Entf")).disabled(menu_keep),
         ];
         menu::open(ctl.store.ui, Menu::at(items, at));
     });

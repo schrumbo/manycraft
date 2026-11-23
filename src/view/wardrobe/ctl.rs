@@ -32,6 +32,17 @@ fn looks_like_link(input: &str) -> bool {
 /// A skin that was added, with what the shelf needs to show it at once.
 type Arrived = (Added, Vec<u8>, image::RgbaImage);
 
+fn store(checked: Vec<(Fetched, image::RgbaImage)>) -> (Vec<Arrived>, Option<anyhow::Error>) {
+    let mut arrived = Vec::new();
+    for (f, front) in checked {
+        match wardrobe::add(&f) {
+            Ok(added) => arrived.push((added, f.png, front)),
+            Err(e) => return (arrived, Some(e)),
+        }
+    }
+    (arrived, None)
+}
+
 /// What the Wardrobe page does: it holds the page's own state, such as the text being typed, and hands everything that
 /// touches accounts or the library to the [Desk], which works in the shared state.
 #[derive(Clone, Copy, PartialEq)]
@@ -206,14 +217,13 @@ impl Ctl {
         adds.write().push((n, label));
         self.add_problem.set(None);
         let Some(rx) = off_thread("wardrobe-add", move || {
-            let fetched = work()?;
-            let mut added: Vec<Arrived> = Vec::new();
-            for f in &fetched {
+            let mut checked: Vec<(Fetched, image::RgbaImage)> = Vec::new();
+            for f in work()? {
                 let image = change::check_png(&f.png)?;
                 let (front, _) = change::front_and_back(&image, f.model);
-                added.push((wardrobe::add(f)?, f.png.clone(), front));
+                checked.push((f, front));
             }
-            Ok::<_, anyhow::Error>(added)
+            Ok::<_, anyhow::Error>(checked)
         }) else {
             adds.write().retain(|(i, _)| *i != n);
             return;
@@ -225,42 +235,46 @@ impl Ctl {
                 adds.write().retain(|(i, _)| *i != n);
                 return;
             };
-            match done {
-                Ok(arrived) => {
-                    let mut shelf = self.shared.shelf;
-                    for (added, png, front) in &arrived {
-                        if added.new
-                            && !shelf.peek().iter().any(|h| h.skin.file == added.skin.file)
-                            && let Some(thumb) = handle(front)
-                        {
-                            shelf.write().insert(0, Hung { skin: added.skin.clone(), thumb, png: Arc::new(png.clone()) });
-                        }
+            let (arrived, error) = match done {
+                Ok(checked) => match Desk::settle(Desk::enqueue(move || store(checked))).await {
+                    Some(stored) => stored,
+                    None => (Vec::new(), None),
+                },
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            adds.write().retain(|(i, _)| *i != n);
+            if !arrived.is_empty() {
+                let mut shelf = self.shared.shelf;
+                for (added, png, front) in &arrived {
+                    if added.new
+                        && !shelf.peek().iter().any(|h| h.skin.file == added.skin.file)
+                        && let Some(thumb) = handle(front)
+                    {
+                        shelf.write().insert(0, Hung { skin: added.skin.clone(), thumb, png: Arc::new(png.clone()) });
                     }
-                    adds.write().retain(|(i, _)| *i != n);
-                    desk.reload_shelf();
-                    let news = arrived.iter().filter(|(a, ..)| a.new).count();
-                    let message = match (arrived.as_slice(), news) {
-                        ([(one, ..)], 1) => trf("„%@“ liegt jetzt in der Garderobe.", &[&one.skin.name]),
-                        ([(one, ..)], _) => trf("„%@“ war schon in der Garderobe.", &[&one.skin.name]),
-                        (_, n) => trf("%lld neue Skins in der Garderobe.", &[&n]),
-                    };
-                    toast::show(self.store.ui, message, None);
                 }
-                Err(e) => {
-                    adds.write().retain(|(i, _)| *i != n);
-                    let found = problem(&e);
-                    if self.alive() {
-                        let mut text = self.text;
-                        if let Some(typed) = typed
-                            && text.peek().is_empty()
-                        {
-                            text.set(typed);
-                        }
-                        let mut add_problem = self.add_problem;
-                        add_problem.set(Some(found));
-                    } else {
-                        toast::show(self.store.ui, found.text, None);
+                desk.reload_shelf();
+                let news = arrived.iter().filter(|(a, ..)| a.new).count();
+                let message = match (arrived.as_slice(), news) {
+                    ([(one, ..)], 1) => trf("„%@“ liegt jetzt in der Garderobe.", &[&one.skin.name]),
+                    ([(one, ..)], _) => trf("„%@“ war schon in der Garderobe.", &[&one.skin.name]),
+                    (_, n) => trf("%lld neue Skins in der Garderobe.", &[&n]),
+                };
+                toast::show(self.store.ui, message, None);
+            }
+            if let Some(e) = error {
+                let found = problem(&e);
+                if self.alive() {
+                    let mut text = self.text;
+                    if let Some(typed) = typed
+                        && text.peek().is_empty()
+                    {
+                        text.set(typed);
                     }
+                    let mut add_problem = self.add_problem;
+                    add_problem.set(Some(found));
+                } else {
+                    toast::show(self.store.ui, found.text, None);
                 }
             }
         });
@@ -270,7 +284,7 @@ impl Ctl {
     pub fn remove(self, file: &str) {
         let mut shelf = self.shared.shelf;
         let Some(at) = shelf.peek().iter().position(|h| h.skin.file == file) else { return };
-        if self.look().and_then(|l| l.worn).as_deref() == Some(file) {
+        if self.lane().holds(file) {
             toast::show(self.store.ui, keep_text(), None);
             return;
         }

@@ -8,10 +8,9 @@ use crate::view::kit::spinner;
 use crate::view::kit::text::line;
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{ring, use_theme};
-use crate::view::theme::{font, space};
+use crate::view::theme::{font, level, space};
 
 const PICK: f32 = 2.;
-const REMOVE_LAYER: i16 = 2;
 
 /// A picture drawn pixel for pixel, never smoothed.
 pub fn pixels(handle: ImageHandle, w: f32, h: f32) -> Element {
@@ -131,11 +130,11 @@ impl Component for Card {
             && (*hovered.read() || keyboard)
         {
             let button = Button::icon(format!("{}.remove", self.id), Icon::Trash, r.label).disabled(r.why_not).not_focusable().on_press(move |_| r.on.call(()));
-            outer = outer.child(rect().position(Position::new_absolute().top(space::XS).right(space::XS)).layer(Layer::Relative(REMOVE_LAYER)).child(button));
+            outer = outer.child(rect().position(Position::new_absolute().top(space::XS).right(space::XS)).layer(Layer::Relative(level::FLOAT)).child(button));
         }
         if let Some(border) = ring(&t, focus()) {
             outer = outer.border(border);
         }
-        WithTip::new(Some(self.failed.as_ref().map_or_else(|| self.label.clone(), |(_, why)| why.clone())), outer)
+        WithTip::new(Some(self.failed.as_ref().map_or_else(|| self.label.clone(), |(_, why)| format!("{}: {why}", self.label))), outer)
     }
 }

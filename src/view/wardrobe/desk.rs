@@ -73,6 +73,7 @@ pub struct Drawn {
     capes: usize,
     model: Model,
     skin: bool,
+    cloak: bool,
 }
 
 pub type Views = Option<(ImageHandle, ImageHandle)>;
@@ -157,7 +158,7 @@ fn library_worker() -> &'static mpsc::Sender<Task> {
     static WORKER: OnceLock<mpsc::Sender<Task>> = OnceLock::new();
     WORKER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<Task>();
-        let _ = std::thread::Builder::new().name("wardrobe-library".into()).spawn(move || rx.into_iter().for_each(|task| task()));
+        let _ = std::thread::Builder::new().name("wardrobe-library".into()).spawn(move || rx.into_iter().for_each(|task| drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)))));
         tx
     })
 }
@@ -194,7 +195,7 @@ impl Desk {
     /// Draws the pictures of the chosen account again when what they show changed.
     pub fn redraw(mut self) {
         let look = (*self.shared.chosen.peek()).and_then(|id| self.shown(id));
-        let key = look.as_ref().map(|l| Drawn { worn: l.worn.clone(), cape: l.cape.clone(), capes: l.capes.len(), model: l.model, skin: l.skin.is_some() });
+        let key = look.as_ref().map(|l| Drawn { worn: l.worn.clone(), cape: l.cape.clone(), capes: l.capes.len(), model: l.model, skin: l.skin.is_some(), cloak: l.cape.as_deref().and_then(|id| l.capes.iter().find(|c| c.id == id)).is_some_and(|c| c.front.is_some()) });
         if *self.shared.drawn.peek() == key {
             return;
         }
@@ -314,7 +315,7 @@ impl Desk {
                 if let Some(Told { face: Some(face), .. }) = &changed.told {
                     show_face(self.store, id, face.clone());
                 }
-                let failure = changed.error.as_ref().map(|e| Failure { key: job.op.key(), problem: problem(e), signin: signs_in_again(e) });
+                let failure = changed.error.as_ref().map(|e| Failure { key: job.op.key(), slot: job.op.slot().unwrap_or(0), problem: problem(e), signin: signs_in_again(e) });
                 let refused = failure.as_ref().map(|f| f.problem.text.clone());
                 let asked = (matches!(job.op, Op::Skin { .. }), matches!(job.op, Op::Cape(_)));
                 self.edit(id, |lane| {
@@ -324,7 +325,13 @@ impl Desk {
                         None if failure.is_none() => lane.bake(&job.op, microsoft),
                         None => {}
                     }
-                    lane.failure = failure;
+                    if let Some(failure) = failure {
+                        if failure.signin {
+                            lane.drop_waiting();
+                        }
+                        lane.fail(failure);
+                    }
+                    lane.prune();
                 });
                 if !watched {
                     let text = refused.map_or_else(|| done_text(asked.0, asked.1), |text| text);
@@ -375,21 +382,36 @@ impl Desk {
 
     /// Runs `work` on the library after the library jobs asked before it; `done` gets what it came to on the UI thread.
     pub fn library(self, work: impl FnOnce() -> anyhow::Result<()> + Send + 'static) {
-        let (tx, rx) = async_channel::bounded(1);
-        LIBRARY_BUSY.fetch_add(1, Ordering::Relaxed);
-        let sent = library_worker().send(Box::new(move || {
-            let _ = tx.send_blocking(work());
-        }));
+        let queued = Self::enqueue(work);
         spawn_in_window(async move {
-            let done = if sent.is_ok() { rx.recv().await.ok() } else { None };
-            LIBRARY_BUSY.fetch_sub(1, Ordering::Relaxed);
-            if let Some(Err(e)) = done {
+            if let Some(Err(e)) = Self::settle(queued).await {
                 toast::show(self.store.ui, problem(&e).text, None);
             }
             if LIBRARY_BUSY.load(Ordering::Relaxed) == 0 {
                 self.reload_shelf();
             }
         });
+    }
+
+    /// Puts `work` in line on the library behind what was asked before; `settle` takes its result.
+    pub fn enqueue<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<async_channel::Receiver<T>> {
+        let (tx, rx) = async_channel::bounded(1);
+        LIBRARY_BUSY.fetch_add(1, Ordering::Relaxed);
+        let sent = library_worker().send(Box::new(move || {
+            let _ = tx.send_blocking(work());
+        }));
+        if sent.is_err() {
+            LIBRARY_BUSY.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(rx)
+    }
+
+    /// Waits for work put in line with `enqueue`; none when it never ran.
+    pub async fn settle<T>(queued: Option<async_channel::Receiver<T>>) -> Option<T> {
+        let done = queued?.recv().await.ok();
+        LIBRARY_BUSY.fetch_sub(1, Ordering::Relaxed);
+        done
     }
 
     /// A skin a person asked for the first time put on: the decoded picture, or why it cannot be used.
