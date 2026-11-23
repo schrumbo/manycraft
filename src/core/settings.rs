@@ -189,7 +189,7 @@ impl Settings {
         self.crash_restart.max_attempts = self.crash_restart.max_attempts.min(MAX_ATTEMPTS);
         self.game.memory_mb = self.game.memory_mb.clamp(MEMORY_RANGE.0, MEMORY_RANGE.1);
         self.game.window = self.game.window.filter(|w| w.width > 0 && w.height > 0);
-        if !self.language.as_deref().is_some_and(|l| matches!(l, "de" | "en")) {
+        if !self.language.as_deref().is_some_and(super::i18n::supported) {
             self.language = None;
         }
         self

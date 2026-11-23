@@ -17,7 +17,7 @@ mod project;
 
 use super::instance::{self, Load, body_max, problem_view};
 use crate::core::batch::ModRef;
-use crate::core::i18n::{Lang, lang, tr, trf};
+use crate::core::i18n::{clock, date, tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::core::modicons;
 use crate::core::modrinth::{self, Filter, Hit, Kind, Page, Resolved, Search, Sort, Support, Update, Version};
@@ -699,11 +699,9 @@ fn search_problem(e: &anyhow::Error) -> Problem {
 fn saved_when(at: SystemTime) -> String {
     let at = chrono::DateTime::<chrono::Local>::from(at);
     if at.date_naive() == chrono::Local::now().date_naive() {
-        at.format("%H:%M").to_string()
-    } else if lang() == Lang::En {
-        at.format("%b %-d").to_string()
+        clock(at.time())
     } else {
-        at.format("%-d.%-m.").to_string()
+        date(at.date_naive(), false)
     }
 }
 

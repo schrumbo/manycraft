@@ -303,7 +303,7 @@ impl Flow {
         self.picking.set(true);
         spawn_in_window(async move {
             let title = tr("Modpack wählen");
-            let paths = off_ui(move || native::pick_files(&title, "Modpack", &["mrpack", "zip"], true)).await.unwrap_or_default();
+            let paths = off_ui(move || native::pick_files(&title, &tr("Modpack"), &["mrpack", "zip"], true)).await.unwrap_or_default();
             if !self.alive() {
                 return;
             }

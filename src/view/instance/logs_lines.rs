@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{date as day_text, tr, trf};
 use crate::core::logs::{self, Kind, LogFile};
 use crate::core::worlds::game_dirs;
 use crate::ui::instance_files::stamp;
@@ -37,7 +37,7 @@ pub fn file_label(f: &LogFile, running: bool) -> String {
             let stem = name.trim_end_matches(".gz").trim_end_matches(".log");
             let date = stem.rsplit_once('-').map_or(stem, |(date, _)| date);
             match chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
-                Ok(day) => format!("{} ({})", day.format("%d.%m.%Y"), stem.rsplit_once('-').map_or("1", |(_, n)| n)),
+                Ok(day) => format!("{} ({})", day_text(day, true), stem.rsplit_once('-').map_or("1", |(_, n)| n)),
                 Err(_) => name,
             }
         }

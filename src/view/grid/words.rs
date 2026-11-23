@@ -7,7 +7,7 @@ use crate::app::event::Event;
 use crate::app::model::{Able, Game, Model, Need, Outage, Phase, Run, proxy_status, status, stopped_ban};
 use crate::core::account::AccountKind;
 use crate::core::history::{Entry, Kind};
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{clock as clock_text, date_time, tr, trf};
 use crate::view::ui::Show;
 
 /// How many events the history of a game lists.
@@ -231,7 +231,7 @@ pub fn outage_line(m: &Model, batch_id: &str, outage: &Outage, named: bool) -> S
 fn clock(at: u64) -> String {
     let Some(time) = chrono::DateTime::from_timestamp(i64::try_from(at).unwrap_or(i64::MAX), 0) else { return String::new() };
     let local = time.with_timezone(&chrono::Local);
-    if local.date_naive() == chrono::Local::now().date_naive() { local.format("%H:%M").to_string() } else { local.format("%d.%m. %H:%M").to_string() }
+    if local.date_naive() == chrono::Local::now().date_naive() { clock_text(local.time()) } else { date_time(local.naive_local()) }
 }
 
 /// "7 Anmeldung": how many need this kind of work.

@@ -281,8 +281,7 @@ pub fn check_names(text: &str, accounts: &[Account]) -> Vec<(String, Listed)> {
 pub fn memory_label(mb: u32) -> String {
     let tenths = (u64::from(mb) * 10 + 512) / 1024;
     let text = if tenths % 10 == 0 { format!("{}", tenths / 10) } else { format!("{}.{}", tenths / 10, tenths % 10) };
-    let text = if crate::core::i18n::lang() == crate::core::i18n::Lang::De { text.replace('.', ",") } else { text };
-    format!("{text} GB")
+    format!("{} GB", crate::core::i18n::decimal(text))
 }
 
 /// `mb` of free memory as [`memory_label`] shows it, rounded down so that it never reads as more than there is.
@@ -374,8 +373,7 @@ pub fn downloads_short(n: u64) -> String {
         let tenths = (n * 10 + unit / 2) / unit;
         if tenths % 10 == 0 { (tenths / 10).to_string() } else { format!("{}.{}", tenths / 10, tenths % 10) }
     };
-    let number = if crate::core::i18n::lang() == crate::core::i18n::Lang::De { number.replace('.', ",") } else { number };
-    trf(key, &[&number])
+    trf(key, &[&crate::core::i18n::decimal(number)])
 }
 
 /// Physical memory of this machine in MB, or 16 GB when the system does not say.
