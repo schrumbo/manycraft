@@ -19,10 +19,12 @@ pub fn center() -> Option<(i32, i32)> {
 
 /// A content area of `logical` size and origin at device `scale` in the units a game window is placed in: points on
 /// macOS, pixels elsewhere.
+#[cfg(not(target_os = "windows"))]
 pub fn game_units(logical: (f64, f64, f64, f64), scale: f64) -> Rect {
     in_units(logical, scale, cfg!(target_os = "macos"))
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 fn in_units((x, y, w, h): (f64, f64, f64, f64), scale: f64, points: bool) -> Rect {
     let scale = if points { 1. } else { scale };
     let at = |v: f64| (v * scale).round();
