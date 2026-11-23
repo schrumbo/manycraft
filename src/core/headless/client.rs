@@ -268,7 +268,7 @@ pub fn server_name(address: &str) -> String {
 /// Runs the connection until it is told to quit: joins, and after a drop waits to be told to reconnect.
 pub fn run(shared: &Shared, spec: &Spec) {
     let _ended = Ended(shared);
-    let _ = shared.events.send(Event::Connected { instance: shared.key.clone(), pid: 0, mod_version: format!("{BRAND} protocol {PROTOCOL}") });
+    let _ = shared.events.send(Event::Connected { instance: shared.key.clone(), pid: 0, mod_version: format!("connection-only protocol {PROTOCOL}") });
     loop {
         match session(shared, spec) {
             End::Quit => break,
