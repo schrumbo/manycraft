@@ -95,6 +95,13 @@ impl Target {
         Self { instance: instance.clone(), batch: Some(batch.clone()), quick: None }
     }
 
+    /// A headless `batch` that plays no instance: a stand-in without a folder, carrying only the version it speaks.
+    pub fn connection(batch: &Batch) -> Self {
+        let mut stand_in = Instance::new(&batch.name, batch.connection_version(), Loader::Vanilla);
+        stand_in.id.clear();
+        Self { instance: stand_in, batch: Some(batch.clone()), quick: None }
+    }
+
     /// `instance` played alone.
     pub fn solo(instance: &Instance) -> Self {
         Self { instance: instance.clone(), batch: None, quick: None }
@@ -1394,7 +1401,7 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
     if reserved.contains_key(key) || running.get_mut(key).is_some_and(RunningInstance::poll) {
         bail!("{} is already running in this batch", account.name);
     }
-    let same_game = reserved.values().any(|r| r.account == account.id && r.instance == instance) || running.values_mut().any(|r| r.account == account.id && r.instance == instance && r.poll());
+    let same_game = !instance.is_empty() && (reserved.values().any(|r| r.account == account.id && r.instance == instance) || running.values_mut().any(|r| r.account == account.id && r.instance == instance && r.poll()));
     if same_game {
         bail!("{} already plays this instance elsewhere", account.name);
     }
@@ -1646,8 +1653,10 @@ fn find_instance<'a>(instances: &'a [Instance], who: &str) -> Result<&'a Instanc
     instances.iter().find(|i| i.id == who || i.name.eq_ignore_ascii_case(who)).with_context(|| format!("no instance {who}"))
 }
 
-fn instance_of<'a>(instances: &'a [Instance], batch: &Batch) -> Result<&'a Instance> {
-    instances.iter().find(|i| i.id == batch.instance_id).with_context(|| format!("the instance of {} is gone: manycraft batch instance {} <instance>", batch.name, batch.name))
+fn target_of(instances: &[Instance], batch: &Batch) -> Result<Target> {
+    let Some(id) = batch.instance() else { return Ok(Target::connection(batch)) };
+    let found = instances.iter().find(|i| i.id == id).with_context(|| format!("the instance of {} is gone: manycraft batch instance {} <instance>", batch.name, batch.name))?;
+    Ok(Target::of_batch(batch, found))
 }
 
 pub(super) fn parse_loader(text: &str) -> Result<Loader> {
@@ -1718,7 +1727,10 @@ fn list() -> Result<i32> {
     let name = |id: &Uuid| accounts.iter().find(|a| a.id == *id).map_or_else(|| id.to_string(), |a| a.name.clone());
     for b in batch::load_all()? {
         let members: Vec<String> = b.accounts.iter().map(name).collect();
-        let (played, memory) = instance_of(&instances, &b).map_or_else(|_| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory())));
+        let (played, memory) = match b.instance() {
+            None => (format!("none, headless {}", b.connection_version()), b.memory_override.unwrap_or_default()),
+            Some(id) => instances.iter().find(|i| i.id == id).map_or_else(|| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory()))),
+        };
         println!("{} ({})  instance {played}  server {}  {memory} MB  accounts: {}", b.name, b.id, b.server.as_deref().unwrap_or("-"), if members.is_empty() { "-".to_owned() } else { members.join(", ") });
     }
     Ok(0)
@@ -1751,7 +1763,7 @@ fn set_instance(who: &str, instance_name: &str) -> Result<i32> {
     let instances = instance::load_all()?;
     let played = find_instance(&instances, instance_name)?;
     let old = instances.iter().find(|i| i.id == target.instance_id && i.id != played.id).map(|i| i.name.clone());
-    target.instance_id.clone_from(&played.id);
+    target.play(&played.id);
     batch::save(target)?;
     println!("{} plays {} now", target.name, played.name);
     if let Some(old) = old {
@@ -1862,7 +1874,7 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         bail!("{} has no accounts yet: manycraft batch add {} <account>", chosen.name, chosen.name);
     }
     let instances = instance::load_all()?;
-    let target = Target::of_batch(&chosen, instance_of(&instances, &chosen)?);
+    let target = target_of(&instances, &chosen)?;
     let saved = account::load()?;
     let accounts = chosen
         .accounts
@@ -3000,6 +3012,21 @@ mod tests {
         proxied.proxy = Some("socks5://127.0.0.1:1080".into());
         let err = connect_one(&t, &proxied, "k", &tx).err().expect("refused").to_string();
         assert!(err.contains("Proxy"), "{err}");
+    }
+
+    #[test]
+    fn a_headless_batch_without_an_instance_resolves_with_none_installed_and_never_clashes_on_an_instance() {
+        let mut b = Batch::headless("H");
+        b.server = Some("127.0.0.1:9".into());
+        let t = target_of(&[], &b).unwrap();
+        assert!(t.connection_only() && t.instance.id.is_empty() && headless::supports(&t.instance.game_version));
+        let mut played = b.clone();
+        played.mode = RunMode::Windows;
+        played.play("gone");
+        assert!(target_of(&[], &played).is_err());
+        let alt = Account::offline("AltOne").unwrap();
+        let reserved = HashMap::from([("other".to_owned(), Reservation { account: alt.id, instance: String::new(), server_addrs: Vec::new() })]);
+        assert!(free(&mut HashMap::new(), &reserved, &t.key(alt.id), &t.instance.id, &alt, &[]).is_ok());
     }
 
     #[test]
