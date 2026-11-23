@@ -22,6 +22,7 @@ mod worlds;
 pub mod links;
 mod save;
 mod settings;
+mod sharing;
 pub(crate) mod snapshots;
 mod title;
 

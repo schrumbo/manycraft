@@ -403,6 +403,7 @@ impl Component for Settings {
         footer.extend(nav.notes.read().get(&id).into_iter().flatten().cloned());
         col = col.child(group(&t, Some(tr("Version & Loader")), rows, (!footer.is_empty()).then(|| footer.join(" "))));
         col = col.child(Game { facts: f.clone() });
+        col = col.child(super::sharing::Sharing { facts: f.clone() });
 
         let open = *nav.advanced.read();
         let mut adv = nav.advanced;
