@@ -12,6 +12,7 @@ use crate::app::model::Phase;
 use crate::core::account::Account;
 use crate::core::chat_text::Run;
 use crate::core::fleet::Target;
+use crate::core::install::{Progress, Stage};
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Preview, PreviewChanges, StateKind, ToMod};
 
 const PREVIEW_W: u32 = 192;
@@ -164,6 +165,25 @@ impl<P: Pixels> Sim<P> {
         self.queue.push((Instant::now() + delay, cancel.cloned(), update));
     }
 
+    fn install(&mut self, target: &Target, cancel: &Arc<AtomicBool>) -> Duration {
+        let Some(total) = secs("MANYCRAFT_FAKE_INSTALL") else { return Duration::ZERO };
+        let batch = target.owner();
+        const STAGES: [(Stage, usize, u32); 4] = [(Stage::Metadata, 1, 1), (Stage::Libraries, 40, 3), (Stage::Assets, 400, 12), (Stage::Runtime, 60, 4)];
+        let weight: u32 = STAGES.iter().map(|s| s.2).sum();
+        let mut at = Duration::ZERO;
+        for (stage, files, share) in STAGES {
+            let span = total * share / weight;
+            let steps = files.min(20);
+            for i in 0..=steps {
+                let progress = Progress { stage, done: files * i / steps, total: files };
+                self.at(at + span * i as u32 / steps as u32, Some(cancel), Update::Preparing { batch: batch.clone(), progress });
+            }
+            at += span;
+        }
+        self.at(at, Some(cancel), Update::Prepared { batch });
+        at
+    }
+
     fn launch(&mut self, key: &str, after: Duration, cancel: Option<&Arc<AtomicBool>>) {
         self.at(after, cancel, Update::Launched { key: key.to_owned(), plain: false });
         self.at(after + Duration::from_millis(1500), cancel, connected(key));
@@ -203,10 +223,11 @@ impl<P: Pixels> Sim<P> {
                 }
             }
             Cmd::Start(target, accounts, cancel) => {
+                let wait = self.install(&target, &cancel);
                 let plain = !crate::core::companion::available(&target.instance.game_version) || !crate::core::fleet::wants_companion(&target, &accounts);
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
-                    let after = STAGGER * n as u32;
+                    let after = wait + STAGGER * n as u32;
                     if target.connection_only() {
                         self.bare.insert(key.clone());
                         self.connect(&key, after, Some(&cancel));
