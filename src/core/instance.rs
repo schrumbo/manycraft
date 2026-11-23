@@ -128,6 +128,9 @@ pub struct Instance {
     /// The library group this instance is listed under; ungrouped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// What this instance shares with the other sharing instances; nothing when the file predates sharing.
+    #[serde(default)]
+    pub sync: super::share::Sharing,
     /// Fields a newer version wrote that this one does not know, written back unchanged.
     #[serde(flatten)]
     pub kept: serde_json::Map<String, serde_json::Value>,
@@ -174,6 +177,7 @@ impl Instance {
             pack: None,
             companion: false,
             group: None,
+            sync: super::share::Sharing::ALL,
             kept: serde_json::Map::new(),
         }
     }

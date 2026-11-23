@@ -10,7 +10,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hickory_resolver::TokioResolver;
@@ -26,6 +26,7 @@ use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::options::LaunchOptions;
 use super::proxy::{self, Kind};
+use super::share;
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
 use super::{adopt, auth, gpu, headless, ipc, javas, lock, net, paths, scrub, stagger};
 
@@ -941,6 +942,7 @@ pub struct Fleet {
     adopted: Mutex<HashMap<String, String>>,
     line: stagger::Line,
     events: Sender<ipc::Event>,
+    notes: Sender<sync::Note>,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -977,8 +979,8 @@ impl Fleet {
 
     fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
-        let (events, sender) = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), events: sender, stagger: DEFAULT_STAGGER }, events))
+        let (events, sender, notes) = sync::spawn(ipc.clone(), games.clone(), raw)?;
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), events: sender, notes, stagger: DEFAULT_STAGGER }, events))
     }
 
     fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
@@ -1000,6 +1002,12 @@ impl Fleet {
                 logs: run.game_dir.join("logs"),
             };
             self.insert(key.clone(), instance);
+            if !run.headless
+                && let Ok(dir) = instance::existing(&run.instance)
+            {
+                let start = share::Start { key: key.clone(), instance: run.instance.clone(), name: share::name_in(&dir), dir, game: run.game_dir.clone(), pid, companion: !run.plain, at: SystemTime::now(), adopted: true };
+                let _ = self.notes.send(sync::Note::Started(start));
+            }
             adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid, plain: run.plain, headless: run.headless });
         }
         adopted
@@ -1029,6 +1037,9 @@ impl Fleet {
                 }
             }
         }
+        for (key, pid) in &gone {
+            let _ = self.notes.send(sync::Note::Ended { key: key.clone(), pid: *pid });
+        }
         if let Some(ledger) = &self.ledger {
             ledger.remove(&gone);
         }
@@ -1056,7 +1067,9 @@ impl Fleet {
             return self.prepare_connection(target, accounts);
         }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
-        if !self.instance_runs(&instance.id) {
+        let joining = self.instance_runs(&instance.id);
+        share::inbound(instance, joining)?;
+        if !joining {
             sync_mods(instance)?;
         }
         let server_addrs = server_addresses(target.join(), accounts, resolve_all, || !super::online::reachable())?;
@@ -1186,6 +1199,7 @@ impl Fleet {
         self.reserve(&key, &target.instance.id, account, server_addrs)?;
         sync::register(&self.games, &key, &target.instance.id, account.id);
         let token = self.ipc.register(&key);
+        let at = SystemTime::now();
         let child = launch(account, &key, &token).inspect_err(|_| {
             self.ipc.unregister(&key);
             lock(&self.reserved).remove(&key);
@@ -1200,6 +1214,7 @@ impl Fleet {
         }
         let pid = child.id();
         let game_dir = target.instance.game_dir(account.id);
+        let plain = !super::companion::available(&target.instance.game_version) || !wants_companion(target, std::slice::from_ref(account));
         if let Some(ledger) = self.ledger.as_ref().filter(|_| !target.connection_only())
             && let Some(seen) = adopt::identify(pid)
         {
@@ -1213,7 +1228,7 @@ impl Fleet {
                 game_dir: game_dir.clone(),
                 token,
                 server_addrs: server_addrs.to_vec(),
-                plain: !super::companion::available(&target.instance.game_version) || !wants_companion(target, std::slice::from_ref(account)),
+                plain,
                 headless: target.headless(),
             };
             ledger.add(&key, run);
@@ -1231,6 +1246,10 @@ impl Fleet {
             logs,
         };
         self.insert(key.clone(), instance);
+        if !target.connection_only() {
+            let start = share::Start { key: key.clone(), instance: target.instance.id.clone(), name: target.instance.name.clone(), dir: target.instance.dir(), game: game_dir, pid, companion: !plain, at, adopted: false };
+            let _ = self.notes.send(sync::Note::Started(start));
+        }
         Ok(key)
     }
 
@@ -1265,6 +1284,7 @@ impl Fleet {
         let reaping = Arc::clone(&self.reaping);
         let ipc = self.ipc.clone();
         let ledger = self.ledger.clone();
+        let notes = self.notes.clone();
         std::thread::Builder::new().name("fleet-reaper".into()).spawn(move || {
             loop {
                 std::thread::sleep(REAP_INTERVAL);
@@ -1278,6 +1298,9 @@ impl Fleet {
                         ipc.unregister(key);
                         ended.push((key.clone(), instance.pid));
                     }
+                }
+                for (key, pid) in &ended {
+                    let _ = notes.send(sync::Note::Ended { key: key.clone(), pid: *pid });
                 }
                 if let Some(ledger) = &ledger
                     && !ended.is_empty()
@@ -1418,6 +1441,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     if matches!(instance.loader, Loader::Forge(_) | Loader::NeoForge(_)) {
         quiet_early_window(&instance.config_dir())?;
     }
+    share::verify_game(&instance.options_template(), &game_dir.join(OPTIONS_FILE), share::data_version(&installed.classpath, &[&installed.game_version, &installed.version_name]))?;
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token)?;
     extra.jvm.splice(0..0, batch_defaults(target, installed, companion_jar.is_some()));
