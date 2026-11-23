@@ -386,21 +386,44 @@ fn join(shared: &Shared, spec: &Spec) -> Result<(Line, DisconnectCause)> {
         return Ok(end);
     }
     let mut chat_types = Vec::new();
+    let mut skipped: HashSet<(bool, i32)> = HashSet::new();
     loop {
         let phase = shared.lock().phase;
         let packet = reader.next(|id| wanted(phase, id))?;
         if phase == Phase::Play && packet.id == play::clientbound::PLAYER_POSITION {
             thread::sleep(CLIENT_TICK);
         }
+        let id = packet.id;
         let mut r = In::new(packet.body);
         let mut link = shared.lock();
-        let end = match phase {
-            Phase::Configuration => configuration(shared, &mut link, packet.id, &mut r, &mut chat_types)?,
-            _ => playing(shared, &mut link, packet.id, &mut r, &chat_types)?,
+        let handled = match phase {
+            Phase::Configuration => configuration(shared, &mut link, id, &mut r, &mut chat_types),
+            _ => playing(shared, &mut link, id, &mut r, &chat_types),
+        };
+        let end = match handled {
+            Ok(end) => end,
+            Err(e) if !essential(phase, id) => {
+                if skipped.insert((phase == Phase::Configuration, id)) {
+                    eprintln!("headless {}: skipped packet {id} it could not read: {e:#}", spec.name);
+                }
+                None
+            }
+            Err(e) => return Err(e),
         };
         if let Some(end) = end {
             return Ok(end);
         }
+    }
+}
+
+/// The packets whose loss the game itself does not survive: answers the server waits for, and its own goodbye. Anything
+/// else the client reads for the manager's sake, so one it cannot read is skipped and the connection stays.
+fn essential(phase: Phase, id: i32) -> bool {
+    use cfg::clientbound as c;
+    use play::clientbound as p;
+    match phase {
+        Phase::Configuration => [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER].contains(&id),
+        _ => [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER].contains(&id),
     }
 }
 
@@ -578,10 +601,10 @@ fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &
 
 fn pushed(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     let id = r.uuid()?;
-    let _url = r.string()?;
-    let _hash = r.string()?;
-    let required = r.bool()?;
-    let text = r.optional_nbt()?.map(|p| text::line(&p).text);
+    let _url = r.string().unwrap_or_default();
+    let _hash = r.string().unwrap_or_default();
+    let required = r.bool().unwrap_or(false);
+    let text = r.optional_nbt().ok().flatten().map(|p| text::line(&p).text);
     match link.packs {
         Packs::Accept => answer_pack(link, id, true),
         Packs::Decline => answer_pack(link, id, false),
@@ -632,13 +655,13 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::PLAYER_COMBAT_KILL => {
             let _player = r.varint()?;
-            let message = text::line(&r.nbt()?).text;
+            let message = r.nbt().map(|m| text::line(&m).text).unwrap_or_default();
             link.dead = Some(if message.is_empty() { died() } else { message });
             shared.settle(link);
         }
-        c::SYSTEM_CHAT => lenient(system_chat(shared, r)),
-        c::PLAYER_CHAT => lenient(player_chat(shared, link, r, types)),
-        c::DISGUISED_CHAT => lenient(disguised_chat(shared, r, types)),
+        c::SYSTEM_CHAT => system_chat(shared, r)?,
+        c::PLAYER_CHAT => player_chat(shared, link, r, types)?,
+        c::DISGUISED_CHAT => disguised_chat(shared, r, types)?,
         c::CHUNK_BATCH_FINISHED => write(link, s::CHUNK_BATCH_RECEIVED, Out::default().f32(CHUNKS_PER_TICK))?,
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
@@ -681,12 +704,6 @@ fn teleported(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
         shared.settle(link);
     }
     Ok(())
-}
-
-/// A line the manager shows is not worth the connection: one the client cannot read is dropped, and the stream stays in step
-/// because the next packet starts at its own frame.
-fn lenient(shown: Result<()>) {
-    let _ = shown;
 }
 
 fn system_chat(shared: &Shared, r: &mut In) -> Result<()> {
@@ -773,6 +790,67 @@ fn bound(r: &mut In, types: &[ChatType], content: &Value, text: String) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shared() -> Shared {
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
+        Shared::new(&spec, std::sync::mpsc::channel().0)
+    }
+
+    fn noise(seed: &mut u64, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                *seed ^= *seed << 13;
+                *seed ^= *seed >> 7;
+                *seed ^= *seed << 17;
+                if *seed % 5 == 0 { 0xff } else { (*seed >> 24) as u8 }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_packet_body_panics_or_overflows_the_stack_however_it_is_cut_or_made_up() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let shared = shared();
+                let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+                for phase in [Phase::Configuration, Phase::Play] {
+                    for id in (0..0x100).filter(|id| wanted(phase, *id)) {
+                        for round in 0..300 {
+                            let body = noise(&mut seed, round % 90);
+                            let mut link = shared.lock();
+                            link.phase = phase;
+                            let mut r = In::new(&body);
+                            let _ = match phase {
+                                Phase::Configuration => configuration(&shared, &mut link, id, &mut r, &mut Vec::new()),
+                                _ => playing(&shared, &mut link, id, &mut r, &[]),
+                            };
+                        }
+                    }
+                }
+            })
+            .unwrap()
+            .join()
+            .expect("a packet body made the client panic");
+    }
+
+    #[test]
+    fn only_what_the_game_itself_cannot_survive_ends_a_connection_on_a_bad_packet() {
+        use cfg::clientbound as c;
+        use play::clientbound as p;
+        for id in [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER] {
+            assert!(essential(Phase::Configuration, id));
+        }
+        for id in [c::REGISTRY_DATA, c::RESOURCE_PACK_PUSH, c::RESOURCE_PACK_POP, c::CODE_OF_CONDUCT, c::SELECT_KNOWN_PACKS] {
+            assert!(!essential(Phase::Configuration, id));
+        }
+        for id in [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER] {
+            assert!(essential(Phase::Play, id));
+        }
+        for id in [p::SYSTEM_CHAT, p::PLAYER_CHAT, p::DISGUISED_CHAT, p::SET_HEALTH, p::RESPAWN, p::PLAYER_COMBAT_KILL, p::RESOURCE_PACK_PUSH, p::RESOURCE_PACK_POP, p::CHUNK_BATCH_FINISHED] {
+            assert!(!essential(Phase::Play, id));
+        }
+    }
 
     fn body(host: &str, port: u16) -> Vec<u8> {
         handshake(host, port).0
