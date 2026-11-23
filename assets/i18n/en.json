@@ -2260,5 +2260,40 @@
   "Ressourcenpaket entfernen": "Remove resource pack",
   "Shader ein- oder ausschalten": "Turn shader on or off",
   "Shader entfernen": "Remove shader",
-  "Instanzen aus Prism, Modrinth oder einem anderen Launcher übernehmen.": "Bring over instances from Prism, Modrinth or another launcher."
+  "Instanzen aus Prism, Modrinth oder einem anderen Launcher übernehmen.": "Bring over instances from Prism, Modrinth or another launcher.",
+  "Screenshot": "Screenshot",
+  "Paket annehmen": "Accept pack",
+  "Paket ablehnen": "Decline pack",
+  "Paket": "Pack",
+  "Ressourcenpaket": "Resource pack",
+  "Server verlangt ein Ressourcenpaket": "Server requires a resource pack",
+  "Server bietet ein Ressourcenpaket an": "Server offers a resource pack",
+  "Der Server verlangt ein Ressourcenpaket, es wurde abgelehnt": "The server requires a resource pack and it was declined",
+  "Ohne Spielfenster geht erst ab Minecraft %@. Schalte es aus oder wähle eine neuere Version.": "Running without a game window needs Minecraft %@ or newer. Turn it off or pick a newer version.",
+  "Screenshot der Ausgewählten": "Screenshot selected",
+  "Ressourcenpakete annehmen": "Accept resource packs",
+  "Ressourcenpakete ablehnen": "Decline resource packs",
+  "Ohne Spielfenster": "Without game window",
+  "Die Spiele laufen unsichtbar und sparsam, ohne Fenster und ohne Platz in der Taskleiste. Du siehst sie über Screenshots; Chat und Befehle gehen wie sonst.": "The games run invisibly and cheaply, with no window and no place in the taskbar. You see them through screenshots; chat and commands work as usual.",
+  "Nur auf Wunsch": "Only on request",
+  "Jede Minute": "Every minute",
+  "Beim Betreten des Servers kommt einer von selbst, weitere über die Kachel. Jeder Screenshot kostet kurz Leistung.": "One comes on its own when the server is joined, more from the tile. Each screenshot costs a moment of performance.",
+  "Fragen": "Ask",
+  "Annehmen": "Accept",
+  "Alle annehmen": "Accept all",
+  "Ablehnen": "Decline",
+  "Ressourcenpakete vom Server": "Server resource packs",
+  "Ein offenes Spiel fragt wie sonst. Ein Spiel im Hintergrund wartet, bis du in seiner Kachel antwortest.": "An open game asks as usual. A game in the background waits until you answer in its tile.",
+  "Jedes Paket, das ein Server anbietet, wird geladen.": "Every pack a server offers is loaded.",
+  "Jedes Paket wird abgelehnt. Verlangt der Server eins, trennt er die Verbindung.": "Every pack is declined. If the server requires one, it disconnects.",
+  "Gilt sofort.": "Applies right away.",
+  "Geht erst ab Minecraft %@.": "Needs Minecraft %@ or newer.",
+  "%lld Ressourcenpaket": {
+    "one": "1 resource pack",
+    "other": "%lld resource packs"
+  },
+  "Alle %lld Minuten": {
+    "one": "Every minute",
+    "other": "Every %lld minutes"
+  }
 }

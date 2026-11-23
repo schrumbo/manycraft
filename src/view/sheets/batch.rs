@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::app::event::Event as AppEvent;
 use crate::app::model::Model;
 use crate::core::account::AccountKind;
-use crate::core::batch::{Background, Batch};
+use crate::core::batch::{Background, Batch, Unattended};
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
@@ -30,11 +30,12 @@ use crate::view::kit::text::{caption, figure, line, para, strong};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{at_least, off_ui, ring, toast, use_arrows, use_theme};
 use crate::view::sheets::instance::{Load, problem_view};
+use crate::view::sheets::unattended;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page, SessionUndo, Show, remember};
 
-const FIELD_W: f32 = frame::SHEET - space::XL * 2. - frame::RING * 2.;
+pub(super) const FIELD_W: f32 = frame::SHEET - space::XL * 2. - frame::RING * 2.;
 const FILTER_FROM: usize = 12;
 const CHROME: f32 = 280.;
 const BODY_MIN: f32 = 160.;
@@ -215,7 +216,7 @@ fn list_max(store: Store) -> f32 {
     (body_max(store) * LIST_SHARE).clamp(LIST_MIN, LIST_MAX)
 }
 
-fn title_text(t: &Theme, text: String) -> Label {
+pub(super) fn title_text(t: &Theme, text: String) -> Label {
     line(t, text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)
 }
 
@@ -230,7 +231,7 @@ fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
         .into_element()
 }
 
-fn hint(t: &Theme, text: String) -> Element {
+pub(super) fn hint(t: &Theme, text: String) -> Element {
     at_least(font::CAPTION * frame::PARA_LINE * HINT_LINES, para(t, text, font::CAPTION, t.text3)).width(Size::fill()).into_element()
 }
 
@@ -257,6 +258,7 @@ struct Seed {
     background: Background,
     launch_parallel: u32,
     full_speed: bool,
+    unattended: Unattended,
 }
 
 impl Seed {
@@ -285,6 +287,7 @@ impl Seed {
             background: original.map_or_else(Background::default, |b| b.background),
             launch_parallel: original.map_or(0, |b| b.launch_parallel),
             full_speed: original.is_some_and(|b| b.full_speed),
+            unattended: original.map_or_else(Unattended::default, Batch::unattended),
         }
     }
 }
@@ -308,6 +311,7 @@ struct Flow {
     kept_custom: State<Option<Background>>,
     launch_parallel: State<u32>,
     full_speed: State<bool>,
+    unattended: State<Unattended>,
     advanced: State<bool>,
     free: State<Option<u64>>,
     accounts: State<HashSet<Uuid>>,
@@ -521,6 +525,7 @@ impl Flow {
             background: *self.background.peek(),
             launch_parallel: *self.launch_parallel.peek(),
             full_speed: *self.full_speed.peek(),
+            unattended: *self.unattended.peek(),
         };
         let id = self.original.peek().as_ref().map(|b| b.id.clone());
         let store = self.store;
@@ -599,6 +604,7 @@ impl Component for BatchSheet {
             kept_custom: use_state(|| None),
             launch_parallel: use_state(|| seed.launch_parallel),
             full_speed: use_state(|| seed.full_speed),
+            unattended: use_state(|| seed.unattended),
             advanced: use_state(|| false),
             free: use_state(|| None),
             accounts: use_state(|| seed.accounts.clone()),
@@ -641,7 +647,7 @@ impl Component for BatchSheet {
         let pace = *flow.launch_parallel.read();
         let inherit = *flow.inherit.read();
         let full_speed = *flow.full_speed.read();
-        let open = *flow.advanced.read() || !inherit || pace != 0 || full_speed;
+        let open = *flow.advanced.read() || !inherit || pace != 0 || full_speed || unattended::set(*flow.unattended.read());
 
         let (choices, candidates, running, picked, instance_memory, caption_text, own_game) = {
             let model = store.model.read();
@@ -667,6 +673,7 @@ impl Component for BatchSheet {
         let (name_problem, server_problem, version_problem) = flow.problems();
         let name_shown = name_problem.clone().filter(|_| tried || !flow.name.read().is_empty());
         let lock = saving.then(saving_text);
+        let game = instance.as_deref().and_then(|id| store.model.read().instance(id).map(|i| i.game_version.clone())).unwrap_or_else(|| version.clone());
 
         if *flow.asking.read() && editing {
             if let Some(batch) = &self.original {
@@ -733,7 +740,8 @@ impl Component for BatchSheet {
             .children(fit_line(&t, flow, picked))
             .child(name_field)
             .child(background_section(&t, flow, background, running, &lock))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory }, &lock));
+            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory }, &lock))
+            .children(open.then(|| unattended::section(&t, flow.unattended, &game, running, &lock)));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
         if let Some(problem) = flow.save_error.read().clone() {

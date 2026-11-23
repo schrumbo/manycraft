@@ -20,6 +20,7 @@ class DisconnectClassifierTest {
 		assertEquals("banned", keyed("multiplayer.disconnect.banned_ip.expiration"));
 		assertEquals("whitelist", keyed("multiplayer.disconnect.not_whitelisted"));
 		assertEquals("server_full", keyed("multiplayer.disconnect.server_full"));
+		assertEquals("pack_declined", keyed("multiplayer.requiredTexturePrompt.disconnect"));
 		assertEquals("kicked", keyed("multiplayer.disconnect.kicked"));
 		assertEquals("kicked", keyed("multiplayer.disconnect.idling"));
 		assertEquals("duplicate", keyed("multiplayer.disconnect.duplicate_login"));

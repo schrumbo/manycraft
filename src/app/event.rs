@@ -91,6 +91,8 @@ pub enum Event {
     ProbeDue { server: String },
     /// The restart of `key` after a crash is due, if nothing newer came since `generation`.
     RestartDue { key: String, generation: u64 },
+    /// The screenshot timer of `key` ran out, if no newer timer was armed since `generation`.
+    CaptureDue { key: String, generation: u64 },
     /// The next join command of `key` is due; the rest follow `delay` apart.
     JoinDue { key: String, generation: u64, lines: Vec<String>, delay: Duration },
     /// A start that waited for the connection tries again.
@@ -145,6 +147,10 @@ pub enum Event {
     /// Reconnects these games one after another, leaving out banned ones and those without a process.
     ReconnectMany(Vec<String>),
     Respawn(String),
+    /// Takes a screenshot of each of these games that runs without a window.
+    Capture(Vec<String>),
+    /// Answers the resource pack each of these games holds.
+    AnswerPack { keys: Vec<String>, accept: bool },
     Play(String),
     /// Plays `instance` alone as a normal game window, with `account` or the one it plays with by default.
     PlayInstance { instance: String, account: Option<Uuid> },

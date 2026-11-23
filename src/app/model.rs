@@ -14,6 +14,7 @@ use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
 use crate::core::instance::Instance;
 use crate::core::i18n::{tr, trf};
+use crate::core::ipc::Offer;
 use crate::core::proxy::Fault;
 
 use super::session::{Frame, Session};
@@ -49,12 +50,14 @@ pub enum Phase {
     ServerAway { server: String },
     /// Not started because there was no connection; starts by itself when it is back.
     NoNetwork,
+    /// On `server`, which offers a resource pack the game holds until the user answers.
+    Offer { server: String, offer: Offer },
 }
 
 impl Phase {
     /// Whether the user has work here: dropped off the server after auto-reconnect gave up, banned, crashed, or must sign in.
     pub fn needs_attention(&self) -> bool {
-        matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. })
+        matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::Offer { .. })
     }
 
     /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash is due.
@@ -70,7 +73,7 @@ impl Phase {
     /// The server the instance is on or was last on, when it is known.
     pub fn server(&self) -> Option<&str> {
         match self {
-            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } | Phase::ServerAway { server } => Some(server),
+            Phase::Connecting { server } | Phase::Queue { server } | Phase::Playing { server, .. } | Phase::NetworkLost { server } | Phase::ServerAway { server } | Phase::Offer { server, .. } => Some(server),
             Phase::Disconnected { server, .. } | Phase::Dead { server, .. } | Phase::Banned { server, .. } => server.as_deref(),
             _ => None,
         }
@@ -110,6 +113,7 @@ impl Phase {
     pub fn need(&self) -> Option<Need> {
         match self {
             Phase::LoginNeeded => Some(Need::SignIn),
+            Phase::Offer { .. } => Some(Need::Offer),
             Phase::Disconnected { .. } => Some(Need::Disconnected),
             Phase::Dead { .. } => Some(Need::Dead),
             Phase::Crashed { .. } => Some(Need::Crashed),
@@ -129,6 +133,8 @@ impl Phase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Need {
     SignIn,
+    /// A server offers a resource pack and waits for the answer.
+    Offer,
     Disconnected,
     Dead,
     Crashed,
@@ -137,7 +143,7 @@ pub enum Need {
 }
 
 impl Need {
-    pub const ALL: [Need; 6] = [Need::SignIn, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
+    pub const ALL: [Need; 7] = [Need::SignIn, Need::Offer, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
 }
 
 /// How many of a set of games each selection action acts on.
@@ -196,6 +202,8 @@ pub struct Game {
     pub memory_wait: Option<u64>,
     /// The name its memory per game is learned under, fixed by how it was started.
     pub measured_as: Option<String>,
+    /// Runs without any window, fixed by how it was started: never shown, previewed only by screenshots.
+    pub headless: bool,
 }
 
 impl Game {
@@ -206,7 +214,21 @@ impl Game {
 
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false }
+    }
+
+    /// Whether its window can be swapped in: a game with the mod past its start that has a window.
+    pub fn showable(&self) -> bool {
+        self.phase.playable() && !self.alone() && !self.headless
+    }
+
+    /// Its main action, `busy` when its account plays the same instance in another game: a headless game takes a
+    /// screenshot where another game would be played.
+    pub fn action(&self, busy: bool) -> Option<Primary> {
+        match main_action(&self.phase, Stopping::of(self.stopping, self.overdue), busy) {
+            Some(Primary::Play) if self.headless => Some(Primary::Screenshot),
+            other => other,
+        }
     }
 }
 
@@ -581,6 +603,10 @@ pub enum Primary {
     TakeOver,
     /// Ends a game whose stop is overdue at once.
     ForceQuit,
+    /// Takes a screenshot of a game without a window.
+    Screenshot,
+    /// Lets the held resource pack in.
+    AcceptPack,
 }
 
 /// How far a stop has come: not stopping, stopping, or stopping for long enough to end the game at once.
@@ -626,6 +652,7 @@ pub fn primary(phase: &Phase, stopping: Stopping) -> Option<Primary> {
         Phase::NoNetwork => Some(Primary::Retry),
         Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
         Phase::Restarting { .. } => Some(Primary::Start),
+        Phase::Offer { .. } => Some(Primary::AcceptPack),
     }
 }
 
@@ -641,6 +668,8 @@ impl Primary {
             Self::SignIn => tr("Anmelden"),
             Self::TakeOver => tr("Dort beenden und hier starten"),
             Self::ForceQuit => tr("Sofort beenden"),
+            Self::Screenshot => tr("Screenshot"),
+            Self::AcceptPack => tr("Paket annehmen"),
         }
     }
 }
@@ -693,6 +722,8 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
         Phase::ServerAway { .. } => tr("Server weg · verbindet sich wieder, sobald er antwortet"),
         Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
+        Phase::Offer { offer, .. } if offer.required => tr("Server verlangt ein Ressourcenpaket"),
+        Phase::Offer { .. } => tr("Server bietet ein Ressourcenpaket an"),
     }
 }
 

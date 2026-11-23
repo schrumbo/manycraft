@@ -49,6 +49,7 @@ pub fn word(g: &Game, m: &Model) -> String {
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
         Phase::ServerAway { .. } => tr("Wartet auf Server"),
+        Phase::Offer { .. } => tr("Ressourcenpaket"),
     }
 }
 
@@ -65,6 +66,7 @@ pub fn short(g: &Game, m: &Model) -> Option<String> {
         Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::Dead { .. } => tr("Gestorben"),
         Phase::Failed { .. } => tr("Fehler"),
+        Phase::Offer { .. } => tr("Paket"),
         _ => return None,
     })
 }
@@ -236,6 +238,7 @@ fn clock(at: u64) -> String {
 pub fn need_label(need: Need, count: usize) -> String {
     match need {
         Need::SignIn => trf("%lld Anmeldung", &[&count]),
+        Need::Offer => trf("%lld Ressourcenpaket", &[&count]),
         Need::Disconnected => trf("%lld Getrennt", &[&count]),
         Need::Dead => trf("%lld Gestorben", &[&count]),
         Need::Crashed => trf("%lld Abgestürzt", &[&count]),
@@ -271,6 +274,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
                 more => (tr("Alle anmelden"), Fix::SignIn(more.iter().map(|a| a.id).collect())),
             }
         }
+        Need::Offer => (pick("Alle annehmen", "Annehmen"), Fix::Events(vec![Event::AnswerPack { keys: keys.to_vec(), accept: true }])),
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
         Need::Crashed | Need::Failed => (if many { trf("Neu starten (%lld)", &[&keys.len()]) } else { tr("Neu starten") }, Fix::Events(vec![Event::StartMany(keys.to_vec())])),

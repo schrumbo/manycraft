@@ -92,6 +92,7 @@ impl Backend for Fake {
 
 struct Running {
     seq: u32,
+    shot: bool,
     next_preview: Instant,
     every: Duration,
     width: u32,
@@ -119,11 +120,11 @@ fn hash(text: &str) -> u64 {
 }
 
 fn state<P>(instance: &str, kind: StateKind, reason: Option<&str>) -> Update<P> {
-    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned), cause: None } })
+    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind, server: Some(SERVER.to_owned()), reason: reason.map(str::to_owned), cause: None, offer: None } })
 }
 
 fn server_down<P>(instance: &str) -> Update<P> {
-    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind: StateKind::Disconnected, server: Some(SERVER.to_owned()), reason: Some("Server closed".to_owned()), cause: Some(DisconnectCause::ServerDown) } })
+    Update::Ipc(Event::Message { instance: instance.to_owned(), message: FromMod::State { kind: StateKind::Disconnected, server: Some(SERVER.to_owned()), reason: Some("Server closed".to_owned()), cause: Some(DisconnectCause::ServerDown), offer: None } })
 }
 
 /// Seconds from an environment variable.
@@ -248,7 +249,15 @@ impl<P: Pixels> Sim<P> {
                     (run.every, run.width) = (every, width);
                 }
             }
-            ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
+            ToMod::Capture { width } => {
+                if let Some(run) = self.running.get_mut(key) {
+                    run.shot = true;
+                    run.width = width.clamp(16, 1280);
+                }
+            }
+            ToMod::Answer { accept: true, .. } => self.at(Duration::from_millis(300), None, state(key, StateKind::Playing, None)),
+            ToMod::Answer { accept: false, .. } => self.at(Duration::from_millis(300), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::State { kind: StateKind::Disconnected, server: Some(SERVER.to_owned()), reason: None, cause: Some(DisconnectCause::PackDeclined), offer: None } })),
+            ToMod::Packs { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers => {}
         }
     }
 
@@ -353,7 +362,7 @@ impl<P: Pixels> Sim<P> {
             }
             match &update {
                 Update::Ipc(Event::Connected { instance, .. }) => {
-                    self.running.insert(instance.clone(), Running { seq: 0, next_preview: now, every: PREVIEW_EVERY, width: PREVIEW_W });
+                    self.running.insert(instance.clone(), Running { seq: 0, shot: false, next_preview: now, every: PREVIEW_EVERY, width: PREVIEW_W });
                 }
                 Update::Exited { key, .. } => {
                     self.running.remove(key);
@@ -395,7 +404,7 @@ impl<P: Pixels> Sim<P> {
         }
         let visible = self.visible.lock().map(|v| v.clone()).unwrap_or_default();
         for (key, run) in &mut self.running {
-            if !visible.contains(key) || run.next_preview > now {
+            if !std::mem::take(&mut run.shot) && (!visible.contains(key) || run.next_preview > now) {
                 continue;
             }
             run.seq += 2;

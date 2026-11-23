@@ -49,7 +49,7 @@ pub fn allowed(from: &Phase, to: &Phase, why: Why) -> bool {
         Why::Launched => matches!(from, Starting { .. } | Failed { .. }) && matches!(to, Plain | Starting { place: 0, .. }),
         Why::StartFailed => matches!(from, Starting { .. } | NoNetwork | Failed { .. }) && matches!(to, LoginNeeded | NoNetwork | Failed { .. }),
         Why::Connected => matches!(from, Starting { .. }) && *to == Menu,
-        Why::Mod => mod_reports(from) && matches!(to, Menu | Connecting { .. } | Queue { .. } | Playing { .. } | Dead { .. } | Disconnected { .. } | NetworkLost { .. } | ServerAway { .. } | Banned { .. } | Restarting { .. } | LoginNeeded),
+        Why::Mod => mod_reports(from) && matches!(to, Menu | Connecting { .. } | Queue { .. } | Playing { .. } | Dead { .. } | Disconnected { .. } | NetworkLost { .. } | ServerAway { .. } | Banned { .. } | Restarting { .. } | LoginNeeded | Offer { .. }),
         Why::Exit => matches!(to, Stopped | Crashed { .. } | Restarting { .. }),
         Why::Stop => matches!(from, Starting { .. } | Crashed { .. } | Restarting { .. } | Failed { .. } | NoNetwork) && *to == Stopped,
         Why::SignIn => matches!((from, to), (Stopped | Crashed { .. } | Failed { .. }, LoginNeeded) | (LoginNeeded, Stopped)),
@@ -93,7 +93,22 @@ mod tests {
             Phase::NetworkLost { server: s() },
             Phase::ServerAway { server: s() },
             Phase::NoNetwork,
+            Phase::Offer { server: s(), offer: crate::core::ipc::Offer { id: s(), required: true, text: None } },
         ]
+    }
+
+    #[test]
+    fn a_held_resource_pack_needs_the_user_and_only_the_mod_raises_it() {
+        let offer = Phase::Offer { server: "s".into(), offer: crate::core::ipc::Offer { id: "1".into(), required: false, text: None } };
+        assert!(offer.needs_attention() && offer.is_running() && offer.reconnectable() && !offer.can_chat());
+        assert_eq!(offer.need(), Some(super::super::model::Need::Offer));
+        for from in all() {
+            assert_eq!(allowed(&from, &offer, Why::Mod), mod_reports(&from), "{from:?}");
+            assert!(!allowed(&from, &offer, Why::Connected) && !allowed(&from, &offer, Why::Reconnect));
+        }
+        assert!(allowed(&offer, &Phase::Playing { server: "s".into(), since: Instant::now() }, Why::Mod));
+        assert!(allowed(&offer, &Phase::Disconnected { server: None, reason: "x".into() }, Why::Mod));
+        assert!(allowed(&offer, &Phase::Connecting { server: "s".into() }, Why::Reconnect));
     }
 
     #[test]

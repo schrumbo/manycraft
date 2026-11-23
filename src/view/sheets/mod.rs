@@ -6,6 +6,7 @@ pub mod browser;
 pub mod import;
 pub mod instance;
 pub mod trash;
+pub mod unattended;
 pub mod updates;
 
 use crate::view::commands::{Answer, Want, answer_wants};

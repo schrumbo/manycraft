@@ -1,7 +1,7 @@
 //! What the core remembers about the running games between events: timer generations, processes, restarts, collected notifications.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::model::Phase;
 use crate::core::phone;
@@ -27,6 +27,20 @@ impl Alert {
             _ => Self::Other,
         }
     }
+}
+
+/// A screenshot timer: the one armed last, every `minutes`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timer {
+    pub generation: u64,
+    pub minutes: u32,
+}
+
+/// Join commands that came due while their game held a resource pack: the rest of them, sent once it is back in the game.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldJoin {
+    pub lines: Vec<String>,
+    pub delay: Duration,
 }
 
 /// What a game that was asked to show covers once it appears.
@@ -66,6 +80,10 @@ pub struct Shot {
 /// The state of the running session that no view shows directly.
 #[derive(Default)]
 pub struct Session {
+    /// The screenshot timer of each game without a window whose batch takes them on an interval, by key.
+    pub captures: HashMap<String, Timer>,
+    /// Bumped by every screenshot timer armed, so a timer of an older one does nothing.
+    pub capture_seq: u64,
     /// Where each game played alone goes on its next start, by key.
     pub quick: HashMap<String, crate::core::fleet::Quick>,
     /// Tiles on screen, whose previews update at full rate.
@@ -83,6 +101,8 @@ pub struct Session {
     pub started: HashMap<String, Instant>,
     /// Games that joined a server and have not left it since.
     pub joined: HashSet<String>,
+    /// Join commands waiting for their game's resource pack offer to be answered.
+    pub held_joins: HashMap<String, HeldJoin>,
     /// Servers whose status ping is on its way or waits for its next turn.
     pub probes: HashSet<String>,
     /// Games a server's answer woke from waiting that have not reached it yet; their next drop spends a try.

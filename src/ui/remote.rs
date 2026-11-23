@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::core::account::{self, Account, AccountKind};
 use crate::core::auth::{self, AuthError, WrongAccount};
-use crate::core::batch::{self, Background, Batch, ModRef};
+use crate::core::batch::{self, Background, Batch, ModRef, Unattended};
 use crate::core::instance::{self as setup, Loader};
 use crate::core::javas::Java;
 use crate::core::options::LaunchOptions;
@@ -741,6 +741,7 @@ pub struct BatchEdit {
     pub launch_parallel: u32,
     /// Games keep the full compiler.
     pub full_speed: bool,
+    pub unattended: Unattended,
 }
 
 /// Applies `edit` to the saved batch `id` as it is on disk now, or creates a batch when `id` is `None`, and returns it.
@@ -790,6 +791,7 @@ fn apply(b: &mut Batch, instance_id: String, edit: BatchEdit, known: &HashSet<Uu
     b.background = edit.background;
     b.launch_parallel = edit.launch_parallel;
     b.full_speed = edit.full_speed;
+    b.set_unattended(edit.unattended);
 }
 
 /// What the instance sheet and page change on an instance; everything else stays as saved.
@@ -1299,7 +1301,7 @@ mod tests {
         let mut b = Batch::new("Farm", "i1");
         b.join_commands = vec!["/home".into()];
         b.memory_override = Some(3000);
-        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4, full_speed: true };
+        let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4, full_speed: true, unattended: Unattended::default() };
         apply(&mut b, "i2".into(), edit(None), &HashSet::from([me]));
         assert_eq!((b.name.as_str(), b.instance_id.as_str(), b.memory_override, b.accounts.as_slice()), ("Lobby", "i2", None, &[me][..]));
         assert_eq!(b.join_commands, ["/home"]);
@@ -1400,9 +1402,10 @@ mod tests {
         let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut b = Batch::new("Farm", "i1");
         b.accounts = vec![shown, unseen];
-        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false };
+        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false, unattended: Unattended { headless: true, screenshots: Some(5), packs: batch::Packs::Decline } };
         apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
         assert_eq!(b.accounts, [unseen]);
+        assert_eq!(b.unattended(), Unattended { headless: true, screenshots: Some(5), packs: batch::Packs::Decline });
     }
 
     #[test]

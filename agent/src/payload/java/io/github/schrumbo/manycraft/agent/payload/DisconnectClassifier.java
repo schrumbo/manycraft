@@ -59,6 +59,9 @@ final class DisconnectClassifier {
 		if (key.equals("multiplayer.disconnect.not_whitelisted")) {
 			return "whitelist";
 		}
+		if (key.equals(PackOffers.DECLINED)) {
+			return "pack_declined";
+		}
 		if (key.equals("multiplayer.disconnect.server_full")) {
 			return "server_full";
 		}

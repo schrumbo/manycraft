@@ -43,7 +43,7 @@ pub fn react(cause: DisconnectCause, attempt: u32, policy: &Reconnect, unit: f64
     match cause {
         DisconnectCause::Banned => return Reaction::Banned,
         DisconnectCause::Auth => return Reaction::SignInAgain,
-        DisconnectCause::Whitelist | DisconnectCause::Duplicate => return Reaction::NotAllowed,
+        DisconnectCause::Whitelist | DisconnectCause::Duplicate | DisconnectCause::PackDeclined => return Reaction::NotAllowed,
         DisconnectCause::ServerDown | DisconnectCause::Unknown if offline && policy.enabled => return Reaction::WaitForNetwork,
         DisconnectCause::ServerFull | DisconnectCause::Kicked | DisconnectCause::ServerDown | DisconnectCause::Unknown => {}
     }

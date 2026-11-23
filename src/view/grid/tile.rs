@@ -10,7 +10,7 @@ use freya::prelude::*;
 use super::layout::{self, TWO_LINES};
 use super::words;
 use crate::app::event::Event as AppEvent;
-use crate::app::model::{Game, Model, Phase, Primary, main_action, status, stopped_ban};
+use crate::app::model::{Game, Model, Phase, Primary, status, stopped_ban};
 use crate::core::account::Account;
 use crate::core::i18n::{tr, trf};
 use crate::view::commands::Command;
@@ -46,6 +46,8 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::Start | Primary::Retry => store.dispatch(AppEvent::Start(vec![key])),
         Primary::TakeOver => store.dispatch(AppEvent::TakeOver(key)),
         Primary::ForceQuit => store.dispatch(AppEvent::Stop(vec![key])),
+        Primary::Screenshot => store.dispatch(AppEvent::Capture(vec![key])),
+        Primary::AcceptPack => store.dispatch(AppEvent::AnswerPack { keys: vec![key], accept: true }),
         Primary::SignIn => {
             let mut page = store.ui.page;
             page.set(Page::ACCOUNTS);
@@ -59,12 +61,14 @@ fn glyph(p: Primary) -> Icon {
         Primary::Reconnect | Primary::Retry | Primary::Respawn | Primary::TakeOver => Icon::Refresh,
         Primary::SignIn => Icon::LogIn,
         Primary::ForceQuit => Icon::Stop,
+        Primary::Screenshot => Icon::Image,
+        Primary::AcceptPack => Icon::Package,
     }
 }
 
 fn action_of(g: &Game, m: &Model) -> Option<Primary> {
     let busy = !g.phase.is_active() && m.playing_elsewhere(&g.instance_id, g.account_id, &g.key).is_some();
-    main_action(&g.phase, crate::app::model::Stopping::of(g.stopping, g.overdue), busy)
+    g.action(busy)
 }
 
 /// Forgets the pointer over `key` once it leaves the tile or row.
@@ -124,6 +128,8 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
         let same = match p {
             Primary::Start => Some(Command::StartSelected),
             Primary::Reconnect => Some(Command::ReconnectSelected),
+            Primary::Screenshot => Some(Command::ScreenshotSelected),
+            Primary::AcceptPack => Some(Command::AcceptPacks),
             _ => None,
         };
         if let Some(s) = same.filter(|c| c.available(store)).and_then(Command::shortcut) {
@@ -131,10 +137,14 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
         }
         items.push(item);
     }
-    for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected] {
+    let offered = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| matches!(g.phase, Phase::Offer { .. })));
+    for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected, Command::ScreenshotSelected, Command::AcceptPacks, Command::DeclinePacks] {
         let doubled = match c {
             Command::StartSelected => matches!(primary, Some(Primary::Start | Primary::TakeOver)),
             Command::ReconnectSelected => matches!(primary, Some(Primary::Reconnect)),
+            Command::ScreenshotSelected => matches!(primary, Some(Primary::Screenshot)),
+            Command::AcceptPacks => matches!(primary, Some(Primary::AcceptPack)) || !offered,
+            Command::DeclinePacks => !offered,
             _ => false,
         };
         if !doubled {
@@ -172,6 +182,9 @@ fn single(c: Command) -> String {
         Command::StopSelected => tr("Stoppen"),
         Command::RestartSelected => tr("Neu starten"),
         Command::ReconnectSelected => tr("Neu verbinden"),
+        Command::ScreenshotSelected => tr("Screenshot"),
+        Command::AcceptPacks => tr("Paket annehmen"),
+        Command::DeclinePacks => tr("Paket ablehnen"),
         other => other.label(),
     }
 }

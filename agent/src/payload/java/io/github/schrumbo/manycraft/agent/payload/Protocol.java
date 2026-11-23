@@ -43,7 +43,15 @@ final class Protocol {
 		record Options(Map<String, String> values) implements Incoming {}
 
 		record Servers() implements Incoming {}
+
+		record Packs(String policy) implements Incoming {}
+
+		record Answer(String id, boolean accept) implements Incoming {}
+
+		record Capture(int width) implements Incoming {}
 	}
+
+	record Offer(String id, boolean required, String text) {}
 
 	private Protocol() {}
 
@@ -64,11 +72,22 @@ final class Protocol {
 	}
 
 	static String state(String kind, String server, String reason, String cause) {
+		return state(kind, server, reason, cause, null);
+	}
+
+	static String state(String kind, String server, String reason, String cause, Offer offer) {
 		JsonObject o = message("state");
 		o.addProperty("kind", kind);
 		o.addProperty("server", server);
 		o.addProperty("reason", reason);
 		o.addProperty("cause", cause);
+		if (offer != null) {
+			JsonObject held = new JsonObject();
+			held.addProperty("id", offer.id());
+			held.addProperty("required", offer.required());
+			held.addProperty("text", offer.text());
+			o.add("offer", held);
+		}
 		return GSON.toJson(o);
 	}
 
@@ -173,6 +192,9 @@ final class Protocol {
 				case "level" -> BackgroundLevel.parse(string(o, "level")).map(l -> new Incoming.Level(l, BackgroundLevel.Custom.of(integer(o, "fps"), integer(o, "render_distance")))).orElse(null);
 				case "options" -> strings(o, "values") == null ? null : new Incoming.Options(strings(o, "values"));
 				case "servers" -> new Incoming.Servers();
+				case "packs" -> string(o, "policy") == null ? null : new Incoming.Packs(string(o, "policy"));
+				case "answer" -> string(o, "id") == null || bool(o, "accept") == null ? null : new Incoming.Answer(string(o, "id"), bool(o, "accept"));
+				case "capture" -> new Incoming.Capture(requireInt(o, "width"));
 				default -> null;
 			});
 		} catch (RuntimeException e) {

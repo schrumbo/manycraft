@@ -48,4 +48,6 @@ public interface Bridge {
 	void overlayChat(Object message);
 
 	void hud(Object graphics);
+
+	boolean resourcePack(Object listener, Object packet);
 }

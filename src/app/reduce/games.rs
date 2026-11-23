@@ -5,8 +5,8 @@ use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
 use super::super::model::{ChatLine, Game, Model, Phase, rank};
 use super::super::phase::{self, Why};
-use super::super::session::{Alert, Frame, Reveal};
-use super::{Env, fleet, go, notify, redraw, show};
+use super::super::session::{Alert, Frame, HeldJoin, Reveal};
+use super::{Env, fleet, go, headless, notify, redraw, show};
 use crate::core::account::AccountKind;
 use crate::core::chat_text;
 use crate::core::fleet as fleets;
@@ -239,18 +239,22 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         }
         Report::Connected { key, pid } => {
             let alone = m.games.get(&key).is_some_and(Game::alone);
+            let headless = m.games.get(&key).is_some_and(|i| i.headless);
             m.session.lost.remove(&key);
             m.set_hint(&key, |h| h.link_lost = false);
             m.session.pids.insert(key.clone(), pid);
             m.session.shots.remove(&key);
             m.session.planned.remove(&key);
-            if env.place_windows && !alone {
+            if env.place_windows && !alone && !headless {
                 m.session.unplaced.insert(key.clone());
             }
             for message in identity(m, env, &key) {
                 fx.now.push(Effect::Send { key: key.clone(), message });
             }
-            fx.now.push(Effect::Tint { key: key.clone(), pid });
+            headless::arm_one(m, &key, &mut fx.now);
+            if !headless {
+                fx.now.push(Effect::Tint { key: key.clone(), pid });
+            }
             if let Some(path) = preview_path(m, &key).filter(|_| m.session.adopted.contains(&key)) {
                 m.session.read_at.insert(key.clone(), env.now);
                 fx.now.push(Effect::ReadPreview { key: key.clone(), path });
@@ -280,6 +284,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
 
 fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>) {
     m.set_hint(&key, |h| *h = Default::default());
+    headless::ended(m, &key);
     m.session.stale.remove(&key);
     fx.now.push(Effect::ReleasePreview(key.clone()));
     if m.games.contains_key(&key)
@@ -295,6 +300,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     s.usage.remove(&key);
     s.unplaced.remove(&key);
     s.joined.remove(&key);
+    s.held_joins.remove(&key);
     s.woken.remove(&key);
     s.adopted.remove(&key);
     let unknown = s.foreign.remove(&key) && code.is_none();
@@ -395,12 +401,13 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     let s = &mut m.session;
     let policy = &env.settings.reconnect;
     let server_text = server.clone().unwrap_or_default();
-    let reason_text = reason.clone().unwrap_or_default();
+    let reason_text = if cause == Some(DisconnectCause::PackDeclined) { notify::cause_text(DisconnectCause::PackDeclined) } else { reason.clone().unwrap_or_default() };
     let mut event: Option<(Kind, Option<String>, String)> = None;
     let mut hold = false;
     let to = match kind {
         StateKind::Menu => {
             s.joined.remove(&key);
+            s.held_joins.remove(&key);
             s.woken.remove(&key);
             Phase::Menu
         }
@@ -412,6 +419,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                 Phase::Playing { server: server_text, since }
             } else {
                 s.started.entry(key.clone()).or_insert(env.now);
+                let held = s.held_joins.remove(&key);
                 if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() && s.joined.insert(key.clone()) {
                     event = Some((Kind::Connected, server.clone(), String::new()));
                     fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, What::Back, "", server.as_deref())));
@@ -419,13 +427,18 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                         let generation = *s.joins.entry(key.clone()).or_default();
                         fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
                     }
+                } else if let Some(HeldJoin { lines, delay }) = held {
+                    let generation = *s.joins.entry(key.clone()).or_default();
+                    fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
                 }
                 Phase::Playing { server: server_text, since: env.now }
             }
         }
         StateKind::Dead => Phase::Dead { server, reason: reason_text },
+        StateKind::Offer => return,
         StateKind::Disconnected => {
             s.joined.remove(&key);
+            s.held_joins.remove(&key);
             let woken = s.woken.remove(&key);
             if let Phase::Playing { since, .. } = i.phase
                 && env.now.saturating_duration_since(since) >= STABLE
@@ -479,6 +492,9 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
         }
     };
     go(m, &key, to, Why::Mod, &mut fx.now);
+    if matches!(event, Some((Kind::Connected, ..))) {
+        headless::joined(m, &key, &mut fx.now);
+    }
     if let Some((kind, server, reason)) = event {
         note(m, env, fx, &key, kind, server, &reason);
     }
@@ -656,6 +672,7 @@ fn seed_state(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: StateKind,
         StateKind::Dead => Phase::Dead { server, reason },
         StateKind::Disconnected if cause == Some(DisconnectCause::Banned) => Phase::Banned { server, reason },
         StateKind::Disconnected => Phase::Disconnected { server, reason },
+        StateKind::Offer => return,
     };
     go(m, key, to, Why::Adopt, &mut fx.now);
 }
@@ -666,7 +683,8 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
         fx.placed.push(key.clone());
     }
     match message {
-        FromMod::State { kind, server, reason, cause } => on_state(m, env, fx, key, kind, server, reason, cause),
+        FromMod::State { kind: StateKind::Offer, server, offer, .. } => headless::offered(m, &key, server, offer, &mut fx.now),
+        FromMod::State { kind, server, reason, cause, .. } => on_state(m, env, fx, key, kind, server, reason, cause),
         FromMod::Chat { from, text, runs, .. } => {
             let runs = match (chat_text::needs_runs(&runs, &text), runs.is_empty(), &from) {
                 (false, ..) => Vec::new(),
@@ -728,12 +746,13 @@ fn identity(m: &Model, env: &Env, key: &str) -> Vec<ToMod> {
 }
 
 /// Every connected game hears its identity, badge and background level again.
-pub(super) fn tell_games(m: &Model, env: &Env, out: &mut Vec<Effect>) {
+pub(super) fn tell_games(m: &mut Model, env: &Env, out: &mut Vec<Effect>) {
     for key in m.session.pids.keys() {
         for message in identity(m, env, key) {
             out.push(Effect::Send { key: key.clone(), message });
         }
     }
+    headless::arm(m, out);
 }
 
 pub(super) fn reconnect_due(m: &mut Model, key: &str, generation: u64, out: &mut Vec<Effect>) {
@@ -759,7 +778,14 @@ pub(super) fn join_due(m: &mut Model, key: String, generation: u64, mut lines: V
     if lines.is_empty() || m.session.joins.get(&key) != Some(&generation) {
         return;
     }
-    if !m.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Playing { .. }) && !i.stopping) {
+    let Some(game) = m.games.get(&key).filter(|i| !i.stopping) else {
+        return;
+    };
+    if matches!(game.phase, Phase::Offer { .. }) {
+        m.session.held_joins.insert(key, HeldJoin { lines, delay });
+        return;
+    }
+    if !matches!(game.phase, Phase::Playing { .. }) {
         return;
     }
     let text = lines.remove(0);
@@ -833,7 +859,7 @@ mod tests {
     }
 
     fn send_state(m: &mut Model, s: &Settings, key: &str, kind: StateKind, cause: Option<DisconnectCause>) -> Vec<Effect> {
-        let message = FromMod::State { kind, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause };
+        let message = FromMod::State { kind, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause, offer: None };
         report(m, s, Report::Mod { key: key.to_owned(), message })
     }
 
@@ -852,7 +878,7 @@ mod tests {
         let s = settings();
         let (mut m, key) = setup(phase, AccountKind::Offline, &["/login pw"]);
         let (account, batch, instance) = (m.games[&key].account_id, m.games[&key].batch_id.clone(), m.games[&key].instance_id.clone());
-        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41, plain: false }]);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: Some(batch), instance, account, pid: 41, plain: false, headless: false }]);
         (m, key)
     }
 
@@ -1025,7 +1051,7 @@ mod tests {
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &[]);
         report(&mut m, &s, Report::Reach { online: false });
-        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("192.168.1.20:25565".into()), reason: None, cause: Some(DisconnectCause::ServerDown) };
+        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("192.168.1.20:25565".into()), reason: None, cause: Some(DisconnectCause::ServerDown), offer: None };
         let fx = report(&mut m, &s, Report::Mod { key: key.clone(), message });
         assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }) && !suspects(&fx));
         assert_eq!(m.games[&key].reconnect_attempts, 1);
@@ -1309,7 +1335,7 @@ mod tests {
         let account = m.games[&solo].account_id;
         let made = m.instances[0].clone();
         let key = fleet::solo_key(&made, account);
-        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42, plain: false }]);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42, plain: false, headless: false }]);
         assert_eq!(m.games[&key].batch_id, fleet::solo_owner(&made.id));
         assert_eq!(m.games[&key].phase, Phase::Menu);
     }
@@ -1321,7 +1347,7 @@ mod tests {
         let account = m.games[&solo].account_id;
         let made = m.instances[0].clone();
         let key = fleet::solo_key(&made, account);
-        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 43, plain: true }]);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 43, plain: true, headless: false }]);
         assert_eq!(m.games[&key].phase, Phase::Plain);
         assert!(!m.hint(&key).link_lost);
     }
@@ -1401,7 +1427,7 @@ mod tests {
         let account = m.games[&solo].account_id;
         let made = m.instances[0].clone();
         let key = fleet::solo_key(&made, account);
-        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42, plain: false }]);
+        adopt(&mut m, &s, vec![Adoption { key: key.clone(), batch: None, instance: made.id.clone(), account, pid: 42, plain: false, headless: false }]);
         let fx = exited(&mut m, &s, &key, Some(-1));
         assert_eq!(m.games[&key].phase, Phase::Crashed { code: Some(-1) });
         assert!(!timers(&fx).iter().any(|(_, e)| matches!(e, Event::RestartDue { .. })));

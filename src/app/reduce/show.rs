@@ -13,7 +13,7 @@ use crate::core::ipc::{HotkeyAction, ToMod};
 
 /// Puts the game window of `key` in the manager's place and hides the manager; a game played alone stays where it is.
 pub(super) fn play(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
-    if m.games.get(key).is_some_and(Game::alone) {
+    if m.games.get(key).is_some_and(|i| i.alone() || i.headless) {
         return;
     }
     if let Some(i) = m.games.get(key).filter(|i| matches!(i.phase, Phase::Plain)) {
@@ -83,7 +83,7 @@ pub(super) fn step(m: &mut Model, action: HotkeyAction, out: &mut Vec<Effect>) {
         return;
     }
     let target = {
-        let order: Vec<&Game> = m.sorted(None).into_iter().filter(|i| i.phase.playable() && !i.alone()).collect();
+        let order: Vec<&Game> = m.sorted(None).into_iter().filter(|i| i.showable()).collect();
         let at = m.playing.as_ref().and_then(|p| order.iter().position(|i| i.key == *p));
         let n = order.len();
         let pick = |from: usize, forward: bool, want: &dyn Fn(&Game) -> bool| -> Option<String> {
@@ -497,4 +497,3 @@ mod tests {
         assert!(m.playing.is_none() && m.session.reveal.is_none());
     }
 }
-

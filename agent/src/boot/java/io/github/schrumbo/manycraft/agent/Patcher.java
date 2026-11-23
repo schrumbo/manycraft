@@ -150,6 +150,9 @@ final class Patcher implements ClassFileTransformer {
 			new Hook("disguised", "handleDisguisedChatMessage", "(Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/ChatType$Bound;*",
 				head(b -> b.aload(1).aload(2).invokestatic(HOOKS, "disguisedChat", type(CD_void, CD_Object, CD_Object))), true),
 			new Hook("chat", "handleOverlay", "(Lnet/minecraft/network/chat/Component;*", head(b -> b.aload(1).invokestatic(HOOKS, "overlayChat", type(CD_void, CD_Object))), true));
+		add(t, "net/minecraft/client/multiplayer/ClientCommonPacketListenerImpl",
+			new Hook("packs", "handleResourcePackPush", "(Lnet/minecraft/network/protocol/common/ClientboundResourcePackPushPacket;)V",
+				cancel(b -> b.aload(0).aload(1).invokestatic(HOOKS, "resourcePack", type(CD_boolean, CD_Object, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Hud",
 			new Hook("hud", "extractRenderState", "(Lnet/minecraft/client/gui/GuiGraphicsExtractor;*", tail(b -> b.aload(1).invokestatic(HOOKS, "hud", type(CD_void, CD_Object)))));
 		add(t, "net/minecraft/client/gui/Gui",
@@ -195,6 +198,7 @@ final class Patcher implements ClassFileTransformer {
 			return null;
 		} finally {
 			Agent.haltIfProxyUnhooked();
+			Agent.haltIfHeadlessUnhooked();
 		}
 	}
 

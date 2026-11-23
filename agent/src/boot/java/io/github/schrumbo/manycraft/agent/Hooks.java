@@ -22,7 +22,11 @@ public final class Hooks {
 	private Hooks() {}
 
 	public static boolean startHidden() {
-		return Boolean.getBoolean("manycraft.hidden") && !failed && Patches.has(Patches.CORE);
+		boolean hidden = Boolean.getBoolean("manycraft.hidden") && !failed && Patches.has(Patches.CORE);
+		if (!hidden && headless()) {
+			Agent.haltHeadless();
+		}
+		return hidden;
 	}
 
 	public static long windowFlags(long flags) {
@@ -49,7 +53,7 @@ public final class Hooks {
 	}
 
 	/**
-	 * Whether the headless prototype is on: a hidden game then skips whole frames instead of only the world render.
+	 * Whether the game runs without a window: it never shows and skips whole frames unless a screenshot is due.
 	 */
 	public static boolean headless() {
 		return Boolean.getBoolean("manycraft.headless");
@@ -340,6 +344,22 @@ public final class Hooks {
 			b.playerChat(bound, signed, decorated, sender, receivedAt);
 		} catch (Throwable e) {
 			Agent.fault("chat", e);
+		}
+	}
+
+	/**
+	 * Called first in {@code handleResourcePackPush}; true means the payload answered the offer and vanilla never sees it.
+	 */
+	public static boolean resourcePack(Object listener, Object packet) {
+		Bridge b = bridge;
+		if (b == null) {
+			return false;
+		}
+		try {
+			return b.resourcePack(listener, packet);
+		} catch (Throwable e) {
+			Agent.fault("packs", e);
+			return false;
 		}
 	}
 

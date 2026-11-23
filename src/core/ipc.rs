@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::batch::Background;
+use super::batch::{Background, Packs};
 use super::place::Mode;
 
 const PREVIEW_MAGIC: u32 = 0x4D43_5056;
@@ -35,6 +35,21 @@ pub enum StateKind {
     Playing,
     Disconnected,
     Dead,
+    /// The server offers a resource pack and the game holds the offer until the user answers it.
+    Offer,
+}
+
+/// A resource pack a server offers, held for the user's answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Offer {
+    /// The offer the answer names, so a late answer to an older offer does nothing.
+    pub id: String,
+    /// Whether the server lets nobody in who declines.
+    #[serde(default)]
+    pub required: bool,
+    /// What the server says about the pack.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Why a connection dropped, as the mod's classifier read the disconnect screen.
@@ -48,6 +63,8 @@ pub enum DisconnectCause {
     ServerDown,
     Auth,
     Duplicate,
+    /// The server requires a resource pack the batch declines.
+    PackDeclined,
     #[serde(other)]
     Unknown,
 }
@@ -77,7 +94,7 @@ pub enum HotkeyAction {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum FromMod {
     Hello { instance: String, token: String, pid: u32, mod_version: String },
-    State { kind: StateKind, server: Option<String>, reason: Option<String>, #[serde(default)] cause: Option<DisconnectCause> },
+    State { kind: StateKind, server: Option<String>, reason: Option<String>, #[serde(default)] cause: Option<DisconnectCause>, #[serde(default, skip_serializing_if = "Option::is_none")] offer: Option<Offer> },
     /// A chat line: its sender and words, and with a current agent the whole line as the game shows it.
     Chat { kind: ChatKind, from: Option<String>, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] runs: Vec<crate::core::chat_text::Run> },
     Preview { seq: u32, w: u32, h: u32 },
@@ -117,6 +134,12 @@ pub enum ToMod {
     Options { values: BTreeMap<String, String> },
     /// Another game of the batch changed the server list; an open server list reloads it.
     Servers,
+    /// What the game answers when a server offers a resource pack.
+    Packs { policy: Packs },
+    /// The user's answer to the held offer `id`.
+    Answer { id: String, accept: bool },
+    /// Renders one finished frame and sends it as a preview at most `width` wide.
+    Capture { width: u32 },
 }
 
 /// A background level as the mod reads it: the level name, plus frames per second and sight for `custom`.
@@ -490,7 +513,7 @@ mod tests {
     #[test]
     fn wire_format_matches_the_mod_protocol() {
         let line = r#"{"t":"state","kind":"disconnected","server":"127.0.0.1:25565","reason":"Kicked"}"#;
-        assert_eq!(serde_json::from_str::<FromMod>(line).unwrap(), FromMod::State { kind: StateKind::Disconnected, server: Some("127.0.0.1:25565".into()), reason: Some("Kicked".into()), cause: None });
+        assert_eq!(serde_json::from_str::<FromMod>(line).unwrap(), FromMod::State { kind: StateKind::Disconnected, server: Some("127.0.0.1:25565".into()), reason: Some("Kicked".into()), cause: None, offer: None });
         let classified = r#"{"t":"state","kind":"disconnected","server":null,"reason":"x","cause":"server_full"}"#;
         assert!(matches!(serde_json::from_str::<FromMod>(classified).unwrap(), FromMod::State { cause: Some(DisconnectCause::ServerFull), .. }));
         let newer = r#"{"t":"state","kind":"disconnected","server":null,"reason":"x","cause":"something_new"}"#;
@@ -529,6 +552,20 @@ mod tests {
         assert_eq!(serde_json::to_string(&ToMod::Servers).unwrap(), r#"{"t":"servers"}"#);
         let custom = r#"{"t":"level","level":"custom","fps":10,"render_distance":6}"#;
         assert_eq!(serde_json::from_str::<ToMod>(custom).unwrap(), ToMod::Level(Level::Custom { fps: 10, render_distance: 6 }));
+    }
+
+    #[test]
+    fn pack_and_capture_wire_format_matches_the_mod_protocol() {
+        assert_eq!(serde_json::to_string(&ToMod::Packs { policy: Packs::Ask }).unwrap(), r#"{"t":"packs","policy":"ask"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Packs { policy: Packs::Accept }).unwrap(), r#"{"t":"packs","policy":"accept"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Packs { policy: Packs::Decline }).unwrap(), r#"{"t":"packs","policy":"decline"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Answer { id: "p-1".into(), accept: true }).unwrap(), r#"{"t":"answer","id":"p-1","accept":true}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Capture { width: 640 }).unwrap(), r#"{"t":"capture","width":640}"#);
+        let held = r#"{"t":"state","kind":"offer","server":"mc.example:25565","reason":null,"cause":null,"offer":{"id":"p-1","required":true,"text":"Bitte laden"}}"#;
+        let offer = Offer { id: "p-1".into(), required: true, text: Some("Bitte laden".into()) };
+        assert_eq!(serde_json::from_str::<FromMod>(held).unwrap(), FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(offer) });
+        let bare = r#"{"t":"state","kind":"offer","server":null,"reason":null,"cause":null,"offer":{"id":"p-2","required":false,"text":null}}"#;
+        assert!(matches!(serde_json::from_str::<FromMod>(bare).unwrap(), FromMod::State { offer: Some(Offer { required: false, text: None, .. }), .. }));
     }
 
     #[test]
