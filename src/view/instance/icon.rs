@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use freya::prelude::*;
 
-use super::mods::row::{cached, load, remember};
+use super::entry::{cached, load, remember};
 use crate::view::kit::use_theme;
 
 fn initial(name: &str) -> String {

@@ -18,7 +18,8 @@ use crate::view::kit::{Bounds, off_ui, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use list::{Data, Row, Sort};
-use row::{ModRow, ROW, Section, Trail};
+use crate::view::instance::entry::ROW;
+use row::{ModRow, Section, Trail};
 
 #[path = "mods_list.rs"]
 mod list;

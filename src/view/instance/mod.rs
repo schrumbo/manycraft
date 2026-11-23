@@ -2,6 +2,7 @@
 
 pub(crate) mod actions;
 mod crash;
+mod entry;
 mod icon;
 mod inspector;
 mod logs;

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use freya::prelude::*;
 
 use super::list::{self, Row, Sort};
-use super::row::ROW;
+use crate::view::instance::entry::ROW;
 use super::{Ctx, Fault, Live};
 use crate::app::event::Event as Msg;
 use crate::core::content::{self, Outcome, Trashed};

@@ -130,20 +130,7 @@ pub(super) fn inline(t: &Theme, ctx: &super::Ctx, locked: Option<String>) -> Opt
     let state = ctx.found.read().clone();
     let (store, id) = (ctx.store, ctx.id.to_string());
     let mut found = ctx.found;
-    let bar = |glyph: Icon, color: Color, text: String| {
-        rect()
-            .width(Size::fill())
-            .height(Size::px(control::L))
-            .padding((0., space::S, 0., space::M))
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::S)
-            .corner_radius(t.shape.control)
-            .background(t.raised)
-            .child(icon(t, glyph, iconsize::S, color))
-            .child(line(t, text, font::CALLOUT, t.text1).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.)))
-            .content(Content::flex())
-    };
+    let bar = |glyph: Icon, color: Color, text: String| crate::view::instance::entry::bar(t, glyph, color, text);
     let close = Button::icon("instance.mods.updates.close", Icon::Close, tr("Hinweis ausblenden")).plain().on_press(move |_| found.set(Found::Idle));
     let row = match state {
         Found::Idle | Found::Checking { quiet: true } => return None,
