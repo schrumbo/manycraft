@@ -242,6 +242,11 @@ pub fn trim_memory() {
     unsafe {
         use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        unsafe extern "system" {
+            fn GetProcessHeap() -> *mut std::ffi::c_void;
+            fn HeapCompact(heap: *mut std::ffi::c_void, flags: u32) -> usize;
+        }
+        HeapCompact(GetProcessHeap(), 0);
         K32EmptyWorkingSet(GetCurrentProcess());
     }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

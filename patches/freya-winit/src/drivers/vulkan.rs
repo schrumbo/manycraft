@@ -344,6 +344,11 @@ impl Drop for VulkanDriver {
 }
 
 impl VulkanDriver {
+    /// Hands the GPU resources nothing is drawing with back to the driver.
+    pub fn release_caches(&mut self) {
+        self.shared.gr_context.borrow_mut().free_gpu_resources();
+    }
+
     pub fn resource_cache_usage(&self) -> (usize, usize) {
         let gr_context = self.shared.gr_context.borrow();
         let usage = gr_context.resource_cache_usage();
