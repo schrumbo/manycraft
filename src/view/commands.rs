@@ -504,7 +504,8 @@ impl Command {
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
             Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
-            Command::AcceptPacks | Command::DeclinePacks => m.games.values().any(|g| matches!(g.phase, Phase::Offer { .. })),
+            Command::AcceptPacks => m.games.values().any(|g| matches!(g.phase, Phase::Offer { .. })),
+            Command::DeclinePacks => picked().any(|g| matches!(g.phase, Phase::Offer { .. })),
             Command::ClearSelection => grid && !selected.is_empty(),
             Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
             Command::MoveSelected => grid && m.batches.len() > 1 && picked().any(|g| m.batch(&g.batch_id).is_some()),
@@ -609,8 +610,8 @@ impl Command {
             Command::ReconnectSelected => store.dispatch(Event::ReconnectMany(keys())),
             Command::ScreenshotSelected => store.dispatch(Event::Capture(keys())),
             Command::AcceptPacks | Command::DeclinePacks => {
-                let keys = offers(store);
-                store.dispatch(Event::AnswerPack { keys, accept: self == Command::AcceptPacks });
+                let accept = self == Command::AcceptPacks;
+                store.dispatch(Event::AnswerPack { keys: offers(store, accept), accept });
             }
             Command::StartAll => store.dispatch(Event::StartAll),
             Command::StopAll => store.dispatch(Event::StopAll),
@@ -656,15 +657,15 @@ impl Command {
     }
 }
 
-/// Whether `command` still runs while a sheet, menu, the palette or a text field has the keyboard: Quit, and the palette
-/// toggle unless a sheet is open, since the palette reaches pages the sheet covers.
-fn offers(store: Store) -> Vec<String> {
+fn offers(store: Store, accept: bool) -> Vec<String> {
     let m = store.model.peek();
     let held = |k: &String| m.games.get(k).is_some_and(|g| matches!(g.phase, Phase::Offer { .. }));
     let picked: Vec<String> = store.ui.selection.peek().iter().filter(|k| held(k)).cloned().collect();
-    if picked.is_empty() { m.games.keys().filter(|k| held(k)).cloned().collect() } else { picked }
+    if picked.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { picked }
 }
 
+/// Whether `command` still runs while a sheet, menu, the palette or a text field has the keyboard: Quit, and the palette
+/// toggle unless a sheet is open, since the palette reaches pages the sheet covers.
 fn passes_layers(store: Store, command: Command) -> bool {
     match command {
         Command::Quit => true,

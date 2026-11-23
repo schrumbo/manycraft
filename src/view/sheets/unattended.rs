@@ -7,11 +7,9 @@ use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
-use crate::view::kit::switch::Switch;
-use crate::view::kit::text::line;
-use crate::view::kit::tooltip::WithTip;
+use crate::view::kit::switch::SwitchLabel;
 use crate::view::sheets::batch::{FIELD_W, hint, title_text};
-use crate::view::theme::{Theme, font, space};
+use crate::view::theme::{Theme, space};
 
 /// Whether the section has something set that a closed "Erweitert" would hide.
 pub fn set(u: Unattended) -> bool {
@@ -29,33 +27,21 @@ pub fn section(t: &Theme, state: State<Unattended>, game: &str, running: bool, l
 }
 
 fn windowless(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, running: bool, lock: &Option<String>) -> Element {
-    let label = tr("Ohne Spielfenster");
     let unsupported = (!game.is_empty() && !companion::available(game) && !u.headless).then(|| trf("Geht erst ab Minecraft %@.", &[&companion::first()]));
-    let reason = lock.clone().or(unsupported);
-    let text = tr("Die Spiele laufen unsichtbar und sparsam, ohne Fenster und ohne Platz in der Taskleiste. Du siehst sie über Screenshots; Chat und Befehle gehen wie sonst.");
-    let text = if running { format!("{text} {}", tr("Gilt beim nächsten Start.")) } else { text };
-    let blocked = reason.is_some();
-    let mut toggle = move || {
-        if !blocked {
-            state.write().headless ^= true;
-        }
+    let mut text = tr("Die Spiele laufen unsichtbar und sparsam, ohne Fenster und ohne Platz in der Taskleiste. Du siehst sie über Screenshots; Chat und Befehle gehen wie sonst.");
+    if let Some(why) = &unsupported {
+        text = format!("{why} {text}");
+    } else if running {
+        text = format!("{text} {}", tr("Gilt beim nächsten Start."));
+    }
+    let row = SwitchLabel {
+        id: "batch.headless",
+        text: tr("Ohne Spielfenster"),
+        on: u.headless,
+        disabled: lock.clone().or(unsupported),
+        on_toggle: EventHandler::new(move |on: bool| state.write().headless = on),
     };
-    let row = rect()
-        .width(Size::fill())
-        .horizontal()
-        .cross_align(Alignment::Center)
-        .spacing(space::S)
-        .cursor(if blocked { CursorIcon::NotAllowed } else { CursorIcon::Pointer })
-        .on_pointer_press(move |e: Event<PointerEventData>| {
-            if let PointerEventData::Mouse(m) = &*e
-                && m.button == Some(MouseButton::Left)
-            {
-                toggle();
-            }
-        })
-        .child(rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation()).child(Switch::new("batch.headless", label.clone(), u.headless).disabled(blocked).on_toggle(move |_| toggle())))
-        .child(line(t, label, font::CALLOUT, t.text2));
-    block().child(WithTip::new(reason, row).fill()).child(hint(t, text)).into_element()
+    block().child(row).child(hint(t, text)).into_element()
 }
 
 fn screenshots(t: &Theme, mut state: State<Unattended>, u: Unattended, lock: &Option<String>) -> Element {
