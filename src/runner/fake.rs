@@ -180,7 +180,7 @@ impl<P: Pixels> Sim<P> {
             }
             at += span;
         }
-        self.at(at, Some(cancel), Update::Prepared { batch });
+        self.at(at, None, Update::Prepared { batch });
         at
     }
 

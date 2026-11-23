@@ -46,7 +46,7 @@ impl Meter {
             self.step_born = now;
             self.step_first = done;
         }
-        self.done = done.min(total.max(done));
+        self.done = if total > 0 { done.min(total) } else { done };
         self.total = total;
         self.unit = unit;
     }
@@ -140,13 +140,11 @@ pub fn remaining(d: Duration) -> String {
     match s {
         s if s < 60 => trf("noch %lld s", &[&((s + 4) / 5 * 5).min(55).max(5)]),
         s if s < 3600 => trf("noch %lld Min.", &[&s.div_ceil(60)]),
-        s => trf("noch %lld Std. %lld Min.", &[&(s / 3600), &((s % 3600).div_ceil(60) % 60)]),
+        s => {
+            let minutes = s.div_ceil(60);
+            trf("noch %lld Std. %lld Min.", &[&(minutes / 60), &(minutes % 60)])
+        }
     }
-}
-
-/// Everything the person reads while a step runs without a figure, for tests and callers that only want the words.
-pub fn waiting_line(step: &str, ran: Duration) -> String {
-    if ran >= SHOW_ELAPSED { format!("{step} · {}", seconds(ran)) } else { step.to_owned() }
 }
 
 
@@ -197,6 +195,7 @@ mod tests {
         let mut m = Meter::begin("x", at(0));
         m.note("x", 5, 3, Unit::Count, at(0));
         assert_eq!(m.share(), Some(1.));
+        assert_eq!(m.detail(at(0)), "3 von 3");
     }
 
     #[test]
@@ -234,11 +233,6 @@ mod tests {
         assert_eq!(remaining(Duration::from_secs(38)), trf("noch %lld s", &[&40]));
         assert_eq!(remaining(Duration::from_secs(61)), trf("noch %lld Min.", &[&2]));
         assert_eq!(remaining(Duration::from_secs(3700)), trf("noch %lld Std. %lld Min.", &[&1, &2]));
-    }
-
-    #[test]
-    fn a_wait_names_its_seconds_only_when_they_matter() {
-        assert_eq!(waiting_line("Anmeldung", Duration::from_secs(1)), "Anmeldung");
-        assert!(waiting_line("Anmeldung", Duration::from_secs(65)).contains("1 Min. 05 s"));
+        assert_eq!(remaining(Duration::from_secs(7199)), trf("noch %lld Std. %lld Min.", &[&2, &0]));
     }
 }

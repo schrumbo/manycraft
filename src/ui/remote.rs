@@ -29,6 +29,7 @@ use super::forms::{self, Plain, Problem};
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const CANNED_DELAY: Duration = Duration::from_millis(450);
+const CANNED_APPLY_STEP: Duration = Duration::from_secs(4);
 pub(super) const CANNED_STEPS: usize = 8;
 
 static SAVING: Mutex<()> = Mutex::new(());
@@ -1177,7 +1178,7 @@ pub fn apply_updates_counted(id: &str, selection: &[Update], running: bool, prog
         } else if drive::fenced("modrinth apply", selection.len()) {
             for done in 0..=selection.len() {
                 progress(done, selection.len());
-                std::thread::sleep(CANNED_DELAY);
+                std::thread::sleep(CANNED_APPLY_STEP);
             }
             modrinth::update_mods_later(&mut b, selection)?;
         } else {

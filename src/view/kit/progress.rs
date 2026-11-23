@@ -195,7 +195,7 @@ impl Tally {
     /// Notes that `done` of `total` are done; callable from any thread.
     pub fn set(&self, done: usize, total: usize) {
         if let Ok(mut at) = self.0.lock() {
-            *at = (done, total);
+            *at = if at.1 == total { (at.0.max(done), total) } else { (done, total) };
         }
     }
 

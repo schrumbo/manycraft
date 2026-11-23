@@ -241,6 +241,8 @@ pub(super) fn cancel_start(m: &mut Model, owner: Option<&str>, out: &mut Vec<Eff
     };
     for owner in &owners {
         m.session.runs.remove(owner);
+        m.preparing.remove(owner);
+        m.meters.remove(owner);
         out.push(Effect::CancelStarts(owner.clone()));
     }
     let keys: Vec<String> = m.games.values().filter(|g| owners.contains(&g.batch_id) && g.phase.waiting() && !m.session.pids.contains_key(&g.key)).map(|g| g.key.clone()).collect();
@@ -429,6 +431,8 @@ pub(super) fn restart_keys(m: &mut Model, keys: &[String], out: &mut Vec<Effect>
 }
 
 pub(super) fn stop_batch(m: &mut Model, batch: &str, out: &mut Vec<Effect>) {
+    m.preparing.remove(batch);
+    m.meters.remove(batch);
     out.push(Effect::CancelStarts(batch.to_owned()));
     let keys: Vec<String> = m.games.values().filter(|i| i.batch_id == batch).map(|i| i.key.clone()).collect();
     stop_keys(m, keys, out);
