@@ -110,15 +110,21 @@ pub fn screenshots_line(mut state: State<Unattended>, lock: &Option<String>) -> 
         .control(picker)
 }
 
-/// What the games answer when a server offers a resource pack.
+fn packs_offered(mode: RunMode) -> Vec<Packs> {
+    Packs::ALL.iter().copied().filter(|p| mode != RunMode::Connection || *p != Packs::Ask).collect()
+}
+
+/// What the games answer when a server offers a resource pack. Headless games cannot ask, so they only accept or decline.
 pub fn packs_line(mut state: State<Unattended>, running: bool, lock: &Option<String>) -> Line {
     let u = *state.read();
+    let offered = packs_offered(u.mode);
+    let shown = if offered.contains(&u.packs) { u.packs } else { Packs::Accept };
     let name = |p: Packs| match p {
         Packs::Ask => tr("Fragen"),
         Packs::Accept => tr("Annehmen"),
         Packs::Decline => tr("Ablehnen"),
     };
-    let segments = Packs::ALL
+    let segments = offered
         .iter()
         .map(|p| Segment {
             id: format!(
@@ -133,17 +139,29 @@ pub fn packs_line(mut state: State<Unattended>, running: bool, lock: &Option<Str
             tip: None,
         })
         .collect();
-    let chosen = Packs::ALL.iter().position(|p| *p == u.packs).unwrap_or(0);
+    let chosen = offered.iter().position(|p| *p == shown).unwrap_or(0);
+    let pick = offered.clone();
     let control = Segmented::new(tr("Ressourcenpakete vom Server"), segments, chosen).disabled(lock.clone()).on_choose(move |n| {
-        if let Some(p) = Packs::ALL.get(n) {
+        if let Some(p) = pick.get(n) {
             state.write().packs = *p;
         }
     });
-    let text = match u.packs {
+    let text = match shown {
         Packs::Ask => tr("Ein offenes Spiel fragt wie sonst. Ein Spiel im Hintergrund wartet, bis du in seiner Kachel antwortest."),
         Packs::Accept => tr("Jedes Paket, das ein Server anbietet, wird geladen."),
         Packs::Decline => tr("Jedes Paket wird abgelehnt. Verlangt der Server eins, trennt er die Verbindung."),
     };
     let text = if running { format!("{text} {}", tr("Gilt sofort.")) } else { text };
     Line::new("batch.packs.row", tr("Ressourcenpakete vom Server")).hint(text).control(control)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_games_never_offer_to_ask_about_packs() {
+        assert_eq!(packs_offered(RunMode::Connection), vec![Packs::Accept, Packs::Decline]);
+        assert_eq!(packs_offered(RunMode::Windows), Packs::ALL.to_vec());
+        assert_eq!(packs_offered(RunMode::Hidden), Packs::ALL.to_vec());
+    }
 }

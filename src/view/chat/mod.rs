@@ -379,16 +379,20 @@ impl Component for Panel {
             .child(rect().width(Size::flex(1.)).child(caption(&t, title).max_lines(1).text_overflow(TextOverflow::Ellipsis)))
             .content(Content::flex())
             .child(Button::icon("chat.close", Icon::Close, tr("Chat ausblenden")).on_press(move |_| set_open(store, false)));
+        let column = rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .content(Content::flex())
+            .child(head)
+            .child(rect().width(Size::fill()).height(Size::flex(1.)).child(Conversation { scope: self.scope.clone() }));
         rect()
             .a11y_role(AccessibilityRole::Complementary)
             .a11y_alt(tr("Chat"))
             .width(Size::px(width))
             .height(Size::fill())
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 0., left: 1. }).alignment(BorderAlignment::Inner))
-            .content(Content::flex())
-            .child(head)
-            .child(rect().width(Size::fill()).height(Size::flex(1.)).child(Conversation { scope: self.scope.clone() }))
             .child(PanelGrip { id: "chat.grip", label: chat_label(), width: store.ui.chat.width, shown: width, min: PANEL_MIN, max: Self::most(window), done: EventHandler::new(winstate::keep_chat_width) })
+            .child(column)
     }
 }
 
