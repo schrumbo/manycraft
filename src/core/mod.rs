@@ -25,6 +25,7 @@ pub mod drive_link;
 #[allow(dead_code)]
 pub mod fit;
 pub mod fleet;
+pub mod headless;
 pub mod folders;
 pub mod game_icon;
 pub mod game_window;
