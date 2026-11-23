@@ -241,7 +241,7 @@ final class Companion implements Bridge {
 		if (bg == null) {
 			return true;
 		}
-		boolean loading = Compat.screen(mc) instanceof LevelLoadingScreen;
+		boolean loading = Compat.screen(mc) instanceof LevelLoadingScreen || Compat.overlay(mc);
 		if (headless != null) {
 			previewDue = preview != null && captureWidth > 0;
 			return previewDue || loading;
