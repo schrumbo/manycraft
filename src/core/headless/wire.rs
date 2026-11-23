@@ -52,6 +52,10 @@ impl Out {
         self.raw(&value.to_be_bytes())
     }
 
+    pub fn i16(&mut self, value: i16) -> &mut Self {
+        self.raw(&value.to_be_bytes())
+    }
+
     pub fn i32(&mut self, value: i32) -> &mut Self {
         self.raw(&value.to_be_bytes())
     }
@@ -139,6 +143,19 @@ impl<'a> In<'a> {
         usize::try_from(n).with_context(|| format!("negative length {n}"))
     }
 
+    /// How many bytes are still unread.
+    pub fn left(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
+    /// An element count behind a VarInt: never negative and never more than the bytes left. Elements wider in memory than on
+    /// the wire still need a cap of their own.
+    pub fn list(&mut self) -> Result<usize> {
+        let n = self.length()?;
+        ensure!(n <= self.left(), "list of {n} past the packet");
+        Ok(n)
+    }
+
     pub fn string(&mut self) -> Result<String> {
         let n = self.length()?;
         Ok(std::str::from_utf8(self.take(n)?)?.to_owned())
@@ -159,6 +176,10 @@ impl<'a> In<'a> {
 
     pub fn u8(&mut self) -> Result<u8> {
         Ok(self.array::<1>()?[0])
+    }
+
+    pub fn i16(&mut self) -> Result<i16> {
+        Ok(i16::from_be_bytes(self.array()?))
     }
 
     pub fn i32(&mut self) -> Result<i32> {

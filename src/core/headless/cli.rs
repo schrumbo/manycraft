@@ -11,12 +11,13 @@ use anyhow::{Context, Result, bail};
 use super::{Connection, Spec, conduct, start};
 use crate::core::account::offline_uuid;
 use crate::core::batch::Packs;
-use crate::core::ipc::{Event, FromMod, ToMod};
+use crate::core::ipc::{Click, Event, FromMod, Slot, ToMod};
 
 const USAGE: &str = "manycraft headless [--server host[:port]] [--name Bot] [--count 1] [--version 26.3] [--stagger-ms 250] [--packs ask|accept|decline]
 
 Offline accounts only. Names are <name>1..<name>N when --count is above 1.
-stdin: say <text> (all), to <name> <text>, reconnect, respawn, accept, decline, quit";
+stdin: say <text> (all), to <name> <text>, reconnect, respawn, accept, decline,
+click <name> <slot> [left|right|shift] (the open menu), close <name>, quit";
 
 /// Runs the subcommand.
 pub fn cli(args: &[String]) -> i32 {
@@ -59,8 +60,17 @@ fn run(args: &[String]) -> Result<()> {
     let (tx, rx) = channel();
     let offers: Arc<Mutex<HashMap<String, String>>> = Arc::default();
     let seen = Arc::clone(&offers);
+    let menus: Arc<Mutex<HashMap<String, i32>>> = Arc::default();
+    let opened = Arc::clone(&menus);
     std::thread::spawn(move || {
         for event in rx {
+            if let Event::Message { instance, message: FromMod::Menu { menu } } = &event {
+                let mut open = opened.lock().unwrap_or_else(PoisonError::into_inner);
+                match menu {
+                    Some(m) => open.insert(instance.clone(), m.id),
+                    None => open.remove(instance),
+                };
+            }
             print_event(&event, &seen);
         }
     });
@@ -95,6 +105,28 @@ fn run(args: &[String]) -> Result<()> {
                     send(Some(&key), &ToMod::Answer { id, accept: word == "accept" });
                 }
             }
+            "click" | "close" => {
+                let mut words = rest.split_whitespace();
+                let who = words.next().unwrap_or_default();
+                let Some(menu) = menus.lock().unwrap_or_else(PoisonError::into_inner).get(who).copied() else {
+                    println!("[{who}] has no menu open");
+                    continue;
+                };
+                if word == "close" {
+                    send(Some(who), &ToMod::CloseMenu { menu });
+                    continue;
+                }
+                let Some(slot) = words.next().and_then(|s| s.parse().ok()) else {
+                    println!("click <name> <slot> [left|right|shift]");
+                    continue;
+                };
+                let click = match words.next().unwrap_or("left") {
+                    "right" => Click::Right,
+                    "shift" => Click::Shift,
+                    _ => Click::Left,
+                };
+                send(Some(who), &ToMod::Click { menu, slot, click });
+            }
             "quit" => break,
             "" => {}
             other => println!("unknown command {other}"),
@@ -128,7 +160,29 @@ fn print_event(event: &Event, offers: &Mutex<HashMap<String, String>>) {
             println!("[{instance}] {kind:?} {}", detail.into_iter().flatten().collect::<Vec<_>>().join(" | "));
         }
         Event::Message { instance, message: FromMod::Chat { kind, from, text, .. } } => println!("[{instance}] chat {kind:?} {}{text}", from.as_ref().map(|f| format!("<{f}> ")).unwrap_or_default()),
+        Event::Message { instance, message: FromMod::Map { map } } => match map {
+            Some(map) => println!("[{instance}] map {} ({} coloured pixels)", map.id, map.colors.iter().filter(|c| **c > 3).count()),
+            None => println!("[{instance}] no map in hand"),
+        },
+        Event::Message { instance, message: FromMod::Menu { menu: Some(menu) } } => {
+            println!("[{instance}] menu {} {} \"{}\" readable={} top={} carried={}", menu.id, menu.kind, menu.title.text, menu.readable, menu.top, menu.carried.as_ref().map_or_else(String::new, slot_text));
+            for (i, slot) in menu.slots.iter().enumerate().take(usize::from(menu.top)) {
+                if let Some(slot) = slot {
+                    println!("[{instance}]   {i}: {}", slot_text(slot));
+                }
+            }
+        }
+        Event::Message { instance, message: FromMod::Menu { menu: None } } => println!("[{instance}] menu closed"),
+        Event::Message { instance, message: FromMod::Titles { titles } } => {
+            let text = |w: &Option<crate::core::ipc::Words>| w.as_ref().map_or_else(String::new, |w| w.text.clone());
+            println!("[{instance}] title \"{}\" subtitle \"{}\" actionbar \"{}\"", text(&titles.title), text(&titles.subtitle), text(&titles.actionbar));
+        }
         Event::Message { instance, message } => println!("[{instance}] {message:?}"),
         other => println!("{other:?}"),
     }
+}
+
+fn slot_text(slot: &Slot) -> String {
+    let lore: Vec<&str> = slot.lore.iter().map(|w| w.text.as_str()).collect();
+    format!("{} x{} ({}){}{}", slot.name.text, slot.count, slot.item, if slot.glint { " glint" } else { "" }, if lore.is_empty() { String::new() } else { format!(" lore: {}", lore.join(" / ")) })
 }

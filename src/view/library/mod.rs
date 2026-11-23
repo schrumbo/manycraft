@@ -215,7 +215,7 @@ pub fn lines(store: Store, list: &[&Instance], infos: &Infos) -> Vec<Line> {
                 played: infos.get(&i.id).and_then(|n| n.played),
                 running: (!keys.is_empty()).then_some(keys),
                 loading: crate::view::instance::loading(&m, &i.id),
-                trouble: m.solo_games(&i.id).any(|g| g.phase.needs_attention()),
+                trouble: m.solo_games(&i.id).any(|g| g.needs_attention()),
             }
         })
         .collect()

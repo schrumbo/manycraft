@@ -132,6 +132,7 @@ fn started(m: &mut Model, owner: &str, target: &Target, accounts: &[Account]) {
             g.connection = target.connection_only();
             g.last_chat = None;
         }
+        super::screen::forget(m, &target.key(a.id));
     }
 }
 
