@@ -111,8 +111,9 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
         out.push(Effect::Stop(fx.stop));
     }
     if !fx.closing.is_empty() {
-        let closed: Vec<String> = fx.closing.iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.stopping && !g.alone())).cloned().collect();
-        fleet::stop_keys(m, fx.closing, out);
+        let fresh: Vec<String> = fx.closing.into_iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.stopping)).collect();
+        let closed: Vec<String> = fresh.iter().filter(|k| m.games.get(k.as_str()).is_some_and(|g| !g.alone())).cloned().collect();
+        fleet::stop_keys(m, fresh, out);
         out.extend(closed.into_iter().filter(|k| m.games.get(k).is_some_and(|g| g.stopping)).map(Effect::Closed));
     }
     out.extend(fx.check_proxy);

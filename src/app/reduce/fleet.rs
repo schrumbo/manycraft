@@ -525,6 +525,73 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_starts_again_from_every_phase_a_game_can_run_in() {
+        use std::time::Instant as At;
+        let s = settings();
+        let phases = [
+            Phase::Starting { place: 0, total: 1 },
+            Phase::Plain,
+            Phase::Menu,
+            Phase::Connecting { server: "s".into() },
+            Phase::Queue { server: "s".into() },
+            Phase::Playing { server: "s".into(), since: At::now() },
+            Phase::Disconnected { server: Some("s".into()), reason: String::new() },
+            Phase::Dead { server: Some("s".into()), reason: String::new() },
+            Phase::NetworkLost { server: "s".into() },
+            Phase::ServerAway { server: "s".into() },
+        ];
+        for phase in phases {
+            for code in [Some(0), Some(1), None] {
+                let (mut m, key) = setup(phase.clone(), AccountKind::Offline, &[]);
+                m.session.pids.insert(key.clone(), 1);
+                run(&mut m, &s, Instant::now(), Event::Restart(vec![key.clone()]));
+                let fx = report(&mut m, &s, Report::Exited { key: key.clone(), code });
+                assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1)), "{phase:?} exit {code:?} starts again");
+                assert!(matches!(m.games[&key].phase, Phase::Starting { .. }), "{phase:?} exit {code:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_closing_report_of_a_game_going_down_for_a_restart_does_not_cancel_it() {
+        let s = settings();
+        let closing = |key: &str| Report::Mod { key: key.into(), message: crate::core::ipc::FromMod::Closing };
+        let (mut m, key) = setup(Phase::Playing { server: "s".into(), since: Instant::now() }, AccountKind::Offline, &[]);
+        m.session.pids.insert(key.clone(), 1);
+        run(&mut m, &s, Instant::now(), Event::Restart(vec![key.clone()]));
+        let fx = report(&mut m, &s, closing(&key));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Closed(_))), "a restart is no user close");
+        let fx = report(&mut m, &s, Report::Exited { key: key.clone(), code: Some(0) });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1)), "it starts again");
+        assert!(matches!(m.games[&key].phase, Phase::Starting { .. }));
+    }
+
+    #[test]
+    fn a_restart_of_many_starts_them_together_after_their_closing_reports() {
+        let s = settings();
+        let closing = |key: &str| Report::Mod { key: key.into(), message: crate::core::ipc::FromMod::Closing };
+        let (mut m, a) = setup(Phase::Playing { server: "s".into(), since: Instant::now() }, AccountKind::Offline, &[]);
+        let second = Uuid::from_u128(8);
+        m.accounts.push(Account { id: second, name: "AltTwo".into(), kind: AccountKind::Offline, proxy: None, color: None });
+        m.batches[0].accounts.push(second);
+        let b = crate::core::fleet::instance_key(&m.batches[0], second);
+        let template = m.games[&a].clone();
+        m.games.insert(b.clone(), Game { key: b.clone(), account_id: second, name: "AltTwo".into(), ..template });
+        for k in [&a, &b] {
+            m.session.pids.insert(k.clone(), 1);
+        }
+        run(&mut m, &s, Instant::now(), Event::Restart(vec![a.clone(), b.clone()]));
+        for k in [&a, &b] {
+            report(&mut m, &s, closing(k));
+        }
+        let fx = report(&mut m, &s, Report::Exited { key: a.clone(), code: Some(0) });
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Start { .. })), "waits for the other");
+        let fx = report(&mut m, &s, Report::Exited { key: b.clone(), code: Some(0) });
+        assert!(fx.iter().any(|e| matches!(e, Effect::ReadMemory)), "both go into the memory line together");
+        assert!([&a, &b].iter().all(|k| matches!(m.games[*k].phase, Phase::Starting { .. })));
+    }
+
+    #[test]
     fn taking_over_stops_the_game_elsewhere_and_starts_here_once_it_is_down() {
         let s = settings();
         let (mut m, key) = setup(Phase::Failed { reason: "Spielt schon in b · allein".into() }, AccountKind::Offline, &[]);
