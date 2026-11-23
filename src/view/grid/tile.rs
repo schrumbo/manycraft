@@ -65,7 +65,8 @@ fn glyph(p: Primary) -> Icon {
         Primary::SignIn => Icon::LogIn,
         Primary::ForceQuit => Icon::Stop,
         Primary::Screenshot => Icon::Image,
-        Primary::AcceptPack | Primary::AcceptRules => Icon::Package,
+        Primary::AcceptPack => Icon::Package,
+        Primary::AcceptRules => Icon::CircleCheck,
         Primary::Chat => Icon::Message,
     }
 }
@@ -601,7 +602,7 @@ const BARE_CHAT_ROOM: f32 = 112.;
 fn bare(t: &Theme, game: &Game, m: &Model, account: Option<&Account>, face: Option<ImageHandle>, w: f32, h: f32) -> Element {
     let stopped = game.phase == Phase::Stopped && !game.stopping;
     let roomy = h >= BARE_ROOM;
-    let mut column = rect().width(Size::px(w)).height(Size::px(h)).center().spacing(space::XS).padding((0., space::M));
+    let mut column = rect().width(Size::px(w)).height(Size::px(h)).center().spacing(space::XS).padding((0., space::M, control::S, space::M));
     let head = face_chip(t, account, face, if roomy { BARE_HEAD } else { BARE_HEAD * 0.7 });
     column = column.child(rect().opacity(if stopped { 0.5 } else { 1. }).child(head));
     if roomy && !stopped {

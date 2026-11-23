@@ -98,8 +98,10 @@ fn modes(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, run
         text = format!("{text} {}", tr("Gilt beim nächsten Start."));
     }
     let mut block = block().child(title_text(t, tr("Wie die Spiele laufen"))).child(rect().horizontal().child(control)).child(hint(t, text));
-    if let Some(why) = all.iter().find_map(|m| unsupported(*m, game).map(|why| (*m, why))).filter(|(m, _)| *m == RunMode::Connection || u.mode == *m) {
-        block = block.child(hint(t, format!("{}: {}", name(why.0), why.1)));
+    for m in all.iter().filter(|m| **m == RunMode::Connection || u.mode == **m) {
+        if let Some(why) = unsupported(*m, game) {
+            block = block.child(hint(t, format!("{}: {}", name(*m), why)));
+        }
     }
     if u.mode == RunMode::Connection && proxied > 0 {
         let warning = if proxied == 1 { tr("Ein Konto mit Proxy startet in diesem Modus noch nicht. Nimm den Proxy weg oder wähle „Fenster“.") } else { trf("%lld Konten mit Proxy starten in diesem Modus noch nicht. Nimm die Proxys weg oder wähle „Fenster“.", &[&proxied]) };

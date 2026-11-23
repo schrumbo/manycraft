@@ -733,15 +733,16 @@ impl Component for BatchSheet {
         } else {
             server_field = server_field.auto_focus();
         }
-        form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock));
+        let connection = flow.unattended.read().mode == crate::core::batch::RunMode::Connection;
+        form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock, !connection));
 
         let preset = seed.capped.filter(|_| !editing && chosen == seed.accounts).map(|free| preset_line(&t, flow, picked, free, &lock));
         form = form
             .children(preset)
             .children(fit_line(&t, flow, picked))
             .child(name_field)
-            .child(background_section(&t, flow, background, running, &lock))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection: flow.unattended.read().mode == crate::core::batch::RunMode::Connection }, &lock))
+            .children((!connection).then(|| background_section(&t, flow, background, running, &lock)))
+            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection }, &lock))
             .children(open.then(|| unattended::section(&t, flow.unattended, &game, running, &lock, proxied)));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
@@ -1038,7 +1039,7 @@ struct Candidate {
     elsewhere: Option<String>,
 }
 
-fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: usize, lock: &Option<String>) -> Element {
+fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: usize, lock: &Option<String>, shared: bool) -> Element {
     let store = flow.store;
     let total = candidates.len();
     let raw = flow.filter.read().trim().to_lowercase();
@@ -1097,7 +1098,7 @@ fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: u
         let height = (shown.len() as f32 * PICK_ROW + BOX_EDGES).min(list_max(store));
         WithTip::new(lock.clone(), PickList { rows: shown, picked: flow.accounts, cursor: flow.cursor, height, locked: lock.clone() }).fill().into_element()
     };
-    column.child(list).child(para(t, tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieser Instanz mit, auch in anderen Batches."), font::CAPTION, t.text3)).into_element()
+    column.child(list).children(shared.then(|| para(t, tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieser Instanz mit, auch in anderen Batches."), font::CAPTION, t.text3))).into_element()
 }
 
 #[derive(Clone, Copy)]
