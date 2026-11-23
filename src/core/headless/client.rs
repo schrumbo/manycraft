@@ -2,7 +2,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::ErrorKind;
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
@@ -23,6 +23,7 @@ use super::v777::{PROTOCOL, configuration as cfg, login, play};
 use super::wire::{In, Out};
 use crate::core::auth::Session;
 use crate::core::batch::Packs;
+use crate::core::fleet::Resolved;
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,6 +31,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_TICK: Duration = Duration::from_millis(50);
 const BRAND: &str = "vanilla";
+const INTENTION_LOGIN: i32 = 2;
 const VIEW_DISTANCE: u8 = 2;
 const CHUNKS_PER_TICK: f32 = 10.0;
 const ACK_AFTER: i32 = 64;
@@ -42,6 +44,7 @@ pub const CONDUCT: &str = "conduct-";
 const PACK_LOADED: i32 = 0;
 const PACK_DECLINED: i32 = 1;
 const PACK_ACCEPTED: i32 = 3;
+const PACK_DOWNLOADED: i32 = 4;
 const PERFORM_RESPAWN: i32 = 0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -225,7 +228,7 @@ fn write(link: &mut Link, id: i32, body: &mut Out) -> Result<()> {
 
 fn answer_pack(link: &mut Link, id: Uuid, accept: bool) -> Result<()> {
     let packet = if link.phase == Phase::Play { play::serverbound::RESOURCE_PACK } else { cfg::serverbound::RESOURCE_PACK };
-    let actions: &[i32] = if accept { &[PACK_ACCEPTED, PACK_LOADED] } else { &[PACK_DECLINED] };
+    let actions: &[i32] = if accept { &[PACK_ACCEPTED, PACK_DOWNLOADED, PACK_LOADED] } else { &[PACK_DECLINED] };
     for action in actions {
         write(link, packet, Out::default().uuid(id).varint(*action))?;
     }
@@ -342,23 +345,25 @@ fn failure(e: &anyhow::Error) -> Line {
 }
 
 fn connect(shared: &Shared, address: &str) -> Result<(TcpStream, String, u16)> {
-    let (host, _) = crate::core::fleet::split_server(address)?;
-    let addrs = crate::core::fleet::resolve_all(address).map_err(|e| anyhow::anyhow!("Unknown host: {e}"))?;
+    let Resolved { host, port, addrs } = crate::core::fleet::resolve_server(address).map_err(|e| anyhow::anyhow!("Unknown host: {e}"))?;
     let mut last = None;
     for addr in addrs {
         if shared.lock().control.is_some() {
             bail!("stopped");
         }
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(stream) => return Ok((stream, host, port(addr))),
+            Ok(stream) => return Ok((stream, host, port)),
             Err(e) => last = Some(e),
         }
     }
     Err(last.map_or_else(|| anyhow::anyhow!("Unknown host"), anyhow::Error::from))
 }
 
-fn port(addr: SocketAddr) -> u16 {
-    addr.port()
+/// The handshake that starts a login, as the game sends it: the protocol, the host and port it connected to, the login intention.
+fn handshake(host: &str, port: u16) -> Out {
+    let mut out = Out::default();
+    out.varint(PROTOCOL).string(host).u16(port).varint(INTENTION_LOGIN);
+    out
 }
 
 /// One TCP connection from handshake to its end. Returns the server's reason when it ends the connection.
@@ -374,7 +379,7 @@ fn join(shared: &Shared, spec: &Spec) -> Result<(Line, DisconnectCause)> {
             bail!("stopped");
         }
         link.writer = Some(Writer::new(stream));
-        write(&mut link, 0, Out::default().varint(PROTOCOL).string(&host).u16(port).varint(2))?;
+        write(&mut link, 0, &mut handshake(&host, port))?;
         write(&mut link, login::serverbound::HELLO, Out::default().string(&spec.name).uuid(spec.uuid))?;
     }
     if let Some(end) = log_in(shared, spec, &mut reader)? {
@@ -545,7 +550,7 @@ fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &
         }
         c::SELECT_KNOWN_PACKS => write(link, s::SELECT_KNOWN_PACKS, Out::default().varint(0))?,
         c::REGISTRY_DATA => {
-            if let Some(found) = chat_types(r)? {
+            if let Ok(Some(found)) = chat_types(r) {
                 *types = found;
             }
         }
@@ -631,20 +636,9 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             link.dead = Some(if message.is_empty() { died() } else { message });
             shared.settle(link);
         }
-        c::SYSTEM_CHAT => {
-            let line = text::line(&r.nbt()?);
-            if !r.bool()? && !line.text.is_empty() {
-                shared.emit(FromMod::Chat { kind: ChatKind::System, from: None, text: line.text, runs: line.runs });
-            }
-        }
-        c::PLAYER_CHAT => player_chat(shared, link, r, types)?,
-        c::DISGUISED_CHAT => {
-            let message = r.nbt()?;
-            let text = text::line(&message).text;
-            if let Some(message) = bound(r, types, &message, text)? {
-                shared.emit(message);
-            }
-        }
+        c::SYSTEM_CHAT => lenient(system_chat(shared, r)),
+        c::PLAYER_CHAT => lenient(player_chat(shared, link, r, types)),
+        c::DISGUISED_CHAT => lenient(disguised_chat(shared, r, types)),
         c::CHUNK_BATCH_FINISHED => write(link, s::CHUNK_BATCH_RECEIVED, Out::default().f32(CHUNKS_PER_TICK))?,
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
@@ -689,12 +683,40 @@ fn teleported(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     Ok(())
 }
 
+/// A line the manager shows is not worth the connection: one the client cannot read is dropped, and the stream stays in step
+/// because the next packet starts at its own frame.
+fn lenient(shown: Result<()>) {
+    let _ = shown;
+}
+
+fn system_chat(shared: &Shared, r: &mut In) -> Result<()> {
+    let line = text::line(&r.nbt()?);
+    if !r.bool()? && !line.text.is_empty() {
+        shared.emit(FromMod::Chat { kind: ChatKind::System, from: None, text: line.text, runs: line.runs });
+    }
+    Ok(())
+}
+
+fn disguised_chat(shared: &Shared, r: &mut In, types: &[ChatType]) -> Result<()> {
+    let message = r.nbt()?;
+    let text = text::line(&message).text;
+    if let Some(message) = bound(r, types, &message, text)? {
+        shared.emit(message);
+    }
+    Ok(())
+}
+
 fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType]) -> Result<()> {
     let _global = r.varint()?;
     let _sender = r.uuid()?;
     let _index = r.varint()?;
     let signed = r.bool()?;
     if signed {
+        link.unacked += 1;
+        if link.unacked > ACK_AFTER {
+            write(link, play::serverbound::CHAT_ACK, Out::default().varint(link.unacked))?;
+            link.unacked = 0;
+        }
         r.take(256)?;
     }
     let content = r.string()?;
@@ -710,13 +732,6 @@ fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType])
     if mask == 2 {
         let words = usize::try_from(r.varint()?)?;
         r.take(words.checked_mul(8).context("filter mask too long")?)?;
-    }
-    if signed {
-        link.unacked += 1;
-        if link.unacked > ACK_AFTER {
-            write(link, play::serverbound::CHAT_ACK, Out::default().varint(link.unacked))?;
-            link.unacked = 0;
-        }
     }
     if mask == 1 {
         return Ok(());
@@ -753,4 +768,32 @@ fn bound(r: &mut In, types: &[ChatType], content: &Value, text: String) -> Resul
     }).collect();
     let from = Some(text::line(&name).text).filter(|n| !n.is_empty());
     Ok(Some(FromMod::Chat { kind: ChatKind::Player, from, text, runs: text::translate(key, &args).runs }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(host: &str, port: u16) -> Vec<u8> {
+        handshake(host, port).0
+    }
+
+    fn expected(host: &str, port: u16) -> Vec<u8> {
+        let mut bytes = vec![0x89, 0x06, host.len() as u8];
+        bytes.extend_from_slice(host.as_bytes());
+        bytes.extend_from_slice(&port.to_be_bytes());
+        bytes.push(2);
+        bytes
+    }
+
+    #[test]
+    fn the_handshake_carries_the_protocol_host_port_and_login_intention_and_nothing_else() {
+        assert_eq!(PROTOCOL, 777, "the bytes below are for protocol 777");
+        assert_eq!(body("mc.example.org", 25565), [&[0x89u8, 0x06, 14][..], b"mc.example.org", &[0x63, 0xdd], &[2]].concat());
+        assert_eq!(body("localhost", 25570), expected("localhost", 25570));
+        assert_eq!(body("mc.example.org.net.", 25570), expected("mc.example.org.net.", 25570), "an SRV target keeps its closing dot, as in the game");
+        for host in ["mc.example.org", "10.0.0.1", "mc.example.org.net."] {
+            assert!(!body(host, 25565).contains(&0), "no \\0FML or forwarding marker after {host}");
+        }
+    }
 }

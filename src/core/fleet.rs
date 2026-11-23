@@ -37,8 +37,10 @@ pub const COMPANION_FILE: &str = "manycraft-companion.jar";
 
 pub(super) const DEFAULT_PORT: u16 = 25565;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
-const SRV_TIMEOUT: Duration = Duration::from_secs(1);
+const SRV_TIMEOUT: Duration = Duration::from_secs(3);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
+const RESOLVE_RETRY: Duration = Duration::from_secs(5);
+const DNS_ATTEMPT: Duration = Duration::from_secs(1);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
 /// How long a stopped game may take to save and quit before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(30);
@@ -147,8 +149,12 @@ impl Target {
         self.batch.as_ref().is_some_and(|b| b.mode == RunMode::Connection)
     }
 
+    /// How its games answer a server's resource packs. Connection-only accounts have nobody to ask, so they accept unless the batch declines.
     fn packs(&self) -> Packs {
-        self.batch.as_ref().map_or(Packs::Ask, |b| b.packs)
+        match self.batch.as_ref().map_or(Packs::Ask, |b| b.packs) {
+            Packs::Ask if self.connection_only() => Packs::Accept,
+            chosen => chosen,
+        }
     }
 }
 
@@ -375,37 +381,79 @@ fn early_window_off(text: &str) -> String {
 "
 }
 
-/// The addresses of `server`, with its SRV record when it names no port; cached for a while.
+/// Where a server is and what a client says it connects to: vanilla's `ConnectScreen` sends the SRV record's target
+/// (as the DNS gives it, with its closing dot) and port in the handshake, otherwise the address as typed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub host: String,
+    pub port: u16,
+    pub addrs: Vec<SocketAddr>,
+}
+
+/// The addresses of `server`, with its SRV record when it names no other port than the default; cached for a while.
 pub(crate) fn resolve_all(server: &str) -> Result<Vec<SocketAddr>> {
+    resolve_server(server).map(|r| r.addrs)
+}
+
+/// [`resolve_all`] with the host and port a handshake to `server` carries.
+pub(crate) fn resolve_server(server: &str) -> Result<Resolved> {
     static RESOLVER: OnceLock<Resolver<SystemDns>> = OnceLock::new();
     RESOLVER.get_or_init(|| Resolver::new(SystemDns::default())).resolve(server, Instant::now())
 }
 
 trait Lookup {
+    /// The SRV target and port of `name`; `None` when the domain has no such record, an error when the lookup failed.
     fn srv(&self, name: &str, deadline: Instant) -> Result<Option<(String, u16)>>;
     fn ips(&self, host: &str, deadline: Instant) -> Result<Vec<IpAddr>>;
 }
 
+struct Entry {
+    at: Instant,
+    resolved: Resolved,
+}
+
 struct Resolver<L> {
     lookup: L,
-    cache: Mutex<HashMap<String, (Instant, Vec<SocketAddr>)>>,
+    cache: Mutex<HashMap<String, Entry>>,
+    turns: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl<L: Lookup> Resolver<L> {
     fn new(lookup: L) -> Self {
-        Self { lookup, cache: Mutex::default() }
+        Self { lookup, cache: Mutex::default(), turns: Mutex::default() }
     }
 
-    fn resolve(&self, server: &str, now: Instant) -> Result<Vec<SocketAddr>> {
+    /// One lookup per server at a time, so fifty accounts that reconnect together share one answer instead of queueing for
+    /// the resolver until their deadlines pass. A failed SRV lookup never replaces what an earlier one found, and a
+    /// fallback made without it is kept only briefly.
+    fn resolve(&self, server: &str, now: Instant) -> Result<Resolved> {
         let key = server.trim().to_ascii_lowercase();
-        if let Some((at, addrs)) = lock(&self.cache).get(&key)
-            && now.saturating_duration_since(*at) < RESOLVE_CACHE
-        {
-            return Ok(addrs.clone());
+        if let Some(found) = self.fresh(&key, now) {
+            return Ok(found);
         }
-        let addrs = resolve_with(&self.lookup, server, now)?;
-        lock(&self.cache).insert(key, (now, addrs.clone()));
-        Ok(addrs)
+        let turn = Arc::clone(lock(&self.turns).entry(key.clone()).or_default());
+        let _turn = lock(&turn);
+        let now = now.max(Instant::now());
+        if let Some(found) = self.fresh(&key, now) {
+            return Ok(found);
+        }
+        let (resolved, complete) = match resolve_with(&self.lookup, server, now) {
+            Ok(found) => found,
+            Err(e) => return lock(&self.cache).get(&key).map(|e| e.resolved.clone()).ok_or(e),
+        };
+        let mut cache = lock(&self.cache);
+        if complete {
+            cache.insert(key, Entry { at: now, resolved: resolved.clone() });
+            return Ok(resolved);
+        }
+        let kept = cache.get(&key).map(|e| e.resolved.clone());
+        let resolved = kept.unwrap_or(resolved);
+        cache.insert(key, Entry { at: (now + RESOLVE_RETRY).checked_sub(RESOLVE_CACHE).unwrap_or(now), resolved: resolved.clone() });
+        Ok(resolved)
+    }
+
+    fn fresh(&self, key: &str, now: Instant) -> Option<Resolved> {
+        lock(&self.cache).get(key).filter(|e| now.saturating_duration_since(e.at) < RESOLVE_CACHE).map(|e| e.resolved.clone())
     }
 }
 
@@ -443,23 +491,36 @@ pub fn server_name(address: &str) -> String {
     }
 }
 
-fn resolve_with(lookup: &impl Lookup, server: &str, start: Instant) -> Result<Vec<SocketAddr>> {
+/// The addresses of `server` and whether the SRV lookup, when it was due, got an answer. Without one the typed host and
+/// port stand in, as in the game.
+fn resolve_with(lookup: &impl Lookup, server: &str, start: Instant) -> Result<(Resolved, bool)> {
     let (host, port) = split_server(server)?;
+    let port = port.unwrap_or(DEFAULT_PORT);
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port.unwrap_or(DEFAULT_PORT))]);
+        return Ok((Resolved { host, port, addrs: vec![SocketAddr::new(ip, port)] }, true));
     }
-    let (target, port) = match port {
-        Some(port) => (host, port),
-        None => lookup.srv(&format!("_minecraft._tcp.{host}"), start + SRV_TIMEOUT).ok().flatten().unwrap_or((host, DEFAULT_PORT)),
+    let mut complete = true;
+    let (target, target_port) = if port == DEFAULT_PORT {
+        match lookup.srv(&format!("_minecraft._tcp.{host}"), start + SRV_TIMEOUT) {
+            Ok(Some(found)) => found,
+            Ok(None) => (host.clone(), port),
+            Err(_) => {
+                complete = false;
+                (host.clone(), port)
+            }
+        }
+    } else {
+        (host.clone(), port)
     };
-    if let Ok(ip) = target.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port)]);
-    }
-    let addrs: Vec<SocketAddr> = lookup.ips(&target, start + RESOLVE_TIMEOUT)?.into_iter().map(|ip| SocketAddr::new(ip, port)).collect();
+    let name = target.trim_end_matches('.');
+    let addrs: Vec<SocketAddr> = match name.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, target_port)],
+        Err(_) => lookup.ips(name, start + RESOLVE_TIMEOUT)?.into_iter().map(|ip| SocketAddr::new(ip, target_port)).collect(),
+    };
     if addrs.is_empty() {
-        bail!("{target} has no address");
+        bail!("{name} has no address");
     }
-    Ok(addrs)
+    Ok((Resolved { host: target, port: target_port, addrs }, complete))
 }
 
 #[derive(Default)]
@@ -493,7 +554,7 @@ impl Dns {
         let all = config.name_servers().to_vec();
         let usable: Vec<_> = all.iter().filter(|n| usable_nameserver(n.ip)).cloned().collect();
         let config = ResolverConfig::from_parts(config.domain().cloned(), config.search().to_vec(), if usable.is_empty() { all } else { usable });
-        options.timeout = SRV_TIMEOUT;
+        options.timeout = DNS_ATTEMPT;
         let mut builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
         *builder.options_mut() = options;
         let resolver = {
@@ -505,12 +566,17 @@ impl Dns {
 
     fn srv(&self, name: &str, deadline: Instant) -> Result<Option<(String, u16)>> {
         let left = deadline.saturating_duration_since(Instant::now());
-        let Ok(Ok(found)) = self.runtime.block_on(async { tokio::time::timeout(left, self.resolver.srv_lookup(name)).await }) else { return Ok(None) };
+        let found = match self.runtime.block_on(async { tokio::time::timeout(left, self.resolver.srv_lookup(name)).await }) {
+            Err(_) => bail!("{name} did not answer within {} s", SRV_TIMEOUT.as_secs()),
+            Ok(Err(e)) if e.is_no_records_found() => return Ok(None),
+            Ok(Err(e)) => bail!("{name}: {e}"),
+            Ok(Ok(found)) => found,
+        };
         let best = found.answers().iter().filter_map(|r| match &r.data {
             RData::SRV(srv) => Some(srv),
             _ => None,
         });
-        Ok(best.min_by_key(|s| (s.priority, Reverse(s.weight))).map(|s| (s.target.to_string().trim_end_matches('.').to_owned(), s.port)))
+        Ok(best.min_by_key(|s| (s.priority, Reverse(s.weight))).map(|s| (s.target.to_string(), s.port)).filter(|(target, _)| target != "."))
     }
 
     fn ips(&self, host: &str, deadline: Instant) -> Result<Vec<IpAddr>> {
@@ -2205,6 +2271,7 @@ mod tests {
         calls: Cell<u32>,
         start: Option<Instant>,
         deadlines: RefCell<Vec<Duration>>,
+        srv_down: Cell<bool>,
     }
 
     impl FakeDns {
@@ -2222,18 +2289,21 @@ mod tests {
     impl Lookup for FakeDns {
         fn srv(&self, name: &str, deadline: Instant) -> Result<Option<(String, u16)>> {
             self.record(name, deadline);
-            Ok(self.srv.get(name).cloned())
+            if self.srv_down.get() {
+                bail!("{name} did not answer");
+            }
+            Ok(self.srv.get(&name.to_ascii_lowercase()).cloned())
         }
 
         fn ips(&self, host: &str, deadline: Instant) -> Result<Vec<IpAddr>> {
             self.record(host, deadline);
-            self.ips.get(host).cloned().with_context(|| format!("cannot find {host}"))
+            self.ips.get(&host.to_ascii_lowercase()).cloned().with_context(|| format!("cannot find {host}"))
         }
     }
 
     fn fake_dns() -> FakeDns {
         let mut dns = FakeDns::default();
-        dns.srv.insert("_minecraft._tcp.example.org".into(), ("mc.example.org.net".into(), 25570));
+        dns.srv.insert("_minecraft._tcp.example.org".into(), ("mc.example.org.net.".into(), 25570));
         dns.ips.insert("mc.example.org.net".into(), vec!["10.0.0.7".parse().unwrap()]);
         dns.ips.insert("example.org".into(), vec!["10.0.0.1".parse().unwrap(), "::1".parse().unwrap()]);
         dns.ips.insert("plain.org".into(), vec!["10.0.0.2".parse().unwrap()]);
@@ -2246,15 +2316,24 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn found(dns: &impl Lookup, server: &str, at: Instant) -> Vec<SocketAddr> {
+        resolve_with(dns, server, at).unwrap().0.addrs
+    }
+
+    fn says(dns: &impl Lookup, server: &str) -> (String, u16) {
+        let (resolved, _) = resolve_with(dns, server, Instant::now()).unwrap();
+        (resolved.host, resolved.port)
+    }
+
     #[test]
     fn ip_literals_pass_through_without_lookups() {
         let dns = fake_dns();
         let at = Instant::now();
-        assert_eq!(resolve_with(&dns, "127.0.0.1:25565", at).unwrap(), [addr("127.0.0.1:25565")]);
-        assert_eq!(resolve_with(&dns, "127.0.0.1", at).unwrap(), [addr("127.0.0.1:25565")]);
-        assert_eq!(resolve_with(&dns, "[::1]:25570", at).unwrap(), [addr("[::1]:25570")]);
-        assert_eq!(resolve_with(&dns, "::1", at).unwrap(), [addr("[::1]:25565")]);
-        assert_eq!(resolve_with(&dns, "[::1]", at).unwrap(), [addr("[::1]:25565")]);
+        assert_eq!(found(&dns, "127.0.0.1:25565", at), [addr("127.0.0.1:25565")]);
+        assert_eq!(found(&dns, "127.0.0.1", at), [addr("127.0.0.1:25565")]);
+        assert_eq!(found(&dns, "[::1]:25570", at), [addr("[::1]:25570")]);
+        assert_eq!(found(&dns, "::1", at), [addr("[::1]:25565")]);
+        assert_eq!(found(&dns, "[::1]", at), [addr("[::1]:25565")]);
         assert_eq!(dns.calls.get(), 0);
     }
 
@@ -2267,16 +2346,30 @@ mod tests {
     }
 
     #[test]
-    fn srv_only_without_a_port_and_a_records_otherwise() {
+    fn srv_answers_the_default_port_and_a_records_any_other() {
         let at = Instant::now();
         let dns = FakeDns { start: Some(at), ..fake_dns() };
-        assert_eq!(resolve_with(&dns, "example.org", at).unwrap(), [addr("10.0.0.7:25570")]);
-        assert_eq!(resolve_with(&dns, "example.org:25565", at).unwrap(), [addr("10.0.0.1:25565"), addr("[::1]:25565")]);
-        assert_eq!(resolve_with(&dns, "plain.org", at).unwrap(), [addr("10.0.0.2:25565")]);
+        assert_eq!(found(&dns, "example.org", at), [addr("10.0.0.7:25570")]);
+        assert_eq!(found(&dns, "example.org:25565", at), [addr("10.0.0.7:25570")], "the game looks the record up for a typed 25565 too");
+        assert_eq!(found(&dns, "example.org:25570", at), [addr("10.0.0.1:25570"), addr("[::1]:25570")]);
+        assert_eq!(found(&dns, "plain.org", at), [addr("10.0.0.2:25565")]);
         assert!(resolve_with(&dns, "nowhere.org", at).is_err());
         assert!(resolve_with(&dns, "empty.org", at).is_err());
-        assert_eq!(resolve_with(&dns, "srv-ip.org", at).unwrap(), [addr("10.0.0.9:1")]);
-        assert_eq!(*dns.deadlines.borrow(), [Duration::from_secs(1), Duration::from_secs(3)]);
+        assert_eq!(found(&dns, "srv-ip.org", at), [addr("10.0.0.9:1")]);
+        assert_eq!(*dns.deadlines.borrow(), [SRV_TIMEOUT, SRV_TIMEOUT, RESOLVE_TIMEOUT]);
+    }
+
+    #[test]
+    fn the_handshake_names_what_the_game_sends() {
+        let dns = fake_dns();
+        assert_eq!(says(&dns, "example.org"), ("mc.example.org.net.".to_owned(), 25570), "the record's target with its closing dot, and its port");
+        assert_eq!(says(&dns, "Example.ORG:25565"), ("mc.example.org.net.".to_owned(), 25570));
+        assert_eq!(says(&dns, "Example.ORG:25570"), ("Example.ORG".to_owned(), 25570), "a typed port skips the record and keeps the typed spelling");
+        assert_eq!(says(&dns, "Plain.Org"), ("Plain.Org".to_owned(), 25565), "no record: the typed host and the default port");
+        assert_eq!(says(&dns, "plain.org:25599"), ("plain.org".to_owned(), 25599));
+        assert_eq!(says(&dns, "10.1.2.3"), ("10.1.2.3".to_owned(), 25565), "an IP stays as typed");
+        assert_eq!(says(&dns, "srv-ip.org"), ("10.0.0.9".to_owned(), 1));
+        assert_eq!(says(&dns, "[::1]:25570"), ("::1".to_owned(), 25570));
     }
 
     #[test]
@@ -2297,12 +2390,73 @@ mod tests {
     fn answers_are_cached_for_a_minute() {
         let resolver = Resolver::new(fake_dns());
         let t0 = Instant::now();
-        assert_eq!(resolver.resolve("plain.org", t0).unwrap(), [addr("10.0.0.2:25565")]);
+        assert_eq!(resolver.resolve("plain.org", t0).unwrap().addrs, [addr("10.0.0.2:25565")]);
         let after_first = resolver.lookup.calls.get();
         resolver.resolve("PLAIN.org", t0 + Duration::from_secs(59)).unwrap();
         assert_eq!(resolver.lookup.calls.get(), after_first);
-        resolver.resolve("plain.org", t0 + Duration::from_secs(60)).unwrap();
+        resolver.resolve("plain.org", t0 + Duration::from_secs(61)).unwrap();
         assert!(resolver.lookup.calls.get() > after_first);
+    }
+
+    #[test]
+    fn a_lookup_that_fails_never_replaces_what_an_earlier_one_found() {
+        let resolver = Resolver::new(fake_dns());
+        let t0 = Instant::now();
+        let first = resolver.resolve("example.org", t0).unwrap();
+        assert_eq!((first.host.as_str(), first.port), ("mc.example.org.net.", 25570));
+        resolver.lookup.srv_down.set(true);
+        let later = resolver.resolve("example.org", t0 + RESOLVE_CACHE + Duration::from_secs(1)).unwrap();
+        assert_eq!(later, first, "the old answer stands while the lookup is down");
+        let calls = resolver.lookup.calls.get();
+        resolver.resolve("example.org", t0 + RESOLVE_CACHE + Duration::from_secs(2)).unwrap();
+        assert_eq!(resolver.lookup.calls.get(), calls, "and the lookup is not hammered");
+        resolver.lookup.srv_down.set(false);
+        let healed = resolver.resolve("example.org", t0 + RESOLVE_CACHE + RESOLVE_RETRY + Duration::from_secs(2)).unwrap();
+        assert_eq!(healed, first);
+    }
+
+    #[test]
+    fn a_fallback_made_without_the_srv_answer_is_tried_again_soon() {
+        let resolver = Resolver::new(fake_dns());
+        resolver.lookup.srv_down.set(true);
+        let t0 = Instant::now();
+        let fallback = resolver.resolve("example.org", t0).unwrap();
+        assert_eq!((fallback.host.as_str(), fallback.port), ("example.org", 25565), "as the game would, without the record");
+        resolver.lookup.srv_down.set(false);
+        assert_eq!(resolver.resolve("example.org", t0 + Duration::from_secs(2)).unwrap(), fallback, "briefly kept");
+        let now = resolver.resolve("example.org", t0 + RESOLVE_RETRY + Duration::from_secs(1)).unwrap();
+        assert_eq!((now.host.as_str(), now.port), ("mc.example.org.net.", 25570));
+    }
+
+    struct SlowDns {
+        srv_calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl Lookup for SlowDns {
+        fn srv(&self, _: &str, _: Instant) -> Result<Option<(String, u16)>> {
+            self.srv_calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(Some(("mc.slow.net.".into(), 25570)))
+        }
+
+        fn ips(&self, _: &str, _: Instant) -> Result<Vec<IpAddr>> {
+            Ok(vec!["10.0.0.5".parse().unwrap()])
+        }
+    }
+
+    #[test]
+    fn fifty_accounts_asking_at_once_share_one_lookup() {
+        let resolver = Arc::new(Resolver::new(SlowDns { srv_calls: 0.into() }));
+        let threads: Vec<_> = (0..50)
+            .map(|_| {
+                let resolver = Arc::clone(&resolver);
+                std::thread::spawn(move || resolver.resolve("slow.org", Instant::now()).unwrap())
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap().port, 25570);
+        }
+        assert_eq!(resolver.lookup.srv_calls.load(Ordering::SeqCst), 1);
     }
 
     struct FakeProcess {
@@ -3019,6 +3173,19 @@ mod tests {
         assert!(require_companion_for_headless(&batch, None).is_err(), "without the companion the game would open a window");
         assert!(require_companion_for_headless(&target("B"), None).is_ok());
         assert!(!Target::solo(&batch.instance).headless());
+    }
+
+    #[test]
+    fn connection_only_accounts_accept_resource_packs_unless_the_batch_declines() {
+        let mut t = target("A");
+        assert_eq!(t.packs(), Packs::Ask, "a game asks");
+        let b = t.batch.as_mut().unwrap();
+        b.mode = RunMode::Connection;
+        assert_eq!(t.packs(), Packs::Accept, "nobody to ask without the game");
+        t.batch.as_mut().unwrap().packs = Packs::Decline;
+        assert_eq!(t.packs(), Packs::Decline);
+        t.batch.as_mut().unwrap().packs = Packs::Accept;
+        assert_eq!(t.packs(), Packs::Accept);
     }
 
     #[test]
