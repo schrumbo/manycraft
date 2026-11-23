@@ -153,6 +153,8 @@ fn a_change_after_loading_reaches_the_sync_folder_and_the_next_start_of_another_
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, true));
+    fs::write(game.join("options.txt"), "fov:0.5
+").unwrap();
     t.loaded("k1");
     t.options(&w.roots, &p, "k1", &values(&[("fov", "0.9")]));
     assert!(w.mother("options.txt").unwrap().contains("fov:0.9"));
@@ -199,6 +201,9 @@ fn per_instance_keys_never_move() {
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, true));
+    fs::write(game.join("options.txt"), "fov:0.5
+fullscreen:false
+").unwrap();
     t.loaded("k1");
     t.options(&w.roots, &p, "k1", &values(&[("fullscreen", "true"), ("lastServer", "x"), ("version", "9999"), ("resourcePacks", "[\"file/a.zip\"]"), ("incompatibleResourcePacks", "[]"), ("fov", "0.7")]));
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.7\n");
@@ -742,4 +747,30 @@ fn an_old_options_template_after_a_version_change_never_reaches_the_sync_folder(
     let now = read(&a.dir.join("options.txt"));
     assert!(now.contains("key_key.jump:key.keyboard.space") && !now.contains(":57"), "{now}");
     assert!(own_files(&w, Item::Options).contains(&b"version:1343\nkey_key.jump:57\nfov:0.1\n".to_vec()));
+}
+
+#[test]
+fn keys_a_game_adds_after_loading_never_reach_the_sync_folder() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[("k1", &a)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k2", &a, &game, false));
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\n").unwrap();
+    t.loaded("k2");
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
+    t.ended(&w.roots, &p, "k2", 1);
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+    let companion = a.dir.join("games").join("c");
+    fs::create_dir_all(&companion).unwrap();
+    fs::write(companion.join("options.txt"), "fov:0.5\n").unwrap();
+    t.started(&w.roots, &p, start("k1", &a, &companion, true));
+    t.loaded("k1");
+    t.options(&w.roots, &p, "k1", &values(&[("fov", "0.5"), ("cloudRange", "64")]));
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+    t.options(&w.roots, &p, "k1", &values(&[("cloudRange", "32")]));
+    assert!(w.mother("options.txt").unwrap().contains("cloudRange:32"));
 }

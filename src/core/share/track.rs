@@ -49,6 +49,7 @@ struct Game {
 struct Base {
     options: BTreeMap<String, String>,
     servers: Option<Vec<u8>>,
+    seen: Option<(u64, Option<SystemTime>)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,9 +98,11 @@ impl Tracker {
         if game.base.is_some() {
             return;
         }
-        let options = read_text(&game.start.game.join(OPTIONS_FILE)).ok().flatten().map(|t| keys::map(&t)).unwrap_or_default();
+        let path = game.start.game.join(OPTIONS_FILE);
+        let seen = file_stamp(&path);
+        let options = read_text(&path).ok().flatten().map(|t| keys::map(&t)).unwrap_or_default();
         let servers = read_file(&game.start.game.join(SERVERS_FILE)).ok().flatten();
-        game.base = Some(Base { options, servers });
+        game.base = Some(Base { options, servers, seen });
         let instance = game.start.instance.clone();
         let dir = game.start.dir.clone();
         let waiting = self.games.values().any(|g| g.start.instance == instance && g.base.is_none());
@@ -116,8 +119,8 @@ impl Tracker {
         if let Err(e) = sync::instance_options(roots, peers, &start.instance, values) {
             eprintln!("the options of {} were not kept: {e:#}", start.name);
         }
-        let mine: BTreeMap<String, String> = values.iter().filter(|(k, v)| base.options.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect();
-        base.options.extend(mine.clone());
+        let mine = keys::changed(&base.options, values);
+        base.options.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
         if mine.is_empty() || !flags_in(&start.dir).options {
             return;
         }
@@ -221,7 +224,11 @@ impl Tracker {
         let shown = self.shown;
         let mut loaded = Vec::new();
         for (key, game) in &mut self.games {
-            if game.base.is_some() || game.start.companion {
+            if game.start.companion {
+                continue;
+            }
+            if let Some(base) = &mut game.base {
+                learn_defaults(&game.start.game.join(OPTIONS_FILE), base);
                 continue;
             }
             if game.shown.is_none() && shown(game.start.pid) {
@@ -275,6 +282,24 @@ impl Tracker {
             eprintln!("the mod settings of {} were not shared: {e:#}", own.name);
         }
     }
+}
+
+/// Takes the keys the game added to its options file since `base` saw it as defaults it filled in: a later change of
+/// one of them is a choice that flows up, the key appearing is not.
+fn learn_defaults(path: &Path, base: &mut Base) {
+    let now = file_stamp(path);
+    if now == base.seen {
+        return;
+    }
+    base.seen = now;
+    let Ok(Some(text)) = read_text(path) else { return };
+    for (k, v) in keys::map(&text) {
+        base.options.entry(k).or_insert(v);
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
 }
 
 /// Whether `bytes` for config file `rel` look like a file a crash or a reset left: empty, or no longer text or JSON

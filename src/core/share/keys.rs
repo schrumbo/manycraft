@@ -40,9 +40,10 @@ pub(super) fn upward(changes: &BTreeMap<String, String>, now: &BTreeMap<String, 
     changes.iter().filter(|(k, v)| valid(k, v) && !excluded(k) && now.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
-/// The keys of `after` that are new or changed against `before`; keys `after` lost are no change.
+/// The keys of `after` whose value changed against `before`. A key only one side has is no change: one the game adds
+/// after loading is a default it filled in, not a choice.
 pub(super) fn changed(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    after.iter().filter(|(k, v)| before.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect()
+    after.iter().filter(|(k, v)| before.get(*k).is_some_and(|b| b != *v)).map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
 /// `text` with every key in `changes` set: lines replaced in place, new keys appended.
@@ -140,7 +141,7 @@ mod tests {
 
     #[test]
     fn changed_ignores_removed_keys() {
-        assert_eq!(changed(&m(&[("a", "1"), ("b", "2"), ("gone", "x")]), &m(&[("a", "1"), ("b", "3"), ("new", "4")])), m(&[("b", "3"), ("new", "4")]));
+        assert_eq!(changed(&m(&[("a", "1"), ("b", "2"), ("gone", "x")]), &m(&[("a", "1"), ("b", "3"), ("new", "4")])), m(&[("b", "3")]));
     }
 
     #[test]

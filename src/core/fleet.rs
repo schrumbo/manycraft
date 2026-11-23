@@ -1069,7 +1069,7 @@ impl Fleet {
             return self.prepare_connection(target, accounts);
         }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
-        self.settle_exits(instance);
+        self.settle_exits(share::flags_in(&share::Own::of(instance).dir).any());
         let joining = self.instance_runs(&instance.id);
         share::inbound(instance, joining)?;
         if !joining {
@@ -1086,10 +1086,11 @@ impl Fleet {
         Ok(Prepared { target: target.clone(), server_addrs, way: Way::Game { installed, companion_jar } })
     }
 
-    /// Waits until the settings of every game that ended were shared, so a start never writes over what they saved.
-    fn settle_exits(&self, instance: &Instance) {
+    /// Waits until the settings of every game that ended were shared, so neither a start writes over what they saved
+    /// nor quitting loses it; with `always`, also when no game ended, for exits already on their way.
+    fn settle_exits(&self, always: bool) {
         let ended: Vec<(String, u32)> = lock(&self.running).iter_mut().filter_map(|(k, r)| (!r.poll()).then(|| (k.clone(), r.pid))).collect();
-        if ended.is_empty() && !share::flags_in(&share::Own::of(instance).dir).any() {
+        if ended.is_empty() && !always {
             return;
         }
         for (key, pid) in ended {
@@ -1389,6 +1390,7 @@ impl Fleet {
             std::thread::sleep(QUIT_POLL);
         }
         self.end(&runs);
+        self.settle_exits(false);
     }
 
     /// Ends the instances `keys` at once, without waiting for them to save.
