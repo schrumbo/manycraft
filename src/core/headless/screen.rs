@@ -22,6 +22,8 @@ const OFFHAND: usize = 45;
 const SHOWN_INVENTORY: usize = 36;
 const PICKUP: i32 = 0;
 const QUICK_MOVE: i32 = 1;
+const AIR: i32 = 0;
+const NEVER_HELD: i32 = -1;
 
 struct Picture {
     id: i32,
@@ -127,6 +129,8 @@ impl Screen {
     }
 
     /// The click packet for the user's `click` on `slot` of the open menu `menu`, when that menu is open and has the slot.
+    /// It claims no slots and a cursor stack no stack can match, so the server sends back every slot and the cursor the
+    /// click changed instead of trusting a guess.
     pub fn click(&self, menu: i32, slot: i16, click: Click) -> Option<Out> {
         let open = self.menu.as_ref().filter(|m| m.id == menu)?;
         let index = usize::try_from(slot).ok().filter(|s| *s < open.slots.len())?;
@@ -136,7 +140,8 @@ impl Screen {
             Click::Shift => (0, QUICK_MOVE),
         };
         let mut out = Out::default();
-        out.varint(open.id).varint(open.state).i16(i16::try_from(index).ok()?).u8(button).varint(input).varint(0).bool(false);
+        out.varint(open.id).varint(open.state).i16(i16::try_from(index).ok()?).u8(button).varint(input).varint(0);
+        out.bool(true).varint(AIR).varint(NEVER_HELD).varint(0).varint(0);
         Some(out)
     }
 
@@ -533,9 +538,10 @@ mod tests {
     fn clicks_encode_the_vanilla_container_click() {
         let mut s = Screen::default();
         chest(&mut s);
-        assert_eq!(s.click(3, 0, Click::Left).unwrap().0, [3, 5, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(s.click(3, 4, Click::Right).unwrap().0, [3, 5, 0, 4, 1, 0, 0, 0]);
-        assert_eq!(s.click(3, 44, Click::Shift).unwrap().0, [3, 5, 0, 44, 0, 1, 0, 0]);
+        let cursor = [1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0, 0];
+        assert_eq!(s.click(3, 0, Click::Left).unwrap().0, [&[3, 5, 0, 0, 0, 0, 0][..], &cursor].concat());
+        assert_eq!(s.click(3, 4, Click::Right).unwrap().0, [&[3, 5, 0, 4, 1, 0, 0][..], &cursor].concat());
+        assert_eq!(s.click(3, 44, Click::Shift).unwrap().0, [&[3, 5, 0, 44, 0, 1, 0][..], &cursor].concat());
         assert!(s.click(3, 45, Click::Left).is_none());
         assert!(s.click(3, -999, Click::Left).is_none());
         assert!(s.click(4, 0, Click::Left).is_none());

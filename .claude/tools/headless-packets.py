@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "src" / "core" / "headless" / "v777.rs"
 GAME_DATA = Path(__file__).resolve().parent / "GameData.java"
 DEFAULT_JAR = Path(tempfile.gettempdir()) / "manycraft-testserver" / "26.3" / "server.jar"
-LANG_PREFIXES = ("chat.type.", "commands.message.display.", "death.", "multiplayer.disconnect.", "multiplayer.player.", "multiplayer.requiredTexturePrompt.", "disconnect.", "connect.failed", "deathScreen.title")
+LANG_PREFIXES = ("container.", "chat.type.", "commands.message.display.", "death.", "multiplayer.disconnect.", "multiplayer.player.", "multiplayer.requiredTexturePrompt.", "disconnect.", "connect.failed", "deathScreen.title")
 
 PACKETS = {
     "login": {
