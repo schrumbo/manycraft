@@ -127,11 +127,6 @@ fn preset(loader: &Loader, windows: bool) -> Vec<&'static Slot> {
     }
 }
 
-/// How many mods the performance preset holds for `loader` on this system.
-pub fn default_total(loader: &Loader) -> usize {
-    preset(loader, cfg!(windows)).len()
-}
-
 /// The names of the performance preset's mods for `loader` on this system, in preset order.
 pub fn default_names(loader: &Loader) -> Vec<&'static str> {
     preset(loader, cfg!(windows)).iter().map(|slot| slot.name).collect()
@@ -1889,7 +1884,7 @@ Connection: close
         let note = defaults.notes.iter().find(|n| n.to_lowercase().contains("modernfix")).unwrap();
         assert!(note.contains("26.3"), "{note}");
         assert_eq!(defaults.notes.len(), defaults.skipped.len());
-        assert_eq!(defaults.skipped.len() + 4, default_total(&fabric()), "{:?}", defaults.skipped);
+        assert_eq!(defaults.skipped.len() + 4, default_names(&fabric()).len(), "{:?}", defaults.skipped);
     }
 
     const ONE: Slot = Slot { name: "One", ids: &["id-a"], windows_only: false };
