@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::account::Account;
 use super::skin_change::{self as change, MAX_PNG, Model, Services, SkinError};
-use super::{auth, drive, lock, net, paths, skin, skins};
+use super::{auth, drive, lock, net, paths, proxy, skin, skins};
 
 mod canned;
 
@@ -135,12 +135,38 @@ fn clean(name: &str, fallback: &str) -> String {
     if name.is_empty() { fallback.to_owned() } else { name }
 }
 
-fn read_index(dir: &Path) -> Index {
-    let mut index = std::fs::read(dir.join("library.json")).ok().and_then(|b| serde_json::from_slice::<Index>(&b).ok()).unwrap_or_default();
-    index.skins.retain(|s| valid_file(&s.file) && dir.join(&s.file).is_file());
-    let mut found: Vec<Skin> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
+fn gone(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound
+}
+
+fn stored_index(dir: &Path) -> Result<Index> {
+    let path = dir.join("library.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if gone(&e) => return Ok(Index::default()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let Ok(serde_json::Value::Object(mut map)) = serde_json::from_slice(&bytes) else {
+        let _ = std::fs::copy(&path, dir.join("library.json.bad"));
+        return Ok(Index::default());
+    };
+    let skins = match map.remove("skins") {
+        Some(serde_json::Value::Array(items)) => items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect(),
+        _ => Vec::new(),
+    };
+    let seen = map.remove("seen").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    Ok(Index { skins, seen })
+}
+
+fn read_index(dir: &Path) -> Result<Index> {
+    let mut index = stored_index(dir)?;
+    index.skins.retain(|s| valid_file(&s.file) && std::fs::metadata(dir.join(&s.file)).map_or_else(|e| !gone(&e), |m| m.is_file()));
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if gone(&e) => return Ok(index),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
+    };
+    let mut found: Vec<Skin> = entries
         .flatten()
         .filter_map(|entry| {
             let file = entry.file_name().to_string_lossy().into_owned();
@@ -154,7 +180,7 @@ fn read_index(dir: &Path) -> Index {
         .collect();
     found.sort_by_key(|s| std::cmp::Reverse(s.added));
     index.skins.extend(found);
-    index
+    Ok(index)
 }
 
 fn write_index(dir: &Path, index: &Index) -> Result<()> {
@@ -164,7 +190,7 @@ fn write_index(dir: &Path, index: &Index) -> Result<()> {
 fn locked<T>(dir: &Path, work: impl FnOnce(&mut Index) -> Result<T>) -> Result<T> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let _guard = lock::exclusive(&dir.join("library.lock"))?;
-    let mut index = read_index(dir);
+    let mut index = read_index(dir)?;
     let out = work(&mut index)?;
     write_index(dir, &index)?;
     Ok(out)
@@ -172,7 +198,7 @@ fn locked<T>(dir: &Path, work: impl FnOnce(&mut Index) -> Result<T>) -> Result<T
 
 /// Every skin of the library, newest first.
 pub fn list() -> Vec<Skin> {
-    read_index(&library_dir()).skins
+    read_index(&library_dir()).map(|i| i.skins).unwrap_or_default()
 }
 
 /// The picture of `skin`.
@@ -222,16 +248,20 @@ fn remove_in(dir: &Path, file: &str) -> Result<()> {
 
 /// Renames a skin of the library.
 pub fn rename(file: &str, name: &str) -> Result<()> {
-    edit(file, |s| s.name = clean(name, &s.name))
+    rename_in(&library_dir(), file, name)
+}
+
+fn rename_in(dir: &Path, file: &str, name: &str) -> Result<()> {
+    edit(dir, file, |s| s.name = clean(name, &s.name))
 }
 
 /// Sets the arm model a skin of the library is worn with.
 pub fn set_model(file: &str, model: Model) -> Result<()> {
-    edit(file, |s| s.model = model)
+    edit(&library_dir(), file, |s| s.model = model)
 }
 
-fn edit(file: &str, change: impl FnOnce(&mut Skin)) -> Result<()> {
-    locked(&library_dir(), |index| {
+fn edit(dir: &Path, file: &str, change: impl FnOnce(&mut Skin)) -> Result<()> {
+    locked(dir, |index| {
         if let Some(skin) = index.skins.iter_mut().find(|s| s.file == file) {
             change(skin);
         }
@@ -245,12 +275,16 @@ pub fn adopt_recent(account: &Account) {
     if marker.is_file() {
         return;
     }
+    let mut all = true;
     for recent in change::recent(account.id) {
-        if let Ok(png) = std::fs::read(&recent.path) {
-            let _ = add(&Fetched { png, model: recent.model, name: format!("{} (früher)", account.name), origin: Origin::Recent, from: Some(account.name.clone()) });
-        }
+        let added = std::fs::read(&recent.path)
+            .map_err(anyhow::Error::from)
+            .and_then(|png| add(&Fetched { png, model: recent.model, name: format!("{} (früher)", account.name), origin: Origin::Recent, from: Some(account.name.clone()) }));
+        all &= added.is_ok();
     }
-    let _ = net::write_atomic(&marker, b"1");
+    if all {
+        let _ = net::write_atomic(&marker, b"1");
+    }
 }
 
 /// Reads and checks a skin file the person picked.
@@ -293,8 +327,8 @@ pub fn fetch_link(input: &str) -> Result<Fetched> {
     if drive::fenced("skin link", &url) {
         return canned::fetched(url.as_str(), Origin::Link, Some(host));
     }
-    let name = url.path_segments().and_then(|mut s| s.next_back()).map(|s| s.trim_end_matches(".png").to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| host.clone());
-    let agent = net::agent(None)?;
+    let name = url.path_segments().and_then(|mut s| s.next_back()).map(|s| proxy::percent_decode(s.trim_end_matches(".png"))).filter(|s| !s.is_empty()).unwrap_or_else(|| host.clone());
+    let agent = net::agent_https(None)?;
     let mut reply = agent.get(url.as_str()).call().map_err(|e| match e {
         ureq::Error::StatusCode(404 | 410) => AddError::NotAnImage.into(),
         e => reach(e.into()),
@@ -404,6 +438,7 @@ pub struct Told {
 /// Asks Minecraft services what `account` wears and owns, keeps the pictures and the answer on disk, and puts a skin
 /// the library has not seen into it. Blocking: run it off the UI thread.
 pub fn refresh(account: &Account) -> Result<Told> {
+    let started = now();
     let before = cached(account.id);
     let outfit = if drive::fenced("skin profile", &account.name) {
         canned::outfit(account)?
@@ -412,6 +447,9 @@ pub fn refresh(account: &Account) -> Result<Told> {
         let services = Services::new(account.proxy.as_deref(), session.access_token)?;
         read(&services)?
     };
+    if let Some(newer) = cached(account.id).filter(|c| c.fetched >= started && Some(c) != before.as_ref()) {
+        return Ok(Told { outfit: newer, face: None });
+    }
     settle(account, before.as_ref(), outfit)
 }
 
@@ -450,15 +488,14 @@ fn settle(account: &Account, before: Option<&Outfit>, outfit: Outfit) -> Result<
                 let _ = skins::adopt(account, worn, &png);
             }
         }
-        let first_time = locked(&library_dir(), |index| {
-            let fresh = !index.seen.iter().any(|t| t == worn);
-            if fresh {
-                index.seen.push(worn.to_owned());
-            }
-            Ok(fresh)
-        })?;
-        if first_time {
-            let _ = add(&Fetched { png: change::png(&picture)?, model: outfit.model, name: account.name.clone(), origin: Origin::Worn, from: Some(account.name.clone()) });
+        if !read_index(&library_dir())?.seen.iter().any(|t| t == worn) {
+            add(&Fetched { png: change::png(&picture)?, model: outfit.model, name: account.name.clone(), origin: Origin::Worn, from: Some(account.name.clone()) })?;
+            locked(&library_dir(), |index| {
+                if !index.seen.iter().any(|t| t == worn) {
+                    index.seen.push(worn.to_owned());
+                }
+                Ok(())
+            })?;
         }
     }
     Ok(Told { outfit, face })
@@ -552,7 +589,7 @@ mod tests {
         assert_eq!(again.skin.name, "Alpha");
         let second = add_in(dir.path(), &fetched(200, "Beta")).unwrap();
         assert!(second.new);
-        let names: Vec<String> = read_index(dir.path()).skins.into_iter().map(|s| s.name).collect();
+        let names: Vec<String> = read_index(dir.path()).unwrap().skins.into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["Beta", "Alpha"]);
     }
 
@@ -562,7 +599,7 @@ mod tests {
         let added = add_in(dir.path(), &fetched(10, "Alpha")).unwrap().skin;
         remove_in(dir.path(), "../outside.png").unwrap();
         remove_in(dir.path(), &added.file).unwrap();
-        assert!(read_index(dir.path()).skins.is_empty());
+        assert!(read_index(dir.path()).unwrap().skins.is_empty());
         assert!(!dir.path().join(&added.file).exists());
     }
 
@@ -573,7 +610,7 @@ mod tests {
         std::fs::remove_file(dir.path().join("library.json")).unwrap();
         std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
         std::fs::write(dir.path().join(format!("{}.png", "0".repeat(40))), b"not a png").unwrap();
-        let found = read_index(dir.path()).skins;
+        let found = read_index(dir.path()).unwrap().skins;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].file, added.file);
     }
@@ -583,7 +620,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let added = add_in(dir.path(), &fetched(10, "Alpha")).unwrap().skin;
         std::fs::remove_file(dir.path().join(&added.file)).unwrap();
-        assert!(read_index(dir.path()).skins.is_empty());
+        assert!(read_index(dir.path()).unwrap().skins.is_empty());
     }
 
     #[test]
@@ -591,7 +628,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let added = add_in(dir.path(), &fetched(10, "Alpha")).unwrap().skin;
         std::fs::write(dir.path().join("library.json"), b"{ damaged").unwrap();
-        assert_eq!(read_index(dir.path()).skins.first().map(|s| s.file.clone()), Some(added.file));
+        assert_eq!(read_index(dir.path()).unwrap().skins.first().map(|s| s.file.clone()), Some(added.file));
+        assert!(dir.path().join("library.json.bad").is_file());
+    }
+
+    #[test]
+    fn an_unknown_entry_does_not_take_the_others_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = add_in(dir.path(), &fetched(10, "Alpha")).unwrap().skin;
+        let second = add_in(dir.path(), &fetched(200, "Beta")).unwrap().skin;
+        let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.path().join("library.json")).unwrap()).unwrap();
+        json["skins"][0]["origin"] = "from the future".into();
+        std::fs::write(dir.path().join("library.json"), serde_json::to_vec(&json).unwrap()).unwrap();
+        rename_in(dir.path(), &first.file, "Renamed").unwrap();
+        let names: Vec<String> = read_index(dir.path()).unwrap().skins.into_iter().map(|s| s.name).collect();
+        assert!(names.contains(&"Renamed".to_owned()));
+        assert!(read_index(dir.path()).unwrap().skins.iter().any(|s| s.file == second.file));
+    }
+
+    #[test]
+    fn an_unreadable_index_stops_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("library.json")).unwrap();
+        assert!(add_in(dir.path(), &fetched(10, "Alpha")).is_err());
+        assert!(dir.path().join("library.json").is_dir());
     }
 
     #[test]

@@ -17,15 +17,22 @@ const RENAME_ATTEMPTS: u32 = 12;
 /// otherwise through the proxy from the environment, if any. Connecting gives up after 10 s, a stalled read after 30 s,
 /// and a whole request after 15 minutes.
 pub fn agent(proxy: Option<&str>) -> Result<ureq::Agent> {
+    Ok(builder(proxy)?.build().into())
+}
+
+/// Like agent, for addresses a person typed: only https, also across the few redirects it follows.
+pub fn agent_https(proxy: Option<&str>) -> Result<ureq::Agent> {
+    Ok(builder(proxy)?.https_only(true).max_redirects(3).build().into())
+}
+
+fn builder(proxy: Option<&str>) -> Result<ureq::config::ConfigBuilder<ureq::typestate::AgentScope>> {
     let proxy = proxy.map(ureq::Proxy::new).transpose().context("invalid proxy address")?.or_else(ureq::Proxy::try_from_env);
     Ok(ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT))
         .timeout_per_read(Some(PER_READ))
         .timeout_global(Some(TOTAL))
         .user_agent(concat!("Manycraft/", env!("CARGO_PKG_VERSION")))
-        .proxy(proxy)
-        .build()
-        .into())
+        .proxy(proxy))
 }
 
 /// HTTP agent for short calls: the whole request, connect to last byte, ends within `timeout`. Uses the proxy from the environment, if any.

@@ -262,7 +262,7 @@ impl Ctl {
     }
 
     pub fn can_wear(self) -> bool {
-        self.busy.peek().is_none() && self.look.peek().as_ref().is_some_and(|l| l.microsoft)
+        self.busy.peek().is_none() && !matches!(*self.phase.peek(), Phase::Refreshing) && self.look.peek().as_ref().is_some_and(|l| l.microsoft)
     }
 
     pub fn wear_skin(self, file: &str) {
@@ -317,9 +317,12 @@ impl Ctl {
                 }
             }
             match changed.error {
-                Some(e) => {
+                Some(e) if self.still(id) => {
                     let mut error = self.error;
                     error.set(Some((problem(&e), signs_in_again(&e))));
+                }
+                Some(e) => {
+                    toast::show(self.store.ui, problem(&e).text, None);
                 }
                 None => {
                     toast::show(self.store.ui, done_text(skin_asked, cape_asked), None);
@@ -423,34 +426,55 @@ impl Ctl {
     }
 
     pub fn remove(self, file: String) {
-        let Some(hung) = self.shelf.peek().iter().find(|h| h.skin.file == file).cloned() else { return };
-        let Ok(png) = wardrobe::bytes(&hung.skin) else { return };
-        if wardrobe::remove(&file).is_err() {
+        let Some(skin) = self.shelf.peek().iter().find(|h| h.skin.file == file).map(|h| h.skin.clone()) else { return };
+        let gone = skin.clone();
+        let Some(rx) = off_thread("wardrobe-remove", move || {
+            let png = wardrobe::bytes(&gone).ok()?;
+            wardrobe::remove(&file).ok()?;
+            Some(png)
+        }) else {
             return;
-        }
-        self.reload_shelf();
-        let skin = hung.skin;
-        let name = skin.name.clone();
-        toast::show(
-            self.store.ui,
-            trf("„%@“ aus der Garderobe entfernt.", &[&name]),
-            Some(EventHandler::new(move |_| {
-                let restored = Fetched { png: png.clone(), model: skin.model, name: skin.name.clone(), origin: skin.origin, from: skin.from.clone() };
-                let _ = wardrobe::add(&restored);
-                if self.alive() {
-                    self.reload_shelf();
-                }
-            })),
-        );
+        };
+        spawn_in_window(async move {
+            let Ok(Some(png)) = rx.recv().await else { return };
+            if !self.alive() {
+                return;
+            }
+            self.reload_shelf();
+            let name = skin.name.clone();
+            toast::show(
+                self.store.ui,
+                trf("„%@“ aus der Garderobe entfernt.", &[&name]),
+                Some(EventHandler::new(move |_| {
+                    let restored = Fetched { png: png.clone(), model: skin.model, name: skin.name.clone(), origin: skin.origin, from: skin.from.clone() };
+                    self.library_job("wardrobe-undo", move || {
+                        let _ = wardrobe::add(&restored);
+                    });
+                })),
+            );
+        });
     }
 
     pub fn rename(self, file: &str, name: &str) {
-        let _ = wardrobe::rename(file, name);
-        self.reload_shelf();
+        let (file, name) = (file.to_owned(), name.to_owned());
+        self.library_job("wardrobe-rename", move || {
+            let _ = wardrobe::rename(&file, &name);
+        });
     }
 
     pub fn set_model(self, file: &str, model: Model) {
-        let _ = wardrobe::set_model(file, model);
-        self.reload_shelf();
+        let file = file.to_owned();
+        self.library_job("wardrobe-model", move || {
+            let _ = wardrobe::set_model(&file, model);
+        });
+    }
+
+    fn library_job(self, name: &str, job: impl FnOnce() + Send + 'static) {
+        let Some(rx) = off_thread(name, job) else { return };
+        spawn_in_window(async move {
+            if rx.recv().await.is_ok() && self.alive() {
+                self.reload_shelf();
+            }
+        });
     }
 }
