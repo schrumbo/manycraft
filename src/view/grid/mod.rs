@@ -237,13 +237,30 @@ pub fn shelf_shown(filter: &Filter, search: &str, show: Show, view: View) -> boo
 /// Where the cursor sits in the scrolled content: its top and bottom, the view's height and how far it can scroll.
 type Reveal = Rc<RefCell<Option<(f32, f32, f32, f32)>>>;
 
-/// The grid page.
+/// The grid page: the mosaic, and the chat as a sidebar beside it while that is open.
 #[derive(PartialEq)]
 pub struct GridPage {
     pub filter: Filter,
 }
 
 impl Component for GridPage {
+    fn render(&self) -> impl IntoElement {
+        let store = use_store();
+        let open = *store.ui.chat.open.read() && !store.failed();
+        let mut page = rect().width(Size::fill()).height(Size::fill()).horizontal().content(Content::flex()).child(rect().width(Size::flex(1.)).height(Size::fill()).child(Mosaic { filter: self.filter.clone() }));
+        if open {
+            page = page.child(super::chat::Panel { scope: super::chat::scope_of(&self.filter) });
+        }
+        page
+    }
+}
+
+#[derive(PartialEq)]
+struct Mosaic {
+    filter: Filter,
+}
+
+impl Component for Mosaic {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let gap = tile::gap(&t);
@@ -538,4 +555,3 @@ pub fn count_line(m: &Model, shown: &[String]) -> Option<String> {
 pub fn sizes() -> [(TileSize, String, String); 4] {
     [(TileSize::Small, "S".into(), tr("Klein")), (TileSize::Medium, "M".into(), tr("Mittel")), (TileSize::Large, "L".into(), tr("Groß")), (TileSize::Fit, tr("Einpassen"), tr("Alle Kacheln ohne Scrollen zeigen"))]
 }
-

@@ -25,6 +25,7 @@ use super::kit::menu::{self, Item, Menu};
 use super::kit::{Bounds, open_external, ring, toast, use_theme};
 use super::native;
 use super::store::{Store, use_store};
+use super::ui::{Filter, Page};
 use super::theme::{Theme, color, control, font, frame, iconsize, level, space};
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{ChatLine, Model};
@@ -33,11 +34,12 @@ use crate::core::chat_text::{self, Run};
 use crate::core::i18n::{tr, trf};
 use crate::core::settings;
 use crate::core::themes::Rgba;
+use crate::core::winstate;
 
 const KEPT_HISTORY: usize = 100;
 const SHOWN_CHARS: usize = 600;
 const PAGE: usize = 200;
-const TIME_W: f32 = 44.;
+const TIME_W: f32 = 40.;
 const PICKER_W: f32 = 200.;
 const PICKER_NARROW: f32 = 150.;
 const CHIP_MAX: f32 = 220.;
@@ -49,11 +51,19 @@ const HEARD_MAX: usize = 3;
 const LINK_SHOWN: usize = 40;
 const GLYPH: f32 = 0.5;
 const READING: f32 = control::READING;
+const PANEL_W: f32 = 340.;
+const PANEL_MIN: f32 = 280.;
+const PANEL_SHARE: f32 = 0.4;
+const HEAD_H: f32 = 40.;
 
 /// The page's state, kept while other pages show so the draft, the history and the recipient survive.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Shared {
     pub batch: State<Option<String>>,
+    /// Whether the chat sidebar of the batch pages is open.
+    pub open: State<bool>,
+    /// The batch the picked recipient was picked for; another batch makes the lines follow it again.
+    pub scope: State<Option<String>>,
     /// The recipient the person picked; `None` follows the batch shown, else everyone.
     pub target: State<Option<Target>>,
     pub recent: State<Vec<Target>>,
@@ -88,6 +98,8 @@ impl Shared {
     pub fn create() -> Self {
         Self {
             batch: State::create(None),
+            open: State::create(winstate::load().chat_open),
+            scope: State::create(None),
             target: State::create(None),
             recent: State::create(Vec::new()),
             draft: State::create(String::new()),
@@ -119,13 +131,13 @@ fn batch_choices(m: &Model) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// The recipient in use: the one picked while it still exists, else the batch shown, else everyone. A picked one that
+/// The recipient in use: the one picked while it still exists, else the batch in `scope`, else everyone. A picked one that
 /// is gone gives nobody, so a line never goes to more games than the person chose.
-fn target_of(m: &Model, shared: Shared) -> Option<Target> {
+fn target_of(m: &Model, shared: Shared, scope: &Option<String>) -> Option<Target> {
     match shared.target.read().clone() {
         Some(t) if exists(m, &t) => Some(t),
         Some(_) => None,
-        None => Some(shared.batch.read().clone().filter(|b| m.batch(b).is_some()).map_or(Target::All, Target::Batch)),
+        None => Some(scope.clone().filter(|b| m.batch(b).is_some()).map_or(Target::All, Target::Batch)),
     }
 }
 
@@ -147,7 +159,7 @@ fn open_picker(store: Store) {
     shared.picker.set(true);
 }
 
-fn send(store: Store) {
+fn send(store: Store, scope: &Option<String>) {
     let mut shared = store.ui.chat;
     let text = shared.draft.peek().trim().to_owned();
     if text.is_empty() || !settings::active().broadcast {
@@ -175,7 +187,7 @@ fn send(store: Store) {
     }
     let (target, reach, batches) = {
         let m = store.model.peek();
-        let target = target_of(&m, shared);
+        let target = target_of(&m, shared, scope);
         let reach = target.as_ref().map_or(0, |t| reached(&m, t));
         let batches = target.as_ref().map(|t| batches_of(&m, t)).unwrap_or_default();
         (target, reach, batches)
@@ -253,11 +265,58 @@ fn set_batch(store: Store, batch: Option<String>) {
     shared.top.set(None);
 }
 
-/// Opens the page with the message field focused.
+/// Whether the chat has a sidebar to show in on `page`.
+pub fn available(page: &Page) -> bool {
+    matches!(page, Page::Grid(_))
+}
+
+/// The batch whose chat a grid page shows: its own, or every batch's.
+pub fn scope_of(filter: &Filter) -> Option<String> {
+    match filter {
+        Filter::Batch(id) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+/// How many lines other players wrote in `scope` since the sequence number `read`.
+pub fn unread(m: &Model, read: u64, scope: Option<&str>) -> usize {
+    let skip = (read.max(m.chat_base()) - m.chat_base()) as usize;
+    let own = own_names(m);
+    m.chat.iter().skip(skip).filter(|l| in_scope(l, scope) && l.from.as_ref().is_some_and(|f| !own.contains(&f.to_lowercase()))).count()
+}
+
+/// The sequence number the next chat line gets.
+pub fn newest(m: &Model) -> u64 {
+    m.chat_base() + m.chat.len() as u64
+}
+
+/// Opens or closes the chat sidebar and remembers it for the next start.
+pub fn set_open(store: Store, open: bool) {
+    let mut shared = store.ui.chat;
+    if *shared.open.peek() == open {
+        return;
+    }
+    shared.open.set(open);
+    shared.picker.set_if_modified(false);
+    winstate::keep_chat_open(open);
+    if open {
+        shared.focus.set(Some(Instant::now()));
+    }
+}
+
+/// Opens the chat with the message field focused: the sidebar of the page shown, or of the grid of all batches.
 pub fn focus(store: Store) {
     let mut ui = store.ui;
-    if *ui.page.peek() != super::ui::Page::Chat {
-        ui.page.set(super::ui::Page::Chat);
+    let page = ui.page.peek().clone();
+    if page != Page::Chat && !available(&page) {
+        let only = {
+            let m = store.model.peek();
+            (m.batches.len() == 1).then(|| m.batches[0].id.clone())
+        };
+        ui.page.set(Page::Grid(only.map_or(Filter::All, Filter::Batch)));
+    }
+    if page != Page::Chat {
+        set_open(store, true);
     }
     let mut at = ui.chat.focus;
     at.set(Some(Instant::now()));
@@ -268,12 +327,19 @@ fn can_send() -> bool {
     s.merged_chat && s.broadcast
 }
 
-/// The page's commands for the palette: pick who sends, or send to everyone again.
+/// The commands for the palette: show or hide the sidebar, pick who sends, or send to everyone again.
 pub fn extras(store: Store) -> Vec<Extra> {
-    if !can_send() {
-        return Vec::new();
+    let shown = available(&store.ui.page.peek());
+    let open = *store.ui.chat.open.peek();
+    let mut out = Vec::new();
+    if shown {
+        let label = if open { tr("Chat ausblenden") } else { tr("Chat einblenden") };
+        out.push(Extra { id: "chat.toggle".into(), label, glyph: Icon::Message, shortcut: None, run: EventHandler::new(move |_| set_open(store, !open)) });
     }
-    let mut out = vec![Extra { id: "chat.sendas".into(), label: tr("Senden als …"), glyph: Icon::Users, shortcut: Some(Shortcut::primary(Code::KeyE)), run: EventHandler::new(move |_| open_picker(store)) }];
+    if !can_send() || (shown && !open) {
+        return out;
+    }
+    out.push(Extra { id: "chat.sendas".into(), label: tr("Senden als …"), glyph: Icon::Users, shortcut: Some(Shortcut::primary(Code::KeyE)), run: EventHandler::new(move |_| open_picker(store)) });
     if !store.ui.chat.history.peek().is_empty() {
         out.push(Extra { id: "chat.recall".into(), label: tr("Letzte Nachricht zurückholen"), glyph: Icon::Message, shortcut: None, run: EventHandler::new(move |_| recall_last(store)) });
     }
@@ -305,11 +371,69 @@ impl Component for Tools {
     }
 }
 
-/// The Chat page.
+/// The Chat page: the whole chat of the batch picked in the toolbar.
 #[derive(PartialEq)]
 pub struct ChatPage;
 
 impl Component for ChatPage {
+    fn render(&self) -> impl IntoElement {
+        let scope = use_store().ui.chat.batch.read().clone();
+        Conversation { scope }
+    }
+}
+
+/// The chat sidebar of the grid pages: a title with the batch it shows, and the conversation.
+#[derive(PartialEq)]
+pub struct Panel {
+    pub scope: Option<String>,
+}
+
+impl Panel {
+    /// The width the sidebar takes of a window `window` wide.
+    fn width(window: f32) -> f32 {
+        PANEL_W.min(window * PANEL_SHARE).max(PANEL_MIN)
+    }
+}
+
+impl Component for Panel {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let (window, _) = *store.ui.window.read();
+        let title = {
+            let m = store.model.read();
+            self.scope.as_ref().and_then(|b| m.batch(b)).map_or_else(|| tr("Alle Batches"), |b| b.name.clone())
+        };
+        let head = rect()
+            .width(Size::fill())
+            .height(Size::px(HEAD_H))
+            .padding((0., space::S, 0., space::L))
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .child(line(&t, tr("Chat"), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD))
+            .child(rect().width(Size::flex(1.)).child(caption(&t, title).max_lines(1).text_overflow(TextOverflow::Ellipsis)))
+            .content(Content::flex())
+            .child(Button::icon("chat.close", Icon::Close, tr("Chat ausblenden")).on_press(move |_| set_open(store, false)));
+        rect()
+            .a11y_role(AccessibilityRole::Complementary)
+            .a11y_alt(tr("Chat"))
+            .width(Size::px(Self::width(window)))
+            .height(Size::fill())
+            .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 0., left: 1. }).alignment(BorderAlignment::Inner))
+            .content(Content::flex())
+            .child(head)
+            .child(rect().width(Size::fill()).height(Size::flex(1.)).child(Conversation { scope: self.scope.clone() }))
+    }
+}
+
+/// The lines of the chat in `scope` and the composer under them.
+#[derive(PartialEq)]
+struct Conversation {
+    scope: Option<String>,
+}
+
+impl Component for Conversation {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
@@ -320,9 +444,20 @@ impl Component for ChatPage {
             let mut left = store.ui.chat.left_at;
             left.set(Some(m.chat_base() + m.chat.len() as u64));
         });
+        use_side_effect_with_deps(&self.scope, move |scope| {
+            let mut shared = store.ui.chat;
+            if *shared.scope.peek() != *scope {
+                shared.scope.set(scope.clone());
+                shared.target.set(None);
+                shared.sent.set(None);
+                shared.rejected.set(None);
+                shared.shown.set(PAGE);
+                shared.top.set(None);
+            }
+        });
         let _ = store.chat.read();
         let m = store.model.read();
-        let batch = shared.batch.read().clone().filter(|b| m.batches.len() > 1 && m.batch(b).is_some());
+        let batch = self.scope.clone().filter(|b| m.batch(b).is_some());
         let merged = settings::active().merged_chat;
         let broadcast = settings::active().broadcast;
         let page = rect().width(Size::fill()).height(Size::fill());
@@ -335,11 +470,7 @@ impl Component for ChatPage {
         let base = m.chat_base();
         let ids: Vec<u64> = m.chat.iter().enumerate().filter(|(_, l)| in_scope(l, batch.as_deref())).map(|(i, _)| base + i as u64).collect();
         let body = if ids.is_empty() {
-            if batch.is_some() && !m.chat.is_empty() {
-                empty(&t, Icon::Search, tr("Keine Treffer"), tr("In diesem Batch gibt es noch keine Chatzeilen."), Some(Button::new("chat.filter.reset", tr("Alle Batches zeigen")).tall().on_press(move |_| set_batch(store, None)).into_element()))
-            } else {
-                empty(&t, Icon::Message, tr("Noch redet keiner"), tr("Sobald ein Account auf einem Server ist, erscheint der Chat hier."), None)
-            }
+            empty(&t, Icon::Message, tr("Noch redet keiner"), tr("Sobald ein Account auf einem Server ist, erscheint der Chat hier."), None)
         } else {
             let shown = (*shared.shown.read()).min(ids.len());
             let mut older = ids.len() - shown;
@@ -368,18 +499,15 @@ impl Component for ChatPage {
         };
         let mut main = rect().width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex());
         if broadcast {
-            main = main.child(Composer);
+            main = main.child(Composer { scope: self.scope.clone() });
         } else {
             main = main.child(
                 rect()
                     .width(Size::fill())
                     .padding((space::M, space::L))
-                    .horizontal()
-                    .cross_align(Alignment::Center)
-                    .spacing(space::M)
+                    .spacing(space::S)
                     .border(Border::new().fill(t.separator).width(BorderWidth { top: 1., right: 0., bottom: 0., left: 0. }).alignment(BorderAlignment::Inner))
-                    .child(line(&t, tr("Senden ist in den Einstellungen ausgeschaltet."), font::CALLOUT, t.text3).width(Size::flex(1.)))
-                    .content(Content::flex())
+                    .child(para(&t, tr("Senden ist in den Einstellungen ausgeschaltet."), font::CALLOUT, t.text3))
                     .child(Button::new("chat.send.off", tr("Einstellungen öffnen")).glyph(Icon::Settings).on_press(move |_| Command::OpenSettings.run(store))),
             );
         }
@@ -689,7 +817,7 @@ impl Component for Row {
         let r = &self.row;
         let l = &r.line;
         let base = if l.from.is_none() { t.text2 } else { t.text1 };
-        let mut body = paragraph().width(Size::flex(1.)).font_size(font::BODY).color(base).line_height(frame::PARA_LINE);
+        let mut body = paragraph().width(Size::fill()).font_size(font::BODY).color(base).line_height(frame::PARA_LINE);
         let plain;
         let runs = if l.runs.is_empty() {
             if let Some(from) = &l.from {
@@ -724,27 +852,34 @@ impl Component for Row {
                     menu::open(store.ui, Menu::at(line_menu(store, &found, copied.clone()), at));
                 }
             })
-            .padding((space::XXS + 1., space::M))
+            .padding((space::XS, space::M))
             .horizontal()
-            .spacing(space::M)
-            .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).maybe_child(self.stamp.then(|| caption(&t, clock(l.at)).font_tabular())))
-            .child(body);
-        let seen = (r.heard.is_none() && r.seen > 1).then(|| trf("Gesehen von %lld Accounts", &[&r.seen]));
-        if r.heard.is_some() || r.batch.is_some() || seen.is_some() {
-            let mut tags = rect().horizontal().cross_align(Alignment::Center).spacing(space::S).max_width(Size::px(TAG_MAX * 2.));
+            .spacing(space::S)
+            .child(rect().width(Size::px(TIME_W)).padding((space::XXS, 0., 0., 0.)).maybe_child(self.stamp.then(|| caption(&t, clock(l.at)).font_tabular())));
+        let mut text_col = rect().width(Size::flex(1.)).child(body);
+        if r.heard.is_some() || r.batch.is_some() {
+            let mut tags = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S);
             if let Some(b) = &r.batch {
-                tags = tags.child(rect().max_width(Size::px(TAG_MAX)).child(caption(&t, b.clone())));
+                tags = tags.child(rect().max_width(Size::px(TAG_MAX)).child(caption(&t, b.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis)));
             }
             if let Some(h) = &r.heard {
                 let tip = trf("Nur bei %@ angekommen.", &[&h.names]);
                 let names = rect().max_width(Size::px(TAG_MAX)).a11y_alt(tip.clone()).child(caption(&t, h.names.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
                 tags = tags.child(WithTip::new(Some(tip), names));
             }
-            if let Some(tip) = seen {
-                let ink = if *hovered.read() { t.text3 } else { Color::TRANSPARENT };
-                tags = tags.child(WithTip::new(Some(tip.clone()), rect().a11y_alt(tip).child(caption(&t, format!("{}×", r.seen)).color(ink).font_tabular())));
-            }
-            row = row.child(tags);
+            text_col = text_col.child(tags);
+        }
+        row = row.child(text_col);
+        if r.heard.is_none() && r.seen > 1 && *hovered.read() {
+            let tip = trf("Gesehen von %lld Accounts", &[&r.seen]);
+            let count = rect()
+                .position(Position::new_absolute().right(space::XS).top(space::XXS))
+                .padding((0., space::XS))
+                .corner_radius(space::XS)
+                .background(t.raised)
+                .a11y_alt(tip.clone())
+                .child(WithTip::new(Some(tip), caption(&t, format!("{}×", r.seen)).font_tabular()));
+            row = row.child(count);
         }
         row.content(Content::flex())
     }
@@ -857,7 +992,9 @@ fn separator(t: &Theme, text: String, ink: Color, rule: Color) -> Element {
 
 /// The control that says who gets the next line; a click or Ctrl+E opens the list.
 #[derive(PartialEq)]
-struct SendAs;
+struct SendAs {
+    scope: Option<String>,
+}
 
 impl Component for SendAs {
     fn render(&self) -> impl IntoElement {
@@ -868,7 +1005,7 @@ impl Component for SendAs {
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
         let m = store.model.read();
-        let target = target_of(&m, shared);
+        let target = target_of(&m, shared, &self.scope);
         let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
         let label = target.as_ref().map_or_else(|| tr("Absender wählen"), |tg| name(&m, tg));
         let account = match &target {
@@ -897,8 +1034,8 @@ impl Component for SendAs {
                 shared.chip_at.set_if_modified(Bounds::of(&e));
                 spot(e);
             })
+            .width(Size::fill())
             .height(Size::px(control::M))
-            .max_width(Size::px(CHIP_MAX))
             .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
@@ -919,11 +1056,11 @@ impl Component for SendAs {
         if let Some(tg) = &target {
             chip = chip.child(mark(&t, store, tg, account, &label, t.text2));
         }
-        chip = chip.child(line(&t, label, font::BODY, ink).font_weight(FontWeight::MEDIUM));
+        chip = chip.child(rect().width(Size::flex(1.)).child(line(&t, label, font::BODY, ink).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis)));
         if let Some(c) = count {
             chip = chip.child(line(&t, c, font::CALLOUT, t.text2).font_tabular());
         }
-        chip = chip.child(icon(&t, Icon::ChevronUp, iconsize::XS, t.text3));
+        chip = chip.child(icon(&t, Icon::ChevronUp, iconsize::XS, t.text3)).content(Content::flex());
         if let Some(border) = ring(&t, focus()) {
             chip = chip.border(border);
         }
@@ -934,7 +1071,9 @@ impl Component for SendAs {
 
 /// The line under the list: who gets the message, the message, and what happened to the last one.
 #[derive(PartialEq)]
-struct Composer;
+struct Composer {
+    scope: Option<String>,
+}
 
 impl Component for Composer {
     fn render(&self) -> impl IntoElement {
@@ -975,7 +1114,7 @@ impl Component for Composer {
             }
         });
         let m = store.model.read();
-        let target = target_of(&m, shared);
+        let target = target_of(&m, shared, &self.scope);
         let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
         let all = choices(&m, &shared.recent.read());
         let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
@@ -998,28 +1137,28 @@ impl Component for Composer {
             None
         };
         let can_send = blocked.is_none();
-        let mut send_button = Button::new("chat.send", tr("Senden")).glyph(Icon::Send).disabled(blocked);
+        let mut send_button = Button::icon("chat.send", Icon::Send, tr("Senden")).disabled(blocked);
         if can_send {
             send_button = send_button.primary();
         }
         let submit_list = suggest.as_ref().map(|(_, l)| l.clone());
+        let (scope_enter, scope_press) = (self.scope.clone(), self.scope.clone());
         let row = rect()
             .width(Size::fill())
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
-            .child(SendAs)
-            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl · @Name wechselt den Absender")).a11y(field).rows_through().on_submit(move |_| {
+            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl")).a11y(field).rows_through().on_submit(move |_| {
                 if let Some(list) = submit_list.as_ref() {
                     if let Some(at) = list.len().checked_sub(1).map(|end| store.ui.chat.at_hot.peek().unwrap_or(0).min(end)) {
                         pick_at(store, list[at].target.clone());
                     }
                     return;
                 }
-                send(store);
+                send(store, &scope_enter);
             })))
             .content(Content::flex())
-            .child(send_button.on_press(move |_| send(store)));
+            .child(send_button.on_press(move |_| send(store, &scope_press)));
         let note = match shared.rejected.read().clone() {
             Some((_, why)) => Some(line(&t, why, font::CAPTION, t.danger_text)),
             None => hint.map(|h| caption(&t, h).max_lines(1).text_overflow(TextOverflow::Ellipsis)),
@@ -1072,6 +1211,7 @@ impl Component for Composer {
                 step_history(store, delta);
             })
             .on_sized(move |e: Event<SizedEventData>| lift.set_if_modified(Bounds::of(&e).h))
+            .child(SendAs { scope: self.scope.clone() })
             .child(row)
             .child(note);
         if !joins.is_empty() {
@@ -1321,7 +1461,8 @@ fn recall_step(history: &[String], at: Option<usize>, delta: isize, current: &st
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clip_link, clock, day_title, heard_by, in_scope, line_problem, links, mentions, now, recall_step, same_day, unique};
+    use super::{ChatLine, MAX_CHAT_CHARS, Model, SHOWN_CHARS, clip, clip_link, clock, day_title, heard_by, in_scope, line_problem, links, mentions, newest, now, recall_step, same_day, scope_of, unique, unread};
+    use crate::view::ui::Filter;
 
     fn line(batch: &str) -> ChatLine {
         ChatLine { instance: "k".into(), account: "Alex".into(), batch: batch.into(), also: Vec::new(), at: 0, from: None, text: "x".into(), runs: Vec::new() }
@@ -1334,6 +1475,28 @@ mod tests {
         assert_eq!(links("(https://en.wikipedia.org/wiki/Java_(language))."), ["https://en.wikipedia.org/wiki/Java_(language)"]);
         assert_eq!(clip_link("https://example.org/"), "example.org/");
         assert!(clip_link(&format!("https://example.org/{}", "a".repeat(80))).ends_with('…'));
+    }
+
+    #[test]
+    fn a_grid_page_shows_the_chat_of_its_batch_or_of_all() {
+        assert_eq!(scope_of(&Filter::Batch("farm".into())), Some("farm".to_owned()));
+        assert_eq!(scope_of(&Filter::All), None);
+        assert_eq!(scope_of(&Filter::Attention), None);
+    }
+
+    #[test]
+    fn unread_counts_lines_of_others_in_scope_after_the_mark() {
+        let mut m = Model::default();
+        m.accounts.push(crate::core::account::Account::offline("Alex").unwrap());
+        for (batch, from) in [("farm", Some("Bert")), ("farm", Some("alex")), ("farm", None), ("mine", Some("Bert")), ("farm", Some("Cleo"))] {
+            let mut l = line(batch);
+            l.from = from.map(str::to_owned);
+            m.push_chat(l, 100);
+        }
+        assert_eq!(unread(&m, 0, None), 3);
+        assert_eq!(unread(&m, 0, Some("farm")), 2);
+        assert_eq!(unread(&m, 4, Some("farm")), 1);
+        assert_eq!(unread(&m, newest(&m), None), 0);
     }
 
     #[test]

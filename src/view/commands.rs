@@ -719,7 +719,7 @@ pub struct Extra {
 pub fn extras(store: Store) -> Vec<Extra> {
     match &*store.ui.page.peek() {
         Page::Instance(_) => super::instance::extras(store),
-        Page::Chat => super::chat::extras(store),
+        Page::Chat | Page::Grid(_) => super::chat::extras(store),
         Page::Discover => super::discover::extras(store),
         _ => Vec::new(),
     }
