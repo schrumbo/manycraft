@@ -36,7 +36,7 @@ use super::commands::{Extra, Shortcut};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::text::{heading, secondary};
-use super::kit::{after, use_theme};
+use super::kit::{after, page, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{frame, iconsize, space};
 use super::ui::{Filter, Page};
@@ -48,7 +48,6 @@ use crate::core::modrinth::Kind;
 
 const SPLIT: f32 = frame::INSPECTOR_SPLIT;
 const INSPECTOR: f32 = frame::INSPECTOR;
-const CONTENT_MAX: f32 = frame::CONTENT_MAX;
 
 const TAB_DIGITS: [Code; 7] = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5, Code::Digit6, Code::Digit7];
 
@@ -407,11 +406,9 @@ impl Component for InstancePage {
         };
         let room = ui.window.read().0 - ui.sidebar_room();
         let wide = room >= SPLIT;
-        let mut body = rect().width(Size::fill()).height(Size::fill());
-        if tab.reads() {
-            body = body.max_width(Size::px(CONTENT_MAX));
-        }
-        let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(body.child(tab_body(&t, store, tab, f.clone())));
+        let body = tab_body(&t, store, tab, f.clone());
+        let body = if tab.reads() { page::reading(body).height(Size::fill()) } else { rect().width(Size::fill()).height(Size::fill()).child(body) };
+        let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).child(body);
         let mut left = rect().width(Size::flex(1.)).height(Size::fill());
         if !wide {
             left = left.child(Strip { id: self.id.clone() });
