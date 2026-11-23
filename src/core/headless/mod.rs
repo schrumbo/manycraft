@@ -12,6 +12,7 @@ mod cli;
 mod client;
 mod conn;
 mod crypto;
+pub mod render;
 pub mod resume;
 mod text;
 mod v777;

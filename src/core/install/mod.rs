@@ -293,6 +293,25 @@ pub fn install(game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress)
     install_in(&root, &dl, &net::agent_within(QUICK_METADATA), online::offline(), game_version, loader, progress)
 }
 
+/// The client jar of `game_version` in the shared versions folder, fetched with its metadata when it is missing or damaged.
+/// It is the same file an install of that version uses, so it exists once on disk.
+pub fn client_jar(game_version: &str) -> Result<PathBuf> {
+    let _in_use = clean::in_use()?;
+    let root = paths::data_dir();
+    let versions = root.join("versions");
+    let dl = Downloader::new(net::agent(None)?)?.seeded(seed::Seeds::new(&root, seed::launchers()));
+    let profile = match local_plan(&versions, &root.join("libraries"), game_version, &Loader::Vanilla) {
+        Some(plan) => plan.profile,
+        None => vanilla_profile(&dl, dl.agent(), &versions, game_version)?,
+    };
+    let client = profile.downloads.as_ref().and_then(|d| d.client.as_ref()).context("version has no client download")?;
+    let dir = join_safe(&versions, game_version)?;
+    let _lock = lock(&dir)?;
+    let jar = dir.join(format!("{game_version}.jar"));
+    dl.all(Stage::Client, &[Job::new(client.url.clone(), jar.clone(), client.sha1.clone(), client.size)], &|_| {})?;
+    Ok(jar)
+}
+
 fn install_in(root: &Path, dl: &Downloader, quick: &ureq::Agent, offline: bool, game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
     let (versions, libraries, assets_dir, runtimes) = (root.join("versions"), root.join("libraries"), root.join("assets"), root.join("runtimes"));
     progress(Progress { stage: Stage::Metadata, done: 0, total: 1 });
