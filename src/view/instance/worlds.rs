@@ -294,7 +294,7 @@ impl Page {
         let page = self.clone();
         spawn_in_window(async move {
             let title = tr("Welt hinzufügen");
-            let Some(picked) = off_ui(move || native::pick_files(&title, "Welten", &["zip"], true)).await else { return };
+            let Some(picked) = off_ui(move || native::pick_files(&title, &tr("Welten"), &["zip"], true)).await else { return };
             page.import(picked);
         });
     }

@@ -205,7 +205,7 @@ fn save_name(store: Store, id: &str, text: &str) -> Option<String> {
 fn choose_icon(store: Store, id: String) {
     spawn_in_window(async move {
         let title = tr("Bild wählen");
-        let Some(picked) = off_ui(move || native::pick_files(&title, "Bilder", &["png", "jpg", "jpeg", "webp", "gif"], false)).await else { return };
+        let Some(picked) = off_ui(move || native::pick_files(&title, &tr("Bilder"), &["png", "jpg", "jpeg", "webp", "gif"], false)).await else { return };
         let Some(path) = picked.into_iter().next() else { return };
         set_icon(store, id, Some(path)).await;
     });

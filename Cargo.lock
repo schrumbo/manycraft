@@ -5048,6 +5048,7 @@ dependencies = [
 name = "manycraft"
 version = "0.10.0-beta.6"
 dependencies = [
+ "aes",
  "anyhow",
  "arboard",
  "async-channel",
@@ -5058,6 +5059,7 @@ dependencies = [
  "freya",
  "freya-core",
  "freya-winit",
+ "getrandom 0.3.4",
  "gpui-kit",
  "hickory-resolver",
  "image",
@@ -5069,6 +5071,7 @@ dependencies = [
  "muda",
  "notify",
  "notify-rust",
+ "num-bigint",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",

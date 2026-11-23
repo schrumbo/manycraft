@@ -10,7 +10,7 @@ use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use super::{Face, Facts, Flow, act_of, fit_name, run_hint, saved_when, status_line, stepped, trail_of, trail_view, version_blocked};
-use crate::core::i18n::{Lang, lang, tr, trf};
+use crate::core::i18n::{date, tr, trf};
 use crate::core::modrinth::{self, Details, Hit, Kind, Version};
 use crate::ui::catalog;
 use crate::ui::forms::{self, Problem, downloads_short};
@@ -174,7 +174,7 @@ fn need_of(have: bool, dependency_type: &str, mods: bool) -> Need {
 fn day(iso: &str) -> String {
     let Ok(at) = chrono::DateTime::parse_from_rfc3339(iso) else { return iso.chars().take(10).collect() };
     let at = at.with_timezone(&chrono::Local);
-    if lang() == Lang::En { at.format("%b %-d, %Y").to_string() } else { at.format("%-d.%-m.%Y").to_string() }
+    date(at.date_naive(), true)
 }
 
 fn problem_of(e: &anyhow::Error) -> Problem {

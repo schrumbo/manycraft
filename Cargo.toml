@@ -26,6 +26,7 @@ required-features = ["freya-proto"]
 
 [dependencies]
 anyhow = "1"
+aes = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 arboard = { version = "3", optional = true, default-features = false, features = ["image-data", "wayland-data-control"] }
 async-channel = "2.5.0"
@@ -37,11 +38,13 @@ freya-core = { version = "0.5.2", optional = true }
 notify = { version = "8.2", optional = true }
 open = { version = "5.4", optional = true }
 flate2 = "1"
+getrandom = "0.3"
 gpui-kit = "0.8.1"
 hickory-resolver = "0.26"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 md-5 = "0.10"
+num-bigint = "0.4"
 qrcode = { version = "0.14", default-features = false }
 raw-window-handle = "0.6"
 rayon = "1"
