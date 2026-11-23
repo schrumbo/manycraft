@@ -2181,5 +2181,11 @@
   "Die Performance-Mods ließen sich nicht laden. Du findest sie später unter Mods.": "The performance mods could not be loaded. You can add them later under Mods.",
   "Ohne Loader nicht möglich.": "Not possible without a loader.",
   "Nicht dabei: %@.": "Left out: %@.",
-  "%1$@, %2$@ und %3$lld weitere für mehr Bilder pro Sekunde. Was es für diese Version oder diesen Loader nicht gibt, bleibt weg.": "%1$@, %2$@ and %3$lld more for higher frame rates. Anything not available for this version or loader is left out."
+  "%1$@, %2$@ und %3$lld weitere für mehr Bilder pro Sekunde. Was es für diese Version oder diesen Loader nicht gibt, bleibt weg.": "%1$@, %2$@ and %3$lld more for higher frame rates. Anything not available for this version or loader is left out.",
+  "Garderobe": "Wardrobe",
+  "Skins und Umhänge": "Skins and capes",
+  "Hier liegen bald alle Skins und Umhänge zum Wechseln.": "All your skins and capes will live here, ready to switch.",
+  "Version und Loader wählen, Mods später.": "Pick a version and loader, add mods later.",
+  "Ein fertiges Paket von Modrinth, das zur eigenen Instanz wird.": "A ready-made pack from Modrinth that becomes its own instance.",
+  "Instanzen aus Prism, Modrinth oder einem anderen Launcher übernehmen.": "Bring over instances from Prism, Modrinth or another launcher."
 }

@@ -16,7 +16,6 @@ use crate::core::i18n::{tr, trf};
 use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings};
 use crate::view::kit::Bounds;
 use crate::view::kit::button::Button;
-use crate::view::kit::chip::Chip;
 use crate::view::kit::group::{Line, group};
 use crate::view::kit::row::Row;
 use crate::view::kit::segmented::{Segment, Segmented};
@@ -157,7 +156,7 @@ impl Component for SettingsPage {
         let rev = use_state(|| 0u64);
         let p = use_provide_context(|| Prefs { store, rev });
         let scroll = use_scroll_controller(ScrollConfig::default);
-        let heights = use_state(|| [0f32; SECTIONS + 1]);
+        let heights = use_state(|| [0f32; SECTIONS]);
         let picked = use_state(|| None::<usize>);
         let mut width = use_state(|| f32::INFINITY);
         let s = p.read();
@@ -228,21 +227,18 @@ impl Component for SettingsPage {
         let sections: [Element; SECTIONS] = [LookGroup.into_element(), GameGroup.into_element(), ingame, connection, notices, PhoneGroup.into_element(), chat, hotkeys, UpdatesGroup.into_element(), advanced];
         let wide = *width.read() >= PAGE + (JUMPS + space::XL) * 2.;
         let mut column = rect().width(Size::fill()).max_width(Size::px(PAGE)).spacing(space::XL);
-        if !wide {
-            column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, 0, Bounds::of(&e).h)).child(Jumps { scroll, heights, picked, wide }));
-        }
         for (i, section) in sections.into_iter().enumerate() {
-            column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, i + 1, Bounds::of(&e).h)).child(section));
+            column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, i, Bounds::of(&e).h)).child(section));
         }
         let mut page = rect().width(Size::fill()).height(Size::fill()).on_sized(move |e| width.set_if_modified(Bounds::of(&e).w));
         if wide {
-            page = page.child(rect().position(Position::new_absolute().left(space::XL).top(space::XL)).layer(Layer::Relative(level::FLOAT)).width(Size::px(JUMPS)).child(Jumps { scroll, heights, picked, wide }));
+            page = page.child(rect().position(Position::new_absolute().left(space::XL).top(space::XL)).layer(Layer::Relative(level::FLOAT)).width(Size::px(JUMPS)).child(Jumps { scroll, heights, picked }));
         }
         page.child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column)))
     }
 }
 
-fn measure(mut heights: State<[f32; SECTIONS + 1]>, i: usize, h: f32) {
+fn measure(mut heights: State<[f32; SECTIONS]>, i: usize, h: f32) {
     let mut next = *heights.peek();
     if next[i] != h {
         next[i] = h;
@@ -254,18 +250,17 @@ fn titles() -> [String; SECTIONS] {
     ["Allgemein", "Spiel", "Im Spiel", "Verbindung", "Benachrichtigungen", "Aufs Handy", "Chat", "Tastenkürzel", "Updates", "Erweitert"].map(tr)
 }
 
-/// Where section `i` starts in the scrolled page; slot 0 of `heights` is the jump row that stands above the sections on a narrow page.
-fn top_of(heights: &[f32; SECTIONS + 1], wide: bool, i: usize) -> f32 {
-    let lead = if wide { 0. } else { heights[0] + space::XL };
-    space::XL + lead + heights[1..=i].iter().map(|h| h + space::XL).sum::<f32>()
+/// Where section `i` starts in the scrolled page.
+fn top_of(heights: &[f32; SECTIONS], i: usize) -> f32 {
+    space::XL + heights[..i].iter().map(|h| h + space::XL).sum::<f32>()
 }
 
 /// Which section the reader is in: the last one whose title reached the top, the one just picked while it is still
 /// there, or at the end of the page the last one in view.
-fn current(heights: &[f32; SECTIONS + 1], wide: bool, y: f32, viewport: f32, end: bool, picked: Option<usize>) -> usize {
+fn current(heights: &[f32; SECTIONS], y: f32, viewport: f32, end: bool, picked: Option<usize>) -> usize {
     let reading = y + space::XL + SPY;
     let seen = |i: usize| {
-        let top = top_of(heights, wide, i);
+        let top = top_of(heights, i);
         top < if end { y + viewport } else { reading } && top + 1. >= y
     };
     if let Some(p) = picked.filter(|p| seen(*p)) {
@@ -274,16 +269,15 @@ fn current(heights: &[f32; SECTIONS + 1], wide: bool, y: f32, viewport: f32, end
     if end && let Some(last) = (0..SECTIONS).rev().find(|i| seen(*i)) {
         return last;
     }
-    (0..SECTIONS).rev().find(|i| top_of(heights, wide, *i) <= reading).unwrap_or(0)
+    (0..SECTIONS).rev().find(|i| top_of(heights, *i) <= reading).unwrap_or(0)
 }
 
-/// The sections of the page as a list beside it when there is room, or as a row of chips above it; picking one scrolls there.
+/// The sections of the page as a list beside it; a window too narrow for it has no navigation at all, the page just scrolls.
 #[derive(PartialEq)]
 struct Jumps {
     scroll: ScrollController,
-    heights: State<[f32; SECTIONS + 1]>,
+    heights: State<[f32; SECTIONS]>,
     picked: State<Option<usize>>,
-    wide: bool,
 }
 
 impl Component for Jumps {
@@ -294,29 +288,16 @@ impl Component for Jumps {
         let y = -scroll.position().y;
         let (content, viewport) = scroll.bounds.read().map_or((0., 0.), |(c, v)| (c.height, v.height));
         let end = content > viewport && y + viewport >= content - 1.;
-        let wide = self.wide;
-        let on = current(&heights, wide, y, viewport, end, *picked.read());
+        let on = current(&heights, y, viewport, end, *picked.read());
         let mut jump = move |i: usize| {
             picked.set(Some(i));
-            scroll.scroll_to_y(-(top_of(&heights, wide, i) - space::XL) as i32);
+            scroll.scroll_to_y(-(top_of(&heights, i) - space::XL) as i32);
         };
-        let titles = titles();
-        if wide {
-            return rect()
-                .width(Size::fill())
-                .a11y_role(AccessibilityRole::Navigation)
-                .a11y_alt(tr("Abschnitte"))
-                .children(titles.into_iter().enumerate().map(|(i, title)| Row::new(format!("settings.jump.{i}"), title).selected(i == on).on_press(move |_| jump(i)).into_element()))
-                .into_element();
-        }
         rect()
             .width(Size::fill())
-            .horizontal()
-            .content(Content::wrap_spacing(space::XS))
-            .spacing(space::XS)
             .a11y_role(AccessibilityRole::Navigation)
             .a11y_alt(tr("Abschnitte"))
-            .children(titles.into_iter().enumerate().map(|(i, title)| Chip::new(format!("settings.jump.{i}"), title).on(i == on).on_press(move |_| jump(i)).into_element()))
+            .children(titles().into_iter().enumerate().map(|(i, title)| Row::new(format!("settings.jump.{i}"), title).selected(i == on).on_press(move |_| jump(i)).into_element()))
             .into_element()
     }
 }
@@ -399,15 +380,15 @@ mod tests {
 
     #[test]
     fn the_spy_follows_the_title_at_the_top() {
-        let mut heights = [300f32; SECTIONS + 1];
-        heights[1] = 220.;
+        let mut heights = [300f32; SECTIONS];
+        heights[0] = 220.;
         let viewport = 820.;
-        assert_eq!(current(&heights, true, 0., viewport, false, None), 0);
-        let second = top_of(&heights, true, 1);
-        assert_eq!(current(&heights, true, second - space::XL * 4., viewport, false, None), 0);
-        assert_eq!(current(&heights, true, second, viewport, false, None), 1);
-        let content = top_of(&heights, true, SECTIONS - 1) + 300.;
-        assert_eq!(current(&heights, true, content - viewport, viewport, true, None), SECTIONS - 1);
-        assert_eq!(current(&heights, true, content - viewport, viewport, true, Some(SECTIONS - 2)), SECTIONS - 2);
+        assert_eq!(current(&heights, 0., viewport, false, None), 0);
+        let second = top_of(&heights, 1);
+        assert_eq!(current(&heights, second - space::XL * 4., viewport, false, None), 0);
+        assert_eq!(current(&heights, second, viewport, false, None), 1);
+        let content = top_of(&heights, SECTIONS - 1) + 300.;
+        assert_eq!(current(&heights, content - viewport, viewport, true, None), SECTIONS - 1);
+        assert_eq!(current(&heights, content - viewport, viewport, true, Some(SECTIONS - 2)), SECTIONS - 2);
     }
 }
