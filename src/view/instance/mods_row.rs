@@ -43,7 +43,6 @@ pub(super) struct ModRow {
     pub cursor: bool,
     pub locked: Option<String>,
     pub trail: Trail,
-    pub project: bool,
     pub update: Option<String>,
 }
 
@@ -55,10 +54,8 @@ impl Component for ModRow {
         let (press_ctx, press_file) = (ctx.clone(), file.clone());
         let (menu_ctx, menu_file) = (ctx.clone(), file.clone());
         let mut actions = Vec::new();
-        if self.project {
-            let (ctx, file) = (ctx.clone(), file.clone());
-            actions.push(RowAction { id: "info", icon: Icon::Info, label: tr("Readme und Details"), danger: false, disabled: None, run: EventHandler::new(move |_| ctx.show_project(&file)) });
-        }
+        let (info_ctx, info_file) = (ctx.clone(), file.clone());
+        actions.push(RowAction { id: "info", icon: Icon::Info, label: tr("Readme und Details"), danger: false, disabled: None, run: EventHandler::new(move |_| info_ctx.pane.show(&info_file)) });
         let trail = match &self.trail {
             Trail::None => None,
             Trail::Fix { newest } => {

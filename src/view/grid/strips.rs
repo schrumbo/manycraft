@@ -167,8 +167,8 @@ impl Component for NeedChip {
             .background(fill)
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_all_press(move |_| {
                 a11y.request_focus();
                 show.set(if chosen { Show::All } else { Show::Need(need) });

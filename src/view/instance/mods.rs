@@ -5,6 +5,7 @@ use std::rc::Rc;
 use freya::prelude::*;
 
 use super::cursor::{Cursor, Live, use_cursor};
+use super::detail::{self, Detail, Pane, Subject, use_pane};
 use super::{Facts, links, snapshots};
 use crate::core::content::Bisect;
 use crate::core::i18n::{tr, trf};
@@ -59,6 +60,8 @@ pub(super) struct Ctx {
     pub key: State<String>,
     pub list: Cursor,
     pub filter_focus: AccessibilityId,
+    /// Whether the detail pane of the row under the cursor is open.
+    pub pane: Pane,
     /// What the last look for updates found, shown above the list.
     pub found: State<updates::Found>,
 }
@@ -151,7 +154,6 @@ impl View {
                         cursor,
                         locked: self.locked.clone(),
                         trail,
-                        project: project.is_some(),
                         update: project.and_then(|id| self.marks.get(id).cloned()),
                     })
                     .into_element()
@@ -209,7 +211,8 @@ impl Component for Mods {
         let cache = use_hook(|| Rc::new(RefCell::new(Cache::default())));
 
         let found = use_state(|| updates::Found::Idle);
-        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, bisect, busy, bisecting, reveal, ticket, key, list, filter_focus, found };
+        let pane = use_pane(store, list);
+        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, bisect, busy, bisecting, reveal, ticket, key, list, filter_focus, pane, found };
 
         let changed = *ui.instance.changed.read();
         let rescan = ctx.clone();
@@ -260,7 +263,7 @@ impl Component for Mods {
         };
         let chosen = ctx.selected.read().clone();
         let focused = ctx.list.focus.is_focused();
-        let at = ctx.list.at.read().clone().filter(|_| focused);
+        let at = ctx.list.at.read().clone().filter(|_| focused || ctx.pane.shown());
         let current = ctx.bisect.read().clone();
         let fault_now = ctx.fault.read().clone();
 
@@ -279,7 +282,14 @@ impl Component for Mods {
             let on_keys = ctx.clone();
             rect()
                 .width(Size::flex(1.))
-                .on_key_down(move |e: Event<KeyboardEventData>| on_keys.list.filter_keys(&e, on_keys.query, || on_keys.step(1, false)))
+                .on_key_down(move |e: Event<KeyboardEventData>| {
+                    if matches!(e.key, Key::Named(NamedKey::Escape)) && on_keys.pane.is_open() {
+                        e.stop_propagation();
+                        on_keys.pane.close();
+                    } else {
+                        on_keys.list.filter_keys(&e, on_keys.query, || on_keys.step(1, false));
+                    }
+                })
                 .child(
                     Field::new("instance.mods.filter", ctx.query)
                         .placeholder(tr("Mods filtern"))
@@ -417,6 +427,18 @@ impl Component for Mods {
                     .child(spacer()),
             );
         }
-        root.content(Content::flex())
+        let left = root.content(Content::flex());
+        if !ctx.pane.shown() {
+            return detail::split(&t, 0., left, None);
+        }
+        let window = ui.window.read().0;
+        let (close, versions) = (ctx.clone(), ctx.clone());
+        let subject = ctx.subject();
+        let open = match &subject {
+            Subject::Project { .. } => ctx.list.current().map(|file| EventHandler::new(move |_| versions.show_project(&file))),
+            _ => None,
+        };
+        let pane = Detail { id: "instance.mods.detail", subject, narrow: window < page::SPLIT_AT, back: tr("Mods"), close: EventHandler::new(move |_| close.pane.close()), versions: open };
+        detail::split(&t, window, left, Some(pane))
     }
 }

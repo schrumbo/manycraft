@@ -187,7 +187,7 @@ impl Component for Table {
         let columns = Column::fitting(self.w, self.batches);
         let first = ((self.top / ROW).floor() as usize).min(self.keys.len());
         let last = (((self.top + self.h) / ROW).ceil() as usize + 1).min(self.keys.len());
-        let mut body = rect().width(Size::fill()).height(Size::fill()).overflow(Overflow::Clip).on_pointer_leave(move |_| hovered.set_if_modified(None));
+        let mut body = rect().width(Size::fill()).height(Size::fill()).overflow(Overflow::Clip).on_pointer_out(move |_| hovered.set_if_modified(None));
         for i in first..last {
             let key = self.keys[i].clone();
             let y = ROW + i as f32 * ROW - self.top;
@@ -197,7 +197,7 @@ impl Component for Table {
                     .key(&key)
                     .position(Position::new_absolute().left(0.).top(y))
                     .width(Size::fill())
-                    .on_pointer_enter(move |_| hovered.set_if_modified(Some((hover_key.clone(), y))))
+                    .on_pointer_over(move |_| hovered.set_if_modified(Some((hover_key.clone(), y))))
                     .child(Row { key, index: i, columns: columns.clone() }),
             );
         }
@@ -259,8 +259,8 @@ impl Component for HeaderCell {
             .background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |_| {
                 let mut sort = store.ui.sort;
@@ -347,8 +347,8 @@ impl Component for Row {
             .horizontal()
             .background(fill)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .cursor(CursorIcon::Pointer)
             .on_mouse_down(move |e: Event<MouseEventData>| e.stop_propagation())
             .on_press(move |e: Event<PressEventData>| {

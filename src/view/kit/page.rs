@@ -5,6 +5,9 @@ use freya::prelude::*;
 
 use crate::view::theme::frame;
 
+/// The window width from which a page puts a detail pane beside its list instead of over it.
+pub const SPLIT_AT: f32 = 1100.;
+
 /// The column of a page: full width, the page gutter around it and the page rhythm between the blocks added to it.
 pub fn column() -> Rect {
     rect().width(Size::fill()).padding(frame::GUTTER).spacing(frame::SECTION)

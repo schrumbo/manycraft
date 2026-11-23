@@ -2295,5 +2295,15 @@
   "Alle %lld Minuten": {
     "one": "Every minute",
     "other": "Every %lld minutes"
-  }
+  },
+  "Zurück · %@": "Back · %@",
+  "Wähle einen Mod, um Details zu sehen.": "Pick a mod to see its details.",
+  "Wähle einen Eintrag, um Details zu sehen.": "Pick an entry to see its details.",
+  "Die Datei ließ sich nicht finden.": "The file could not be found.",
+  "Die Datei ließ sich nicht lesen.": "The file could not be read.",
+  "Nicht auf Modrinth gefunden.": "Not found on Modrinth.",
+  "Versionen und Galerie": "Versions and gallery",
+  "Nicht von Modrinth. Die Angaben stehen in der Datei.": "Not from Modrinth. This comes from the file itself.",
+  "Die Datei enthält keine Beschreibung.": "The file has no description.",
+  "Webseite": "Website"
 }

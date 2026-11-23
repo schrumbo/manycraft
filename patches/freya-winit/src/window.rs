@@ -121,7 +121,8 @@ pub struct AppWindow {
     pub(crate) screen_reader: ScreenReader,
 
     pub(crate) process_layout_on_next_render: bool,
-    pub(crate) send_mouse_move_on_next_layout: bool,
+    pub(crate) send_mouse_move_until: Option<Instant>,
+    pub(crate) last_synthetic_move: Option<Instant>,
     pub(crate) event_buffer: EventBuffer<PlatformEvent, Instant>,
 
     pub(crate) render_callbacks: Vec<RenderCallback>,
@@ -158,6 +159,8 @@ pub struct AppWindow {
     pub(crate) hot_reload_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// How long after a wheel event every finished layout re-sends the pointer position, so hover follows a scroll that animates.
+const SCROLL_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 const MIN_CUSTOM_SCALE_FACTOR: f64 = 0.25;
 const MAX_CUSTOM_SCALE_FACTOR: f64 = 5.0;
 
@@ -451,7 +454,8 @@ impl AppWindow {
             screen_reader,
 
             process_layout_on_next_render: true,
-            send_mouse_move_on_next_layout: false,
+            send_mouse_move_until: None,
+            last_synthetic_move: None,
             event_buffer: EventBuffer::new(input_interval),
 
             render_callbacks: Vec::new(),
@@ -682,7 +686,18 @@ impl AppWindow {
             },
             handle,
         );
-        if std::mem::take(&mut self.send_mouse_move_on_next_layout) && self.cursor_in_window {
+        if let Some(until) = self.send_mouse_move_until
+            && self.cursor_in_window
+        {
+            let now = Instant::now();
+            if now > until {
+                self.send_mouse_move_until = None;
+                return;
+            }
+            if self.last_synthetic_move.is_some_and(|last| now.duration_since(last) < self.event_buffer.interval) {
+                return;
+            }
+            self.last_synthetic_move = Some(now);
             self.event_buffer.push(
                 [PlatformEvent::Mouse {
                     name: MouseEventName::MouseMove,
@@ -770,8 +785,9 @@ impl AppWindow {
         plugins: &mut PluginsManager,
         handle: PluginHandle,
     ) {
-        self.send_mouse_move_on_next_layout |=
-            matches!(platform_event, PlatformEvent::Wheel { .. });
+        if matches!(platform_event, PlatformEvent::Wheel { .. }) {
+            self.send_mouse_move_until = Some(Instant::now() + SCROLL_SETTLE);
+        }
         let mut platform_events = vec![platform_event];
         plugins.send(
             PluginEvent::StartedMeasuringEvents {

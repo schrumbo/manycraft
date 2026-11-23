@@ -15,6 +15,7 @@ mod library;
 mod start;
 mod menubar;
 mod native;
+mod readme;
 mod settings;
 mod sheets;
 mod shell;

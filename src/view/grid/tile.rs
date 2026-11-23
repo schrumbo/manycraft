@@ -359,11 +359,11 @@ impl Component for Tile {
             .width(Size::px(self.width))
             .height(Size::px(self.height))
             .on_sized(spot)
-            .on_pointer_enter(move |_| {
+            .on_pointer_over(move |_| {
                 hovered.set(true);
                 store.watch(|w| w.hovered = Some(over_key.clone()));
             })
-            .on_pointer_leave(move |_| {
+            .on_pointer_out(move |_| {
                 hovered.set_if_modified(false);
                 pressed.set_if_modified(false);
                 unhover(store, &leave_key);

@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::LazyLock;
-use std::time::SystemTime;
 
 use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
@@ -11,23 +10,22 @@ use freya::prelude::*;
 
 use super::{Face, Facts, Flow, act_of, fit_name, run_hint, saved_when, status_line, stepped, trail_of, trail_view, version_blocked};
 use crate::core::i18n::{Lang, lang, tr, trf};
-use crate::core::modrinth::{self, Details, Hit, Kind, Version};
+use crate::core::modrinth::{self, Hit, Kind, Version};
 use crate::ui::catalog;
 use crate::ui::forms::{self, Problem, downloads_short};
-use crate::ui::remote;
 use crate::view::commands::Shortcut;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::badge::{Tone, badge};
 use crate::view::kit::button::Button;
-use crate::view::kit::markdown::{self, Block};
 use crate::view::kit::segmented::{Segment, Segmented};
-use crate::view::kit::text::{caption, hairline, line, para, strong};
+use crate::view::kit::text::{caption, hairline, line, para};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::spinner;
 use crate::view::kit::{off_ui, open_external, ring, use_arrows, use_theme};
+use crate::view::readme::{self, Body, loading, problem_of, quiet};
 use crate::view::sheets::instance::{Load, problem_view};
-use crate::view::theme::{Theme, control, faces, font, frame, iconsize, space};
+use crate::view::theme::{Theme, faces, font, frame, iconsize, space};
 
 const SHOT_BOX: (u32, u32) = (1024, 576);
 const SHOTS_AT_ONCE: usize = 2;
@@ -177,20 +175,6 @@ fn day(iso: &str) -> String {
     if lang() == Lang::En { at.format("%b %-d, %Y").to_string() } else { at.format("%-d.%-m.%Y").to_string() }
 }
 
-fn problem_of(e: &anyhow::Error) -> Problem {
-    if remote::is_network(e) {
-        Problem { text: tr("Keine Verbindung zu Modrinth. Prüf dein Internet und versuch es nochmal."), detail: Some(format!("{e:#}")) }
-    } else {
-        forms::explain_as(tr("Die Seite ließ sich nicht laden."), e)
-    }
-}
-
-struct Body {
-    details: Details,
-    blocks: Vec<Block>,
-    saved: Option<SystemTime>,
-}
-
 #[derive(Clone)]
 enum Pic {
     Loading,
@@ -258,18 +242,12 @@ impl Pg {
         let asked = self.hit.project_id.clone();
         let page = self.clone();
         spawn_in_window(async move {
-            let result = off_ui(move || {
-                catalog::details(&asked).map(|(details, saved)| {
-                    let blocks = markdown::blocks(&details.body);
-                    (details, blocks, saved)
-                })
-            })
-            .await;
+            let result = off_ui(move || readme::fetch(&asked)).await;
             if !page.current(generation) {
                 return;
             }
             let loaded = match result {
-                Some(Ok((details, blocks, saved))) => Load::Ready(Rc::new(Body { details, blocks, saved })),
+                Some(Ok(body)) => Load::Ready(Rc::new(body)),
                 Some(Err(e)) => Load::Failed(problem_of(&e)),
                 None => Load::Failed(Problem::plain(forms::unexplained())),
             };
@@ -508,10 +486,6 @@ impl Component for ProjectPage {
     }
 }
 
-fn quiet(t: &Theme, text: String) -> Element {
-    rect().width(Size::fill()).padding((space::L, 0.)).child(para(t, text, font::CALLOUT, t.text2)).into_element()
-}
-
 fn web_page(pg: &Pg, versions: bool) -> String {
     let base = format!("https://modrinth.com/{}/{}", pg.kind.project_type(), pg.hit.slug);
     if versions { format!("{base}/versions") } else { base }
@@ -526,20 +500,6 @@ fn nothing(t: &Theme, pg: &Pg, text: String, id: &str, versions: bool) -> Elemen
         .child(para(t, text, font::CALLOUT, t.text2))
         .child(rect().horizontal().child(Button::new(id, tr("Auf Modrinth ansehen")).glyph(Icon::External).on_press(move |_| open_external("modrinth", url.clone()))))
         .into_element()
-}
-
-fn loading(t: &Theme) -> Element {
-    let bar = |w: f32| rect().width(Size::px(w)).height(Size::px(frame::BAR_H)).corner_radius(t.shape.small).background(t.hover);
-    let one = || {
-        rect()
-            .width(Size::fill())
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::M)
-            .child(rect().width(Size::px(control::L)).height(Size::px(control::L)).corner_radius(t.shape.control).background(t.hover))
-            .child(rect().spacing(space::S).child(bar(frame::BAR_NAME)).child(bar(frame::BAR_TEXT)))
-    };
-    rect().width(Size::fill()).spacing(space::M).children((0..SKELETON_LINES).map(|_| one())).into_element()
 }
 
 fn failed(t: &Theme, pg: &Pg, key: &str, why: &Problem) -> Element {
@@ -560,38 +520,10 @@ fn about(t: &Theme, pg: &Pg) -> Element {
     match loaded {
         Load::Loading => loading(t),
         Load::Failed(why) => failed(t, pg, "browser.project.error", &why),
-        Load::Ready(body) if body.blocks.is_empty() => quiet(t, if body.details.description.is_empty() { tr("Keine Beschreibung.") } else { body.details.description.clone() }),
-        Load::Ready(body) => {
-            let mut column = rect().width(Size::fill()).spacing(space::M);
-            if !body.details.description.is_empty() {
-                column = column.child(para(t, body.details.description.clone(), font::BODY, t.text2));
-            }
-            column.child(links(pg, &body.details)).child(markdown::view(t, &body.blocks, t.text1)).into_element()
-        }
+        Load::Ready(body) => readme::view(t, &body, &web_page(pg, false), "browser.project", None),
     }
 }
 
-fn web_url(url: &Option<String>) -> Option<String> {
-    url.as_deref().map(str::trim).filter(|u| u.starts_with("https://")).map(str::to_owned)
-}
-
-/// The project's own pages next to its page on Modrinth.
-fn links(pg: &Pg, details: &Details) -> Element {
-    let mut row = rect().width(Size::fill()).horizontal().spacing(space::XS).content(Content::wrap_spacing(space::XS));
-    let pages = [
-        ("source", tr("Quellcode"), web_url(&details.source_url)),
-        ("wiki", tr("Wiki"), web_url(&details.wiki_url)),
-        ("issues", tr("Fehler melden"), web_url(&details.issues_url)),
-        ("discord", tr("Discord"), web_url(&details.discord_url)),
-    ];
-    for (key, label, url) in pages {
-        if let Some(url) = url {
-            row = row.child(Button::new(format!("browser.project.link.{key}"), label).glyph(Icon::External).on_press(move |_| open_external(key, url.clone())));
-        }
-    }
-    let url = web_page(pg, false);
-    row.child(Button::new("browser.project.link.modrinth", tr("Auf Modrinth")).glyph(Icon::External).on_press(move |_| open_external("modrinth", url.clone()))).into_element()
-}
 
 fn gallery(t: &Theme, pg: &Pg) -> Element {
     let loaded = pg.details.read().clone();
@@ -876,8 +808,8 @@ impl Component for VersionRow {
             let press = self.on_press.clone();
             row = row
                 .cursor(CursorIcon::Pointer)
-                .on_pointer_enter(move |_| hovered.set(true))
-                .on_pointer_leave(move |_| {
+                .on_pointer_over(move |_| hovered.set(true))
+                .on_pointer_out(move |_| {
                     hovered.set_if_modified(false);
                     pressed.set_if_modified(false);
                 })

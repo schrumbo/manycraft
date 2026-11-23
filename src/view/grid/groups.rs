@@ -97,8 +97,8 @@ impl Component for Header {
             .corner_radius(if self.stuck { 0. } else { t.shape.small + 2. })
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
             .on_all_press(move |e: Event<PressEventData>| {
                 if let PressEventData::Mouse(m) = &*e
