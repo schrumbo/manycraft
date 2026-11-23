@@ -53,7 +53,7 @@ fn name(mode: RunMode) -> String {
     match mode {
         RunMode::Windows => tr("Fenster"),
         RunMode::Hidden => tr("Verstecktes Spiel"),
-        RunMode::Connection => tr("Nur Verbindung · Beta"),
+        RunMode::Connection => tr("Headless"),
     }
 }
 

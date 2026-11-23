@@ -137,7 +137,7 @@ impl RunMode {
     }
 }
 
-/// Whether the "connection only" mode is offered at all. The release flips it when the mode is not ready to ship.
+/// Whether the headless mode is offered at all. The release flips it when the mode is not ready to ship.
 pub const CONNECTION_ONLY_OFFERED: bool = true;
 
 /// A server's code of conduct a batch's user accepted, by the hash of its text.
@@ -185,7 +185,7 @@ pub struct Batch {
     /// Games keep the full compiler, so a played game runs as fast as a solo one at the cost of more memory per game.
     #[serde(default)]
     pub full_speed: bool,
-    /// How the games run: with windows, as the real game without any, or as a connection only. A `headless: true` from an
+    /// How the games run: with windows, as the real game without any, or headless, as a protocol client. A `headless: true` from an
     /// early build reads as the hidden game.
     #[serde(default, alias = "headless", deserialize_with = "lenient_mode", skip_serializing_if = "RunMode::is_windows")]
     pub mode: RunMode,

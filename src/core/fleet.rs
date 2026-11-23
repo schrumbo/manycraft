@@ -1073,9 +1073,9 @@ impl Fleet {
     fn prepare_connection(&self, target: &Target, accounts: &[Account]) -> Result<Prepared> {
         let version = &target.instance.game_version;
         if !headless::supports(version) {
-            bail!(super::i18n::trf("„Nur Verbindung“ geht für Minecraft %@ noch nicht. Schalte es aus oder wähle eine andere Version.", &[version]));
+            bail!(super::i18n::trf("„Headless“ geht für Minecraft %@ noch nicht. Schalte es aus oder wähle eine andere Version.", &[version]));
         }
-        let Some(server) = target.join() else { bail!(super::i18n::tr("„Nur Verbindung“ braucht einen Server. Trag im Batch einen ein.")) };
+        let Some(server) = target.join() else { bail!(super::i18n::tr("„Headless“ braucht einen Server. Trag im Batch einen ein.")) };
         let server_addrs = server_addresses(Some(server), accounts, resolve_all, || !super::online::reachable())?;
         Ok(Prepared { target: target.clone(), server_addrs, way: Way::Connection })
     }
@@ -1533,8 +1533,8 @@ fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ip
 
 fn refusal(why: headless::Refused) -> anyhow::Error {
     anyhow!(match why {
-        headless::Refused::Proxy => super::i18n::tr("Mit einem Proxy geht „Nur Verbindung“ noch nicht. Entferne den Proxy oder schalte den Modus aus."),
-        headless::Refused::Version => super::i18n::tr("Diese Minecraft-Version geht mit „Nur Verbindung“ noch nicht."),
+        headless::Refused::Proxy => super::i18n::tr("Mit einem Proxy geht „Headless“ noch nicht. Entferne den Proxy oder schalte den Modus aus."),
+        headless::Refused::Version => super::i18n::tr("Diese Minecraft-Version geht mit „Headless“ noch nicht."),
     })
 }
 
