@@ -237,7 +237,7 @@ fn chat(link: &mut Link, text: &str) -> Result<()> {
     ensure!(link.phase == Phase::Play, "not on a server");
     let text = text.trim();
     ensure!(!text.is_empty(), "nothing to send");
-    ensure!(text.chars().count() <= MAX_CHAT, "longer than {MAX_CHAT} characters");
+    ensure!(text.encode_utf16().count() <= MAX_CHAT, "longer than {MAX_CHAT} characters");
     ensure!(!text.chars().any(|c| c == '§' || c < ' ' || c == '\u{7f}'), "contains characters the server refuses");
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     link.chat_clock = now.max(link.chat_clock + 1);
@@ -267,6 +267,7 @@ pub fn server_name(address: &str) -> String {
 
 /// Runs the connection until it is told to quit: joins, and after a drop waits to be told to reconnect.
 pub fn run(shared: &Shared, spec: &Spec) {
+    let _ended = Ended(shared);
     let _ = shared.events.send(Event::Connected { instance: shared.key.clone(), pid: 0, mod_version: format!("{BRAND} protocol {PROTOCOL}") });
     loop {
         match session(shared, spec) {
@@ -281,10 +282,10 @@ pub fn run(shared: &Shared, spec: &Spec) {
                 }
                 let mut link = shared.lock();
                 let control = loop {
-                    if let Some(control) = link.control.take() {
-                        break control;
+                    match link.control.take() {
+                        Some(Control::Leave(..)) | None => link = shared.wake.wait(link).unwrap_or_else(PoisonError::into_inner),
+                        Some(control) => break control,
                     }
-                    link = shared.wake.wait(link).unwrap_or_else(PoisonError::into_inner);
                 };
                 if matches!(control, Control::Quit) {
                     break;
@@ -292,8 +293,15 @@ pub fn run(shared: &Shared, spec: &Spec) {
             }
         }
     }
-    shared.running.store(false, Ordering::Release);
-    let _ = shared.events.send(Event::Disconnected { instance: shared.key.clone() });
+}
+
+struct Ended<'a>(&'a Shared);
+
+impl Drop for Ended<'_> {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::Release);
+        let _ = self.0.events.send(Event::Disconnected { instance: self.0.key.clone() });
+    }
 }
 
 fn session(shared: &Shared, spec: &Spec) -> End {
@@ -311,6 +319,7 @@ fn session(shared: &Shared, spec: &Spec) -> End {
     let mut link = shared.lock();
     link.writer = None;
     link.phase = Phase::Login;
+    link.held.clear();
     match link.control.take() {
         Some(Control::Quit) => End::Quit,
         Some(Control::Reconnect) => End::Reconnect,
@@ -737,7 +746,7 @@ fn bound(r: &mut In, types: &[ChatType], content: &Value, text: String) -> Resul
     }
     let name = r.nbt()?;
     let target = r.optional_nbt()?;
-    let kind = usize::try_from(holder - 1).ok().and_then(|i| types.get(i));
+    let kind = usize::try_from(holder).ok().and_then(|h| h.checked_sub(1)).and_then(|i| types.get(i));
     if kind.is_some_and(|k| OUTGOING.contains(&k.name.as_str())) {
         return Ok(None);
     }

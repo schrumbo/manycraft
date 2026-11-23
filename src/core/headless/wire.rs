@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-const MAX_NBT_DEPTH: usize = 512;
+const MAX_NBT_DEPTH: usize = 64;
+const MAX_NBT_NODES: usize = 65_536;
 
 /// A packet body being written.
 #[derive(Default)]
@@ -108,11 +109,12 @@ pub fn varint_prefix(buf: &[u8]) -> Result<Option<(i32, usize)>> {
 pub struct In<'a> {
     buf: &'a [u8],
     pos: usize,
+    nodes: usize,
 }
 
 impl<'a> In<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf, pos: 0 }
+        Self { buf, pos: 0, nodes: 0 }
     }
 
     pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
@@ -178,6 +180,7 @@ impl<'a> In<'a> {
     /// Network NBT (a nameless root tag), as JSON: compounds become objects, lists and arrays become arrays.
     pub fn nbt(&mut self) -> Result<Value> {
         let tag = self.u8()?;
+        self.nodes = MAX_NBT_NODES;
         self.tag(tag, 0)
     }
 
@@ -188,6 +191,8 @@ impl<'a> In<'a> {
 
     fn tag(&mut self, tag: u8, depth: usize) -> Result<Value> {
         ensure!(depth < MAX_NBT_DEPTH, "NBT nested too deep");
+        ensure!(self.nodes > 0, "NBT has too many values");
+        self.nodes -= 1;
         Ok(match tag {
             0 => Value::Null,
             1 => Value::from(self.array::<1>()?[0] as i8),
@@ -196,10 +201,7 @@ impl<'a> In<'a> {
             4 => Value::from(self.i64()?),
             5 => Value::from(f64::from(self.f32()?)),
             6 => Value::from(self.f64()?),
-            7 => {
-                let n = self.count()?;
-                Value::Array(self.take(n)?.iter().map(|b| Value::from(*b as i8)).collect())
-            }
+            7 => self.skip_array(1)?,
             8 => Value::String(self.mutf8()?),
             9 => {
                 let inner = self.u8()?;
@@ -224,16 +226,16 @@ impl<'a> In<'a> {
                 }
                 Value::Object(map)
             }
-            11 => {
-                let n = self.count()?;
-                (0..n).map(|_| self.i32().map(Value::from)).collect::<Result<_>>()?
-            }
-            12 => {
-                let n = self.count()?;
-                (0..n).map(|_| self.i64().map(Value::from)).collect::<Result<_>>()?
-            }
+            11 => self.skip_array(4)?,
+            12 => self.skip_array(8)?,
             other => bail!("unknown NBT tag {other}"),
         })
+    }
+
+    fn skip_array(&mut self, width: usize) -> Result<Value> {
+        let n = self.count()?;
+        self.take(n.checked_mul(width).context("NBT array too long")?)?;
+        Ok(Value::Null)
     }
 
     fn count(&mut self) -> Result<usize> {
@@ -336,6 +338,31 @@ mod tests {
         nbt_string(&mut bare, "plain");
         assert_eq!(In::new(&bare).nbt().unwrap(), Value::String("plain".into()));
         assert!(In::new(&[9, 1, 0x7f, 0xff, 0xff, 0xff]).nbt().is_err(), "a list longer than the packet fails");
+    }
+
+    #[test]
+    fn hostile_nbt_is_bounded_in_depth_values_and_arrays() {
+        fn lists(depth: usize) -> Vec<u8> {
+            let mut out = vec![9];
+            for _ in 1..depth {
+                out.extend([9, 0, 0, 0, 1]);
+            }
+            out.extend([0, 0, 0, 0, 0]);
+            out
+        }
+        let ok = std::thread::Builder::new().stack_size(512 * 1024).spawn(|| In::new(&lists(MAX_NBT_DEPTH)).nbt().is_ok()).unwrap().join().unwrap();
+        assert!(ok, "the deepest allowed NBT fits on a connection thread");
+        assert!(In::new(&lists(MAX_NBT_DEPTH + 1)).nbt().is_err());
+        let mut array = vec![7, 0, 0, 0x10, 0];
+        array.resize(array.len() + 0x1000, 0);
+        let mut r = In::new(&array);
+        assert_eq!(r.nbt().unwrap(), Value::Null);
+        assert_eq!(r.pos, array.len());
+        let n = MAX_NBT_NODES + 1;
+        let mut wide = vec![9, 1];
+        wide.extend((n as i32).to_be_bytes());
+        wide.resize(wide.len() + n, 0);
+        assert!(In::new(&wide).nbt().is_err());
     }
 
     #[test]

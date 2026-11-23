@@ -7,6 +7,9 @@ use anyhow::{Context, Result, ensure};
 use num_bigint::BigUint;
 use sha1::{Digest, Sha1};
 
+const MAX_MODULUS: usize = 512;
+const MAX_EXPONENT: usize = 8;
+
 /// One direction of an AES-128-CFB8 stream; the key doubles as the IV, as the game does it.
 pub struct Cfb8 {
     aes: Aes128,
@@ -123,6 +126,7 @@ fn rsa_key(spki: &[u8]) -> Result<(&[u8], &[u8])> {
     let mut key = Der(der(&mut Der(key), 0x30)?);
     let n = der(&mut key, 0x02)?;
     let e = der(&mut key, 0x02)?;
+    ensure!(n.len() <= MAX_MODULUS + 1 && e.len() <= MAX_EXPONENT, "RSA key larger than any server sends");
     Ok((n, e))
 }
 
@@ -240,6 +244,15 @@ mod tests {
         assert_eq!(opened[k - secret.len() - 1], 0);
         assert_eq!(&opened[k - secret.len()..], &secret);
         assert_ne!(rsa_encrypt(&spki, &secret).unwrap(), sealed, "padding is random");
+    }
+
+    #[test]
+    fn oversized_keys_are_refused() {
+        let key = [der_item(0x02, &[0x7f; 64]), der_item(0x02, &[1; MAX_EXPONENT + 1])].concat();
+        let mut bits = vec![0];
+        bits.extend(der_item(0x30, &key));
+        let spki = der_item(0x30, &[der_item(0x30, &[0x05, 0x00]), der_item(0x03, &bits)].concat());
+        assert!(rsa_encrypt(&spki, &[0; 16]).is_err());
     }
 
     fn next_prime(mut n: BigUint) -> BigUint {

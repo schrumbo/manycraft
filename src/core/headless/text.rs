@@ -8,6 +8,8 @@ use crate::core::chat_text::Run;
 
 const MAX_DEPTH: usize = 64;
 const MAX_CHARS: usize = 8192;
+const MAX_VISITS: usize = 4096;
+const MAX_KEYS: usize = 16;
 
 /// A component read for the manager: its text, its styled runs and every translation key in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -29,7 +31,8 @@ struct Style {
 /// Reads `component`.
 pub fn line(component: &Value) -> Line {
     let mut out = Line::default();
-    walk(component, Style::default(), &mut out, 0);
+    let mut left = MAX_VISITS;
+    walk(component, Style::default(), &mut out, &mut left, 0);
     out
 }
 
@@ -66,10 +69,11 @@ fn style_of(run: &Run) -> Style {
     Style { color: run.color, bold: run.bold, italic: run.italic, underline: run.underline, strike: run.strike }
 }
 
-fn walk(value: &Value, style: Style, out: &mut Line, depth: usize) {
-    if depth > MAX_DEPTH {
+fn walk(value: &Value, style: Style, out: &mut Line, left: &mut usize, depth: usize) {
+    if depth > MAX_DEPTH || *left == 0 || out.text.len() >= MAX_CHARS {
         return;
     }
+    *left -= 1;
     match value {
         Value::String(s) => push(out, s, style),
         Value::Number(n) => push(out, &n.to_string(), style),
@@ -80,26 +84,28 @@ fn walk(value: &Value, style: Style, out: &mut Line, depth: usize) {
                 Value::Object(map) => styled(map, style),
                 _ => style,
             };
-            walk(first, style, out, depth + 1);
+            walk(first, style, out, left, depth + 1);
             for item in rest {
-                walk(item, inherited, out, depth + 1);
+                walk(item, inherited, out, left, depth + 1);
             }
         }
         Value::Object(map) => {
             if map.len() == 1
                 && let Some(inner) = map.get("")
             {
-                walk(inner, style, out, depth + 1);
+                walk(inner, style, out, left, depth + 1);
                 return;
             }
             let style = styled(map, style);
             if let Some(text) = map.get("text") {
-                walk(text, style, out, depth + 1);
+                walk(text, style, out, left, depth + 1);
             } else if let Some(Value::String(key)) = map.get("translate") {
-                out.keys.push(key.clone());
+                if out.keys.len() < MAX_KEYS && !out.keys.contains(key) {
+                    out.keys.push(key.clone());
+                }
                 let args = map.get("with").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
                 let format = english(key).or_else(|| map.get("fallback").and_then(Value::as_str)).unwrap_or(key);
-                format_into(format, args, style, out, depth);
+                format_into(format, args, style, out, left, depth);
             } else if let Some(Value::String(selector)) = map.get("selector") {
                 push(out, selector, style);
             } else if let Some(Value::String(key)) = map.get("keybind") {
@@ -107,7 +113,7 @@ fn walk(value: &Value, style: Style, out: &mut Line, depth: usize) {
             }
             if let Some(Value::Array(extra)) = map.get("extra") {
                 for item in extra {
-                    walk(item, style, out, depth + 1);
+                    walk(item, style, out, left, depth + 1);
                 }
             }
         }
@@ -115,7 +121,7 @@ fn walk(value: &Value, style: Style, out: &mut Line, depth: usize) {
     }
 }
 
-fn format_into(format: &str, args: &[Value], style: Style, out: &mut Line, depth: usize) {
+fn format_into(format: &str, args: &[Value], style: Style, out: &mut Line, left: &mut usize, depth: usize) {
     let mut next = 0;
     let mut rest = format;
     while let Some(at) = rest.find('%') {
@@ -126,13 +132,13 @@ fn format_into(format: &str, args: &[Value], style: Style, out: &mut Line, depth
             rest = tail;
         } else if let Some(tail) = after.strip_prefix('s') {
             if let Some(arg) = args.get(next) {
-                walk(arg, style, out, depth + 1);
+                walk(arg, style, out, left, depth + 1);
             }
             next += 1;
             rest = tail;
         } else if let Some((digits, tail)) = after.split_once("$s").filter(|(d, _)| !d.is_empty() && d.len() <= 2 && d.bytes().all(|b| b.is_ascii_digit())) {
             if let Some(arg) = digits.parse::<usize>().ok().and_then(|n| args.get(n.wrapping_sub(1))) {
-                walk(arg, style, out, depth + 1);
+                walk(arg, style, out, left, depth + 1);
             }
             rest = tail;
         } else {
@@ -207,7 +213,7 @@ mod tests {
         let positional = translate("x", &[]);
         assert_eq!(positional.text, "x", "an unknown key shows itself");
         let mut out = Line::default();
-        format_into("%2$s then %1$s, 100%%", &[json!("a"), json!("b")], Style::default(), &mut out, 0);
+        format_into("%2$s then %1$s, 100%%", &[json!("a"), json!("b")], Style::default(), &mut out, &mut MAX_VISITS.to_owned(), 0);
         assert_eq!(out.text, "b then a, 100%");
     }
 
@@ -231,5 +237,16 @@ mod tests {
         assert_eq!(line(&deep).text, "");
         let huge = line(&json!({"text": "é".repeat(10_000)}));
         assert!(huge.text.len() <= MAX_CHARS);
+    }
+
+    #[test]
+    fn repeated_arguments_cannot_blow_up() {
+        let mut doubling = json!({"translate": "k0", "fallback": "x"});
+        for i in 1..63 {
+            doubling = json!({"translate": format!("k{i}"), "fallback": "%1$s%1$s", "with": [doubling]});
+        }
+        let l = line(&doubling);
+        assert!(l.keys.len() <= MAX_KEYS);
+        assert!(l.text.len() <= MAX_CHARS);
     }
 }
