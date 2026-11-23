@@ -1444,9 +1444,10 @@ fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) 
 
 /// Starts the connection of `account` to the batch's server: no game folder, no Java, only the signed-in session.
 fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ipc::Event>) -> Result<Box<dyn Process>> {
-    if account.proxy.is_some() {
-        bail!(super::i18n::tr("Mit einem Proxy geht „Nur Verbindung“ noch nicht. Entferne den Proxy oder schalte den Modus aus."));
-    }
+    let proxy = match account.proxy.as_deref() {
+        Some(url) => Some(proxy::parse(url).map_err(|_| refusal(headless::Refused::Proxy))?),
+        None => None,
+    };
     let session = match account.kind {
         AccountKind::Offline => {
             account::validate_offline_name(&account.name)?;
@@ -1455,8 +1456,22 @@ fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ip
         AccountKind::Microsoft => Some(auth::session_for(account)?),
     };
     let address = target.join().context("no server")?.to_owned();
-    let spec = headless::Spec { key: key.to_owned(), address, name: account.name.clone(), uuid: account.id, session, version: target.instance.game_version.clone(), packs: target.packs() };
-    Ok(Box::new(Linked { connection: headless::start(spec, events.clone())? }))
+    let conduct = target.batch.as_ref().map(|b| b.conduct_hashes(&address)).unwrap_or_default();
+    let spec = headless::Spec { key: key.to_owned(), address, name: account.name.clone(), uuid: account.id, session, version: target.instance.game_version.clone(), packs: target.packs(), proxy, conduct };
+    match headless::start(spec, events.clone()) {
+        Ok(connection) => Ok(Box::new(Linked { connection })),
+        Err(e) => Err(match e.downcast_ref::<headless::Refused>() {
+            Some(why) => refusal(*why),
+            None => e,
+        }),
+    }
+}
+
+fn refusal(why: headless::Refused) -> anyhow::Error {
+    anyhow!(match why {
+        headless::Refused::Proxy => super::i18n::tr("Mit einem Proxy geht „Nur Verbindung“ noch nicht. Entferne den Proxy oder schalte den Modus aus."),
+        headless::Refused::Version => super::i18n::tr("Diese Minecraft-Version geht mit „Nur Verbindung“ noch nicht."),
+    })
 }
 
 /// A game without the companion would open its window, so a headless batch does not start one.
@@ -2906,6 +2921,7 @@ mod tests {
     fn a_connection_only_start_refuses_a_proxy_account() {
         let mut t = target("A");
         t.batch.as_mut().unwrap().mode = RunMode::Connection;
+        t.batch.as_mut().unwrap().server = Some("127.0.0.1:9".into());
         assert!(t.connection_only() && !t.headless());
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut proxied = Account::offline("AltOne").unwrap();

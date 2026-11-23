@@ -49,7 +49,7 @@ pub fn word(g: &Game, m: &Model) -> String {
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
         Phase::ServerAway { .. } => tr("Wartet auf Server"),
-        Phase::Offer { offer, .. } if offer.conduct => tr("Serverregeln"),
+        Phase::Offer { offer, .. } if offer.is_conduct() => tr("Serverregeln"),
         Phase::Offer { .. } => tr("Ressourcenpaket"),
     }
 }
@@ -67,7 +67,7 @@ pub fn short(g: &Game, m: &Model) -> Option<String> {
         Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::Dead { .. } => tr("Gestorben"),
         Phase::Failed { .. } => tr("Fehler"),
-        Phase::Offer { offer, .. } if offer.conduct => tr("Regeln"),
+        Phase::Offer { offer, .. } if offer.is_conduct() => tr("Regeln"),
         Phase::Offer { .. } => tr("Paket"),
         _ => return None,
     })

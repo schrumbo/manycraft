@@ -2148,8 +2148,6 @@
   "Screenshot der Ausgewählten": "Screenshot selected",
   "Ressourcenpakete annehmen": "Accept resource packs",
   "Ressourcenpakete ablehnen": "Decline resource packs",
-  "Ohne Spielfenster": "Without game window",
-  "Die Spiele laufen unsichtbar und sparsam, ohne Fenster und ohne Platz in der Taskleiste. Du siehst sie über Screenshots; Chat und Befehle gehen wie sonst.": "The games run invisibly and cheaply, with no window and no place in the taskbar. You see them through screenshots; chat and commands work as usual.",
   "Nur auf Wunsch": "Only on request",
   "Jede Minute": "Every minute",
   "Beim Betreten des Servers kommt einer von selbst, weitere über die Kachel. Jeder Screenshot kostet kurz Leistung.": "One comes on its own when the server is joined, more from the tile. Each screenshot costs a moment of performance.",
@@ -2195,5 +2193,6 @@
   "Kein Spiel und kein Bild, nur Chat und Status: braucht kaum Speicher, aber keine Mods und keine Screenshots. Ob ein Server das erlaubt, entscheidest du.": "No game and no picture, only chat and status: needs little memory, but no mods and no screenshots. Whether a server allows this is up to you.",
   "Wie die Spiele laufen": "How the games run",
   "Ein Konto mit Proxy startet in diesem Modus noch nicht.": "An account with a proxy does not start in this mode yet.",
-  "%lld Konten mit Proxy starten in diesem Modus noch nicht.": "%lld accounts with a proxy do not start in this mode yet."
+  "%lld Konten mit Proxy starten in diesem Modus noch nicht.": "%lld accounts with a proxy do not start in this mode yet.",
+  "Diese Minecraft-Version geht mit „Nur Verbindung“ noch nicht.": "This Minecraft version does not work with “Connection only” yet."
 }

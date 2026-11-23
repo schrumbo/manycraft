@@ -62,12 +62,12 @@ impl Phase {
 
     /// Whether a server waits for an answer about its resource pack.
     pub fn needs_pack_answer(&self) -> bool {
-        matches!(self, Phase::Offer { offer, .. } if !offer.conduct)
+        matches!(self, Phase::Offer { offer, .. } if !offer.is_conduct())
     }
 
     /// Whether a server waits for an answer about its code of conduct.
     pub fn needs_rules_answer(&self) -> bool {
-        matches!(self, Phase::Offer { offer, .. } if offer.conduct)
+        matches!(self, Phase::Offer { offer, .. } if offer.is_conduct())
     }
 
     /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash is due.
@@ -123,7 +123,7 @@ impl Phase {
     pub fn need(&self) -> Option<Need> {
         match self {
             Phase::LoginNeeded => Some(Need::SignIn),
-            Phase::Offer { offer, .. } if offer.conduct => Some(Need::Conduct),
+            Phase::Offer { offer, .. } if offer.is_conduct() => Some(Need::Conduct),
             Phase::Offer { .. } => Some(Need::Offer),
             Phase::Disconnected { .. } => Some(Need::Disconnected),
             Phase::Dead { .. } => Some(Need::Dead),
@@ -674,7 +674,7 @@ pub fn primary(phase: &Phase, stopping: Stopping) -> Option<Primary> {
         Phase::NoNetwork => Some(Primary::Retry),
         Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
         Phase::Restarting { .. } => Some(Primary::Start),
-        Phase::Offer { offer, .. } if offer.conduct => Some(Primary::AcceptRules),
+        Phase::Offer { offer, .. } if offer.is_conduct() => Some(Primary::AcceptRules),
         Phase::Offer { .. } => Some(Primary::AcceptPack),
     }
 }
@@ -748,7 +748,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
         Phase::ServerAway { .. } => tr("Server weg · verbindet sich wieder, sobald er antwortet"),
         Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
-        Phase::Offer { offer, .. } if offer.conduct => tr("Server fragt nach seinen Regeln"),
+        Phase::Offer { offer, .. } if offer.is_conduct() => tr("Server fragt nach seinen Regeln"),
         Phase::Offer { offer, .. } if offer.required => tr("Server verlangt ein Ressourcenpaket"),
         Phase::Offer { .. } => tr("Server bietet ein Ressourcenpaket an"),
     }

@@ -283,6 +283,11 @@ impl Batch {
         self.conduct.iter().any(|c| c.server.eq_ignore_ascii_case(server) && c.hash == hash)
     }
 
+    /// The hashes of the codes of conduct accepted on `server`.
+    pub fn conduct_hashes(&self, server: &str) -> Vec<String> {
+        self.conduct.iter().filter(|c| c.server.eq_ignore_ascii_case(server)).map(|c| c.hash.clone()).collect()
+    }
+
     /// Keeps the acceptance of the code of conduct with `hash` on `server`, replacing an older text of that server.
     pub fn accept_conduct(&mut self, server: &str, hash: &str) {
         self.conduct.retain(|c| !c.server.eq_ignore_ascii_case(server));

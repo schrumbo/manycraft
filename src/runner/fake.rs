@@ -181,7 +181,7 @@ impl<P: Pixels> Sim<P> {
         self.at(after + Duration::from_millis(1000), cancel, state(key, StateKind::Connecting, None));
         match hash(key) % 6 {
             0 => {
-                let offer = crate::core::ipc::Offer { id: "rules".into(), required: true, text: Some(RULES.into()), conduct: true };
+                let offer = crate::core::ipc::Offer { id: "conduct-fake".into(), required: true, text: Some(RULES.into()) };
                 let held = Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::State { kind: StateKind::Offer, server: Some(SERVER.to_owned()), reason: None, cause: None, offer: Some(offer) } });
                 self.at(after + Duration::from_millis(1600), cancel, held);
             }

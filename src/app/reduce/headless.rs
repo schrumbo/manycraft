@@ -101,7 +101,7 @@ pub(super) fn offered(m: &mut Model, key: &str, server: Option<String>, offer: O
         return;
     };
     let server = server.unwrap_or_default();
-    if offer.conduct && conduct_known(m, key, &server, &offer) {
+    if offer.is_conduct() && conduct_known(m, key, &server, &offer) {
         out.push(Effect::Send { key: key.to_owned(), message: ToMod::Answer { id: offer.id, accept: true } });
         return;
     }
@@ -109,7 +109,7 @@ pub(super) fn offered(m: &mut Model, key: &str, server: Option<String>, offer: O
 }
 
 fn conduct_hash(offer: &Offer) -> String {
-    batch::conduct_hash(offer.text.as_deref().unwrap_or(&offer.id))
+    crate::core::headless::conduct(offer).map_or_else(|| batch::conduct_hash(offer.text.as_deref().unwrap_or(&offer.id)), str::to_owned)
 }
 
 fn conduct_known(m: &Model, key: &str, server: &str, offer: &Offer) -> bool {
@@ -124,7 +124,7 @@ pub(super) fn answer(m: &mut Model, keys: &[String], accept: bool, conduct: bool
     for key in keys {
         if let Some(i) = m.games.get(key).filter(|i| !i.stopping)
             && let Phase::Offer { offer, .. } = &i.phase
-            && offer.conduct == conduct
+            && offer.is_conduct() == conduct
         {
             out.push(Effect::Send { key: key.clone(), message: ToMod::Answer { id: offer.id.clone(), accept } });
             answered.push(key.clone());
@@ -154,7 +154,7 @@ pub(super) fn answer(m: &mut Model, keys: &[String], accept: bool, conduct: bool
             .values()
             .filter(|i| i.batch_id == batch && !i.stopping && !answered.contains(&i.key))
             .filter_map(|i| match &i.phase {
-                Phase::Offer { server: s, offer } if offer.conduct && s.eq_ignore_ascii_case(&server) && conduct_hash(offer) == hash => Some((i.key.clone(), offer.id.clone())),
+                Phase::Offer { server: s, offer } if offer.is_conduct() && s.eq_ignore_ascii_case(&server) && conduct_hash(offer) == hash => Some((i.key.clone(), offer.id.clone())),
                 _ => None,
             })
             .collect();
@@ -198,7 +198,7 @@ mod tests {
     }
 
     fn offer(key: &str, id: &str, required: bool) -> Report {
-        Report::Mod { key: key.into(), message: FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(Offer { id: id.into(), required, text: None, conduct: false }) } }
+        Report::Mod { key: key.into(), message: FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(Offer { id: id.into(), required, text: None }) } }
     }
 
     fn connection_only() -> (Model, String, Settings) {
@@ -212,7 +212,7 @@ mod tests {
     }
 
     fn rules(key: &str, text: &str) -> Report {
-        Report::Mod { key: key.into(), message: FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(Offer { id: "rules-1".into(), required: true, text: Some(text.into()), conduct: true }) } }
+        Report::Mod { key: key.into(), message: FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(Offer { id: format!("conduct-{}", text.replace(' ', "_")), required: true, text: Some(text.into()) }) } }
     }
 
     #[test]
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(m.games[&key].action(false), Some(Primary::AcceptRules));
         assert!(run(&mut m, &s, Instant::now(), Event::AnswerPack { keys: vec![key.clone()], accept: true }).is_empty(), "a pack answer never touches the rules");
         let fx = run(&mut m, &s, Instant::now(), Event::AnswerRules { keys: vec![key.clone()], accept: true });
-        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { id, accept: true }, .. } if id == "rules-1")), "{fx:?}");
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { id, accept: true }, .. } if id == "conduct-Be_kind.")), "{fx:?}");
         assert!(fx.iter().any(|e| matches!(e, Effect::RememberConduct { .. })), "{fx:?}");
     }
 
