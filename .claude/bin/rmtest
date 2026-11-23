@@ -1,0 +1,27 @@
+#!/bin/bash
+# Deletes a test home (C:/mc-*, or a folder under the temp dir) without following junctions or symlinks into real data.
+set -u
+dir="${1:?usage: rmtest <test home>}"
+case "$dir" in
+  C:/mc-*|C:\\mc-*|c:/mc-*|/c/mc-*|"${TMPDIR:-/nonexistent}"/*|/tmp/*) ;;
+  *) echo "rmtest only deletes C:/mc-* or temp folders, not $dir" >&2; exit 1 ;;
+esac
+[ -e "$dir" ] || { echo "already gone: $dir"; exit 0; }
+if command -v powershell.exe >/dev/null; then
+  win=$(cygpath -w "$dir" 2>/dev/null || echo "$dir")
+  powershell.exe -NoProfile -NonInteractive -Command "
+    \$root = '$win'
+    \$stack = New-Object System.Collections.Stack; \$stack.Push(\$root)
+    while (\$stack.Count) { \$d = \$stack.Pop()
+      foreach (\$e in [System.IO.Directory]::EnumerateFileSystemEntries(\$d)) {
+        \$a = [System.IO.File]::GetAttributes(\$e)
+        if (\$a -band [System.IO.FileAttributes]::ReparsePoint) {
+          if (\$a -band [System.IO.FileAttributes]::Directory) { [System.IO.Directory]::Delete(\$e, \$false) } else { [System.IO.File]::Delete(\$e) }
+        } elseif (\$a -band [System.IO.FileAttributes]::Directory) { \$stack.Push(\$e) } } }
+    Remove-Item -LiteralPath \$root -Recurse -Force
+    if (Test-Path -LiteralPath \$root) { exit 1 }"
+else
+  rm -rf -- "$dir"
+fi
+[ -e "$dir" ] && { echo "could not delete $dir" >&2; exit 1; }
+echo "deleted $dir"
