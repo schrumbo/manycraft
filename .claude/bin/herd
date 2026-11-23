@@ -21,7 +21,7 @@ remove() {
   git -C "$ROOT" worktree prune
   rm -rf "$ROOT/target/herd-$name" "$ROOT/target/herd-$name"-* 2>/dev/null
   [ -d "$wt" ] && { echo "could not delete $wt; a process still holds it" >&2; exit 1; }
-  git -C "$ROOT" branch -d "herd/$name"
+  git -C "$HERE" branch -d "herd/$name"
 }
 
 case "$cmd" in
