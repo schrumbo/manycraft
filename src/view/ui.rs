@@ -82,6 +82,7 @@ pub enum View {
 /// What the open browser would undo next: how the palette names it, and what it does.
 #[derive(Clone, PartialEq)]
 pub struct BrowserUndo {
+    pub at: u64,
     pub label: String,
     pub run: EventHandler<()>,
 }
@@ -89,6 +90,7 @@ pub struct BrowserUndo {
 /// A deletion that can be taken back for as long as the window is open: what it undoes and how.
 #[derive(Clone, PartialEq)]
 pub struct SessionUndo {
+    pub at: u64,
     pub key: String,
     pub label: String,
     pub run: EventHandler<()>,
@@ -312,7 +314,7 @@ mod tests {
     }
 
     fn entry(key: &str, label: &str) -> SessionUndo {
-        SessionUndo { key: key.into(), label: label.into(), run: EventHandler::new(|_| {}) }
+        SessionUndo { at: 0, key: key.into(), label: label.into(), run: EventHandler::new(|_| {}) }
     }
 
     #[test]

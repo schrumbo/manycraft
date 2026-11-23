@@ -548,20 +548,24 @@ impl Command {
                 ui.page.set(Page::Start);
                 ui.focus_quick.set(Some(std::time::Instant::now()));
             }
-            Command::Undo => {
-                let browser = ui.browser_undo.peek().clone();
-                match browser {
-                    Some(undo) => undo.run.call(()),
-                    None => {
-                        if !toast::undo_last(ui) {
-                            let newest = ui.session_undo.peek().first().cloned();
-                            if let Some(undo) = newest {
-                                undo.run.call(());
-                            }
-                        }
+            Command::Undo => match latest_undo(store) {
+                Some(Latest::Browser) => {
+                    let browser = ui.browser_undo.peek().clone();
+                    if let Some(undo) = browser {
+                        undo.run.call(());
                     }
                 }
-            }
+                Some(Latest::Toast) => {
+                    toast::undo_last(ui);
+                }
+                Some(Latest::Session) => {
+                    let newest = ui.session_undo.peek().first().cloned();
+                    if let Some(undo) = newest {
+                        undo.run.call(());
+                    }
+                }
+                None => {}
+            },
             Command::FocusSearch => {
                 if !matches!(*ui.page.peek(), Page::Grid(_) | Page::Library) {
                     ui.page.set(Page::Library);
@@ -700,16 +704,35 @@ pub fn name_undo(store: Store, id: u64, what: String) {
     });
 }
 
-/// What the palette calls Rückgängig: the open browser's removal, what the newest toast takes back when it is named, or
-/// the newest deletion no toast offers any more.
+/// Where Rückgängig takes the newest change back from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Latest {
+    Browser,
+    Toast,
+    Session,
+}
+
+/// The source holding the newest change, given the stamps of the open browser's top removal, the newest undoable toast and
+/// the newest kept deletion; every undo, however it is offered, goes in the order it happened.
+fn newest_of(browser: Option<u64>, toast: Option<u64>, session: Option<u64>) -> Option<Latest> {
+    [(browser, Latest::Browser), (toast, Latest::Toast), (session, Latest::Session)].into_iter().filter_map(|(at, from)| at.map(|at| (at, from))).max_by_key(|(at, _)| *at).map(|(_, from)| from)
+}
+
+fn latest_undo(store: Store) -> Option<Latest> {
+    newest_of(store.ui.browser_undo.peek().as_ref().map(|u| u.at), toast::newest_undo(&store.ui.toasts.peek()), store.ui.session_undo.peek().first().map(|u| u.at))
+}
+
+/// What the palette calls Rückgängig: what the newest change takes back, the same one Strg+Z runs; a toast without a
+/// name leaves the plain word.
 pub fn undo_label(store: Store) -> Option<String> {
-    if let Some(u) = store.ui.browser_undo.peek().as_ref() {
-        return Some(u.label.clone());
+    match latest_undo(store)? {
+        Latest::Browser => store.ui.browser_undo.peek().as_ref().map(|u| u.label.clone()),
+        Latest::Toast => {
+            let id = toast::newest_undo(&store.ui.toasts.peek())?;
+            UNDO_NAMES.with_borrow(|names| names.iter().find(|(n, _)| *n == id).map(|(_, what)| trf("Rückgängig: %@", &[what])))
+        }
+        Latest::Session => store.ui.session_undo.peek().first().map(|u| u.label.clone()),
     }
-    if let Some(id) = store.ui.toasts.peek().iter().rev().find(|t| t.undo.is_some()).map(|t| t.id) {
-        return UNDO_NAMES.with_borrow(|names| names.iter().find(|(n, _)| *n == id).map(|(_, what)| trf("Rückgängig: %@", &[what])));
-    }
-    store.ui.session_undo.peek().first().map(|u| u.label.clone())
 }
 
 /// A command the shown page offers beyond the window's: in the palette, and through its shortcut while the page is shown.
@@ -983,6 +1006,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn undo_goes_to_the_newest_change_whichever_way_it_is_offered() {
+        assert_eq!(newest_of(None, None, None), None);
+        assert_eq!(newest_of(None, Some(4), Some(2)), Some(Latest::Toast));
+        assert_eq!(newest_of(None, Some(2), Some(4)), Some(Latest::Session));
+        assert_eq!(newest_of(Some(9), Some(4), Some(2)), Some(Latest::Browser));
+        assert_eq!(newest_of(Some(1), Some(4), None), Some(Latest::Toast));
+        assert_eq!(newest_of(Some(1), None, Some(3)), Some(Latest::Session));
     }
 
     #[test]

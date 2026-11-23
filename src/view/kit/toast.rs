@@ -56,8 +56,18 @@ pub fn show_action(ui: Ui, text: impl Into<String>, label: impl Into<String>, ru
     push(ui, text.into(), None, Some((label.into(), run)), false)
 }
 
+/// The next number of the one sequence that orders everything undoable: toasts, kept deletions and the browser's removals.
+pub fn stamp() -> u64 {
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The stamp of the newest toast that can be undone.
+pub fn newest_undo(toasts: &[Toast]) -> Option<u64> {
+    toasts.iter().rev().find(|t| t.undo.is_some()).map(|t| t.id)
+}
+
 fn push(mut ui: Ui, text: String, undo: Option<EventHandler<()>>, action: Option<(String, EventHandler<()>)>, keep: bool) -> u64 {
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let id = stamp();
     let until = Instant::now() + if undo.is_some() || action.is_some() { UNDOABLE } else { PLAIN };
     {
         let mut toasts = ui.toasts.write();
@@ -123,10 +133,12 @@ pub fn dismiss(mut ui: Ui, id: u64) {
 
 /// Undoes the newest toast that can be undone; false when there is none.
 pub fn undo_last(ui: Ui) -> bool {
-    let last = ui.toasts.peek().iter().rev().find_map(|t| t.undo.clone().map(|u| (t.id, u)));
-    let Some((id, undo)) = last else { return false };
+    let Some(id) = newest_undo(&ui.toasts.peek()) else { return false };
+    let undo = ui.toasts.peek().iter().find(|t| t.id == id).and_then(|t| t.undo.clone());
     dismiss(ui, id);
-    undo.call(());
+    if let Some(undo) = undo {
+        undo.call(());
+    }
     true
 }
 
@@ -198,5 +210,27 @@ impl Component for Host {
             .spacing(space::S)
             .children(cards)
             .into_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn toast(id: u64, undo: bool) -> Toast {
+        Toast { id, text: String::new(), undo: undo.then(|| EventHandler::new(|_| {})), action: None, keep: false, held: false, until: Instant::now() }
+    }
+
+    #[test]
+    fn the_newest_toast_with_an_undo_is_the_one_to_undo() {
+        assert_eq!(newest_undo(&[]), None);
+        assert_eq!(newest_undo(&[toast(1, false), toast(2, false)]), None);
+        assert_eq!(newest_undo(&[toast(1, true), toast(2, true), toast(3, false)]), Some(2));
+    }
+
+    #[test]
+    fn stamps_only_grow() {
+        let (a, b) = (stamp(), stamp());
+        assert!(b > a);
     }
 }

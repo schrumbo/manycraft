@@ -15,15 +15,11 @@ use crate::core::modrinth::Kind;
 use crate::ui::forms::{self, Problem};
 use crate::view::commands::{Extra, Shortcut};
 use crate::view::icons::Icon;
-use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::sheet;
-use crate::view::kit::text::{para, spacer, title};
-use crate::view::kit::{held, off_ui, toast, use_theme};
+use crate::view::kit::{held, off_ui, toast};
 use crate::view::native;
 use crate::view::store::Store;
-use crate::view::theme::{frame, space};
-use crate::view::ui::Ui;
 
 /// Puts `made` into the model when it differs from what the model holds.
 pub(super) fn publish(store: Store, made: Instance) {
@@ -100,76 +96,6 @@ fn undo_add(store: Store, id: String, files: Vec<String>, label: String) {
             None => offer_added(store, id, files, label),
         }
     });
-}
-
-struct Ask {
-    heading: String,
-    message: String,
-    only: String,
-    all: String,
-    on_only: EventHandler<()>,
-    on_all: EventHandler<()>,
-}
-
-impl PartialEq for Ask {
-    fn eq(&self, _: &Self) -> bool {
-        false
-    }
-}
-
-impl Component for Ask {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let ui = use_consume::<Ui>();
-        let (only, all) = (self.on_only.clone(), self.on_all.clone());
-        let (key_all, heading) = (self.on_all.clone(), self.heading.clone());
-        let footer = rect()
-            .width(Size::fill())
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::S)
-            .content(Content::flex())
-            .child(spacer())
-            .child(Button::new("instance.mods.ask.cancel", tr("Abbrechen")).on_press(move |_| sheet::close(ui)))
-            .child(Button::new("instance.mods.ask.only", self.only.clone()).on_press(move |_| {
-                sheet::close(ui);
-                only.call(());
-            }))
-            .child(Button::new("instance.mods.ask.all", self.all.clone()).primary().on_press(move |_| {
-                sheet::close(ui);
-                all.call(());
-            }));
-        let mut card = rect()
-            .a11y_role(AccessibilityRole::Dialog)
-            .a11y_alt(heading.clone())
-            .width(Size::px(frame::SHEET))
-            .padding(space::XL)
-            .spacing(space::L)
-            .background(t.raised)
-            .corner_radius(t.shape.sheet)
-            .shadow(t.elevation.float.clone())
-            .on_mouse_down(|e: Event<MouseEventData>| e.stop_propagation())
-            .on_global_key_down(move |e: Event<KeyboardEventData>| match e.key {
-                Key::Named(NamedKey::Escape | NamedKey::Enter) if ui.menu.peek().is_some() || *ui.palette.peek() => {}
-                Key::Named(NamedKey::Escape) => {
-                    e.stop_propagation();
-                    sheet::close(ui);
-                }
-                Key::Named(NamedKey::Enter) if e.modifiers.is_empty() => {
-                    e.stop_propagation();
-                    sheet::close(ui);
-                    key_all.call(());
-                }
-                _ => {}
-            })
-            .child(title(&t, heading))
-            .child(para(&t, self.message.clone(), crate::view::theme::font::BODY, t.text2))
-            .child(footer);
-        if let Some(rim) = t.elevation.rim {
-            card = card.border(Border::new().fill(rim).width(1.).alignment(BorderAlignment::Outer));
-        }
-        card
-    }
 }
 
 impl Ctx {
@@ -463,15 +389,28 @@ impl Ctx {
         let all = if files.len() + missing.len() == 2 { tr("Beide einschalten") } else { tr("Alle einschalten") };
         let both: Vec<String> = files.iter().chain(missing.iter()).cloned().collect();
         let (first, second) = (self.clone(), self.clone());
-        let ask = Ask {
-            heading,
-            message,
-            only,
-            all,
-            on_only: EventHandler::new(move |_| first.apply_switch(files.clone(), true)),
-            on_all: EventHandler::new(move |_| second.apply_switch(both.clone(), true)),
+        let ui = self.store.ui;
+        let primary = sheet::Primary {
+            label: all,
+            disabled: None,
+            danger: false,
+            busy: false,
+            run: EventHandler::new(move |_| {
+                sheet::close(ui);
+                second.apply_switch(both.clone(), true);
+            }),
         };
-        sheet::open(self.store.ui, ask);
+        let secondary = sheet::Primary {
+            label: only,
+            disabled: None,
+            danger: false,
+            busy: false,
+            run: EventHandler::new(move |_| {
+                sheet::close(ui);
+                first.apply_switch(files.clone(), true);
+            }),
+        };
+        sheet::open(ui, sheet::Card::new("instance.mods.ask", heading).message(message).primary(primary).primary_id("instance.mods.ask.all").secondary(secondary).secondary_id("instance.mods.ask.only").keep_cancel());
     }
 
     pub(super) fn apply_switch(&self, files: Vec<String>, on: bool) {
