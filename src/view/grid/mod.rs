@@ -540,7 +540,7 @@ pub fn count_line(m: &Model, shown: &[String]) -> Option<String> {
     if total == 0 {
         return None;
     }
-    let running = games().filter(|g: &&Game| g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention()).count();
+    let running = games().filter(|g: &&Game| g.phase.counts_as_running()).count();
     let attention = games().filter(|g| g.phase.needs_attention()).count();
     let mut parts = vec![trf("%lld von %lld laufen", &[&running, &total])];
     if attention == 1 {

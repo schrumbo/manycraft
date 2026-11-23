@@ -151,9 +151,9 @@ impl Component for StartPage {
             let mut rows = rect().width(Size::fill()).spacing(space::XS);
             for b in &m.batches {
                 let games = || m.games.values().filter(|g| g.batch_id == b.id);
-                let (total, running) = (games().count(), games().filter(|g| g.phase.is_active()).count());
+                let (total, running, active) = (games().count(), games().filter(|g| g.phase.counts_as_running()).count(), games().any(|g| g.phase.is_active()));
                 let attention = m.attention_count(Some(&b.id));
-                rows = rows.child(rect().key(&b.id).width(Size::fill()).child(BatchRow { id: b.id.clone(), name: b.name.clone(), total, running, attention }));
+                rows = rows.child(rect().key(&b.id).width(Size::fill()).child(BatchRow { id: b.id.clone(), name: b.name.clone(), total, running, active, attention }));
             }
             lower.push(section(&t, tr("Batches"), None, rows));
         }
@@ -239,6 +239,7 @@ struct BatchRow {
     name: String,
     total: usize,
     running: usize,
+    active: bool,
     attention: usize,
 }
 
@@ -253,7 +254,7 @@ impl Component for BatchRow {
         let spot = use_spot(&format!("start.batch.{id}"), "button", &self.name, true);
         let (open, key, act) = (id.clone(), id.clone(), id.clone());
         let counts = trf("%lld/%lld laufen", &[&self.running, &self.total]);
-        let toggle = if self.running == 0 {
+        let toggle = if !self.active {
             Button::new(format!("start.batch.{id}.start"), tr("Starten")).on_press(move |_| store.dispatch(AppEvent::StartBatch(act.clone())))
         } else {
             Button::new(format!("start.batch.{id}.stop"), tr("Stoppen")).on_press(move |_| store.dispatch(AppEvent::StopBatch(act.clone())))
