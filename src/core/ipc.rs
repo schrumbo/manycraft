@@ -52,6 +52,13 @@ pub struct Offer {
     pub text: Option<String>,
 }
 
+impl Offer {
+    /// Whether this is a server's code of conduct, which only the user may accept, not a resource pack.
+    pub fn is_conduct(&self) -> bool {
+        crate::core::headless::conduct(self).is_some()
+    }
+}
+
 /// Why a connection dropped, as the mod's classifier read the disconnect screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

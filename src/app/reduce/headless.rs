@@ -9,6 +9,7 @@ use super::super::model::{Model, Phase};
 use super::super::phase::{self, Why};
 use super::super::session::Timer;
 use super::go;
+use crate::core::batch;
 use crate::core::ipc::{Offer, ToMod};
 
 /// How wide a screenshot of a game without a window is: sharp on a large tile, small enough for fifty of them.
@@ -26,7 +27,7 @@ fn shot(key: &str) -> Effect {
 }
 
 fn capturable(m: &Model, key: &str) -> bool {
-    m.session.pids.contains_key(key) && m.games.get(key).is_some_and(|i| i.headless && !i.stopping && !i.hint.link_lost && phase::mod_reports(&i.phase) && !matches!(i.phase, Phase::Starting { .. }))
+    m.session.pids.contains_key(key) && m.games.get(key).is_some_and(|i| i.headless && !i.connection && !i.stopping && !i.hint.link_lost && phase::mod_reports(&i.phase) && !matches!(i.phase, Phase::Starting { .. }))
 }
 
 /// The game `key` got onto its server: a game without a window shows where it is with one screenshot.
@@ -47,7 +48,7 @@ pub(super) fn arm(m: &mut Model, out: &mut Vec<Effect>) {
 
 /// Matches the screenshot timer of `key` to its batch's interval, staggered by the account's place in the batch.
 pub(super) fn arm_one(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
-    let wanted = m.games.get(key).filter(|i| i.headless && m.session.pids.contains_key(key)).and_then(|i| {
+    let wanted = m.games.get(key).filter(|i| i.headless && !i.connection && m.session.pids.contains_key(key)).and_then(|i| {
         let batch = m.batches.iter().find(|b| b.id == i.batch_id)?;
         let minutes = batch.unattended().screenshots?;
         let place = batch.accounts.iter().position(|a| *a == i.account_id).unwrap_or(0) as u32;
@@ -87,7 +88,8 @@ pub(super) fn ended(m: &mut Model, key: &str) {
     m.session.captures.remove(key);
 }
 
-/// The game `key` holds a resource pack `offer` from `server` until the user answers.
+/// The game `key` holds a resource pack or a code of conduct `offer` from `server` until the user answers. A code of conduct
+/// the user already accepted for this batch and server, by the hash of its text, is answered the same way again.
 pub(super) fn offered(m: &mut Model, key: &str, server: Option<String>, offer: Option<Offer>, out: &mut Vec<Effect>) {
     let why = if m.session.adopted.remove(key) { Why::Adopt } else { Why::Mod };
     let Some(i) = m.games.get(key) else { return };
@@ -98,16 +100,66 @@ pub(super) fn offered(m: &mut Model, key: &str, server: Option<String>, offer: O
         out.push(Effect::Log(format!("phase: {key} reported an offer without one")));
         return;
     };
-    go(m, key, Phase::Offer { server: server.unwrap_or_default(), offer }, why, out);
+    let server = server.unwrap_or_default();
+    if offer.is_conduct() && conduct_known(m, key, &server, &offer) {
+        out.push(Effect::Send { key: key.to_owned(), message: ToMod::Answer { id: offer.id, accept: true } });
+        return;
+    }
+    go(m, key, Phase::Offer { server, offer }, why, out);
 }
 
-/// Answers the resource pack each of `keys` holds; the game reports where the answer took it.
-pub(super) fn answer(m: &Model, keys: &[String], accept: bool, out: &mut Vec<Effect>) {
+fn conduct_hash(offer: &Offer) -> String {
+    crate::core::headless::conduct(offer).unwrap_or_default().to_owned()
+}
+
+fn conduct_known(m: &Model, key: &str, server: &str, offer: &Offer) -> bool {
+    m.games.get(key).and_then(|i| m.batch(&i.batch_id)).is_some_and(|b| b.conduct_accepted(server, &conduct_hash(offer)))
+}
+
+/// Answers the resource pack (or, with `conduct`, the code of conduct) each of `keys` holds; the game reports where the answer
+/// took it. Accepting a code of conduct is remembered for its batch and server, and carries to the batch's other accounts that
+/// hold the same text.
+pub(super) fn answer(m: &mut Model, keys: &[String], accept: bool, conduct: bool, out: &mut Vec<Effect>) {
+    let mut answered = Vec::new();
     for key in keys {
         if let Some(i) = m.games.get(key).filter(|i| !i.stopping)
             && let Phase::Offer { offer, .. } = &i.phase
+            && offer.is_conduct() == conduct
         {
             out.push(Effect::Send { key: key.clone(), message: ToMod::Answer { id: offer.id.clone(), accept } });
+            answered.push(key.clone());
+        }
+    }
+    if !(conduct && accept) {
+        return;
+    }
+    let mut remembered: Vec<(String, String, String)> = Vec::new();
+    for key in &answered {
+        if let Some(i) = m.games.get(key)
+            && let Phase::Offer { server, offer } = &i.phase
+        {
+            let entry = (i.batch_id.clone(), server.clone(), conduct_hash(offer));
+            if !remembered.contains(&entry) {
+                remembered.push(entry);
+            }
+        }
+    }
+    for (batch, server, hash) in remembered {
+        if let Some(b) = m.batches.iter_mut().find(|b| b.id == batch) {
+            b.accept_conduct(&server, &hash);
+        }
+        out.push(Effect::RememberConduct { batch: batch.clone(), server: server.clone(), hash: hash.clone() });
+        let mates: Vec<(String, String)> = m
+            .games
+            .values()
+            .filter(|i| i.batch_id == batch && !i.stopping && !answered.contains(&i.key))
+            .filter_map(|i| match &i.phase {
+                Phase::Offer { server: s, offer } if offer.is_conduct() && s.eq_ignore_ascii_case(&server) && conduct_hash(offer) == hash => Some((i.key.clone(), offer.id.clone())),
+                _ => None,
+            })
+            .collect();
+        for (key, id) in mates {
+            out.push(Effect::Send { key, message: ToMod::Answer { id, accept: true } });
         }
     }
 }
@@ -127,7 +179,7 @@ mod tests {
     fn headless(minutes: Option<u32>) -> (Model, String, Settings) {
         let s = settings();
         let (mut m, key) = setup(Phase::Starting { place: 0, total: 1 }, AccountKind::Offline, &[]);
-        m.batches[0].headless = true;
+        m.batches[0].mode = crate::core::batch::RunMode::Hidden;
         m.batches[0].screenshots = minutes;
         m.games.get_mut(&key).unwrap().headless = true;
         (m, key, s)
@@ -147,6 +199,105 @@ mod tests {
 
     fn offer(key: &str, id: &str, required: bool) -> Report {
         Report::Mod { key: key.into(), message: FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(Offer { id: id.into(), required, text: None }) } }
+    }
+
+    fn connection_only() -> (Model, String, Settings) {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 0, total: 1 }, AccountKind::Offline, &[]);
+        m.batches[0].mode = crate::core::batch::RunMode::Connection;
+        let g = m.games.get_mut(&key).unwrap();
+        g.headless = true;
+        g.connection = true;
+        (m, key, s)
+    }
+
+    fn rules(key: &str, text: &str) -> Report {
+        Report::Mod { key: key.into(), message: FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(Offer { id: format!("conduct-{}", text.replace(' ', "_")), required: true, text: Some(text.into()) }) } }
+    }
+
+    #[test]
+    fn a_connection_only_game_chats_instead_of_playing_and_takes_no_screenshot() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        assert_eq!(m.games[&key].action(false), Some(Primary::Chat));
+        assert_eq!(shots(&run(&mut m, &s, Instant::now(), Event::Capture(vec![key.clone()]))), 0);
+        let fx = run(&mut m, &s, Instant::now(), Event::Play(key.clone()));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Show { .. } | Effect::HideManager)), "{fx:?}");
+        assert_eq!(m.playing, None);
+    }
+
+    #[test]
+    fn a_code_of_conduct_is_attention_and_never_answered_by_itself() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        let fx = report(&mut m, &s, rules(&key, "Be kind."));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { .. }, .. })), "{fx:?}");
+        assert_eq!(m.needs(None), [(Need::Conduct, 1)]);
+        assert_eq!(m.games[&key].action(false), Some(Primary::AcceptRules));
+        assert!(run(&mut m, &s, Instant::now(), Event::AnswerPack { keys: vec![key.clone()], accept: true }).is_empty(), "a pack answer never touches the rules");
+        let fx = run(&mut m, &s, Instant::now(), Event::AnswerRules { keys: vec![key.clone()], accept: true });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { id, accept: true }, .. } if id == "conduct-Be_kind.")), "{fx:?}");
+        assert!(fx.iter().any(|e| matches!(e, Effect::RememberConduct { .. })), "{fx:?}");
+    }
+
+    #[test]
+    fn a_declined_code_of_conduct_is_not_remembered() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, rules(&key, "Be kind."));
+        let fx = run(&mut m, &s, Instant::now(), Event::AnswerRules { keys: vec![key.clone()], accept: false });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { accept: false, .. }, .. })));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::RememberConduct { .. })));
+        assert!(m.batches[0].conduct.is_empty());
+    }
+
+    #[test]
+    fn a_declined_code_of_conduct_drops_with_the_rules_as_its_reason() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, rules(&key, "Be kind."));
+        run(&mut m, &s, Instant::now(), Event::AnswerRules { keys: vec![key.clone()], accept: false });
+        report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example:25565"), Some(DisconnectCause::PackDeclined)));
+        assert!(matches!(&m.games[&key].phase, Phase::Disconnected { reason, .. } if reason.contains("Regeln") && !reason.contains("Ressourcenpaket")), "{:?}", m.games[&key].phase);
+    }
+
+    #[test]
+    fn an_accepted_code_of_conduct_is_answered_again_for_the_same_text_only() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, rules(&key, "Be kind."));
+        run(&mut m, &s, Instant::now(), Event::AnswerRules { keys: vec![key.clone()], accept: true });
+        report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example:25565"), None));
+        let fx = report(&mut m, &s, rules(&key, "Be kind."));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { accept: true, .. }, .. })), "the same text is accepted again: {fx:?}");
+        assert!(!matches!(m.games[&key].phase, Phase::Offer { .. }));
+        let fx = report(&mut m, &s, rules(&key, "Be kind. And no bots."));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Answer { .. }, .. })), "a changed text asks again: {fx:?}");
+        assert_eq!(m.needs(None), [(Need::Conduct, 1)]);
+    }
+
+    #[test]
+    fn a_death_of_a_connection_only_game_is_attention_with_a_respawn_and_never_automatic() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let fx = report(&mut m, &s, state(&key, StateKind::Dead, Some("mc.example:25565"), None));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Respawn, .. })), "{fx:?}");
+        assert_eq!(m.needs(None), [(Need::Dead, 1)]);
+        assert_eq!(m.games[&key].action(false), Some(Primary::Respawn));
+        let fx = run(&mut m, &s, Instant::now(), Event::Respawn(key));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::Respawn, .. })), "{fx:?}");
+    }
+
+    #[test]
+    fn a_code_of_conduct_is_not_a_pack_in_the_counts() {
+        let (mut m, key, s) = headless(None);
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        report(&mut m, &s, rules(&key, "Be kind."));
+        assert!(m.games[&key].phase.needs_rules_answer());
+        assert!(!m.games[&key].phase.needs_pack_answer());
     }
 
     #[test]

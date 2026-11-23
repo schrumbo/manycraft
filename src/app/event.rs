@@ -151,6 +151,8 @@ pub enum Event {
     Capture(Vec<String>),
     /// Answers the resource pack each of these games holds.
     AnswerPack { keys: Vec<String>, accept: bool },
+    /// The user's answer to the codes of conduct these games hold.
+    AnswerRules { keys: Vec<String>, accept: bool },
     Play(String),
     /// Plays `instance` alone as a normal game window, with `account` or the one it plays with by default.
     PlayInstance { instance: String, account: Option<Uuid> },

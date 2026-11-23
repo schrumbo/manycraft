@@ -574,6 +574,9 @@ impl Component for Entry {
         if self.warn {
             e = e.child(icon(&t, Icon::Alert, iconsize::S, if self.disabled { t.text3 } else if self.hot { t.on_accent } else { t.attention_text }));
         }
+        if let (Some(detail), false, None) = (&self.detail, roomy, &self.shortcut) {
+            e = e.child(line(&t, detail.clone(), font::CALLOUT, if self.hot && !self.disabled { t.on_accent } else { t.text3 }));
+        }
         if let Some(k) = &self.shortcut {
             e = e.child(line(&t, k.clone(), font::CALLOUT, if self.hot && !self.disabled { t.on_accent } else { t.text3 }));
         }

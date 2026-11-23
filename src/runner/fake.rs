@@ -113,7 +113,10 @@ struct Sim<P> {
     changes: PreviewChanges,
     outage: Option<(Instant, Instant)>,
     dropped: bool,
+    bare: HashSet<String>,
 }
+
+const RULES: &str = "Regeln des Servers: Sei freundlich, kein Griefing, keine Werbung. Wer sie nicht annimmt, kann nicht spielen.";
 
 fn hash(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
@@ -138,7 +141,7 @@ fn connected<P>(instance: &str) -> Update<P> {
 
 impl<P: Pixels> Sim<P> {
     fn new(out: async_channel::Sender<Update<P>>, visible: Arc<Mutex<HashSet<String>>>) -> Self {
-        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), on_server: HashSet::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default(), outage: None, dropped: false }
+        Self { out, visible, names: HashMap::new(), seeded: false, running: HashMap::new(), on_server: HashSet::new(), queue: Vec::new(), reconnects: 0, chat_at: Instant::now() + CHAT_EVERY, chat_n: 0, still: std::env::var_os("MANYCRAFT_FAKE_STILL").is_some(), changes: PreviewChanges::default(), outage: None, dropped: false, bare: HashSet::new() }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Cmd>) {
@@ -172,6 +175,24 @@ impl<P: Pixels> Sim<P> {
         self.at(after, cancel, Update::Launched { key: key.to_owned(), plain: true });
     }
 
+    fn connect(&mut self, key: &str, after: Duration, cancel: Option<&Arc<AtomicBool>>) {
+        self.at(after, cancel, Update::Launched { key: key.to_owned(), plain: false });
+        self.at(after + Duration::from_millis(600), cancel, connected(key));
+        self.at(after + Duration::from_millis(1000), cancel, state(key, StateKind::Connecting, None));
+        match hash(key) % 6 {
+            0 => {
+                let offer = crate::core::ipc::Offer { id: "conduct-fake".into(), required: true, text: Some(RULES.into()) };
+                let held = Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::State { kind: StateKind::Offer, server: Some(SERVER.to_owned()), reason: None, cause: None, offer: Some(offer) } });
+                self.at(after + Duration::from_millis(1600), cancel, held);
+            }
+            1 => {
+                self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None));
+                self.at(after + Duration::from_secs(8), cancel, state(key, StateKind::Dead, Some("Zombie")));
+            }
+            _ => self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None)),
+        }
+    }
+
     fn command(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Known(list) => {
@@ -186,7 +207,10 @@ impl<P: Pixels> Sim<P> {
                 for (n, account) in accounts.iter().enumerate() {
                     let key = target.key(account.id);
                     let after = STAGGER * n as u32;
-                    if plain {
+                    if target.connection_only() {
+                        self.bare.insert(key.clone());
+                        self.connect(&key, after, Some(&cancel));
+                    } else if plain {
                         self.launch_plain(&key, after, Some(&cancel));
                     } else {
                         self.launch(&key, after, Some(&cancel));
@@ -367,6 +391,7 @@ impl<P: Pixels> Sim<P> {
                 Update::Exited { key, .. } => {
                     self.running.remove(key);
                     self.on_server.remove(key);
+                    self.bare.remove(key);
                 }
                 Update::Ipc(Event::Message { instance, message: FromMod::State { kind, .. } }) => {
                     if matches!(kind, StateKind::Playing | StateKind::Queue) {
@@ -404,7 +429,7 @@ impl<P: Pixels> Sim<P> {
         }
         let visible = self.visible.lock().map(|v| v.clone()).unwrap_or_default();
         for (key, run) in &mut self.running {
-            if !std::mem::take(&mut run.shot) && (!visible.contains(key) || run.next_preview > now) {
+            if self.bare.contains(key) || !std::mem::take(&mut run.shot) && (!visible.contains(key) || run.next_preview > now) {
                 continue;
             }
             run.seq += 2;

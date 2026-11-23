@@ -8,6 +8,7 @@ use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, HeldJoin, Reveal};
 use super::{Env, fleet, go, headless, notify, redraw, show};
 use crate::core::account::AccountKind;
+use crate::core::batch::RunMode;
 use crate::core::chat_text;
 use crate::core::fleet as fleets;
 use crate::core::history::{self, Entry, Kind};
@@ -195,10 +196,13 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         }
         Report::Reach { online } => on_reach(m, env, fx, online),
         Report::Seed { key, phase, attempts } => {
+            let bare = m.games.get(&key).and_then(|i| m.batch(&i.batch_id)).is_some_and(|b| b.mode == RunMode::Connection);
             if go(m, &key, phase, Why::Seed, &mut fx.now)
                 && let Some(i) = m.games.get_mut(&key)
             {
                 i.reconnect_attempts = attempts;
+                i.connection = bare;
+                i.headless |= bare;
             }
         }
         Report::SignIn { account, valid } => {
@@ -402,7 +406,11 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     let s = &mut m.session;
     let policy = &env.settings.reconnect;
     let server_text = server.clone().unwrap_or_default();
-    let reason_text = if cause == Some(DisconnectCause::PackDeclined) { notify::cause_text(DisconnectCause::PackDeclined) } else { reason.clone().unwrap_or_default() };
+    let reason_text = match cause {
+        Some(DisconnectCause::PackDeclined) if i.phase.needs_rules_answer() => tr("Du hast die Regeln des Servers abgelehnt"),
+        Some(DisconnectCause::PackDeclined) => notify::cause_text(DisconnectCause::PackDeclined),
+        _ => reason.clone().unwrap_or_default(),
+    };
     let mut event: Option<(Kind, Option<String>, String)> = None;
     let mut hold = false;
     let to = match kind {
@@ -693,6 +701,12 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 (true, ..) => chat_text::styled(&runs, &text),
             };
             let text = if text.contains('§') { chat_text::plain(&chat_text::styled(&[], &text)) } else { text };
+            if let Some(i) = m.games.get_mut(&key).filter(|i| i.connection) {
+                i.last_chat = Some(match &from {
+                    Some(from) if !text.starts_with(from.as_str()) => format!("{from}: {text}"),
+                    _ => text.clone(),
+                });
+            }
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
             if env.settings.merged_chat {
                 let server = m.games.get(&key).and_then(|i| i.phase.server().map(str::to_owned));

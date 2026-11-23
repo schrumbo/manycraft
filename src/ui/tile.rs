@@ -259,13 +259,14 @@ impl Look for Primary {
             Self::TakeOver => "arrow-right-left",
             Self::ForceQuit => "power",
             Self::Screenshot => "image",
-            Self::AcceptPack => "package",
+            Self::AcceptPack | Self::AcceptRules => "package",
+            Self::Chat => "message-square",
         }
     }
 
     fn action(self, key: &str, account: Uuid) -> Box<dyn Action> {
         match self {
-            Self::Play | Self::Screenshot | Self::AcceptPack => Box::new(Play(key.to_owned())),
+            Self::Play | Self::Screenshot | Self::AcceptPack | Self::AcceptRules | Self::Chat => Box::new(Play(key.to_owned())),
             Self::ForceQuit => Box::new(Stop(key.to_owned())),
             Self::Reconnect => Box::new(Reconnect(key.to_owned())),
             Self::Respawn => Box::new(Respawn(key.to_owned())),

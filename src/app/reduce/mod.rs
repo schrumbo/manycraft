@@ -165,7 +165,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::Capture(keys) => headless::capture(model, &keys, &mut out),
-        Event::AnswerPack { keys, accept } => headless::answer(model, &keys, accept, &mut out),
+        Event::AnswerPack { keys, accept } => headless::answer(model, &keys, accept, false, &mut out),
+        Event::AnswerRules { keys, accept } => headless::answer(model, &keys, accept, true, &mut out),
         Event::Play(key) => show::play(model, &key, &mut out),
         Event::PlayInstance { instance, account } => {
             show::play_instance(model, &instance, account, &mut out);
@@ -261,7 +262,12 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
     for report in reports {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
-            Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => chat = true,
+            Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => {
+                if m.games.get(key).is_some_and(|g| g.connection) && m.session.visible.contains(key) {
+                    return Redraw::All;
+                }
+                chat = true;
+            }
             _ => return Redraw::All,
         }
     }

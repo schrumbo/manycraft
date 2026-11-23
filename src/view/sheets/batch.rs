@@ -673,6 +673,7 @@ impl Component for BatchSheet {
         let (name_problem, server_problem, version_problem) = flow.problems();
         let name_shown = name_problem.clone().filter(|_| tried || !flow.name.read().is_empty());
         let lock = saving.then(saving_text);
+        let proxied = store.model.read().accounts.iter().filter(|a| a.proxy.is_some() && chosen.contains(&a.id)).count();
         let game = instance.as_deref().and_then(|id| store.model.read().instance(id).map(|i| i.game_version.clone())).unwrap_or_else(|| version.clone());
 
         if *flow.asking.read() && editing {
@@ -732,16 +733,17 @@ impl Component for BatchSheet {
         } else {
             server_field = server_field.auto_focus();
         }
-        form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock));
+        let connection = flow.unattended.read().mode == crate::core::batch::RunMode::Connection;
+        form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock, !connection));
 
         let preset = seed.capped.filter(|_| !editing && chosen == seed.accounts).map(|free| preset_line(&t, flow, picked, free, &lock));
         form = form
             .children(preset)
             .children(fit_line(&t, flow, picked))
             .child(name_field)
-            .child(background_section(&t, flow, background, running, &lock))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory }, &lock))
-            .children(open.then(|| unattended::section(&t, flow.unattended, &game, running, &lock)));
+            .children((!connection).then(|| background_section(&t, flow, background, running, &lock)))
+            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection }, &lock))
+            .children(open.then(|| unattended::section(&t, flow.unattended, flow.advanced, &game, running, &lock, proxied)));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
@@ -828,6 +830,9 @@ fn preset_line(t: &Theme, mut flow: Flow, picked: usize, free: usize, lock: &Opt
 }
 
 fn fit_line(t: &Theme, flow: Flow, count: usize) -> Option<Element> {
+    if flow.unattended.read().mode == crate::core::batch::RunMode::Connection {
+        return None;
+    }
     let (total, budget) = forms::memory_need(count, flow.each_memory(), flow.total_ram)?;
     let lower = forms::memory_fit(count, flow.memory_max);
     let need = trf("%lld Accounts brauchen zusammen bis zu %@. Dieser Rechner hat neben dem System nur %@.", &[&count, &forms::memory_label(total), &forms::memory_label(budget)]);
@@ -917,17 +922,21 @@ struct AdvancedView {
     running: bool,
     picked: usize,
     instance_memory: u32,
+    connection: bool,
 }
 
 fn advanced_section(t: &Theme, flow: Flow, view: AdvancedView, lock: &Option<String>) -> Element {
-    let AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory } = view;
+    let AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection } = view;
     let each = if inherit { instance_memory } else { memory };
-    let title = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
+    let title = if open || connection { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
     let mut advanced = flow.advanced;
     let disclosure = Button::new("batch.advanced", title).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| advanced.set(!open));
     let mut column = rect().width(Size::fill()).spacing(space::S).child(rect().horizontal().child(disclosure));
     if !open {
         return column.into_element();
+    }
+    if connection {
+        return column.child(pace_section(t, flow, pace, running, lock)).into_element();
     }
     let count = picked.max(1);
     let total = u64::from(each) * count as u64;
@@ -1030,7 +1039,7 @@ struct Candidate {
     elsewhere: Option<String>,
 }
 
-fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: usize, lock: &Option<String>) -> Element {
+fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: usize, lock: &Option<String>, shared: bool) -> Element {
     let store = flow.store;
     let total = candidates.len();
     let raw = flow.filter.read().trim().to_lowercase();
@@ -1089,7 +1098,7 @@ fn accounts_section(t: &Theme, flow: Flow, candidates: Vec<Candidate>, picked: u
         let height = (shown.len() as f32 * PICK_ROW + BOX_EDGES).min(list_max(store));
         WithTip::new(lock.clone(), PickList { rows: shown, picked: flow.accounts, cursor: flow.cursor, height, locked: lock.clone() }).fill().into_element()
     };
-    column.child(list).child(para(t, tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieser Instanz mit, auch in anderen Batches."), font::CAPTION, t.text3)).into_element()
+    column.child(list).children(shared.then(|| para(t, tr("Ändern sich Einstellungen, Ressourcenpakete oder Serverliste in einem Spiel, ziehen alle Spiele dieser Instanz mit, auch in anderen Batches."), font::CAPTION, t.text3))).into_element()
 }
 
 #[derive(Clone, Copy)]

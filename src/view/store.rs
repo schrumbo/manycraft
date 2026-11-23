@@ -434,6 +434,13 @@ impl Store {
                     self.reload(true);
                 });
             }
+            Effect::RememberConduct { batch, server, hash } => {
+                let _ = std::thread::Builder::new().name("conduct".into()).spawn(move || {
+                    if let Err(e) = crate::ui::remote::remember_conduct(&batch, &server, &hash) {
+                        eprintln!("conduct: {e:#}");
+                    }
+                });
+            }
             Effect::AddAccount => self.ui.page.set(Page::ACCOUNTS),
             Effect::AskQuit { running } => self.ask_quit(running),
             Effect::Quit { keep } => {
@@ -706,7 +713,17 @@ impl Store {
     fn ask_quit(self, running: usize) {
         self.unstow();
         let title = if running == 1 { tr("1 Spiel läuft noch") } else { trf("%lld Spiele laufen noch", &[&running]) };
-        let message = if running == 1 { tr("Beim nächsten Start findet Manycraft es wieder.") } else { tr("Beim nächsten Start findet Manycraft sie wieder.") };
+        let (keepable, linked) = {
+            let model = self.model.peek();
+            (model.games.values().any(|g| g.phase.is_running() && !g.connection), model.games.values().any(|g| g.phase.is_running() && g.connection))
+        };
+        let message = match (keepable, running == 1) {
+            (true, false) if linked => tr("Beim nächsten Start findet Manycraft die Spiele mit Fenster wieder. Die ohne Fenster trennen sich beim Beenden."),
+            (false, true) => tr("Ohne Spielfenster bleibt es nicht verbunden: Beim Beenden trennt es sich."),
+            (false, false) => tr("Ohne Spielfenster bleiben sie nicht verbunden: Beim Beenden trennen sie sich."),
+            (true, true) => tr("Beim nächsten Start findet Manycraft es wieder."),
+            (true, false) => tr("Beim nächsten Start findet Manycraft sie wieder."),
+        };
         let end = sheet::Primary { label: tr("Alle beenden"), disabled: None, danger: true, busy: false, run: EventHandler::new(move |_| {
             sheet::close(self.ui);
             self.dispatch(Event::QuitChosen { keep: false });
@@ -715,7 +732,8 @@ impl Store {
             sheet::close(self.ui);
             self.dispatch(Event::QuitChosen { keep: true });
         }) };
-        sheet::open(self.ui, sheet::Card::new("quit", title).message(message).secondary(end).primary(keep).width(super::theme::frame::SHEET * 0.8));
+        let card = sheet::Card::new("quit", title).message(message).width(super::theme::frame::SHEET * 0.8);
+        sheet::open(self.ui, if keepable { card.secondary(end).primary(keep) } else { card.primary(end) });
     }
 
     /// Tells the core and the fake fleet which games have a tile on screen.

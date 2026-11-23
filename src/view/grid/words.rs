@@ -49,6 +49,7 @@ pub fn word(g: &Game, m: &Model) -> String {
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
         Phase::ServerAway { .. } => tr("Wartet auf Server"),
+        Phase::Offer { offer, .. } if offer.is_conduct() => tr("Serverregeln"),
         Phase::Offer { .. } => tr("Ressourcenpaket"),
     }
 }
@@ -66,6 +67,7 @@ pub fn short(g: &Game, m: &Model) -> Option<String> {
         Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::Dead { .. } => tr("Gestorben"),
         Phase::Failed { .. } => tr("Fehler"),
+        Phase::Offer { offer, .. } if offer.is_conduct() => tr("Regeln"),
         Phase::Offer { .. } => tr("Paket"),
         _ => return None,
     })
@@ -159,6 +161,12 @@ pub fn when(at: u64) -> String {
     crate::ui::instance_files::when(i64::try_from(at).unwrap_or(i64::MAX))
 }
 
+/// "seit 14:02": when game `key` last got onto its server, as a clock time, which never ticks.
+pub fn since(key: &str, m: &Model) -> Option<String> {
+    let at = m.history.get(key)?.iter().rev().find(|e| e.kind == Kind::Connected)?.at;
+    Some(trf("seit %@", &[&clock(at)]))
+}
+
 /// The newest event of game `key` that changed how it stands, for the table's "Seit".
 pub fn last_change<'a>(key: &str, m: &'a Model) -> Option<&'a Entry> {
     m.history.get(key).and_then(|log| log.back())
@@ -239,6 +247,7 @@ pub fn need_label(need: Need, count: usize) -> String {
     match need {
         Need::SignIn => trf("%lld Anmeldung", &[&count]),
         Need::Offer => trf("%lld Ressourcenpaket", &[&count]),
+        Need::Conduct => trf("%lld Serverregeln", &[&count]),
         Need::Disconnected => trf("%lld Getrennt", &[&count]),
         Need::Dead => trf("%lld Gestorben", &[&count]),
         Need::Crashed => trf("%lld Abgestürzt", &[&count]),
@@ -275,6 +284,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
             }
         }
         Need::Offer => (pick("Alle annehmen", "Annehmen"), Fix::Events(vec![Event::AnswerPack { keys: keys.to_vec(), accept: true }])),
+        Need::Conduct => (pick("Alle Regeln annehmen", "Regeln annehmen"), Fix::Events(vec![Event::AnswerRules { keys: keys.to_vec(), accept: true }])),
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
         Need::Crashed | Need::Failed => (if many { trf("Neu starten (%lld)", &[&keys.len()]) } else { tr("Neu starten") }, Fix::Events(vec![Event::StartMany(keys.to_vec())])),
