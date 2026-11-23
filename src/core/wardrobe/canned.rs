@@ -4,13 +4,14 @@ use anyhow::Result;
 use image::{Rgba, RgbaImage};
 use uuid::Uuid;
 
-use super::{AddError, Fetched, Origin, Outfit, Owned, now, keep_texture};
+use super::{AddError, Fetched, Origin, Outfit, Owned, Step, now, keep_texture};
 use crate::core::account::Account;
 use crate::core::auth::AuthError;
 use crate::core::drive;
 use crate::core::skin_change::{Applied, Cape, Model, SkinError, Wardrobe};
 
 const DELAY: Duration = Duration::from_millis(450);
+const SLOW: Duration = Duration::from_secs(4);
 const SKIN: &str = "ca11ed";
 const CAPES: [(&str, &str, &str, [u8; 3], [u8; 3]); 3] = [
     ("canned-migrator", "Migrator", "ca0001", [0x6b, 0x3f, 0x1f], [0xd9, 0xa4, 0x41]),
@@ -20,6 +21,10 @@ const CAPES: [(&str, &str, &str, [u8; 3], [u8; 3]); 3] = [
 
 fn outcome() -> String {
     drive::dir().and_then(|d| std::fs::read_to_string(d.join("skin")).ok()).unwrap_or_default().trim().to_owned()
+}
+
+fn delay() -> Duration {
+    if outcome() == "slow" { SLOW } else { DELAY }
 }
 
 pub(super) fn skin(shirt: [u8; 3], trousers: [u8; 3]) -> RgbaImage {
@@ -80,8 +85,12 @@ pub(super) fn fetched(input: &str, origin: Origin, from: Option<String>) -> Resu
     Ok(Fetched { png, model: if input.len() % 2 == 0 { Model::Classic } else { Model::Slim }, name, origin, from })
 }
 
-pub(super) fn outfit(account: &Account) -> Result<Outfit> {
-    std::thread::sleep(DELAY);
+pub(super) fn outfit(account: &Account, step: &dyn Fn(Step)) -> Result<Outfit> {
+    let wait = delay() / 4;
+    step(Step::SignIn);
+    std::thread::sleep(wait);
+    step(Step::Profile);
+    std::thread::sleep(wait * 2);
     match outcome().as_str() {
         "loadfail" => return Err(SkinError::Unavailable(503).into()),
         "signin" => return Err(AuthError::SignInAgain.into()),
@@ -90,7 +99,9 @@ pub(super) fn outfit(account: &Account) -> Result<Outfit> {
     keep_texture(SKIN, &worn_skin())?;
     let all = outcome() != "nocapes";
     let mut capes = Vec::new();
-    for (id, alias, texture, base, stripe) in CAPES.iter().filter(|_| all) {
+    for (done, (id, alias, texture, base, stripe)) in CAPES.iter().filter(|_| all).enumerate() {
+        step(Step::Capes { done, total: CAPES.len() });
+        std::thread::sleep(wait / 3);
         keep_texture(texture, &cape(*base, *stripe))?;
         capes.push(Owned { id: (*id).into(), alias: (*alias).into(), texture: (*texture).into() });
     }
@@ -99,7 +110,7 @@ pub(super) fn outfit(account: &Account) -> Result<Outfit> {
 }
 
 pub(super) fn apply(before: Option<&Outfit>, upload: Option<(&[u8], Model)>, cape: Option<Option<&str>>) -> Applied {
-    std::thread::sleep(DELAY);
+    std::thread::sleep(delay());
     let outcome = outcome();
     drive::note(format!("skin canned {}", if outcome.is_empty() { "ok" } else { &outcome }));
     if outcome == "ratelimit" {

@@ -1,7 +1,9 @@
 use freya::prelude::*;
 
-use super::card::{Card, pixels, rows};
-use super::ctl::{Ctl, Hung};
+use super::card::{Card, Removal, pixels, rows};
+use super::ctl::{Ctl, keep_text};
+use super::desk::Hung;
+use super::lane::{Lane, Pending};
 use super::rename;
 use super::stage::problem_view;
 use crate::core::i18n::{tr, trf};
@@ -11,6 +13,7 @@ use crate::view::icons::Icon;
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Item, Menu};
+use crate::view::kit::spinner;
 use crate::view::kit::text::{para, secondary, strong};
 use crate::view::theme::{Theme, font, space};
 
@@ -38,14 +41,25 @@ fn origin_text(o: Origin) -> String {
     }
 }
 
-fn hang(ctl: Ctl, hung: &Hung, worn: bool, enabled: bool, width: f32) -> Element {
+fn pending_text(p: Pending) -> String {
+    match p {
+        Pending::Waiting => tr("Wartet …"),
+        Pending::Working(_) => tr("Wird angezogen …"),
+    }
+}
+
+fn hang(ctl: Ctl, lane: &Lane, hung: &Hung, worn: bool, width: f32) -> Element {
     let file = hung.skin.file.clone();
     let name = hung.skin.name.clone();
     let model = hung.skin.model;
     let press_file = file.clone();
-    let busy = ctl.busy.read().as_deref() == Some(format!("skin:{file}").as_str());
+    let pending = lane.skin_pending(&file).map(pending_text);
+    let failed = lane.failure.as_ref().filter(|f| f.key == format!("skin:{file}")).map(|f| (tr("Nicht geändert"), f.problem.text.clone()));
+    let microsoft = ctl.account().is_some_and(|a| a.kind == crate::core::account::AccountKind::Microsoft);
+    let keep = worn.then(keep_text);
     let menu_file = file.clone();
     let menu_name = name.clone();
+    let menu_keep = keep.is_some();
     let on_secondary = EventHandler::new(move |at: (f32, f32)| {
         let wear_file = menu_file.clone();
         let rename_file = menu_file.clone();
@@ -53,14 +67,15 @@ fn hang(ctl: Ctl, hung: &Hung, worn: bool, enabled: bool, width: f32) -> Element
         let model_file = menu_file.clone();
         let remove_file = menu_file.clone();
         let items = vec![
-            Item::new("wardrobe.menu.wear", tr("Anziehen"), move |_| ctl.wear_skin(&wear_file)).disabled(!enabled || worn),
+            Item::new("wardrobe.menu.wear", tr("Anziehen"), move |_| ctl.wear_skin(&wear_file)).disabled(!microsoft || worn),
             Item::new("wardrobe.menu.rename", tr("Umbenennen…"), move |_| rename::open(ctl, rename_file.clone(), rename_name.clone())),
             Item::new("wardrobe.menu.model", if model == Arms::Slim { tr("Klassische Arme") } else { tr("Schlanke Arme") }, move |_| ctl.set_model(&model_file, if model == Arms::Slim { Arms::Classic } else { Arms::Slim })),
             Item::Separator,
-            Item::new("wardrobe.menu.remove", tr("Entfernen"), move |_| ctl.remove(remove_file.clone())).danger(),
+            Item::new("wardrobe.menu.remove", tr("Entfernen"), move |_| ctl.remove(&remove_file)).danger().disabled(menu_keep),
         ];
         menu::open(ctl.store.ui, Menu::at(items, at));
     });
+    let remove_file = file.clone();
     Card {
         id: format!("wardrobe.skin.{}", &file[..file.len().min(8)]),
         label: name.clone(),
@@ -68,25 +83,43 @@ fn hang(ctl: Ctl, hung: &Hung, worn: bool, enabled: bool, width: f32) -> Element
         detail: Some(if worn { tr("Getragen") } else { origin_text(hung.skin.origin) }),
         picture: pixels(hung.thumb.clone(), 16. * SCALE, 32. * SCALE),
         worn,
-        enabled,
-        busy,
+        enabled: true,
+        pending,
+        failed,
         width,
         on_press: EventHandler::new(move |_| ctl.wear_skin(&press_file)),
         on_secondary: Some(on_secondary),
+        remove: Some(Removal { label: tr("Entfernen"), on: EventHandler::new(move |_| ctl.remove(&remove_file)), why_not: keep }),
+    }
+    .into_element()
+}
+
+fn arriving(id: u64, label: String, width: f32) -> Element {
+    Card {
+        id: format!("wardrobe.adding.{id}"),
+        label: label.clone(),
+        caption: Some(label),
+        detail: Some(tr("Wird geladen …")),
+        picture: rect().width(Size::px(16. * SCALE)).height(Size::px(32. * SCALE)).center().child(spinner::Spinner).into_element(),
+        worn: false,
+        enabled: false,
+        pending: None,
+        failed: None,
+        width,
+        on_press: EventHandler::new(|()| {}),
+        on_secondary: None,
+        remove: None,
     }
     .into_element()
 }
 
 fn add_bar(t: &Theme, ctl: Ctl) -> Element {
-    let adding = *ctl.adding.read();
+    let choosing = *ctl.choosing.read();
     let typed = ctl.text.read().trim().is_empty();
     let problem = ctl.add_problem.read().clone();
-    let mut field = Field::new("wardrobe.add.input", ctl.text).placeholder(tr("Link oder Spielername")).glyph(Icon::Link).width(Size::flex(1.)).on_submit(move |_| ctl.add_typed());
-    if adding {
-        field = field.disabled(Some(tr("Wird hinzugefügt …")));
-    }
-    let add = Button::new("wardrobe.add", tr("Hinzufügen")).primary().busy(adding).disabled(typed.then(|| tr("Gib einen Link oder einen Spielernamen ein."))).on_press(move |_| ctl.add_typed());
-    let file = Button::new("wardrobe.add.file", tr("Datei…")).glyph(Icon::Upload).disabled(adding.then(|| tr("Wird hinzugefügt …"))).on_press(move |_| ctl.choose_file());
+    let field = Field::new("wardrobe.add.input", ctl.text).placeholder(tr("Link oder Spielername")).glyph(Icon::Link).width(Size::flex(1.)).on_submit(move |_| ctl.add_typed());
+    let add = Button::new("wardrobe.add", tr("Hinzufügen")).primary().disabled(typed.then(|| tr("Gib einen Link oder einen Spielernamen ein."))).on_press(move |_| ctl.add_typed());
+    let file = Button::new("wardrobe.add.file", tr("Datei…")).glyph(Icon::Upload).disabled(choosing.then(|| tr("Der Dateidialog ist offen."))).on_press(move |_| ctl.choose_file());
     let mut column = rect().width(Size::fill()).spacing(space::S).child(rect().width(Size::fill()).horizontal().content(Content::flex()).cross_align(Alignment::Start).spacing(space::S).child(field).child(add).child(file));
     if let Some(p) = problem {
         column = column.child(problem_view(t, "wardrobe.add", &p, ctl.add_details));
@@ -110,10 +143,11 @@ fn empty(t: &Theme) -> Element {
 /// The right side of the page: the skins of the library, to put on and to add to.
 pub fn library(t: &Theme, ctl: Ctl, width: Size, dropping: bool) -> Element {
     let grid = *ctl.grid.read();
-    let shelf = ctl.shelf.read().clone();
-    let look = ctl.look.read().clone();
+    let shelf = ctl.shelf();
+    let adds = ctl.adds();
+    let look = ctl.look();
+    let lane = ctl.lane();
     let worn = look.as_ref().and_then(|l| l.worn.clone());
-    let enabled = ctl.can_wear();
     let (per_row, card) = fit(grid);
     let mut measure = ctl.grid;
     let mut column = rect().width(width).spacing(space::M);
@@ -124,10 +158,11 @@ pub fn library(t: &Theme, ctl: Ctl, width: Size, dropping: bool) -> Element {
     if let Some(hint) = hint {
         column = column.child(hint);
     }
-    let body = if shelf.is_empty() {
+    let body = if shelf.is_empty() && adds.is_empty() {
         empty(t)
     } else {
-        let cards: Vec<Element> = shelf.iter().map(|h| rect().key(h.skin.file.clone()).child(hang(ctl, h, worn.as_deref() == Some(h.skin.file.as_str()), enabled, card)).into_element()).collect();
+        let mut cards: Vec<Element> = adds.iter().rev().map(|(n, label)| rect().key(format!("adding.{n}")).child(arriving(*n, label.clone(), card)).into_element()).collect();
+        cards.extend(shelf.iter().map(|h| rect().key(h.skin.file.clone()).child(hang(ctl, &lane, h, worn.as_deref() == Some(h.skin.file.as_str()), card)).into_element()));
         rows(cards, per_row, GAP)
     };
     let mut zone = rect().width(Size::fill()).on_sized(move |e: Event<SizedEventData>| measure.set_if_modified(e.area.width())).child(body);

@@ -2,13 +2,16 @@ use freya::elements::image::ImageHandle;
 use freya::prelude::*;
 
 use crate::view::drive::use_spot;
+use crate::view::icons::Icon;
+use crate::view::kit::button::Button;
+use crate::view::kit::spinner;
 use crate::view::kit::text::line;
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{ring, use_theme};
 use crate::view::theme::{font, space};
 
 const PICK: f32 = 2.;
-const DIM: f32 = 0.45;
+const REMOVE_LAYER: i16 = 2;
 
 /// A picture drawn pixel for pixel, never smoothed.
 pub fn pixels(handle: ImageHandle, w: f32, h: f32) -> Element {
@@ -24,7 +27,16 @@ pub fn rows(items: Vec<Element>, per_row: usize, gap: f32) -> Element {
     column.into_element()
 }
 
-/// A skin or cape to put on: a picture with a caption, ringed in the accent while worn.
+/// The way to take a card away: what it does, and why it cannot now.
+#[derive(Clone, PartialEq)]
+pub struct Removal {
+    pub label: String,
+    pub on: EventHandler<()>,
+    pub why_not: Option<String>,
+}
+
+/// A skin or cape to put on: a picture with a caption, ringed in the accent while worn. A change on its way shows on the
+/// card alone, as a quiet line in place of the detail; a refused one as `failed`, with the reason as the tooltip.
 #[derive(Clone, PartialEq)]
 pub struct Card {
     pub id: String,
@@ -34,10 +46,12 @@ pub struct Card {
     pub picture: Element,
     pub worn: bool,
     pub enabled: bool,
-    pub busy: bool,
+    pub pending: Option<String>,
+    pub failed: Option<(String, String)>,
     pub width: f32,
     pub on_press: EventHandler<()>,
     pub on_secondary: Option<EventHandler<(f32, f32)>>,
+    pub remove: Option<Removal>,
 }
 
 impl Component for Card {
@@ -49,7 +63,8 @@ impl Component for Card {
         let spot = use_spot(&self.id, "option", &self.label, self.enabled);
         let press = self.on_press.clone();
         let secondary = self.on_secondary.clone();
-        let enabled = self.enabled && !self.busy;
+        let enabled = self.enabled;
+        let keyboard = focus() == Focus::Keyboard;
         let edge = Border::new().fill(if self.worn { t.accent } else { Color::TRANSPARENT }).width(PICK).alignment(BorderAlignment::Inner);
         let mut inner = rect()
             .width(Size::fill())
@@ -63,9 +78,15 @@ impl Component for Card {
         if let Some(c) = &self.caption {
             inner = inner.child(line(&t, c.clone(), font::CALLOUT, if self.worn { t.text1 } else { t.text2 }).width(Size::fill()).text_align(TextAlign::Center));
         }
-        if let Some(d) = &self.detail {
+        if let Some(p) = &self.pending {
+            inner = inner.child(rect().width(Size::fill()).horizontal().main_align(Alignment::Center).child(spinner::waiting(&t, p.clone())));
+        } else if let Some((short, _)) = &self.failed {
+            inner = inner.child(line(&t, short.clone(), font::CAPTION, t.danger_text).width(Size::fill()).text_align(TextAlign::Center));
+        } else if let Some(d) = &self.detail {
             inner = inner.child(line(&t, d.clone(), font::CAPTION, t.text3).width(Size::fill()).text_align(TextAlign::Center));
         }
+        let remove = self.remove.clone();
+        let keys = remove.clone();
         let mut outer = rect()
             .a11y_id(a11y)
             .a11y_focusable(self.enabled)
@@ -74,10 +95,9 @@ impl Component for Card {
             .width(Size::px(self.width))
             .background(t.raised)
             .corner_radius(t.shape.control)
-            .opacity(if self.enabled { if self.busy { 0.7 } else { 1. } } else { DIM })
-            .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::NotAllowed })
+            .cursor(if enabled { CursorIcon::Pointer } else { CursorIcon::Default })
             .on_sized(spot)
-            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_over(move |_| hovered.set_if_modified(true))
             .on_pointer_out(move |_| hovered.set_if_modified(false))
             .child(inner);
         if enabled {
@@ -98,9 +118,24 @@ impl Component for Card {
                 }
             });
         }
+        outer = outer.on_key_down(move |e: Event<KeyboardEventData>| {
+            if a11y.is_focused()
+                && matches!(e.key, Key::Named(NamedKey::Delete | NamedKey::Backspace))
+                && let Some(r) = &keys
+            {
+                e.stop_propagation();
+                r.on.call(());
+            }
+        });
+        if let Some(r) = remove
+            && (*hovered.read() || keyboard)
+        {
+            let button = Button::icon(format!("{}.remove", self.id), Icon::Trash, r.label).disabled(r.why_not).not_focusable().on_press(move |_| r.on.call(()));
+            outer = outer.child(rect().position(Position::new_absolute().top(space::XS).right(space::XS)).layer(Layer::Relative(REMOVE_LAYER)).child(button));
+        }
         if let Some(border) = ring(&t, focus()) {
             outer = outer.border(border);
         }
-        WithTip::new(Some(self.label.clone()), outer)
+        WithTip::new(Some(self.failed.as_ref().map_or_else(|| self.label.clone(), |(_, why)| why.clone())), outer)
     }
 }
