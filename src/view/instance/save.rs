@@ -43,7 +43,6 @@ pub enum Change {
     JvmArgs(Vec<String>),
     LoaderVersion(Option<String>),
     Option(OptionChange),
-    Companion(bool),
 }
 
 impl Change {
@@ -54,7 +53,6 @@ impl Change {
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
             Self::Option(change) => change.apply(&mut edit.options),
-            Self::Companion(_) => {}
         }
     }
 }
@@ -123,17 +121,6 @@ pub fn pending_jvm(store: Store, id: &str) -> Option<Vec<String>> {
     })
 }
 
-/// Whether instance `id` starts its solo games with the companion once its queued and running changes are saved, when one of them sets it.
-pub fn pending_companion(store: Store, id: &str) -> Option<bool> {
-    let nav = store.ui.instance;
-    let queue = nav.queue.read();
-    let saving = nav.saving.read();
-    queue.iter().rev().chain(saving.iter()).filter(|(i, _)| i == id).find_map(|(_, job)| match job {
-        Job::Save(Change::Companion(on)) => Some(*on),
-        _ => None,
-    })
-}
-
 /// The start options of instance `id` once its queued and running option changes are saved.
 pub fn pending_options(store: Store, id: &str, saved: &LaunchOptions) -> LaunchOptions {
     let nav = store.ui.instance;
@@ -186,9 +173,6 @@ async fn pump(store: Store) {
 }
 
 fn run(made: &Instance, job: &Job) -> anyhow::Result<(Instance, Vec<String>)> {
-    if let Job::Save(Change::Companion(on)) = job {
-        return Ok((remote::save_companion(&made.id, *on)?, Vec::new()));
-    }
     let base = InstanceEdit::of(made);
     let mut edit = base.clone();
     let mut missing = Vec::new();

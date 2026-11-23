@@ -875,16 +875,6 @@ pub fn save_instance(id: &str, base: &InstanceEdit, edit: InstanceEdit) -> Resul
     })
 }
 
-/// Sets whether the games of instance `id` played alone start with the companion, and returns the instance.
-pub fn save_companion(id: &str, on: bool) -> Result<setup::Instance> {
-    saved(|| {
-        let mut made = find_instance(id)?;
-        made.companion = on;
-        setup::save(&made)?;
-        Ok(made)
-    })
-}
-
 fn merge(base: &InstanceEdit, now: &InstanceEdit, edit: &InstanceEdit) -> Option<InstanceEdit> {
     fn take<T: PartialEq + Clone>(base: &T, now: &T, edit: &T, out: &mut T) -> bool {
         if edit == base || edit == now {

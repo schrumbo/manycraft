@@ -1493,10 +1493,10 @@ fn name_stand_in(server: &str) -> Result<SocketAddr> {
     Ok(SocketAddr::from(([240, a, b, c], port.unwrap_or(25565))))
 }
 
-/// Whether the games of `target` start with the companion: always in a batch, and alone when the instance asks for it
-/// or an account has a proxy, which must not connect without it.
+/// Whether the games of `target` start with the companion: always in a batch, and alone only when an account has a
+/// proxy, which must not connect without it.
 pub fn wants_companion(target: &Target, accounts: &[Account]) -> bool {
-    target.batch.is_some() || target.instance.companion || accounts.iter().any(|a| a.proxy.is_some())
+    target.batch.is_some() || accounts.iter().any(|a| a.proxy.is_some())
 }
 
 fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) -> Result<()> {
@@ -2716,17 +2716,15 @@ mod tests {
     }
 
     #[test]
-    fn the_companion_starts_in_batches_with_a_proxy_or_when_the_instance_asks() {
+    fn the_companion_starts_in_batches_and_alone_only_with_a_proxy() {
         let plain = Account::offline("AltOne").unwrap();
         let mut proxied = Account::offline("AltTwo").unwrap();
         proxied.proxy = Some("socks5://h:1".into());
-        let mut instance = Instance::new("Solo", "26.3", Loader::default());
+        let instance = Instance::new("Solo", "26.3", Loader::default());
         let solo = Target::solo(&instance);
         assert!(!wants_companion(&solo, std::slice::from_ref(&plain)));
         assert!(wants_companion(&solo, &[plain.clone(), proxied.clone()]));
         assert!(wants_companion(&target("A"), std::slice::from_ref(&plain)));
-        instance.companion = true;
-        assert!(wants_companion(&Target::solo(&instance), &[plain]));
     }
 
     #[test]
