@@ -104,7 +104,7 @@ impl Tracker {
         let dir = game.start.dir.clone();
         let waiting = self.games.values().any(|g| g.start.instance == instance && g.base.is_none());
         if !waiting && matches!(self.config.get(&instance), Some(None) | None) {
-            self.config.insert(instance, Some(stamps(&dir.join(CONFIG), None)));
+            self.config.insert(instance, stamps(&dir.join(CONFIG), None));
         }
     }
 
@@ -189,7 +189,7 @@ impl Tracker {
         if !self.games.values().any(|g| &g.start.instance == instance) {
             self.config.remove(instance);
         } else if !self.games.values().any(|g| &g.start.instance == instance && g.base.is_none()) && matches!(self.config.get(instance), Some(None)) {
-            self.config.insert(instance.clone(), Some(stamps(&own.dir.join(CONFIG), None)));
+            self.config.insert(instance.clone(), stamps(&own.dir.join(CONFIG), None));
         }
     }
 
@@ -247,7 +247,7 @@ impl Tracker {
     fn scan(&mut self, own: &Own) {
         let Some(Some(before)) = self.config.get(&own.id) else { return };
         let dir = own.dir.join(CONFIG);
-        let now = stamps(&dir, Some(before));
+        let Some(now) = stamps(&dir, Some(before)) else { return };
         let changed: Vec<String> = now.iter().filter(|(rel, s)| before.get(*rel).is_none_or(|b| b.sha != s.sha)).map(|(rel, _)| rel.clone()).collect();
         self.config.insert(own.id.clone(), Some(now));
         if changed.is_empty() || !flags_in(&own.dir).config {
@@ -290,12 +290,20 @@ fn binary(rel: &str) -> bool {
     [".dat", ".nbt", ".png", ".bin", ".db"].iter().any(|e| rel.ends_with(e))
 }
 
-fn stamps(dir: &Path, before: Option<&BTreeMap<String, Stamp>>) -> BTreeMap<String, Stamp> {
+/// The stamp of every file under `dir`, `None` when the folder cannot be read. A file that cannot be read keeps its stamp
+/// from `before`, so a passing error never looks like a change.
+fn stamps(dir: &Path, before: Option<&BTreeMap<String, Stamp>>) -> Option<BTreeMap<String, Stamp>> {
     let mut out = BTreeMap::new();
-    for (rel, path) in files_in(dir).unwrap_or_default() {
-        let Ok(meta) = fs::metadata(&path) else { continue };
+    for (rel, path) in files_in(dir).ok()? {
+        let old = before.and_then(|b| b.get(&rel));
+        let Ok(meta) = fs::metadata(&path) else {
+            if let Some(old) = old {
+                out.insert(rel, old.clone());
+            }
+            continue;
+        };
         let (len, modified) = (meta.len(), meta.modified().ok());
-        if let Some(old) = before.and_then(|b| b.get(&rel))
+        if let Some(old) = old
             && old.len == len
             && old.modified == modified
             && modified.is_some()
@@ -303,10 +311,18 @@ fn stamps(dir: &Path, before: Option<&BTreeMap<String, Stamp>>) -> BTreeMap<Stri
             out.insert(rel, old.clone());
             continue;
         }
-        let Ok(bytes) = fs::read(&path) else { continue };
-        out.insert(rel, Stamp { len, modified, sha: Sha256::digest(&bytes).into() });
+        match fs::read(&path) {
+            Ok(bytes) => {
+                out.insert(rel, Stamp { len, modified, sha: Sha256::digest(&bytes).into() });
+            }
+            Err(_) => {
+                if let Some(old) = old {
+                    out.insert(rel, old.clone());
+                }
+            }
+        }
     }
-    out
+    Some(out)
 }
 
 fn logged_loaded(game: &mut Game) -> bool {

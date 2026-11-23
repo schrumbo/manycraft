@@ -90,10 +90,14 @@ impl Roots {
 pub(crate) enum Note {
     Started(Start),
     Ended { key: String, pid: u32 },
+    /// Answered once every note and message before it was handled.
+    Flush(Sender<()>),
 }
 
 enum Inbox {
-    Event(Event),
+    Options { key: String, values: BTreeMap<String, String> },
+    Servers { key: String },
+    Loaded { key: String },
     Note(Note),
 }
 
@@ -107,7 +111,17 @@ pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> 
     let events = inbox.clone();
     std::thread::Builder::new().name("game-sync-in".into()).spawn(move || {
         for event in raw {
-            if events.send(Inbox::Event(event)).is_err() {
+            let passed = match event {
+                Event::Message { instance, message: FromMod::Options { values } } => events.send(Inbox::Options { key: instance, values }).is_ok(),
+                Event::Message { instance, message: FromMod::Servers } => events.send(Inbox::Servers { key: instance }).is_ok(),
+                event => {
+                    if let Event::Message { instance, message: FromMod::State { .. } } = &event {
+                        let _ = events.send(Inbox::Loaded { key: instance.clone() });
+                    }
+                    tx.send(event).is_ok()
+                }
+            };
+            if !passed {
                 return;
             }
         }
@@ -126,18 +140,14 @@ pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> 
         let mut ticked = Instant::now();
         loop {
             match mail.recv_timeout(TICK) {
-                Ok(Inbox::Event(Event::Message { instance, message: FromMod::Options { values } })) => tracker.options(&roots, &server, &instance, &values),
-                Ok(Inbox::Event(Event::Message { instance, message: FromMod::Servers })) => tracker.servers(&roots, &server, &instance),
-                Ok(Inbox::Event(event)) => {
-                    if let Event::Message { instance, message: FromMod::State { .. } } = &event {
-                        tracker.loaded(instance);
-                    }
-                    if tx.send(event).is_err() {
-                        break;
-                    }
-                }
+                Ok(Inbox::Options { key, values }) => tracker.options(&roots, &server, &key, &values),
+                Ok(Inbox::Servers { key }) => tracker.servers(&roots, &server, &key),
+                Ok(Inbox::Loaded { key }) => tracker.loaded(&key),
                 Ok(Inbox::Note(Note::Started(start))) => tracker.started(&roots, &server, start),
                 Ok(Inbox::Note(Note::Ended { key, pid })) => tracker.ended(&roots, &server, &key, pid),
+                Ok(Inbox::Note(Note::Flush(done))) => {
+                    let _ = done.send(());
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
@@ -290,6 +300,7 @@ pub(super) fn copy_servers(template: &Path, dir: &Path, siblings: &[PathBuf]) ->
     if fs::read(&dest).ok().as_deref() == Some(bytes.as_slice()) {
         return Ok(());
     }
+    super::share::writable(&dest);
     net::write_atomic(&dest, &bytes)
 }
 

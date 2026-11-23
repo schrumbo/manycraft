@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use freya::prelude::*;
 
 use crate::app::event::Event;
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{self, tr, trf};
 use crate::core::share::{self, ITEMS, Item, Sharing, Version};
 use crate::ui::forms;
 use crate::view::kit::button::Button;
@@ -131,7 +131,7 @@ impl Component for ShareGroup {
 }
 
 fn describe(v: &Version) -> String {
-    let when = chrono::DateTime::from_timestamp_millis(v.written.unwrap_or(v.at)).map(|d| d.with_timezone(&chrono::Local).format("%d.%m.%Y, %H:%M").to_string()).unwrap_or_default();
+    let when = chrono::DateTime::from_timestamp_millis(v.written.unwrap_or(v.at)).map(|d| i18n::date_time(d.with_timezone(&chrono::Local).naive_local())).unwrap_or_default();
     let files = if v.item == Item::Config && v.files > 1 { trf(" · %@ Dateien", &[&v.files]) } else { String::new() };
     match (&v.source, v.own) {
         (Some(name), true) => format!("{when} · {}{files}", trf("eigener Stand von %@", &[name])),

@@ -2241,5 +2241,6 @@
   "Der Ordner „config“. Dateien, die nur diese Instanz hat, bleiben.": "The “config” folder. Files only this instance has stay.",
   "Die Liste unter Mehrspieler.": "The list under Multiplayer.",
   "Nicht umgestellt.": "Not switched.",
-  "Teilen": "Sharing"
+  "Teilen": "Sharing",
+  "Erst ab Minecraft 1.13. Ältere Versionen speichern Tasten anders und behalten ihre eigenen.": "From Minecraft 1.13 on. Older versions store keys differently and keep their own."
 }

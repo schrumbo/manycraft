@@ -558,3 +558,170 @@ fn old_instance_files_share_nothing_and_new_instances_share_everything() {
     assert!(text.contains("\"sync\":{\"options\":true,\"config\":true,\"servers\":true}"), "{text}");
     let _ = Uuid::nil();
 }
+fn old_instance(w: &World, name: &str, game: &str) -> Own {
+    let made = Instance { sync: Sharing::ALL, ..Instance::new(name, game, Loader::Vanilla) };
+    save_in(&w.roots.instances, &made).unwrap();
+    let dir = dir_in(&w.roots.instances, &made.id);
+    Own { id: made.id, name: made.name, dir }
+}
+
+fn own_files(w: &World, item: Item) -> Vec<Vec<u8>> {
+    history::versions(&w.mother, item).unwrap().into_iter().filter(|v| v.own).flat_map(|v| history::files(&w.mother, &v).unwrap().into_iter().map(|(_, b)| b)).collect()
+}
+
+#[test]
+fn options_travel_from_1_13_on() {
+    for game in ["1.13", "1.13-pre1", "1.20.4", "26.3", "26w14a", "17w43a", "18w22c"] {
+        assert!(options_travel(game), "{game}");
+    }
+    for game in ["1.12.2", "1.8.9", "17w31a", "b1.7.3", "rd-132211", "", "wild"] {
+        assert!(!options_travel(game), "{game}");
+    }
+}
+
+#[test]
+fn options_of_games_before_1_13_move_neither_way() {
+    let w = world();
+    let old = old_instance(&w, "Old", "1.12.2");
+    fs::write(old.dir.join("options.txt"), "key_key.jump:57\nlang:en_US\n").unwrap();
+    inbound_in(&w.mother, &old, false).unwrap();
+    assert_eq!(w.mother("options.txt"), None);
+    w.put_mother("options.txt", "key_key.jump:key.keyboard.space\n");
+    inbound_in(&w.mother, &old, false).unwrap();
+    assert_eq!(read(&old.dir.join("options.txt")), "key_key.jump:57\nlang:en_US\n");
+    let game = w.game(&old);
+    let p = w.peers(&[]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &old, &game, false));
+    fs::write(game.join("options.txt"), "key_key.jump:57\n").unwrap();
+    t.loaded("k1");
+    fs::write(game.join("options.txt"), "key_key.jump:58\nlang:de_DE\n").unwrap();
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("options.txt").unwrap(), "key_key.jump:key.keyboard.space\n");
+    let fresh = w.instance("Fresh", Sharing::NONE);
+    let older = old_instance(&w, "Older", "1.8.9");
+    fs::write(older.dir.join("options.txt"), "key_key.jump:57\n").unwrap();
+    set_in(&w.mother, &w.roots.instances, &older.id, Sharing::NONE).unwrap();
+    turn_on_in(&w.mother, &w.roots.instances, &[older.id.clone(), fresh.id.clone()]).unwrap();
+    assert_eq!(w.mother("options.txt").unwrap(), "key_key.jump:key.keyboard.space\n");
+    assert!(own_files(&w, Item::Options).iter().all(|b| !String::from_utf8_lossy(b).contains(":57")));
+}
+
+#[test]
+fn every_own_copy_that_differs_is_kept_before_the_shared_one_replaces_it() {
+    let w = world();
+    w.put_mother("config/mod.json", "{\"shared\":1}");
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    fs::write(a.dir.join("config").join("mod.json"), "{\"by hand\":1}").unwrap();
+    fs::write(a.dir.join("options.txt"), "fov:0.3\n").unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert_eq!(read(&a.dir.join("config").join("mod.json")), "{\"shared\":1}");
+    assert!(own_files(&w, Item::Config).contains(&b"{\"by hand\":1}".to_vec()));
+    assert!(own_files(&w, Item::Options).contains(&b"fov:0.3\n".to_vec()));
+}
+
+#[test]
+fn what_was_kept_stays_restorable_when_a_later_step_fails() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    w.put_mother("servers.dat", "list");
+    let a = w.instance("A", Sharing::ALL);
+    fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
+    fs::create_dir_all(a.dir.join("servers.dat").join("blocked")).unwrap();
+    assert!(inbound_in(&w.mother, &a, false).is_err());
+    assert!(own_files(&w, Item::Options).contains(&b"fov:0.1\n".to_vec()));
+}
+
+#[test]
+fn an_options_template_that_is_not_utf8_keeps_its_own_lines_and_bytes() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    let raw = b"version:3955\nfov:0.1\nresourcePacks:[\"\xdcbersicht.zip\"]\n".to_vec();
+    fs::write(a.dir.join("options.txt"), &raw).unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    let now = String::from_utf8_lossy(&fs::read(a.dir.join("options.txt")).unwrap()).into_owned();
+    assert!(now.contains("version:3955") && now.contains("resourcePacks:") && now.contains("fov:0.5"), "{now}");
+    assert!(own_files(&w, Item::Options).contains(&raw));
+}
+
+#[test]
+fn a_broken_history_index_moves_aside_and_starts_still_work() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    w.put_mother("history/index.json", "{ not json");
+    w.put_mother("history/kept/options.txt", "fov:0.2\n");
+    let a = w.instance("A", Sharing::ALL);
+    fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert!(read(&a.dir.join("options.txt")).contains("fov:0.5"));
+    let aside: Vec<PathBuf> = fs::read_dir(&w.mother.root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("history.broken-")).collect();
+    assert_eq!(aside.len(), 1);
+    assert_eq!(read(&aside[0].join("kept").join("options.txt")), "fov:0.2\n");
+}
+
+#[test]
+fn history_entries_pointing_outside_are_ignored() {
+    let w = world();
+    let a = w.instance("A", Sharing::ALL);
+    w.put_mother("config/mod.json", "shared");
+    inbound_in(&w.mother, &a, false).unwrap();
+    let index = format!("{{\"entries\":[{{\"at\":1,\"rel\":\"../../evil.txt\",\"sha\":\"x\",\"size\":1,\"file\":\"a/b\"}},{{\"at\":1,\"rel\":\"config/x.json\",\"sha\":\"x\",\"size\":1,\"file\":\"../../../escape\"}}]}}");
+    w.put_mother("history/index.json", &index);
+    for item in ITEMS {
+        assert!(history::versions(&w.mother, item).unwrap().is_empty());
+    }
+}
+
+#[cfg(windows)]
+fn link_to(target: &Path, link: &Path) -> std::io::Result<()> {
+    junction::create(target, link)
+}
+
+#[cfg(not(windows))]
+fn link_to(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[test]
+fn shared_config_never_goes_through_a_linked_folder() {
+    let w = world();
+    let a = w.instance("A", Sharing::ALL);
+    let outside = w.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(a.dir.join("config")).unwrap();
+    if link_to(&outside, &a.dir.join("config").join("sub")).is_err() {
+        return;
+    }
+    w.put_mother("config/sub/x.json", "shared");
+    w.put_mother("config/top.json", "top");
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert!(!outside.join("x.json").exists());
+    assert_eq!(read(&a.dir.join("config").join("top.json")), "top");
+}
+
+#[test]
+fn an_unreadable_config_folder_keeps_the_baseline() {
+    let w = world();
+    w.put_mother("config/mod.json", "{\"a\":1}");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &a, &game, false));
+    t.loaded("k1");
+    w.put_mother("config/mod.json", "{\"b\":2}");
+    let config = a.dir.join("config");
+    let moved = a.dir.join("config-away");
+    fs::rename(&config, &moved).unwrap();
+    fs::write(&config, "not a folder").unwrap();
+    scan_now(&mut t);
+    fs::remove_file(&config).unwrap();
+    fs::rename(&moved, &config).unwrap();
+    scan_now(&mut t);
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("config/mod.json").unwrap(), "{\"b\":2}");
+}

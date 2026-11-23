@@ -129,7 +129,7 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     /// What this instance shares with the other sharing instances; nothing when the file predates sharing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "super::share::Sharing::is_none")]
     pub sync: super::share::Sharing,
     /// Fields a newer version wrote that this one does not know, written back unchanged.
     #[serde(flatten)]

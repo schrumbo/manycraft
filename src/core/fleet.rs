@@ -41,6 +41,7 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const SRV_TIMEOUT: Duration = Duration::from_secs(1);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
+const EXITS_WAIT: Duration = Duration::from_secs(40);
 /// How long a stopped game may take to save and quit before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(30);
 const LINKED: [&str; 5] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks"];
@@ -321,6 +322,7 @@ fn copy_options(template: &Path, dest: &Path) -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
     };
     let existing = fs::read_to_string(dest).ok();
+    share::writable(dest);
     net::write_atomic(dest, merge_options(&text, existing.as_deref(), PER_INSTANCE_KEYS).as_bytes())
 }
 
@@ -1067,6 +1069,7 @@ impl Fleet {
             return self.prepare_connection(target, accounts);
         }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
+        self.settle_exits();
         let joining = self.instance_runs(&instance.id);
         share::inbound(instance, joining)?;
         if !joining {
@@ -1081,6 +1084,18 @@ impl Fleet {
             None => None,
         };
         Ok(Prepared { target: target.clone(), server_addrs, way: Way::Game { installed, companion_jar } })
+    }
+
+    /// Waits until the settings of every game that ended were shared, so a start never writes over what they saved.
+    fn settle_exits(&self) {
+        let ended: Vec<(String, u32)> = lock(&self.running).iter_mut().filter_map(|(k, r)| (!r.poll()).then(|| (k.clone(), r.pid))).collect();
+        for (key, pid) in ended {
+            let _ = self.notes.send(sync::Note::Ended { key, pid });
+        }
+        let (done, answer) = std::sync::mpsc::channel();
+        if self.notes.send(sync::Note::Flush(done)).is_ok() && answer.recv_timeout(EXITS_WAIT).is_err() {
+            eprintln!("the settings of games that ended are still being shared");
+        }
     }
 
     fn prepare_connection(&self, target: &Target, accounts: &[Account]) -> Result<Prepared> {

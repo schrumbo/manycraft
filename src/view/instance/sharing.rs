@@ -26,7 +26,8 @@ impl Component for Sharing {
         let made = &self.facts.made;
         let now = pending.read().unwrap_or(made.sync);
         let saving = pending.read().is_some();
-        let rows = ITEMS.into_iter().map(|item| item_row(store, pending, &made.id, now, item, saving)).collect();
+        let old = !share::options_travel(&made.game_version);
+        let rows = ITEMS.into_iter().map(|item| item_row(store, pending, &made.id, now, item, saving, old && item == Item::Options)).collect();
         let mut footer = vec![tr("Beim Einschalten bekommt die Instanz beim nächsten Start die geteilten Einstellungen. Ihre eigenen bleiben unter „Frühere Stände“ in den App-Einstellungen.")];
         if self.facts.running {
             footer.push(tr("Laufende Spiele geben ihre Änderungen weiter, sobald sie gespeichert sind."));
@@ -35,17 +36,19 @@ impl Component for Sharing {
     }
 }
 
-fn item_row(store: Store, pending: State<Option<Shared>>, id: &str, now: Shared, item: Item, saving: bool) -> Element {
+fn item_row(store: Store, pending: State<Option<Shared>>, id: &str, now: Shared, item: Item, saving: bool, unreachable: bool) -> Element {
     let (key, label, hint) = match item {
+        Item::Options if unreachable => ("options", tr("Spiel-Optionen"), tr("Erst ab Minecraft 1.13. Ältere Versionen speichern Tasten anders und behalten ihre eigenen.")),
         Item::Options => ("options", tr("Spiel-Optionen"), tr("Grafik, Steuerung und Ton. Vollbild, Fenster und Ressourcenpakete bleiben pro Instanz.")),
         Item::Config => ("config", tr("Mod-Einstellungen"), tr("Der Ordner „config“. Dateien, die nur diese Instanz hat, bleiben.")),
         Item::Servers => ("servers", tr("Serverliste"), tr("Die Liste unter Mehrspieler.")),
     };
-    let on = now.get(item);
+    let on = now.get(item) && !unreachable;
+    let locked = saving || unreachable;
     let id = id.to_owned();
     let flip = move |want: bool| set(store, pending, id.clone(), now.with(item, want));
-    let mut line = Line::new(format!("instance.settings.share.{key}.row"), label.clone()).hint(hint).control(Toggle::new(format!("instance.settings.share.{key}"), label, on).disabled(saving).on_toggle(flip.clone()));
-    if !saving {
+    let mut line = Line::new(format!("instance.settings.share.{key}.row"), label.clone()).hint(hint).control(Toggle::new(format!("instance.settings.share.{key}"), label, on).disabled(locked).on_toggle(flip.clone()));
+    if !locked {
         line = line.on_press(move |_| flip(!on));
     }
     line.into_element()

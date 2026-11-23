@@ -114,11 +114,6 @@ impl History {
         self.store(Some(own.id.clone()), &folder, rel, bytes, Some(Source { id: own.id.clone(), name: own.name.clone() }), None)
     }
 
-    /// Whether an own copy of `rel` of the instance `id` was ever kept.
-    pub(super) fn backed_up(&self, id: &str, rel: &str) -> bool {
-        self.index.entries.iter().any(|e| e.instance.as_deref() == Some(id) && e.rel == rel)
-    }
-
     fn store(&mut self, instance: Option<String>, folder: &str, rel: &str, bytes: &[u8], source: Option<Source>, written: Option<i64>) -> Result<()> {
         let sha = hash(bytes);
         let file = match self.index.entries.iter().find(|e| e.sha == sha && self.path(&e.file).is_file()) {
@@ -182,13 +177,33 @@ impl History {
     }
 }
 
+/// The index under `root`, without entries that point outside it. An index that cannot be read moves aside with its
+/// folder, which keeps every file for a person to look at, and the history starts empty.
 fn read_index(root: &Path) -> Result<Index> {
     let path = root.join(INDEX);
-    match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("cannot read {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index::default()),
-        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Index::default()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    match serde_json::from_slice::<Index>(&bytes) {
+        Ok(mut index) => {
+            index.entries.retain(|e| inside(&e.rel) && inside(&e.file));
+            index.current.retain(|rel, _| inside(rel));
+            Ok(index)
+        }
+        Err(e) => {
+            let aside = root.with_file_name(format!("{DIR}.broken-{}", chrono::Utc::now().timestamp_millis()));
+            fs::rename(root, &aside).with_context(|| format!("cannot read {}: {e}", path.display()))?;
+            eprintln!("the history index could not be read ({e}); it moved to {}", aside.display());
+            Ok(Index::default())
+        }
     }
+}
+
+/// Whether `rel`, a path with `/` between parts, stays below the folder it is relative to.
+fn inside(rel: &str) -> bool {
+    !rel.is_empty() && !rel.contains(['\\', ':']) && rel.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -196,7 +211,7 @@ fn hash(bytes: &[u8]) -> String {
 }
 
 fn stamp_name(at: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(at).map_or_else(|| at.to_string(), |t| t.format("%Y%m%dT%H%M%S%.3fZ").to_string().replace('.', ""))
+    chrono::DateTime::from_timestamp_millis(at).map_or_else(|| at.to_string(), |t| t.format("%Y-%m-%dT%H-%M-%S-%3fZ").to_string())
 }
 
 pub(super) fn versions(mother: &Mother, item: Item) -> Result<Vec<Version>> {
