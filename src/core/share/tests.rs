@@ -725,3 +725,21 @@ fn an_unreadable_config_folder_keeps_the_baseline() {
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("config/mod.json").unwrap(), "{\"b\":2}");
 }
+
+#[test]
+fn an_old_options_template_after_a_version_change_never_reaches_the_sync_folder() {
+    let w = world();
+    let a = w.instance("A", Sharing::ALL);
+    fs::write(a.dir.join("options.txt"), "version:1343\nkey_key.jump:57\nfov:0.1\n").unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert_eq!(w.mother("options.txt"), None);
+    let b = w.instance("B", Sharing::NONE);
+    fs::write(b.dir.join("options.txt"), "key_key.jump:57\n").unwrap();
+    set_in(&w.mother, &w.roots.instances, &b.id, Sharing::ALL).unwrap();
+    assert_eq!(w.mother("options.txt"), None);
+    w.put_mother("options.txt", "key_key.jump:key.keyboard.space\n");
+    inbound_in(&w.mother, &a, false).unwrap();
+    let now = read(&a.dir.join("options.txt"));
+    assert!(now.contains("key_key.jump:key.keyboard.space") && !now.contains(":57"), "{now}");
+    assert!(own_files(&w, Item::Options).contains(&b"version:1343\nkey_key.jump:57\nfov:0.1\n".to_vec()));
+}

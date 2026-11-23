@@ -218,13 +218,13 @@ fn options_in(mother: &Mother, own: &Own, history: &mut History) -> Result<()> {
     let raw = read_file(&template)?;
     let mine = raw.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
     let Some(theirs) = read_text(&mother.path(OPTIONS_FILE))? else {
-        if let Some(mine) = mine.filter(|t| keys::readable(t)) {
+        if let Some(mine) = mine.filter(|t| keys::readable(t) && !keys::legacy(t)) {
             put_locked(mother, history, own, vec![(OPTIONS_FILE.to_owned(), keys::shared(&mine).into_bytes())])?;
         }
         return Ok(());
     };
     let wanted: BTreeMap<String, String> = keys::map(&theirs).into_iter().filter(|(k, _)| !keys::excluded(k)).collect();
-    let base = mine.clone().filter(|t| keys::readable(t)).unwrap_or_default();
+    let base = mine.clone().filter(|t| keys::readable(t) && !keys::legacy(t)).unwrap_or_default();
     if keys::covers(&base, &wanted) && mine.is_some() {
         return Ok(());
     }
@@ -415,12 +415,14 @@ fn join(mother: &Mother, own: &Own, items: &[Item]) -> Result<()> {
                 for (rel, bytes) in &mine {
                     history.backup(own, rel, bytes)?;
                 }
-                if !present(mother, *item)? && !mine.is_empty() {
-                    let up = match item {
-                        Item::Options => mine.into_iter().map(|(rel, b)| (rel, keys::shared(&String::from_utf8_lossy(&b)).into_bytes())).collect(),
+                if !present(mother, *item)? {
+                    let up: Vec<(String, Vec<u8>)> = match item {
+                        Item::Options => mine.into_iter().map(|(rel, b)| (rel, String::from_utf8_lossy(&b).into_owned())).filter(|(_, t)| keys::readable(t) && !keys::legacy(t)).map(|(rel, t)| (rel, keys::shared(&t).into_bytes())).collect(),
                         _ => mine,
                     };
-                    put_locked(mother, history, own, up)?;
+                    if !up.is_empty() {
+                        put_locked(mother, history, own, up)?;
+                    }
                 }
             }
             Ok(())

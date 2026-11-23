@@ -238,6 +238,12 @@ impl Tracker {
             return;
         }
         self.scanned = Some(now);
+        let waiting: Vec<Own> = self.config.iter().filter(|(id, c)| c.is_none() && self.games.values().filter(|g| &g.start.instance == *id).all(|g| g.base.is_some())).filter_map(|(id, _)| self.games.values().find(|g| &g.start.instance == id).map(|g| g.start.own())).collect();
+        for own in waiting {
+            if let Some(base) = stamps(&own.dir.join(CONFIG), None) {
+                self.config.insert(own.id, Some(base));
+            }
+        }
         let owns: Vec<Own> = self.config.iter().filter(|(_, c)| c.is_some()).filter_map(|(id, _)| self.games.values().find(|g| &g.start.instance == id).map(|g| g.start.own())).collect();
         for own in owns {
             self.scan(&own);

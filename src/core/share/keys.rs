@@ -78,6 +78,15 @@ pub(super) fn covers(text: &str, wanted: &BTreeMap<String, String>) -> bool {
 }
 
 /// The data version `text` names, when it is a number.
+/// Data version of 17w43a, the first game that names keys the way later ones do.
+const FLATTENED: u32 = 1444;
+
+/// Whether `text` is an `options.txt` written before 1.13: an older data version, or keys bound by number.
+pub(super) fn legacy(text: &str) -> bool {
+    let map = map(text);
+    map.get("version").and_then(|v| v.trim().parse::<u32>().ok()).is_some_and(|v| v < FLATTENED) || map.iter().any(|(k, v)| k.starts_with("key_") && v.trim().parse::<i32>().is_ok())
+}
+
 pub(super) fn version(text: &str) -> Option<u32> {
     map(text).get("version").and_then(|v| v.trim().parse().ok())
 }

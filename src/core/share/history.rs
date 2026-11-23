@@ -203,7 +203,7 @@ fn read_index(root: &Path) -> Result<Index> {
 
 /// Whether `rel`, a path with `/` between parts, stays below the folder it is relative to.
 fn inside(rel: &str) -> bool {
-    !rel.is_empty() && !rel.contains(['\\', ':']) && rel.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+    !rel.is_empty() && rel.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && !(cfg!(windows) && part.contains(['\\', ':'])))
 }
 
 fn hash(bytes: &[u8]) -> String {

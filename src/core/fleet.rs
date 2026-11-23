@@ -1069,7 +1069,7 @@ impl Fleet {
             return self.prepare_connection(target, accounts);
         }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
-        self.settle_exits();
+        self.settle_exits(instance);
         let joining = self.instance_runs(&instance.id);
         share::inbound(instance, joining)?;
         if !joining {
@@ -1087,8 +1087,11 @@ impl Fleet {
     }
 
     /// Waits until the settings of every game that ended were shared, so a start never writes over what they saved.
-    fn settle_exits(&self) {
+    fn settle_exits(&self, instance: &Instance) {
         let ended: Vec<(String, u32)> = lock(&self.running).iter_mut().filter_map(|(k, r)| (!r.poll()).then(|| (k.clone(), r.pid))).collect();
+        if ended.is_empty() && !share::flags_in(&share::Own::of(instance).dir).any() {
+            return;
+        }
         for (key, pid) in ended {
             let _ = self.notes.send(sync::Note::Ended { key, pid });
         }
