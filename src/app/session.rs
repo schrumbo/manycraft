@@ -36,10 +36,9 @@ pub struct Timer {
     pub minutes: u32,
 }
 
-/// Join commands that came due while their game held a resource pack: the rest of them, sent once it is answered.
+/// Join commands that came due while their game held a resource pack: the rest of them, sent once it is back in the game.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldJoin {
-    pub generation: u64,
     pub lines: Vec<String>,
     pub delay: Duration,
 }

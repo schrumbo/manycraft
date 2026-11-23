@@ -235,6 +235,42 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { text }, .. } if text == "/login pw")), "{fx:?}");
     }
 
+    fn join_due(fx: &[Effect]) -> Vec<Event> {
+        later(fx).into_iter().filter_map(|(_, e)| if let Event::JoinDue { key, generation, lines, delay } = e { Some(Event::JoinDue { key: key.clone(), generation: *generation, lines: lines.clone(), delay: *delay }) } else { None }).collect()
+    }
+
+    #[test]
+    fn join_commands_held_by_an_offer_end_with_the_connection_and_run_once_after_a_reconnect() {
+        let (mut m, key, s) = headless(None);
+        m.batches[0].join_commands = vec!["/login pw".into()];
+        connected(&mut m, &s, &key);
+        let fx = report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let [join] = join_due(&fx).try_into().expect("one join scheduled");
+        report(&mut m, &s, offer(&key, "pack-1", false));
+        run(&mut m, &s, Instant::now(), join);
+        report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example:25565"), None));
+        assert!(m.session.held_joins.is_empty(), "the held lines belonged to the old connection");
+        let fx = report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        assert_eq!(join_due(&fx).len(), 1, "one run of the join commands per join");
+    }
+
+    #[test]
+    fn join_commands_held_by_an_offer_survive_a_queue_on_the_way_back() {
+        let (mut m, key, s) = headless(None);
+        m.batches[0].join_commands = vec!["/login pw".into()];
+        connected(&mut m, &s, &key);
+        let fx = report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let [join] = join_due(&fx).try_into().expect("one join scheduled");
+        report(&mut m, &s, offer(&key, "pack-1", false));
+        run(&mut m, &s, Instant::now(), join);
+        let fx = report(&mut m, &s, state(&key, StateKind::Queue, Some("mc.example:25565"), None));
+        assert!(join_due(&fx).is_empty(), "nothing typed in the queue");
+        let fx = report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let [again] = join_due(&fx).try_into().expect("released once back in the game");
+        let fx = run(&mut m, &s, Instant::now(), again);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { text }, .. } if text == "/login pw")), "{fx:?}");
+    }
+
     #[test]
     fn a_declined_required_pack_drops_with_its_reason_and_no_reconnect() {
         let (mut m, key, s) = headless(None);

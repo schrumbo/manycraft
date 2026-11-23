@@ -407,6 +407,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     let to = match kind {
         StateKind::Menu => {
             s.joined.remove(&key);
+            s.held_joins.remove(&key);
             s.woken.remove(&key);
             Phase::Menu
         }
@@ -418,11 +419,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                 Phase::Playing { server: server_text, since }
             } else {
                 s.started.entry(key.clone()).or_insert(env.now);
-                if matches!(i.phase, Phase::Offer { .. })
-                    && let Some(HeldJoin { generation, lines, delay }) = s.held_joins.remove(&key)
-                {
-                    fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
-                }
+                let held = s.held_joins.remove(&key);
                 if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() && s.joined.insert(key.clone()) {
                     event = Some((Kind::Connected, server.clone(), String::new()));
                     fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, What::Back, "", server.as_deref())));
@@ -430,6 +427,9 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                         let generation = *s.joins.entry(key.clone()).or_default();
                         fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
                     }
+                } else if let Some(HeldJoin { lines, delay }) = held {
+                    let generation = *s.joins.entry(key.clone()).or_default();
+                    fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
                 }
                 Phase::Playing { server: server_text, since: env.now }
             }
@@ -438,6 +438,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
         StateKind::Offer => return,
         StateKind::Disconnected => {
             s.joined.remove(&key);
+            s.held_joins.remove(&key);
             let woken = s.woken.remove(&key);
             if let Phase::Playing { since, .. } = i.phase
                 && env.now.saturating_duration_since(since) >= STABLE
@@ -781,7 +782,7 @@ pub(super) fn join_due(m: &mut Model, key: String, generation: u64, mut lines: V
         return;
     };
     if matches!(game.phase, Phase::Offer { .. }) {
-        m.session.held_joins.insert(key, HeldJoin { generation, lines, delay });
+        m.session.held_joins.insert(key, HeldJoin { lines, delay });
         return;
     }
     if !matches!(game.phase, Phase::Playing { .. }) {

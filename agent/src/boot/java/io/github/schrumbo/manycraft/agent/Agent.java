@@ -17,6 +17,8 @@ public final class Agent {
 	static final String PAYLOAD = "io.github.schrumbo.manycraft.agent.payload.Entry";
 	private static final Set<String> FAULTS = ConcurrentHashMap.newKeySet();
 	private static final List<String> PROXY_FEATURES = List.of("proxy", "signin", "dns", "realms");
+	private static final List<String> HEADLESS_FEATURES = List.of("hidden", "frame", "packs");
+	private static final String PACKS_CLASS = "net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl";
 	private static final List<String> PROXIED_CLASSES = List.of("io.netty.bootstrap.Bootstrap", "net.minecraft.client.multiplayer.resolver.ServerNameResolver",
 		"com.mojang.realmsclient.client.FileDownload", "com.mojang.realmsclient.client.FileUpload", "com.mojang.realmsclient.client.Ping");
 	private static volatile Instrumentation inst;
@@ -75,7 +77,7 @@ public final class Agent {
 				return;
 			}
 			loaded = true;
-			if (Hooks.headless() && !(Patches.has("hidden") && Patches.has("frame"))) {
+			if (Hooks.headless() && !headlessHooked(anchor.getClass().getClassLoader())) {
 				haltHeadless();
 			}
 			if (Proxies.requested() && !proxyHooked(anchor.getClass().getClassLoader())) {
@@ -102,6 +104,16 @@ public final class Agent {
 		}
 	}
 
+	static boolean headlessHooked(ClassLoader game) {
+		try {
+			Class.forName(PACKS_CLASS, false, game);
+		} catch (Throwable e) {
+			log(PACKS_CLASS + " not found: " + e);
+			return false;
+		}
+		return HEADLESS_FEATURES.stream().allMatch(Patches::has);
+	}
+
 	static boolean proxyHooked(ClassLoader game) {
 		for (String name : PROXIED_CLASSES) {
 			try {
@@ -115,12 +127,12 @@ public final class Agent {
 	}
 
 	static void haltHeadless() {
-		log("the game runs without a window but its window hooks are missing " + Patches.applied() + ", stopping it instead of opening one");
+		log("the game runs without a window but its hooks are missing " + Patches.applied() + ", stopping it instead of opening one");
 		Runtime.getRuntime().halt(1);
 	}
 
 	static void haltIfHeadlessUnhooked() {
-		if (Hooks.headless() && (Patches.missing("hidden") || Patches.missing("frame"))) {
+		if (Hooks.headless() && HEADLESS_FEATURES.stream().anyMatch(Patches::missing)) {
 			haltHeadless();
 		}
 	}

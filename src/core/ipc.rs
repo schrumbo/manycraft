@@ -555,6 +555,20 @@ mod tests {
     }
 
     #[test]
+    fn pack_and_capture_wire_format_matches_the_mod_protocol() {
+        assert_eq!(serde_json::to_string(&ToMod::Packs { policy: Packs::Ask }).unwrap(), r#"{"t":"packs","policy":"ask"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Packs { policy: Packs::Accept }).unwrap(), r#"{"t":"packs","policy":"accept"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Packs { policy: Packs::Decline }).unwrap(), r#"{"t":"packs","policy":"decline"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Answer { id: "p-1".into(), accept: true }).unwrap(), r#"{"t":"answer","id":"p-1","accept":true}"#);
+        assert_eq!(serde_json::to_string(&ToMod::Capture { width: 640 }).unwrap(), r#"{"t":"capture","width":640}"#);
+        let held = r#"{"t":"state","kind":"offer","server":"mc.example:25565","reason":null,"cause":null,"offer":{"id":"p-1","required":true,"text":"Bitte laden"}}"#;
+        let offer = Offer { id: "p-1".into(), required: true, text: Some("Bitte laden".into()) };
+        assert_eq!(serde_json::from_str::<FromMod>(held).unwrap(), FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(offer) });
+        let bare = r#"{"t":"state","kind":"offer","server":null,"reason":null,"cause":null,"offer":{"id":"p-2","required":false,"text":null}}"#;
+        assert!(matches!(serde_json::from_str::<FromMod>(bare).unwrap(), FromMod::State { offer: Some(Offer { required: false, text: None, .. }), .. }));
+    }
+
+    #[test]
     fn registered_mod_connects_reports_and_receives() {
         let (server, events) = Server::start().unwrap();
         let token = server.register("a");
