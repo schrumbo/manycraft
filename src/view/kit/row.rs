@@ -2,6 +2,7 @@
 
 use freya::prelude::*;
 
+use super::badge::corner;
 use super::text::{caption, line};
 use super::{ring, use_theme};
 use crate::view::drive::use_spot;
@@ -159,10 +160,11 @@ impl Component for Row {
             lead = Some(icon(&t, g, iconsize::S, if self.selected { t.accent_text } else { t.text2 }));
         }
         if let Some(mark) = &self.compact {
-            let mut face = rect().center().children(lead);
-            if let Some(m) = mark {
-                face = face.child(rect().position(Position::new_absolute().top(-space::XXS).right(-space::XXS)).child(m.clone()));
-            }
+            let face = rect().width(Size::px(frame::FACE)).height(Size::px(frame::FACE)).center().children(lead);
+            let face = match mark {
+                Some(m) => corner(face, frame::FACE, frame::FACE, m.clone(), -space::XXS),
+                None => face.into_element(),
+            };
             return r.main_align(Alignment::Center).child(face);
         }
         r = r.children(lead);
