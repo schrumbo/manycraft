@@ -87,12 +87,16 @@ pub fn save(saved: &Saved) -> Result<()> {
     save_to(&path(), saved)
 }
 
-/// Changes the remembered state and saves it; changes never overlap.
+/// Changes the remembered state and saves it unless nothing changed; changes never overlap.
 pub fn update(change: impl FnOnce(&mut Saved)) -> Result<()> {
     static LOCK: Mutex<()> = Mutex::new(());
     let _one_at_a_time = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let mut saved = load();
+    let before = saved.clone();
     change(&mut saved);
+    if saved == before {
+        return Ok(());
+    }
     save(&saved)
 }
 

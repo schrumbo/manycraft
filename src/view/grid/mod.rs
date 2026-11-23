@@ -404,7 +404,7 @@ impl Component for Mosaic {
 
         if view == View::Table {
             let batches = !matches!(self.filter, Filter::Batch(_)) && m.batches.len() > 1;
-            page = page.child(Table { keys: keys.clone(), top: at, h, batches });
+            page = page.child(Table { keys: keys.clone(), top: at, h, w, batches });
         } else {
             if shelf > 0 && at < shelf_h {
                 page = page.child(

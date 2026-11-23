@@ -77,9 +77,7 @@ impl Component for Toolbar {
         {
             bar = bar.child(instance::Tabs);
         }
-        if let Page::Grid(filter) = &page
-            && grid::tools::shown(&m, filter)
-        {
+        if let Page::Grid(filter) = &page {
             bar = bar.child(grid::tools::Tools { filter: filter.clone(), room });
         }
         match &page {

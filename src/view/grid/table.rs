@@ -34,6 +34,7 @@ pub enum Column {
 const SINCE_W: f32 = 112.;
 const STATUS_W: f32 = 136.;
 const ATTEMPTS_W: f32 = 64.;
+const FLEX_MIN: f32 = 112.;
 /// The width of the preview of the row under the pointer.
 pub const PREVIEW_W: f32 = 192.;
 
@@ -79,6 +80,28 @@ impl Column {
 
     fn numeric(self) -> bool {
         matches!(self, Column::Since | Column::Attempts)
+    }
+
+    fn least(self) -> f32 {
+        match self {
+            Column::Since => SINCE_W,
+            Column::Attempts => ATTEMPTS_W,
+            Column::Status => STATUS_W,
+            _ => FLEX_MIN,
+        }
+    }
+
+    /// The columns that fit `width`: account and status always stay, the rest drops from the least important.
+    fn fitting(width: f32, batches: bool) -> Vec<Column> {
+        let mut columns: Vec<Column> = Column::SHOWN.into_iter().filter(|c| batches || *c != Column::Batch).collect();
+        let needs = |columns: &[Column]| columns.iter().map(|c| c.least()).sum::<f32>() + space::L * 2.;
+        for dropped in [Column::Attempts, Column::Reason, Column::Server, Column::Since, Column::Batch] {
+            if needs(&columns) <= width {
+                break;
+            }
+            columns.retain(|c| *c != dropped);
+        }
+        columns
     }
 }
 
@@ -142,6 +165,7 @@ pub struct Table {
     pub keys: Vec<String>,
     pub top: f32,
     pub h: f32,
+    pub w: f32,
     pub batches: bool,
 }
 
@@ -160,7 +184,7 @@ impl Component for Table {
         });
         use_drop(move || store.watch(|w| w.hovered = None));
         let sort = *store.ui.sort.read();
-        let columns: Vec<Column> = Column::SHOWN.into_iter().filter(|c| self.batches || *c != Column::Batch).collect();
+        let columns = Column::fitting(self.w, self.batches);
         let first = ((self.top / ROW).floor() as usize).min(self.keys.len());
         let last = (((self.top + self.h) / ROW).ceil() as usize + 1).min(self.keys.len());
         let mut body = rect().width(Size::fill()).height(Size::fill()).overflow(Overflow::Clip).on_pointer_leave(move |_| hovered.set_if_modified(None));
@@ -370,5 +394,25 @@ impl Component for Peek {
             card = card.shadow(shadow);
         }
         card.child(image(handle).width(Size::px(PREVIEW_W)).height(Size::px(h)).aspect_ratio(AspectRatio::Max).image_cover(ImageCover::Center)).into_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Column;
+
+    #[test]
+    fn a_narrow_table_keeps_account_and_status_and_drops_the_rest_in_order() {
+        let wide = Column::fitting(1200., true);
+        assert_eq!(wide, Column::SHOWN);
+        let no_batch = Column::fitting(1200., false);
+        assert!(!no_batch.contains(&Column::Batch));
+        let mid = Column::fitting(700., true);
+        assert!(!mid.contains(&Column::Attempts) && mid.contains(&Column::Account) && mid.contains(&Column::Status));
+        for width in [0., 200., 428.] {
+            let narrow = Column::fitting(width, true);
+            assert!(narrow.contains(&Column::Account) && narrow.contains(&Column::Status), "{width}");
+        }
+        assert_eq!(Column::fitting(0., true), [Column::Account, Column::Status]);
     }
 }

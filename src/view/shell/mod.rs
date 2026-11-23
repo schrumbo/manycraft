@@ -199,13 +199,11 @@ fn remember(page: &Page, sidebar: bool, rail: bool, width: f32) {
 }
 
 fn write_kept(kept: Kept) {
-    let mut saved = winstate::load();
-    let (kind, batch) = kept.page.unwrap_or_else(|| (saved.page, saved.batch.clone()));
-    if (saved.page, &saved.batch, saved.sidebar, saved.rail, saved.sidebar_width) == (kind, &batch, kept.sidebar, kept.rail, kept.width) {
-        return;
-    }
-    (saved.page, saved.batch, saved.sidebar, saved.rail, saved.sidebar_width) = (kind, batch, kept.sidebar, kept.rail, kept.width);
-    if let Err(e) = winstate::save(&saved) {
+    let result = winstate::update(|saved| {
+        let (kind, batch) = kept.page.unwrap_or_else(|| (saved.page, saved.batch.clone()));
+        (saved.page, saved.batch, saved.sidebar, saved.rail, saved.sidebar_width) = (kind, batch, kept.sidebar, kept.rail, kept.width);
+    });
+    if let Err(e) = result {
         eprintln!("window state: {e:#}");
     }
 }

@@ -125,7 +125,7 @@ impl Shared {
 
 /// The batch picker's entries: all batches, then each by name.
 fn batch_choices(m: &Model) -> Vec<(String, Option<String>)> {
-    let mut out = vec![(tr("Alle Batches"), None)];
+    let mut out = vec![(tr("Batches"), None)];
     let names = unique(m.batches.iter().map(|b| b.name.clone()).collect());
     out.extend(m.batches.iter().zip(names).map(|(b, name)| (name, Some(b.id.clone()))));
     out
@@ -402,7 +402,7 @@ impl Component for Panel {
         let (window, _) = *store.ui.window.read();
         let title = {
             let m = store.model.read();
-            self.scope.as_ref().and_then(|b| m.batch(b)).map_or_else(|| tr("Alle Batches"), |b| b.name.clone())
+            self.scope.as_ref().and_then(|b| m.batch(b)).map_or_else(|| tr("Batches"), |b| b.name.clone())
         };
         let head = rect()
             .width(Size::fill())
@@ -448,7 +448,6 @@ impl Component for Conversation {
             let mut shared = store.ui.chat;
             if *shared.scope.peek() != *scope {
                 shared.scope.set(scope.clone());
-                shared.target.set(None);
                 shared.sent.set(None);
                 shared.rejected.set(None);
                 shared.shown.set(PAGE);
@@ -456,6 +455,11 @@ impl Component for Conversation {
             }
         });
         let _ = store.chat.read();
+        let now = newest(&store.model.peek());
+        use_side_effect_with_deps(&now, move |now| {
+            let mut left = store.ui.chat.left_at;
+            left.set(Some(*now));
+        });
         let m = store.model.read();
         let batch = self.scope.clone().filter(|b| m.batch(b).is_some());
         let merged = settings::active().merged_chat;
@@ -875,7 +879,7 @@ impl Component for Row {
             let count = rect()
                 .position(Position::new_absolute().right(space::XS).top(space::XXS))
                 .padding((0., space::XS))
-                .corner_radius(space::XS)
+                .corner_radius(t.shape.control)
                 .background(t.raised)
                 .a11y_alt(tip.clone())
                 .child(WithTip::new(Some(tip), caption(&t, format!("{}×", r.seen)).font_tabular()));

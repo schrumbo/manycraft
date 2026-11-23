@@ -36,20 +36,11 @@ fn with_keys(text: String, c: Command) -> String {
     }
 }
 
-/// Whether the grid's tools belong in the toolbar: once the page has games of a batch to size, filter, find and start,
-/// and always on a batch page, for its settings and its chat.
-pub fn shown(m: &Model, filter: &Filter) -> bool {
-    match filter {
-        Filter::Attention => true,
-        Filter::All => m.games.values().any(|g| !g.alone()),
-        Filter::Batch(_) => true,
-    }
-}
-
 fn has_games(m: &Model, filter: &Filter) -> bool {
     match filter {
         Filter::Batch(b) => m.games.values().any(|g| g.batch_id == *b),
-        _ => true,
+        Filter::All => m.games.values().any(|g| !g.alone()),
+        Filter::Attention => true,
     }
 }
 
@@ -93,6 +84,7 @@ impl Component for Aside {
         let t = use_theme();
         let store = use_store();
         let ui = store.ui;
+        let _ = store.chat.read();
         let open = *ui.chat.open.read();
         let scope = chat::scope_of(&self.filter);
         let (now, unread) = {
@@ -106,11 +98,11 @@ impl Component for Aside {
             }
         });
         let unread = if open { 0 } else { unread };
-        let mut tip = with_keys(if open { tr("Chat ausblenden") } else { tr("Chat einblenden") }, Command::OpenChat);
+        let mut tip = if open { tr("Chat ausblenden") } else { with_keys(tr("Chat einblenden"), Command::OpenChat) };
         if unread > 0 {
             tip = format!("{tip} · {}", trf("%lld ungelesen", &[&unread]));
         }
-        let button = Button::icon("toolbar.chat", Icon::Message, if open { tr("Chat ausblenden") } else { tr("Chat einblenden") }).on(open).tip(tip).on_press(move |_| chat::set_open(store, !open));
+        let button = Button::icon("toolbar.chat", Icon::Message, tr("Chat")).on(open).tip(tip).on_press(move |_| chat::set_open(store, !open));
         let mut chat_slot = rect().child(button);
         if unread > 0 {
             chat_slot = chat_slot.child(rect().position(Position::new_absolute().right(space::XS).top(space::XS)).child(dot(t.accent)));
