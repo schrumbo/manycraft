@@ -22,6 +22,7 @@ pub fn look(need: Need, t: &Theme) -> (Hsla, Hsla, &'static str) {
         Need::SignIn => (t.danger, t.danger_text, "log-in"),
         Need::Banned => (t.danger, t.danger_text, "ban"),
         Need::Disconnected | Need::Offer | Need::Conduct => (t.attention, t.attention_text, "wifi-off"),
+        Need::Screen => (t.attention, t.attention_text, "image"),
         Need::Dead | Need::Crashed | Need::Failed => (t.attention, t.attention_text, "triangle-alert"),
     }
 }
@@ -32,6 +33,7 @@ pub fn label(need: Need, count: usize) -> String {
         Need::SignIn => trf("%lld Anmeldung", &[&count]),
         Need::Offer => trf("%lld Ressourcenpaket", &[&count]),
         Need::Conduct => trf("%lld Serverregeln", &[&count]),
+        Need::Screen => trf("%lld Bildschirm", &[&count]),
         Need::Disconnected => trf("%lld Getrennt", &[&count]),
         Need::Dead => trf("%lld Gestorben", &[&count]),
         Need::Crashed => trf("%lld Abgestürzt", &[&count]),
@@ -59,7 +61,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Box<dyn Ac
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Box::new(ReconnectMany(keys.to_vec()))),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Box::new(RespawnMany(keys.to_vec()))),
         Need::Crashed | Need::Failed => (pick("Alle starten", "Starten"), Box::new(StartMany(keys.to_vec()))),
-        Need::Banned | Need::Offer | Need::Conduct => return None,
+        Need::Banned | Need::Offer | Need::Conduct | Need::Screen => return None,
     })
 }
 

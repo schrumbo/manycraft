@@ -80,6 +80,8 @@ pub struct Shot {
 /// The state of the running session that no view shows directly.
 #[derive(Default)]
 pub struct Session {
+    /// The connection-only account whose screen is in view.
+    pub screen_open: Option<String>,
     /// The screenshot timer of each game without a window whose batch takes them on an interval, by key.
     pub captures: HashMap<String, Timer>,
     /// Bumped by every screenshot timer armed, so a timer of an older one does nothing.

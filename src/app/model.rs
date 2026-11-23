@@ -14,7 +14,7 @@ use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
 use crate::core::instance::Instance;
 use crate::core::i18n::{tr, trf};
-use crate::core::ipc::Offer;
+use crate::core::ipc::{MapPicture, Menu, Offer, Titles};
 use crate::core::proxy::Fault;
 
 use super::session::{Frame, Session};
@@ -148,6 +148,8 @@ pub enum Need {
     Offer,
     /// A server asks for its code of conduct to be accepted; only the user may.
     Conduct,
+    /// A server showed a connection-only account a map or a menu the user has not looked at yet.
+    Screen,
     Disconnected,
     Dead,
     Crashed,
@@ -156,7 +158,7 @@ pub enum Need {
 }
 
 impl Need {
-    pub const ALL: [Need; 8] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
+    pub const ALL: [Need; 9] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Screen, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
 }
 
 /// How many of a set of games each selection action acts on.
@@ -221,6 +223,38 @@ pub struct Game {
     pub connection: bool,
     /// The last public chat line it heard, for its tile.
     pub last_chat: Option<String>,
+    /// What its server shows it besides the world, for a connection-only account.
+    pub shows: Shows,
+}
+
+/// Whether a connection-only account holds a map or has a menu open, and whether the user has looked since it changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shows {
+    pub map: bool,
+    pub menu: bool,
+    pub unseen: bool,
+}
+
+impl Shows {
+    pub fn any(self) -> bool {
+        self.map || self.menu
+    }
+}
+
+/// What a server shows a connection-only account besides the world, kept while it shows any of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Screen {
+    pub map: Option<MapPicture>,
+    /// Bumped whenever the map changes, so the view rebuilds its picture only then.
+    pub map_seq: u64,
+    pub menu: Option<Menu>,
+    pub titles: Titles,
+}
+
+impl Screen {
+    pub fn is_empty(&self) -> bool {
+        self.map.is_none() && self.menu.is_none() && self.titles.title.is_none() && self.titles.subtitle.is_none() && self.titles.actionbar.is_none()
+    }
 }
 
 impl Game {
@@ -231,7 +265,17 @@ impl Game {
 
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None, shows: Shows::default() }
+    }
+
+    /// The work it needs: what its phase needs, else a map or menu the user has not looked at.
+    pub fn need(&self) -> Option<Need> {
+        self.phase.need().or_else(|| (self.shows.unseen && self.shows.any() && self.phase.is_running()).then_some(Need::Screen))
+    }
+
+    /// Whether it needs the user, by its phase or by what its server shows it.
+    pub fn needs_attention(&self) -> bool {
+        self.phase.needs_attention() || self.need() == Some(Need::Screen)
     }
 
     /// Whether its window can be swapped in: a game with the mod past its start that has a window.
@@ -243,6 +287,7 @@ impl Game {
     /// screenshot where another game would be played.
     pub fn action(&self, busy: bool) -> Option<Primary> {
         match main_action(&self.phase, Stopping::of(self.stopping, self.overdue), busy) {
+            Some(Primary::Play) if self.connection && (self.shows.menu || self.shows.unseen && self.shows.any()) => Some(Primary::Screen),
             Some(Primary::Play) if self.connection => Some(Primary::Chat),
             Some(Primary::Play) if self.headless => Some(Primary::Screenshot),
             other => other,
@@ -309,6 +354,8 @@ pub struct Model {
     pub measured: HashMap<String, u32>,
     /// The account chosen to play instances alone that name none, as the settings keep it.
     pub active_account: Option<Uuid>,
+    /// What servers show connection-only accounts besides the world, by game key, only while they show any.
+    pub screens: HashMap<String, Screen>,
     pub session: Session,
 }
 
@@ -388,13 +435,13 @@ impl Model {
 
     /// How many instances of `batch_id` (all when `None`) need attention.
     pub fn attention_count(&self, batch_id: Option<&str>) -> usize {
-        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone() && i.phase.needs_attention()).count()
+        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone() && i.needs_attention()).count()
     }
 
     /// How many instances of `batch_id` (all when `None`) need each kind of work, in the grid's order, leaving out kinds nobody needs.
     pub fn needs(&self, batch_id: Option<&str>) -> Vec<(Need, usize)> {
         let mut counts: HashMap<Need, usize> = HashMap::new();
-        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone()).filter_map(|i| i.phase.need()) {
+        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone()).filter_map(Game::need) {
             *counts.entry(need).or_default() += 1;
         }
         Need::ALL.into_iter().filter_map(|n| counts.get(&n).map(|c| (n, *c))).collect()
@@ -629,6 +676,8 @@ pub enum Primary {
     AcceptRules,
     /// Opens the chat of an account that only has a connection.
     Chat,
+    /// Opens the screen of a connection-only account whose server shows it a map or a menu.
+    Screen,
 }
 
 /// How far a stop has come: not stopping, stopping, or stopping for long enough to end the game at once.
@@ -695,6 +744,7 @@ impl Primary {
             Self::AcceptPack => tr("Paket annehmen"),
             Self::AcceptRules => tr("Regeln annehmen"),
             Self::Chat => tr("Chat"),
+            Self::Screen => tr("Bildschirm"),
         }
     }
 }

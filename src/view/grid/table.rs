@@ -308,7 +308,7 @@ impl Component for Row {
         let reason = words::reason(g, &m);
         let spot = use_spot(&format!("row.{}", self.key), "row", &format!("{} · {word}", g.name), true);
         let severe = matches!(g.phase, Phase::LoginNeeded | Phase::Banned { .. });
-        let tone = if severe { t.danger_text } else if g.phase.needs_attention() { t.attention_text } else { t.text2 };
+        let tone = if severe { t.danger_text } else if g.needs_attention() { t.attention_text } else { t.text2 };
         let ink = if selected { t.accent_text } else { t.text1 };
         let cell = |c: Column| -> Element {
             let text = match c {

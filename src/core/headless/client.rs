@@ -14,6 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::screen::Screen;
 use super::Spec;
 use super::classify::classify;
 use super::conn::{Reader, Writer};
@@ -95,6 +96,7 @@ struct Link {
     chat_clock: i64,
     unacked: i32,
     shown: Option<Shown>,
+    screen: Screen,
 }
 
 /// What the connection's thread and its handle share.
@@ -124,6 +126,7 @@ impl Shared {
             chat_clock: 0,
             unacked: 0,
             shown: None,
+            screen: Screen::default(),
         };
         Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true) }
     }
@@ -164,9 +167,30 @@ impl Shared {
             ToMod::ChatSend { text } => chat(&mut link, text)?,
             ToMod::Packs { policy } => link.packs = *policy,
             ToMod::Answer { id, accept } => self.answer(&mut link, id, *accept)?,
+            ToMod::Click { menu, slot, click } => {
+                if link.phase == Phase::Play
+                    && let Some(mut out) = link.screen.click(*menu, *slot, *click)
+                {
+                    write(&mut link, play::serverbound::CONTAINER_CLICK, &mut out)?;
+                }
+            }
+            ToMod::CloseMenu { menu } => {
+                if let Some(mut out) = link.screen.close(*menu) {
+                    self.show_screen(&mut link);
+                    if link.phase == Phase::Play {
+                        write(&mut link, play::serverbound::CONTAINER_CLOSE, &mut out)?;
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn show_screen(&self, link: &mut Link) {
+        for message in link.screen.changes() {
+            self.emit(message);
+        }
     }
 
     fn answer(&self, link: &mut Link, id: &str, accept: bool) -> Result<()> {
@@ -320,6 +344,8 @@ fn session(shared: &Shared, spec: &Spec) -> End {
     link.writer = None;
     link.phase = Phase::Login;
     link.held.clear();
+    link.screen.reset();
+    shared.show_screen(&mut link);
     match link.control.take() {
         Some(Control::Quit) => End::Quit,
         Some(Control::Reconnect) => End::Reconnect,
@@ -412,7 +438,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::CHUNK_BATCH_FINISHED, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id),
+        _ => [p::CHUNK_BATCH_FINISHED, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id),
     }
 }
 
@@ -607,6 +633,13 @@ fn popped(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
 fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatType]) -> Result<Option<(Line, DisconnectCause)>> {
     use play::clientbound as c;
     use play::serverbound as s;
+    if Screen::reads(id) {
+        if let Err(e) = link.screen.read(id, r) {
+            eprintln!("{}: screen packet {id} not read: {e:#}", shared.key);
+        }
+        shared.show_screen(link);
+        return Ok(None);
+    }
     match id {
         c::KEEP_ALIVE => {
             let token = r.i64()?;
@@ -656,6 +689,8 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         c::CHUNK_BATCH_FINISHED => write(link, s::CHUNK_BATCH_RECEIVED, Out::default().f32(CHUNKS_PER_TICK))?,
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
+            link.screen.reset();
+            shared.show_screen(link);
             link.phase = Phase::Configuration;
             link.unacked = 0;
         }

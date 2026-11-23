@@ -184,7 +184,7 @@ pub fn found(g: &Game, m: &Model, words: &[String]) -> bool {
     }
     let batch = m.batch(&g.batch_id);
     let server = g.phase.server().or_else(|| batch.and_then(|b| b.server.as_deref())).unwrap_or_default();
-    let state = if g.phase.needs_attention() {
+    let state = if g.needs_attention() {
         tr("braucht dich")
     } else if g.phase.is_active() {
         tr("läuft")
@@ -199,9 +199,9 @@ pub fn found(g: &Game, m: &Model, words: &[String]) -> bool {
 pub fn fits(g: &Game, show: Show) -> bool {
     match show {
         Show::All => true,
-        Show::Need(need) => g.phase.need() == Some(need),
-        Show::Running => g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention(),
-        Show::Stopped => !g.phase.is_active() && !g.phase.needs_attention(),
+        Show::Need(need) => g.need() == Some(need),
+        Show::Running => g.phase.is_active() && !g.phase.waiting() && !g.needs_attention(),
+        Show::Stopped => !g.phase.is_active() && !g.needs_attention(),
     }
 }
 
@@ -248,6 +248,7 @@ pub fn need_label(need: Need, count: usize) -> String {
         Need::SignIn => trf("%lld Anmeldung", &[&count]),
         Need::Offer => trf("%lld Ressourcenpaket", &[&count]),
         Need::Conduct => trf("%lld Serverregeln", &[&count]),
+        Need::Screen => trf("%lld Bildschirm", &[&count]),
         Need::Disconnected => trf("%lld Getrennt", &[&count]),
         Need::Dead => trf("%lld Gestorben", &[&count]),
         Need::Crashed => trf("%lld Abgestürzt", &[&count]),
@@ -285,6 +286,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
         }
         Need::Offer => (pick("Alle annehmen", "Annehmen"), Fix::Events(vec![Event::AnswerPack { keys: keys.to_vec(), accept: true }])),
         Need::Conduct => (pick("Alle Regeln annehmen", "Regeln annehmen"), Fix::Events(vec![Event::AnswerRules { keys: keys.to_vec(), accept: true }])),
+        Need::Screen => return None,
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
         Need::Crashed | Need::Failed => (if many { trf("Neu starten (%lld)", &[&keys.len()]) } else { tr("Neu starten") }, Fix::Events(vec![Event::StartMany(keys.to_vec())])),
@@ -301,7 +303,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
 
 /// The games of `batch` (all when `None`) that need `need`, in name order.
 pub fn keys_of(need: Need, batch: Option<&str>, m: &Model) -> Vec<String> {
-    let mut games: Vec<&Game> = m.games.values().filter(|g| batch.is_none_or(|b| g.batch_id == b) && g.phase.need() == Some(need)).collect();
+    let mut games: Vec<&Game> = m.games.values().filter(|g| batch.is_none_or(|b| g.batch_id == b) && g.need() == Some(need)).collect();
     games.sort_by_key(|g| (g.name.to_lowercase(), g.key.clone()));
     games.into_iter().map(|g| g.key.clone()).collect()
 }

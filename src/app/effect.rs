@@ -19,6 +19,8 @@ pub enum Redraw {
     Nothing,
     /// Only chat lines arrived, which nothing but the chat page shows.
     Chat,
+    /// Only what servers show connection-only accounts changed, which only their screens show.
+    Screen,
     All,
 }
 

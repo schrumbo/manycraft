@@ -50,7 +50,7 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::Screenshot => store.dispatch(AppEvent::Capture(vec![key])),
         Primary::AcceptPack => store.dispatch(AppEvent::AnswerPack { keys: vec![key], accept: true }),
         Primary::AcceptRules => store.dispatch(AppEvent::AnswerRules { keys: vec![key], accept: true }),
-        Primary::Chat => open_chat(store, &key),
+        Primary::Chat | Primary::Screen => open_chat(store, &key),
         Primary::SignIn => {
             let mut page = store.ui.page;
             page.set(Page::ACCOUNTS);
@@ -68,6 +68,7 @@ fn glyph(p: Primary) -> Icon {
         Primary::AcceptPack => Icon::Package,
         Primary::AcceptRules => Icon::CircleCheck,
         Primary::Chat => Icon::Message,
+        Primary::Screen => Icon::Image,
     }
 }
 
@@ -266,7 +267,7 @@ impl Component for Tile {
         let preview = preview.filter(|_| !game.connection);
         let selected = store.ui.selection.read().contains(&self.key);
         let face = store.faces.read().get(&game.account_id).cloned();
-        let attention = game.phase.needs_attention();
+        let attention = game.needs_attention();
         let severe = matches!(game.phase, Phase::LoginNeeded | Phase::Banned { .. });
         let detail = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
         let reason = words::reason(game, &m);
