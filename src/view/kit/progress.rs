@@ -10,7 +10,7 @@ use freya::prelude::*;
 
 pub use crate::app::meter::{Meter, Unit};
 
-use super::text::{caption, line, spacer};
+use super::text::{caption, line};
 use super::{after, use_theme};
 use crate::core::i18n::trf;
 use crate::view::drive::use_spot;
@@ -154,7 +154,8 @@ impl Component for Wait {
             .spacing(space::XS)
             .on_sized(spot)
             .child(bar.named(said))
-            .child(rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(line(&t, step, font::CALLOUT, t.text2).width(Size::flex(1.))).child(spacer()).child(caption(&t, detail)))
+            .child(line(&t, step, font::CALLOUT, t.text2).width(Size::fill()))
+            .maybe_child((!detail.is_empty()).then(|| caption(&t, detail).width(Size::fill())))
     }
 }
 
