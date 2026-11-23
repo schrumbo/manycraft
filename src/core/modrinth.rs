@@ -15,8 +15,36 @@ use super::instance::{Instance, Loader};
 use super::{install, net, online, paths};
 
 const API: &str = "https://api.modrinth.com/v2";
-const FABRIC_DEFAULTS: [&[&str]; 6] = [&["fabric-api"], &["lithium"], &["ferrite-core"], &["modernfix"], &["krypton"], &["sodium"]];
-const FORGE_DEFAULTS: [&[&str]; 3] = [&["lithium"], &["ferrite-core"], &["modernfix"]];
+
+/// One mod of the performance preset: its name for notes, the Modrinth project ids to try in turn (a mod published per
+/// loader has one id each) and whether it only runs on Windows.
+struct Slot {
+    name: &'static str,
+    ids: &'static [&'static str],
+    windows_only: bool,
+}
+
+const fn slot(name: &'static str, ids: &'static [&'static str]) -> Slot {
+    Slot { name, ids, windows_only: false }
+}
+
+const PRESET: [Slot; 15] = [
+    slot("Debugify", &["QwxR6Gcd"]),
+    slot("Sodium", &["AANobbMI"]),
+    slot("Lithium", &["gvQqBUqZ"]),
+    slot("EntityCulling", &["NNAgCjsB"]),
+    slot("FastNoise", &["OnlVIpq5"]),
+    slot("FerriteCore", &["uXXizFIs"]),
+    slot("Gnetum", &["7MoE34WK"]),
+    slot("ImmediatelyFast", &["5ZwdcRci"]),
+    slot("Ixeris", &["p8RJPJIC"]),
+    slot("ModernFix", &["nmDcB62a"]),
+    slot("Noxesium", &["Kw7Sm3Xf"]),
+    slot("Optimized Block Entities", &["AtOSAunf"]),
+    slot("Sodium Extra", &["PtjYWJkn"]),
+    slot("Very Many Players", &["wnEe9KBa", "LlSMGYzF"]),
+    Slot { name: "Windows Priority Boost", ids: &["7ZoK90Xo"], windows_only: true },
+];
 /// Modrinth project id of Fabric API, which the companion mod needs in every instance.
 pub const FABRIC_API: &str = "P7dR8mSH";
 const POOL_THREADS: usize = 8;
@@ -92,12 +120,21 @@ fn keys(loader: &Loader) -> &'static [&'static str] {
     }
 }
 
-fn defaults_for(loader: &Loader) -> &'static [&'static [&'static str]] {
+fn preset(loader: &Loader, windows: bool) -> Vec<&'static Slot> {
     match loader {
-        Loader::Vanilla => &[],
-        Loader::Fabric(_) | Loader::Quilt(_) => &FABRIC_DEFAULTS,
-        Loader::Forge(_) | Loader::NeoForge(_) => &FORGE_DEFAULTS,
+        Loader::Vanilla => Vec::new(),
+        _ => PRESET.iter().filter(|s| windows || !s.windows_only).collect(),
     }
+}
+
+/// How many mods the performance preset holds for `loader` on this system.
+pub fn default_total(loader: &Loader) -> usize {
+    preset(loader, cfg!(windows)).len()
+}
+
+/// The names of the performance preset's mods for `loader` on this system, in preset order.
+pub fn default_names(loader: &Loader) -> Vec<&'static str> {
+    preset(loader, cfg!(windows)).iter().map(|slot| slot.name).collect()
 }
 
 /// How search results are ordered.
@@ -208,11 +245,13 @@ pub struct Page {
     pub saved: Option<SystemTime>,
 }
 
-/// The default mods for a game version, and why any of them is missing.
+/// The default mods for a game version, why any of them is missing and which.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Defaults {
     pub mods: Vec<ModRef>,
     pub notes: Vec<String>,
+    /// The names of the preset mods that were left out, in preset order.
+    pub skipped: Vec<String>,
 }
 
 /// A newer file for a mod of an instance.
@@ -689,33 +728,55 @@ fn resolve_version_from(src: &dyn Source, version_id: &str, game_version: &str, 
     Ok(entries.into_iter().map(|e| e.found).collect())
 }
 
+fn clash(kept: &[Entry], fresh: &[Entry]) -> Option<(String, String)> {
+    fresh.iter().find_map(|entry| {
+        kept.iter().find(|k| k.incompatible.contains(&entry.found.project_id) || entry.incompatible.contains(&k.found.project_id)).map(|k| (entry.found.title.clone(), k.found.title.clone()))
+    })
+}
+
 fn defaults_from(src: &dyn Source, game_version: &str, loader: &Loader) -> Result<Defaults> {
+    defaults_with(src, game_version, loader, &preset(loader, cfg!(windows)))
+}
+
+fn defaults_with(src: &dyn Source, game_version: &str, loader: &Loader, slots: &[&Slot]) -> Result<Defaults> {
     let target = src.target(game_version, loader);
-    let slot = |choices: &&[&str]| -> Result<Result<Vec<Entry>, String>> {
+    let resolve_slot = |slot: &&Slot| -> Result<Result<Vec<Entry>, String>> {
         let mut first = None;
-        for slug in *choices {
-            match resolve_for(src, &[slug], game_version, loader, &target) {
+        for id in slot.ids {
+            match resolve_for(src, &[id], game_version, loader, &target) {
                 Ok((found, _)) => return Ok(Ok(found)),
-                Err(e) if is_unavailable(&e) => {
+                Err(e) if net::no_connection(&e) => return Err(e),
+                Err(e) => {
                     first.get_or_insert_with(|| format!("{e:#}"));
                 }
-                Err(e) => return Err(e),
             }
         }
         Ok(Err(first.unwrap_or_default()))
     };
-    let slots = pool()?.install(|| defaults_for(loader).par_iter().map(slot).collect::<Result<Vec<_>>>())?;
+    let resolved = pool()?.install(|| slots.par_iter().map(resolve_slot).collect::<Result<Vec<_>>>())?;
     let mut entries: Vec<Entry> = Vec::new();
     let mut seen = HashSet::new();
     let mut notes = Vec::new();
-    for slot in slots {
-        match slot {
-            Ok(found) => entries.extend(found.into_iter().filter(|entry| seen.insert(entry.found.project_id.clone()))),
-            Err(note) => notes.push(note),
+    let mut skipped = Vec::new();
+    for (slot, found) in slots.iter().zip(resolved) {
+        match found {
+            Ok(found) => {
+                let fresh: Vec<Entry> = found.into_iter().filter(|entry| !seen.contains(&entry.found.project_id)).collect();
+                if let Some((title, other)) = clash(&entries, &fresh) {
+                    notes.push(trf("„%1$@“ passt nicht zu „%2$@“ und wurde ausgelassen.", &[&title, &other]));
+                    skipped.push(slot.name.to_owned());
+                } else {
+                    seen.extend(fresh.iter().map(|entry| entry.found.project_id.clone()));
+                    entries.extend(fresh);
+                }
+            }
+            Err(note) => {
+                notes.push(note);
+                skipped.push(slot.name.to_owned());
+            }
         }
     }
-    check_compatible(&entries)?;
-    Ok(Defaults { mods: entries.into_iter().map(|e| e.found).collect(), notes })
+    Ok(Defaults { mods: entries.into_iter().map(|e| e.found).collect(), notes, skipped })
 }
 
 fn updates_from(src: &dyn Source, game_version: &str, loader: &Loader, mods: &[ModRef]) -> Result<Vec<Update>> {
@@ -1094,12 +1155,14 @@ pub fn resolve_with_dependencies<S: AsRef<str>>(list: &[S], game_version: &str, 
     Ok(entries.into_iter().map(|e| e.found).collect())
 }
 
-/// For Fabric and Quilt Fabric API, Lithium, FerriteCore, ModernFix, Krypton and Sodium, for Forge and NeoForge Lithium,
-/// FerriteCore and ModernFix, for Vanilla none, each with its dependencies.
-/// A default without a version for `game_version` and the loader is skipped and explained in `notes`, one sentence each.
+/// The performance preset for every mod loader, for Vanilla none, each mod with its dependencies: Debugify, Sodium,
+/// Lithium, EntityCulling, FastNoise, FerriteCore, Gnetum, ImmediatelyFast, Ixeris, ModernFix, Noxesium, Optimized
+/// Block Entities, Sodium Extra, Very Many Players and, on Windows only, Windows Priority Boost.
+/// A default without a version for `game_version` and the loader, or one that clashes with an earlier default, is
+/// skipped: `notes` explains it in one sentence and `skipped` names it. The preset never fails for that.
 pub fn default_mods(game_version: &str, loader: &Loader) -> Result<Defaults> {
-    if defaults_for(loader).is_empty() {
-        return Ok(Defaults { mods: Vec::new(), notes: Vec::new() });
+    if preset(loader, cfg!(windows)).is_empty() {
+        return Ok(Defaults { mods: Vec::new(), notes: Vec::new(), skipped: Vec::new() });
     }
     defaults_from(&Api::new()?, game_version, loader)
 }
@@ -1509,9 +1572,10 @@ Connection: close
         assert_eq!(err.to_string(), "„Fabric API“ läuft nicht mit Quilt 0.30.2.");
         let mut fx = snapshot_api(&[">=0.20.0"]);
         fx.add("lithium", r#"{"id":"id-l","slug":"lithium","title":"Lithium"}"#, r#"[{"id":"vl","project_id":"id-l","version_type":"release","date_published":"2026-11-01T00:00:00Z","game_versions":["26.4-snapshot-7"],"loaders":["fabric"],"files":[{"url":"https://x/l.jar","filename":"l.jar","primary":true,"hashes":{"sha1":"11"}}],"dependencies":[{"project_id":"P7dR8mSH","dependency_type":"required"}]}]"#);
-        let defaults = defaults_from(&fx, SNAPSHOT, &Loader::Quilt(None)).unwrap();
+        let lithium = Slot { name: "Lithium", ids: &["lithium"], windows_only: false };
+        let defaults = defaults_with(&fx, SNAPSHOT, &Loader::Quilt(None), &[&lithium]).unwrap();
         assert!(defaults.mods.is_empty(), "{:?}", titles(&defaults.mods));
-        assert!(defaults.notes.contains(&"„Fabric API“ läuft nicht mit Quilt 0.30.2.".to_owned()), "{:?}", defaults.notes);
+        assert_eq!(defaults.skipped, ["Lithium"]);
         assert!(defaults.notes.contains(&"Für „Lithium“ nötig: „Fabric API“ läuft nicht mit Quilt 0.30.2.".to_owned()), "{:?}", defaults.notes);
     }
 
@@ -1603,7 +1667,7 @@ Connection: close
         Loader::Fabric(None)
     }
 
-    const FABRIC_TITLES: [&str; 5] = ["Fabric API", "Lithium", "FerriteCore", "Krypton", "Sodium"];
+    const FABRIC_TITLES: [&str; 4] = ["Sodium", "Lithium", "FerriteCore", "Sodium Extra"];
 
     fn titles(mods: &[ModRef]) -> Vec<&str> {
         mods.iter().map(|m| m.title.as_str()).collect()
@@ -1647,17 +1711,32 @@ Connection: close
     }
 
     #[test]
-    fn defaults_differ_by_loader() {
+    fn the_preset_is_the_fifteen_mods_and_windows_boost_only_runs_on_windows() {
+        let names = |windows| preset(&fabric(), windows).iter().map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(names(true).len(), 15);
+        assert_eq!(names(true)[14], "Windows Priority Boost");
+        assert_eq!(names(false).len(), 14);
+        assert!(!names(false).contains(&"Windows Priority Boost"));
+        assert!(preset(&Loader::Vanilla, true).is_empty());
+        for loader in [Loader::Quilt(None), Loader::Forge(None), Loader::NeoForge(None)] {
+            assert_eq!(preset(&loader, true).len(), 15);
+        }
+        let ids: HashSet<&str> = PRESET.iter().flat_map(|s| s.ids.iter().copied()).collect();
+        assert_eq!(ids.len(), 16);
+    }
+
+    #[test]
+    fn each_loader_gets_its_own_files_of_the_preset() {
         let fx = Fixtures::recorded();
         let quilt = defaults_from(&fx, "26.3", &Loader::Quilt(None)).unwrap();
         assert_eq!(titles(&quilt.mods), FABRIC_TITLES);
         let neoforge = defaults_from(&fx, "26.3", &Loader::NeoForge(None)).unwrap();
-        assert_eq!(titles(&neoforge.mods), ["Lithium", "FerriteCore"]);
         assert!(neoforge.mods.iter().all(|m| !m.file_name.contains("fabric")), "{:?}", neoforge.mods);
-        assert_eq!(defaults_for(&Loader::NeoForge(None)), defaults_for(&Loader::Forge(None)));
-        assert!(defaults_for(&Loader::Vanilla).is_empty());
+        assert_eq!(titles(&neoforge.mods), FABRIC_TITLES);
+        let files = |d: &Defaults| d.mods.iter().map(|m| m.file_name.clone()).collect::<Vec<_>>();
+        assert_ne!(files(&neoforge), files(&quilt));
         let vanilla = default_mods("26.3", &Loader::Vanilla).unwrap();
-        assert!(vanilla.mods.is_empty() && vanilla.notes.is_empty());
+        assert!(vanilla.mods.is_empty() && vanilla.notes.is_empty() && vanilla.skipped.is_empty());
     }
 
     #[test]
@@ -1806,19 +1885,41 @@ Connection: close
         let fx = Fixtures::recorded();
         let defaults = defaults_from(&fx, "26.3", &fabric()).unwrap();
         assert_eq!(titles(&defaults.mods), FABRIC_TITLES);
+        assert!(defaults.skipped.contains(&"ModernFix".to_owned()), "{:?}", defaults.skipped);
+        let note = defaults.notes.iter().find(|n| n.to_lowercase().contains("modernfix")).unwrap();
+        assert!(note.contains("26.3"), "{note}");
+        assert_eq!(defaults.notes.len(), defaults.skipped.len());
+        assert_eq!(defaults.skipped.len() + 4, default_total(&fabric()), "{:?}", defaults.skipped);
+    }
+
+    const ONE: Slot = Slot { name: "One", ids: &["id-a"], windows_only: false };
+    const TWO: Slot = Slot { name: "Two", ids: &["id-b"], windows_only: false };
+    const EITHER: Slot = Slot { name: "Either", ids: &["id-none", "id-b"], windows_only: false };
+
+    #[test]
+    fn a_default_that_clashes_is_left_out_with_a_note_and_never_fails_the_rest() {
+        let fx = Fixtures::synthetic(&[("a", &[("id-b", "incompatible")]), ("b", &[])]);
+        let defaults = defaults_with(&fx, "26.3", &fabric(), &[&ONE, &TWO]).unwrap();
+        assert_eq!(titles(&defaults.mods), ["T-a"]);
+        assert_eq!(defaults.skipped, ["Two"]);
         assert_eq!(defaults.notes.len(), 1);
-        assert!(defaults.notes[0].to_lowercase().contains("modernfix") && defaults.notes[0].contains("26.3"), "{:?}", defaults.notes);
+        assert!(defaults.notes[0].contains("T-b") && defaults.notes[0].contains("T-a"), "{:?}", defaults.notes);
     }
 
     #[test]
-    fn defaults_skip_a_mod_that_is_not_on_modrinth_and_fail_on_incompatibility() {
-        let mut fx = Fixtures::recorded();
-        fx.projects.retain(|(slug, _, _)| slug != "krypton");
-        let defaults = defaults_from(&fx, "26.3", &fabric()).unwrap();
-        assert_eq!(defaults.notes.len(), 2);
-        assert_eq!(defaults.mods.len(), FABRIC_TITLES.len() - 1);
-        let fx = Fixtures::synthetic(&[("fabric-api", &[("id-lithium", "incompatible")]), ("lithium", &[])]);
-        assert!(defaults_from(&fx, "26.3", &fabric()).unwrap_err().to_string().contains("incompatible"));
+    fn a_slot_whose_own_files_clash_is_left_out_and_never_fails_the_rest() {
+        let fx = Fixtures::synthetic(&[("a", &[("id-b", "required"), ("id-b", "incompatible")]), ("b", &[])]);
+        let defaults = defaults_with(&fx, "26.3", &fabric(), &[&ONE, &TWO]).unwrap();
+        assert_eq!(defaults.skipped, ["One"]);
+        assert_eq!(titles(&defaults.mods), ["T-b"]);
+    }
+
+    #[test]
+    fn a_slot_falls_back_to_its_next_id_and_names_a_slot_that_is_not_on_modrinth() {
+        let fx = Fixtures::synthetic(&[("b", &[])]);
+        let defaults = defaults_with(&fx, "26.3", &fabric(), &[&EITHER, &ONE]).unwrap();
+        assert_eq!(titles(&defaults.mods), ["T-b"]);
+        assert_eq!(defaults.skipped, ["One"]);
     }
 
     fn pinned(fx: &Fixtures, id: &str) -> ModRef {

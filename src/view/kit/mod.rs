@@ -5,6 +5,8 @@ pub mod badge;
 pub mod button;
 pub mod check;
 pub mod chip;
+pub mod drop;
+pub mod face;
 pub mod field;
 pub mod group;
 pub mod markdown;

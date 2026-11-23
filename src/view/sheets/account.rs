@@ -276,7 +276,7 @@ impl Flow {
                     Done::Added => {
                         let left = *self.opened_private.peek();
                         if !left && self.pending.peek().queue.is_empty() && self.added.peek().is_empty() {
-                            self.done(trf("%@ hinzugefügt", &[&name]), Vec::new(), Start::Microsoft);
+                            self.done(trf("%@ hinzugefügt", &[&name]), Start::Microsoft);
                             return;
                         }
                         self.private_left_open.set(left);
@@ -388,8 +388,7 @@ impl Flow {
                         [only] => trf("%@ hinzugefügt", &[&only.name]),
                         _ => trf("%lld Offline-Accounts hinzugefügt.", &[&accounts.len()]),
                     };
-                    let ids: Vec<String> = accounts.iter().map(|a| a.id.to_string()).collect();
-                    self.done(text, ids, Start::Offline);
+                    self.done(text, Start::Offline);
                 }
                 Ok(Ok(_)) => self.save_error.set(Some(Problem::plain(tr("Diese Namen gibt es inzwischen schon.")))),
                 Ok(Err(e)) => self.save_error.set(Some(forms::explain(&e))),
@@ -427,17 +426,17 @@ impl Flow {
         sheet::close(self.store.ui);
     }
 
-    fn onward(self, added: Vec<String>) {
+    fn onward(self) {
         self.stop();
-        crate::view::sheets::after_first_account(self.store, added);
+        crate::view::sheets::after_first_account(self.store);
     }
 
     /// Leaves the sheet after accounts were added: on the first run straight on to the first instance, else closed, with
     /// a toast that offers `again` for the next one.
-    fn done(self, text: String, added: Vec<String>, again: Start) {
+    fn done(self, text: String, again: Start) {
         let store = self.store;
         if first_run(store) {
-            self.onward(added);
+            self.onward();
         } else {
             self.finish();
         }
@@ -934,7 +933,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             let more = act(again, None, move || flow.start(Via::Window));
             if onward {
                 parts.secondary = Some(("account.add.again", more));
-                parts.primary = Some(("account.add.ok", act(tr("Weiter"), None, move || flow.onward(Vec::new()))));
+                parts.primary = Some(("account.add.ok", act(tr("Weiter"), None, move || flow.onward())));
             } else {
                 parts.secondary = Some(("account.add.done", act(tr("Fertig"), None, move || flow.finish())));
                 parts.primary = Some(("account.add.again", more));

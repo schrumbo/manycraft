@@ -667,16 +667,19 @@ pub fn defaults(game_version: &str, loader: &Loader) -> Result<Defaults> {
         std::thread::sleep(CANNED_DELAY);
         let mut mods = vec![canned_ref("fabric-api", "Fabric API", game_version), canned_ref("lithium", "Lithium", game_version), canned_ref("ferrite-core", "FerriteCore", game_version), canned_ref("modernfix", "ModernFix", game_version), canned_ref("sodium", "Sodium", game_version)];
         let mut notes = Vec::new();
+        let mut skipped = Vec::new();
         if !matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
             mods.remove(0);
         }
         if game_version.starts_with("1.8") || game_version.starts_with("1.12") {
             mods.truncate(1);
             notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Lithium", &loader.name(), &game_version]));
+            skipped.push("Lithium".to_owned());
         } else if matches!(loader, Loader::Fabric(_) | Loader::Quilt(_)) {
-            notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Krypton", &loader.name(), &game_version]));
+            notes.push(trf("„%1$@“ gibt es nicht für %2$@ %3$@.", &[&"Gnetum", &loader.name(), &game_version]));
+            skipped.push("Gnetum".to_owned());
         }
-        return Ok(Defaults { mods, notes });
+        return Ok(Defaults { mods, notes, skipped });
     }
     modrinth::default_mods(game_version, loader)
 }
