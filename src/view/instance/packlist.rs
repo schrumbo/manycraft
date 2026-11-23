@@ -23,7 +23,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::{caption, secondary};
-use crate::view::kit::{Bounds, off_ui, open_external, toast, use_theme};
+use crate::view::kit::{Bounds, off_ui, open_external, page, toast, use_theme};
 use crate::view::native;
 use crate::view::sheets::browser;
 use crate::view::store::{Store, use_store};
@@ -361,7 +361,7 @@ impl Component for Packs {
             ScrollView::new().width(Size::fill()).height(Size::flex(1.)).child(rect().width(Size::fill()).children(rows)).into_element()
         };
 
-        let mut root = rect().width(Size::fill()).height(Size::fill()).padding(space::L).spacing(space::S).child(top);
+        let mut root = page::column().height(Size::fill()).spacing(space::S).child(top);
         if let Some(name) = hint {
             let find_id = id.clone();
             root = root.child(bar(&t, Icon::Alert, t.attention_text, trf("Shader brauchen %@. Ohne laden sie nicht.", &[&name])).child(Button::new(format!("instance.{key}.loader"), trf("%@ hinzufügen…", &[&name])).on_press(move |_| browser::find(store, &find_id, Kind::Mod))));

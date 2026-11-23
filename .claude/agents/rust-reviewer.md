@@ -14,7 +14,7 @@ Look for what breaks in real use:
 - Panics: slicing strings by byte, indexing, arithmetic on untrusted values, re-entrant entity updates.
 - Concurrency: blocking the UI thread, stale results from cancelled work, races with file watchers.
 - Logic: edge cases the tests miss, empty and huge inputs, German umlauts, Windows and Linux behaviour.
-- Design: code that duplicates an existing helper, abstractions with one user, tests that cannot fail.
+- Design: code that duplicates an existing helper, abstractions with one user, tests that cannot fail, a quick fix that patches a symptom instead of the root cause, a workaround that makes the next change harder.
 
 Verify each finding in the code before reporting it. Drop anything you cannot show.
 

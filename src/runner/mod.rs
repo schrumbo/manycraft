@@ -215,6 +215,13 @@ impl Runtime {
         Some(Place { frame: place::clamp(place.frame, &works), ..place })
     }
 
+    /// Takes the manager, shown again where the person left it, as the place the next swap and the parked games follow.
+    pub fn follow_manager(&mut self, window: Option<(Rect, Mode)>) {
+        if let Some(place) = self.manager_place(window) {
+            self.place = Some(place);
+        }
+    }
+
     /// The place after the game `playing` with process `pid`, wherever the player moved, resized, maximized or fullscreened it.
     pub fn follow_shown(&mut self, playing: Option<&str>, pid: Option<u32>) -> Option<Place> {
         let pid = pid.filter(|_| !drive::on());

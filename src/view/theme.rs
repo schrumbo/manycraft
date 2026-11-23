@@ -90,20 +90,22 @@ pub mod frame {
     pub const MENU_ROW: f32 = 28.;
     /// Rows a long menu shows before it scrolls.
     pub const MENU_ROWS: usize = 12;
-    /// The widest the content of an instance tab grows.
+    /// The widest the content of an instance tab grows. Pages draw in [`crate::view::kit::page`] instead, which has no such cap.
     pub const CONTENT_MAX: f32 = 760.;
-    /// The widest a run of prose gets, so a long text stays readable in a wide pane.
-    pub const PROSE_MAX: f32 = 720.;
+    /// The space around the content of a page, on every side.
+    pub const GUTTER: f32 = super::space::XL;
+    /// The space between the blocks of a page.
+    pub const SECTION: f32 = super::space::XL;
+    /// The widest a run of prose gets inside a page: a readme or a long description keeps this measure while the page around it is full width.
+    pub const READING: f32 = 720.;
+    /// The content width from which a page sets its blocks side by side.
+    pub const SPLIT: f32 = 960.;
     /// The width of the welcome card on the first run.
     pub const WELCOME: f32 = 440.;
-    /// The width of the welcome card of the Start page.
-    pub const START_WELCOME: f32 = 640.;
     /// The side of the instance picture in the hero of the Start page.
     pub const HERO_FACE: f32 = 72.;
     /// The width of the version select of Schnell spielen.
     pub const QUICK_SELECT: f32 = 160.;
-    /// The widest the Start page gets.
-    pub const START: f32 = 1120.;
     pub const TOAST: f32 = 420.;
     pub const TOASTS: usize = 3;
     pub const TOOLTIP: f32 = 280.;

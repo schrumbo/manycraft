@@ -86,6 +86,7 @@ impl Component for Shell {
             Page::Grid(filter) => GridPage { filter }.into_element(),
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
             Page::Browse(id, kind) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(crate::view::sheets::browser::ContentPage { id, kind, outer: false }).into_element(),
+            Page::Wardrobe => crate::view::wardrobe::WardrobePage.into_element(),
             Page::Chat => ChatPage.into_element(),
             Page::Settings(Pane::General) => super::settings::SettingsPage.into_element(),
             Page::Settings(Pane::Accounts) => AccountsPage.into_element(),

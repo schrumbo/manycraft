@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use freya::prelude::*;
@@ -16,6 +16,7 @@ use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::check;
+use crate::view::kit::drop::DropTarget;
 use crate::view::kit::field::{self, Field};
 use crate::view::kit::group::{Line, group, status};
 use crate::view::kit::sheet::{self, Card, Primary};
@@ -75,7 +76,7 @@ fn picked(libs: &[Library], chosen: &HashSet<String>, known: &HashMap<String, Pr
     libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable() && chosen.contains(&i.key())).filter(|i| seen.insert(profile_of(known, i))).cloned().collect()
 }
 
-fn merge(libs: &mut Vec<Library>, known: &mut HashMap<String, Profile>, found: Vec<Library>, scanned: HashMap<String, Profile>) -> (bool, Vec<String>) {
+fn merge(libs: &mut Vec<Library>, known: &mut HashMap<String, Profile>, found: Vec<Library>, scanned: HashMap<String, Profile>) -> bool {
     let listed: HashSet<Profile> = libs.iter().flat_map(|l| &l.instances).map(|i| profile_of(known, i)).collect();
     let found: Vec<Library> = found
         .into_iter()
@@ -85,7 +86,6 @@ fn merge(libs: &mut Vec<Library>, known: &mut HashMap<String, Profile>, found: V
         })
         .filter(|lib| !lib.instances.is_empty())
         .collect();
-    let fresh: Vec<String> = found.iter().flat_map(|l| &l.instances).filter(|i| i.importable()).map(Found::key).collect();
     let added = !found.is_empty();
     known.extend(scanned);
     for lib in found {
@@ -94,7 +94,7 @@ fn merge(libs: &mut Vec<Library>, known: &mut HashMap<String, Profile>, found: V
             None => libs.push(lib),
         }
     }
-    (added, fresh)
+    added
 }
 
 struct Shown {
@@ -219,8 +219,6 @@ impl Flow {
             }
             match found {
                 Ok((libs, known)) => {
-                    let all: Vec<String> = libs.iter().flat_map(|l| &l.instances).filter(|i| i.importable()).map(Found::key).collect();
-                    self.chosen.write().extend(all);
                     self.known.set(known);
                     self.libs.set(Some(libs));
                 }
@@ -281,12 +279,21 @@ impl Flow {
             };
             let mut libs = self.libs.peek().clone().unwrap_or_default();
             let mut known = self.known.peek().clone();
-            let (added, fresh) = merge(&mut libs, &mut known, found, scanned);
+            let added = merge(&mut libs, &mut known, found, scanned);
             self.note.set(if added { None } else { Some(tr("In diesem Ordner liegt keine neue Instanz, die sich übernehmen lässt.")) });
             self.known.set(known);
             self.libs.set(Some(libs));
-            self.chosen.write().extend(fresh);
         });
+    }
+
+    fn dropped(self, paths: Vec<PathBuf>) {
+        let (packs, other): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| packable(p));
+        if packs.is_empty() && !other.is_empty() {
+            let mut note = self.note;
+            note.set(Some(tr("Nur .mrpack- und .zip-Dateien lassen sich installieren.")));
+            return;
+        }
+        self.hand_over(packs.into_iter().map(Source::File).collect());
     }
 
     fn pick_files(mut self) {
@@ -296,7 +303,7 @@ impl Flow {
         self.picking.set(true);
         spawn_in_window(async move {
             let title = tr("Modpack wählen");
-            let paths = off_ui(move || native::pick_files(&title, "", &[], true)).await.unwrap_or_default();
+            let paths = off_ui(move || native::pick_files(&title, "Modpack", &["mrpack", "zip"], true)).await.unwrap_or_default();
             if !self.alive() {
                 return;
             }
@@ -376,6 +383,10 @@ impl Flow {
         sheet::close(self.store.ui);
         install::start(self.store, sources);
     }
+}
+
+fn packable(path: &Path) -> bool {
+    path.is_dir() || path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mrpack") || e.eq_ignore_ascii_case("zip"))
 }
 
 fn primary_held(m: Modifiers) -> bool {
@@ -466,8 +477,9 @@ impl Component for Import {
             .child(super::instance::origins(self.origin, None))
             .child(para(&t, tr("Kopiert Instanzen. Der andere Launcher bleibt unverändert, Accounts werden nicht übernommen."), font::CALLOUT, t.text2))
             .child(pick_body(flow, &t, &list, (scroll, viewport, content), list_max, loading));
+        let body = DropTarget::new(body, tr("Zum Installieren loslassen"), move |paths| flow.dropped(paths));
         Card::new("import", tr("Instanz erstellen"))
-            .width(frame::SHEET)
+            .width(super::instance::WIDE)
             .body(body)
             .leading(folder)
             .primary(Primary { label, disabled: blocked, danger: false, busy: false, run: EventHandler::new(move |_| flow.start()) })
@@ -618,7 +630,7 @@ impl Component for PickFile {
         let t = use_theme();
         let a11y = use_a11y();
         let focus = use_focus(a11y);
-        let label = tr("Aus Datei importieren…");
+        let label = tr("Modpack-Datei wählen…");
         let busy = self.busy;
         let keyed = self.press.clone();
         let clicked = self.press.clone();
@@ -643,7 +655,7 @@ impl Component for PickFile {
             r = r.border(border);
         }
         let pick = Line::new("import.file", label)
-            .hint(tr("Modpack von Modrinth, Export oder Instanz aus Prism"))
+            .hint(tr(".mrpack von Modrinth oder ein Export als .zip. Du kannst die Datei auch hierher ziehen."))
             .control(icon(&t, Icon::ChevronRight, iconsize::S, t.text3))
             .dim(busy)
             .on_press(move |_| {
@@ -811,6 +823,13 @@ mod tests {
     }
 
     #[test]
+    fn only_packs_zips_and_folders_are_taken_from_a_drop() {
+        assert!(packable(Path::new("Farm.mrpack")) && packable(Path::new("Farm.MRPACK")) && packable(Path::new("export.zip")));
+        assert!(!packable(Path::new("shot.png")) && !packable(Path::new("mod.jar")) && !packable(Path::new("noext")));
+        assert!(packable(&std::env::temp_dir()));
+    }
+
+    #[test]
     fn the_subtitle_names_version_loader_and_mod_count() {
         assert_eq!(subtitle(&found("a", "A", Loader::Fabric(Some("0.16.5".into())), 12)), "Minecraft 1.21.1 · Fabric 0.16.5 · 12 Mods");
         assert_eq!(subtitle(&found("a", "A", Loader::Vanilla, 0)), "Minecraft 1.21.1");
@@ -872,14 +891,11 @@ mod tests {
         let again = library(vec![found("a", "A", Loader::Vanilla, 0)]);
         let mut scanned = HashMap::new();
         scanned.insert(profile_key(&again.instances[0]), (PathBuf::from("one"), "x".to_owned()));
-        let (added, fresh) = merge(&mut libs, &mut known, vec![again], scanned);
-        assert!(!added && fresh.is_empty());
+        assert!(!merge(&mut libs, &mut known, vec![again], scanned));
         let other = library(vec![found("n", "N", Loader::Vanilla, 0)]);
         let mut scanned = HashMap::new();
         scanned.insert(profile_key(&other.instances[0]), (PathBuf::from("two"), "x".to_owned()));
-        let (added, fresh) = merge(&mut libs, &mut known, vec![other], scanned);
-        assert!(added);
-        assert_eq!(fresh, vec!["prism:n".to_owned()]);
+        assert!(merge(&mut libs, &mut known, vec![other], scanned));
         assert_eq!(libs[0].instances.len(), 2);
     }
 }

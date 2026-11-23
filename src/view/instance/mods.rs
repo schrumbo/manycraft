@@ -14,7 +14,7 @@ use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Menu};
 use crate::view::kit::select::Select;
 use crate::view::kit::text::{caption, heading, line, mono, secondary, spacer};
-use crate::view::kit::{Bounds, off_ui, use_theme};
+use crate::view::kit::{Bounds, off_ui, page, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use list::{Data, Row, Sort};
@@ -424,10 +424,8 @@ impl Component for Mods {
         };
 
         let drop_ctx = ctx.clone();
-        let mut root = rect()
-            .width(Size::fill())
+        let mut root = page::column()
             .height(Size::fill())
-            .padding(space::L)
             .spacing(space::S)
             .on_global_file_hover(move |_| dropping.set_if_modified(true))
             .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))

@@ -10,7 +10,7 @@ use freya::prelude::*;
 use freya_core::elements::paragraph::ParagraphHolderInner;
 
 use super::text::{hairline, line};
-use super::{open_external, use_theme};
+use super::{open_external, page, use_theme};
 use crate::view::theme::{Theme, faces, font, frame, space};
 
 mod html;
@@ -738,7 +738,7 @@ pub fn view(t: &Theme, blocks: &[Block], color: Color) -> Element {
         let block = view_block(t, b, color);
         match b {
             Block::Table { .. } | Block::Images(_) | Block::Code(_) | Block::Rule => block,
-            _ => rect().width(Size::fill()).max_width(Size::px(frame::PROSE_MAX)).child(block).into_element(),
+            _ => page::reading(block).into_element(),
         }
     });
     rect().width(Size::fill()).spacing(space::M).children(column).into_element()
