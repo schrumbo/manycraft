@@ -22,7 +22,7 @@ use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, heading, line, secondary};
-use crate::view::kit::{Bounds, use_theme};
+use crate::view::kit::{Bounds, use_theme, page};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, font, frame, iconsize, space};
 use crate::view::ui::Page;
@@ -331,7 +331,7 @@ impl Component for LibraryPage {
         let on_screen = lines(store, &hits, &infos);
         let parts = sections(&hits, grouped);
         let folded = shared.folded.read().clone();
-        let mut body = rect().width(Size::fill()).padding((space::L, space::XL)).spacing(space::L);
+        let mut body = page::column();
         if !installs.is_empty() && !searching {
             body = body.child(card::Arriving { entries: installs });
         }
@@ -357,7 +357,7 @@ impl Component for LibraryPage {
         if !searching {
             body = body.child(recent::Recent);
         }
-        ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(body).into_element()
+        page::scrolling(scroll, body)
     }
 }
 

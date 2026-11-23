@@ -31,6 +31,8 @@ pub enum Page {
     Library,
     /// Modpacks and content from Modrinth, each installable as a new instance.
     Discover,
+    /// Skins and capes, to switch between and to add to.
+    Wardrobe,
     /// The mosaic of every game, or of one batch, or of those that need the person.
     Grid(Filter),
     Instance(String),
@@ -278,7 +280,7 @@ pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
         Page::Grid(_) => Some((winstate::Page::Grid, None)),
         Page::Instance(id) | Page::Browse(id, _) => Some((winstate::Page::Instance, Some(id.clone()))),
         Page::Chat => Some((winstate::Page::Chat, None)),
-        Page::Settings(_) => None,
+        Page::Wardrobe | Page::Settings(_) => None,
     }
 }
 

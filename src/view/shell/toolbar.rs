@@ -1,7 +1,10 @@
 use freya::prelude::*;
 
 use crate::core::i18n::{tr, trf};
+use crate::view::commands::Command;
 use crate::view::grid;
+use crate::view::icons::Icon;
+use crate::view::kit::button::Button;
 use crate::view::instance;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, title};
@@ -28,9 +31,10 @@ impl Component for Toolbar {
             Page::Start => (String::new(), None),
             Page::Library => (tr("Instanzen"), (!m.instances.is_empty()).then(|| if m.instances.len() == 1 { tr("1 Instanz") } else { trf("%lld Instanzen", &[&m.instances.len()]) })),
             Page::Discover => (tr("Entdecken"), Some(if ui.discover.read().kind == crate::core::modrinth::Kind::Modpack { tr("Von Modrinth, jedes Modpack wird eine eigene Instanz") } else { tr("Von Modrinth") })),
+            Page::Wardrobe => (tr("Garderobe"), Some(tr("Skins und Umhänge"))),
             Page::Grid(filter) => {
                 let name = match filter {
-                    Filter::All => tr("Alle Batches"),
+                    Filter::All => tr("Batches"),
                     Filter::Attention => tr("Brauchen dich"),
                     Filter::Batch(id) => m.batch(id).map_or_else(|| tr("Batch"), |b| b.name.clone()),
                 };
@@ -80,6 +84,9 @@ impl Component for Toolbar {
             && grid::tools::shown(&m, filter)
         {
             bar = bar.child(grid::tools::Tools { filter: filter.clone(), room });
+        }
+        if matches!(page, Page::Grid(_)) && !m.accounts.is_empty() {
+            bar = bar.child(Button::icon("toolbar.chat", Icon::Message, tr("Chat")).tip(Command::OpenChat.tip()).on_press(move |_| Command::OpenChat.run(store)));
         }
         match &page {
             Page::Library => bar = bar.child(crate::view::library::Tools { room }),
