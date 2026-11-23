@@ -21,7 +21,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, hairline, line, para};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::spinner;
+use crate::view::kit::progress::Wait;
 use crate::view::kit::{off_ui, open_external, ring, use_arrows, use_theme};
 use crate::view::readme::{self, Body, loading, problem_of, quiet};
 use crate::view::sheets::instance::{Load, problem_view};
@@ -831,7 +831,7 @@ fn tail_view(t: &Theme, tail: Tail, id: &str, number: &str, replaces: Option<Str
     let label = trf("Version %@ hinzufügen", &[&number]);
     let button = || Button::new(format!("browser.project.version.{id}.add"), label.clone()).glyph(Icon::Plus).not_focusable().label_max(frame::VERSION_ACTION_LABEL);
     match tail {
-        Tail::Busy => Some(spinner::waiting(t, tr("Wird hinzugefügt …"))),
+        Tail::Busy => Some(Wait::working(format!("browser.project.version.{id}.adding"), tr("Wird hinzugefügt")).into_element()),
         Tail::Added => Some(status_line(t, Icon::Check, t.success_text, tr("Hinzugefügt"))),
         Tail::Add { .. } => {
             let add = add.clone();

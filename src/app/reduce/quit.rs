@@ -148,7 +148,9 @@ mod tests {
             m.games.insert(g.key.clone(), g);
         }
         let fx = run(&mut m, &s, Instant::now(), Event::RestartForUpdate);
-        assert_eq!(resumed(&fx), [vec![key, "dead".to_owned()]]);
+        let mut expected = vec![key, "dead".to_owned()];
+        expected.sort();
+        assert_eq!(resumed(&fx), [expected]);
         assert_eq!(quits(&fx), ["Quit { keep: true }"]);
         let fx = run(&mut with(Phase::Menu), &s, Instant::now(), Event::RestartForUpdate);
         assert_eq!(resumed(&fx), [Vec::<String>::new()], "an empty note clears an older one");

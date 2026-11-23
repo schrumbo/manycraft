@@ -296,6 +296,8 @@ pub struct Model {
     pub error: Option<String>,
     /// Batches whose game is being installed, with the percent done.
     pub preparing: HashMap<String, u8>,
+    /// The same installs with the step they are on and their pace, by batch.
+    pub meters: HashMap<String, super::meter::Meter>,
     /// Changes whenever an instance changes place in the sort order, so views know when to sort again.
     pub order_seq: u64,
     /// Last events of every instance by key, oldest first, at most `history::KEPT` each.

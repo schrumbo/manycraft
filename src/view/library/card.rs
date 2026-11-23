@@ -10,6 +10,7 @@ use crate::view::instance::{InstanceIcon, Mini};
 use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
+use crate::view::kit::progress::Wait;
 use crate::view::kit::text::{body, caption};
 use crate::view::kit::{ring, use_theme};
 use crate::view::shell::instance_items;
@@ -156,8 +157,12 @@ impl Component for Ghost {
                 }
             })
             .child(side)
-            .child(body(&t, e.name.clone()).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis))
-            .child(caption(&t, e.state()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+            .child(body(&t, e.name.clone()).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis));
+        let card = if matches!(e.stage, Stage::Running(_)) && !e.stopping() {
+            card.child(Wait::new(format!("library.arriving.{id}.progress"), e.meter.clone()))
+        } else {
+            card.child(caption(&t, e.state()).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+        };
         if failed {
             card.child(
                 rect()

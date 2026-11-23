@@ -29,7 +29,7 @@ use super::forms::{self, Plain, Problem};
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const CANNED_DELAY: Duration = Duration::from_millis(450);
-const CANNED_STEPS: usize = 8;
+pub(super) const CANNED_STEPS: usize = 8;
 
 static SAVING: Mutex<()> = Mutex::new(());
 
@@ -1083,7 +1083,7 @@ pub fn launcher_folder(folder: &Path) -> Vec<Library> {
 
 /// Imports `found` as a new instance of its own name; see `launchers::import`. A driven instance runs the same steps,
 /// then makes an empty instance of the same version and loader without reading the other launcher's files.
-pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<setup::Instance> {
     if !drive::fenced("launcher import", found.key()) {
         return launchers::import(found, &found.name, take, cancel, progress);
     }
@@ -1091,7 +1091,7 @@ pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(
         if cancel.load(Ordering::SeqCst) {
             bail!(mrpack::Refused::Cancelled);
         }
-        progress(step, CANNED_STEPS);
+        progress(mrpack::Phase::Copying, step, CANNED_STEPS);
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {
@@ -1108,7 +1108,7 @@ pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(
 
 /// Imports a `.mrpack`, Prism export or Prism instance folder as a new instance; see `mrpack::import`.
 /// A driven instance runs the same checks, then makes an empty one of the pack's name without downloading.
-pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<setup::Instance> {
     if !drive::fenced("mrpack import", path.display()) {
         return mrpack::import(path, cancel, progress);
     }
@@ -1117,7 +1117,7 @@ pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(
         if cancel.load(Ordering::SeqCst) {
             bail!(mrpack::Refused::Cancelled);
         }
-        progress(step, CANNED_STEPS);
+        progress(mrpack::Phase::Copying, step, CANNED_STEPS);
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {

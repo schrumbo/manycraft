@@ -12,7 +12,9 @@ use crate::core::packs::{self, Catalog, Installed, Modrinth};
 use crate::core::modrinth::{self, Dependency, Details, File, Filter, Hashes, Hit, Kind, Page, Search, Shot, Sort, Support, Update, Version};
 use crate::core::{drive, paths};
 
-use super::remote::{CANNED_DELAY, canned_hits};
+use super::remote::{CANNED_DELAY, CANNED_STEPS, canned_hits};
+
+const CANNED_PACK_BYTES: u64 = 48 << 20;
 
 const CANNED_SEARCH_DELAY: Duration = Duration::from_millis(300);
 const CANNED_MANY_DELAY: Duration = Duration::from_millis(40);
@@ -328,12 +330,15 @@ pub fn put_back(instance_dir: &Path, entry: &str) -> Result<PathBuf> {
 }
 
 /// Downloads the newest `.mrpack` of a modpack `filter` takes and returns its path.
-pub fn fetch_modpack(project_id: &str, title: &str, filter: &Filter) -> Result<PathBuf> {
+pub fn fetch_modpack(project_id: &str, title: &str, filter: &Filter, progress: &(dyn Fn(u64, Option<u64>) + Sync)) -> Result<PathBuf> {
     if drive::fenced("modpack fetch", project_id) {
-        std::thread::sleep(CANNED_DELAY);
+        for step in 0..=CANNED_STEPS as u64 {
+            progress(step * CANNED_PACK_BYTES / CANNED_STEPS as u64, Some(CANNED_PACK_BYTES));
+            std::thread::sleep(CANNED_DELAY);
+        }
         return canned_modpack(project_id, title);
     }
-    packs::fetch_modpack(&Modrinth.file_for(project_id, title, filter)?)
+    packs::fetch_modpack(&Modrinth.file_for(project_id, title, filter)?, progress)
 }
 
 /// A gallery picture as a local file.

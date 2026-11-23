@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
+use super::super::meter::{self, Meter, Unit};
 use super::super::model::{ChatLine, Game, Model, Phase, rank};
 use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, HeldJoin, Reveal};
@@ -166,11 +167,14 @@ fn note(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: Kind, server: Op
 
 fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
     match report {
-        Report::Preparing { batch, percent } => {
-            m.preparing.insert(batch, percent);
+        Report::Preparing { batch, progress } => {
+            let step = meter::install_step(progress.stage);
+            m.preparing.insert(batch.clone(), progress.percent());
+            m.meters.entry(batch).or_insert_with(|| Meter::begin(step.clone(), env.now)).note(&step, progress.done as u64, progress.total as u64, Unit::Count, env.now);
         }
         Report::Prepared { batch } => {
             m.preparing.remove(&batch);
+            m.meters.remove(&batch);
         }
         Report::Launched { key, plain } => {
             if m.games.get(&key).is_some_and(|i| !i.stopping) {
@@ -181,6 +185,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         Report::Failed { key, reason, login, offline } => {
             if let Some(i) = m.games.get(&key) {
                 m.preparing.remove(&i.batch_id);
+                m.meters.remove(&i.batch_id);
             }
             let to = if login {
                 Phase::LoginNeeded

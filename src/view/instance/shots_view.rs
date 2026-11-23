@@ -10,11 +10,11 @@ use crate::core::shots::Shot;
 use crate::view::commands::Shortcut;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::{Button, Look};
-use crate::view::kit::spinner::Spinner;
 use crate::view::kit::text::{figure, heading, secondary, strong};
 use crate::view::kit::{after, use_theme};
 use crate::view::theme::{font, iconsize, space};
 
+const SKELETON_SHARE: f32 = 60.;
 const DOUBLE: Duration = Duration::from_millis(400);
 const SETTLE: Duration = Duration::from_millis(80);
 const MIN_ZOOM: f32 = 0.05;
@@ -290,7 +290,7 @@ impl Component for Viewer {
             })
             .on_global_pointer_up(move |_: Event<PointerEventData>| drag.set_if_modified(None));
         surface = match picture {
-            None => surface.center().child(Spinner),
+            None => surface.center().child(rect().width(Size::percent(SKELETON_SHARE)).height(Size::percent(SKELETON_SHARE)).corner_radius(t.shape.tile).background(t.hover)),
             Some(None) => surface.center().spacing(space::M).child(icon(&t, Icon::ImageOff, iconsize::L * 2., t.text3)).child(heading(&t, tr("Das Bild lässt sich nicht öffnen."))),
             Some(Some(f)) => {
                 let left = (area.0 - shown.0) / 2. + pan.0;

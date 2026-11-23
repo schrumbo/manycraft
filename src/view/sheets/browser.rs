@@ -35,7 +35,6 @@ use crate::view::kit::field::{self, Field};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{Card, Primary};
-use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
 use crate::view::kit::{after, at_least, button_focused, off_ui, toast, use_theme};

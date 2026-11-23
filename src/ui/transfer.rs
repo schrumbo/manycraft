@@ -103,7 +103,7 @@ pub(super) fn start(path: PathBuf, cx: &mut App) {
     let stop = Arc::clone(&cancel);
     let source = path.clone();
     let job = cx.background_spawn(async move {
-        let progress = |done: usize, total: usize| {
+        let progress = |_: crate::core::mrpack::Phase, done: usize, total: usize| {
             let _ = tx.try_send((done * 100).checked_div(total).unwrap_or(0).min(100) as u8);
         };
         remote::import_instance(&path, &stop, &progress)
@@ -160,7 +160,7 @@ pub fn import_found(items: Vec<Found>, take: Take, cx: &mut App) {
             let stop = Arc::clone(&cancel);
             let item = found.clone();
             let job = cx.background_spawn(async move {
-                let progress = |done: usize, total: usize| {
+                let progress = |_: crate::core::mrpack::Phase, done: usize, total: usize| {
                     let _ = tx.try_send((done * 100).checked_div(total).unwrap_or(0).min(100) as u8);
                 };
                 remote::import_found(&item, take, &stop, &progress)

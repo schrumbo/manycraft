@@ -236,7 +236,7 @@ fn import_to(instance: &Instance, name: &str, root: &Path, lookup: Lookup) -> Re
         bail!("{} cannot be imported: {reason}", instance.name);
     }
     let spec = launchers::Spec { name, label: &instance.name, game_version: instance.game_version.as_deref(), loader: instance.loader.clone(), game_dir: &instance.game_dir, take: launchers::Take { settings: true, worlds: false } };
-    launchers::copy_instance(&spec, root, lookup, &AtomicBool::new(false), &|_, _| {})
+    launchers::copy_instance(&spec, root, lookup, &AtomicBool::new(false), &|_, _, _| {})
 }
 
 pub(super) fn copy_file(from: &Path, to: &Path) -> Result<()> {

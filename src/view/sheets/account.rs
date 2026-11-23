@@ -22,7 +22,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::group::note;
 use crate::view::kit::sheet::{self, Card, Primary};
-use crate::view::kit::spinner;
+use crate::view::kit::progress::Wait;
 use crate::view::kit::text::{line, mono, para, strong};
 use crate::view::kit::{after, at_least, off_thread, open_external, ring, toast, use_theme};
 use crate::view::store::{Store, use_store};
@@ -458,12 +458,14 @@ fn act(label: String, disabled: Option<String>, mut run: impl FnMut() + 'static)
     Primary { label, disabled, danger: false, busy: false, run: EventHandler::new(move |_| run()) }
 }
 
-fn waiting(t: &Theme, text: String) -> Element {
-    spinner::beside(para(t, text, font::CALLOUT, t.text2).width(Size::auto()))
+const SIGN_IN_STEPS: usize = 3;
+
+fn waiting(id: &str, text: String) -> Element {
+    Wait::working(id, text).into_element()
 }
 
-fn waiting_long(t: &Theme, text: String) -> Element {
-    spinner::still(t, para(t, text, font::CALLOUT, t.text2).width(Size::auto()))
+fn signing_in(at: usize, text: String) -> Element {
+    Wait::stepped(format!("account.add.step{at}"), text, at, SIGN_IN_STEPS).into_element()
 }
 
 fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
@@ -707,7 +709,7 @@ fn choose(flow: Flow, t: &Theme, ids: [AccessibilityId; 2], offline: bool) -> Pa
             .child(rect().width(Size::fill()).horizontal().spacing(space::S).content(Content::flex()).child(field).child(test));
         match check {
             Check::Idle => {}
-            Check::Running => block = block.child(waiting(t, tr("Proxy wird geprüft …"))),
+            Check::Running => block = block.child(waiting("account.proxy.check", tr("Proxy wird geprüft"))),
             Check::Passed => block = block.child(notice(t, Icon::CircleCheck, t.success_text, tr("Der Proxy erreicht das Internet."))),
             Check::Failed(why) => block = block.child(problem_view(t, "account.add.check", &why, flow.details)),
         }
@@ -857,7 +859,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
     match ms {
         Ms::Requesting => {
             let text = if *flow.windowed.read() { tr("Anmeldefenster wird geöffnet …") } else { tr("Code wird angefordert …") };
-            parts.body = rect().width(Size::fill()).padding((space::L, 0.)).child(waiting(t, text)).into_element();
+            parts.body = rect().width(Size::fill()).padding((space::L, 0.)).child(signing_in(1, text)).into_element();
         }
         Ms::Window => {
             let instruction = match pending.again.as_ref().map(|a| &a.name).or(pending.queue.first()) {
@@ -868,12 +870,12 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
                 .width(Size::fill())
                 .spacing(spacing)
                 .child(para(t, instruction, font::BODY, t.text1))
-                .child(waiting_long(t, tr("Warte auf deine Anmeldung im Fenster …")))
+                .child(signing_in(2, tr("Warte auf deine Anmeldung im Fenster")))
                 .child(rect().horizontal().child(Button::new("account.add.browser", tr("Im Browser anmelden")).plain().glyph(Icon::External).on_press(move |_| flow.start(Via::Browser))))
                 .into_element();
         }
         Ms::Finishing => {
-            parts.body = rect().width(Size::fill()).padding((space::L, 0.)).child(waiting(t, tr("Anmeldung wird abgeschlossen …"))).into_element();
+            parts.body = rect().width(Size::fill()).padding((space::L, 0.)).child(signing_in(3, tr("Anmeldung wird abgeschlossen"))).into_element();
         }
         Ms::Code(code) => {
             let copied = *flow.copied.read();
@@ -899,7 +901,7 @@ fn microsoft_parts(flow: Flow, t: &Theme, ms: &Ms, can_back: bool) -> Parts {
             let state = match copied {
                 Some(Copied::Code) => notice(t, Icon::Check, t.success_text, tr("Code kopiert. Auf der Seite einfügen.")),
                 Some(Copied::Link) => notice(t, Icon::Check, t.success_text, tr("Link kopiert. Der Code steckt schon darin.")),
-                None => waiting_long(t, tr("Warte auf deine Anmeldung im Browser …")),
+                None => signing_in(2, tr("Warte auf deine Anmeldung im Browser")),
             };
             let mut body = rect().width(Size::fill()).spacing(spacing);
             if code.fallback {

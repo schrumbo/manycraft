@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use freya::prelude::*;
 
@@ -12,14 +13,14 @@ use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
 use crate::core::launchers::{Found, Take};
 use crate::core::modrinth::Filter;
-use crate::core::mrpack::{self, Refused};
+use crate::app::meter::{Meter, Unit};
+use crate::core::mrpack::{self, Phase, Refused};
 use crate::ui::catalog;
 use crate::ui::remote;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
-use crate::view::kit::spinner::Spinner;
-use crate::view::kit::text::{figure, line, para, strong};
+use crate::view::kit::progress::Wait;
 use crate::view::kit::{after, toast, use_theme};
 use crate::ui::forms::explain_as;
 use crate::view::store::{Store, use_store};
@@ -56,6 +57,13 @@ impl Source {
         }
     }
 
+    fn first_step(&self) -> String {
+        match self {
+            Source::Pack { .. } => tr("Modpack wird geladen"),
+            Source::File(_) | Source::Found(..) => tr("Wird gelesen"),
+        }
+    }
+
     fn gone(&self) -> bool {
         matches!(self, Source::File(path) if !path.exists())
     }
@@ -77,6 +85,8 @@ pub struct Install {
     pub id: u64,
     pub name: String,
     pub stage: Stage,
+    /// The step it is on, with its figures and pace.
+    pub meter: Meter,
     /// Set to stop it; the entry stays until it stopped.
     pub cancel: Arc<AtomicBool>,
     source: Source,
@@ -99,8 +109,7 @@ impl Install {
         match &self.stage {
             _ if self.stopping() => tr("Bricht ab …"),
             Stage::Queued => tr("Wartet …"),
-            Stage::Running(None) => tr("Wird vorbereitet …"),
-            Stage::Running(Some(p)) => trf("Wird installiert · %lld %", &[p]),
+            Stage::Running(_) => self.meter.line(Instant::now()),
             Stage::Failed(_) => tr("Nicht installiert"),
         }
     }
@@ -108,7 +117,7 @@ impl Install {
 
 enum Report {
     Name(String),
-    Percent(u8),
+    Step { step: String, done: u64, total: u64, unit: Unit },
     Done(anyhow::Result<Instance>),
 }
 
@@ -130,7 +139,7 @@ pub fn begin(store: Store, sources: Vec<Source>) -> bool {
     if sources.is_empty() {
         return false;
     }
-    let made: Vec<Install> = sources.into_iter().map(|source| Install { id: NEXT.fetch_add(1, Ordering::Relaxed), name: source.name(), stage: Stage::Queued, cancel: Arc::new(AtomicBool::new(false)), source }).collect();
+    let made: Vec<Install> = sources.into_iter().map(|source| Install { id: NEXT.fetch_add(1, Ordering::Relaxed), name: source.name(), stage: Stage::Queued, meter: Meter::begin(source.first_step(), Instant::now()), cancel: Arc::new(AtomicBool::new(false)), source }).collect();
     let mut installs = store.ui.installs;
     installs.write().extend(made);
     pump(store);
@@ -201,15 +210,21 @@ async fn run(store: Store, id: u64) {
         close(store, id);
         return;
     }
-    update(store, id, |i| i.stage = Stage::Running(None));
+    update(store, id, |i| {
+        i.stage = Stage::Running(None);
+        i.meter = Meter::begin(i.source.first_step(), Instant::now());
+    });
     let (tx, rx) = async_channel::unbounded::<Report>();
     let (source, stop) = (entry.source.clone(), Arc::clone(&entry.cancel));
     let work = std::thread::Builder::new().name("install".into()).spawn(move || {
-        let progress = |done: usize, total: usize| {
-            let _ = tx.try_send(Report::Percent((done * 100).checked_div(total).unwrap_or(0).min(100) as u8));
+        let progress = |phase: Phase, done: usize, total: usize| {
+            let _ = tx.try_send(Report::Step { step: phase_step(phase), done: done as u64, total: total as u64, unit: Unit::Count });
+        };
+        let downloaded = |got: u64, total: Option<u64>| {
+            let _ = tx.try_send(Report::Step { step: tr("Modpack wird geladen"), done: got, total: total.unwrap_or(0), unit: Unit::Bytes });
         };
         let result = match &source {
-            Source::Pack { project, title, icon, filter } => catalog::fetch_modpack(project, title, filter).and_then(|path| {
+            Source::Pack { project, title, icon, filter } => catalog::fetch_modpack(project, title, filter, &downloaded).and_then(|path| {
                 if stop.load(Ordering::SeqCst) {
                     anyhow::bail!(Refused::Cancelled);
                 }
@@ -239,24 +254,23 @@ async fn run(store: Store, id: u64) {
         while let Ok(next) = rx.try_recv() {
             reports.push(next);
         }
-        let (mut name, mut percent) = (None, None);
+        let (mut name, mut moved) = (None, None);
         for report in reports {
             match report {
                 Report::Name(n) => name = Some(n),
-                Report::Percent(p) => percent = Some(p),
+                Report::Step { step, done, total, unit } => moved = Some((step, done, total, unit)),
                 Report::Done(done) => result = Some(done),
             }
         }
-        let now = find(store, id);
-        let renamed = name.filter(|n| now.as_ref().is_some_and(|i| i.name != *n));
-        let moved = percent.map(|p| Stage::Running(Some(p))).filter(|s| now.as_ref().is_some_and(|i| i.stage != *s));
+        let renamed = name.filter(|n| find(store, id).is_some_and(|i| i.name != *n));
         if renamed.is_some() || moved.is_some() {
             update(store, id, |i| {
                 if let Some(n) = renamed {
                     i.name = n;
                 }
-                if let Some(s) = moved {
-                    i.stage = s;
+                if let Some((step, done, total, unit)) = moved {
+                    i.meter.note(&step, done, total, unit, Instant::now());
+                    i.stage = Stage::Running(i.meter.percent());
                 }
             });
         }
@@ -307,6 +321,15 @@ fn failed(store: Store, id: u64, why: String) {
     toast::show_action(store.ui, why, tr("Erneut versuchen"), EventHandler::new(move |_| retry(store, id)));
 }
 
+fn phase_step(phase: Phase) -> String {
+    match phase {
+        Phase::Reading => tr("Wird gelesen"),
+        Phase::Matching => tr("Mods werden bei Modrinth gesucht"),
+        Phase::Downloading => tr("Mods werden geladen"),
+        Phase::Copying => tr("Dateien werden geschrieben"),
+    }
+}
+
 fn is_cancelled(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<Refused>() == Some(&Refused::Cancelled))
 }
@@ -335,13 +358,16 @@ fn explain(label: &str, e: &anyhow::Error) -> String {
     }
 }
 
-/// A ring that fills with `percent`; while nothing is counted yet it turns, and it stands still while it waits.
+/// The share of the ring drawn while nothing is counted yet.
+const IDLE_RING: u8 = 25;
+
+/// A ring that fills with `percent`; while nothing is counted yet it shows a quarter, and the step beside it says what runs.
 pub fn ring(t: &Theme, stage: &Stage, size: f32) -> Element {
     match stage {
-        Stage::Running(Some(p)) => {
+        Stage::Running(percent) => {
             let r = 9.;
             let full = std::f32::consts::TAU * r;
-            let done = full * f32::from((*p).min(100)) / 100.;
+            let done = full * f32::from(percent.unwrap_or(IDLE_RING).min(100)) / 100.;
             let hex = |c: Color| format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
             let svg = format!(
                 r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-width="3"><circle cx="12" cy="12" r="{r}" stroke="{}" stroke-opacity="{}"/><circle cx="12" cy="12" r="{r}" stroke="{}" stroke-linecap="round" stroke-dasharray="{done:.2} {full:.2}" transform="rotate(-90 12 12)"/></svg>"#,
@@ -351,42 +377,38 @@ pub fn ring(t: &Theme, stage: &Stage, size: f32) -> Element {
             );
             SvgViewer::new(Bytes::from(svg)).width(Size::px(size)).height(Size::px(size)).show_loader(false).into_element()
         }
-        Stage::Running(None) => rect().width(Size::px(size)).height(Size::px(size)).center().child(Spinner).into_element(),
         Stage::Queued => icon(t, Icon::Clock, size, t.text3),
         Stage::Failed(_) => icon(t, Icon::CircleAlert, size, t.danger_text),
     }
 }
 
-/// A Play slot that shows work on its way: a bar filled to `share` percent with `state` on it, and Abbrechen.
+/// The install of Minecraft's files for the game of instance `id` played alone, while it runs: its step, figures and pace.
+pub fn game_meter(m: &crate::app::model::Model, id: &str) -> Option<Meter> {
+    m.solo_games(id).filter(|g| matches!(g.phase, crate::app::model::Phase::Starting { .. }) && g.memory_wait.is_none()).find_map(|g| m.meters.get(&g.batch_id).cloned())
+}
+
+/// A Play slot that shows work on its way: a bar with its step and figures, and Abbrechen.
 #[derive(PartialEq)]
 pub struct Progress {
     pub id: String,
-    pub state: String,
-    pub share: f32,
+    pub meter: Meter,
     pub stopping: bool,
     pub on_cancel: EventHandler<()>,
 }
 
 impl Component for Progress {
     fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let state = self.state.clone();
-        let spot = use_spot(&format!("{}.progress", self.id), "progressbar", &state, false);
-        let share = self.share;
-        let bar = rect()
-            .a11y_role(AccessibilityRole::ProgressIndicator)
-            .a11y_alt(state.clone())
-            .width(Size::flex(1.))
-            .height(Size::px(control::M))
-            .corner_radius(t.shape.control)
-            .background(t.control)
-            .overflow(Overflow::Clip)
-            .on_sized(spot)
-            .child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::percent(share)).height(Size::fill()).background(t.accent.with_af32(frame::TILE_WASH * 2.)))
-            .child(rect().width(Size::fill()).height(Size::fill()).center().child(figure(&t, state, font::BODY, t.text1).font_weight(FontWeight::MEDIUM)));
         let press = self.on_cancel.clone();
         let stop = Button::new(format!("{}.cancel", self.id), tr("Abbrechen")).disabled(self.stopping.then(|| tr("Bricht ab …"))).on_press(move |_| press.call(()));
-        rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(bar).child(stop).into_element()
+        rect()
+            .width(Size::fill())
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::M)
+            .content(Content::flex())
+            .child(rect().width(Size::flex(1.)).child(Wait::new(format!("{}.progress", self.id), self.meter.clone())))
+            .child(stop)
+            .into_element()
     }
 }
 
@@ -418,8 +440,8 @@ mod tests {
 
     #[test]
     fn the_state_follows_the_stage() {
-        let mut entry = Install { id: 1, name: "Farm".into(), stage: Stage::Running(Some(62)), cancel: Arc::new(AtomicBool::new(false)), source: Source::File("x.mrpack".into()) };
-        assert!(entry.state().contains("62"));
+        let mut entry = Install { id: 1, name: "Farm".into(), stage: Stage::Running(Some(62)), meter: Meter::begin("x", Instant::now()), cancel: Arc::new(AtomicBool::new(false)), source: Source::File("x.mrpack".into()) };
+        assert!(entry.state().contains('x'));
         entry.stage = Stage::Running(None);
         assert_ne!(entry.state(), Install { stage: Stage::Queued, ..entry.clone() }.state());
         entry.cancel.store(true, Ordering::SeqCst);

@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::{Ended, Facts, facts};
 use crate::app::event::Event as AppEvent;
+use crate::app::meter::Meter;
 use crate::core::account::AccountKind;
 use crate::core::game_window::CAN_RAISE;
 use crate::core::i18n::{tr, trf};
@@ -301,14 +302,14 @@ impl Component for Hero {
                     }))
                     .into_element()
             }
-            Play::Installing(percent) => {
+            Play::Installing(_) => {
                 let keys = f.launching.clone();
+                let meter = crate::view::install::game_meter(&store.model.peek(), &id).unwrap_or_else(|| Meter::begin(tr("Wird vorbereitet …"), Instant::now()));
                 rect()
                     .width(Size::px(LOADING_W))
                     .child(crate::view::install::Progress {
                         id: "instance.loading".into(),
-                        state: trf("Wird installiert · %lld %", &[&percent]),
-                        share: f32::from(percent),
+                        meter,
                         stopping: false,
                         on_cancel: EventHandler::new(move |_| stop_keys(store, keys.clone())),
                     })

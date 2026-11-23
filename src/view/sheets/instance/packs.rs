@@ -18,9 +18,9 @@ use crate::view::kit::field::Field;
 use crate::view::kit::group::group;
 use crate::view::kit::row::Row;
 use crate::view::kit::sheet::{self, Card, Primary};
-use crate::view::kit::spinner;
 use crate::view::kit::text::para;
 use crate::view::kit::{after, off_ui, toast, use_theme};
+use crate::view::readme;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{control, font, frame, space};
 
@@ -202,7 +202,7 @@ impl Component for Packs {
                 .child(problem_view(&t, "packs.problem", Icon::CircleAlert, problem, details))
                 .child(rect().horizontal().child(Button::new("packs.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| find.run())))
                 .into_element(),
-            Status::Loading if hits.is_empty() => rect().width(Size::fill()).padding((space::L, 0.)).center().child(spinner::waiting(&t, tr("Modpacks werden geladen …"))).into_element(),
+            Status::Loading if hits.is_empty() => rect().width(Size::fill()).padding((space::L, 0.)).child(readme::loading(&t)).into_element(),
             Status::Ready if hits.is_empty() => {
                 let query = find.query.read().trim().to_owned();
                 let text = if query.is_empty() { tr("Modrinth hat keine Modpacks geliefert.") } else { trf("Kein Modpack passt zu „%@“. Suche anders.", &[&query]) };

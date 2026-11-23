@@ -212,7 +212,12 @@ pub fn place(found: &ModRef, dir: &Path, replacing: Option<&str>, download: impl
 
 /// Downloads `found` to `path` and checks its SHA-1.
 pub fn download(found: &ModRef, path: &Path) -> Result<()> {
-    net::fetch_verified(&net::agent(None)?, &found.url, path, Some(&found.sha1)).with_context(|| format!("cannot download {}", found.title))
+    download_counted(found, path, &|_, _| {})
+}
+
+/// Like [`download`], and tells `progress` how many bytes arrived of how many the server announced.
+pub fn download_counted(found: &ModRef, path: &Path, progress: &(dyn Fn(u64, Option<u64>) + Sync)) -> Result<()> {
+    net::fetch_counted(&net::agent(None)?, &found.url, path, Some(&found.sha1), progress).with_context(|| format!("cannot download {}", found.title))
 }
 
 /// Moves the pack `file` in `dir`, a folder inside `instance_dir`, to the instance's trash and returns the entry
@@ -487,10 +492,10 @@ fn escaped(value: &str) -> String {
 }
 
 /// Downloads the `.mrpack` of a modpack to the cache folder for an import and returns its path.
-pub fn fetch_modpack(found: &ModRef) -> Result<PathBuf> {
+pub fn fetch_modpack(found: &ModRef, progress: &(dyn Fn(u64, Option<u64>) + Sync)) -> Result<PathBuf> {
     modrinth::safe_file_name(&found.file_name)?;
     let path = paths::data_dir().join("cache").join("modpacks").join(&found.file_name);
-    download(found, &path)?;
+    download_counted(found, &path, progress)?;
     Ok(path)
 }
 
