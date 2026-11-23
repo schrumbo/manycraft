@@ -315,9 +315,9 @@ impl Component for Tile {
             pic = pic.child(cover(w, h, Color::TRANSPARENT).corner_radius(r).border(Border::new().fill(t.accent).width(frame::RING).alignment(BorderAlignment::Inner)));
         }
         if *pressed.read() {
-            pic = pic.child(cover(w, h, Color::BLACK.with_af32(PRESS_SHADE)));
+            pic = pic.child(cover(w, h, t.shade.with_af32(PRESS_SHADE)));
         } else if hover {
-            pic = pic.child(cover(w, h, Color::WHITE.with_af32(HOVER_LIFT)));
+            pic = pic.child(cover(w, h, t.pale.with_af32(HOVER_LIFT)));
         }
         if let Some(done) = progress(game, &m) {
             let mut bar = rect().position(Position::new_absolute().left(0.).bottom(0.)).width(Size::px(w)).height(Size::px(frame::PROGRESS_EDGE)).background(t.text1.with_af32(TRACK));

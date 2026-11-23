@@ -684,7 +684,7 @@ impl Component for BatchSheet {
 
         let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M);
         if running {
-            form = form.child(notice(&t, Icon::Info, t.accent_text, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
+            form = form.child(notice(&t, Icon::Info, t.text2, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
         }
 
         let instance_lock = if running { Some(tr("Stoppe zuerst die laufenden Spiele.")) } else { lock.clone() };
