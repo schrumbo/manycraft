@@ -36,10 +36,29 @@ pub fn list(instance_dir: &Path) -> Vec<Shot> {
     shots
 }
 
+fn open(path: &Path) -> Result<image::DynamicImage> {
+    image::ImageReader::open(path).with_context(|| format!("cannot read {}", path.display()))?.with_guessed_format()?.decode().with_context(|| format!("cannot decode {}", path.display()))
+}
+
+/// The picture at `path` in full size, as RGBA.
+pub fn decode(path: &Path) -> Result<image::RgbaImage> {
+    Ok(open(path)?.into_rgba8())
+}
+
+/// The picture at `path` scaled down to fit `width` by `height` as RGBA, with the size of the file's own picture; one that
+/// is smaller keeps its size.
+pub fn fitted(path: &Path, width: u32, height: u32) -> Result<(image::RgbaImage, (u32, u32))> {
+    let picture = open(path)?;
+    let original = (picture.width(), picture.height());
+    if original.0 <= width && original.1 <= height {
+        return Ok((picture.into_rgba8(), original));
+    }
+    Ok((picture.resize(width, height, image::imageops::FilterType::Triangle).into_rgba8(), original))
+}
+
 /// The picture at `path` scaled to fit `width` by `height`, as RGBA.
 pub fn thumbnail(path: &Path, width: u32, height: u32) -> Result<image::RgbaImage> {
-    let picture = image::ImageReader::open(path).with_context(|| format!("cannot read {}", path.display()))?.with_guessed_format()?.decode().with_context(|| format!("cannot decode {}", path.display()))?;
-    Ok(picture.thumbnail(width, height).into_rgba8())
+    Ok(open(path)?.thumbnail(width, height).into_rgba8())
 }
 
 /// The file at `path` as PNG bytes, for the clipboard.

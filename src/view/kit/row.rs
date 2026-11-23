@@ -17,6 +17,7 @@ pub struct Row {
     glyph: Option<Icon>,
     leading: Option<Element>,
     trailing: Option<Element>,
+    reveal: Option<Element>,
     selected: bool,
     disabled: bool,
     compact: Option<Option<Element>>,
@@ -27,7 +28,7 @@ pub struct Row {
 
 impl Row {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), detail: None, glyph: None, leading: None, trailing: None, selected: false, disabled: false, compact: None, height: frame::ROW, on_press: None, on_secondary: None }
+        Self { id: id.into(), title: title.into(), detail: None, glyph: None, leading: None, trailing: None, reveal: None, selected: false, disabled: false, compact: None, height: frame::ROW, on_press: None, on_secondary: None }
     }
 
     /// A second, quieter line under the title.
@@ -51,6 +52,12 @@ impl Row {
     /// Content at the end of the row, such as a count.
     pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
         self.trailing = Some(trailing.into_element());
+        self
+    }
+
+    /// Content after the trailing part that shows only while the pointer rests on the row, it is selected or has the keyboard focus, such as its actions.
+    pub fn reveal(mut self, reveal: impl IntoElement) -> Self {
+        self.reveal = Some(reveal.into_element());
         self
     }
 
@@ -166,6 +173,9 @@ impl Component for Row {
         r = r.child(text).content(Content::flex());
         if let Some(tr) = &self.trailing {
             r = r.child(tr.clone());
+        }
+        if let Some(reveal) = self.reveal.as_ref().filter(|_| self.selected || *hovered.read() || focus() == Focus::Keyboard) {
+            r = r.child(reveal.clone());
         }
         r
     }

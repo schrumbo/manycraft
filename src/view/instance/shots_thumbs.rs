@@ -12,6 +12,16 @@ use crate::view::icons::{Icon, icon};
 use crate::view::kit::{off_ui, use_theme};
 use crate::view::theme::iconsize;
 
+const VIEW_KEPT: usize = 5;
+const VIEW_PX: u32 = 4096;
+
+/// A screenshot decoded for the viewer: the picture, at most `VIEW_PX` on a side, and the size of the file's own picture.
+#[derive(Clone)]
+pub struct Full {
+    pub handle: ImageHandle,
+    pub original: (u32, u32),
+}
+
 struct Entry<V> {
     stamp: i64,
     value: V,
@@ -50,6 +60,7 @@ impl<V: Clone> Kept<V> {
 
 thread_local! {
     static KEPT: RefCell<Kept<Option<ImageHandle>>> = RefCell::new(Kept::new(files::THUMBS_KEPT));
+    static FULL: RefCell<Kept<Option<Full>>> = RefCell::new(Kept::new(VIEW_KEPT));
     static GATE: (async_channel::Sender<()>, async_channel::Receiver<()>) = async_channel::bounded(files::DECODERS);
 }
 
@@ -59,6 +70,26 @@ fn lookup(path: &Path, stamp: i64) -> Option<Option<ImageHandle>> {
 
 fn keep(path: PathBuf, stamp: i64, picture: Option<ImageHandle>) {
     KEPT.with(|k| k.borrow_mut().put(path, stamp, picture));
+}
+
+/// The decoded screenshot for the viewer: `None` while it is not decoded, `Some(None)` when it cannot be.
+pub fn full(path: &Path, stamp: i64) -> Option<Option<Full>> {
+    FULL.with(|k| k.borrow_mut().get(path, stamp))
+}
+
+/// Decodes the screenshot for the viewer off the UI thread unless it is kept already.
+pub async fn load_full(path: PathBuf, stamp: i64) {
+    if full(&path, stamp).is_some() {
+        return;
+    }
+    let _slot = Slot::take().await;
+    if full(&path, stamp).is_some() {
+        return;
+    }
+    let source = path.clone();
+    let decoded = off_ui(move || shots::fitted(&source, VIEW_PX, VIEW_PX).ok().map(|(p, original)| (p.width(), p.height(), p.into_raw(), original))).await.flatten();
+    let value = decoded.and_then(|(w, h, rgba, original)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul).map(|handle| Full { handle, original }));
+    FULL.with(|k| k.borrow_mut().put(path, stamp, value));
 }
 
 /// One of the few places to decode at once; freed when dropped, also when the task is cancelled.

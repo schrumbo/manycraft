@@ -318,6 +318,25 @@ pub fn copy_text(text: String) -> bool {
     freya::clipboard::Clipboard::set(text).is_ok()
 }
 
+static CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> = std::sync::Mutex::new(None);
+
+/// Puts the picture at `path` on the clipboard as an image; a driven window only notes it. Decodes the file, so it runs
+/// off the UI thread. The clipboard handle lives as long as the process: on Linux the data is served by it.
+pub fn copy_image(path: &std::path::Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+    if drive::fenced("copy image", path.display()) {
+        return Ok(());
+    }
+    let picture = crate::core::shots::decode(path)?;
+    let (width, height) = (picture.width() as usize, picture.height() as usize);
+    let mut held = CLIPBOARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held.is_none() {
+        *held = Some(arboard::Clipboard::new().context("the clipboard is not available")?);
+    }
+    let clipboard = held.as_mut().context("the clipboard is not available")?;
+    clipboard.set_image(arboard::ImageData { width, height, bytes: std::borrow::Cow::Owned(picture.into_raw()) }).context("the picture could not be put on the clipboard")
+}
+
 /// Asks for files with the system's dialog, `extensions` as the filter; blocks, so it runs off the UI thread. A driven
 /// window gets the paths the drive tool answers.
 pub fn pick_files(title: &str, filter: &str, extensions: &[&str], many: bool) -> Vec<std::path::PathBuf> {

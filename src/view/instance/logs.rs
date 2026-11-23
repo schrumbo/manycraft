@@ -6,7 +6,8 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 use super::logs_lines::{Line, capped, first_row, longest, option_label, ordered, scan, search, split};
-use super::logs_viewer::{Hits, Viewer, Wrapped, row};
+use super::logs_select::Selection;
+use super::logs_viewer::{Hits, Viewer, Wrapped, copy_selection, row};
 use super::shots_parts::{Same, centered};
 use super::{Facts, use_extras};
 use crate::core::i18n::{tr, trf};
@@ -93,6 +94,7 @@ struct Ctx {
     wrap: State<bool>,
     cols: State<usize>,
     wrapped: State<Wrapped>,
+    sel: State<Option<Selection>>,
 }
 
 /// Whether the log shows its last line.
@@ -162,6 +164,8 @@ fn read_log(path: &Path) -> anyhow::Result<(Vec<Line>, bool, usize, u64, Option<
 fn load_doc(ctx: Ctx, path: Option<PathBuf>) {
     let (mut doc, mut stick) = (ctx.doc, ctx.stick);
     let load = doc.peek().load.wrapping_add(1);
+    let mut sel = ctx.sel;
+    sel.set(None);
     let mut blank = Doc::blank(load);
     let Some(path) = path else {
         blank.status = Status::Ready;
@@ -221,9 +225,11 @@ async fn catch_up(ctx: Ctx, load: u64, path: PathBuf) -> bool {
     let end = at_end(ctx.controller);
     let widest = longest(&lines);
     let mut d = doc.write();
+    let mut sel = ctx.sel;
     d.born = born;
     d.offset = next;
     if restarted {
+        sel.set(None);
         d.lines = Same(Arc::new(Vec::new()));
         d.longest = 0;
     }
@@ -238,6 +244,8 @@ async fn catch_up(ctx: Ctx, load: u64, path: PathBuf) -> bool {
     };
     if over > 0 {
         d.cut = true;
+        let moved = (*sel.peek()).and_then(|s| s.shifted(over));
+        sel.set(moved);
     }
     d.longest = d.longest.max(widest);
     d.version += 1;
@@ -303,7 +311,8 @@ impl Component for Logs {
         let mut wrap = use_state(|| true);
         let cols = use_state(|| 0usize);
         let wrapped = use_state(Wrapped::default);
-        let ctx = Ctx { doc, stick, found, controller, wrap, cols, wrapped };
+        let sel = use_state(|| None::<Selection>);
+        let ctx = Ctx { doc, stick, found, controller, wrap, cols, wrapped, sel };
 
         let (account_now, pick_now) = (scanned.read().account, *pick.read());
         let _ = account_now;
@@ -490,6 +499,29 @@ impl Component for Logs {
             extras.push(Extra { id: "instance.logs.copy".into(), label: tr("Ganzes Protokoll kopieren"), glyph: Icon::Copy, shortcut: None, run: EventHandler::new(move |_| all()) });
             extras.push(Extra { id: "instance.logs.reveal".into(), label: tr("Protokoll im Ordner zeigen"), glyph: Icon::Folder, shortcut: None, run: EventHandler::new(move |_| folder()) });
             extras.push(Extra { id: "instance.logs.upload".into(), label: tr("Protokoll hochladen…"), glyph: Icon::Upload, shortcut: None, run: EventHandler::new(move |_| send()) });
+            extras.push(Extra {
+                id: "instance.logs.select".into(),
+                label: tr("Alles auswählen"),
+                glyph: Icon::Rows,
+                shortcut: Some(Shortcut::primary(Code::KeyA)),
+                run: EventHandler::new(move |_| {
+                    let mut sel = sel;
+                    sel.set(Selection::all(&doc.peek().lines.0));
+                }),
+            });
+            if sel.read().is_some_and(|s| !s.is_empty()) {
+                extras.push(Extra {
+                    id: "instance.logs.copy.selection".into(),
+                    label: tr("Auswahl kopieren"),
+                    glyph: Icon::Copy,
+                    shortcut: Some(Shortcut::primary(Code::KeyC)),
+                    run: EventHandler::new(move |_| {
+                        if let Some(held) = (*sel.peek()).filter(|s| !s.is_empty()) {
+                            copy_selection(store.ui, &doc.peek().lines.0, &held);
+                        }
+                    }),
+                });
+            }
             if *find_open.read() && !hits.list.0.is_empty() {
                 extras.push(Extra { id: "instance.logs.next".into(), label: tr("Nächster Treffer"), glyph: Icon::ChevronDown, shortcut: Some(Shortcut::bare(Code::F3)), run: EventHandler::new(move |_| jump(ctx, 1)) });
                 extras.push(Extra { id: "instance.logs.previous".into(), label: tr("Vorheriger Treffer"), glyph: Icon::ChevronDown, shortcut: Some(Shortcut { code: Code::F3, primary: false, shift: true, alt: false, ctrl: false }), run: EventHandler::new(move |_| jump(ctx, -1)) });
@@ -700,6 +732,7 @@ impl Component for Logs {
                 current: if *find_open.read() { hits.line() } else { None },
                 cut: state.cut,
                 controller,
+                sel,
             }
             .into_element(),
         };
