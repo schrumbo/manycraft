@@ -638,7 +638,7 @@ impl Command {
             }
             Command::AcceptRules | Command::DeclineRules => {
                 let accept = self == Command::AcceptRules;
-                store.dispatch(Event::AnswerRules { keys: rules(store, accept), accept });
+                store.dispatch(Event::AnswerRules { keys: rules(store), accept });
             }
             Command::StartAll => store.dispatch(Event::StartAll),
             Command::StopAll => store.dispatch(Event::StopAll),
@@ -691,11 +691,10 @@ fn offers(store: Store, accept: bool) -> Vec<String> {
     if selection.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { selection.iter().filter(|k| held(k)).cloned().collect() }
 }
 
-fn rules(store: Store, accept: bool) -> Vec<String> {
+fn rules(store: Store) -> Vec<String> {
     let m = store.model.peek();
     let held = |k: &String| m.games.get(k).is_some_and(|g| g.phase.needs_rules_answer());
-    let selection = store.ui.selection.peek();
-    if selection.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { selection.iter().filter(|k| held(k)).cloned().collect() }
+    store.ui.selection.peek().iter().filter(|k| held(k)).cloned().collect()
 }
 
 /// Whether `command` still runs while a sheet, menu, the palette or a text field has the keyboard: Quit, and the palette

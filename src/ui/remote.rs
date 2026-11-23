@@ -1009,6 +1009,11 @@ pub fn remember_account(id: &str, account: Uuid) -> Result<()> {
     })
 }
 
+/// Keeps the user's acceptance of a code of conduct on `server` for the batch `id`, under the saving lock.
+pub fn remember_conduct(id: &str, server: &str, hash: &str) -> Result<()> {
+    saved(|| batch::remember_conduct(id, server, hash))
+}
+
 /// Makes `account` the one instance `id` always plays with alone; `None` leaves it to the active account.
 pub fn set_default_account(id: &str, account: Option<Uuid>) -> Result<()> {
     saved(|| {

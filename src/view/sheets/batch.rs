@@ -741,7 +741,7 @@ impl Component for BatchSheet {
             .children(fit_line(&t, flow, picked))
             .child(name_field)
             .child(background_section(&t, flow, background, running, &lock))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory }, &lock))
+            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection: flow.unattended.read().mode == crate::core::batch::RunMode::Connection }, &lock))
             .children(open.then(|| unattended::section(&t, flow.unattended, &game, running, &lock, proxied)));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
@@ -829,6 +829,9 @@ fn preset_line(t: &Theme, mut flow: Flow, picked: usize, free: usize, lock: &Opt
 }
 
 fn fit_line(t: &Theme, flow: Flow, count: usize) -> Option<Element> {
+    if flow.unattended.read().mode == crate::core::batch::RunMode::Connection {
+        return None;
+    }
     let (total, budget) = forms::memory_need(count, flow.each_memory(), flow.total_ram)?;
     let lower = forms::memory_fit(count, flow.memory_max);
     let need = trf("%lld Accounts brauchen zusammen bis zu %@. Dieser Rechner hat neben dem System nur %@.", &[&count, &forms::memory_label(total), &forms::memory_label(budget)]);
@@ -918,17 +921,21 @@ struct AdvancedView {
     running: bool,
     picked: usize,
     instance_memory: u32,
+    connection: bool,
 }
 
 fn advanced_section(t: &Theme, flow: Flow, view: AdvancedView, lock: &Option<String>) -> Element {
-    let AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory } = view;
+    let AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection } = view;
     let each = if inherit { instance_memory } else { memory };
-    let title = if open { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
+    let title = if open || connection { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
     let mut advanced = flow.advanced;
     let disclosure = Button::new("batch.advanced", title).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| advanced.set(!open));
     let mut column = rect().width(Size::fill()).spacing(space::S).child(rect().horizontal().child(disclosure));
     if !open {
         return column.into_element();
+    }
+    if connection {
+        return column.child(pace_section(t, flow, pace, running, lock)).into_element();
     }
     let count = picked.max(1);
     let total = u64::from(each) * count as u64;

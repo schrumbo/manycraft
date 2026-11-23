@@ -610,7 +610,13 @@ fn bare(t: &Theme, game: &Game, m: &Model, account: Option<&Account>, face: Opti
             _ => words::caption(game, m),
         };
         column = column.child(line(t, place, font::CAPTION, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
-        if let Some(said) = game.last_chat.as_ref().filter(|_| h >= BARE_CHAT_ROOM) {
+        let rules = match &game.phase {
+            Phase::Offer { offer, .. } if offer.is_conduct() => offer.text.clone(),
+            _ => None,
+        };
+        if let Some(text) = rules.filter(|_| h >= BARE_CHAT_ROOM) {
+            column = column.child(line(t, text, font::CAPTION2, t.text2).max_lines(3).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
+        } else if let Some(said) = game.last_chat.as_ref().filter(|_| h >= BARE_CHAT_ROOM) {
             column = column.child(line(t, said.clone(), font::CAPTION2, t.text3).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
         }
     }

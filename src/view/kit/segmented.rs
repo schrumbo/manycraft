@@ -23,18 +23,25 @@ pub struct Segmented {
     items: Vec<Segment>,
     chosen: usize,
     disabled: Option<String>,
+    unavailable: Vec<bool>,
     on_choose: Option<EventHandler<usize>>,
 }
 
 impl Segmented {
     /// Segments named for screen readers by `label`.
     pub fn new(label: impl Into<String>, items: Vec<Segment>, chosen: usize) -> Self {
-        Self { label: label.into(), items, chosen, disabled: None, on_choose: None }
+        Self { label: label.into(), items, chosen, disabled: None, unavailable: Vec::new(), on_choose: None }
     }
 
     /// Greys the segments out and shows `reason` as the tooltip of the whole control.
     pub fn disabled(mut self, reason: Option<String>) -> Self {
         self.disabled = reason;
+        self
+    }
+
+    /// Greys single segments out (`true` at their index); they cannot be chosen and the arrow keys skip them.
+    pub fn unavailable(mut self, flags: Vec<bool>) -> Self {
+        self.unavailable = flags;
         self
     }
 
@@ -56,9 +63,11 @@ impl Component for Segmented {
         let enabled = self.disabled.is_none();
         let choose = self.on_choose.clone().filter(|_| enabled);
         let keys = choose.clone();
+        let off = move |i: usize| self.unavailable.get(i).copied().unwrap_or(false);
+        let skip: Vec<bool> = (0..count).map(off).collect();
         let segments = self.items.iter().enumerate().map(|(i, item)| {
-            let pick = choose.clone();
-            Piece { item: item.clone(), on: i == chosen, enabled, on_press: EventHandler::new(move |_| {
+            let pick = choose.clone().filter(|_| !off(i));
+            Piece { item: item.clone(), on: i == chosen, enabled: enabled && !off(i), on_press: EventHandler::new(move |_| {
                 a11y.request_focus();
                 if let Some(h) = &pick {
                     h.call(i);
@@ -80,13 +89,14 @@ impl Component for Segmented {
                 if !a11y.is_focused() || count == 0 {
                     return;
                 }
+                let free = |i: &usize| !skip[*i];
                 let next = match e.key {
-                    Key::Named(NamedKey::ArrowRight) => (chosen + 1).min(count - 1),
-                    Key::Named(NamedKey::ArrowLeft) => chosen.saturating_sub(1),
+                    Key::Named(NamedKey::ArrowRight) => (chosen + 1..count).find(free),
+                    Key::Named(NamedKey::ArrowLeft) => (0..chosen).rev().find(free),
                     _ => return,
                 };
                 e.stop_propagation();
-                if next != chosen
+                if let Some(next) = next
                     && let Some(h) = &keys
                 {
                     h.call(next);

@@ -146,14 +146,12 @@ pub struct Conduct {
     pub hash: String,
 }
 
-/// A stable hash of a code of conduct's text, so a changed text asks again.
-pub fn conduct_hash(text: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in text.trim().bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
+/// A server address as accepted codes of conduct compare it: host in lower case with the port, 25565 when none is given.
+fn server_key(server: &str) -> String {
+    match super::fleet::split_server(server) {
+        Ok((host, port)) => format!("{}:{}", host.to_ascii_lowercase(), port.unwrap_or(super::fleet::DEFAULT_PORT)),
+        Err(_) => server.trim().to_ascii_lowercase(),
     }
-    format!("{hash:016x}")
 }
 
 /// How a batch runs unattended: how its games run, screenshots, and how it answers resource packs.
@@ -280,17 +278,20 @@ impl Batch {
 
     /// Whether the user accepted the code of conduct with `hash` on `server` for this batch.
     pub fn conduct_accepted(&self, server: &str, hash: &str) -> bool {
-        self.conduct.iter().any(|c| c.server.eq_ignore_ascii_case(server) && c.hash == hash)
+        let server = server_key(server);
+        self.conduct.iter().any(|c| server_key(&c.server) == server && c.hash == hash)
     }
 
     /// The hashes of the codes of conduct accepted on `server`.
     pub fn conduct_hashes(&self, server: &str) -> Vec<String> {
-        self.conduct.iter().filter(|c| c.server.eq_ignore_ascii_case(server)).map(|c| c.hash.clone()).collect()
+        let server = server_key(server);
+        self.conduct.iter().filter(|c| server_key(&c.server) == server).map(|c| c.hash.clone()).collect()
     }
 
     /// Keeps the acceptance of the code of conduct with `hash` on `server`, replacing an older text of that server.
     pub fn accept_conduct(&mut self, server: &str, hash: &str) {
-        self.conduct.retain(|c| !c.server.eq_ignore_ascii_case(server));
+        let key = server_key(server);
+        self.conduct.retain(|c| server_key(&c.server) != key);
         self.conduct.push(Conduct { server: server.to_owned(), hash: hash.to_owned() });
     }
 
@@ -747,9 +748,7 @@ mod tests {
     #[test]
     fn a_code_of_conduct_is_remembered_per_server_by_its_text() {
         let mut b = Batch::new("a", "i1");
-        let (old, new) = (conduct_hash("No griefing"), conduct_hash("No griefing, no AFK"));
-        assert_ne!(old, new);
-        assert_eq!(old, conduct_hash("  No griefing\n"), "surrounding space does not change the text");
+        let (old, new) = ("aa11".to_owned(), "bb22".to_owned());
         assert!(!b.conduct_accepted("play.example.org", &old));
         b.accept_conduct("play.example.org", &old);
         assert!(b.conduct_accepted("PLAY.example.org", &old) && !b.conduct_accepted("play.example.org", &new) && !b.conduct_accepted("other.org", &old));
@@ -757,6 +756,16 @@ mod tests {
         assert_eq!(b.conduct.len(), 1, "a new text replaces the old one");
         let back: Batch = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
         assert!(back.conduct_accepted("play.example.org", &new));
+    }
+
+    #[test]
+    fn a_remembered_code_of_conduct_matches_the_server_with_or_without_the_default_port() {
+        let mut b = Batch::new("a", "i1");
+        b.accept_conduct("mc.example:25565", "aa11");
+        assert_eq!(b.conduct_hashes("MC.example"), ["aa11"]);
+        assert!(b.conduct_accepted("mc.example", "aa11") && !b.conduct_accepted("mc.example:25566", "aa11"));
+        b.accept_conduct("mc.example", "bb22");
+        assert_eq!(b.conduct.len(), 1);
     }
 
     #[test]

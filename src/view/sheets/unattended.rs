@@ -85,7 +85,8 @@ fn modes(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, run
     let chosen = all.iter().position(|m| *m == u.mode).unwrap_or(0);
     let game_owned = game.to_owned();
     let pick = all.clone();
-    let control = Segmented::new(tr("Wie die Spiele laufen"), segments, chosen).disabled(lock.clone()).on_choose(move |i| {
+    let flags = all.iter().map(|m| *m != u.mode && unsupported(*m, game).is_some()).collect();
+    let control = Segmented::new(tr("Wie die Spiele laufen"), segments, chosen).unavailable(flags).disabled(lock.clone()).on_choose(move |i| {
         if let Some(m) = pick.get(i)
             && (*m == state.peek().mode || unsupported(*m, &game_owned).is_none())
         {
@@ -101,7 +102,7 @@ fn modes(t: &Theme, mut state: State<Unattended>, u: Unattended, game: &str, run
         block = block.child(hint(t, format!("{}: {}", name(why.0), why.1)));
     }
     if u.mode == RunMode::Connection && proxied > 0 {
-        let warning = if proxied == 1 { tr("Ein Konto mit Proxy startet in diesem Modus noch nicht.") } else { trf("%lld Konten mit Proxy starten in diesem Modus noch nicht.", &[&proxied]) };
+        let warning = if proxied == 1 { tr("Ein Konto mit Proxy startet in diesem Modus noch nicht. Nimm den Proxy weg oder wähle „Fenster“.") } else { trf("%lld Konten mit Proxy starten in diesem Modus noch nicht. Nimm die Proxys weg oder wähle „Fenster“.", &[&proxied]) };
         block = block.child(hint(t, warning));
     }
     block.into_element()

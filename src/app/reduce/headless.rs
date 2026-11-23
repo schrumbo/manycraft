@@ -109,7 +109,7 @@ pub(super) fn offered(m: &mut Model, key: &str, server: Option<String>, offer: O
 }
 
 fn conduct_hash(offer: &Offer) -> String {
-    crate::core::headless::conduct(offer).map_or_else(|| batch::conduct_hash(offer.text.as_deref().unwrap_or(&offer.id)), str::to_owned)
+    crate::core::headless::conduct(offer).unwrap_or_default().to_owned()
 }
 
 fn conduct_known(m: &Model, key: &str, server: &str, offer: &Offer) -> bool {

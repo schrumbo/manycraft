@@ -35,7 +35,7 @@ pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
 /// before each start, since the agent replaced it.
 pub const COMPANION_FILE: &str = "manycraft-companion.jar";
 
-const DEFAULT_PORT: u16 = 25565;
+pub(super) const DEFAULT_PORT: u16 = 25565;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const SRV_TIMEOUT: Duration = Duration::from_secs(1);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
@@ -676,9 +676,61 @@ impl Process for Child {
     }
 }
 
+/// What a connection-only account's writer thread is told. Writes can block for seconds while a server stalls, so none
+/// of them runs under the fleet's locks.
+enum Job {
+    Send(ipc::ToMod),
+    Retire(Arc<headless::Connection>),
+}
+
 /// A connection-only account as a process: it has no id and ends when the connection does.
 struct Linked {
-    connection: headless::Connection,
+    connection: Option<Arc<headless::Connection>>,
+    jobs: Sender<Job>,
+}
+
+impl Linked {
+    fn new(connection: headless::Connection) -> Self {
+        let connection = Arc::new(connection);
+        let held = Arc::clone(&connection);
+        let (jobs, queue) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("link-send".into())
+            .spawn(move || {
+                for job in queue {
+                    match job {
+                        Job::Send(message) => {
+                            let _ = held.send(&message);
+                        }
+                        Job::Retire(last) => {
+                            drop(last);
+                            break;
+                        }
+                    }
+                }
+            })
+            .ok();
+        Self { connection: Some(connection), jobs }
+    }
+
+    fn running(&self) -> bool {
+        self.connection.as_ref().is_some_and(|c| c.is_running())
+    }
+
+    fn enqueue(&self, message: ipc::ToMod) -> Result<()> {
+        if !self.running() {
+            bail!("the connection is closed");
+        }
+        self.jobs.send(Job::Send(message)).map_err(|_| anyhow!("the connection is closed"))
+    }
+}
+
+impl Drop for Linked {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            let _ = self.jobs.send(Job::Retire(connection));
+        }
+    }
 }
 
 impl Process for Linked {
@@ -687,15 +739,15 @@ impl Process for Linked {
     }
 
     fn deliver(&self, message: &ipc::ToMod) -> Option<Result<()>> {
-        Some(self.connection.send(message))
+        Some(self.enqueue(message.clone()))
     }
 
     fn try_wait(&mut self) -> io::Result<Option<Option<i32>>> {
-        Ok((!self.connection.is_running()).then_some(None))
+        Ok((!self.running()).then_some(None))
     }
 
     fn kill(&mut self) -> io::Result<()> {
-        let _ = self.connection.send(&ipc::ToMod::Quit);
+        let _ = self.enqueue(ipc::ToMod::Quit);
         Ok(())
     }
 
@@ -704,7 +756,7 @@ impl Process for Linked {
     }
 
     fn close(&self) -> bool {
-        self.connection.send(&ipc::ToMod::Quit).is_ok()
+        self.enqueue(ipc::ToMod::Quit).is_ok()
     }
 }
 
@@ -1459,7 +1511,7 @@ fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ip
     let conduct = target.batch.as_ref().map(|b| b.conduct_hashes(&address)).unwrap_or_default();
     let spec = headless::Spec { key: key.to_owned(), address, name: account.name.clone(), uuid: account.id, session, version: target.instance.game_version.clone(), packs: target.packs(), proxy, conduct };
     match headless::start(spec, events.clone()) {
-        Ok(connection) => Ok(Box::new(Linked { connection })),
+        Ok(connection) => Ok(Box::new(Linked::new(connection))),
         Err(e) => Err(match e.downcast_ref::<headless::Refused>() {
             Some(why) => refusal(*why),
             None => e,

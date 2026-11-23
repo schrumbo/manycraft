@@ -2192,7 +2192,9 @@
   "Das echte Spiel läuft unsichtbar und sparsam, ohne Fenster. Mods, Screenshots und ältere Server gehen, es braucht aber den Speicher des Spiels.": "The real game runs unseen and lean, without a window. Mods, screenshots and older servers work, but it needs the memory of the game.",
   "Kein Spiel und kein Bild, nur Chat und Status: braucht kaum Speicher, aber keine Mods und keine Screenshots. Ob ein Server das erlaubt, entscheidest du.": "No game and no picture, only chat and status: needs little memory, but no mods and no screenshots. Whether a server allows this is up to you.",
   "Wie die Spiele laufen": "How the games run",
-  "Ein Konto mit Proxy startet in diesem Modus noch nicht.": "An account with a proxy does not start in this mode yet.",
-  "%lld Konten mit Proxy starten in diesem Modus noch nicht.": "%lld accounts with a proxy do not start in this mode yet.",
+  "Ohne Spielfenster bleibt es nicht verbunden: Beim Beenden trennt es sich.": "Without a game window it does not stay connected: it disconnects when you quit.",
+  "Ohne Spielfenster bleiben sie nicht verbunden: Beim Beenden trennen sie sich.": "Without a game window they do not stay connected: they disconnect when you quit.",
+  "Ein Konto mit Proxy startet in diesem Modus noch nicht. Nimm den Proxy weg oder wähle „Fenster“.": "An account with a proxy does not start in this mode yet. Remove the proxy or choose “Windows”.",
+  "%lld Konten mit Proxy starten in diesem Modus noch nicht. Nimm die Proxys weg oder wähle „Fenster“.": "%lld accounts with a proxy do not start in this mode yet. Remove the proxies or choose “Windows”.",
   "Diese Minecraft-Version geht mit „Nur Verbindung“ noch nicht.": "This Minecraft version does not work with “Connection only” yet."
 }
