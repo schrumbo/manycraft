@@ -351,7 +351,7 @@ pub(crate) mod testing {
     /// Loads the model's own data again with `adopted` games still running.
     pub fn adopt(m: &mut Model, s: &Settings, adopted: Vec<Adoption>) -> Vec<Effect> {
         let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
-        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted, measured: HashMap::new() })))
+        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted, resume: Vec::new(), measured: HashMap::new() })))
     }
 }
 

@@ -117,7 +117,7 @@ impl Shared {
             packs: spec.packs,
             held: VecDeque::new(),
             conduct: spec.conduct.iter().cloned().collect(),
-            server: server_name(&spec.address),
+            server: crate::core::fleet::server_name(&spec.address),
             played: false,
             dead: None,
             loaded: false,
@@ -279,14 +279,6 @@ fn chat(link: &mut Link, text: &str) -> Result<()> {
     write(link, id, &mut out)?;
     link.unacked = 0;
     Ok(())
-}
-
-/// The server as the companion names it: `host:port`, with the default port filled in.
-pub fn server_name(address: &str) -> String {
-    match crate::core::fleet::split_server(address) {
-        Ok((host, port)) => format!("{host}:{}", port.unwrap_or(25565)),
-        Err(_) => address.trim().to_owned(),
-    }
 }
 
 /// Runs the connection until it is told to quit: joins, and after a drop waits to be told to reconnect.

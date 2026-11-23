@@ -14,6 +14,7 @@ mod client;
 mod conn;
 mod crypto;
 mod item;
+pub mod resume;
 mod screen;
 mod text;
 mod v777;

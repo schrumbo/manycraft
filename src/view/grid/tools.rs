@@ -7,7 +7,7 @@ use crate::core::i18n::{tr, trf};
 use crate::view::chat;
 use crate::view::commands::{self, Command, Want};
 use crate::view::icons::Icon;
-use crate::view::kit::badge::dot;
+use crate::view::kit::badge::{corner, dot};
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::menu::Item;
@@ -16,7 +16,7 @@ use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::use_theme;
 use crate::view::kit::select::Select;
 use crate::view::store::use_store;
-use crate::view::theme::{frame, space};
+use crate::view::theme::{control, frame, space};
 use crate::view::ui::{Filter, Show, View};
 
 const FILTER_W: f32 = 150.;
@@ -92,11 +92,9 @@ impl Component for Aside {
         if unread > 0 {
             tip = format!("{tip} · {}", trf("%lld ungelesen", &[&unread]));
         }
-        let button = Button::icon("toolbar.chat", Icon::Message, tr("Chat")).on(open).tip(tip).on_press(move |_| chat::set_open(store, !open));
-        let mut chat_slot = rect().child(button);
-        if unread > 0 {
-            chat_slot = chat_slot.child(rect().position(Position::new_absolute().right(space::XS).top(space::XS)).child(dot(t.accent)));
-        }
+        let name = if unread > 0 { format!("{} · {}", tr("Chat"), trf("%lld ungelesen", &[&unread])) } else { tr("Chat") };
+        let button = Button::icon("toolbar.chat", Icon::Message, name).on(open).tip(tip).on_press(move |_| chat::set_open(store, !open));
+        let chat_slot = if unread > 0 { corner(button, control::M, control::M, dot(t.accent), space::XS) } else { button.into_element() };
         let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
         if let Filter::Batch(id) = &self.filter {
             let wanted = Want::EditBatch(id.clone());

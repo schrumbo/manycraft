@@ -76,6 +76,8 @@ pub struct Loaded {
     pub keep: bool,
     /// Games an earlier manager launched that still run.
     pub adopted: Vec<Adoption>,
+    /// Connection-only accounts the restart for an update wrote down, to connect again.
+    pub resume: Vec<String>,
     /// The memory one game of each batch was measured to hold in earlier runs, in MB, by batch id.
     pub measured: HashMap<String, u32>,
 }

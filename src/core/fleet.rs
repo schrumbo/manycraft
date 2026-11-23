@@ -431,6 +431,18 @@ pub(super) fn split_server(server: &str) -> Result<(String, Option<u16>)> {
     Ok((host.to_owned(), port))
 }
 
+/// The one name of a server address: the host in lower case with the port, 25565 when none is given, an IPv6 host in
+/// brackets. Accepted codes of conduct and the connection-only client's reports both name and compare servers by it.
+pub fn server_name(address: &str) -> String {
+    match split_server(address) {
+        Ok((host, port)) => {
+            let (host, port) = (host.to_ascii_lowercase(), port.unwrap_or(DEFAULT_PORT));
+            if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }
+        }
+        Err(_) => address.trim().to_ascii_lowercase(),
+    }
+}
+
 fn resolve_with(lookup: &impl Lookup, server: &str, start: Instant) -> Result<Vec<SocketAddr>> {
     let (host, port) = split_server(server)?;
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -2244,6 +2256,14 @@ mod tests {
         assert_eq!(resolve_with(&dns, "::1", at).unwrap(), [addr("[::1]:25565")]);
         assert_eq!(resolve_with(&dns, "[::1]", at).unwrap(), [addr("[::1]:25565")]);
         assert_eq!(dns.calls.get(), 0);
+    }
+
+    #[test]
+    fn a_server_has_one_name_in_lower_case_with_its_port_that_names_itself_again() {
+        for (address, name) in [("Play.Example.COM", "play.example.com:25565"), ("play.example.com:25570", "play.example.com:25570"), (" MC.example:25565 ", "mc.example:25565"), ("::1", "[::1]:25565"), ("[FD00::1]:1", "[fd00::1]:1"), ("not a server", "not a server")] {
+            assert_eq!(server_name(address), name, "{address}");
+            assert_eq!(server_name(&server_name(address)), name, "{address} is stable");
+        }
     }
 
     #[test]

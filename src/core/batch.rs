@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
+use super::fleet::server_name;
 use super::{paths, store};
 
 const FILE: &str = "batch.json";
@@ -146,14 +147,6 @@ pub struct Conduct {
     pub hash: String,
 }
 
-/// A server address as accepted codes of conduct compare it: host in lower case with the port, 25565 when none is given.
-fn server_key(server: &str) -> String {
-    match super::fleet::split_server(server) {
-        Ok((host, port)) => format!("{}:{}", host.to_ascii_lowercase(), port.unwrap_or(super::fleet::DEFAULT_PORT)),
-        Err(_) => server.trim().to_ascii_lowercase(),
-    }
-}
-
 /// How a batch runs unattended: how its games run, screenshots, and how it answers resource packs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Unattended {
@@ -278,21 +271,21 @@ impl Batch {
 
     /// Whether the user accepted the code of conduct with `hash` on `server` for this batch.
     pub fn conduct_accepted(&self, server: &str, hash: &str) -> bool {
-        let server = server_key(server);
-        self.conduct.iter().any(|c| server_key(&c.server) == server && c.hash == hash)
+        let server = server_name(server);
+        self.conduct.iter().any(|c| server_name(&c.server) == server && c.hash == hash)
     }
 
     /// The hashes of the codes of conduct accepted on `server`.
     pub fn conduct_hashes(&self, server: &str) -> Vec<String> {
-        let server = server_key(server);
-        self.conduct.iter().filter(|c| server_key(&c.server) == server).map(|c| c.hash.clone()).collect()
+        let server = server_name(server);
+        self.conduct.iter().filter(|c| server_name(&c.server) == server).map(|c| c.hash.clone()).collect()
     }
 
     /// Keeps the acceptance of the code of conduct with `hash` on `server`, replacing an older text of that server.
     pub fn accept_conduct(&mut self, server: &str, hash: &str) {
-        let key = server_key(server);
-        self.conduct.retain(|c| server_key(&c.server) != key);
-        self.conduct.push(Conduct { server: server.to_owned(), hash: hash.to_owned() });
+        let server = server_name(server);
+        self.conduct.retain(|c| server_name(&c.server) != server);
+        self.conduct.push(Conduct { server, hash: hash.to_owned() });
     }
 
     /// The name its measured memory per game is kept under: games with the full compiler hold more, so each choice has a
@@ -766,6 +759,16 @@ mod tests {
         assert!(b.conduct_accepted("mc.example", "aa11") && !b.conduct_accepted("mc.example:25566", "aa11"));
         b.accept_conduct("mc.example", "bb22");
         assert_eq!(b.conduct.len(), 1);
+    }
+
+    #[test]
+    fn accepted_servers_are_stored_by_their_one_name_and_old_entries_still_match() {
+        let mut b = Batch::new("a", "i1");
+        b.conduct = serde_json::from_str(r#"[{"server":"Mc.Example","hash":"old"},{"server":"[::1]:25570","hash":"six"}]"#).unwrap();
+        assert!(b.conduct_accepted("mc.example:25565", "old") && b.conduct_accepted("MC.EXAMPLE", "old") && b.conduct_accepted("[::1]:25570", "six"));
+        b.accept_conduct("MC.Example", "new");
+        assert_eq!(b.conduct.iter().map(|c| (c.server.as_str(), c.hash.as_str())).collect::<Vec<_>>(), [("[::1]:25570", "six"), ("mc.example:25565", "new")]);
+        assert_eq!(b.conduct_hashes("mc.example"), ["new"]);
     }
 
     #[test]

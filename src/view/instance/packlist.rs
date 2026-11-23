@@ -256,12 +256,12 @@ impl Ops {
         let mut actions = Vec::new();
         if self.matches.contains_key(&e.file) {
             let (ops, file) = (self.clone(), e.file.clone());
-            actions.push(RowAction { id: "info", icon: Icon::Info, label: tr("Readme und Details"), danger: false, disabled: None, run: EventHandler::new(move |_| {
+            actions.push(RowAction { id: "info", icon: Icon::Info, label: tr("Readme und Details"), tip: Some(detail::with_key(tr("Readme und Details"))), danger: false, disabled: None, run: EventHandler::new(move |_| {
                 ops.info(&file);
             }) });
         }
         let (ops, e) = (self.clone(), e.clone());
-        actions.push(RowAction { id: "remove", icon: Icon::Trash, label: tr("Entfernen"), danger: true, disabled: None, run: EventHandler::new(move |_| ops.remove(&e)) });
+        actions.push(RowAction { id: "remove", icon: Icon::Trash, label: tr("Entfernen"), tip: None, danger: true, disabled: None, run: EventHandler::new(move |_| ops.remove(&e)) });
         actions
     }
 
@@ -271,9 +271,12 @@ impl Ops {
         if let Some(p) = self.matches.get(&e.file) {
             let (ops, file, web) = (self.clone(), e.file.clone(), p.project.clone());
             let kind = self.kind;
-            items.push(Item::new(format!("instance.{key}.menu.project"), tr("Readme und Versionen"), move |_| {
-                ops.info(&file);
-            }));
+            items.push(
+                Item::new(format!("instance.{key}.menu.project"), tr("Readme und Versionen"), move |_| {
+                    ops.info(&file);
+                })
+                .shortcut(detail::TOGGLE.label()),
+            );
             items.push(Item::new(format!("instance.{key}.menu.web"), tr("Auf Modrinth öffnen"), move |_| open_external("modrinth", format!("https://modrinth.com/{}/{web}", kind.project_type()))));
             items.push(Item::Separator);
         }
@@ -339,8 +342,19 @@ impl Ops {
                 }),
             }
         };
+        let details = {
+            let ops = self.clone();
+            Extra {
+                id: format!("instance.{key}.details"),
+                label: self.pane.label(),
+                glyph: Icon::Info,
+                shortcut: Some(detail::TOGGLE),
+                run: EventHandler::new(move |_| ops.pane.toggle()),
+            }
+        };
         vec![
             Extra { id: format!("instance.{key}.filter"), label: find, glyph: Icon::Search, shortcut: Some(Shortcut::primary(Code::KeyF)), run: EventHandler::new(move |_| filter.request_focus()) },
+            details,
             act("toggle", flip, Icon::Check, |ops, _, _, e| ops.toggle(e, !e.on)),
             act("remove", drop_it, Icon::Trash, |ops, list, among, e| ops.discard(list, among, e)),
         ]
@@ -497,13 +511,21 @@ impl Component for Packs {
         }
         let add_id = id.clone();
         let hint = (kind == Kind::Shader && shader_loader.is_none()).then(|| packs::shader_mod(&loader).map(|(_, name)| name)).flatten();
-        if entries.is_empty() && hint.is_none() {
+        let loader_bar = |name: &str| {
+            let find_id = id.clone();
+            bar(&t, Icon::Alert, t.attention_text, trf("Shader brauchen %@. Ohne laden sie nicht.", &[&name])).child(Button::new(format!("instance.{key}.loader"), trf("%@ hinzufügen…", &[&name])).on_press(move |_| browser::find(store, &find_id, Kind::Mod)))
+        };
+        if entries.is_empty() {
             let (text, body) = match kind {
                 Kind::Shader => (tr("Noch keine Shader"), tr("Shader ändern das Licht und die Schatten im Spiel.")),
                 _ => (tr("Noch keine Ressourcenpakete"), tr("Ressourcenpakete ändern, wie das Spiel aussieht und klingt.")),
             };
             let add = Button::new(format!("instance.{key}.empty.add"), tr("Hinzufügen…")).glyph(Icon::Plus).primary().on_press(move |_| browser::find(store, &add_id, kind));
-            return centered(&t, if kind == Kind::Shader { Icon::Sparkles } else { Icon::Palette }, text, body, Some(add));
+            let empty = centered(&t, if kind == Kind::Shader { Icon::Sparkles } else { Icon::Palette }, text, body, Some(add));
+            return match hint {
+                None => empty,
+                Some(name) => page::column().height(Size::fill()).spacing(space::S).content(Content::flex()).child(loader_bar(&name)).child(rect().width(Size::fill()).height(Size::flex(1.)).child(empty)).into_element(),
+            };
         }
 
         let placeholder = if kind == Kind::Shader { tr("Shader filtern") } else { tr("Ressourcenpakete filtern") };
@@ -574,9 +596,8 @@ impl Component for Packs {
         };
 
         let mut root = page::column().height(Size::fill()).spacing(space::S).child(top);
-        if let Some(name) = hint {
-            let find_id = id.clone();
-            root = root.child(bar(&t, Icon::Alert, t.attention_text, trf("Shader brauchen %@. Ohne laden sie nicht.", &[&name])).child(Button::new(format!("instance.{key}.loader"), trf("%@ hinzufügen…", &[&name])).on_press(move |_| browser::find(store, &find_id, Kind::Mod))));
+        if let Some(name) = &hint {
+            root = root.child(loader_bar(name));
         }
         let left = root.child(counts).child(body).content(Content::flex());
         if !pane.shown() {

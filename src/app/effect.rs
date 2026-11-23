@@ -115,6 +115,8 @@ pub enum Effect {
     RememberTrayExplained,
     /// Asks whether the `running` games keep running when Manycraft quits.
     AskQuit { running: usize },
+    /// Writes down the connection-only accounts `keys`, which end with Manycraft, for the next start to connect again.
+    Resume(Vec<String>),
     /// Quits Manycraft; the games keep running when `keep`, for the next start to find again.
     Quit { keep: bool },
     /// A line for the test drive log.
