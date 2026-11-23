@@ -8,6 +8,7 @@ use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, HeldJoin, Reveal};
 use super::{Env, fleet, go, headless, notify, redraw, show};
 use crate::core::account::AccountKind;
+use crate::core::batch::RunMode;
 use crate::core::chat_text;
 use crate::core::fleet as fleets;
 use crate::core::history::{self, Entry, Kind};
@@ -194,10 +195,13 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         }
         Report::Reach { online } => on_reach(m, env, fx, online),
         Report::Seed { key, phase, attempts } => {
+            let bare = m.games.get(&key).and_then(|i| m.batch(&i.batch_id)).is_some_and(|b| b.mode == RunMode::Connection);
             if go(m, &key, phase, Why::Seed, &mut fx.now)
                 && let Some(i) = m.games.get_mut(&key)
             {
                 i.reconnect_attempts = attempts;
+                i.connection = bare;
+                i.headless |= bare;
             }
         }
         Report::SignIn { account, valid } => {

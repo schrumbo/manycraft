@@ -262,6 +262,7 @@ impl Component for Tile {
         let Some(game) = m.games.get(&self.key) else {
             return rect().into_element();
         };
+        let preview = preview.filter(|_| !game.connection);
         let selected = store.ui.selection.read().contains(&self.key);
         let face = store.faces.read().get(&game.account_id).cloned();
         let attention = game.phase.needs_attention();
