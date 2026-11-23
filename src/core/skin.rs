@@ -14,6 +14,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use super::account::{Account, AccountKind};
+use super::skin_change::Model;
 use super::{net, paths};
 
 /// Width and height of a face in pixels.
@@ -70,6 +71,16 @@ pub fn adopt(id: Uuid, skin: &RgbaImage) -> Option<Vec<u8>> {
     let face = face_of(skin)?;
     let _ = store(id, &face);
     Some(face)
+}
+
+/// The skin vanilla gives the account `id` and its arm model, read from an installed client jar.
+pub fn default_skin(id: Uuid) -> Option<(RgbaImage, Model)> {
+    let index = default_index(id);
+    let mut jar = client_jar()?;
+    let mut bytes = Vec::new();
+    jar.by_name(&default_path(index)).ok()?.read_to_end(&mut bytes).ok()?;
+    let image = image::load_from_memory_with_format(&bytes, ImageFormat::Png).ok()?.into_rgba8();
+    Some((image, if index < NAMES.len() { Model::Slim } else { Model::Classic }))
 }
 
 fn default_index(id: Uuid) -> usize {

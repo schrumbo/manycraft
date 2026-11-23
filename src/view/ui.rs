@@ -8,6 +8,7 @@ use freya::prelude::*;
 use super::accounts;
 use super::chat;
 use super::library;
+use super::wardrobe;
 use super::shell::history::History;
 use super::grid::layout::TileSize;
 use super::grid::table::Column;
@@ -170,6 +171,8 @@ pub struct Ui {
     pub installing: State<bool>,
     /// What the Accounts page shows and has picked.
     pub accounts: accounts::Shared,
+    /// The account the Wardrobe dresses.
+    pub wardrobe: wardrobe::Shared,
     /// What the Chat page shows and is about to send.
     pub chat: chat::Shared,
     /// How the grid groups its games, and the last mass stop to undo.
@@ -223,6 +226,7 @@ impl Ui {
             installs: State::create(Vec::new()),
             installing: State::create(false),
             accounts: accounts::Shared::create(),
+            wardrobe: wardrobe::Shared::create(),
             chat: chat::Shared::create(),
             grid_view: crate::view::grid::mass::Shared::create(),
             instance: Nav::create(),

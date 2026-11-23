@@ -5,7 +5,6 @@ pub mod batch;
 pub mod browser;
 pub mod import;
 pub mod instance;
-pub mod skin;
 pub mod trash;
 pub mod updates;
 
@@ -32,7 +31,7 @@ fn run(store: Store, want: Want) {
         Want::AddMicrosoft => account::open(store, account::Start::Microsoft),
         Want::SignInAgain(ids) => account::open(store, account::Start::Again(ids)),
         Want::SignInNames(names) => account::open(store, account::Start::Names(names)),
-        Want::ChangeSkin(id) => skin::open(store, id),
+        Want::ChangeSkin(id) => crate::view::wardrobe::show(store, id),
         Want::OpenTrash => trash::open(store),
         Want::Import => import::open(store),
         Want::ImportFile(path) => import::open_file(store, path),

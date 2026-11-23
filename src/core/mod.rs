@@ -86,6 +86,7 @@ pub mod themes;
 pub mod trash;
 pub mod updater;
 pub mod versions;
+pub mod wardrobe;
 pub mod webauth;
 pub mod winstate;
 pub mod worlds;
