@@ -713,8 +713,12 @@ impl Store {
     fn ask_quit(self, running: usize) {
         self.unstow();
         let title = if running == 1 { tr("1 Spiel läuft noch") } else { trf("%lld Spiele laufen noch", &[&running]) };
-        let keepable = self.model.peek().games.values().any(|g| g.phase.is_running() && !g.connection);
+        let (keepable, linked) = {
+            let model = self.model.peek();
+            (model.games.values().any(|g| g.phase.is_running() && !g.connection), model.games.values().any(|g| g.phase.is_running() && g.connection))
+        };
         let message = match (keepable, running == 1) {
+            (true, false) if linked => tr("Beim nächsten Start findet Manycraft die Spiele mit Fenster wieder. Die ohne Fenster trennen sich beim Beenden."),
             (false, true) => tr("Ohne Spielfenster bleibt es nicht verbunden: Beim Beenden trennt es sich."),
             (false, false) => tr("Ohne Spielfenster bleiben sie nicht verbunden: Beim Beenden trennen sie sich."),
             (true, true) => tr("Beim nächsten Start findet Manycraft es wieder."),

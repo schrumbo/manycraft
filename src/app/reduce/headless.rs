@@ -253,6 +253,15 @@ mod tests {
     }
 
     #[test]
+    fn a_declined_code_of_conduct_drops_with_the_rules_as_its_reason() {
+        let (mut m, key, s) = connection_only();
+        connected(&mut m, &s, &key);
+        report(&mut m, &s, rules(&key, "Be kind."));
+        report(&mut m, &s, state(&key, StateKind::Disconnected, Some("mc.example:25565"), Some(DisconnectCause::PackDeclined)));
+        assert!(matches!(&m.games[&key].phase, Phase::Disconnected { reason, .. } if reason.contains("Regeln") && !reason.contains("Ressourcenpaket")), "{:?}", m.games[&key].phase);
+    }
+
+    #[test]
     fn an_accepted_code_of_conduct_is_answered_again_for_the_same_text_only() {
         let (mut m, key, s) = connection_only();
         connected(&mut m, &s, &key);

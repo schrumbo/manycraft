@@ -406,7 +406,11 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     let s = &mut m.session;
     let policy = &env.settings.reconnect;
     let server_text = server.clone().unwrap_or_default();
-    let reason_text = if cause == Some(DisconnectCause::PackDeclined) { notify::cause_text(DisconnectCause::PackDeclined) } else { reason.clone().unwrap_or_default() };
+    let reason_text = match cause {
+        Some(DisconnectCause::PackDeclined) if i.phase.needs_rules_answer() => tr("Du hast die Regeln des Servers abgelehnt"),
+        Some(DisconnectCause::PackDeclined) => notify::cause_text(DisconnectCause::PackDeclined),
+        _ => reason.clone().unwrap_or_default(),
+    };
     let mut event: Option<(Kind, Option<String>, String)> = None;
     let mut hold = false;
     let to = match kind {

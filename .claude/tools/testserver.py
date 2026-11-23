@@ -67,6 +67,8 @@ def write_config(folder, port):
         "spawn-monsters": "false",
         "white-list": "false",
     }
+    if os.environ.get("MANYCRAFT_TESTSERVER_CONDUCT"):
+        props["enable-code-of-conduct"] = "true"
     path = folder / "server.properties"
     if not path.exists():
         props["difficulty"] = "peaceful"
