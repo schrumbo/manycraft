@@ -124,8 +124,8 @@ impl Component for HeaderCell {
             .corner_radius(t.shape.small)
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_press(move |_| {
                 a11y.request_focus();
                 let (by, up) = *sort.peek();
@@ -198,8 +198,8 @@ impl Component for Row {
             .spacing(space::M)
             .background(fill)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_press(move |_| {
                 a11y.request_focus();
                 pick(store, id);

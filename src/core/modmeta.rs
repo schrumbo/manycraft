@@ -34,6 +34,61 @@ pub fn read(path: &Path) -> Result<Option<Meta>> {
     meta_of(&mut zip, true)
 }
 
+/// What a jar says about itself for a detail page; name and version as in `Meta`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct About {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub authors: Vec<String>,
+    pub homepage: Option<String>,
+}
+
+/// Reads the description, authors and home page of the jar at `path`; `None` when it has no metadata Manycraft knows.
+pub fn about(path: &Path) -> Result<Option<About>> {
+    let mut zip = open(path)?;
+    if let Some(text) = read_text(&mut zip, "fabric.mod.json")? {
+        let meta = fabric(&text)?;
+        let root = json(&text)?;
+        let authors = root.get("authors").map(names).unwrap_or_default();
+        return Ok(Some(About { name: meta.name, version: meta.version, description: string(root.get("description")).unwrap_or_default(), authors, homepage: string(root.pointer("/contact/homepage")) }));
+    }
+    if let Some(text) = read_text(&mut zip, "quilt.mod.json")? {
+        let meta = quilt(&text)?;
+        let root = json(&text)?;
+        let about = root.pointer("/quilt_loader/metadata");
+        let authors = about.and_then(|m| m.get("contributors")).map(names).unwrap_or_default();
+        return Ok(Some(About {
+            name: meta.name,
+            version: meta.version,
+            description: string(about.and_then(|m| m.get("description"))).unwrap_or_default(),
+            authors,
+            homepage: string(about.and_then(|m| m.pointer("/contact/homepage"))),
+        }));
+    }
+    for name in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
+        let Some(text) = read_text(&mut zip, name)? else { continue };
+        let version = if text.contains(JAR_VERSION) { read_text(&mut zip, MANIFEST).ok().flatten().and_then(|manifest| manifest_version(&manifest)) } else { None };
+        let meta = forge(&text, version.as_deref())?;
+        let root: toml::Table = toml::from_str(&text).context("invalid mods.toml")?;
+        let first = root.get("mods").and_then(toml::Value::as_array).and_then(|mods| mods.first()).and_then(toml::Value::as_table);
+        let field = |key: &str| first.and_then(|f| f.get(key)).or_else(|| root.get(key)).and_then(toml::Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        let authors = field("authors").map(|a| a.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()).unwrap_or_default();
+        return Ok(Some(About { name: meta.name, version: meta.version, description: field("description").unwrap_or_default(), authors, homepage: field("displayURL") }));
+    }
+    Ok(None)
+}
+
+fn names(value: &Value) -> Vec<String> {
+    let found: Vec<String> = match value {
+        Value::Array(items) => items.iter().filter_map(|a| string(Some(a)).or_else(|| string(a.get("name")))).collect(),
+        Value::Object(people) => people.keys().map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()).collect(),
+        Value::String(one) => vec![one.trim().to_owned()],
+        _ => Vec::new(),
+    };
+    unique(found)
+}
+
 /// The bytes of `entry` in the jar at `path`, at most 1 MiB.
 pub fn entry_bytes(path: &Path, entry: &str) -> Result<Vec<u8>> {
     let mut zip = open(path)?;
@@ -297,6 +352,31 @@ mod tests {
         assert_eq!((meta.id.as_str(), meta.name.as_str()), ("messy", "Messy Mod"));
         assert_eq!(meta.depends, ["fabric-api"]);
         assert_eq!(fabric("\u{feff}{\"id\":\"bom\"}").unwrap().id, "bom");
+    }
+
+    #[test]
+    fn about_reads_description_authors_and_home_page_of_each_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let fabric_jar = jar(dir.path(), "f.jar", &[("fabric.mod.json", br#"{"id":"f","name":"F","version":"1","description":" Does things. ","authors":["A",{"name":"B"},"A"],"contact":{"homepage":"https://example.org"}}"#)]);
+        let found = about(&fabric_jar).unwrap().unwrap();
+        assert_eq!((found.name.as_str(), found.version.as_str(), found.description.as_str()), ("F", "1", "Does things."));
+        assert_eq!(found.authors, ["A", "B"]);
+        assert_eq!(found.homepage.as_deref(), Some("https://example.org"));
+
+        let quilt_jar = jar(dir.path(), "q.jar", &[("quilt.mod.json", br#"{"quilt_loader":{"id":"q","version":"2","metadata":{"name":"Q","description":"Quilty","contributors":{"Carol":"Owner","Dave":"Dev"},"contact":{"homepage":"https://q.example"}}}}"#)]);
+        let found = about(&quilt_jar).unwrap().unwrap();
+        assert_eq!((found.name.as_str(), found.description.as_str()), ("Q", "Quilty"));
+        assert_eq!(found.authors.len(), 2);
+        assert_eq!(found.homepage.as_deref(), Some("https://q.example"));
+
+        let forge_jar = jar(dir.path(), "g.jar", &[("META-INF/mods.toml", b"[[mods]]\nmodId=\"g\"\nversion=\"3\"\ndisplayName=\"G\"\ndescription='''Forged.'''\nauthors=\"Erin, Frank\"\ndisplayURL=\"https://g.example\"\n")]);
+        let found = about(&forge_jar).unwrap().unwrap();
+        assert_eq!((found.name.as_str(), found.description.as_str()), ("G", "Forged."));
+        assert_eq!(found.authors, ["Erin", "Frank"]);
+        assert_eq!(found.homepage.as_deref(), Some("https://g.example"));
+
+        let bare = jar(dir.path(), "none.jar", &[("readme.txt", b"x")]);
+        assert_eq!(about(&bare).unwrap(), None);
     }
 
     const QUILT: &str = r#"{

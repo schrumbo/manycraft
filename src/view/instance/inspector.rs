@@ -98,8 +98,8 @@ impl Component for Link {
             .background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })
             .cursor(CursorIcon::Pointer)
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_all_press(move |_| page.set(to.clone()))
             .on_key_down(move |e: Event<KeyboardEventData>| {
                 let go = matches!(&e.key, Key::Named(NamedKey::Enter)) || matches!(&e.key, Key::Character(c) if c == " ");

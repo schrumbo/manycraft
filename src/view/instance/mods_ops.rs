@@ -6,6 +6,7 @@ use freya::prelude::*;
 
 use crate::view::instance::cursor;
 use super::list::{self, Row, Sort};
+use crate::view::instance::detail::Subject;
 use super::{Ctx, Fault, Live};
 use crate::app::event::Event as Msg;
 use crate::core::content::{self, Outcome, Trashed};
@@ -309,6 +310,7 @@ impl Ctx {
         let shift = e.modifiers.contains(Modifiers::SHIFT);
         match &e.key {
             key if cursor::motion(key).is_some() => self.step(cursor::motion(key).unwrap_or_default(), shift),
+            Key::Named(NamedKey::Escape) if self.pane.is_open() => self.pane.close(),
             Key::Named(NamedKey::Escape) if !self.selected.peek().is_empty() => self.clear_selection(),
             Key::Named(NamedKey::Escape) if !self.query.peek().is_empty() => self.clear_filter(),
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => self.delete(self.targets()),
@@ -596,14 +598,18 @@ impl Ctx {
             let ctx = self.clone();
             items.push(Item::new("instance.mods.menu.fix", tr("Doppelte Mods bereinigen"), move |_| ctx.fix_all()).disabled(locked));
         }
-        if let [only] = chosen.as_slice()
-            && self.project_of(only).is_some()
-        {
-            let (show, web, file) = (self.clone(), self.clone(), only.clone());
-            let web_file = file.clone();
-            items.insert(0, Item::Separator);
-            items.insert(0, Item::new("instance.mods.menu.web", tr("Auf Modrinth öffnen"), move |_| web.show_on_modrinth(&web_file)));
-            items.insert(0, Item::new("instance.mods.menu.project", tr("Readme und Versionen"), move |_| show.show_project(&file)));
+        if let [only] = chosen.as_slice() {
+            let mut head = Vec::new();
+            let (show, file) = (self.clone(), only.clone());
+            head.push(Item::new("instance.mods.menu.details", tr("Details"), move |_| show.pane.show(&file)));
+            if self.project_of(only).is_some() {
+                let (versions, web, file) = (self.clone(), self.clone(), only.clone());
+                let web_file = file.clone();
+                head.push(Item::new("instance.mods.menu.project", tr("Versionen und Galerie"), move |_| versions.show_project(&file)));
+                head.push(Item::new("instance.mods.menu.web", tr("Auf Modrinth öffnen"), move |_| web.show_on_modrinth(&web_file)));
+            }
+            head.push(Item::Separator);
+            items.splice(0..0, head);
         }
         let (copy, remove, files) = (self.clone(), self.clone(), chosen.clone());
         items.push(Item::Separator);
@@ -710,7 +716,22 @@ impl Ctx {
         }
     }
 
-    /// Shows the readme and versions of the Modrinth project `file` came from.
+    /// What the detail pane shows for the row under the cursor.
+    pub(super) fn subject(&self) -> Subject {
+        let nothing = || Subject::Nothing(tr("Wähle einen Mod, um Details zu sehen."));
+        let Some(file) = self.list.current() else { return nothing() };
+        let data = self.data.peek().clone();
+        let Some(e) = data.entry(&file) else { return nothing() };
+        match &e.source {
+            content::Source::Modrinth { project_id, .. } => Subject::Project { id: project_id.clone(), title: e.name(), kind: Kind::Mod },
+            content::Source::Own => match self.store.model.peek().instance(&self.id).map(Instance::mods_dir) {
+                Some(dir) => Subject::Local { dir, file },
+                None => Subject::Nothing(tr("Die Datei ließ sich nicht finden.")),
+            },
+        }
+    }
+
+    /// Shows the versions and gallery of the Modrinth project `file` came from.
     pub(super) fn show_project(&self, file: &str) {
         if let Some((project, name)) = self.project_of(file) {
             crate::view::sheets::browser::open_project(self.store, &self.id, Kind::Mod, &project, &name);

@@ -210,8 +210,8 @@ impl Component for EntryRow {
             .spacing(space::M)
             .corner_radius(t.shape.control)
             .background(fill)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .child(switch)
             .child(main);
         if let Some(menu) = self.on_menu.clone() {

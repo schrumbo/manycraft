@@ -65,7 +65,7 @@ const SORT_W: f32 = 120.;
 const LOADER_W: f32 = 124.;
 const PACK_TRAIL_W: f32 = 184.;
 const VERSION_W: f32 = 132.;
-const SPLIT_AT: f32 = 1100.;
+use crate::view::kit::page::SPLIT_AT;
 const PANE_LIST: f32 = 0.8;
 const PANE_MAX: f32 = 1240.;
 const OTHERS: f32 = control::M * 4. + space::XS * 7. + font::CAPTION * font::LINE + font::BODY * font::LINE;
@@ -2833,8 +2833,8 @@ impl Component for ResultRow {
             .cursor(CursorIcon::Pointer)
             .content(Content::flex())
             .on_sized(spot)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| {
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| {
                 hovered.set_if_modified(false);
                 pressed.set_if_modified(false);
             })

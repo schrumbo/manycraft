@@ -122,12 +122,12 @@ impl Component for Row {
             .opacity(if disabled { 0.55 } else { 1. })
             .on_sized(spot)
             .cursor(if press.is_some() { CursorIcon::Pointer } else { CursorIcon::Default })
-            .on_pointer_enter(move |_| {
+            .on_pointer_over(move |_| {
                 if !disabled {
                     hovered.set(true);
                 }
             })
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_all_press(move |e: Event<PressEventData>| {
                 if disabled {
                     return;

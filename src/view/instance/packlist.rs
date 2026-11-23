@@ -8,6 +8,7 @@ use anyhow::Result;
 use freya::prelude::*;
 
 use super::cursor::{self, Cursor, Live, use_cursor};
+use super::detail::{self, Detail, Pane, Subject, use_pane};
 use super::entry::{EntryRow, ROW, RowAction, bar};
 use super::shots_parts::centered;
 use super::{Facts, actions};
@@ -196,6 +197,8 @@ fn switch(store: Store, instance_dir: PathBuf, kind: Kind, loader: crate::core::
 #[derive(Clone)]
 struct Ops {
     store: Store,
+    pane: Pane,
+    settled: bool,
     id: String,
     instance_dir: PathBuf,
     dir: PathBuf,
@@ -210,9 +213,25 @@ impl Ops {
     }
 
     fn info(&self, file: &str) -> bool {
-        let Some(p) = self.matches.get(file) else { return false };
-        browser::open_project(self.store, &self.id, self.kind, &p.project, &p.title);
+        if !self.matches.contains_key(file) {
+            return false;
+        }
+        self.pane.show(file);
         true
+    }
+
+    fn subject(&self, file: Option<&str>) -> Subject {
+        match file.and_then(|f| self.matches.get(f)) {
+            Some(p) => Subject::Project { id: p.project.clone(), title: p.title.clone(), kind: self.kind },
+            None if file.is_some() && !self.settled => Subject::Nothing(String::new()),
+            None => Subject::Nothing(if file.is_some() { tr("Nicht auf Modrinth gefunden.") } else { tr("Wähle einen Eintrag, um Details zu sehen.") }),
+        }
+    }
+
+    fn versions(&self, file: &str) {
+        if let Some(p) = self.matches.get(file) {
+            browser::open_project(self.store, &self.id, self.kind, &p.project, &p.title);
+        }
     }
 
     fn remove(&self, e: &Entry) {
@@ -266,6 +285,10 @@ impl Ops {
     fn key_down(&self, list: Cursor, shown: &[Entry], e: &KeyboardEventData) -> bool {
         if self.store.ui.layered() || e.modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::META) {
             return false;
+        }
+        if matches!(e.key, Key::Named(NamedKey::Escape)) && self.pane.is_open() {
+            self.pane.close();
+            return true;
         }
         if let Some(delta) = cursor::motion(&e.key) {
             list.go(&shown.iter().map(|e| e.file.clone()).collect::<Vec<_>>(), delta);
@@ -464,8 +487,10 @@ impl Component for Packs {
             let known = known.read();
             if known.0 == tag { known.1.clone() } else { Matches::default() }
         };
-        let ops = Ops { store, id: id.clone(), instance_dir: instance_dir.clone(), dir: dir.clone(), kind, loader: loader.clone(), matches };
-        let at = list.at.read().clone().filter(|_| list.focus.is_focused());
+        let pane = use_pane(store, list);
+        let settled = known.read().0 == tag;
+        let ops = Ops { store, pane, settled, id: id.clone(), instance_dir: instance_dir.clone(), dir: dir.clone(), kind, loader: loader.clone(), matches };
+        let at = list.at.read().clone().filter(|_| list.focus.is_focused() || pane.shown());
         super::use_extras(ops.extras(list, filter_focus, &entries));
         if !ready {
             return rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Lädt …"))).into_element();
@@ -497,7 +522,14 @@ impl Component for Packs {
             let order: Vec<String> = shown.iter().map(|e| e.file.clone()).collect();
             rect()
                 .width(Size::flex(1.))
-                .on_key_down(move |e: Event<KeyboardEventData>| list.filter_keys(&e, query, || list.go(&order, 1)))
+                .on_key_down(move |e: Event<KeyboardEventData>| {
+                    if matches!(e.key, Key::Named(NamedKey::Escape)) && pane.is_open() {
+                        e.stop_propagation();
+                        pane.close();
+                    } else {
+                        list.filter_keys(&e, query, || list.go(&order, 1));
+                    }
+                })
                 .child(Field::new(format!("instance.{key}.filter"), query).placeholder(placeholder).glyph(Icon::Search).a11y(filter_focus).on_submit({
                     let order: Vec<String> = shown.iter().map(|e| e.file.clone()).collect();
                     move |_| {
@@ -546,7 +578,18 @@ impl Component for Packs {
             let find_id = id.clone();
             root = root.child(bar(&t, Icon::Alert, t.attention_text, trf("Shader brauchen %@. Ohne laden sie nicht.", &[&name])).child(Button::new(format!("instance.{key}.loader"), trf("%@ hinzufügen…", &[&name])).on_press(move |_| browser::find(store, &find_id, Kind::Mod))));
         }
-        root.child(counts).child(body).content(Content::flex()).into_element()
+        let left = root.child(counts).child(body).content(Content::flex());
+        if !pane.shown() {
+            return detail::split(&t, 0., left, None);
+        }
+        let window = ui.window.read().0;
+        let current = list.current();
+        let subject = ops.subject(current.as_deref());
+        let (close, show) = (ops.clone(), ops.clone());
+        let versions = current.filter(|f| ops.matches.contains_key(f)).map(|f| EventHandler::new(move |_| show.versions(&f)));
+        let back = if kind == Kind::Shader { tr("Shader") } else { tr("Ressourcenpakete") };
+        let detail = Detail { id: if kind == Kind::Shader { "instance.shaders.detail" } else { "instance.packs.detail" }, subject, narrow: window < page::SPLIT_AT, back, close: EventHandler::new(move |_| close.pane.close()), versions };
+        detail::split(&t, window, left, Some(detail))
     }
 }
 

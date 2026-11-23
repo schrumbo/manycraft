@@ -77,8 +77,8 @@ impl Component for Title {
             .corner_radius(t.shape.small)
             .background(if *hovered.read() { t.hover } else { Color::TRANSPARENT })
             .cursor(CursorIcon::Text)
-            .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .on_pointer_over(move |_| hovered.set(true))
+            .on_pointer_out(move |_| hovered.set_if_modified(false))
             .on_press(move |e: Event<PressEventData>| {
                 if let PressEventData::Mouse(m) = &*e
                     && m.button != Some(MouseButton::Left)

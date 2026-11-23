@@ -583,6 +583,10 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                             }
                         },
                         NativeWindowEventAction::PlatformEvent(platform_event) => {
+                            if let PlatformEvent::Mouse { cursor, .. } | PlatformEvent::Wheel { cursor, .. } = &platform_event {
+                                app.position = *cursor;
+                                app.cursor_in_window = true;
+                            }
                             app.queue_platform_events(vec![platform_event]);
                         }
                     }

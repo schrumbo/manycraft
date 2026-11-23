@@ -137,6 +137,12 @@ struct Disk {
     updated: Option<SystemTime>,
 }
 
+/// The jar of `file` in `mods`, wherever it is now: switched on, or off as `.disabled`.
+pub fn jar_path(mods: &Path, file: &str) -> PathBuf {
+    let found = list_jars(mods).ok().and_then(|mut jars| jars.remove(&file.to_lowercase()));
+    found.and_then(|f| f.on.or(f.off)).unwrap_or_else(|| mods.join(file))
+}
+
 fn stat(found: &Found, mods: &Path) -> Option<Disk> {
     let actual = found.on.as_ref().or_else(|| found.off.as_ref())?;
     let meta = std::fs::metadata(actual).ok()?;
