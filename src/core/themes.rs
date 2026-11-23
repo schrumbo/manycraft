@@ -11,11 +11,12 @@ use super::i18n::{decimal, tr, trf};
 use super::paths;
 
 /// The theme a fresh install uses, in the system's light or dark appearance.
-pub const DEFAULT: &str = "lantern";
+pub const DEFAULT: &str = "manycraft";
 
 const MAX_BYTES: u64 = 256 * 1024;
 
-const BUILT_IN: [(&str, &str); 19] = [
+const BUILT_IN: [(&str, &str); 20] = [
+    ("manycraft", include_str!("../../assets/themes/manycraft.json")),
     ("lantern", include_str!("../../assets/themes/lantern.json")),
     ("biome", include_str!("../../assets/themes/biome.json")),
     ("tinte", include_str!("../../assets/themes/tinte.json")),
@@ -722,6 +723,14 @@ mod tests {
                 Err(errors) => panic!("{id}: {errors:?}"),
             }
         }
+    }
+
+    #[test]
+    fn the_default_ships_both_appearances_as_written() {
+        let theme = parse(DEFAULT, BUILT_IN[0].1, Origin::BuiltIn).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(BUILT_IN[0].0, DEFAULT);
+        assert!(theme.light.is_some() && theme.dark.is_some() && theme.warnings.is_empty(), "{:?}", theme.warnings);
+        assert_eq!(Library::load(&temp("default")).chosen(None).map(|t| t.id.as_str()), Some(DEFAULT));
     }
 
     #[test]

@@ -85,8 +85,8 @@ impl Component for Switch {
                 .width(Size::px(knob + stretch))
                 .height(Size::px(knob))
                 .corner_radius(knob / 2.)
-                .background(Color::WHITE)
-                .shadow(Shadow::from((0., 1., 2., 0., Color::BLACK.with_af32(0.3)))),
+                .background(t.pale)
+                .shadow(Shadow::from((0., 1., 2., 0., t.deep.with_af32(0.3)))),
         );
         if !self.disabled {
             s = s
