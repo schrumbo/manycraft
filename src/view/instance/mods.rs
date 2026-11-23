@@ -206,7 +206,7 @@ impl Component for Mods {
         let list = use_cursor();
         let filter_focus = use_a11y();
         let details = use_state(|| false);
-        let mut dropping = use_state(|| false);
+        let dropping = use_state(|| false);
         let seen = use_state(|| u64::MAX);
         let cache = use_hook(|| Rc::new(RefCell::new(Cache::default())));
 
@@ -384,19 +384,7 @@ impl Component for Mods {
                 .child(body)
         };
 
-        let drop_ctx = ctx.clone();
-        let mut root = page::column()
-            .height(Size::fill())
-            .spacing(space::S)
-            .on_global_file_hover(move |_| dropping.set_if_modified(true))
-            .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
-            .on_file_drop(move |e: Event<FileEventData>| {
-                dropping.set_if_modified(false);
-                match drop_ctx.locked() {
-                    Some(why) => drop_ctx.note(why),
-                    None => drop_ctx.dropped(e.file_paths.clone()),
-                }
-            });
+        let mut root = page::column().height(Size::fill()).spacing(space::S);
         if let Some(b) = &current {
             root = root.child(trouble::card(&ctx, &t, b, &scan, self.facts.running));
         }
@@ -416,20 +404,9 @@ impl Component for Mods {
             root = root.child(counts);
         }
         root = root.child(list);
-        if *dropping.read() {
-            root = root.child(
-                rect()
-                    .position(Position::new_absolute().left(0.).top(0.))
-                    .width(Size::fill())
-                    .height(Size::fill())
-                    .corner_radius(t.shape.tile)
-                    .background(t.accent.with_a((frame::NOTICE_WASH * 255.) as u8))
-                    .child(spacer()),
-            );
-        }
         let left = root.content(Content::flex());
         if !ctx.pane.shown() {
-            return detail::split(&t, 0., left, None);
+            return drop_zone(&t, dropping, &ctx, detail::split(&t, 0., left, None));
         }
         let window = ui.window.read().0;
         let (close, versions) = (ctx.clone(), ctx.clone());
@@ -439,6 +416,34 @@ impl Component for Mods {
             _ => None,
         };
         let pane = Detail { id: "instance.mods.detail", subject, narrow: window < page::SPLIT_AT, back: tr("Mods"), close: EventHandler::new(move |_| close.pane.close()), versions: open };
-        detail::split(&t, window, left, Some(pane))
+        drop_zone(&t, dropping, &ctx, detail::split(&t, window, left, Some(pane)))
     }
+}
+/// `inner` as one drop target for the whole tab, list and detail pane alike, washed in the accent while files are dragged over the window.
+fn drop_zone(t: &Theme, mut dropping: State<bool>, ctx: &Ctx, inner: Element) -> Element {
+    let ctx = ctx.clone();
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .on_global_file_hover(move |_| dropping.set_if_modified(true))
+        .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
+        .on_global_pointer_move(move |_| dropping.set_if_modified(false))
+        .on_file_drop(move |e: Event<FileEventData>| {
+            dropping.set_if_modified(false);
+            match ctx.locked() {
+                Some(why) => ctx.note(why),
+                None => ctx.dropped(e.file_paths.clone()),
+            }
+        })
+        .child(inner)
+        .maybe_child((*dropping.read()).then(|| {
+            rect()
+                .position(Position::new_absolute().left(0.).top(0.))
+                .width(Size::fill())
+                .height(Size::fill())
+                .corner_radius(t.shape.tile)
+                .background(t.accent.with_a((frame::NOTICE_WASH * 255.) as u8))
+                .child(spacer())
+        }))
+        .into_element()
 }

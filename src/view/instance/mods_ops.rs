@@ -6,7 +6,7 @@ use freya::prelude::*;
 
 use crate::view::instance::cursor;
 use super::list::{self, Row, Sort};
-use crate::view::instance::detail::Subject;
+use crate::view::instance::detail::{self, Subject};
 use super::{Ctx, Fault, Live};
 use crate::app::event::Event as Msg;
 use crate::core::content::{self, Outcome, Trashed};
@@ -601,7 +601,7 @@ impl Ctx {
         if let [only] = chosen.as_slice() {
             let mut head = Vec::new();
             let (show, file) = (self.clone(), only.clone());
-            head.push(Item::new("instance.mods.menu.details", tr("Details"), move |_| show.pane.show(&file)));
+            head.push(Item::new("instance.mods.menu.details", tr("Details"), move |_| show.pane.show(&file)).shortcut(detail::TOGGLE.label()));
             if self.project_of(only).is_some() {
                 let (versions, web, file) = (self.clone(), self.clone(), only.clone());
                 let web_file = file.clone();
@@ -681,6 +681,7 @@ impl Ctx {
         };
         let focus = self.filter_focus;
         push("filter", tr("Mods filtern"), Icon::Search, Some(Shortcut::primary(Code::KeyF)), |_| None, Box::new(move |_| focus.request_focus()));
+        push("details", self.pane.label(), Icon::Info, Some(detail::TOGGLE), Ctx::why_empty, Box::new(|c: &Ctx| c.pane.toggle()));
         push("select", tr("Alle Mods auswählen"), Icon::Check, Some(Shortcut::primary(Code::KeyA)), Ctx::why_empty, Box::new(Ctx::select_all));
         push("enable", tr("Ausgewählte Mods einschalten"), Icon::Check, None, Ctx::why_none, Box::new(|c: &Ctx| c.switch(c.targets(), true)));
         push("disable", tr("Ausgewählte Mods ausschalten"), Icon::Minus, None, Ctx::why_none, Box::new(|c: &Ctx| c.switch(c.targets(), false)));

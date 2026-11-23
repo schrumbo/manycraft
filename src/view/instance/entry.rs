@@ -121,6 +121,7 @@ pub(in crate::view::instance) struct RowAction {
     pub id: &'static str,
     pub icon: Icon,
     pub label: String,
+    pub tip: Option<String>,
     pub danger: bool,
     pub disabled: Option<String>,
     pub run: EventHandler<()>,
@@ -234,7 +235,10 @@ impl Component for EntryRow {
             let slot = rect().width(Size::px(control::M)).height(Size::px(control::M));
             let run = action.run.clone();
             row = row.child(if shown {
-                let button = Button::icon(format!("instance.{area}.{}.{key}", action.id), action.icon, action.label.clone()).plain().disabled(action.disabled.clone());
+                let mut button = Button::icon(format!("instance.{area}.{}.{key}", action.id), action.icon, action.label.clone()).plain().disabled(action.disabled.clone());
+                if let Some(tip) = &action.tip {
+                    button = button.tip(tip.clone());
+                }
                 slot.child(if action.danger { button.danger() } else { button }.on_press(move |_| run.call(())))
             } else {
                 slot
