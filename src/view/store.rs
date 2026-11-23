@@ -217,11 +217,16 @@ impl Store {
         });
         spawn_in_window(async move {
             let Ok(read) = rx.recv().await else { return };
-            let adopted = match self.runtime() {
-                Some(rt) if read.data.is_ok() || self.model.peek().loaded => rt.borrow().backend.adopted(),
-                _ => Vec::new(),
+            let (adopted, resume) = match self.runtime() {
+                Some(rt) if read.data.is_ok() || self.model.peek().loaded => {
+                    let rt = rt.borrow();
+                    (rt.backend.adopted(), rt.backend.resumed())
+                }
+                _ => (Vec::new(), Vec::new()),
             };
-            self.dispatch(Event::Loaded(Box::new(read.loaded(keep, adopted))));
+            let mut loaded = read.loaded(keep, adopted);
+            loaded.resume = resume;
+            self.dispatch(Event::Loaded(Box::new(loaded)));
         });
     }
 
@@ -443,6 +448,11 @@ impl Store {
             }
             Effect::AddAccount => self.ui.page.set(Page::ACCOUNTS),
             Effect::AskQuit { running } => self.ask_quit(running),
+            Effect::Resume(keys) => {
+                if let Some(rt) = runtime {
+                    rt.borrow().backend.resume(&keys);
+                }
+            }
             Effect::Quit { keep } => {
                 if let Some(rt) = runtime {
                     rt.borrow_mut().keep_games = keep;

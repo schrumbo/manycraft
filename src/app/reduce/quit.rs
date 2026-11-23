@@ -31,11 +31,16 @@ pub(super) fn ask(m: &Model, out: &mut Vec<Effect>) {
     }
 }
 
-/// The restart that installs an update keeps the games, for the new version to find again; it waits while a game starts.
+/// The restart that installs an update keeps the games, for the new version to find again, and writes down the connection-only
+/// accounts that are up, which end with Manycraft and connect again at the next start; it waits while a game starts.
 pub(super) fn restart_for_update(m: &Model, out: &mut Vec<Effect>) {
-    if !m.games.values().any(|i| matches!(i.phase, Phase::Starting { .. })) {
-        out.push(Effect::Quit { keep: true });
+    if m.games.values().any(|i| matches!(i.phase, Phase::Starting { .. })) {
+        return;
     }
+    let mut keys: Vec<String> = m.games.values().filter(|i| i.connection && i.phase.is_running() && !matches!(i.phase, Phase::Disconnected { .. } | Phase::Banned { .. })).map(|i| i.key.clone()).collect();
+    keys.sort();
+    out.push(Effect::Resume(keys));
+    out.push(Effect::Quit { keep: true });
 }
 
 #[cfg(test)]
@@ -113,6 +118,42 @@ mod tests {
         assert!(m.games.values().all(|i| i.phase == Phase::Menu));
     }
 
+    fn resumed(fx: &[Effect]) -> Vec<Vec<String>> {
+        fx.iter().filter_map(|e| if let Effect::Resume(keys) = e { Some(keys.clone()) } else { None }).collect()
+    }
+
+    #[test]
+    fn restarting_for_an_update_writes_down_the_connections_that_are_up_and_only_those() {
+        let s = settings();
+        let mut m = with(Phase::Playing { server: "a".into(), since: Instant::now() });
+        let key = m.games.keys().next().unwrap().clone();
+        m.games.get_mut(&key).unwrap().connection = true;
+        let mut window = m.games[&key].clone();
+        window.key = "window".into();
+        window.connection = false;
+        m.games.insert("window".into(), window);
+        let mut dropped = m.games[&key].clone();
+        dropped.key = "dropped".into();
+        dropped.phase = Phase::Disconnected { server: None, reason: "x".into() };
+        let mut banned = dropped.clone();
+        banned.key = "banned".into();
+        banned.phase = Phase::Banned { server: None, reason: "x".into() };
+        let mut gone = dropped.clone();
+        gone.key = "gone".into();
+        gone.phase = Phase::Stopped;
+        let mut dead = m.games[&key].clone();
+        dead.key = "dead".into();
+        dead.phase = Phase::Dead { server: Some("a".into()), reason: "x".into() };
+        for g in [dropped, banned, gone, dead] {
+            m.games.insert(g.key.clone(), g);
+        }
+        let fx = run(&mut m, &s, Instant::now(), Event::RestartForUpdate);
+        assert_eq!(resumed(&fx), [vec![key, "dead".to_owned()]]);
+        assert_eq!(quits(&fx), ["Quit { keep: true }"]);
+        let fx = run(&mut with(Phase::Menu), &s, Instant::now(), Event::RestartForUpdate);
+        assert_eq!(resumed(&fx), [Vec::<String>::new()], "an empty note clears an older one");
+    }
+
     #[test]
     fn restarting_for_an_update_keeps_the_games_and_waits_for_starts() {
         let s = settings();
@@ -121,6 +162,7 @@ mod tests {
             assert_eq!(quits(&run(&mut m, &s, Instant::now(), Event::RestartForUpdate)), ["Quit { keep: true }"]);
         }
         let mut starting = with(Phase::Starting { place: 1, total: 1 });
-        assert!(quits(&run(&mut starting, &s, Instant::now(), Event::RestartForUpdate)).is_empty());
+        let fx = run(&mut starting, &s, Instant::now(), Event::RestartForUpdate);
+        assert!(quits(&fx).is_empty() && resumed(&fx).is_empty());
     }
 }

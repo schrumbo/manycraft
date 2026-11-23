@@ -11,7 +11,7 @@ use crate::core::fleet::{self, Adoption};
 const START_WAITS_FOR: Duration = Duration::from_secs(10);
 
 pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Effect>) {
-    let Loaded { data, logs, problems, recovered, keep, adopted, measured } = loaded;
+    let Loaded { data, logs, problems, recovered, keep, adopted, resume, measured } = loaded;
     for (batch, mb) in measured {
         m.measured.entry(batch).or_insert(mb);
     }
@@ -66,6 +66,9 @@ pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Eff
         } else {
             m.session.waiting_starts.push((batch, since));
         }
+    }
+    if m.loaded && !resume.is_empty() {
+        launching::start_keys(m, &resume, out);
     }
 }
 
@@ -168,7 +171,7 @@ mod tests {
 
     fn reload(m: &mut crate::app::model::Model, s: &crate::core::settings::Settings, accounts: Vec<crate::core::account::Account>) -> Vec<Effect> {
         let data = Ok((accounts, m.batches.clone(), m.instances.clone()));
-        let loaded = super::super::super::event::Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), measured: std::collections::HashMap::new() };
+        let loaded = super::super::super::event::Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), resume: Vec::new(), measured: std::collections::HashMap::new() };
         run(m, s, std::time::Instant::now(), super::super::super::event::Event::Loaded(Box::new(loaded)))
     }
 
@@ -187,6 +190,31 @@ mod tests {
         accounts.retain(|a| a.id != first);
         reload(&mut m, &s, accounts);
         assert_eq!(super::show::active_account(&m), Some(uuid::Uuid::from_u128(77)), "a removed active account falls back");
+    }
+
+    #[test]
+    fn connections_written_down_before_a_restart_connect_again_with_the_conduct_their_batch_accepted() {
+        use super::super::super::event::{Event, Loaded};
+        use crate::core::batch::RunMode;
+
+        let s = settings();
+        let (mut m, key) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        m.batches[0].mode = RunMode::Connection;
+        m.batches[0].server = Some("mc.example".into());
+        m.batches[0].accept_conduct("MC.example", "aa11");
+        let loaded = |resume: Vec<String>, m: &super::super::super::model::Model| {
+            let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
+            Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), resume, measured: std::collections::HashMap::new() }))
+        };
+        let event = loaded(Vec::new(), &m);
+        assert!(!run(&mut m, &s, std::time::Instant::now(), event).iter().any(|e| matches!(e, Effect::Start { .. })), "nothing written down, nothing starts");
+        let event = loaded(vec![key.clone(), "removed".into()], &m);
+        let fx = run(&mut m, &s, std::time::Instant::now(), event);
+        let starts: Vec<_> = fx.iter().filter_map(|e| if let Effect::Start { target, accounts, .. } = e { Some((target, accounts)) } else { None }).collect();
+        let [(target, accounts)] = starts.as_slice() else { panic!("expected one start, got {}", starts.len()) };
+        assert!(target.connection_only());
+        assert_eq!(target.batch.as_ref().map(|b| b.conduct_hashes("mc.example")), Some(vec!["aa11".to_owned()]));
+        assert_eq!(accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["AltOne"]);
     }
 
     #[test]

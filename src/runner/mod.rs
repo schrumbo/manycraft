@@ -315,7 +315,7 @@ pub struct Data {
 impl Data {
     /// The load event, keeping the message already shown when `keep`, with the games an earlier manager left running.
     pub fn loaded(self, keep: bool, adopted: Vec<Adoption>) -> Loaded {
-        Loaded { data: self.data, logs: self.logs, problems: self.problems, recovered: self.recovered, keep, adopted, measured: self.measured }
+        Loaded { data: self.data, logs: self.logs, problems: self.problems, recovered: self.recovered, keep, adopted, resume: Vec::new(), measured: self.measured }
     }
 }
 
