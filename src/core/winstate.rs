@@ -1,7 +1,7 @@
 //! What the manager window remembers across restarts in `window.json`: where it was, how big, on which monitor, whether maximized, which page it showed and whether the sidebar was open.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result};
@@ -60,11 +60,18 @@ pub struct Saved {
     /// Whether the chat sidebar of the batch pages is open.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub chat_open: bool,
+    /// The width of the chat sidebar in logical pixels; 0 until the person dragged it.
+    #[serde(skip_serializing_if = "is_unset")]
+    pub chat_width: f32,
+}
+
+fn is_unset(width: &f32) -> bool {
+    *width == 0.
 }
 
 impl Default for Saved {
     fn default() -> Self {
-        Self { frame: None, maximized: false, display: None, page: Page::Start, batch: None, sidebar: true, sidebar_width: SIDEBAR_WIDTH, rail: false, chat_open: false }
+        Self { frame: None, maximized: false, display: None, page: Page::Start, batch: None, sidebar: true, sidebar_width: SIDEBAR_WIDTH, rail: false, chat_open: false, chat_width: 0. }
     }
 }
 
@@ -72,6 +79,8 @@ impl Default for Saved {
 pub const SIDEBAR_WIDTH: f32 = 232.;
 /// The narrowest and widest the sidebar can be dragged.
 pub const SIDEBAR_RANGE: (f32, f32) = (200., 320.);
+/// The narrowest and widest the chat sidebar can be dragged.
+pub const CHAT_RANGE: (f32, f32) = (280., 720.);
 
 fn path() -> PathBuf {
     paths::data_dir().join(FILE)
@@ -100,6 +109,17 @@ pub fn update(change: impl FnOnce(&mut Saved)) -> Result<()> {
     save(&saved)
 }
 
+/// Remembers in the background how wide the chat sidebar is; the newest call decides.
+pub fn keep_chat_width(width: f32) {
+    static LATEST: AtomicU32 = AtomicU32::new(0);
+    LATEST.store(width.to_bits(), Ordering::SeqCst);
+    std::thread::spawn(|| {
+        if let Err(e) = update(|s| s.chat_width = f32::from_bits(LATEST.load(Ordering::SeqCst))) {
+            eprintln!("window state: {e:#}");
+        }
+    });
+}
+
 /// Remembers in the background whether the chat sidebar is open; the newest call decides.
 pub fn keep_chat_open(open: bool) {
     static LATEST: AtomicBool = AtomicBool::new(false);
@@ -115,6 +135,7 @@ fn load_from(path: &Path) -> Saved {
     let mut saved: Saved = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     saved.frame = saved.frame.filter(Frame::sound);
     saved.sidebar_width = if saved.sidebar_width.is_finite() { saved.sidebar_width.clamp(SIDEBAR_RANGE.0, SIDEBAR_RANGE.1) } else { SIDEBAR_WIDTH };
+    saved.chat_width = if saved.chat_width.is_finite() && saved.chat_width > 0. { saved.chat_width.clamp(CHAT_RANGE.0, CHAT_RANGE.1) } else { 0. };
     saved
 }
 
@@ -127,7 +148,7 @@ mod tests {
     use super::*;
 
     fn saved() -> Saved {
-        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Instance, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true, chat_open: true }
+        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Instance, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true, chat_open: true, chat_width: 410. }
     }
 
     #[test]
@@ -173,6 +194,22 @@ mod tests {
         assert_eq!(load_from(&file).sidebar_width, SIDEBAR_RANGE.1);
         std::fs::write(&file, b"{\"sidebar_width\":3}").unwrap();
         assert_eq!(load_from(&file).sidebar_width, SIDEBAR_RANGE.0);
+    }
+
+    #[test]
+    fn the_chat_width_stays_in_its_range_and_unset_stays_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        std::fs::write(&file, b"{\"chat_width\":4000}").unwrap();
+        assert_eq!(load_from(&file).chat_width, CHAT_RANGE.1);
+        std::fs::write(&file, b"{\"chat_width\":3}").unwrap();
+        assert_eq!(load_from(&file).chat_width, CHAT_RANGE.0);
+        std::fs::write(&file, b"{\"chat_width\":-5}").unwrap();
+        assert_eq!(load_from(&file).chat_width, 0.);
+        std::fs::write(&file, b"{}").unwrap();
+        assert_eq!(load_from(&file).chat_width, 0.);
+        save_to(&file, &Saved::default()).unwrap();
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("chat_width"));
     }
 
     #[test]
