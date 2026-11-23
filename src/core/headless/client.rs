@@ -6,6 +6,7 @@ use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -27,6 +28,7 @@ use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Offer, StateKi
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const CLIENT_TICK: Duration = Duration::from_millis(50);
 const BRAND: &str = "manycraft";
 const VIEW_DISTANCE: u8 = 2;
 const CHUNKS_PER_TICK: f32 = 10.0;
@@ -381,6 +383,9 @@ fn join(shared: &Shared, spec: &Spec) -> Result<(Line, DisconnectCause)> {
     loop {
         let phase = shared.lock().phase;
         let packet = reader.next(|id| wanted(phase, id))?;
+        if phase == Phase::Play && packet.id == play::clientbound::PLAYER_POSITION {
+            thread::sleep(CLIENT_TICK);
+        }
         let mut r = In::new(packet.body);
         let mut link = shared.lock();
         let end = match phase {
