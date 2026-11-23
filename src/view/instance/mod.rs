@@ -6,6 +6,7 @@ mod icon;
 mod inspector;
 mod logs;
 mod logs_lines;
+mod logs_select;
 mod logs_viewer;
 mod mods;
 mod packlist;
@@ -13,6 +14,7 @@ mod play;
 mod shots;
 mod shots_parts;
 mod shots_thumbs;
+mod shots_view;
 mod worlds;
 pub mod links;
 mod save;
@@ -66,6 +68,11 @@ impl Tab {
     /// The tabs of an instance in order; shader packs need a loader that takes mods.
     pub fn shown(takes_mods: bool) -> Vec<Tab> {
         [Tab::Mods, Tab::Packs, Tab::Shaders, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings].into_iter().filter(|t| takes_mods || *t != Tab::Shaders).collect()
+    }
+
+    /// Whether the tab is a form or prose that keeps a readable measure; the others use the whole width.
+    fn reads(self) -> bool {
+        self == Tab::Settings
     }
 
     /// The id the drive tool and spots use.
@@ -400,9 +407,11 @@ impl Component for InstancePage {
         };
         let room = ui.window.read().0 - ui.sidebar_room();
         let wide = room >= SPLIT;
-        let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(
-            rect().width(Size::fill()).max_width(Size::px(CONTENT_MAX)).height(Size::fill()).child(tab_body(&t, store, tab, f.clone())),
-        );
+        let mut body = rect().width(Size::fill()).height(Size::fill());
+        if tab.reads() {
+            body = body.max_width(Size::px(CONTENT_MAX));
+        }
+        let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).cross_align(Alignment::Center).child(body.child(tab_body(&t, store, tab, f.clone())));
         let mut left = rect().width(Size::flex(1.)).height(Size::fill());
         if !wide {
             left = left.child(Strip { id: self.id.clone() });

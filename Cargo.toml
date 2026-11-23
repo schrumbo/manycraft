@@ -13,7 +13,7 @@ ignored = ["md-5"]
 [features]
 default = ["freya"]
 freya-proto = ["dep:freya", "dep:freya-winit", "dep:notify"]
-freya = ["dep:freya", "dep:freya-winit", "dep:freya-core", "dep:open", "dep:rfd", "dep:notify-rust", "dep:winrt", "dep:windows-registry"]
+freya = ["dep:freya", "dep:freya-winit", "dep:freya-core", "dep:arboard", "dep:open", "dep:rfd", "dep:notify-rust", "dep:winrt", "dep:windows-registry"]
 
 [[bin]]
 name = "manycraft"
@@ -27,6 +27,7 @@ required-features = ["freya-proto"]
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+arboard = { version = "3", optional = true, default-features = false, features = ["image-data", "wayland-data-control"] }
 async-channel = "2.5.0"
 base64 = "0.22"
 dirs = "6"

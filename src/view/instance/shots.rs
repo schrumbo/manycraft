@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use super::shots_parts::{Move, Same, bring_into_view, cell_width, centered, columns, key_move, moved, page, picture_height, row_height};
 use super::shots_thumbs::Thumb;
+use super::shots_view::Viewer;
 use super::{Facts, actions, use_extras};
 use crate::core::i18n::{tr, trf};
 use crate::core::shots::{self, Shot};
@@ -45,6 +46,8 @@ struct Grid {
     selected: State<Option<PathBuf>>,
     width: State<f32>,
     controller: ScrollController,
+    viewing: State<bool>,
+    copying: State<bool>,
 }
 
 impl Grid {
@@ -119,9 +122,41 @@ impl Grid {
     }
 
     fn open(&self) {
+        if self.current().is_some() {
+            let mut viewing = self.viewing;
+            viewing.set(true);
+        }
+    }
+
+    fn close(&self) {
+        let mut viewing = self.viewing;
+        viewing.set(false);
+        self.reveal_selected();
+    }
+
+    fn external(&self) {
         if let Some(shot) = self.current() {
             native::open(&shot.path);
         }
+    }
+
+    fn copy_image(&self) {
+        let Some(shot) = self.current() else { return };
+        let (ui, mut copying) = (self.store.ui, self.copying);
+        if *copying.peek() {
+            return;
+        }
+        copying.set(true);
+        spawn_in_window(async move {
+            let done = off_ui(move || native::copy_image(&shot.path)).await;
+            copying.set(false);
+            let text = match done {
+                Some(Ok(())) => tr("Bild kopiert."),
+                Some(Err(e)) => forms::explain_as(tr("Das Bild wurde nicht kopiert."), &e).text,
+                None => tr("Das Bild wurde nicht kopiert."),
+            };
+            toast::show(ui, text, None);
+        });
     }
 
     fn reveal(&self) {
@@ -143,6 +178,10 @@ impl Grid {
         let next = shots.get(at + 1).or_else(|| at.checked_sub(1).and_then(|p| shots.get(p))).map(|s| s.path.clone());
         let rest: Vec<Shot> = shots.iter().filter(|s| s.path != shot.path).cloned().collect();
         let (mut list, mut selected) = (self.list, self.selected);
+        if next.is_none() {
+            let mut viewing = self.viewing;
+            viewing.set(false);
+        }
         selected.set(next);
         list.set(List { loaded: true, shots: Same(Arc::new(rest)) });
         let (store, dir) = (self.store, self.dir.clone());
@@ -186,11 +225,14 @@ fn undo(store: Store, dir: PathBuf, name: String, entry: String) {
 }
 
 fn menu_items(grid: &Grid) -> Vec<Item> {
-    let (open, reveal, copy, delete) = (grid.clone(), grid.clone(), grid.clone(), grid.clone());
+    let (open, external, reveal, image, copy, delete) = (grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone());
     vec![
         Item::new("instance.shots.menu.open", tr("Öffnen"), move |_| open.open()).shortcut(Shortcut::bare(Code::Enter).label()),
+        Item::new("instance.shots.menu.external", tr("Mit Standard-App öffnen"), move |_| external.external()),
         Item::new("instance.shots.menu.reveal", tr("Im Ordner zeigen"), move |_| reveal.reveal()),
-        Item::new("instance.shots.menu.copy", tr("Pfad kopieren"), move |_| copy.copy()).shortcut(Shortcut::primary(Code::KeyC).label()),
+        Item::Separator,
+        Item::new("instance.shots.menu.image", tr("Bild kopieren"), move |_| image.copy_image()).shortcut(Shortcut::primary(Code::KeyC).label()),
+        Item::new("instance.shots.menu.copy", tr("Pfad kopieren"), move |_| copy.copy()),
         Item::Separator,
         Item::new("instance.shots.menu.delete", tr("Löschen"), move |_| delete.delete()).danger(),
     ]
@@ -314,7 +356,9 @@ impl Component for Shots {
         let mut scan = use_state(|| 0u64);
         let controller = use_scroll_controller(ScrollConfig::default);
         let a11y = use_a11y();
-        let grid = Grid { store, dir: dir.clone(), list, selected, width, controller };
+        let viewing = use_state(|| false);
+        let copying = use_state(|| false);
+        let grid = Grid { store, dir: dir.clone(), list, selected, width, controller, viewing, copying };
 
         let reload = grid.clone();
         use_side_effect_with_deps(&(dir, changed, f.running), move |(dir, _, _)| {
@@ -338,9 +382,11 @@ impl Component for Shots {
         let chosen = grid.current().is_some();
         let mut extras = Vec::new();
         if chosen {
-            let (open, copy, reveal, delete) = (grid.clone(), grid.clone(), grid.clone(), grid.clone());
+            let (open, external, image, copy, reveal, delete) = (grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone());
             extras.push(Extra { id: "instance.shots.open".into(), label: tr("Screenshot öffnen"), glyph: Icon::Fit, shortcut: None, run: EventHandler::new(move |_| open.open()) });
-            extras.push(Extra { id: "instance.shots.copy".into(), label: tr("Pfad kopieren"), glyph: Icon::Copy, shortcut: Some(Shortcut::primary(Code::KeyC)), run: EventHandler::new(move |_| copy.copy()) });
+            extras.push(Extra { id: "instance.shots.external".into(), label: tr("Screenshot mit Standard-App öffnen"), glyph: Icon::External, shortcut: None, run: EventHandler::new(move |_| external.external()) });
+            extras.push(Extra { id: "instance.shots.image".into(), label: tr("Bild kopieren"), glyph: Icon::Copy, shortcut: Some(Shortcut::primary(Code::KeyC)), run: EventHandler::new(move |_| image.copy_image()) });
+            extras.push(Extra { id: "instance.shots.copy".into(), label: tr("Pfad kopieren"), glyph: Icon::Copy, shortcut: None, run: EventHandler::new(move |_| copy.copy()) });
             extras.push(Extra { id: "instance.shots.reveal".into(), label: tr("Screenshot im Ordner zeigen"), glyph: Icon::Folder, shortcut: None, run: EventHandler::new(move |_| reveal.reveal()) });
             extras.push(Extra { id: "instance.shots.delete".into(), label: tr("Screenshot löschen"), glyph: Icon::Close, shortcut: None, run: EventHandler::new(move |_| delete.delete()) });
         }
@@ -350,10 +396,10 @@ impl Component for Shots {
         let count = shown.shots.0.len();
         let mut tools = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
         if chosen {
-            let (open, reveal, copy, delete) = (grid.clone(), grid.clone(), grid.clone(), grid.clone());
+            let (open, reveal, image, delete) = (grid.clone(), grid.clone(), grid.clone(), grid.clone());
             tools = tools
                 .child(Button::new("instance.shots.open", tr("Öffnen")).glyph(Icon::Fit).on_press(move |_| open.open()))
-                .child(Button::new("instance.shots.copy", tr("Pfad kopieren")).glyph(Icon::Copy).tip(Shortcut::primary(Code::KeyC).label()).on_press(move |_| copy.copy()))
+                .child(Button::new("instance.shots.copy", tr("Bild kopieren")).glyph(Icon::Copy).busy(*copying.read()).tip(Shortcut::primary(Code::KeyC).label()).on_press(move |_| image.copy_image()))
                 .child(Button::new("instance.shots.reveal", tr("Im Ordner zeigen")).glyph(Icon::Folder).on_press(move |_| reveal.reveal()))
                 .child(Button::new("instance.shots.delete", tr("Löschen")).on_press(move |_| delete.delete()));
         }
@@ -373,6 +419,25 @@ impl Component for Shots {
             .child(secondary(&t, title).width(Size::flex(1.)))
             .child(tools)
             .content(Content::flex());
+
+        if *viewing.read() && count > 0 {
+            let at = grid.at().unwrap_or(0);
+            let who = shown.shots.0.get(at).map_or_else(String::new, |s| f.accounts.iter().find(|(id, _)| *id == s.account).map_or_else(|| tr("Entfernter Account"), |(_, name)| name.clone()));
+            let (step, close, external, reveal, delete, image) = (grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone());
+            return Viewer {
+                shots: shown.shots.clone(),
+                at,
+                who,
+                copying: *copying.read(),
+                on_step: EventHandler::new(move |by| step.step(by)),
+                on_close: EventHandler::new(move |_| close.close()),
+                on_copy: EventHandler::new(move |_| image.copy_image()),
+                on_reveal: EventHandler::new(move |_| reveal.reveal()),
+                on_external: EventHandler::new(move |_| external.external()),
+                on_delete: EventHandler::new(move |_| delete.delete()),
+            }
+            .into_element();
+        }
 
         let body = if !shown.loaded {
             rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Screenshots werden gesucht …"))).into_element()
@@ -431,6 +496,6 @@ impl Component for Shots {
                 )
                 .into_element()
         };
-        rect().width(Size::fill()).height(Size::fill()).child(toolbar).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex())
+        rect().width(Size::fill()).height(Size::fill()).child(toolbar).child(rect().width(Size::fill()).height(Size::flex(1.)).child(body)).content(Content::flex()).into_element()
     }
 }
