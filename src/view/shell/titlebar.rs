@@ -60,6 +60,7 @@ pub fn trail(page: &Page, names: &Names) -> Vec<Crumb> {
         Page::Start => vec![crumb(tr("Start"), None)],
         Page::Library => vec![crumb(tr("Instanzen"), None)],
         Page::Discover => vec![crumb(tr("Entdecken"), None)],
+        Page::Wardrobe => vec![crumb(tr("Garderobe"), None)],
         Page::Grid(Filter::All) => vec![crumb(tr("Alle Batches"), None)],
         Page::Grid(Filter::Attention) => vec![crumb(tr("Alle Batches"), Some(Page::Grid(Filter::All))), crumb(tr("Brauchen dich"), None)],
         Page::Grid(Filter::Batch(_)) => vec![crumb(names.batch.clone().unwrap_or_else(|| tr("Batch")), None)],

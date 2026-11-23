@@ -546,15 +546,12 @@ impl Component for AccountsPage {
             shown.iter().filter(|l| p.contains(&l.id)).count()
         };
         let all = shown.len();
-        let mut column = rect().width(Size::fill()).height(Size::fill()).cross_align(Alignment::Center);
+        let mut column = rect().width(Size::fill()).height(Size::fill());
         if m.accounts.is_empty() {
             return page.child(empty(&t, store)).into_element();
         }
         let pad = if wide { space::L } else { space::XL };
         let mut inner = rect().width(Size::fill()).height(Size::fill()).padding((space::L, pad, 0., pad)).spacing(space::M);
-        if !wide {
-            inner = inner.max_width(Size::px(PAGE_MAX + pad * 2.));
-        }
         if any {
             inner = inner.child(strips);
         }
@@ -571,10 +568,7 @@ impl Component for AccountsPage {
         column = column.child(inner);
         page = page.child(column);
         if picked > 1 {
-            let mut floating = rect().width(Size::fill()).corner_radius(t.shape.control).background(t.raised).shadow(t.elevation.float.clone()).child(SelectionBar { count: picked, all });
-            if !wide {
-                floating = floating.max_width(Size::px(PAGE_MAX));
-            }
+            let floating = rect().width(Size::fill()).corner_radius(t.shape.control).background(t.raised).shadow(t.elevation.float.clone()).child(SelectionBar { count: picked, all });
             page = page.child(rect().position(Position::new_absolute().left(0.).bottom(space::L)).layer(Layer::Relative(level::FLOAT)).width(Size::fill()).padding((0., pad)).cross_align(Alignment::Center).child(floating));
         }
         page.into_element()

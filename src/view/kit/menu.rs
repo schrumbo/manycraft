@@ -38,6 +38,8 @@ pub enum Item {
         face: Option<Face>,
         warn: bool,
         keep: bool,
+        detail: Option<String>,
+        glyph: Option<Icon>,
         run: EventHandler<()>,
     },
     Separator,
@@ -46,7 +48,7 @@ pub enum Item {
 impl Item {
     /// An entry named `id` that runs `run`.
     pub fn new(id: impl Into<String>, label: impl Into<String>, run: impl FnMut(()) + 'static) -> Self {
-        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, warn: false, keep: false, run: EventHandler::new(run) }
+        Self::Action { id: id.into(), label: label.into(), shortcut: None, checked: false, danger: false, disabled: false, face: None, warn: false, keep: false, detail: None, glyph: None, run: EventHandler::new(run) }
     }
 
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
@@ -67,6 +69,22 @@ impl Item {
     pub fn face(mut self, account: Face) -> Self {
         if let Self::Action { face, .. } = &mut self {
             *face = Some(account);
+        }
+        self
+    }
+
+    /// A second, quieter line under the label of an entry with a face, which makes the entry taller.
+    pub fn detail(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { detail, .. } = &mut self {
+            *detail = Some(text.into());
+        }
+        self
+    }
+
+    /// Puts a glyph where an account's face would be, so plain entries line up with the accounts above them.
+    pub fn glyph(mut self, icon: Icon) -> Self {
+        if let Self::Action { glyph, .. } = &mut self {
+            *glyph = Some(icon);
         }
         self
     }
@@ -118,6 +136,8 @@ pub struct Menu {
     pub search: Option<String>,
     /// Opens over its control with the checked entry on it, like a pop-up button's menu.
     pop: bool,
+    /// Opens above the point it was given instead of below it, for controls at the bottom edge of the window.
+    up: bool,
     /// Chooses the entry under the pointer when the button that opened it is let go, after a drag.
     drag: bool,
     /// The right edge of the control a menu drops from, which it lines up with when it would overflow the window.
@@ -128,12 +148,17 @@ pub struct Menu {
 impl Menu {
     /// A menu at the pointer.
     pub fn at(items: Vec<Item>, at: (f32, f32)) -> Self {
-        Self { items, at, width: frame::MENU, search: None, pop: false, drag: false, edge: None, serial: 0 }
+        Self { items, at, width: frame::MENU, search: None, pop: false, up: false, drag: false, edge: None, serial: 0 }
     }
 
     /// A menu that drops from `anchor`, as wide as it.
     pub fn under(items: Vec<Item>, anchor: Bounds) -> Self {
-        Self { items, at: (anchor.x, anchor.y + anchor.h + space::XS), width: anchor.w.max(frame::MENU * 0.6), search: None, pop: false, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
+        Self { items, at: (anchor.x, anchor.y + anchor.h + space::XS), width: anchor.w.max(frame::MENU * 0.6), search: None, pop: false, up: false, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
+    }
+
+    /// A menu that rises from the top of `anchor`, at least as wide as the roomy entries need.
+    pub fn above(items: Vec<Item>, anchor: Bounds) -> Self {
+        Self { items, at: (anchor.x, anchor.y - space::XS), width: anchor.w.max(ROOMY_WIDTH), search: None, pop: false, up: true, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
     }
 
     /// A menu that opens over `anchor`: its checked entry covers the control and its text starts where the control's
@@ -142,7 +167,7 @@ impl Menu {
         let lead = LEAD - inset;
         let row = items.iter().position(|i| matches!(i, Item::Action { checked: true, .. })).map_or(0., |i| top(&items, i));
         let y = anchor.y + (anchor.h - frame::MENU_ROW) / 2. - space::XS - row;
-        Self { items, at: (anchor.x - lead, y), width: anchor.w + lead, search: None, pop: true, drag: false, edge: None, serial: 0 }
+        Self { items, at: (anchor.x - lead, y), width: anchor.w + lead, search: None, pop: true, up: false, drag: false, edge: None, serial: 0 }
     }
 
     /// Lets the entry under the pointer be chosen by letting go of the mouse button that opened the menu, once the pointer
@@ -159,6 +184,10 @@ impl Menu {
     }
 }
 
+const ROOMY: f32 = 44.;
+const ROOMY_FACE: f32 = 28.;
+const ROOMY_WIDTH: f32 = 296.;
+const PLAIN_ROOMY: f32 = 36.;
 const WIDE_GLYPH: f32 = 0.8;
 const LEAD: f32 = space::XS + space::S + iconsize::S + space::XS;
 const TYPED: Duration = Duration::from_millis(900);
@@ -183,8 +212,11 @@ fn fits(item: &Item, lead: bool) -> f32 {
     if lead {
         w += iconsize::S + space::XS;
     }
+    if let Item::Action { detail: Some(detail), .. } = item {
+        w = w.max(space::S * 2. + ROOMY_FACE + space::XS + glyphs(detail, font::CALLOUT) + if lead { iconsize::S + space::XS } else { 0. });
+    }
     if face.is_some() {
-        w += frame::FACE + space::XS;
+        w += if is_roomy(item) { ROOMY_FACE } else { frame::FACE } + space::XS;
     }
     if let Some(keys) = shortcut {
         w += space::XL + glyphs(keys, font::CALLOUT);
@@ -195,8 +227,17 @@ fn fits(item: &Item, lead: bool) -> f32 {
     w
 }
 
+fn is_roomy(item: &Item) -> bool {
+    matches!(item, Item::Action { face: Some(_), detail: Some(_), .. })
+}
+
 fn height(item: &Item) -> f32 {
-    if matches!(item, Item::Separator) { space::S + 1. } else { frame::MENU_ROW }
+    match item {
+        Item::Separator => space::S + 1.,
+        Item::Action { face: Some(_), detail: Some(_), .. } => ROOMY,
+        Item::Action { glyph: Some(_), .. } => PLAIN_ROOMY,
+        _ => frame::MENU_ROW,
+    }
 }
 
 fn top(items: &[Item], i: usize) -> f32 {
@@ -317,6 +358,8 @@ impl Component for Panel {
         .max(space::S);
         let y = if menu.pop {
             menu.at.1.min(h - space::S - panel_h).max(frame::CHROME + space::S)
+        } else if menu.up {
+            (menu.at.1 - panel_h).max(frame::CHROME + space::S)
         } else if menu.at.1 + tallest > h - space::S {
             (menu.at.1 - tallest).max(frame::CHROME + space::S)
         } else {
@@ -348,10 +391,10 @@ impl Component for Panel {
             .enumerate()
             .map(|(i, item)| match item {
                 Item::Separator => rect().width(Size::fill()).padding((space::XS, space::S)).child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator)).into_element(),
-                Item::Action { id, label, shortcut, checked, danger, disabled, face, warn, .. } => {
-                    let mut run = run.clone();
+                Item::Action { id, label, shortcut, checked, danger, disabled, face, warn, detail, glyph, .. } => {
+                    let run = run.clone();
                     let at = q.clone();
-                    let mut release_run = run.clone();
+                    let release_run = run.clone();
                     let release = EventHandler::new(move |_| {
                         if drag && !*down_in.peek() && (born.elapsed() > HELD || entered.peek().1) {
                             release_run(i, ui);
@@ -367,7 +410,7 @@ impl Component for Panel {
                         }
                         hot.set((at.clone(), Some(i)));
                     });
-                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, lead, on_release: release, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, hot: chosen == Some(i), on_hover: hover, on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
+                    Entry { id: id.clone(), label: label.clone(), shortcut: shortcut.clone(), checked: *checked, lead, on_release: release, danger: *danger, disabled: *disabled, face: face.clone(), warn: *warn, detail: detail.clone(), glyph: *glyph, hot: chosen == Some(i), on_hover: hover, on_press: EventHandler::new(move |_| run(i, ui)) }.into_element()
                 }
             })
             .collect();
@@ -388,7 +431,7 @@ impl Component for Panel {
             })
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
                 let mut ui = ui;
-                let mut keys_run = keys_run.clone();
+                let keys_run = keys_run.clone();
                 match &e.key {
                     Key::Named(NamedKey::Escape) => ui.menu.set(None),
                     Key::Named(key @ (NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
@@ -459,6 +502,8 @@ struct Entry {
     disabled: bool,
     face: Option<Face>,
     warn: bool,
+    detail: Option<String>,
+    glyph: Option<Icon>,
     hot: bool,
     on_release: EventHandler<()>,
     on_hover: EventHandler<()>,
@@ -482,11 +527,18 @@ impl Component for Entry {
         let hover = self.on_hover.clone();
         let press = self.on_press.clone();
         let release = self.on_release.clone();
+        let roomy = self.face.is_some() && self.detail.is_some();
         let mut e = rect()
             .a11y_role(AccessibilityRole::MenuItem)
             .a11y_alt(self.label.clone())
             .width(Size::fill())
-            .height(Size::px(frame::MENU_ROW))
+            .height(Size::px(if roomy {
+                ROOMY
+            } else if self.glyph.is_some() {
+                PLAIN_ROOMY
+            } else {
+                frame::MENU_ROW
+            }))
             .padding((0., space::S))
             .horizontal()
             .cross_align(Alignment::Center)
@@ -504,12 +556,21 @@ impl Component for Entry {
             e = e.child(rect().width(Size::px(iconsize::S)).child(if self.checked { icon(&t, Icon::Check, iconsize::S, ink) } else { rect().into_element() }));
         }
         if let Some(f) = &self.face {
-            e = e.child(rect().opacity(if self.disabled { 0.5 } else { 1. }).child(crate::view::accounts::head(&t, store, f.id, &f.name, f.color, frame::FACE)));
+            let side = if roomy { ROOMY_FACE } else { frame::FACE };
+            e = e.child(rect().opacity(if self.disabled { 0.5 } else { 1. }).child(crate::view::accounts::head(&t, store, f.id, &f.name, f.color, side)));
         }
-        let mut e = e
-            .child(line(&t, self.label.clone(), font::BODY, ink))
-            .child(spacer())
-            .content(Content::flex());
+        if let Some(glyph) = self.glyph {
+            e = e.child(rect().width(Size::px(ROOMY_FACE)).center().child(icon(&t, glyph, iconsize::M, ink)));
+        }
+        let mut e = match (&self.detail, roomy) {
+            (Some(detail), true) => {
+                let quiet = if self.hot && !self.disabled { t.on_accent } else { t.text3 };
+                e.child(rect().child(line(&t, self.label.clone(), font::BODY, ink)).child(line(&t, detail.clone(), font::CAPTION, quiet)))
+            }
+            _ => e.child(line(&t, self.label.clone(), font::BODY, ink)),
+        }
+        .child(spacer())
+        .content(Content::flex());
         if self.warn {
             e = e.child(icon(&t, Icon::Alert, iconsize::S, if self.disabled { t.text3 } else if self.hot { t.on_accent } else { t.attention_text }));
         }

@@ -95,6 +95,14 @@ pub mod frame {
     pub const INSPECTOR: f32 = 300.;
     /// The widest the content of an instance tab grows.
     pub const CONTENT_MAX: f32 = 760.;
+    /// The space around the content of a page, on every side.
+    pub const GUTTER: f32 = super::space::XL;
+    /// The space between the blocks of a page.
+    pub const SECTION: f32 = super::space::XL;
+    /// The widest a run of prose gets inside a page: a readme or a long description keeps this measure while the page around it is full width.
+    pub const READING: f32 = 720.;
+    /// The content width from which a page sets its blocks side by side.
+    pub const SPLIT: f32 = 960.;
     /// The width of the welcome card on the first run.
     pub const WELCOME: f32 = 440.;
     /// The width of the welcome card of the Start page.

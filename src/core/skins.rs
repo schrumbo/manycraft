@@ -14,6 +14,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::account::{Account, AccountKind};
+use super::skin_change::Model;
 use super::{drive, net, paths};
 
 const SESSION_PROFILE: &str = "https://sessionserver.mojang.com/session/minecraft/profile/";
@@ -169,12 +170,7 @@ fn fetch_skin(account: &Account) -> Result<Option<(String, Vec<u8>)>> {
         return Ok(None);
     }
     let agent = net::agent(account.proxy.as_deref())?;
-    let profile: Profile = net::get_json(&agent, &format!("{SESSION_PROFILE}{}", account.id.simple()))?;
-    let Some(hash) = skin_hash(&profile) else { return Ok(None) };
-    let url = format!("https://{TEXTURE_HOST}/texture/{hash}");
-    let mut reply = agent.get(&url).call().with_context(|| format!("cannot load the skin of {}", account.name))?;
-    let bytes = reply.body_mut().with_config().limit(MAX_SKIN).read_to_vec().context("cannot read the skin")?;
-    Ok(Some((hash, bytes)))
+    Ok(profile_skin(&agent, account.id).with_context(|| format!("cannot load the skin of {}", account.name))?.map(|s| (s.hash, s.png)))
 }
 
 #[derive(Deserialize)]
@@ -203,22 +199,47 @@ struct TextureSet {
 #[derive(Deserialize)]
 struct Skin {
     url: String,
+    #[serde(default)]
+    metadata: Option<SkinMeta>,
+}
+
+#[derive(Deserialize)]
+struct SkinMeta {
+    model: Option<String>,
 }
 
 fn valid_hash(hash: &str) -> bool {
     !hash.is_empty() && hash.len() <= 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The texture id of the skin the session server names, only when it lives on Mojang's texture host.
-fn skin_hash(profile: &Profile) -> Option<String> {
+/// The texture id and arm model of the skin the session server names, only when it lives on Mojang's texture host.
+fn skin_texture(profile: &Profile) -> Option<(String, Model)> {
     let value = &profile.properties.iter().find(|p| p.name == "textures")?.value;
     let json = base64_decode(value)?;
     let textures: Textures = serde_json::from_slice(&json).ok()?;
-    let url = textures.textures.skin?.url;
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let skin = textures.textures.skin?;
+    let rest = skin.url.strip_prefix("https://").or_else(|| skin.url.strip_prefix("http://"))?;
     let (host, path) = rest.split_once('/')?;
     let hash = path.strip_prefix("texture/")?;
-    (host == TEXTURE_HOST && valid_hash(hash)).then(|| hash.to_ascii_lowercase())
+    let model = if skin.metadata.and_then(|m| m.model).as_deref() == Some("slim") { Model::Slim } else { Model::Classic };
+    (host == TEXTURE_HOST && valid_hash(hash)).then(|| (hash.to_ascii_lowercase(), model))
+}
+
+/// The skin a player wears, as the session server names it.
+pub struct ProfileSkin {
+    pub png: Vec<u8>,
+    pub hash: String,
+    pub model: Model,
+}
+
+/// Downloads the skin the profile `id` wears from Mojang's session and texture servers; `None` when the profile wears none of its own.
+pub fn profile_skin(agent: &ureq::Agent, id: Uuid) -> Result<Option<ProfileSkin>> {
+    let profile: Profile = net::get_json(agent, &format!("{SESSION_PROFILE}{}", id.simple()))?;
+    let Some((hash, model)) = skin_texture(&profile) else { return Ok(None) };
+    let url = format!("https://{TEXTURE_HOST}/texture/{hash}");
+    let mut reply = agent.get(&url).call().context("cannot load the skin")?;
+    let png = reply.body_mut().with_config().limit(MAX_SKIN).read_to_vec().context("cannot read the skin")?;
+    Ok(Some(ProfileSkin { png, hash, model }))
 }
 
 fn base64_decode(text: &str) -> Option<Vec<u8>> {
@@ -352,11 +373,11 @@ mod tests {
             }
             Profile { properties: vec![Property { name: "textures".into(), value: text }] }
         };
-        assert_eq!(skin_hash(&profile("http://textures.minecraft.net/texture/AB12cd")).as_deref(), Some("ab12cd"));
-        assert_eq!(skin_hash(&profile("https://evil.example/texture/ab12")), None);
-        assert_eq!(skin_hash(&profile("https://textures.minecraft.net.evil.example/texture/ab12")), None);
-        assert_eq!(skin_hash(&profile("https://textures.minecraft.net/texture/../../x")), None);
-        assert_eq!(skin_hash(&Profile { properties: Vec::new() }), None);
+        assert_eq!(skin_texture(&profile("http://textures.minecraft.net/texture/AB12cd")).map(|(h, _)| h).as_deref(), Some("ab12cd"));
+        assert_eq!(skin_texture(&profile("https://evil.example/texture/ab12")).map(|(h, _)| h), None);
+        assert_eq!(skin_texture(&profile("https://textures.minecraft.net.evil.example/texture/ab12")).map(|(h, _)| h), None);
+        assert_eq!(skin_texture(&profile("https://textures.minecraft.net/texture/../../x")).map(|(h, _)| h), None);
+        assert!(skin_texture(&Profile { properties: Vec::new() }).is_none());
     }
 
     #[test]
