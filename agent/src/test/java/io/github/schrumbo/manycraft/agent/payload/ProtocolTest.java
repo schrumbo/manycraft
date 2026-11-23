@@ -68,6 +68,28 @@ class ProtocolTest {
 	}
 
 	@Test
+	void stateCarriesAHeldOfferOnlyWhenThereIsOne() {
+		assertFalse(json(Protocol.state("playing", "mc.example:25565", null, null)).has("offer"));
+		JsonObject o = json(Protocol.state("offer", "mc.example:25565", null, null, new Protocol.Offer("6f1c", true, "Please")));
+		assertEquals("offer", o.get("kind").getAsString());
+		JsonObject offer = o.getAsJsonObject("offer");
+		assertEquals("6f1c", offer.get("id").getAsString());
+		assertTrue(offer.get("required").getAsBoolean());
+		assertEquals("Please", offer.get("text").getAsString());
+		assertTrue(json(Protocol.state("offer", null, null, null, new Protocol.Offer("a", false, null))).getAsJsonObject("offer").get("text").isJsonNull());
+	}
+
+	@Test
+	void parsesPacksAnswerAndCapture() {
+		assertEquals(new Protocol.Incoming.Packs("decline"), Protocol.parse("{\"t\":\"packs\",\"policy\":\"decline\"}").orElseThrow());
+		assertEquals(new Protocol.Incoming.Answer("6f1c", true), Protocol.parse("{\"t\":\"answer\",\"id\":\"6f1c\",\"accept\":true}").orElseThrow());
+		assertEquals(new Protocol.Incoming.Capture(640), Protocol.parse("{\"t\":\"capture\",\"width\":640}").orElseThrow());
+		assertTrue(Protocol.parse("{\"t\":\"answer\",\"id\":\"6f1c\"}").isEmpty());
+		assertTrue(Protocol.parse("{\"t\":\"capture\"}").isEmpty());
+		assertTrue(Protocol.parse("{\"t\":\"packs\"}").isEmpty());
+	}
+
+	@Test
 	void previewSeqIsUnsigned() {
 		JsonObject o = json(Protocol.preview(0xFFFFFFFE, 320, 180));
 		assertEquals(4294967294L, o.get("seq").getAsLong());

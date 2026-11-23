@@ -48,6 +48,7 @@ pub(super) fn cause_text(cause: DisconnectCause) -> String {
     match cause {
         DisconnectCause::ServerDown => tr("Server nicht erreichbar"),
         DisconnectCause::ServerFull => tr("Server voll"),
+        DisconnectCause::PackDeclined => tr("Der Server verlangt ein Ressourcenpaket, der Batch lehnt es ab"),
         _ => String::new(),
     }
 }

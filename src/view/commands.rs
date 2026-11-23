@@ -11,6 +11,7 @@ use super::kit::toast;
 use super::store::Store;
 use super::ui::{Filter, Page, Show, View};
 use crate::app::event::Event;
+use crate::app::model::Phase;
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::HotkeyAction;
 
@@ -43,6 +44,9 @@ pub enum Command {
     StopSelected,
     RestartSelected,
     ReconnectSelected,
+    ScreenshotSelected,
+    AcceptPacks,
+    DeclinePacks,
     StartAll,
     StopAll,
     MessageSelected,
@@ -187,11 +191,14 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 61] = [
+    pub const ALL: [Command; 64] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
         Command::ReconnectSelected,
+        Command::ScreenshotSelected,
+        Command::AcceptPacks,
+        Command::DeclinePacks,
         Command::MessageSelected,
         Command::MoveSelected,
         Command::LeaveSelected,
@@ -280,6 +287,9 @@ impl Command {
             Command::StopSelected => "StopSelected",
             Command::RestartSelected => "RestartSelected",
             Command::ReconnectSelected => "ReconnectSelected",
+            Command::ScreenshotSelected => "ScreenshotSelected",
+            Command::AcceptPacks => "AcceptPacks",
+            Command::DeclinePacks => "DeclinePacks",
             Command::StartAll => "StartAll",
             Command::StopAll => "StopAll",
             Command::MessageSelected => "MessageSelected",
@@ -343,6 +353,9 @@ impl Command {
             Command::StopSelected => tr("Ausgewählte stoppen"),
             Command::RestartSelected => tr("Ausgewählte neu starten"),
             Command::ReconnectSelected => tr("Ausgewählte neu verbinden"),
+            Command::ScreenshotSelected => tr("Screenshot der Ausgewählten"),
+            Command::AcceptPacks => tr("Ressourcenpakete annehmen"),
+            Command::DeclinePacks => tr("Ressourcenpakete ablehnen"),
             Command::StartAll => tr("Alle starten"),
             Command::StopAll => tr("Alle stoppen"),
             Command::MessageSelected => tr("Nachricht an Ausgewählte…"),
@@ -378,6 +391,8 @@ impl Command {
             Command::StopSelected | Command::StopAll | Command::CancelStart | Command::ShowStopped => Icon::Stop,
             Command::RestartSelected | Command::ReconnectSelected | Command::ReconnectDropped => Icon::Refresh,
             Command::MessageSelected => Icon::Message,
+            Command::ScreenshotSelected => Icon::Image,
+            Command::AcceptPacks | Command::DeclinePacks => Icon::Package,
             Command::MoveSelected | Command::LeaveSelected | Command::GroupByBatch => Icon::Layers,
             Command::ShowUngrouped => Icon::Grid,
             Command::ShowHistory => Icon::Clock,
@@ -442,6 +457,9 @@ impl Command {
             Command::StopSelected => k(Code::Period),
             Command::RestartSelected => ks(Code::KeyR),
             Command::ReconnectSelected => k(Code::KeyJ),
+            Command::ScreenshotSelected => ks(Code::KeyS),
+            Command::AcceptPacks => ks(Code::KeyY),
+            Command::DeclinePacks => ka(Code::KeyY),
             Command::Larger => k(Code::Equal),
             Command::Smaller => k(Code::Minus),
             Command::Fit => k(Code::Digit0),
@@ -485,6 +503,8 @@ impl Command {
             Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
+            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
+            Command::AcceptPacks | Command::DeclinePacks => m.games.values().any(|g| matches!(g.phase, Phase::Offer { .. })),
             Command::ClearSelection => grid && !selected.is_empty(),
             Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
             Command::MoveSelected => grid && m.batches.len() > 1 && picked().any(|g| m.batch(&g.batch_id).is_some()),
@@ -587,6 +607,11 @@ impl Command {
             Command::StopSelected => store.dispatch(Event::Stop(keys())),
             Command::RestartSelected => store.dispatch(Event::Restart(keys())),
             Command::ReconnectSelected => store.dispatch(Event::ReconnectMany(keys())),
+            Command::ScreenshotSelected => store.dispatch(Event::Capture(keys())),
+            Command::AcceptPacks | Command::DeclinePacks => {
+                let keys = offers(store);
+                store.dispatch(Event::AnswerPack { keys, accept: self == Command::AcceptPacks });
+            }
             Command::StartAll => store.dispatch(Event::StartAll),
             Command::StopAll => store.dispatch(Event::StopAll),
             Command::MessageSelected => ui.message.set(true),
@@ -633,6 +658,13 @@ impl Command {
 
 /// Whether `command` still runs while a sheet, menu, the palette or a text field has the keyboard: Quit, and the palette
 /// toggle unless a sheet is open, since the palette reaches pages the sheet covers.
+fn offers(store: Store) -> Vec<String> {
+    let m = store.model.peek();
+    let held = |k: &String| m.games.get(k).is_some_and(|g| matches!(g.phase, Phase::Offer { .. }));
+    let picked: Vec<String> = store.ui.selection.peek().iter().filter(|k| held(k)).cloned().collect();
+    if picked.is_empty() { m.games.keys().filter(|k| held(k)).cloned().collect() } else { picked }
+}
+
 fn passes_layers(store: Store, command: Command) -> bool {
     match command {
         Command::Quit => true,

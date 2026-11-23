@@ -20,7 +20,7 @@ use hickory_resolver::proto::rr::RData;
 use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
-use super::batch::{self, Background, Batch};
+use super::batch::{self, Background, Batch, Packs};
 use super::instance::{self, Instance, Loader};
 use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
@@ -55,6 +55,9 @@ const EARLY_WINDOW: &str = "earlyWindowControl";
 const ICON_FILE: &str = "manycraft-icon.png";
 const TOKEN_VAR: &str = "MANYCRAFT_TOKEN";
 const PROXY_VAR: &str = "MANYCRAFT_PROXY";
+const HEADLESS_FLAG: &str = "-Dmanycraft.headless=true";
+/// SDL reads its hints from the environment; this one keeps a macOS game out of the Dock and the app switcher.
+const MAC_BACKGROUND_VAR: &str = "SDL_MAC_BACKGROUND_APP";
 const USAGE: &str = "usage: manycraft batch create <name> [--instance <instance>] [--version <version>] [--server <host:port>] [--memory <MB>]
        manycraft batch list
        manycraft batch add <batch> <account>
@@ -132,6 +135,15 @@ impl Target {
 
     fn background(&self) -> Background {
         self.batch.as_ref().map_or(Background::Full, |b| b.background)
+    }
+
+    /// Whether its games run without any window.
+    pub fn headless(&self) -> bool {
+        self.batch.as_ref().is_some_and(|b| b.headless)
+    }
+
+    fn packs(&self) -> Packs {
+        self.batch.as_ref().map_or(Packs::Ask, |b| b.packs)
     }
 }
 
@@ -512,11 +524,17 @@ fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_addr
     if target.batch.is_some() {
         jvm.extend([format!("-Dmanycraft.preview={}", game_dir.join(PREVIEW_FILE).display()), "-Dmanycraft.hidden=true".to_owned()]);
     }
+    if target.headless() {
+        jvm.push(HEADLESS_FLAG.to_owned());
+    }
     let mut game = instance.options.game_arguments(&instance.game_version);
     if target.batch.is_none() {
         game.extend(default_window(&instance.options, &super::settings::active().game));
     }
     let mut secrets = vec![(TOKEN_VAR.to_owned(), token.to_owned())];
+    if cfg!(target_os = "macos") && target.headless() {
+        secrets.push((MAC_BACKGROUND_VAR.to_owned(), "1".to_owned()));
+    }
     if let Some(url) = &account.proxy {
         let proxy = proxy::parse(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
         secrets.push((PROXY_VAR.to_owned(), url.clone()));
@@ -591,6 +609,7 @@ pub fn identity_messages(target: &Target, account: &Account, badge: bool) -> Vec
         ipc::ToMod::Identity { name: account.name.clone(), batch: target.label().to_owned(), rgb: account.rgb(), icon: Some(icon_path(&target.instance, account.id).display().to_string()) },
         ipc::ToMod::Badge { visible: badge },
         ipc::ToMod::Level(target.background().into()),
+        ipc::ToMod::Packs { policy: target.packs() },
     ]
 }
 
@@ -794,6 +813,8 @@ pub struct Adoption {
     pub pid: u32,
     /// Whether it runs without the companion, so no mod will ever report.
     pub plain: bool,
+    /// Whether it runs without any window.
+    pub headless: bool,
 }
 
 /// Outcome of starting one account: its instance key, or why it did not start.
@@ -869,7 +890,7 @@ impl Fleet {
                 logs: run.game_dir.join("logs"),
             };
             self.insert(key.clone(), instance);
-            adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid, plain: run.plain });
+            adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid, plain: run.plain, headless: run.headless });
         }
         adopted
     }
@@ -1065,6 +1086,7 @@ impl Fleet {
                 token,
                 server_addrs: server_addrs.to_vec(),
                 plain: !super::companion::available(&target.instance.game_version) || !wants_companion(target, std::slice::from_ref(account)),
+                headless: target.headless(),
             };
             ledger.add(&key, run);
         }
@@ -1264,6 +1286,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     let instance = &target.instance;
     let game_dir = prepare(instance, account)?;
     require_companion_for_proxy(account, companion_jar)?;
+    require_companion_for_headless(target, companion_jar)?;
     if matches!(instance.loader, Loader::Forge(_) | Loader::NeoForge(_)) {
         quiet_early_window(&instance.config_dir())?;
     }
@@ -1351,6 +1374,14 @@ pub fn wants_companion(target: &Target, accounts: &[Account]) -> bool {
 fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) -> Result<()> {
     if account.proxy.is_some() && companion_jar.is_none_or(|jar| !jar.is_file()) {
         bail!(super::i18n::trf("Der Proxy braucht Minecraft %@ oder neuer. Entferne ihn oder wähle eine neuere Version.", &[&super::companion::first()]));
+    }
+    Ok(())
+}
+
+/// A game without the companion would open its window, so a headless batch does not start one.
+fn require_companion_for_headless(target: &Target, companion_jar: Option<&Path>) -> Result<()> {
+    if target.headless() && companion_jar.is_none_or(|jar| !jar.is_file()) {
+        bail!(super::i18n::trf("Ohne Spielfenster geht erst ab Minecraft %@. Schalte es aus oder wähle eine neuere Version.", &[&super::companion::first()]));
     }
     Ok(())
 }
@@ -2788,6 +2819,25 @@ mod tests {
         let dir = batch.instance.game_dir(alt.id);
         let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch.instance, alt.id).display())));
+    }
+
+    #[test]
+    fn a_headless_batch_starts_its_games_windowless_answers_packs_its_way_and_needs_the_companion() {
+        let mut batch = target("A");
+        let alt = Account::offline("AltOne").unwrap();
+        let plain = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        assert!(!plain.jvm.contains(&HEADLESS_FLAG.to_owned()));
+        assert!(identity_messages(&batch, &alt, true).contains(&ipc::ToMod::Packs { policy: Packs::Ask }));
+        let b = batch.batch.as_mut().unwrap();
+        b.headless = true;
+        b.packs = Packs::Decline;
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        assert!(extra.jvm.contains(&HEADLESS_FLAG.to_owned()) && extra.jvm.contains(&"-Dmanycraft.hidden=true".to_owned()));
+        assert_eq!(extra.secrets.iter().any(|(k, _)| k == MAC_BACKGROUND_VAR), cfg!(target_os = "macos"));
+        assert!(identity_messages(&batch, &alt, true).contains(&ipc::ToMod::Packs { policy: Packs::Decline }));
+        assert!(require_companion_for_headless(&batch, None).is_err(), "without the companion the game would open a window");
+        assert!(require_companion_for_headless(&target("B"), None).is_ok());
+        assert!(!Target::solo(&batch.instance).headless());
     }
 
     #[test]

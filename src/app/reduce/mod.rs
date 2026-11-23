@@ -3,6 +3,7 @@
 mod data;
 mod fleet;
 mod games;
+mod headless;
 mod notify;
 mod previews;
 pub mod usage;
@@ -68,6 +69,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::RestartDue { key, generation } => games::restart_due(model, &key, generation, &mut out),
         Event::LinkLostDue { key } => games::link_lost_due(model, &key, &mut out),
         Event::JoinDue { key, generation, lines, delay } => games::join_due(model, key, generation, lines, delay, &mut out),
+        Event::CaptureDue { key, generation } => headless::capture_due(model, &key, generation, &mut out),
         Event::WaitingStartDue { key } => {
             if model.games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
                 fleet::start_keys(model, std::slice::from_ref(&key), &mut out);
@@ -162,6 +164,8 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::Respawn });
             }
         }
+        Event::Capture(keys) => headless::capture(model, &keys, &mut out),
+        Event::AnswerPack { keys, accept } => headless::answer(model, &keys, accept, &mut out),
         Event::Play(key) => show::play(model, &key, &mut out),
         Event::PlayInstance { instance, account } => {
             show::play_instance(model, &instance, account, &mut out);
@@ -320,7 +324,7 @@ pub(crate) mod testing {
     }
 
     pub fn state(key: &str, kind: StateKind, server: Option<&str>, cause: Option<DisconnectCause>) -> Report {
-        Report::Mod { key: key.into(), message: FromMod::State { kind, server: server.map(str::to_owned), reason: None, cause } }
+        Report::Mod { key: key.into(), message: FromMod::State { kind, server: server.map(str::to_owned), reason: None, cause, offer: None } }
     }
 
     /// The events delivered later, with their waits.
@@ -414,7 +418,7 @@ mod tests {
         let drawn = |reports: &[Report]| redraw(&m, &env, reports);
         assert_eq!(drawn(&[notice("redraw-a"), notice("redraw-b")]), Redraw::Nothing);
         assert_eq!(drawn(&[notice("redraw-a"), chat("redraw-b", ChatKind::Player), chat("redraw-a", ChatKind::System)]), Redraw::Chat);
-        let playing = message("redraw-a", FromMod::State { kind: crate::core::ipc::StateKind::Playing, server: None, reason: None, cause: None });
+        let playing = message("redraw-a", FromMod::State { kind: crate::core::ipc::StateKind::Playing, server: None, reason: None, cause: None, offer: None });
         assert_eq!(drawn(&[notice("redraw-a"), playing]), Redraw::All);
         assert_eq!(drawn(&[notice(&lost)]), Redraw::All);
         assert_eq!(drawn(&[chat(&lost, ChatKind::Player)]), Redraw::All);

@@ -19,12 +19,14 @@ import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ResolvedServerAddress;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.chat.ChatType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.PlayerChatMessage;
+import net.minecraft.network.protocol.common.ClientboundResourcePackPushPacket;
 import net.minecraft.util.StringUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -35,6 +37,9 @@ final class Companion implements Bridge {
 	private static final long SMOKE_WINDOW = 5_000_000_000L;
 	private static final int SMOKE_SAVE_AFTER = 2;
 	private static final long SMOKE_SHOWN_MS = 6000;
+	private static final long CAPTURE_WARMUP = 10_000_000_000L;
+	private static final int CAPTURE_STEADY_FRAMES = 10;
+	private static final int CAPTURE_FPS = 30;
 
 	record Hotkeys(KeyChord next, KeyChord prev, KeyChord nextAttention, KeyChord grid) {
 		static final Hotkeys DEFAULT = new Hotkeys(
@@ -57,6 +62,7 @@ final class Companion implements Bridge {
 	private final OptionSync options = new OptionSync();
 	private final AtomicBoolean closing = new AtomicBoolean();
 	private final AudioPause audio = new AudioPause();
+	private final PackOffers packs = new PackOffers();
 	private volatile BackgroundController background;
 	private volatile Hotkeys hotkeys = Hotkeys.DEFAULT;
 	private final Queue<Protocol.Incoming> early = new ConcurrentLinkedQueue<>();
@@ -67,12 +73,16 @@ final class Companion implements Bridge {
 	private boolean shownDrawn;
 	private int shownSections;
 	private int smokeHiddenSamples;
+	private volatile int captureWidth;
+	private long captureSince;
+	private int captureSections;
+	private int captureSteady;
 
 	private Companion(Config config, String version) {
 		this.config = config;
 		this.version = version;
 		this.link = new ManagerLink(config, this::handshake, this::onInbound);
-		this.state = new StateReporter(this::send, queue);
+		this.state = new StateReporter(this::send, queue, packs);
 		this.chat = new ChatBridge(this::send, queue);
 		this.preview = config.preview() == null ? null : new PreviewService(config.preview(), this::send);
 	}
@@ -114,7 +124,7 @@ final class Companion implements Bridge {
 	@Override
 	public boolean skipFrame(Object minecraft) {
 		BackgroundController bg = background;
-		if (headless == null || bg == null || !bg.skipsRender() || preview != null && preview.due(bg.profile().previewIntervalMs())) {
+		if (headless == null || bg == null || captureWidth > 0) {
 			return false;
 		}
 		Minecraft mc = (Minecraft) minecraft;
@@ -133,7 +143,10 @@ final class Companion implements Bridge {
 	@Override
 	public int hiddenFramerate() {
 		BackgroundController bg = background;
-		return bg != null && bg.hidden() ? bg.hiddenFramerate() : 0;
+		if (bg == null || !bg.hidden()) {
+			return 0;
+		}
+		return captureWidth > 0 ? Math.max(CAPTURE_FPS, bg.hiddenFramerate()) : bg.hiddenFramerate();
 	}
 
 	@Override
@@ -213,6 +226,12 @@ final class Companion implements Bridge {
 	}
 
 	@Override
+	public boolean resourcePack(Object listener, Object packet) {
+		BackgroundController bg = background;
+		return packs.push(Minecraft.getInstance(), (ClientCommonPacketListenerImpl) listener, (ClientboundResourcePackPushPacket) packet, bg != null && !bg.hidden());
+	}
+
+	@Override
 	public boolean beforeRender(Object renderer) {
 		Minecraft mc = Minecraft.getInstance();
 		GameWindow.frame(mc);
@@ -221,8 +240,12 @@ final class Companion implements Bridge {
 		if (bg == null) {
 			return true;
 		}
+		if (headless != null) {
+			previewDue = preview != null && captureWidth > 0;
+			return previewDue;
+		}
 		BackgroundController.Profile p = bg.profile();
-		previewDue = preview != null && preview.due(p.previewIntervalMs());
+		previewDue = preview != null && (captureWidth > 0 || preview.due(p.previewIntervalMs()));
 		return previewDue || !bg.skipsRender();
 	}
 
@@ -232,10 +255,39 @@ final class Companion implements Bridge {
 		if (shownAt != 0 && bg != null && !bg.hidden()) {
 			smokeShown();
 		}
-		if (previewDue && bg != null) {
-			previewDue = false;
-			preview.capture(Compat.mainTarget(Minecraft.getInstance()), bg.profile().previewWidth());
+		if (!previewDue || bg == null) {
+			return;
 		}
+		previewDue = false;
+		int width = captureWidth;
+		if (width > 0) {
+			if (!warm(Minecraft.getInstance())) {
+				return;
+			}
+			captureWidth = 0;
+		} else {
+			width = bg.profile().previewWidth();
+		}
+		preview.capture(Compat.mainTarget(Minecraft.getInstance()), width);
+	}
+
+	private boolean warm(Minecraft mc) {
+		int sections = Compat.renderedSections(mc);
+		captureSteady = sections == captureSections ? captureSteady + 1 : 0;
+		captureSections = sections;
+		return sections > 0 && captureSteady >= CAPTURE_STEADY_FRAMES || System.nanoTime() - captureSince > CAPTURE_WARMUP;
+	}
+
+	private void capture(int width) {
+		if (preview == null || width <= 0) {
+			return;
+		}
+		if (captureWidth == 0) {
+			captureSince = System.nanoTime();
+			captureSections = -1;
+			captureSteady = 0;
+		}
+		captureWidth = width;
 	}
 
 	private void smokeShown() {
@@ -304,6 +356,7 @@ final class Companion implements Bridge {
 		try {
 			link.ensureRunning();
 			drain(mc);
+			packs.tick();
 			state.tick(mc);
 			GameWindow.tick();
 			BackgroundController bg = background;
@@ -350,7 +403,7 @@ final class Companion implements Bridge {
 	}
 
 	private static boolean needsBackground(Protocol.Incoming message) {
-		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Hint || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers);
+		return !(message instanceof Protocol.Incoming.Hotkeys || message instanceof Protocol.Incoming.Quit || message instanceof Protocol.Incoming.Identity || message instanceof Protocol.Incoming.Badge || message instanceof Protocol.Incoming.Hint || message instanceof Protocol.Incoming.Options || message instanceof Protocol.Incoming.Servers || message instanceof Protocol.Incoming.Packs || message instanceof Protocol.Incoming.Answer);
 	}
 
 	private void handle(Minecraft mc, Protocol.Incoming message) {
@@ -382,11 +435,21 @@ final class Companion implements Bridge {
 			options.serversChanged(mc);
 			return;
 		}
+		if (message instanceof Protocol.Incoming.Packs p) {
+			packs.policy(p.policy());
+			return;
+		}
+		if (message instanceof Protocol.Incoming.Answer a) {
+			packs.answer(mc, a.id(), a.accept());
+			return;
+		}
 		BackgroundController bg = background;
 		if (bg == null) {
 			return;
 		}
 		switch (message) {
+			case Protocol.Incoming.Show show when headless != null -> {
+			}
 			case Protocol.Incoming.Show show -> {
 				shownAt = smoke == null ? 0 : System.nanoTime();
 				shownDrawn = false;
@@ -400,6 +463,7 @@ final class Companion implements Bridge {
 			case Protocol.Incoming.ChatSend chatSend -> sendChat(mc, chatSend.text());
 			case Protocol.Incoming.Reconnect reconnect -> reconnect(mc);
 			case Protocol.Incoming.Respawn respawn -> respawn(mc);
+			case Protocol.Incoming.Capture c -> capture(Math.clamp(c.width(), 16, 1280));
 			default -> {
 			}
 		}

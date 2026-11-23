@@ -890,7 +890,7 @@ mod tests {
         crate::core::i18n::init("de");
         let s = settings();
         let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
-        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause: Some(DisconnectCause::Banned) };
+        let message = FromMod::State { kind: StateKind::Disconnected, server: Some("mc.example:25565".into()), reason: Some("why".into()), cause: Some(DisconnectCause::Banned), offer: None };
         report(&mut m, &s, Report::Mod { key: key.clone(), message });
         m.games.get_mut(&key).unwrap().stopping = true;
         report(&mut m, &s, Report::Exited { key: key.clone(), code: Some(0) });
@@ -912,7 +912,7 @@ mod tests {
         assert_eq!(status(&m.games[&key], None), "Keine Verbindung zum Spiel");
         report(&mut m, &s, Report::Connected { key: key.clone(), pid: 9 });
         report(&mut m, &s, Report::LinkLost { key: key.clone() });
-        let message = FromMod::State { kind: StateKind::Playing, server: Some("mc.example:25565".into()), reason: None, cause: None };
+        let message = FromMod::State { kind: StateKind::Playing, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: None };
         report(&mut m, &s, Report::Mod { key: key.clone(), message });
         assert_eq!(status(&m.games[&key], None), "Auf mc.example:25565");
     }

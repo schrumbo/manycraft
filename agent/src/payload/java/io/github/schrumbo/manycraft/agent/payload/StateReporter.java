@@ -19,20 +19,23 @@ final class StateReporter {
 	private static final Field CAUSE_OF_DEATH = Access.field(DeathScreen.class, "causeOfDeath");
 	private final Consumer<String> sink;
 	private final QueueDetector queue;
+	private final PackOffers packs;
 	private String kind = "menu";
+	private Protocol.Offer offer;
 	private String server;
 	private String reason;
 	private String cause;
 	private ServerData pending;
 	private ServerData lastServer;
 
-	StateReporter(Consumer<String> sink, QueueDetector queue) {
+	StateReporter(Consumer<String> sink, QueueDetector queue, PackOffers packs) {
 		this.sink = sink;
 		this.queue = queue;
+		this.packs = packs;
 	}
 
 	synchronized String line() {
-		return Protocol.state(kind, server, reason, cause);
+		return Protocol.state(kind, server, reason, cause, offer);
 	}
 
 	synchronized ServerData lastServer() {
@@ -66,8 +69,9 @@ final class StateReporter {
 		} else {
 			newKind = "menu";
 		}
+		Protocol.Offer held = newKind.equals("connecting") || newKind.equals("playing") || newKind.equals("queue") ? packs.offer() : null;
 		String newServer = serverFor(mc, newKind);
-		update(newKind, newServer, newReason, newCause);
+		update(held != null ? "offer" : newKind, newServer, newReason, newCause, held);
 	}
 
 	private synchronized String serverFor(Minecraft mc, String newKind) {
@@ -80,7 +84,7 @@ final class StateReporter {
 				pending = null;
 				return null;
 			}
-			case "playing", "queue", "dead" -> {
+			case "playing", "queue", "dead", "offer" -> {
 				if (mc.hasSingleplayerServer()) {
 					return null;
 				}
@@ -92,17 +96,18 @@ final class StateReporter {
 		}
 	}
 
-	private void update(String newKind, String newServer, String newReason, String newCause) {
+	private void update(String newKind, String newServer, String newReason, String newCause, Protocol.Offer newOffer) {
 		String line;
 		synchronized (this) {
-			if (newKind.equals(kind) && Objects.equals(newServer, server) && Objects.equals(newReason, reason) && Objects.equals(newCause, cause)) {
+			if (newKind.equals(kind) && Objects.equals(newServer, server) && Objects.equals(newReason, reason) && Objects.equals(newCause, cause) && Objects.equals(newOffer, offer)) {
 				return;
 			}
 			kind = newKind;
 			server = newServer;
 			reason = newReason;
 			cause = newCause;
-			line = Protocol.state(kind, server, reason, cause);
+			offer = newOffer;
+			line = Protocol.state(kind, server, reason, cause, offer);
 		}
 		sink.accept(line);
 	}

@@ -41,11 +41,14 @@ pub struct Run {
     /// Whether the game runs without the companion; older records are all companion games.
     #[serde(default)]
     pub plain: bool,
+    /// Whether the game runs without any window; older records have none.
+    #[serde(default)]
+    pub headless: bool,
 }
 
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Run").field("batch", &self.batch).field("instance", &self.instance).field("account", &self.account).field("pid", &self.pid).field("started", &self.started).field("exe", &self.exe).field("game_dir", &self.game_dir).field("token", &"<hidden>").field("server_addrs", &self.server_addrs).field("plain", &self.plain).finish()
+        f.debug_struct("Run").field("batch", &self.batch).field("instance", &self.instance).field("account", &self.account).field("pid", &self.pid).field("started", &self.started).field("exe", &self.exe).field("game_dir", &self.game_dir).field("token", &"<hidden>").field("server_addrs", &self.server_addrs).field("plain", &self.plain).field("headless", &self.headless).finish()
     }
 }
 
@@ -407,6 +410,7 @@ pub(crate) mod tests {
             token: "t".into(),
             server_addrs: vec!["127.0.0.1:25565".parse().unwrap()],
             plain: false,
+            headless: false,
         }
     }
 

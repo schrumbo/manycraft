@@ -439,6 +439,7 @@ impl BatchSheet {
             background: self.background,
             launch_parallel: self.launch_parallel,
             full_speed: self.full_speed,
+            unattended: self.original.as_ref().map_or_else(Default::default, Batch::unattended),
         };
         let id = self.original.as_ref().map(|b| b.id.clone());
         self.saving = true;

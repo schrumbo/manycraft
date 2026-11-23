@@ -90,6 +90,32 @@ impl Background {
     }
 }
 
+/// What the games of a batch answer when a server offers a resource pack.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Packs {
+    /// A hidden game holds the offer until the user answers it in the batch; a shown game asks in its own window.
+    #[default]
+    Ask,
+    Accept,
+    Decline,
+}
+
+impl Packs {
+    pub const ALL: [Self; 3] = [Self::Ask, Self::Accept, Self::Decline];
+}
+
+/// Minutes between automatic screenshots a headless batch may choose.
+pub const SCREENSHOT_MINUTES: [u32; 5] = [1, 5, 15, 30, 60];
+
+/// How a batch runs unattended: without game windows, with screenshots, and how it answers resource packs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unattended {
+    pub headless: bool,
+    pub screenshots: Option<u32>,
+    pub packs: Packs,
+}
+
 /// A group of accounts that all play the same instance with the same run settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Batch {
@@ -120,6 +146,25 @@ pub struct Batch {
     /// Games keep the full compiler, so a played game runs as fast as a solo one at the cost of more memory per game.
     #[serde(default)]
     pub full_speed: bool,
+    /// Games run without any window: never shown, rendering only for screenshots.
+    #[serde(default)]
+    pub headless: bool,
+    /// Minutes between automatic screenshots of a headless game; `None` takes them only when asked.
+    #[serde(default, deserialize_with = "lenient_minutes")]
+    pub screenshots: Option<u32>,
+    /// What the games answer when a server offers a resource pack; a value from a newer version reads as the default.
+    #[serde(default, deserialize_with = "lenient_packs")]
+    pub packs: Packs,
+}
+
+fn lenient_minutes<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<Option<u32>>(value).ok().flatten().filter(|m| SCREENSHOT_MINUTES.contains(m)))
+}
+
+fn lenient_packs<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Packs, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<Packs>(value).unwrap_or_default())
 }
 
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Background, D::Error> {
@@ -155,7 +200,22 @@ impl Batch {
             memory_override: None,
             launch_parallel: 0,
             full_speed: false,
+            headless: false,
+            screenshots: None,
+            packs: Packs::Ask,
         }
+    }
+
+    /// Its unattended settings.
+    pub fn unattended(&self) -> Unattended {
+        Unattended { headless: self.headless, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs }
+    }
+
+    /// Takes over `u`; an interval it does not offer reads as none.
+    pub fn set_unattended(&mut self, u: Unattended) {
+        self.headless = u.headless;
+        self.screenshots = u.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m));
+        self.packs = u.packs;
     }
 
     /// The name its measured memory per game is kept under: games with the full compiler hold more, so each choice has a
@@ -577,6 +637,23 @@ mod tests {
         assert_eq!(read(r#"{"custom":{"fps":-3}}"#), Background::Saving);
         assert_eq!(read(r#"{"custom":"x"}"#), Background::Saving);
         assert_eq!(read(r#""custom""#), Background::Saving);
+    }
+
+    #[test]
+    fn unattended_settings_round_trip_and_read_old_or_odd_files_as_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Batch::new("a", "i1");
+        b.set_unattended(Unattended { headless: true, screenshots: Some(15), packs: Packs::Decline });
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b.clone()]);
+        assert_eq!(b.unattended(), Unattended { headless: true, screenshots: Some(15), packs: Packs::Decline });
+        let read = |extra: &str| serde_json::from_str::<Batch>(&format!(r#"{{"id":"a1","name":"A","instance_id":"i1"{extra}}}"#)).unwrap().unattended();
+        assert_eq!(read(""), Unattended::default(), "a batch from before headless runs with windows and asks");
+        assert_eq!(read(r#","screenshots":7,"packs":"maybe""#), Unattended::default(), "an interval it does not offer and an unknown answer read as off and ask");
+        assert_eq!(read(r#","headless":true,"screenshots":60,"packs":"accept""#), Unattended { headless: true, screenshots: Some(60), packs: Packs::Accept });
+        let mut odd = Batch::new("b", "i1");
+        odd.set_unattended(Unattended { headless: false, screenshots: Some(2), packs: Packs::Ask });
+        assert_eq!(odd.screenshots, None);
     }
 
     #[test]

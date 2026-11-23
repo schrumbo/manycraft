@@ -111,6 +111,17 @@ public final class Agent {
 		return PROXY_FEATURES.stream().allMatch(Patches::has);
 	}
 
+	static void haltHeadless() {
+		log("the game runs without a window but its window hooks are missing " + Patches.applied() + ", stopping it instead of opening one");
+		Runtime.getRuntime().halt(1);
+	}
+
+	static void haltIfHeadlessUnhooked() {
+		if (Hooks.headless() && (Patches.missing("hidden") || Patches.missing("frame"))) {
+			haltHeadless();
+		}
+	}
+
 	static void haltIfProxyUnhooked() {
 		if (Proxies.requested() && PROXY_FEATURES.stream().anyMatch(Patches::missing)) {
 			log("a proxy is set but its hooks are missing " + Patches.applied() + ", stopping the game instead of connecting without it");
@@ -119,6 +130,9 @@ public final class Agent {
 	}
 
 	private static void reveal(Object minecraft) {
+		if (Hooks.headless()) {
+			haltHeadless();
+		}
 		if (!Boolean.getBoolean("manycraft.hidden")) {
 			return;
 		}

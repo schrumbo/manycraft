@@ -477,6 +477,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
         Phase::ServerAway { .. } => tr("Wartet auf Server"),
+        Phase::Offer { .. } => tr("Ressourcenpaket"),
     }
 }
 

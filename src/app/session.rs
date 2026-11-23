@@ -29,6 +29,13 @@ impl Alert {
     }
 }
 
+/// A screenshot timer: the one armed last, every `minutes`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timer {
+    pub generation: u64,
+    pub minutes: u32,
+}
+
 /// What a game that was asked to show covers once it appears.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reveal {
@@ -66,6 +73,10 @@ pub struct Shot {
 /// The state of the running session that no view shows directly.
 #[derive(Default)]
 pub struct Session {
+    /// The screenshot timer of each game without a window whose batch takes them on an interval, by key.
+    pub captures: HashMap<String, Timer>,
+    /// Bumped by every screenshot timer armed, so a timer of an older one does nothing.
+    pub capture_seq: u64,
     /// Where each game played alone goes on its next start, by key.
     pub quick: HashMap<String, crate::core::fleet::Quick>,
     /// Tiles on screen, whose previews update at full rate.

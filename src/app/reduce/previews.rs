@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::super::effect::Effect;
 use super::super::event::Event;
-use super::super::model::{Game, Model};
+use super::super::model::Model;
 use super::super::session::Shot;
 use crate::core::ipc::ToMod;
 use crate::core::settings::PreviewRate;
@@ -24,7 +24,7 @@ pub fn plan(m: &Model, rate: PreviewRate) -> HashMap<String, Shot> {
     let width = WIDTHS.into_iter().find(|w| *w >= s.watch.width).unwrap_or(WIDTHS[2]);
     let width = if s.watch.width == 0 { WIDTHS[1] } else { width };
     let paused = Shot { interval_ms: PAUSED_MS, width };
-    let pids: Vec<&String> = s.pids.keys().filter(|k| !m.games.get(*k).is_some_and(Game::alone)).collect();
+    let pids: Vec<&String> = s.pids.keys().filter(|k| !m.games.get(*k).is_some_and(|i| i.alone() || i.headless)).collect();
     if s.watch.away || m.playing.is_some() {
         return pids.into_iter().map(|k| (k.clone(), paused)).collect();
     }

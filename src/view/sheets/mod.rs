@@ -7,6 +7,7 @@ pub mod import;
 pub mod instance;
 pub mod skin;
 pub mod trash;
+pub mod unattended;
 pub mod updates;
 
 use crate::view::commands::{Answer, Want, answer_wants};
@@ -78,4 +79,3 @@ pub fn after_first_account(store: Store, added: Vec<String>) {
         sheet::close(store.ui);
     }
 }
-

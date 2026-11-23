@@ -127,6 +127,7 @@ fn started(m: &mut Model, owner: &str, target: &Target, accounts: &[Account]) {
     for a in accounts {
         if let Some(g) = m.games.get_mut(&target.key(a.id)) {
             g.measured_as = Some(measured.clone());
+            g.headless = target.headless();
         }
     }
 }

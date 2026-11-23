@@ -147,6 +147,7 @@ impl Component for NeedChip {
             Need::SignIn => (t.danger_text, Icon::LogIn),
             Need::Banned => (t.danger_text, Icon::Close),
             Need::Disconnected => (t.attention_text, Icon::Wifi),
+            Need::Offer => (t.attention_text, Icon::Package),
             Need::Dead | Need::Crashed | Need::Failed => (t.attention_text, Icon::Alert),
         };
         let (need, chosen) = (self.need, self.chosen);
