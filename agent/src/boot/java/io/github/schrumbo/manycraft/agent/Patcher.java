@@ -119,6 +119,7 @@ final class Patcher implements ClassFileTransformer {
 			new Hook("pause", "pauseIfInactive", "()V", cancel(b -> b.invokestatic(HOOKS, "managed", type(CD_boolean)))),
 			new Hook("quit", "stop", "()V", head(b -> b.invokestatic(HOOKS, "closeRequested", type(CD_void)))));
 		add(t, "net/minecraft/client/renderer/GameRenderer",
+			new Hook("render", "extract", "(Lnet/minecraft/client/DeltaTracker;Z)V", unless(b -> b.aload(0).invokestatic(HOOKS, "beforeExtract", type(CD_boolean, CD_Object)))),
 			new Hook("render", "render", null, Patcher::guardRender));
 		add(t, "com/mojang/blaze3d/platform/Window",
 			new Hook("hidden", null, null, Patcher::hideWindow),
@@ -370,6 +371,14 @@ final class Patcher implements ClassFileTransformer {
 		});
 	}
 
+	static Edit unless(Consumer<CodeBuilder> test) {
+		return head(b -> {
+			Label original = b.newLabel();
+			test.accept(b);
+			b.ifne(original).return_().labelBinding(original);
+		});
+	}
+
 	static Edit tail(Consumer<CodeBuilder> epilogue) {
 		return hit -> (b, e) -> {
 			if (e instanceof ReturnInstruction r && r.opcode() == Opcode.RETURN) {
@@ -381,10 +390,7 @@ final class Patcher implements ClassFileTransformer {
 	}
 
 	private static CodeTransform guardRender(Runnable hit) {
-		CodeTransform skip = head(b -> {
-			Label original = b.newLabel();
-			b.aload(0).invokestatic(HOOKS, "beforeRender", type(CD_boolean, CD_Object)).ifne(original).return_().labelBinding(original);
-		}).transform(hit);
+		CodeTransform skip = unless(b -> b.invokestatic(HOOKS, "drawing", type(CD_boolean))).transform(hit);
 		return skip.andThen(tail(b -> b.aload(0).invokestatic(HOOKS, "afterRender", type(CD_void, CD_Object))).transform(() -> {}));
 	}
 

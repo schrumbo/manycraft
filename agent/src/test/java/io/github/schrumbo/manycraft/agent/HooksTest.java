@@ -23,7 +23,7 @@ class HooksTest {
 
 	private static Bridge bridge(Function<Object[], Object> save) {
 		return (Bridge) Proxy.newProxyInstance(Bridge.class.getClassLoader(), new Class<?>[] {Bridge.class}, (proxy, method, args) -> {
-			if (method.getName().equals("saveOptions")) {
+			if (method.getName().equals("saveOptions") || method.getName().equals("beforeRender")) {
 				return save.apply(args);
 			}
 			throw new UnsupportedOperationException(method.getName());
@@ -65,6 +65,20 @@ class HooksTest {
 		assertTrue(Hooks.save(new Object()));
 		Hooks.guarded = false;
 		assertFalse(Hooks.save(new Object()));
+	}
+
+	@Test
+	void aSkippedFrameSkipsItsRenderToo() {
+		assertTrue(Hooks.beforeExtract(new Object()));
+		assertTrue(Hooks.drawing());
+		List<Boolean> answers = new ArrayList<>(List.of(false, true));
+		Hooks.bridge = bridge(args -> answers.removeFirst());
+		assertFalse(Hooks.beforeExtract(new Object()));
+		assertFalse(Hooks.drawing());
+		assertFalse(Hooks.drawing());
+		assertTrue(Hooks.beforeExtract(new Object()));
+		assertTrue(Hooks.drawing());
+		assertEquals(List.of(), answers);
 	}
 
 	@Test

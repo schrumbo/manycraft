@@ -18,6 +18,7 @@ public final class Hooks {
 	 */
 	public static volatile boolean guarded;
 	private static final ThreadLocal<Boolean> SAVING = new ThreadLocal<>();
+	private static volatile boolean drawing = true;
 
 	private Hooks() {}
 
@@ -88,7 +89,21 @@ public final class Hooks {
 		}
 	}
 
-	public static boolean beforeRender(Object renderer) {
+	/**
+	 * Called first in {@code GameRenderer.extract}; false skips the frame. Extract hands the level's changes since the
+	 * last frame (loaded chunks, dirty sections) to render exactly once, so a frame skips both or neither:
+	 * {@link #drawing} repeats the answer for the frame's render.
+	 */
+	public static boolean beforeExtract(Object renderer) {
+		drawing = beforeRender(renderer);
+		return drawing;
+	}
+
+	public static boolean drawing() {
+		return drawing;
+	}
+
+	private static boolean beforeRender(Object renderer) {
 		Bridge b = bridge;
 		if (b == null) {
 			return true;

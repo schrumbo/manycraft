@@ -65,6 +65,22 @@ class PatcherTest {
 	}
 
 	@Test
+	void extractAndRenderShareOneAnswerPerFrame() throws IOException {
+		String name = "net/minecraft/client/renderer/GameRenderer";
+		byte[] out = Patcher.patch(PatcherTest.class.getClassLoader(), name, bytes(name), Patcher.table(false).get(name));
+		assertNotNull(out);
+		assertEquals(List.of("beforeExtract"), hookCalls(out, "extract"));
+		assertEquals("drawing", hookCalls(out, "render").getFirst());
+	}
+
+	private static List<String> hookCalls(byte[] patched, String method) {
+		MethodModel model = ClassFile.of().parse(patched).methods().stream().filter(m -> m.methodName().equalsString(method)).findFirst().orElseThrow();
+		return model.code().orElseThrow().elementStream()
+			.filter(e -> e instanceof InvokeInstruction i && i.owner().asInternalName().equals("io/github/schrumbo/manycraft/agent/Hooks"))
+			.map(e -> ((InvokeInstruction) e).name().stringValue()).toList();
+	}
+
+	@Test
 	void anAlternativeThatMissesNeitherCountsNorTouchesTheClass() throws IOException {
 		String name = "net/minecraft/client/gui/Gui";
 		assertNull(Patcher.patch(PatcherTest.class.getClassLoader(), name, bytes(name), Patcher.table(false).get(name)));

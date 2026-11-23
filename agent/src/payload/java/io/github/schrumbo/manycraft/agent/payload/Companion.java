@@ -16,6 +16,7 @@ import net.minecraft.client.Options;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.DeathScreen;
+import net.minecraft.client.gui.screens.LevelLoadingScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.input.KeyEvent;
@@ -240,13 +241,14 @@ final class Companion implements Bridge {
 		if (bg == null) {
 			return true;
 		}
+		boolean loading = Compat.screen(mc) instanceof LevelLoadingScreen;
 		if (headless != null) {
 			previewDue = preview != null && captureWidth > 0;
-			return previewDue;
+			return previewDue || loading;
 		}
 		BackgroundController.Profile p = bg.profile();
 		previewDue = preview != null && (captureWidth > 0 || preview.due(p.previewIntervalMs()));
-		return previewDue || !bg.skipsRender();
+		return previewDue || !bg.skipsRender() || loading;
 	}
 
 	@Override
