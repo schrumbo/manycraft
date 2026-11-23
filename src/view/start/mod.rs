@@ -15,12 +15,12 @@ use crate::core::launchers;
 use crate::view::commands::{self, Want, can_want, want};
 use crate::view::drive::use_spot;
 use crate::view::grid::{fix_of, run_fix, words};
-use crate::view::icons::Icon;
+use crate::view::icons::{Icon, icon};
 use crate::view::instance::{self, Facts, Hero, InstanceIcon, facts, use_minute};
 use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::text::{body, caption, heading, line, secondary, strong};
-use crate::view::kit::{off_ui, ring, use_theme};
+use crate::view::kit::{off_ui, page, ring, use_theme};
 use crate::view::library::{self, CARD_W, Infos, Wall, ago, use_infos, what};
 use crate::view::shell::swatch;
 use crate::view::store::{Store, use_store};
@@ -127,11 +127,11 @@ impl Component for StartPage {
         }
         let list = m.instances.clone();
         let accounts = m.accounts.len();
-        let room = (ui.window.read().0 - ui.sidebar_room()).min(frame::START);
-        let mut page = rect().width(Size::fill()).max_width(Size::px(frame::START)).padding(space::XL).spacing(space::XL);
+        let room = ui.window.read().0 - ui.sidebar_room();
+        let mut page = page::column();
         if list.is_empty() && ui.installs.read().is_empty() {
             drop(m);
-            return scroll(at, page.child(Welcome { bare: accounts == 0 }));
+            return page::scrolling(at, page.child(Welcome { bare: accounts == 0, split: room >= frame::SPLIT }));
         }
         drop(m);
         if let Some(i) = resume(&list, &infos) {
@@ -139,13 +139,14 @@ impl Component for StartPage {
             let title = if played.is_some() { tr("Weiterspielen") } else { tr("Jetzt spielen") };
             page = page.child(section(&t, title, None, ResumeCard { id: i.id.clone(), name: i.name.clone(), picture: i.icon_path(), what: what(i), played, room }));
         }
-        let more: Vec<&Instance> = recent(&list, &infos, RECENT_MAX + 1).into_iter().skip(1).take(cards_in(room - space::XL * 2., t.grid_gap)).collect();
+        let more: Vec<&Instance> = recent(&list, &infos, RECENT_MAX + 1).into_iter().skip(1).take(cards_in(room - frame::GUTTER * 2., t.grid_gap)).collect();
         if !more.is_empty() {
             let lines = library::lines(store, &more, &infos);
             let all = Button::new("start.recent.all", tr("Alle Instanzen")).plain().on_press(move |_| go(store, Page::Library)).into_element();
             page = page.child(section(&t, tr("Zuletzt gespielt"), Some(all), Wall { lines }));
         }
         let m = store.model.read();
+        let mut lower = Vec::new();
         if !m.batches.is_empty() {
             let mut rows = rect().width(Size::fill()).spacing(space::XS);
             for b in &m.batches {
@@ -154,7 +155,7 @@ impl Component for StartPage {
                 let attention = m.attention_count(Some(&b.id));
                 rows = rows.child(rect().key(&b.id).width(Size::fill()).child(BatchRow { id: b.id.clone(), name: b.name.clone(), total, running, attention }));
             }
-            page = page.child(section(&t, tr("Batches"), None, rows));
+            lower.push(section(&t, tr("Batches"), None, rows));
         }
         let needs = m.needs(None);
         if !needs.is_empty() {
@@ -163,17 +164,23 @@ impl Component for StartPage {
                 let fix = fix_of(&m, need);
                 rows = rows.child(rect().key(format!("{need:?}")).width(Size::fill()).child(NeedRow { need, count, fix }));
             }
-            page = page.child(section(&t, tr("Brauchen dich"), None, rows));
+            lower.push(section(&t, tr("Brauchen dich"), None, rows));
         }
         drop(m);
+        if room >= frame::SPLIT && lower.len() == 2 {
+            let mut side = rect().width(Size::fill()).horizontal().spacing(frame::SECTION).content(Content::flex());
+            for block in lower {
+                side = side.child(rect().width(Size::flex(1.)).child(block));
+            }
+            page = page.child(side);
+        } else {
+            for block in lower {
+                page = page.child(block);
+            }
+        }
         page = page.child(QuickPlay { infos });
-        page = page.child(footer(store));
-        scroll(at, page)
+        page::scrolling(at, page)
     }
-}
-
-fn scroll(controller: ScrollController, page: Rect) -> Element {
-    ScrollView::new_controlled(controller).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).cross_align(Alignment::Center).child(page)).into_element()
 }
 
 #[derive(PartialEq)]
@@ -325,6 +332,21 @@ impl Component for NeedRow {
 #[derive(PartialEq)]
 struct Welcome {
     bare: bool,
+    split: bool,
+}
+
+/// One way to a first instance: what it does and the button that starts it.
+fn way(t: &Theme, glyph: Icon, title: String, text: String, action: Button) -> Element {
+    rect()
+        .width(Size::flex(1.))
+        .padding(space::L)
+        .spacing(space::M)
+        .background(t.raised)
+        .corner_radius(t.shape.tile)
+        .child(icon(t, glyph, iconsize::L, t.accent_text))
+        .child(rect().width(Size::fill()).spacing(space::XXS).child(strong(t, title, font::TITLE3, t.text1)).child(secondary(t, text).max_lines(3)))
+        .child(action)
+        .into_element()
 }
 
 impl Component for Welcome {
@@ -342,34 +364,38 @@ impl Component for Welcome {
             });
         });
         let detected: Vec<String> = found.read().iter().map(|l| trf("%@ mit %lld Instanzen gefunden", &[&l.launcher.name(), &l.instances.len()])).collect();
-        let mut actions = rect().horizontal().spacing(space::S).content(Content::wrap_spacing(space::S));
         let new = Button::new("start.welcome.new", tr("Neue Instanz")).glyph(Icon::Plus).tall().disabled(commands::want_blocked(&Want::NewInstance)).on_press(move |_| {
             want(store, Want::NewInstance);
         });
-        actions = actions.child(if self.bare { new } else { new.primary() });
-        actions = actions.child(Button::new("start.welcome.packs", tr("Modpack suchen")).glyph(Icon::Search).tall().on_press(move |_| go(store, Page::Discover)));
+        let packs = Button::new("start.welcome.packs", tr("Modpack suchen")).glyph(Icon::Search).tall().on_press(move |_| go(store, Page::Discover));
+        let mut ways = vec![
+            way(&t, Icon::Plus, tr("Neue Instanz"), tr("Version und Loader wählen, Mods später."), if self.bare { new } else { new.primary() }),
+            way(&t, Icon::Package, tr("Modpack"), tr("Ein fertiges Paket von Modrinth, das zur eigenen Instanz wird."), packs),
+        ];
         if can_want(&Want::Import) {
-            actions = actions.child(Button::new("start.welcome.import", tr("Aus anderem Launcher importieren")).glyph(Icon::Download).tall().on_press(move |_| {
-                want(store, Want::Import);
-            }));
+            let text = if detected.is_empty() { tr("Instanzen aus Prism, Modrinth oder einem anderen Launcher übernehmen.") } else { detected.join(" · ") };
+            ways.push(way(
+                &t,
+                Icon::Download,
+                tr("Importieren"),
+                text,
+                Button::new("start.welcome.import", tr("Aus anderem Launcher importieren")).glyph(Icon::Download).tall().on_press(move |_| {
+                    want(store, Want::Import);
+                }),
+            ));
         }
-        let mut card = rect()
+        let mut row = rect().width(Size::fill()).spacing(frame::SECTION);
+        if self.split {
+            row = row.horizontal().content(Content::flex());
+        }
+        let mut col = rect()
             .width(Size::fill())
-            .max_width(Size::px(frame::START_WELCOME))
-            .padding(space::XL)
-            .spacing(space::M)
-            .background(t.raised)
-            .corner_radius(t.shape.tile)
-            .child(heading(&t, tr("Willkommen bei Manycraft")))
-            .child(secondary(&t, tr("Eine Instanz ist ein Minecraft mit eigener Version, eigenen Mods und Einstellungen.")).max_lines(3))
-            .child(actions);
-        if !detected.is_empty() {
-            card = card.child(caption(&t, detected.join(" · ")));
-        }
+            .spacing(frame::SECTION)
+            .child(rect().width(Size::fill()).spacing(space::XS).child(heading(&t, tr("Willkommen bei Manycraft"))).child(page::reading(secondary(&t, tr("Eine Instanz ist ein Minecraft mit eigener Version, eigenen Mods und Einstellungen.")))));
         if self.bare {
-            card = card.child(no_account(&t, store));
+            col = col.child(no_account(&t, store));
         }
-        rect().width(Size::fill()).cross_align(Alignment::Center).padding((space::XL, 0.)).child(card)
+        col.child(row.children(ways))
     }
 }
 
@@ -388,19 +414,6 @@ fn no_account(t: &Theme, store: Store) -> Element {
             want(store, Want::AddAccount);
         }))
         .into_element()
-}
-
-fn footer(store: Store) -> Element {
-    let mut row = rect().width(Size::fill()).horizontal().spacing(space::S).content(Content::wrap_spacing(space::S));
-    row = row.child(Button::new("start.new", tr("Neue Instanz")).glyph(Icon::Plus).disabled(commands::want_blocked(&Want::NewInstance)).on_press(move |_| {
-        want(store, Want::NewInstance);
-    }));
-    if can_want(&Want::Import) {
-        row = row.child(Button::new("start.import", tr("Importieren…")).glyph(Icon::Download).on_press(move |_| {
-            want(store, Want::Import);
-        }));
-    }
-    row.child(Button::new("start.packs", tr("Modpack suchen")).glyph(Icon::Search).on_press(move |_| go(store, Page::Discover))).into_element()
 }
 
 #[cfg(test)]

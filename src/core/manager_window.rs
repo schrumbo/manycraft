@@ -29,13 +29,29 @@ fn in_units((x, y, w, h): (f64, f64, f64, f64), scale: f64, points: bool) -> Rec
     Rect { x: at(x) as i32, y: at(y) as i32, w: at(w).max(1.) as u32, h: at(h).max(1.) as u32 }
 }
 
-/// Lets the game process `pid` bring its window to the front, which Windows refuses to background processes otherwise.
+/// Lets the game process `pid` bring its window to the front, which Windows refuses to background processes otherwise
+/// and macOS from 14 on refuses unless the active app yields to it.
 pub fn allow_foreground(pid: u32) {
     #[cfg(target_os = "windows")]
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send, sel};
+        let Ok(pid) = i32::try_from(pid) else { return };
+        let game: *mut AnyObject = msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if game.is_null() || app.is_null() {
+            return;
+        }
+        let cooperative: bool = msg_send![app, respondsToSelector: sel!(yieldActivationToApplication:)];
+        if cooperative {
+            let _: () = msg_send![app, yieldActivationToApplication: game];
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = pid;
 }
 

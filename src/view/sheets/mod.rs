@@ -35,7 +35,7 @@ fn run(store: Store, want: Want) {
         Want::OpenTrash => trash::open(store),
         Want::Import => import::open(store),
         Want::ImportFile(path) => import::open_file(store, path),
-        Want::NewInstance => instance::create(store, None),
+        Want::NewInstance => instance::create(store),
         Want::EditMods(id) => instance::mods(store, id),
         Want::AddMods(id) => browser::add_mods(store, id),
         Want::FindModpacks => browser::find_modpacks(store),
@@ -64,15 +64,10 @@ fn run(store: Store, want: Want) {
     }
 }
 
-/// What follows the very first accounts, `added` by id: the sheet that sets up the instance to play with, playing the
-/// account when only one was added.
-pub fn after_first_account(store: Store, added: Vec<String>) {
-    let play = match added.as_slice() {
-        [only] => Some(only.clone()),
-        _ => None,
-    };
+/// What follows the very first accounts: the sheet that sets up the first instance.
+pub fn after_first_account(store: Store) {
     if store.model.peek().instances.is_empty() {
-        instance::create(store, Some(play));
+        instance::create(store);
     } else {
         sheet::close(store.ui);
     }
