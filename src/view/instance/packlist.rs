@@ -69,11 +69,11 @@ fn remember(signature: String, found: Matches) {
 fn lookup(dir: &Path, filter: &Filter) -> Result<HashMap<String, Known>> {
     let installed = catalog::installed(dir)?;
     let current: Vec<ModRef> = installed.iter().map(|i| i.found.clone()).collect();
-    let updates = if current.is_empty() { Vec::new() } else { catalog::updates(filter, &current)? };
+    let updates = if current.is_empty() { Vec::new() } else { catalog::updates(filter, &current).unwrap_or_default() };
     Ok(installed
         .into_iter()
         .map(|i| {
-            let update = updates.iter().any(|u| u.current.project_id == i.found.project_id);
+            let update = updates.iter().any(|u| u.current.version_id == i.found.version_id);
             (i.file, Known { project: i.found.project_id, title: i.found.title, update })
         })
         .collect())
@@ -124,7 +124,11 @@ fn remove(store: Store, instance_dir: PathBuf, dir: PathBuf, kind: Kind, loader:
             if was_on {
                 packs::switch(&from, hold.0, &name, false, &hold.1)?;
             }
-            packs::remove(&from, &folder, &name)
+            let removed = packs::remove(&from, &folder, &name);
+            if removed.is_err() && was_on {
+                let _ = packs::switch(&from, hold.0, &name, true, &hold.1);
+            }
+            removed
         })
         .await;
         match done {
@@ -209,7 +213,7 @@ impl Component for Packs {
         let changed = *store.ui.instance.changed.read();
         let mut listing = use_state(|| Listing::Loading);
         let query = use_state(String::new);
-        let mut known = use_state(|| Matches::default());
+        let mut known = use_state(|| (String::new(), Matches::default()));
         let mut more_bounds = use_state(Bounds::default);
         let key = spot(kind);
         use_side_effect_with_deps(&(dir.clone(), instance_dir.clone(), kind, changed), move |(dir, instance_dir, kind, _)| {
@@ -227,22 +231,24 @@ impl Component for Packs {
             Listing::Ready(entries) => matches_key(&dir, entries),
             Listing::Loading => String::new(),
         };
+        let tag = format!("{signature}|{filter:?}");
         let looking = dir.clone();
         use_side_effect_with_deps(&(signature, filter.clone()), move |(signature, filter)| {
             if signature.is_empty() {
                 return;
             }
-            if let Some(found) = looked(signature) {
-                known.set(found);
+            let tag = format!("{signature}|{filter:?}");
+            if let Some(found) = looked(&tag) {
+                known.set((tag, found));
                 return;
             }
-            let (signature, filter, dir) = (signature.clone(), filter.clone(), looking.clone());
+            let (filter, dir) = (filter.clone(), looking.clone());
             spawn(async move {
                 if let Some(Ok(found)) = off_ui(move || lookup(&dir, &filter)).await {
                     let found = Matches::new(found);
-                    remember(signature, found.clone());
+                    remember(tag.clone(), found.clone());
                     if known.try_peek().is_some() {
-                        known.set(found);
+                        known.set((tag, found));
                     }
                 }
             });
@@ -265,7 +271,10 @@ impl Component for Packs {
         let text = query.read().clone();
         let needle = text.trim().to_lowercase();
         let shown: Vec<&Entry> = entries.iter().filter(|e| needle.is_empty() || shown_name(&e.file).to_lowercase().contains(&needle)).collect();
-        let matches = known.read().clone();
+        let matches = {
+            let known = known.read();
+            if known.0 == tag { known.1.clone() } else { Matches::default() }
+        };
 
         let placeholder = if kind == Kind::Shader { tr("Shader filtern") } else { tr("Ressourcenpakete filtern") };
         let more = {

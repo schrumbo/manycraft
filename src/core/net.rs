@@ -141,10 +141,16 @@ pub fn get_bytes_vetted(url: &str, allow: impl Fn(&str) -> bool) -> Result<Vec<u
 }
 
 fn resolve(base: &str, location: &str) -> Option<String> {
-    if location.contains("://") {
+    let (scheme, rest) = base.split_once("://")?;
+    if let Some((given, _)) = location.split_once("://")
+        && !given.is_empty()
+        && given.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    {
         return Some(location.to_owned());
     }
-    let (scheme, rest) = base.split_once("://")?;
+    if let Some(network) = location.strip_prefix("//") {
+        return Some(format!("{scheme}://{network}"));
+    }
     let host = rest.split(['/', '?', '#']).next()?;
     location.starts_with('/').then(|| format!("{scheme}://{host}{location}"))
 }
@@ -360,6 +366,8 @@ mod tests {
         assert_eq!(resolve("https://a.org/x/y?q", "/z.png").as_deref(), Some("https://a.org/z.png"));
         assert_eq!(resolve("https://a.org/x", "http://10.0.0.1/p").as_deref(), Some("http://10.0.0.1/p"));
         assert_eq!(resolve("https://a.org/x", "z.png"), None);
+        assert_eq!(resolve("https://a.org/x", "//b.org/p").as_deref(), Some("https://b.org/p"));
+        assert_eq!(resolve("https://a.org/x", "/img?u=https://c.org/a.png").as_deref(), Some("https://a.org/img?u=https://c.org/a.png"));
     }
 
     #[test]

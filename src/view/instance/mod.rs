@@ -443,8 +443,8 @@ fn tab_body(t: &super::theme::Theme, store: Store, tab: Tab, f: Facts) -> Elemen
                 .into_element()
         }
         Tab::Mods => mods::Mods { facts: f }.into_element(),
-        Tab::Packs => packlist::Packs { facts: f, kind: Kind::ResourcePack }.into_element(),
-        Tab::Shaders => packlist::Packs { facts: f, kind: Kind::Shader }.into_element(),
+        Tab::Packs => rect().key("packs").child(packlist::Packs { facts: f, kind: Kind::ResourcePack }).into_element(),
+        Tab::Shaders => rect().key("shaders").child(packlist::Packs { facts: f, kind: Kind::Shader }).into_element(),
         Tab::Worlds => worlds::Worlds { facts: f }.into_element(),
         Tab::Shots => shots::Shots { facts: f }.into_element(),
         Tab::Logs => logs::Logs { facts: f }.into_element(),
