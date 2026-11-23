@@ -30,7 +30,7 @@ use crate::app::event::Event as AppEvent;
 use crate::app::model::{ChatLine, Model};
 use crate::core::batch::MAX_CHAT_CHARS;
 use crate::core::chat_text::{self, Run};
-use crate::core::i18n::{tr, trf};
+use crate::core::i18n::{clock as clock_text, date, tr, trf};
 use crate::core::settings;
 use crate::core::themes::Rgba;
 use crate::core::winstate;
@@ -1323,7 +1323,7 @@ fn local(at: i64) -> Option<chrono::DateTime<chrono::Local>> {
 }
 
 fn clock(at: i64) -> String {
-    local(at).map_or_else(String::new, |d| d.format("%H:%M").to_string())
+    local(at).map_or_else(String::new, |d| clock_text(d.time()))
 }
 
 fn same_day(a: i64, b: i64) -> bool {
@@ -1338,7 +1338,7 @@ fn day_title(at: i64, now: i64) -> String {
     } else if today.and_then(|t| t.pred_opt()) == Some(day) {
         tr("Gestern")
     } else {
-        day.format("%d.%m.%Y").to_string()
+        date(day, true)
     }
 }
 

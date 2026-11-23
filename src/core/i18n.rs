@@ -20,10 +20,28 @@ pub enum Lang {
     En,
 }
 
-/// Picks the UI language: `setting` (`de` or `en`), else the system language, falling back to German.
+impl Lang {
+    /// Every language the UI speaks; each one except German needs its own file in `assets/i18n`.
+    pub const ALL: [Lang; 2] = [Lang::De, Lang::En];
+
+    /// The language code used in settings and as the catalog file name.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Lang::De => "de",
+            Lang::En => "en",
+        }
+    }
+}
+
+/// Whether `code` names a language the UI speaks.
+pub fn supported(code: &str) -> bool {
+    Lang::ALL.iter().any(|l| l.code() == code)
+}
+
+/// Picks the UI language: `setting` (a language code), else the system language, falling back to German.
 pub fn init(setting: &str) {
     let code = if setting.is_empty() { sys_locale::get_locale().unwrap_or_default() } else { setting.to_string() };
-    *LANG.write().unwrap_or_else(|e| e.into_inner()) = if code.starts_with("en") { Lang::En } else { Lang::De };
+    *LANG.write().unwrap_or_else(|e| e.into_inner()) = Lang::ALL.into_iter().find(|l| code.starts_with(l.code())).unwrap_or(Lang::De);
 }
 
 /// The language the UI speaks.
@@ -46,8 +64,12 @@ pub fn trc(context: &str, key: &str) -> String {
 
 /// Translates and fills `%@` / `%lld` / `%1$@` placeholders in order.
 pub fn trf(key: &str, args: &[&dyn std::fmt::Display]) -> String {
+    render(lang(), key, args)
+}
+
+fn render(lang: Lang, key: &str, args: &[&dyn std::fmt::Display]) -> String {
     let args: Vec<String> = args.iter().map(ToString::to_string).collect();
-    let template = match (lang(), EN.get(key)) {
+    let template = match (lang, EN.get(key)) {
         (Lang::En, Some(Entry::One(s))) => s.clone(),
         (Lang::En, Some(Entry::Plural(forms))) => {
             let one = args.iter().find_map(|a| a.parse::<i64>().ok()) == Some(1);
@@ -56,6 +78,49 @@ pub fn trf(key: &str, args: &[&dyn std::fmt::Display]) -> String {
         _ => key.to_string(),
     };
     fill(&template, &args)
+}
+
+/// A number written with a point as decimal mark, in the UI language's mark.
+pub fn decimal(text: String) -> String {
+    decimal_in(lang(), text)
+}
+
+fn decimal_in(lang: Lang, text: String) -> String {
+    if lang == Lang::De { text.replace('.', ",") } else { text }
+}
+
+/// A time of day: `14:05`, or `2:05 PM` in English.
+pub fn clock(at: chrono::NaiveTime) -> String {
+    clock_in(lang(), at)
+}
+
+fn clock_in(lang: Lang, at: chrono::NaiveTime) -> String {
+    at.format(if lang == Lang::En { "%-I:%M %p" } else { "%H:%M" }).to_string()
+}
+
+/// A calendar day: `05.03.2026`, or `Mar 5, 2026` in English; without the year `05.03.` and `Mar 5`.
+pub fn date(at: chrono::NaiveDate, with_year: bool) -> String {
+    date_in(lang(), at, with_year)
+}
+
+fn date_in(lang: Lang, at: chrono::NaiveDate, with_year: bool) -> String {
+    let pattern = match (lang, with_year) {
+        (Lang::En, true) => "%b %-d, %Y",
+        (Lang::En, false) => "%b %-d",
+        (Lang::De, true) => "%d.%m.%Y",
+        (Lang::De, false) => "%d.%m.",
+    };
+    at.format(pattern).to_string()
+}
+
+/// A day and time of day without the year: `05.03. 14:05`, or `Mar 5, 2:05 PM` in English.
+pub fn date_time(at: chrono::NaiveDateTime) -> String {
+    date_time_in(lang(), at)
+}
+
+fn date_time_in(lang: Lang, at: chrono::NaiveDateTime) -> String {
+    let joint = if lang == Lang::En { ", " } else { " " };
+    format!("{}{joint}{}", date_in(lang, at.date(), false), clock_in(lang, at.time()))
 }
 
 fn fill(template: &str, args: &[String]) -> String {
@@ -90,94 +155,14 @@ fn fill(template: &str, args: &[String]) -> String {
 }
 
 #[cfg(test)]
+#[path = "i18n/audit.rs"]
+mod audit;
+
+#[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use chrono::{NaiveDate, NaiveTime};
 
     use super::*;
-
-    fn literal_after(source: &str, start: usize) -> Option<(String, usize)> {
-        let mut out = String::new();
-        let mut chars = source[start..].char_indices();
-        while let Some((i, c)) = chars.next() {
-            match c {
-                '"' => return Some((out, start + i + 1)),
-                '\\' => match chars.next()?.1 {
-                    'n' => out.push('\n'),
-                    't' => out.push('\t'),
-                    other => out.push(other),
-                },
-                c => out.push(c),
-            }
-        }
-        None
-    }
-
-    fn keys_in(source: &str, found: &mut Vec<String>) {
-        let mut from = 0;
-        while let Some(at) = source[from..].find("trc(\"") {
-            from += at + "trc(\"".len();
-            let Some((context, end)) = literal_after(source, from) else { continue };
-            from = end;
-            let Some(open) = source[from..].find('"').filter(|i| source[from..from + i].trim_start_matches(',').trim().is_empty()) else { continue };
-            if let Some((key, end)) = literal_after(source, from + open + 1) {
-                found.push(format!("{key} ({context})"));
-                from = end;
-            }
-        }
-        for call in ["tr(\"", "trf(\""] {
-            let mut from = 0;
-            while let Some(at) = source[from..].find(call) {
-                let start = from + at;
-                from = start + call.len();
-                let ident = source[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
-                if ident {
-                    continue;
-                }
-                if let Some((key, end)) = literal_after(source, from) {
-                    found.push(key);
-                    from = end;
-                }
-            }
-        }
-    }
-
-    fn collect(dir: &Path, found: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                collect(&path, found);
-            } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|n| n != "i18n.rs") {
-                keys_in(&std::fs::read_to_string(&path).unwrap(), found);
-            }
-        }
-    }
-
-    #[test]
-    fn every_german_key_has_an_english_text() {
-        let mut keys = Vec::new();
-        collect(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut keys);
-        let missing: Vec<&String> = keys.iter().filter(|k| !EN.contains_key(k.as_str())).collect();
-        assert!(missing.is_empty(), "add to assets/i18n/en.json: {missing:?}");
-    }
-
-    #[test]
-    fn english_file_parses_and_has_no_empty_texts() {
-        assert!(!EN.is_empty());
-        for (key, entry) in EN.iter() {
-            let empty = match entry {
-                Entry::One(s) => s.is_empty(),
-                Entry::Plural(forms) => forms.values().any(String::is_empty),
-            };
-            assert!(!empty, "empty English text for {key:?}");
-        }
-    }
-
-    #[test]
-    fn scanner_reads_escaped_keys() {
-        let mut found = Vec::new();
-        keys_in("a(tr(\"Sag \\\"Hallo\\\"\")); mytr(\"nein\"); trf(\"%@ Konten\", &[&1]); trc(\"Ort\", \"Neu\")", &mut found);
-        assert_eq!(found, ["Neu (Ort)", "Sag \"Hallo\"", "%@ Konten"]);
-    }
 
     #[test]
     fn keeps_plain_percent_signs() {
@@ -191,5 +176,19 @@ mod tests {
         assert_eq!(fill("in %@", &["2 Tagen".into()]), "in 2 Tagen");
         assert_eq!(fill("%2$@ / %1$@", &["a".into(), "b".into()]), "b / a");
         assert_eq!(fill("%lld von %lld", &["1".into(), "3".into()]), "1 von 3");
+    }
+
+    #[test]
+    fn dates_numbers_and_plurals_follow_the_language() {
+        let day = NaiveDate::from_ymd_opt(2026, 3, 5).unwrap_or_default();
+        let time = NaiveTime::from_hms_opt(14, 5, 0).unwrap_or_default();
+        let at = day.and_time(time);
+        assert_eq!((date_in(Lang::De, day, true), date_in(Lang::De, day, false), clock_in(Lang::De, time), decimal_in(Lang::De, "2.5".into())), ("05.03.2026".into(), "05.03.".into(), "14:05".into(), "2,5".into()));
+        assert_eq!(date_time_in(Lang::De, at), "05.03. 14:05");
+        assert_eq!((date_in(Lang::En, day, true), date_in(Lang::En, day, false), clock_in(Lang::En, time), decimal_in(Lang::En, "2.5".into())), ("Mar 5, 2026".into(), "Mar 5".into(), "2:05 PM".into(), "2.5".into()));
+        assert_eq!(date_time_in(Lang::En, at), "Mar 5, 2:05 PM");
+        assert_eq!(render(Lang::En, "%lld Mods", &[&1]), "1 mod");
+        assert_eq!(render(Lang::En, "%lld Mods", &[&3]), "3 mods");
+        assert_eq!(render(Lang::De, "%lld Mods", &[&3]), "3 Mods");
     }
 }

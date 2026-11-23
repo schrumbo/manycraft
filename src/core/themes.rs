@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use super::i18n::{Lang, lang, tr, trf};
+use super::i18n::{decimal, tr, trf};
 use super::paths;
 
 /// The theme a fresh install uses, in the system's light or dark appearance.
@@ -503,8 +503,7 @@ fn render(doc: &Map<String, Value>) -> String {
 }
 
 fn ratio_text(r: f64) -> String {
-    let text = format!("{r:.1}");
-    if lang() == Lang::De { text.replace('.', ",") } else { text }
+    decimal(format!("{r:.1}"))
 }
 
 /// Reads one theme file; the errors say in German or English what to fix.
