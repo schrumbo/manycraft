@@ -297,35 +297,62 @@ impl ScrollFeel for TargetPlatform {
 }
 
 /// Moves a value towards a target with a smooth and continuous animation.
+///
+/// The math runs in f64: scroll offsets of long lists exceed the f32 pixel grid, where a position
+/// can no longer come closer than half a pixel to its target and the animation would never settle.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SmoothDamp {
-    position: Point2D,
-    velocity: Vector2D,
+    position: [f64; 2],
+    velocity: [f64; 2],
     smooth_time: f32,
 }
 
 impl SmoothDamp {
     pub(crate) fn new() -> Self {
         Self {
-            position: Point2D::zero(),
-            velocity: Vector2D::zero(),
+            position: [0.; 2],
+            velocity: [0.; 2],
             smooth_time: TargetPlatform::Unknown.scroll_smoothing_time(),
         }
     }
 
+    fn position(&self) -> Point2D {
+        Point2D::new(self.position[0] as f32, self.position[1] as f32)
+    }
+
+    fn set_position(&mut self, position: Point2D) {
+        self.position = [position.x as f64, position.y as f64];
+    }
+
+    fn velocity(&self) -> Vector2D {
+        Vector2D::new(self.velocity[0] as f32, self.velocity[1] as f32)
+    }
+
+    fn set_velocity(&mut self, velocity: Vector2D) {
+        self.velocity = [velocity.x as f64, velocity.y as f64];
+    }
+
     /// Returns whether it has settled onto `target`.
     fn advance(&mut self, target: Point2D, elapsed_seconds: f32) -> bool {
-        let omega = 2.0 / self.smooth_time;
-        let decay = (-omega * elapsed_seconds).exp();
-        let change = self.position - target;
-        let linear_term = (self.velocity + change * omega) * elapsed_seconds;
+        let omega = 2.0 / self.smooth_time as f64;
+        let elapsed = elapsed_seconds as f64;
+        let decay = (-omega * elapsed).exp();
+        let target = [target.x as f64, target.y as f64];
 
-        let velocity = (self.velocity - linear_term * omega) * decay;
-        let position = target + (change + linear_term) * decay;
+        let mut position = [0.; 2];
+        let mut velocity = [0.; 2];
+        for axis in 0..2 {
+            let change = self.position[axis] - target[axis];
+            let linear_term = (self.velocity[axis] + change * omega) * elapsed;
+            velocity[axis] = (self.velocity[axis] - linear_term * omega) * decay;
+            position[axis] = target[axis] + (change + linear_term) * decay;
+        }
 
-        if (target - position).length() < SETTLE_DISTANCE && velocity.length() < SETTLE_SPEED {
+        let distance = ((target[0] - position[0]).powi(2) + (target[1] - position[1]).powi(2)).sqrt();
+        let speed = (velocity[0].powi(2) + velocity[1].powi(2)).sqrt();
+        if distance < SETTLE_DISTANCE as f64 && speed < SETTLE_SPEED as f64 {
             self.position = target;
-            self.velocity = Vector2D::zero();
+            self.velocity = [0.; 2];
             return true;
         }
 
@@ -367,7 +394,7 @@ impl ScrollController {
     /// Position to render, the animated one while a scroll animation is running.
     pub fn animated_position(&self, target: Point2D) -> Point2D {
         if self.task.read().is_some() {
-            self.damp.read().position
+            self.damp.read().position()
         } else {
             target
         }
@@ -393,10 +420,10 @@ impl ScrollController {
             let mut damp = self.damp.write();
             damp.smooth_time = smooth_time;
             if let Some(velocity) = velocity {
-                damp.velocity = velocity;
+                damp.set_velocity(velocity);
             }
             if !is_animating {
-                damp.position = current;
+                damp.set_position(current);
             }
         }
         if is_animating {
@@ -499,13 +526,37 @@ impl ScrollController {
         if let Some(task) = task {
             task.cancel();
 
-            let position = self.damp.peek().position.to_i32();
+            let position = self.damp.peek().position().to_i32();
             self.scroll_to_x(position.x);
             self.scroll_to_y(position.y);
         }
 
-        let velocity = self.damp.peek().velocity;
-        self.damp.write().velocity = Vector2D::zero();
+        let velocity = self.damp.peek().velocity();
+        self.damp.write().set_velocity(Vector2D::zero());
         velocity
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frames_to_settle(from: f32, target: f32) -> Option<usize> {
+        let mut damp = SmoothDamp::new();
+        damp.set_position(Point2D::new(0., from));
+        let target = Point2D::new(0., target);
+        (1..=2000).find(|_| damp.advance(target, 1. / 220.))
+    }
+
+    #[test]
+    fn settles_on_short_lists() {
+        assert!(frames_to_settle(-1_000., -1_300.).is_some());
+    }
+
+    #[test]
+    fn settles_when_the_content_exceeds_the_f32_pixel_grid() {
+        for target in [-2_400_001., -4_000_001., -4_194_305., -6_000_003., -9_000_007.] {
+            assert!(frames_to_settle(target + 60., target).is_some(), "stuck at {target}");
+        }
     }
 }
