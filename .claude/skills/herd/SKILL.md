@@ -10,6 +10,7 @@ Each helper is a full session with its own context, so it costs far more than a 
 ```sh
 .claude/bin/herd new <name> "<exact task and acceptance check>"
 .claude/bin/herd new <name> --model opus "<task>"
+.claude/bin/herd new <name> --lane "src/core/x/*,Cargo.toml" "<task>"
 .claude/bin/herd status
 .claude/bin/herd land <name>
 .claude/bin/herd rm <name>
@@ -17,7 +18,7 @@ Each helper is a full session with its own context, so it costs far more than a 
 
 Worktree: `.claude/worktrees/<name>`, branch `herd/<name>`, started from the last commit. Uncommitted work on main is invisible to helpers, so commit before spawning. Default model Sonnet. Helpers follow `ship`, commit only on their own branch and report back as `<hc from=...>`.
 
-1. Split the work so files do not overlap. Declare shared modules (`mod.rs`, `Cargo.toml` deps, entry points) on main first so helpers only fill their own files. Give each helper the task, the file scope and the acceptance check.
+1. Give each helper a `--lane`: the only paths it may change. `herd land` refuses a diff outside it (`HERD_LANE_OK=1` overrides after a look). Split the work so files do not overlap. Declare shared modules (`mod.rs`, `Cargo.toml` deps, entry points) on main first so helpers only fill their own files. Give each helper the task, the file scope and the acceptance check.
 2. Keep working. Wait with `hc wait --children any`, never sleep.
 3. Steer with `hc send <name> "..."`. Read with `hc read --lines 100 <name>`.
 4. On a report, read the actual diff: `git diff main...herd/<name>`. Do not infer success from the report.
