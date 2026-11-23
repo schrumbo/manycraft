@@ -1,5 +1,4 @@
-//! The grid page: games played alone as a "Zuletzt gespielt" shelf, every other game as a uniform 16:9 tile or as a row
-//! of the table, only what is on screen drawn, with the lines about starts, outages and work above and the selection bar
+//! The grid page: every game of a batch as a uniform 16:9 tile or as a row of the table, only what is on screen drawn, with the lines about starts, outages and work above and the selection bar
 //! below.
 
 mod bar;
@@ -8,7 +7,6 @@ pub mod layout;
 pub mod mass;
 mod moves;
 pub use moves::{ask_move, leave};
-mod shelf;
 mod strips;
 pub use strips::{fix_of, run_fix};
 pub mod table;
@@ -31,12 +29,11 @@ use self::tile::{History, Tile};
 use super::commands::{self, Command};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
-use super::kit::text::{body, heading, line, para, secondary};
+use super::kit::text::{heading, para, secondary};
 use super::kit::{Bounds, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{control, font, iconsize, space};
 use super::ui::{Filter, Page, Show, View};
-use crate::app::event::Event as AppEvent;
 use crate::app::model::{Game, Model};
 use crate::core::fleet;
 use crate::core::i18n::{tr, trf};
@@ -229,11 +226,6 @@ pub fn greeting(m: &Model) -> bool {
     welcome::due(m)
 }
 
-/// Whether the page shows the shelf of instances played alone above its tiles.
-pub fn shelf_shown(filter: &Filter, search: &str, show: Show, view: View) -> bool {
-    *filter == Filter::All && search.is_empty() && show == Show::All && view == View::Tiles
-}
-
 /// Where the cursor sits in the scrolled content: its top and bottom, the view's height and how far it can scroll.
 type Reveal = Rc<RefCell<Option<(f32, f32, f32, f32)>>>;
 
@@ -297,12 +289,10 @@ impl Component for Mosaic {
         if let Some(groups) = &groups {
             keys = groups::open_keys(groups);
         }
-        let shelf = if shelf_shown(&self.filter, &search, show, view) { shelf::count(&m) } else { 0 };
         let size = *ui.size.read();
         let Bounds { w, h, .. } = *area.read();
-        let shelf_h = shelf::height(shelf);
         let heads = groups.as_ref().map_or(0., |g| g.len() as f32 * (groups::HEADER + gap));
-        let grid = layout(keys.len(), size, w, (h - shelf_h - heads).max(0.), gap, t.grid_pad);
+        let grid = layout(keys.len(), size, w, (h - heads).max(0.), gap, t.grid_pad);
         let sections = groups.as_ref().map(|g| layout::sections(&grid, &g.iter().map(|g| (g.keys.len(), g.folded)).collect::<Vec<_>>(), t.grid_pad, groups::HEADER));
         let place = |i: usize| sections.as_ref().and_then(|s| s.tiles.get(i).copied()).unwrap_or_else(|| grid.origin(i, t.grid_pad));
         PLACES.with(|p| *p.borrow_mut() = sections.as_ref().map(|s| s.tiles.clone()).unwrap_or_default());
@@ -311,7 +301,7 @@ impl Component for Mosaic {
         }
         let bar_room = if ui.selection.read().len() >= 2 { control::L + space::L * 2. } else { 0. };
         let (content, per_row, row_h) = match view {
-            View::Tiles => (sections.as_ref().map_or(grid.content_h, |s| s.content_h) + shelf_h + bar_room, grid.columns.max(1), grid.tile_h + gap),
+            View::Tiles => (sections.as_ref().map_or(grid.content_h, |s| s.content_h) + bar_room, grid.columns.max(1), grid.tile_h + gap),
             View::Table => (ROW * (keys.len() as f32 + 1.) + bar_room, 1, ROW),
         };
         let page_rows = ((h - if view == View::Table { ROW } else { 0. }) / row_h.max(1.)).floor().max(1.) as usize;
@@ -327,19 +317,19 @@ impl Component for Mosaic {
             View::Tiles => {
                 let (_, y) = place(i);
                 let under = if sections.is_some() { groups::HEADER } else { 0. };
-                (y + shelf_h - t.grid_pad - under, y + shelf_h + grid.tile_h + t.grid_pad, h, max_top)
+                (y - t.grid_pad - under, y + grid.tile_h + t.grid_pad, h, max_top)
             }
             View::Table => (i as f32 * ROW, (i as f32 + 2.) * ROW, h, max_top),
         });
         let (first, last) = match view {
             View::Tiles => match &sections {
                 Some(s) => {
-                    let band = at - shelf_h;
+                    let band = at;
                     let first = s.tiles.partition_point(|(_, y)| y + grid.tile_h < band);
                     (first, s.tiles.partition_point(|(_, y)| *y <= band + h).max(first))
                 }
                 None => {
-                    let rows = grid.visible_rows(t.grid_pad, (at - shelf_h).max(0.), h);
+                    let rows = grid.visible_rows(t.grid_pad, at.max(0.), h);
                     (rows.start * grid.columns, (rows.end * grid.columns).min(keys.len()))
                 }
             },
@@ -398,7 +388,7 @@ impl Component for Mosaic {
         if !m.loaded {
             return column.child(page.child(rect().center().width(Size::fill()).height(Size::fill()).child(secondary(&t, tr("Lädt …"))))).into_element();
         }
-        if keys.is_empty() && shelf == 0 && groups.as_ref().is_none_or(Vec::is_empty) {
+        if keys.is_empty() && groups.as_ref().is_none_or(Vec::is_empty) {
             return column.child(page.child(empty(&t, &self.filter, show, &search, store, &m))).into_element();
         }
 
@@ -406,15 +396,6 @@ impl Component for Mosaic {
             let batches = !matches!(self.filter, Filter::Batch(_)) && m.batches.len() > 1;
             page = page.child(Table { keys: keys.clone(), top: at, h, w, batches });
         } else {
-            if shelf > 0 && at < shelf_h {
-                page = page.child(
-                    rect()
-                        .position(Position::new_absolute().left(grid.left.min(t.grid_pad)).top(t.grid_pad - at))
-                        .spacing(space::S)
-                        .child(line(&t, tr("Zuletzt gespielt"), font::CALLOUT, t.text2).font_weight(FontWeight::SEMI_BOLD))
-                        .child(shelf::Shelf { width: (w - t.grid_pad * 2.).max(0.), gap }),
-                );
-            }
             let mut heads: Vec<(usize, Element)> = Vec::new();
             if let (Some(groups), Some(s)) = (&groups, &sections) {
                 let band_w = grid.columns.max(1) as f32 * (grid.tile_w + gap) - gap;
@@ -424,7 +405,7 @@ impl Component for Mosaic {
                     if !group.folded {
                         start += group.keys.len();
                     }
-                    let (head, end) = (s.headers[g] + shelf_h - at, s.ends[g] + shelf_h - at);
+                    let (head, end) = (s.headers[g] - at, s.ends[g] - at);
                     if end < 0. || head > h {
                         continue;
                     }
@@ -456,7 +437,7 @@ impl Component for Mosaic {
                 page = page.child(
                     rect()
                         .key(key)
-                        .position(Position::new_absolute().left(x).top(y + shelf_h - at))
+                        .position(Position::new_absolute().left(x).top(y - at))
                         .child(Tile { key: key.clone(), name: game.name.clone(), width: grid.tile_w, height: grid.tile_h, index: i }),
                 );
             }
@@ -464,7 +445,7 @@ impl Component for Mosaic {
             let open = ui.history.read().clone();
             if let Some((key, i)) = open.and_then(|k| keys.iter().position(|x| *x == k).map(|i| (k, i))) {
                 let (x, y) = place(i);
-                let tile_top = y + shelf_h - at;
+                let tile_top = y - at;
                 let below = tile_top + grid.tile_h + space::XS;
                 let left = x.min((w - tile::HISTORY_W - space::M).max(0.));
                 let at_y = if h - below >= HISTORY_ROOM || tile_top < HISTORY_ROOM { Position::new_absolute().left(left).top(below) } else { Position::new_absolute().left(left).bottom(h - tile_top + space::XS) };
