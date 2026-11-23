@@ -201,7 +201,7 @@ fn batch_lines(m: &Model) -> Vec<BatchLine> {
             let games = || m.games.values().filter(|g| g.batch_id == b.id);
             let total = games().count();
             let running = games().filter(|g| g.phase.is_active()).count();
-            let fine = games().filter(|g| g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention()).count();
+            let fine = games().filter(|g| g.phase.counts_as_running()).count();
             let attention = m.attention_count(Some(&b.id));
             let run = m.run(Some(&b.id));
             let hint = match (total, running) {

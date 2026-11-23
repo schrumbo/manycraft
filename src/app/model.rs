@@ -114,6 +114,13 @@ impl Phase {
         !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::NoNetwork)
     }
 
+    /// Whether the game counts in "n of m running": it is past its queue and connected, a player on the death screen
+    /// included, since that keeps the connection. One that dropped, is banned, waits for an answer or has no process
+    /// counts as work or as stopped, never as running. Every count of running games asks this.
+    pub fn counts_as_running(&self) -> bool {
+        self.is_active() && !self.waiting() && (!self.needs_attention() || matches!(self, Phase::Dead { .. }))
+    }
+
     /// Whether the game window can be swapped in: the mod answers and the game is past its start.
     pub fn playable(&self) -> bool {
         matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
@@ -794,6 +801,23 @@ mod tests {
         }
         let names: Vec<&str> = m.sorted(None).iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["bob", "zed", "amy"]);
+    }
+
+    #[test]
+    fn a_connected_account_counts_as_running_and_a_dead_one_stays_an_attention_item() {
+        let (s, offer) = ("s".to_owned(), crate::core::ipc::Offer { id: "1".into(), required: true, text: None });
+        let dead = Phase::Dead { server: Some(s.clone()), reason: "x".into() };
+        assert!(dead.counts_as_running() && dead.needs_attention());
+        for running in [Phase::Menu, Phase::Plain, Phase::Connecting { server: s.clone() }, Phase::Queue { server: s.clone() }, Phase::Playing { server: s.clone(), since: Instant::now() }, Phase::NetworkLost { server: s.clone() }, Phase::ServerAway { server: s.clone() }, Phase::Restarting { attempt: 1, of: 3 }, Phase::Starting { place: 0, total: 1 }] {
+            assert!(running.counts_as_running() && !running.needs_attention(), "{running:?}");
+        }
+        for not in [Phase::Stopped, Phase::Starting { place: 2, total: 3 }, Phase::Disconnected { server: None, reason: "x".into() }, Phase::Banned { server: None, reason: "x".into() }, Phase::Crashed { code: None }, Phase::LoginNeeded, Phase::Failed { reason: "x".into() }, Phase::NoNetwork, Phase::Offer { server: s, offer }] {
+            assert!(!not.counts_as_running(), "{not:?}");
+        }
+        let mut m = Model::default();
+        m.games.insert("1".into(), instance("1", "a", "a", dead));
+        m.games.insert("2".into(), instance("2", "b", "a", Phase::Playing { server: "s".into(), since: Instant::now() }));
+        assert_eq!((m.games.values().filter(|g| g.phase.counts_as_running()).count(), m.attention_count(None)), (2, 1));
     }
 
     #[test]

@@ -200,7 +200,7 @@ pub fn fits(g: &Game, show: Show) -> bool {
     match show {
         Show::All => true,
         Show::Need(need) => g.phase.need() == Some(need),
-        Show::Running => g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention(),
+        Show::Running => g.phase.counts_as_running(),
         Show::Stopped => !g.phase.is_active() && !g.phase.needs_attention(),
     }
 }
@@ -341,6 +341,24 @@ mod tests {
 
     fn game(phase: Phase) -> Game {
         Game { phase, ..Game::new("k".into(), "b".into(), "i".into(), Uuid::nil(), "Alex".into()) }
+    }
+
+    #[test]
+    fn a_dead_account_counts_as_running_in_the_header_and_the_filter_and_stays_an_attention_item() {
+        crate::core::i18n::init("de");
+        let mut m = Model::default();
+        let keys: Vec<String> = [Phase::Dead { server: Some("s".into()), reason: "x".into() }, Phase::Playing { server: "s".into(), since: std::time::Instant::now() }, Phase::Disconnected { server: None, reason: "x".into() }, Phase::Stopped]
+            .into_iter()
+            .enumerate()
+            .map(|(n, phase)| {
+                let key = n.to_string();
+                m.games.insert(key.clone(), Game { key: key.clone(), phase, ..game(Phase::Stopped) });
+                key
+            })
+            .collect();
+        assert_eq!(crate::view::grid::count_line(&m, &keys).as_deref(), Some("2 von 4 laufen · 2 brauchen dich"));
+        assert_eq!(keys.iter().filter(|k| fits(&m.games[*k], Show::Running)).count(), 2);
+        assert_eq!(keys.iter().filter(|k| fits(&m.games[*k], Show::Need(Need::Dead))).count(), 1);
     }
 
     #[test]

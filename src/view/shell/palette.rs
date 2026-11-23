@@ -181,7 +181,7 @@ fn entries(store: Store, query: &str, recents: &[String]) -> Vec<Entry> {
     let m = store.model.peek();
     for b in &m.batches {
         let games = || m.games.values().filter(|g| g.batch_id == b.id);
-        let fine = games().filter(|g| g.phase.is_active() && !g.phase.waiting() && !g.phase.needs_attention()).count();
+        let fine = games().filter(|g| g.phase.counts_as_running()).count();
         let sub = format!("{} · {}", tr("Batch"), trf("%lld von %lld laufen", &[&fine, &games().count()]));
         list.push(Entry::new(format!("palette.batch.{}", b.id), b.name.clone(), Icon::Layers, None, Target::Page(Page::Grid(Filter::Batch(b.id.clone())))).sub(sub.clone()).drills(Drill::Batch(b.id.clone())));
         let exporting = m.exporting.contains(&b.instance_id);

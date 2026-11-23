@@ -13,7 +13,7 @@ use crate::core::fleet::{self, Fleet, Target};
 use crate::core::ipc::{self, Event, FromMod, ToMod};
 use crate::core::place::Rect;
 use crate::core::proxy::{self, Fault};
-use crate::core::{adopt, drive, install, net, online};
+use crate::core::{adopt, drive, headless, install, net, online};
 
 const PRESENT_EVERY: Duration = Duration::from_millis(100);
 const EXIT_POLL: Duration = Duration::from_millis(500);
@@ -87,6 +87,12 @@ pub trait Backend: Send + Sync {
     fn adopted(&self) -> Vec<fleet::Adoption> {
         Vec::new()
     }
+    /// Writes down the connection-only accounts `keys`, which end with this manager, for the next start to connect again.
+    fn resume(&self, _keys: &[String]) {}
+    /// The connection-only accounts the last manager wrote down; only the first call returns them.
+    fn resumed(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Lets the adopted games that got a tile talk to the manager again and stops tracking the rest, which keep running.
     fn settle(&self, _placed: &[String], _dropped: &[String]) {}
     /// Brings the window of the game `key`, played alone, to the front.
@@ -105,6 +111,7 @@ pub struct Real<P> {
     refreshing: Arc<Mutex<HashSet<uuid::Uuid>>>,
     checking: Arc<Mutex<HashSet<String>>>,
     adopted: Mutex<Vec<fleet::Adoption>>,
+    resumed: Mutex<Vec<String>>,
 }
 
 impl<P: Pixels> Real<P> {
@@ -196,7 +203,7 @@ impl<P: Pixels> Real<P> {
                 let _ = sender.send(&key, &message);
             }
         })?;
-        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted) })
+        Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted), resumed: Mutex::new(if adopt::is_manager() { headless::resume::take() } else { Vec::new() }) })
     }
 }
 
@@ -344,6 +351,14 @@ impl<P: Pixels> Backend for Real<P> {
         let (live, ended): (Vec<_>, Vec<_>) = std::mem::take(&mut *lock(&self.adopted)).into_iter().partition(|a| self.fleet.is_running(&a.key));
         self.settle(&[], &ended.into_iter().map(|a| a.key).collect::<Vec<_>>());
         live
+    }
+
+    fn resume(&self, keys: &[String]) {
+        headless::resume::remember(keys);
+    }
+
+    fn resumed(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.resumed))
     }
 
     fn raise(&self, key: &str) {
