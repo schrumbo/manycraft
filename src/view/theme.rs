@@ -29,6 +29,8 @@ pub const CLOSE_INK: Color = Color::WHITE;
 /// How strongly the title bar's own controls show while a sheet waits for an answer.
 pub const WAITING: f32 = 0.45;
 
+const SHADE_DEPTH: f32 = 0.6;
+
 /// Fixed sizes of the window's frame around the content.
 pub mod frame {
     /// The height of the title bar over both columns.
@@ -212,9 +214,12 @@ pub struct Theme {
     /// Washes over a control on hover and press.
     pub hover: Color,
     pub press: Color,
-    /// The palest and the deepest colour of the palette, in place of white and black: knobs, washes over pictures, shadows.
+    /// The palest and the deepest of the palette's grounds and primary text, in place of white and black: knobs, ink on
+    /// identity colours, washes over pictures.
     pub pale: Color,
     pub deep: Color,
+    /// The colour of shadows and of darkening washes: the deepest colour, taken further down in the dark appearance.
+    pub shade: Color,
     pub identity: Vec<Color>,
     pub shape: Shape,
     pub elevation: Elevation,
@@ -226,6 +231,10 @@ pub struct Theme {
 }
 
 /// A theme colour as a Freya colour.
+fn rgba(c: Color) -> Rgba {
+    Rgba { r: c.r(), g: c.g(), b: c.b(), a: 255 }
+}
+
 pub fn color(c: Rgba) -> Color {
     Color::from(u32::from_be_bytes([c.a, c.r, c.g, c.b]))
 }
@@ -265,7 +274,12 @@ impl Theme {
         let text1 = get(Token::Text1);
         let attention = get(Token::Attention);
         let accent = get(Token::Accent);
-        let (pale, deep) = if dark { (text1, get(Token::Surface)) } else { (get(Token::Raised), text1) };
+        let tones = [Token::Surface, Token::Sidebar, Token::Raised, Token::Sunken, Token::Control, Token::Text1].map(|t| p.get(t));
+        let light = |c: &Rgba| c.contrast(Rgba::BLACK);
+        let pale = tones.iter().copied().max_by(|a, b| light(a).total_cmp(&light(b))).unwrap_or(Rgba::WHITE);
+        let deep = tones.iter().copied().min_by(|a, b| light(a).total_cmp(&light(b))).unwrap_or(Rgba::BLACK);
+        let shade = color(if dark { deep.mix(Rgba::BLACK, SHADE_DEPTH) } else { deep });
+        let (pale, deep) = (color(pale), color(deep));
         Self {
             dark,
             surface: get(Token::Surface),
@@ -296,6 +310,7 @@ impl Theme {
             press: text1.with_af32(if dark { 0.12 } else { 0.09 }),
             pale,
             deep,
+            shade,
             identity: p.identity.iter().map(|&c| color(c)).collect(),
             shape: Shape {
                 tile: radius::CARD * r,
@@ -307,7 +322,7 @@ impl Theme {
             },
             elevation: Elevation {
                 card: (!dark).then(|| shadow(0., 1., 3., 0., text1.with_af32(0.08))),
-                float: if dark { shadow(0., 16., 40., 0., deep.with_af32(0.55)) } else { shadow(0., 14., 36., 0., text1.with_af32(0.18)) },
+                float: if dark { shadow(0., 16., 40., 0., shade.with_af32(0.55)) } else { shadow(0., 14., 36., 0., text1.with_af32(0.18)) },
                 rim: dark.then(|| text1.with_af32(0.06)),
                 glow: (source.signature == Signature::Glow).then(|| if dark { shadow(0., 0., 28., 2., attention.with_af32(0.42)) } else { shadow(0., 0., 22., 1., attention.with_af32(0.30)) }),
             },
@@ -339,20 +354,16 @@ impl Theme {
         self.identity.get(index % self.identity.len().max(1)).copied().unwrap_or(self.accent)
     }
 
-    /// Text colour that reads on identity colour `fill`: the palette's deepest or palest colour.
+    /// Text colour that reads on identity colour `fill`: the palette's deepest or palest colour, whichever stands out more.
     pub fn ink_on(&self, fill: Color) -> Color {
-        let luma = 0.299 * f32::from(fill.r()) + 0.587 * f32::from(fill.g()) + 0.114 * f32::from(fill.b());
-        if luma > 150. { self.deep } else { self.pale }
+        let back = rgba(fill);
+        if rgba(self.deep).contrast(back) >= rgba(self.pale).contrast(back) { self.deep } else { self.pale }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rgba(c: Color) -> Rgba {
-        Rgba { r: c.r(), g: c.g(), b: c.b(), a: 255 }
-    }
 
     fn over(top: Color, under: Color) -> Color {
         let a = f32::from(top.a()) / 255.;
@@ -399,15 +410,34 @@ mod tests {
                 }
             }
             pairs.extend([("tile-ring", t.tile_ring, t.surface, 3.), ("on-accent", t.on_accent, t.accent, 4.5), ("on-attention", t.on_attention, t.attention, 4.5), ("on-danger", t.on_danger, t.danger, 4.5)]);
-            pairs.push(("switch knob", t.pale, t.accent, 3.));
+            pairs.push(("switch knob", t.on_accent, t.accent, 3.));
+            for fill in &t.identity {
+                pairs.push(("initials", t.ink_on(*fill), *fill, 3.));
+            }
             for (name, ink, back, need) in pairs {
                 let ratio = rgba(ink).contrast(rgba(back));
                 assert!(ratio >= need, "{side}: {name} {ratio:.2}:1 on {back:?}, needs {need}:1");
             }
-            for c in [t.surface, t.sidebar, t.raised, t.well, t.control, t.separator, t.text1, t.text2, t.text3, t.accent, t.on_accent, t.on_danger, t.pale, t.deep] {
+            for c in [t.surface, t.sidebar, t.raised, t.well, t.control, t.separator, t.text1, t.text2, t.text3, t.accent, t.on_accent, t.on_danger, t.pale, t.deep, t.shade] {
                 assert!(rgba(c) != Rgba::WHITE && rgba(c) != Rgba::BLACK, "{side}: pure white or black {c:?}");
             }
             assert!(rgba(t.danger).contrast(rgba(t.accent)) >= 1.4, "{side}: danger and accent differ in hue only");
+        }
+    }
+
+    #[test]
+    fn every_built_in_keeps_knobs_and_shadows_apart_from_what_they_sit_on() {
+        let library = Library::load(&std::env::temp_dir().join("manycraft-no-user-themes"));
+        for source in &library.themes {
+            for dark in [false, true].into_iter().filter(|d| source.has(*d)) {
+                let t = Theme::new(source, dark);
+                let side = format!("{} {}", source.id, if dark { "dark" } else { "light" });
+                let knob = rgba(t.on_accent).contrast(rgba(t.accent));
+                assert!(knob >= 3., "{side}: switch knob {knob:.2}:1 on the accent");
+                for ground in [t.surface, t.sidebar, t.raised, t.well, t.control] {
+                    assert!(rgba(t.shade).contrast(Rgba::BLACK) <= rgba(ground).contrast(Rgba::BLACK), "{side}: shadow lighter than {ground:?}");
+                }
+            }
         }
     }
 

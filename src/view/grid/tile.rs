@@ -315,7 +315,7 @@ impl Component for Tile {
             pic = pic.child(cover(w, h, Color::TRANSPARENT).corner_radius(r).border(Border::new().fill(t.accent).width(frame::RING).alignment(BorderAlignment::Inner)));
         }
         if *pressed.read() {
-            pic = pic.child(cover(w, h, t.deep.with_af32(PRESS_SHADE)));
+            pic = pic.child(cover(w, h, t.shade.with_af32(PRESS_SHADE)));
         } else if hover {
             pic = pic.child(cover(w, h, t.pale.with_af32(HOVER_LIFT)));
         }

@@ -143,7 +143,7 @@ impl Component for Piece {
             .on_press(move |_| press.call(()))
             .child(line(&t, self.item.label.clone(), font::CALLOUT, if !self.enabled { t.text3 } else if self.on { t.text1 } else { t.text2 }).font_weight(if self.on { FontWeight::SEMI_BOLD } else { FontWeight::MEDIUM }));
         if self.on {
-            p = p.background(if t.dark { t.separator } else { t.surface }).shadow(Shadow::from((0., 1., 2., 0., t.deep.with_af32(if t.dark { 0.35 } else { 0.12 }))));
+            p = p.background(if t.dark { t.separator } else { t.surface }).shadow(Shadow::from((0., 1., 2., 0., t.shade.with_af32(if t.dark { 0.35 } else { 0.12 }))));
         } else if *pressed.read() && self.enabled {
             p = p.background(t.press);
         } else if *hovered.read() && self.enabled {

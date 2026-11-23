@@ -1,5 +1,7 @@
 //! Tooltips: shown after the pointer rests on a control, at once while moving from one tooltip to the next.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use freya::prelude::*;
@@ -44,6 +46,15 @@ impl Component for WithTip {
         let ui = use_consume::<Ui>();
         let mut bounds = use_state(Bounds::default);
         let mut hovered = use_state(|| false);
+        let shown = use_hook(|| Rc::new(Cell::new(false)));
+        let gone = shown.clone();
+        use_drop(move || {
+            if gone.get() {
+                let mut ui = ui;
+                ui.tip.set(None);
+            }
+        });
+        let (enter_shown, leave_shown, down_shown) = (shown.clone(), shown.clone(), shown);
         let tip = self.tip.clone();
         let enter_tip = tip.clone();
         rect()
@@ -53,6 +64,7 @@ impl Component for WithTip {
                 hovered.set(true);
                 let Some(text) = enter_tip.clone() else { return };
                 let mut ui = ui;
+                let shown = enter_shown.clone();
                 let recent = ui.tip_seen.peek().is_some_and(|t: Instant| t.elapsed() < NEIGHBOUR);
                 spawn(async move {
                     if !recent {
@@ -60,11 +72,13 @@ impl Component for WithTip {
                     }
                     if *hovered.peek() {
                         ui.tip.set(Some(Tip { text, anchor: *bounds.peek() }));
+                        shown.set(true);
                     }
                 });
             })
             .on_pointer_leave(move |_| {
                 hovered.set(false);
+                leave_shown.set(false);
                 let mut ui = ui;
                 if ui.tip.peek().is_some() {
                     ui.tip_seen.set(Some(Instant::now()));
@@ -72,6 +86,7 @@ impl Component for WithTip {
                 }
             })
             .on_mouse_down(move |_| {
+                down_shown.set(false);
                 let mut ui = ui;
                 ui.tip.set_if_modified(None);
             })
