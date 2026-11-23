@@ -363,6 +363,18 @@ impl Store {
                 }
             }
             Effect::HideManager => native::hide(),
+            Effect::Slim { tray } => {
+                let stowed = tray && self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
+                native::hide();
+                if stowed {
+                    self.set_away();
+                    native::stow();
+                }
+                spawn_in_window(async move {
+                    after(std::time::Duration::from_millis(2000)).await;
+                    native::trim_memory();
+                });
+            }
             Effect::ShowManager => {
                 self.unstow();
                 native::show();

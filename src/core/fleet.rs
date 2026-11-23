@@ -118,6 +118,11 @@ impl Target {
         self.batch.as_ref().map_or_else(|| self.instance.memory(), |b| b.memory(self.instance.memory()))
     }
 
+    /// Memory each game starts with, never above [`Target::memory_mb`]; `None` leaves the start to Java.
+    pub fn memory_min_mb(&self) -> Option<u32> {
+        self.instance.memory_min().map(|min| min.min(self.memory_mb()))
+    }
+
     fn server(&self) -> Option<&str> {
         self.batch.as_ref().and_then(|b| b.server.as_deref())
     }
@@ -1440,6 +1445,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         session,
         offline_name: account.name.clone(),
         memory_mb: target.memory_mb(),
+        memory_min_mb: target.memory_min_mb(),
         server: target.join().map(str::to_owned),
         world: match &target.quick {
             Some(Quick::World(folder)) if target.server().is_none() => Some(folder.clone()),

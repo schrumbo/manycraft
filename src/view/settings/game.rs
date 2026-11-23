@@ -8,16 +8,18 @@ use freya::prelude::*;
 use super::{Prefs, toggle, use_prefs};
 use crate::core::i18n::{tr, trf};
 use crate::core::javas::Java;
-use crate::core::options::{self, Gpu};
+use crate::core::instance::DEFAULT_MEMORY_MB;
+use crate::core::options::{self, Gpu, MEMORY_FLOOR_MB, MEMORY_MIN_FLOOR_MB};
 use crate::core::paths;
+use crate::core::settings;
 use crate::ui::{forms, remote};
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::group::{Line, titled};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
-use crate::view::kit::stepper::Stepper;
 use crate::view::kit::text::line;
+use crate::view::instance::memory::{Memory, Steps};
 use crate::view::kit::{after, off_ui, open_external, use_theme};
 use crate::view::native;
 use crate::view::theme::{control, font, space};
@@ -61,22 +63,8 @@ impl Component for GameGroup {
                 }
             });
         });
-        let total = forms::total_ram_mb();
-        let max = forms::memory_max(total);
-        let memory = Line::new("settings.game.memory.row", tr("Arbeitsspeicher"))
-            .hint(trf("Dieser Computer hat %@.", &[&forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]))
-            .control(
-                Stepper::new("settings.game.memory", tr("Arbeitsspeicher"), i64::from(game.memory_mb), i64::from(forms::MEMORY_MIN), i64::from(max))
-                    .step(i64::from(forms::MEMORY_STEP))
-                    .shown(forms::memory_label(game.memory_mb))
-                    .on_change(move |v: i64| {
-                        p.change(|s| {
-                            let now = s.game.memory_mb;
-                            s.game.memory_mb = forms::memory_step(now, if v > i64::from(now) { 1 } else { -1 }, max);
-                        })
-                    }),
-            )
-            .into_element();
+        let most = MemoryLine { p, limit: Limit::Most, saved: Some(game.memory_mb) }.into_element();
+        let least = MemoryLine { p, limit: Limit::Least, saved: game.memory_min_mb }.into_element();
 
         let mut choices: Vec<(Option<Option<PathBuf>>, String)> = vec![(Some(None), tr("Automatisch (empfohlen)"))];
         for found in javas.read().iter().flatten() {
@@ -111,7 +99,7 @@ impl Component for GameGroup {
         let window = WindowLine { p, saved: game.window.map(|w| (w.width.to_string(), w.height.to_string())).unwrap_or_default() }.into_element();
         let fullscreen = toggle(p, "settings.game.fullscreen", tr("Im Vollbild starten"), tr("Gilt für Spiele, die du allein spielst."), game.fullscreen, |s, on| s.game.fullscreen = on);
 
-        let mut rows = vec![memory, java.into_element(), window, fullscreen];
+        let mut rows = vec![most, least, java.into_element(), window, fullscreen];
         if cfg!(windows) || game.gpu.is_some() {
             let segments = GPUS.iter().enumerate().map(|(n, g)| Segment { id: format!("settings.game.gpu.{n}"), label: gpu_label(*g), tip: None }).collect();
             let chosen = GPUS.iter().position(|g| *g == game.gpu).unwrap_or(0);
@@ -131,6 +119,100 @@ impl Component for GameGroup {
                 .into_element(),
         );
         titled(&t, Some(tr("Spiel")), Some(tr("Gilt für Instanzen ohne eigene Einstellung")), rows, None)
+    }
+}
+
+/// Which of the two memory lines.
+#[derive(Clone, Copy, PartialEq)]
+enum Limit {
+    Most,
+    Least,
+}
+
+/// One line of the memory a game starts with or may use at most, saved a moment after typing stops.
+#[derive(PartialEq)]
+struct MemoryLine {
+    p: Prefs,
+    limit: Limit,
+    saved: Option<u32>,
+}
+
+fn saved_text(mb: Option<u32>) -> String {
+    mb.map(|mb| mb.to_string()).unwrap_or_default()
+}
+
+fn save_max(p: Prefs, text: &str) -> Result<(), String> {
+    let max = options::parse_memory(text)?.unwrap_or(DEFAULT_MEMORY_MB);
+    options::check_memory_max(max, settings::active().game.memory_min_mb, forms::total_ram_mb())?;
+    p.change(|s| s.game.memory_mb = max);
+    Ok(())
+}
+
+fn save_min(p: Prefs, text: &str) -> Result<(), String> {
+    let min = options::parse_memory(text)?;
+    if let Some(min) = min {
+        options::check_memory_min(min, settings::active().game.memory_mb)?;
+    }
+    p.change(|s| s.game.memory_min_mb = min);
+    Ok(())
+}
+
+/// Saves `text` through `apply` once typing stopped for a moment, and keeps `text` in step with `saved` where something else changed it.
+fn use_memory_text(p: Prefs, saved: String, apply: fn(Prefs, &str) -> Result<(), String>) -> (State<String>, State<Option<String>>) {
+    let mut text = use_state(|| saved.clone());
+    let mut problem = use_state(|| None::<String>);
+    let typed = text.read().clone();
+    use_side_effect_with_deps(&typed, move |typed| {
+        let typed = typed.clone();
+        spawn(async move {
+            after(TYPING).await;
+            if !p.alive() || *text.peek() != typed {
+                return;
+            }
+            match apply(p, &typed) {
+                Ok(()) => problem.set_if_modified(None),
+                Err(e) => problem.set_if_modified(Some(e)),
+            }
+        });
+    });
+    use_side_effect_with_deps(&saved, move |saved| {
+        let shown = options::parse_memory(&text.peek()).ok().flatten();
+        if shown != options::parse_memory(saved).ok().flatten() {
+            text.set(saved.clone());
+        }
+    });
+    (text, problem)
+}
+
+impl Component for MemoryLine {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let p = self.p;
+        let total = forms::total_ram_mb();
+        let (text, problem) = use_memory_text(p, saved_text(self.saved), match self.limit {
+            Limit::Most => save_max,
+            Limit::Least => save_min,
+        });
+        let (id, label, hint) = match self.limit {
+            Limit::Most => ("settings.game.memory", tr("Maximaler Arbeitsspeicher"), trf("Mehr braucht ein Spiel nie. Dieser Computer hat %@.", &[&forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))])),
+            Limit::Least => ("settings.game.memory_min", tr("Minimaler Arbeitsspeicher"), tr("Womit ein Spiel startet. Leer lassen: Java entscheidet.")),
+        };
+        let field = Memory::new(id, label.clone(), text);
+        let field = match self.limit {
+            Limit::Most => {
+                let ceiling = u32::try_from(total).unwrap_or(u32::MAX).max(MEMORY_FLOOR_MB);
+                field.placeholder(DEFAULT_MEMORY_MB.to_string()).steps(Steps { floor: MEMORY_FLOOR_MB, ceiling, from: self.saved.unwrap_or(DEFAULT_MEMORY_MB) })
+            }
+            Limit::Least => {
+                let ceiling = settings::active().game.memory_mb;
+                field.placeholder(tr("Automatisch")).steps(Steps { floor: MEMORY_MIN_FLOOR_MB, ceiling, from: ceiling.min(1024) })
+            }
+        };
+        let mut row = Line::new(format!("{id}.row"), label).hint(problem.read().clone().unwrap_or(hint)).control(field);
+        if problem.read().is_some() {
+            row = row.hint_tone(t.danger_text);
+        }
+        row
     }
 }
 

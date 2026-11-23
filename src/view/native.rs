@@ -235,6 +235,28 @@ fn reveal_command(minimized: bool) -> windows_sys::Win32::UI::WindowsAndMessagin
     if minimized { SW_RESTORE } else { SW_SHOW }
 }
 
+/// Hands the memory a hidden manager no longer needs back to the system: the working set on Windows, the freed heap on
+/// Linux with glibc and on macOS.
+pub fn trim_memory() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        K32EmptyWorkingSet(GetCurrentProcess());
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+    }
+}
+
 /// Brings the manager back in front exactly as the person left it: its size, its place and whether it is maximized stay.
 pub fn show() {
     if drive::fenced("show", "main window") {

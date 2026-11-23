@@ -13,7 +13,7 @@ use self::phone::PhoneGroup;
 use crate::app::event::Event;
 use crate::app::model::UpdateStatus;
 use crate::core::i18n::{tr, trf};
-use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings};
+use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings, WhilePlaying};
 use crate::view::kit::Bounds;
 use crate::view::kit::button::Button;
 use crate::view::kit::group::{Line, group};
@@ -33,6 +33,7 @@ const JUMPS: f32 = 180.;
 const SECTIONS: usize = 10;
 const SPY: f32 = space::XL * 2.;
 const ATTEMPTS: (i64, i64) = (1, 100);
+const WHILE_PLAYING: [WhilePlaying; 3] = [WhilePlaying::Minimize, WhilePlaying::Tray, WhilePlaying::Keep];
 const RATES: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
 
 /// Changes settings and saves them; `rev` makes the page draw the new values, since the settings are not a state.
@@ -112,6 +113,16 @@ fn toggle(p: Prefs, id: &str, label: String, hint: String, on: bool, apply: fn(&
         .into_element()
 }
 
+fn while_playing(p: Prefs, chosen: WhilePlaying) -> Element {
+    let labels = [tr("Minimieren"), tr("Im Infobereich"), tr("Offen lassen")];
+    let segments = WHILE_PLAYING.iter().zip(labels).enumerate().map(|(n, (_, label))| Segment { id: format!("settings.while.{n}"), label, tip: None }).collect();
+    let at = WHILE_PLAYING.iter().position(|w| *w == chosen).unwrap_or(0);
+    Line::new("settings.while.row", tr("Beim Spielen"))
+        .hint(tr("Was Manycraft tut, solange ein Spiel läuft, das du allein spielst. Läuft ein Batch, bleibt es offen."))
+        .control(Segmented::new(tr("Beim Spielen"), segments, at).on_choose(move |i| p.change(|s| s.while_playing = WHILE_PLAYING[i.min(2)])))
+        .into_element()
+}
+
 fn attempts(p: Prefs, id: &str, label: String, value: u32, requires: Option<&str>, apply: fn(&mut Settings, u32)) -> Element {
     let enabled = requires.is_none();
     let reason = requires.map(|switch| trf("Erst „%@“ einschalten.", &[&tr(switch)]));
@@ -164,6 +175,8 @@ impl Component for SettingsPage {
             &t,
             Some(tr("Im Spiel")),
             vec![
+                while_playing(p, s.while_playing),
+                toggle(p, "settings.reopen", tr("Danach wieder öffnen"), tr("Holt Manycraft zurück, sobald das letzte Spiel endet, das du allein gespielt hast."), s.reopen_after, |s, on| s.reopen_after = on),
                 toggle(p, "settings.sleep", tr("Computer wach halten, solange Spiele laufen"), tr("Der Bildschirm darf trotzdem ausgehen."), s.prevent_sleep, |s, on| s.prevent_sleep = on),
                 toggle(p, "settings.badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |s, on| s.game_badge = on),
             ],

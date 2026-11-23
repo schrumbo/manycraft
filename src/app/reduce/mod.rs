@@ -9,6 +9,7 @@ mod previews;
 pub mod usage;
 mod quit;
 mod show;
+mod slim;
 
 use std::cell::Cell;
 use std::time::Instant;
@@ -56,8 +57,10 @@ impl<'a> Env<'a> {
 /// Applies `event` to `model` and returns what the front end has to do, in order.
 pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
     let mut out = Vec::new();
+    let mut launched = false;
     match event {
         Event::Reports(reports) => {
+            launched = reports.iter().any(|r| matches!(r, Report::Launched { key, .. } if model.games.get(key).is_some_and(Game::alone)));
             let freed = reports.iter().any(|r| matches!(r, Report::Exited { .. } | Report::Connected { .. }));
             games::reports(model, env, reports, &mut out);
             if freed && fleet::memory_waiting(model) {
@@ -222,6 +225,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
     }
     fleet::finish_take_overs(model, env.now, &mut out);
+    slim::settle(model, env, launched, &mut out);
     if !model.session.runs.is_empty() {
         let games = &model.games;
         model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));
