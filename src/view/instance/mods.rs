@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use freya::prelude::*;
 
+use super::cursor::{Cursor, Live, use_cursor};
 use super::{Facts, links, snapshots};
 use crate::core::content::Bisect;
 use crate::core::i18n::{tr, trf};
@@ -32,28 +33,6 @@ mod trouble;
 #[path = "mods_updates.rs"]
 mod updates;
 
-pub(super) trait Live<T: 'static> {
-    fn soft(self, f: impl FnOnce(&mut T));
-    fn got(self) -> Option<T>
-    where
-        T: Clone;
-}
-
-impl<T: 'static> Live<T> for State<T> {
-    fn soft(mut self, f: impl FnOnce(&mut T)) {
-        if let Some(mut w) = self.try_write() {
-            f(&mut w);
-        }
-    }
-
-    fn got(self) -> Option<T>
-    where
-        T: Clone,
-    {
-        self.try_peek().map(|r| r.clone())
-    }
-}
-
 /// A problem shown above the list; `failed` when it came from a change, not from reading the files.
 #[derive(Clone, PartialEq)]
 pub(super) struct Fault {
@@ -72,17 +51,13 @@ pub(super) struct Ctx {
     pub sort: State<Sort>,
     pub selected: State<Rc<HashSet<String>>>,
     pub anchor: State<Option<String>>,
-    pub cursor: State<Option<String>>,
     pub bisect: State<Option<Bisect>>,
     pub busy: State<bool>,
     pub bisecting: State<bool>,
     pub reveal: State<Option<String>>,
     pub ticket: State<u64>,
     pub key: State<String>,
-    pub scroll: ScrollController,
-    pub viewport: State<f32>,
-    pub bounds: State<Bounds>,
-    pub list_focus: AccessibilityId,
+    pub list: Cursor,
     pub filter_focus: AccessibilityId,
     /// What the last look for updates found, shown above the list.
     pub found: State<updates::Found>,
@@ -220,17 +195,13 @@ impl Component for Mods {
         let sort = use_state(Sort::current);
         let selected = use_state(|| Rc::new(HashSet::<String>::new()));
         let anchor = use_state(|| None::<String>);
-        let cursor = use_state(|| None::<String>);
         let bisect = use_state(|| None::<Bisect>);
         let busy = use_state(|| false);
         let bisecting = use_state(|| false);
         let reveal = use_state(|| None::<String>);
         let ticket = use_state(|| 0u64);
         let key = use_state(String::new);
-        let viewport = use_state(|| 0f32);
-        let bounds = use_state(Bounds::default);
-        let scroll = use_hook(|| ScrollController::new(0, 0));
-        let list_focus = use_a11y();
+        let list = use_cursor();
         let filter_focus = use_a11y();
         let details = use_state(|| false);
         let mut dropping = use_state(|| false);
@@ -238,7 +209,7 @@ impl Component for Mods {
         let cache = use_hook(|| Rc::new(RefCell::new(Cache::default())));
 
         let found = use_state(|| updates::Found::Idle);
-        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, cursor, bisect, busy, bisecting, reveal, ticket, key, scroll, viewport, bounds, list_focus, filter_focus, found };
+        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, bisect, busy, bisecting, reveal, ticket, key, list, filter_focus, found };
 
         let changed = *ui.instance.changed.read();
         let rescan = ctx.clone();
@@ -288,8 +259,8 @@ impl Component for Mods {
             (c.rows.clone(), c.marks.clone())
         };
         let chosen = ctx.selected.read().clone();
-        let focused = list_focus.is_focused();
-        let at = ctx.cursor.read().clone().filter(|_| focused);
+        let focused = ctx.list.focus.is_focused();
+        let at = ctx.list.at.read().clone().filter(|_| focused);
         let current = ctx.bisect.read().clone();
         let fault_now = ctx.fault.read().clone();
 
@@ -308,24 +279,7 @@ impl Component for Mods {
             let on_keys = ctx.clone();
             rect()
                 .width(Size::flex(1.))
-                .on_key_down(move |e: Event<KeyboardEventData>| match e.key {
-                    Key::Named(NamedKey::Escape) => {
-                        e.stop_propagation();
-                        if on_keys.query.peek().is_empty() {
-                            on_keys.list_focus.request_focus();
-                        } else {
-                            on_keys.query.soft(String::clear);
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        e.stop_propagation();
-                        on_keys.list_focus.request_focus();
-                        if on_keys.cursor.peek().is_none() {
-                            on_keys.step(1, false);
-                        }
-                    }
-                    _ => {}
-                })
+                .on_key_down(move |e: Event<KeyboardEventData>| on_keys.list.filter_keys(&e, on_keys.query, || on_keys.step(1, false)))
                 .child(
                     Field::new("instance.mods.filter", ctx.query)
                         .placeholder(tr("Mods filtern"))
@@ -334,8 +288,8 @@ impl Component for Mods {
                         .on_submit({
                             let ctx = ctx.clone();
                             move |_| {
-                                ctx.list_focus.request_focus();
-                                if ctx.cursor.peek().is_none() {
+                                ctx.list.focus.request_focus();
+                                if ctx.list.current().is_none() {
                                     ctx.step(1, false);
                                 }
                             }
@@ -392,15 +346,12 @@ impl Component for Mods {
             empty(&t, Icon::Search, trf("Kein Mod passt zu „%@“.", &[&text.trim()]), String::new(), Some(button))
         } else {
             let view = View { data: scan.clone(), rows: rows.clone(), marks: marks.clone(), selected: chosen.clone(), cursor: at, locked: lock.clone(), ctx: ctx.clone() };
-            let (view_h, view_b) = (ctx.viewport, ctx.bounds);
-            VirtualScrollView::new_with_data_controlled(view, |item, view: &View| view.item(item.index), ctx.scroll)
+            let list = ctx.list;
+            VirtualScrollView::new_with_data_controlled(view, |item, view: &View| view.item(item.index), ctx.list.scroll)
                 .length(rows.len())
                 .item_size(ROW)
                 .scroll_with_arrows(false)
-                .on_sized(move |e: Event<SizedEventData>| {
-                    view_h.soft(|h| *h = e.area.height());
-                    view_b.soft(|b| *b = Bounds::of(&e));
-                })
+                .on_sized(move |e: Event<SizedEventData>| list.sized(&e))
                 .into_element()
         };
 
@@ -409,14 +360,14 @@ impl Component for Mods {
             rect().width(Size::fill()).height(Size::flex(1.)).child(body)
         } else {
             rect()
-                .a11y_id(list_focus)
+                .a11y_id(ctx.list.focus)
                 .a11y_focusable(true)
                 .a11y_role(AccessibilityRole::List)
                 .a11y_alt(tr("Mods"))
                 .width(Size::fill())
                 .height(Size::flex(1.))
                 .on_key_down(move |e: Event<KeyboardEventData>| {
-                    if keys.key_down(&e, keys.list_focus.is_focused()) {
+                    if keys.key_down(&e, keys.list.focus.is_focused()) {
                         e.stop_propagation();
                     }
                 })
