@@ -11,12 +11,17 @@ use freya::prelude::*;
 use super::{link, run_len, safe_link, code_span};
 use crate::core::packs;
 use crate::view::kit::{off_ui, open_external, use_theme};
-use crate::view::theme::{font, space};
+use crate::view::theme::{font, frame, space};
 
 const AT_ONCE: usize = 4;
 const KEPT: usize = 24;
 const UNMEASURED: f32 = 640.;
-const PLACEHOLDER: (f32, f32) = (96., 20.);
+const PLACEHOLDER_W: f32 = 96.;
+
+/// The height of the one line a picture stands for until it is known: the placeholder while it loads and the alt text if it never does, so neither moves the text below.
+fn line_height() -> f32 {
+    font::CALLOUT * frame::PARA_LINE
+}
 
 /// A picture of a document: where it is, what it shows in words, where a click on it goes and how wide its author drew it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,9 +196,13 @@ impl Component for Picture {
             });
         });
         let body = match state.read().clone() {
-            Fetch::Loading => rect().width(Size::px(PLACEHOLDER.0)).height(Size::px(PLACEHOLDER.1)).corner_radius(t.shape.small).background(t.hover).into_element(),
+            Fetch::Loading => rect().width(Size::px(PLACEHOLDER_W)).height(Size::px(line_height())).corner_radius(t.shape.small).background(t.hover).into_element(),
             Fetch::Failed if self.pic.alt.is_empty() => rect().into_element(),
-            Fetch::Failed => paragraph().font_size(font::CALLOUT).color(t.text3).span(Span::new(self.pic.alt.clone())).into_element(),
+            Fetch::Failed => rect()
+                .height(Size::px(line_height()))
+                .max_width(Size::px(self.room))
+                .child(paragraph().font_size(font::CALLOUT).line_height(frame::PARA_LINE).max_lines(1).text_overflow(TextOverflow::Ellipsis).color(t.text3).span(Span::new(self.pic.alt.clone())))
+                .into_element(),
             Fetch::Ready(p) => {
                 let (w, h) = (p.w as f32, p.h as f32);
                 let shown = self.pic.width.map_or(w, |x| (x as f32).min(w)).min(self.room);

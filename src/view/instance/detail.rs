@@ -16,13 +16,21 @@ use crate::view::commands::Shortcut;
 use crate::view::icons::Icon;
 use crate::view::kit::button::Button;
 use crate::view::kit::text::{caption, para};
-use crate::view::kit::{after, off_ui, open_external, page, use_theme};
+use crate::view::kit::{after, off_ui, open_external, page, toast, use_theme};
 use crate::view::readme::{self, Body};
 use crate::view::store::Store;
 use crate::view::theme::{font, space};
 
 const SETTLE: Duration = Duration::from_millis(120);
 const REFOCUS: Duration = Duration::from_millis(50);
+
+/// The key that shows or hides the detail pane of the row under the cursor, in every list that has one.
+pub(super) const TOGGLE: Shortcut = Shortcut::primary(Code::KeyI);
+
+/// `label` with the key of [`TOGGLE`] for a tooltip.
+pub(super) fn with_key(label: String) -> String {
+    format!("{label} · {}", TOGGLE.label())
+}
 
 /// What the pane shows.
 #[derive(Clone, PartialEq)]
@@ -75,6 +83,25 @@ impl Pane {
         self.open.soft(|o| *o = true);
         if self.store.ui.window.peek().0 >= page::SPLIT_AT {
             self.list.focus.request_focus();
+        }
+    }
+
+    /// What the palette calls the command of [`Pane::toggle`].
+    pub fn label(&self) -> String {
+        if self.shown() { tr("Details ausblenden") } else { tr("Details anzeigen") }
+    }
+
+    /// Closes the pane, or opens it on the row under the cursor; with no such row it says so.
+    pub fn toggle(&self) {
+        if self.is_open() {
+            self.close();
+            return;
+        }
+        match self.list.current() {
+            Some(file) => self.show(&file),
+            None => {
+                toast::show(self.store.ui, tr("Wähle zuerst einen Eintrag in der Liste."), None);
+            }
         }
     }
 

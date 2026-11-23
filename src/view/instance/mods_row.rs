@@ -5,6 +5,7 @@ use freya::prelude::*;
 use super::Ctx;
 use crate::core::i18n::tr;
 use crate::view::icons::Icon;
+use crate::view::instance::detail;
 use crate::view::instance::entry::{EntryRow, ROW, RowAction, RowText};
 use crate::view::kit::text::strong;
 use crate::view::kit::use_theme;
@@ -55,7 +56,7 @@ impl Component for ModRow {
         let (menu_ctx, menu_file) = (ctx.clone(), file.clone());
         let mut actions = Vec::new();
         let (info_ctx, info_file) = (ctx.clone(), file.clone());
-        actions.push(RowAction { id: "info", icon: Icon::Info, label: tr("Readme und Details"), danger: false, disabled: None, run: EventHandler::new(move |_| info_ctx.pane.show(&info_file)) });
+        actions.push(RowAction { id: "info", icon: Icon::Info, label: tr("Readme und Details"), tip: Some(detail::with_key(tr("Readme und Details"))), danger: false, disabled: None, run: EventHandler::new(move |_| info_ctx.pane.show(&info_file)) });
         let trail = match &self.trail {
             Trail::None => None,
             Trail::Fix { newest } => {
