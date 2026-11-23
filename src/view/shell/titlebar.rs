@@ -66,7 +66,6 @@ pub fn trail(page: &Page, names: &Names) -> Vec<Crumb> {
         Page::Grid(Filter::Batch(_)) => vec![crumb(names.batch.clone().unwrap_or_else(|| tr("Batch")), None)],
         Page::Instance(id) => vec![library(), crumb(named(tr("Instanz")), Some(Page::Instance(id.clone()))), crumb(names.tab.clone(), None)],
         Page::Browse(id, _) => vec![library(), crumb(named(tr("Instanz")), Some(Page::Instance(id.clone()))), crumb(tr("Hinzufügen"), None)],
-        Page::Chat => vec![crumb(tr("Chat"), None)],
         Page::Settings(Pane::General) => vec![crumb(tr("Einstellungen"), None)],
         Page::Settings(Pane::Accounts) => vec![crumb(tr("Einstellungen"), Some(Page::Settings(Pane::General))), crumb(tr("Accounts"), None)],
     }

@@ -17,7 +17,6 @@ pub use self::sidebar::{instance_items, open_folder, swatch};
 use self::titlebar::TitleBar;
 use self::toolbar::Toolbar;
 use super::accounts::AccountsPage;
-use super::chat::ChatPage;
 use super::commands;
 use super::grid::GridPage;
 use super::icons::{Icon, icon};
@@ -87,7 +86,6 @@ impl Component for Shell {
             Page::Instance(id) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(InstancePage { id }).into_element(),
             Page::Browse(id, kind) => rect().key(&id).width(Size::fill()).height(Size::fill()).child(crate::view::sheets::browser::ContentPage { id, kind, outer: false }).into_element(),
             Page::Wardrobe => crate::view::wardrobe::WardrobePage.into_element(),
-            Page::Chat => ChatPage.into_element(),
             Page::Settings(Pane::General) => super::settings::SettingsPage.into_element(),
             Page::Settings(Pane::Accounts) => AccountsPage.into_element(),
         };
@@ -199,13 +197,11 @@ fn remember(page: &Page, sidebar: bool, rail: bool, width: f32) {
 }
 
 fn write_kept(kept: Kept) {
-    let mut saved = winstate::load();
-    let (kind, batch) = kept.page.unwrap_or_else(|| (saved.page, saved.batch.clone()));
-    if (saved.page, &saved.batch, saved.sidebar, saved.rail, saved.sidebar_width) == (kind, &batch, kept.sidebar, kept.rail, kept.width) {
-        return;
-    }
-    (saved.page, saved.batch, saved.sidebar, saved.rail, saved.sidebar_width) = (kind, batch, kept.sidebar, kept.rail, kept.width);
-    if let Err(e) = winstate::save(&saved) {
+    let result = winstate::update(|saved| {
+        let (kind, batch) = kept.page.unwrap_or_else(|| (saved.page, saved.batch.clone()));
+        (saved.page, saved.batch, saved.sidebar, saved.rail, saved.sidebar_width) = (kind, batch, kept.sidebar, kept.rail, kept.width);
+    });
+    if let Err(e) = result {
         eprintln!("window state: {e:#}");
     }
 }

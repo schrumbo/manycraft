@@ -157,7 +157,6 @@ impl MainWindow {
         native::note_center(window);
         let page = match saved.page {
             winstate::Page::Accounts => Page::Accounts,
-            winstate::Page::Chat if settings::active().merged_chat => Page::Chat,
             _ => Page::Grid(None),
         };
         Self {
@@ -227,7 +226,7 @@ impl MainWindow {
             (saved.page, saved.batch) = match &self.page {
                 Page::Grid(batch) => (winstate::Page::Grid, batch.clone()),
                 Page::Accounts => (winstate::Page::Accounts, None),
-                Page::Chat => (winstate::Page::Chat, None),
+                Page::Chat => (winstate::Page::Grid, None),
                 Page::Instance(id) => (winstate::Page::Instance, Some(id.clone())),
             };
         }

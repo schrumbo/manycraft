@@ -1,6 +1,8 @@
 //! What the manager window remembers across restarts in `window.json`: where it was, how big, on which monitor, whether maximized, which page it showed and whether the sidebar was open.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -15,10 +17,10 @@ const FILE: &str = "window.json";
 pub enum Page {
     #[default]
     Start,
+    #[serde(alias = "chat")]
     Grid,
     Instance,
     Accounts,
-    Chat,
     Library,
     Discover,
 }
@@ -55,11 +57,14 @@ pub struct Saved {
     pub sidebar_width: f32,
     /// Whether the sidebar shrinks to a rail of icons.
     pub rail: bool,
+    /// Whether the chat sidebar of the batch pages is open.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub chat_open: bool,
 }
 
 impl Default for Saved {
     fn default() -> Self {
-        Self { frame: None, maximized: false, display: None, page: Page::Start, batch: None, sidebar: true, sidebar_width: SIDEBAR_WIDTH, rail: false }
+        Self { frame: None, maximized: false, display: None, page: Page::Start, batch: None, sidebar: true, sidebar_width: SIDEBAR_WIDTH, rail: false, chat_open: false }
     }
 }
 
@@ -82,6 +87,30 @@ pub fn save(saved: &Saved) -> Result<()> {
     save_to(&path(), saved)
 }
 
+/// Changes the remembered state and saves it unless nothing changed; changes never overlap.
+pub fn update(change: impl FnOnce(&mut Saved)) -> Result<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _one_at_a_time = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut saved = load();
+    let before = saved.clone();
+    change(&mut saved);
+    if saved == before {
+        return Ok(());
+    }
+    save(&saved)
+}
+
+/// Remembers in the background whether the chat sidebar is open; the newest call decides.
+pub fn keep_chat_open(open: bool) {
+    static LATEST: AtomicBool = AtomicBool::new(false);
+    LATEST.store(open, Ordering::SeqCst);
+    std::thread::spawn(|| {
+        if let Err(e) = update(|s| s.chat_open = LATEST.load(Ordering::SeqCst)) {
+            eprintln!("window state: {e:#}");
+        }
+    });
+}
+
 fn load_from(path: &Path) -> Saved {
     let mut saved: Saved = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     saved.frame = saved.frame.filter(Frame::sound);
@@ -98,7 +127,7 @@ mod tests {
     use super::*;
 
     fn saved() -> Saved {
-        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Chat, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true }
+        Saved { frame: Some(Frame { x: -1500.5, y: 139., w: 1280., h: 800. }), maximized: true, display: Some("d".into()), page: Page::Instance, batch: Some("b".into()), sidebar: false, sidebar_width: 260., rail: true, chat_open: true }
     }
 
     #[test]
@@ -118,6 +147,14 @@ mod tests {
         assert_eq!(load_from(&file), Saved::default());
         std::fs::write(&file, b"{\"page\":\"somewhere\"}").unwrap();
         assert_eq!(load_from(&file), Saved::default());
+    }
+
+    #[test]
+    fn the_chat_page_of_older_versions_opens_the_grid_of_all_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        std::fs::write(&file, b"{\"page\":\"chat\",\"batch\":null,\"maximized\":true}").unwrap();
+        assert_eq!(load_from(&file), Saved { page: Page::Grid, maximized: true, ..Saved::default() });
     }
 
     #[test]

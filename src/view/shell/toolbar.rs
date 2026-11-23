@@ -1,10 +1,7 @@
 use freya::prelude::*;
 
 use crate::core::i18n::{tr, trf};
-use crate::view::commands::Command;
 use crate::view::grid;
-use crate::view::icons::Icon;
-use crate::view::kit::button::Button;
 use crate::view::instance;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, title};
@@ -49,7 +46,6 @@ impl Component for Toolbar {
                 Some(i) => (trf("Mods für %@", &[&i.name]), Some(crate::view::sheets::browser::content_line(i, m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active())))),
                 None => (tr("Mods"), None),
             },
-            Page::Chat => (tr("Chat"), None),
             Page::Settings(Pane::General) => (tr("Einstellungen"), None),
             Page::Settings(Pane::Accounts) => (tr("Accounts"), (m.loaded && !m.accounts.is_empty()).then(|| crate::view::accounts::count_line(&m))),
         };
@@ -80,13 +76,8 @@ impl Component for Toolbar {
         {
             bar = bar.child(instance::Tabs);
         }
-        if let Page::Grid(filter) = &page
-            && grid::tools::shown(&m, filter)
-        {
+        if let Page::Grid(filter) = &page {
             bar = bar.child(grid::tools::Tools { filter: filter.clone(), room });
-        }
-        if matches!(page, Page::Grid(_)) && !m.accounts.is_empty() {
-            bar = bar.child(Button::icon("toolbar.chat", Icon::Message, tr("Chat")).tip(Command::OpenChat.tip()).on_press(move |_| Command::OpenChat.run(store)));
         }
         match &page {
             Page::Library => bar = bar.child(crate::view::library::Tools { room }),
@@ -99,9 +90,6 @@ impl Component for Toolbar {
                 }
             }
             _ => {}
-        }
-        if page == Page::Chat {
-            bar = bar.child(crate::view::chat::Tools { room });
         }
         if let Page::Instance(id) = &page {
             let hero = instance::Hero { id: id.clone(), room };

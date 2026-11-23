@@ -4,13 +4,16 @@ use super::layout::TileSize;
 use crate::app::event::Event as AppEvent;
 use crate::app::model::Model;
 use crate::core::i18n::{tr, trf};
-use crate::view::commands::Command;
+use crate::view::chat;
+use crate::view::commands::{self, Command, Want};
 use crate::view::icons::Icon;
+use crate::view::kit::badge::dot;
 use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::menu::Item;
 use crate::view::kit::more::More;
 use crate::view::kit::segmented::{Segment, Segmented};
+use crate::view::kit::use_theme;
 use crate::view::kit::select::Select;
 use crate::view::store::use_store;
 use crate::view::theme::{frame, space};
@@ -33,12 +36,11 @@ fn with_keys(text: String, c: Command) -> String {
     }
 }
 
-/// Whether the grid's tools belong in the toolbar: once the page has games of a batch to size, filter, find and start.
-pub fn shown(m: &Model, filter: &Filter) -> bool {
+fn has_games(m: &Model, filter: &Filter) -> bool {
     match filter {
-        Filter::Attention => true,
-        Filter::All => m.games.values().any(|g| !g.alone()),
         Filter::Batch(b) => m.games.values().any(|g| g.batch_id == *b),
+        Filter::All => m.games.values().any(|g| !g.alone()),
+        Filter::Attention => true,
     }
 }
 
@@ -52,7 +54,7 @@ fn size_id(size: TileSize) -> &'static str {
 }
 
 /// The grid's controls in the toolbar: filter, tile size, search, view, and stopping and starting what the page shows,
-/// with the batch and the count in each tooltip.
+/// with the batch and the count in each tooltip, then the batch's settings and the chat sidebar.
 #[derive(PartialEq)]
 pub struct Tools {
     pub filter: Filter,
@@ -60,6 +62,60 @@ pub struct Tools {
 }
 
 impl Component for Tools {
+    fn render(&self) -> impl IntoElement {
+        let store = use_store();
+        let games = has_games(&store.model.read(), &self.filter);
+        let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::S);
+        if games {
+            row = row.child(Controls { filter: self.filter.clone(), room: self.room });
+        }
+        row.child(Aside { filter: self.filter.clone() })
+    }
+}
+
+/// The batch's settings and the chat sidebar's switch, the last controls of the toolbar.
+#[derive(PartialEq)]
+struct Aside {
+    filter: Filter,
+}
+
+impl Component for Aside {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let ui = store.ui;
+        let _ = store.chat.read();
+        let open = *ui.chat.open.read();
+        let scope = chat::scope_of(&self.filter);
+        let unread = if open { 0 } else { chat::unread(&store.model.read(), *ui.chat.left_at.read(), scope.as_deref()) };
+        let mut tip = if open { tr("Chat ausblenden") } else { with_keys(tr("Chat einblenden"), Command::OpenChat) };
+        if unread > 0 {
+            tip = format!("{tip} · {}", trf("%lld ungelesen", &[&unread]));
+        }
+        let button = Button::icon("toolbar.chat", Icon::Message, tr("Chat")).on(open).tip(tip).on_press(move |_| chat::set_open(store, !open));
+        let mut chat_slot = rect().child(button);
+        if unread > 0 {
+            chat_slot = chat_slot.child(rect().position(Position::new_absolute().right(space::XS).top(space::XS)).child(dot(t.accent)));
+        }
+        let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS);
+        if let Filter::Batch(id) = &self.filter {
+            let wanted = Want::EditBatch(id.clone());
+            let blocked = commands::want_blocked(&wanted);
+            row = row.child(Button::icon("toolbar.batch.settings", Icon::Settings, tr("Batch-Einstellungen")).disabled(blocked).on_press(move |_| {
+                commands::want(store, wanted.clone());
+            }));
+        }
+        row.child(chat_slot)
+    }
+}
+
+#[derive(PartialEq)]
+struct Controls {
+    pub filter: Filter,
+    pub room: f32,
+}
+
+impl Component for Controls {
     fn render(&self) -> impl IntoElement {
         let store = use_store();
         let mut ui = store.ui;
