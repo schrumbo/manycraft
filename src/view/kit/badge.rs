@@ -33,6 +33,16 @@ pub fn badge(t: &Theme, value: impl Into<String>, tone: Tone) -> Element {
         .into_element()
 }
 
+/// `host`, a `w` by `h` box, with `mark` over its top right corner, `inset` in from the edges (negative: outside). The size has to be given: `right` of an absolute child resolves against the space the host was offered, not against a host that sizes itself.
+pub fn corner(host: impl IntoElement, w: f32, h: f32, mark: Element, inset: f32) -> Element {
+    rect()
+        .width(Size::px(w))
+        .height(Size::px(h))
+        .child(host)
+        .child(rect().position(Position::new_absolute().top(inset).right(inset)).interactive(false).child(mark))
+        .into_element()
+}
+
 /// A small dot that marks a state next to a name.
 pub fn dot(color: Color) -> Element {
     rect().width(Size::px(frame::DOT)).height(Size::px(frame::DOT)).corner_radius(frame::DOT / 2.).background(color).into_element()
