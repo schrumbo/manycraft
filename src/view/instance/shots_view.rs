@@ -49,7 +49,7 @@ impl Pose {
     }
 
     fn at_scale(scale: f32, fit: f32, stage: (f32, f32), size: (f32, f32), at: (f32, f32)) -> Self {
-        Self { zoom: Some(1.), pan: (0., 0.) }.zoomed(scale, fit, stage, size, at)
+        FIT.zoomed(scale, fit, stage, size, at)
     }
 
     /// The pose after the scale became `scale`, the point `at` (from the stage's center) staying under the pointer.
@@ -117,21 +117,25 @@ impl Component for Viewer {
         let mut drag = use_state(|| None::<((f32, f32), (f32, f32))>);
         let mut pressed = use_state(|| None::<Instant>);
         let mut ready = use_state(|| 0u32);
+        let mut loading = use_state(|| None::<TaskHandle>);
         let _ = ready.read();
         let Some(shot) = self.shot(self.at) else {
             return rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Der Screenshot ist nicht mehr da."))).into_element();
         };
         let neighbors: Vec<(PathBuf, i64)> = [self.at.checked_add(1), self.at.checked_sub(1)].into_iter().flatten().filter_map(|n| self.shot(n)).map(|s| (s.path.clone(), s.taken)).collect();
         use_side_effect_with_deps(&(shot.path.clone(), shot.taken, neighbors), move |(path, stamp, neighbors)| {
+            if let Some(old) = loading.write().take() {
+                old.cancel();
+            }
             let (path, stamp, neighbors) = (path.clone(), *stamp, neighbors.clone());
-            spawn(async move {
+            loading.set(Some(spawn(async move {
                 load_full(path, stamp).await;
                 let next = ready.peek().wrapping_add(1);
                 ready.set(next);
                 for (path, stamp) in neighbors {
                     load_full(path, stamp).await;
                 }
-            });
+            })));
         });
 
         let picture = full(&shot.path, shot.taken);
@@ -148,6 +152,9 @@ impl Component for Viewer {
         let last = self.at + 1 >= count;
 
         let zoom_by = move |factor: f32| {
+            if size.0 <= 0. {
+                return;
+            }
             let area = *stage.peek();
             let fit = fit_scale(area, size);
             let next = pose.peek().factor(factor, fit, area, size, (0., 0.));
@@ -158,24 +165,32 @@ impl Component for Viewer {
             put(pose, FIT);
             on_step.call(by);
         };
-        let (key_step, key_close, key_delete) = (step.clone(), self.on_close.clone(), self.on_delete.clone());
+        let delete = {
+            let on_delete = self.on_delete.clone();
+            move || {
+                put(pose, FIT);
+                on_delete.call(());
+            }
+        };
+        let (key_step, key_close, key_delete) = (step.clone(), self.on_close.clone(), delete.clone());
         let keys = move |e: Event<KeyboardEventData>| {
             if e.modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::META) {
                 return;
             }
             let area = *stage.peek();
             let fit = fit_scale(area, size);
+            let sized = size.0 > 0.;
             match &e.key {
                 Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp) => key_step(-1),
                 Key::Named(NamedKey::ArrowRight | NamedKey::PageDown) => key_step(1),
                 Key::Named(NamedKey::Home) => key_step(isize::MIN / 2),
                 Key::Named(NamedKey::End) => key_step(isize::MAX / 2),
                 Key::Named(NamedKey::Escape) => key_close.call(()),
-                Key::Named(NamedKey::Delete) => key_delete.call(()),
-                Key::Character(c) if c == "+" || c == "=" => put(pose, pose.peek().factor(BUTTON_ZOOM, fit, area, size, (0., 0.))),
-                Key::Character(c) if c == "-" => put(pose, pose.peek().factor(1. / BUTTON_ZOOM, fit, area, size, (0., 0.))),
+                Key::Named(NamedKey::Delete) => key_delete(),
+                Key::Character(c) if sized && (c == "+" || c == "=") => put(pose, pose.peek().factor(BUTTON_ZOOM, fit, area, size, (0., 0.))),
+                Key::Character(c) if sized && c == "-" => put(pose, pose.peek().factor(1. / BUTTON_ZOOM, fit, area, size, (0., 0.))),
                 Key::Character(c) if c == "0" => put(pose, FIT),
-                Key::Character(c) if c == "1" => put(pose, Pose::at_scale(1., fit, area, size, (0., 0.))),
+                Key::Character(c) if sized && c == "1" => put(pose, Pose::at_scale(1., fit, area, size, (0., 0.))),
                 _ => return,
             }
             e.stop_propagation();
@@ -222,10 +237,7 @@ impl Component for Viewer {
                 let reveal = self.on_reveal.clone();
                 move |_| reveal.call(())
             }))
-            .child(Button::icon("instance.shots.view.delete", Icon::Trash, tr("Löschen")).tip(Shortcut::bare(Code::Delete).label()).on_press({
-                let delete = self.on_delete.clone();
-                move |_| delete.call(())
-            }));
+            .child(Button::icon("instance.shots.view.delete", Icon::Trash, tr("Löschen")).tip(Shortcut::bare(Code::Delete).label()).on_press(move |_| delete()));
 
         let mut surface = rect()
             .width(Size::fill())
@@ -237,6 +249,9 @@ impl Component for Viewer {
             .on_sized(move |e: Event<SizedEventData>| stage.set_if_modified((e.area.width(), e.area.height())))
             .on_wheel(move |e: Event<WheelEventData>| {
                 e.stop_propagation();
+                if size.0 <= 0. {
+                    return;
+                }
                 let area = *stage.peek();
                 let at = (e.element_location.x as f32 - area.0 / 2., e.element_location.y as f32 - area.1 / 2.);
                 let fit = fit_scale(area, size);
@@ -346,6 +361,14 @@ mod tests {
         let actual = FIT.toggled(fit, STAGE, SIZE, (0., 0.));
         assert_eq!(actual.zoom, Some(1.));
         assert_eq!(actual.toggled(fit, STAGE, SIZE, (0., 0.)), FIT);
+    }
+
+    #[test]
+    fn a_double_click_keeps_the_clicked_point_under_the_pointer() {
+        let fit = fit_scale(STAGE, SIZE);
+        let at = (300., 150.);
+        let actual = FIT.toggled(fit, STAGE, SIZE, at);
+        assert!((actual.pan.0 - (-420.)).abs() < 1e-3 && (actual.pan.1 - (-210.)).abs() < 1e-3);
     }
 
     #[test]

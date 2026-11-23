@@ -82,6 +82,10 @@ pub async fn load_full(path: PathBuf, stamp: i64) {
     if full(&path, stamp).is_some() {
         return;
     }
+    let _slot = Slot::take().await;
+    if full(&path, stamp).is_some() {
+        return;
+    }
     let source = path.clone();
     let decoded = off_ui(move || shots::fitted(&source, VIEW_PX, VIEW_PX).ok().map(|(p, original)| (p.width(), p.height(), p.into_raw(), original))).await.flatten();
     let value = decoded.and_then(|(w, h, rgba, original)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul).map(|handle| Full { handle, original }));

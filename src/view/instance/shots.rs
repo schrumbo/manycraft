@@ -149,7 +149,9 @@ impl Grid {
         copying.set(true);
         spawn_in_window(async move {
             let done = off_ui(move || native::copy_image(&shot.path)).await;
-            copying.set(false);
+            if let Some(mut c) = copying.try_write() {
+                *c = false;
+            }
             let text = match done {
                 Some(Ok(())) => tr("Bild kopiert."),
                 Some(Err(e)) => forms::explain_as(tr("Das Bild wurde nicht kopiert."), &e).text,
@@ -421,6 +423,7 @@ impl Component for Shots {
             .content(Content::flex());
 
         if *viewing.read() && count > 0 {
+            let _ = selected.read();
             let at = grid.at().unwrap_or(0);
             let who = shown.shots.0.get(at).map_or_else(String::new, |s| f.accounts.iter().find(|(id, _)| *id == s.account).map_or_else(|| tr("Entfernter Account"), |(_, name)| name.clone()));
             let (step, close, external, reveal, delete, image) = (grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone());

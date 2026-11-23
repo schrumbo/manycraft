@@ -252,18 +252,21 @@ impl Pointer {
         match m.button {
             Some(MouseButton::Left) => {
                 let lines = &self.probe.lines.0;
-                let next = match (self.click(spot.line), self.shift.get(), *self.sel.peek()) {
+                let clicks = self.click(spot.line);
+                let next = match (clicks, self.shift.get(), *self.sel.peek()) {
                     (1, true, Some(s)) => Selection { head: spot, ..s },
                     (1, ..) => Selection::caret(spot),
                     (2, ..) => Selection::word(lines, spot),
                     _ => Selection::line(lines, spot.line),
                 };
                 sel.set_if_modified(Some(next));
-                self.last.set((x, y));
-                let epoch = self.epoch.get() + 1;
-                self.epoch.set(epoch);
-                self.held.set(epoch);
-                self.autoscroll(epoch);
+                if clicks == 1 {
+                    self.last.set((x, y));
+                    let epoch = self.epoch.get() + 1;
+                    self.epoch.set(epoch);
+                    self.held.set(epoch);
+                    self.autoscroll(epoch);
+                }
             }
             Some(MouseButton::Right) => {
                 if !self.sel.peek().is_some_and(|s| s.covers(spot)) {
@@ -294,6 +297,9 @@ impl Pointer {
         spawn_in_window(async move {
             while this.held.get() == epoch {
                 after(AUTOSCROLL).await;
+                if this.sel.try_peek().is_none() {
+                    break;
+                }
                 let (x, y) = this.last.get();
                 let [_, top, _, height] = this.probe.area.get();
                 let beyond = if y < top {
@@ -372,6 +378,10 @@ impl Component for Viewer {
         let clicks = use_hook(|| Rc::new(Cell::new(None)));
         let epoch = use_hook(|| Rc::new(Cell::new(0u64)));
         let held = use_hook(|| Rc::new(Cell::new(0u64)));
+        use_drop({
+            let held = held.clone();
+            move || held.set(0)
+        });
         let rows = (self.wrap && fit > 0).then(|| self.wrapped.peek().rows(&self.lines.0, fit));
         let count = rows.as_ref().map_or(self.lines.0.len(), |r| r.0.len());
         use_side_effect_with_deps(&count, move |count| {
