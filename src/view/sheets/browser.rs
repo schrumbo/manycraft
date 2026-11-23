@@ -2035,7 +2035,7 @@ impl Component for Browser {
             move || EventHandler::new(move |_| flow.undo())
         });
         let mut slot = store.ui.browser_undo;
-        use_side_effect_with_deps(&top, move |top| slot.set(top.clone().map(|label| BrowserUndo { label, run: undo_run.clone() })));
+        use_side_effect_with_deps(&top, move |top| slot.set(top.clone().map(|label| BrowserUndo { at: toast::stamp(), label, run: undo_run.clone() })));
         use_drop(move || slot.set(None));
         let outer = self.scope.outer;
         let follow = flow.clone();

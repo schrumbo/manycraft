@@ -5,7 +5,7 @@ use freya::prelude::*;
 
 use super::button::Button;
 use super::text::{para, spacer, title};
-use super::use_theme;
+use super::{button_focused, use_theme};
 use crate::core::i18n::tr;
 use crate::view::theme::{font, frame, level, motion, space};
 use crate::view::ui::Ui;
@@ -202,8 +202,7 @@ impl Component for Card {
                     }
                 }
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() && enter.is_some() => {
-                    if held.is_none()
-                        && !*ui.palette.peek()
+                    if takes_enter(held.is_some(), *ui.palette.peek(), button_focused())
                         && let Some(h) = &enter
                     {
                         e.stop_propagation();
@@ -213,8 +212,7 @@ impl Component for Card {
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() => {
                     if let Some(p) = &keys
                         && p.disabled.is_none()
-                        && held.is_none()
-                        && !*ui.palette.peek()
+                        && takes_enter(held.is_some(), *ui.palette.peek(), button_focused())
                     {
                         e.stop_propagation();
                         p.run.call(());
@@ -234,6 +232,12 @@ impl Component for Card {
         }
         card.child(footer)
     }
+}
+
+/// Whether the sheet's default action answers Enter: not while work is locked, the palette is open, or a button has the
+/// focus, since that button answers Enter itself.
+fn takes_enter(locked: bool, palette: bool, button_focused: bool) -> bool {
+    !locked && !palette && !button_focused
 }
 
 /// Draws the window's sheet over a scrim that fades in.
@@ -282,4 +286,17 @@ pub fn confirm(ui: Ui, id: &str, heading: String, message: String, action: Strin
         run(());
     }) };
     open(ui, Card::new(id, heading).message(message).primary(primary).width(frame::SHEET_NARROW));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::takes_enter;
+
+    #[test]
+    fn enter_runs_the_default_action_only_when_nothing_else_answers_it() {
+        assert!(takes_enter(false, false, false));
+        assert!(!takes_enter(true, false, false));
+        assert!(!takes_enter(false, true, false));
+        assert!(!takes_enter(false, false, true));
+    }
 }

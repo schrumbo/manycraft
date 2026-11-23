@@ -175,7 +175,7 @@ fn offer_restore(store: Store, batch: Batch) {
         move |_| restore(store, batch.clone())
     });
     let mut session = store.ui.session_undo;
-    remember(&mut session.write(), SessionUndo { key: batch.id.clone(), label: trf("Löschen von „%@“ rückgängig", &[&batch.name]), run: undo.clone() });
+    remember(&mut session.write(), SessionUndo { at: toast::stamp(), key: batch.id.clone(), label: trf("Löschen von „%@“ rückgängig", &[&batch.name]), run: undo.clone() });
     toast::show_kept(store.ui, trf("„%@“ gelöscht.", &[&batch.name]), undo);
 }
 

@@ -71,7 +71,7 @@ pub fn stopped(store: Store, keys: Vec<String>) {
     let mut shared = store.ui.grid_view;
     shared.mass.set(Some(Mass { id, keys, at, what: what.clone() }));
     let mut session = store.ui.session_undo;
-    remember(&mut session.write(), SessionUndo { key: KEY.into(), label: trf("Rückgängig: %@", &[&what]), run: undo.clone() });
+    remember(&mut session.write(), SessionUndo { at: toast::stamp(), key: KEY.into(), label: trf("Rückgängig: %@", &[&what]), run: undo.clone() });
     let toast = toast::show(store.ui, text, Some(undo));
     crate::view::commands::name_undo(store, toast, what);
 }

@@ -243,14 +243,51 @@ impl AccessibilityTree {
         }
     }
 
+    /// The topmost modal node: the last one in depth order.
+    fn modal_root(tree: &Tree) -> Option<NodeId> {
+        if !tree.accessibility_state.values().any(|state| state.a11y_modal) {
+            return None;
+        }
+        let mut modal = None;
+        tree.traverse_depth(|node_id| {
+            if tree
+                .accessibility_state
+                .get(&node_id)
+                .is_some_and(|state| state.a11y_modal)
+            {
+                modal = Some(node_id);
+            }
+        });
+        modal
+    }
+
+    /// Whether `node_id` is the modal itself or below it; every node when there is no modal.
+    fn inside_modal(tree: &Tree, modal: Option<NodeId>, node_id: NodeId) -> bool {
+        let Some(top) = modal else {
+            return true;
+        };
+        let mut at = Some(node_id);
+        while let Some(n) = at {
+            if n == top {
+                return true;
+            }
+            at = tree.parents.get(&n).copied();
+        }
+        false
+    }
+
+    /// A modal keeps the focus: only the root and nodes inside the topmost modal can have it.
     fn can_focus(&self, id: AccessibilityId, tree: &Tree) -> bool {
-        self.map.get(&id).is_some_and(|node_id| {
-            id == ACCESSIBILITY_ROOT_ID
-                || tree
-                    .accessibility_state
-                    .get(node_id)
-                    .is_some_and(|state| state.a11y_focusable != Focusable::Disabled)
-        })
+        if id == ACCESSIBILITY_ROOT_ID {
+            return self.map.contains_key(&id);
+        }
+        let Some(node_id) = self.map.get(&id) else {
+            return false;
+        };
+        tree.accessibility_state
+            .get(node_id)
+            .is_some_and(|state| state.a11y_focusable != Focusable::Disabled)
+            && Self::inside_modal(tree, Self::modal_root(tree), *node_id)
     }
 
     /// Focus a Node given the strategy.
@@ -292,28 +329,10 @@ impl AccessibilityTree {
             (group_nodes, self.focused_id)
         } else {
             let mut nodes = Vec::new();
-            let mut modal = None;
-            tree.traverse_depth(|node_id| {
-                if tree.accessibility_state.get(&node_id).is_some_and(|s| s.a11y_modal) {
-                    modal = Some(node_id);
-                }
-            });
-            let inside = |node_id: NodeId| match modal {
-                None => true,
-                Some(top) => {
-                    let mut at = Some(node_id);
-                    while let Some(n) = at {
-                        if n == top {
-                            return true;
-                        }
-                        at = tree.parents.get(&n).copied();
-                    }
-                    false
-                }
-            };
+            let modal = Self::modal_root(tree);
 
             tree.traverse_depth(|node_id| {
-                if !inside(node_id) {
+                if !Self::inside_modal(tree, modal, node_id) {
                     return;
                 }
                 let accessibility_state = tree.accessibility_state.get(&node_id).unwrap();
