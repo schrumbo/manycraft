@@ -1,8 +1,10 @@
 //! Progress of work the person waits for, drawn: a bar with the step it is on, a count or byte figure and, once it can be
 //! told, how long is left. Work that cannot be measured shows a sliding bar with the step name and the seconds it has run.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use freya::animation::*;
@@ -156,6 +158,82 @@ impl Component for Wait {
             .child(bar.named(said))
             .child(line(&t, step, font::CALLOUT, t.text2).width(Size::fill()))
             .maybe_child((!detail.is_empty()).then(|| caption(&t, detail).width(Size::fill())))
+    }
+}
+
+/// How far a worker thread is, shared with the view that shows it: files done of files in all.
+#[derive(Clone, Debug, Default)]
+pub struct Tally(Arc<Mutex<(usize, usize)>>);
+
+impl PartialEq for Tally {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+static KEPT: LazyLock<Mutex<HashMap<String, Tally>>> = LazyLock::new(Mutex::default);
+
+impl Tally {
+    /// The tally of the work called `key`, the same one for every caller until it is [`Tally::forget`]ten, so a worker and
+    /// a distant view can share one without passing it through every layer between them.
+    pub fn keyed(key: &str) -> Tally {
+        KEPT.lock().map_or_else(|_| Tally::default(), |mut kept| kept.entry(key.to_owned()).or_default().clone())
+    }
+
+    /// The tally of the work called `key` if it has one, else a detached one that never moves.
+    pub fn of(key: &str) -> Tally {
+        KEPT.lock().ok().and_then(|kept| kept.get(key).cloned()).unwrap_or_default()
+    }
+
+    /// Drops the tally of the work called `key`.
+    pub fn forget(key: &str) {
+        if let Ok(mut kept) = KEPT.lock() {
+            kept.remove(key);
+        }
+    }
+
+    /// Notes that `done` of `total` are done; callable from any thread.
+    pub fn set(&self, done: usize, total: usize) {
+        if let Ok(mut at) = self.0.lock() {
+            *at = (done, total);
+        }
+    }
+
+    fn get(&self) -> (usize, usize) {
+        self.0.lock().map_or((0, 0), |at| *at)
+    }
+}
+
+/// A [`Wait`] that reads a [`Tally`] once a second.
+#[derive(PartialEq)]
+pub struct Tracked {
+    id: String,
+    step: String,
+    tally: Tally,
+    unit: Unit,
+}
+
+impl Tracked {
+    /// Counts files: the tally holds how many are done of how many there are.
+    pub fn new(id: impl Into<String>, step: impl Into<String>, tally: Tally) -> Self {
+        Tracked { id: id.into(), step: step.into(), tally, unit: Unit::Count }
+    }
+
+    /// Counts bytes instead; a total of 0 says the size is not known.
+    pub fn bytes(mut self) -> Self {
+        self.unit = Unit::Bytes;
+        self
+    }
+}
+
+impl Component for Tracked {
+    fn render(&self) -> impl IntoElement {
+        let now = use_second(true).max(Instant::now());
+        let meter = use_hook(|| Rc::new(RefCell::new(Meter::begin(self.step.clone(), Instant::now()))));
+        let (done, total) = self.tally.get();
+        meter.borrow_mut().note(&self.step, done as u64, total as u64, self.unit, now);
+        let current = meter.borrow().clone();
+        Wait::new(self.id.clone(), current)
     }
 }
 

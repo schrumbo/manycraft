@@ -1165,12 +1165,23 @@ pub fn mod_updates(made: &setup::Instance) -> Result<Vec<Update>> {
 /// Applies `selection` to the saved instance `id` as it is on disk now and returns it. While a game of it
 /// is `running` only its list changes; the files follow at the next start.
 pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<setup::Instance> {
+    apply_updates_counted(id, selection, running, &|_, _| {})
+}
+
+/// Like the update apply above, and reports how many mod files are in place of how many the instance lists.
+pub fn apply_updates_counted(id: &str, selection: &[Update], running: bool, progress: modrinth::Progress) -> Result<setup::Instance> {
     saved(|| {
         let mut b = setup::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
-        if running || drive::fenced("modrinth apply", selection.len()) {
+        if running {
+            modrinth::update_mods_later(&mut b, selection)?;
+        } else if drive::fenced("modrinth apply", selection.len()) {
+            for done in 0..=selection.len() {
+                progress(done, selection.len());
+                std::thread::sleep(CANNED_DELAY);
+            }
             modrinth::update_mods_later(&mut b, selection)?;
         } else {
-            modrinth::update_mods(&mut b, selection)?;
+            modrinth::update_mods(&mut b, selection, progress)?;
         }
         Ok(b)
     })

@@ -103,13 +103,21 @@ pub fn install(instance_dir: &Path, dir: &Path, project_id: &str, title: &str, f
 /// instance's trash first, the selection follows to the new file, and the trash entry comes back with what is
 /// installed now. A failure puts the old file back and leaves the selection as it was.
 pub fn install_version(instance_dir: &Path, dir: &Path, title: &str, version: &Version, replacing: Option<&str>, filter: &Filter) -> Result<(Installed, Option<String>)> {
+    install_version_counted(instance_dir, dir, title, version, replacing, filter, &|_, _| {})
+}
+
+/// Like [`install_version`], and tells `progress` how many bytes arrived of how many the server announced.
+pub fn install_version_counted(instance_dir: &Path, dir: &Path, title: &str, version: &Version, replacing: Option<&str>, filter: &Filter, progress: &(dyn Fn(u64, Option<u64>) + Sync)) -> Result<(Installed, Option<String>)> {
     let found = modrinth::version_ref(title, version)?;
     swap_in(instance_dir, dir, filter.kind, found, replacing, |found| {
         if drive::fenced("pack install", &found.file_name) {
-            std::thread::sleep(CANNED_DELAY);
+            for step in 0..=CANNED_STEPS as u64 {
+                progress(step * CANNED_PACK_BYTES / CANNED_STEPS as u64, Some(CANNED_PACK_BYTES));
+                std::thread::sleep(CANNED_DELAY);
+            }
             packs::place(found, dir, None, |_, path| Ok(std::fs::write(path, b"canned")?))
         } else {
-            packs::place(found, dir, None, packs::download)
+            packs::place(found, dir, None, |found, path| packs::download_counted(found, path, progress))
         }
     })
 }

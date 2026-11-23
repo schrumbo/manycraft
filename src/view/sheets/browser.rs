@@ -37,6 +37,7 @@ use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{Card, Primary};
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, para, strong};
+use crate::view::kit::progress::Tally;
 use crate::view::kit::{after, at_least, button_focused, off_ui, toast, use_theme};
 use crate::view::install::{self, Source};
 use crate::view::store::{Store, use_store};
@@ -1471,13 +1472,15 @@ impl Flow {
         let have = self.installed_in(&dir, &id);
         let filter = self.filter();
         self.mark(&id, true);
+        let (key, tally) = (version.id.clone(), Tally::keyed(&version.id));
         self.set_version_busy(&id, Some(&version.id));
         self.clear_error();
         let flow = self.clone();
         spawn_in_window(async move {
             let (asked, name, number) = (dir.clone(), title.clone(), version.version_number.clone());
             let replacing = have.as_ref().map(|i| i.file.clone());
-            let result = off_ui(move || catalog::install_version(&instance_dir, &asked, &name, &version, replacing.as_deref(), &filter)).await;
+            let result = off_ui(move || catalog::install_version_counted(&instance_dir, &asked, &name, &version, replacing.as_deref(), &filter, &|done, total| tally.set(done as usize, total.unwrap_or(0) as usize))).await;
+            Tally::forget(&key);
             flow.set_version_busy(&id, None);
             flow.mark(&id, false);
             if !flow.alive() {
