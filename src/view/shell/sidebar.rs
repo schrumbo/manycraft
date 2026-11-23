@@ -300,7 +300,12 @@ impl Component for Sidebar {
         }
         let mark = (attention > 0).then(|| dot(t.attention)).or_else(|| (new_chat > 0).then(|| dot(t.accent)));
         let r = Row::new("nav.batches", tr("Batches")).glyph(Icon::Layers).height(frame::ROW).selected(on_batches).trailing(end).compact(rail, mark).on_press(go(Page::Grid(Filter::All)));
-        top = top.child(WithTip::new(Some(if rail { tr("Batches") } else { Command::ShowAll.tip() }), r));
+        let tip = match (rail, new_chat) {
+            (true, _) => tr("Batches"),
+            (false, 0) => Command::ShowAll.tip(),
+            (false, n) => format!("{} · {}", Command::ShowAll.tip(), trf("%lld ungelesen", &[&n])),
+        };
+        top = top.child(WithTip::new(Some(tip), r));
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
         for b in batches {

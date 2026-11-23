@@ -332,7 +332,7 @@ impl Command {
             Command::GoForward => tr("Vor"),
             Command::LibraryAsGrid => tr("Instanzen als Raster"),
             Command::LibraryAsList => tr("Instanzen als Liste"),
-            Command::ShowAll => tr("Alle Batches"),
+            Command::ShowAll => tr("Batches"),
             Command::ShowAttention => tr("Brauchen dich anzeigen"),
             Command::ShowAccounts => tr("Accounts"),
             Command::SwitchAccount => tr("Account wechseln…"),

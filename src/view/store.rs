@@ -362,6 +362,7 @@ impl Store {
                 self.unstow();
                 native::show();
                 if let Some(rt) = runtime {
+                    rt.borrow_mut().follow_manager(native::place());
                     self.spread(&rt);
                 }
             }
