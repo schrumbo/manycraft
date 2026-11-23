@@ -408,8 +408,14 @@ trait Lookup {
 }
 
 struct Entry {
-    at: Instant,
-    resolved: Resolved,
+    until: Instant,
+    found: std::result::Result<Resolved, String>,
+}
+
+impl Entry {
+    fn answer(&self) -> Result<Resolved> {
+        self.found.clone().map_err(|e| anyhow!(e))
+    }
 }
 
 struct Resolver<L> {
@@ -423,37 +429,33 @@ impl<L: Lookup> Resolver<L> {
         Self { lookup, cache: Mutex::default(), turns: Mutex::default() }
     }
 
-    /// One lookup per server at a time, so fifty accounts that reconnect together share one answer instead of queueing for
-    /// the resolver until their deadlines pass. A failed SRV lookup never replaces what an earlier one found, and a
-    /// fallback made without it is kept only briefly.
+    /// One lookup per server at a time, so fifty accounts that reconnect together share one answer, a failed one too,
+    /// instead of queueing for the resolver until their deadlines pass. A failed lookup never replaces what an earlier one
+    /// found, and an answer made without SRV or a failure is kept only briefly.
     fn resolve(&self, server: &str, now: Instant) -> Result<Resolved> {
         let key = server.trim().to_ascii_lowercase();
-        if let Some(found) = self.fresh(&key, now) {
-            return Ok(found);
+        if let Some(entry) = self.fresh(&key, now) {
+            return entry.answer();
         }
         let turn = Arc::clone(lock(&self.turns).entry(key.clone()).or_default());
         let _turn = lock(&turn);
         let now = now.max(Instant::now());
-        if let Some(found) = self.fresh(&key, now) {
-            return Ok(found);
+        if let Some(entry) = self.fresh(&key, now) {
+            return entry.answer();
         }
-        let (resolved, complete) = match resolve_with(&self.lookup, server, now) {
-            Ok(found) => found,
-            Err(e) => return lock(&self.cache).get(&key).map(|e| e.resolved.clone()).ok_or(e),
+        let kept = lock(&self.cache).get(&key).and_then(|e| e.found.clone().ok());
+        let entry = match resolve_with(&self.lookup, server, now) {
+            Ok((resolved, true)) => Entry { until: now + RESOLVE_CACHE, found: Ok(resolved) },
+            Ok((resolved, false)) => Entry { until: now + RESOLVE_RETRY, found: Ok(kept.unwrap_or(resolved)) },
+            Err(e) => Entry { until: now + RESOLVE_RETRY, found: kept.ok_or_else(|| format!("{e:#}")) },
         };
-        let mut cache = lock(&self.cache);
-        if complete {
-            cache.insert(key, Entry { at: now, resolved: resolved.clone() });
-            return Ok(resolved);
-        }
-        let kept = cache.get(&key).map(|e| e.resolved.clone());
-        let resolved = kept.unwrap_or(resolved);
-        cache.insert(key, Entry { at: (now + RESOLVE_RETRY).checked_sub(RESOLVE_CACHE).unwrap_or(now), resolved: resolved.clone() });
-        Ok(resolved)
+        let answer = entry.answer();
+        lock(&self.cache).insert(key, entry);
+        answer
     }
 
-    fn fresh(&self, key: &str, now: Instant) -> Option<Resolved> {
-        lock(&self.cache).get(key).filter(|e| now.saturating_duration_since(e.at) < RESOLVE_CACHE).map(|e| e.resolved.clone())
+    fn fresh(&self, key: &str, now: Instant) -> Option<Entry> {
+        lock(&self.cache).get(key).filter(|e| now < e.until).map(|e| Entry { until: e.until, found: e.found.clone() })
     }
 }
 
@@ -515,7 +517,7 @@ fn resolve_with(lookup: &impl Lookup, server: &str, start: Instant) -> Result<(R
     let name = target.trim_end_matches('.');
     let addrs: Vec<SocketAddr> = match name.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, target_port)],
-        Err(_) => lookup.ips(name, start + RESOLVE_TIMEOUT)?.into_iter().map(|ip| SocketAddr::new(ip, target_port)).collect(),
+        Err(_) => lookup.ips(name, Instant::now().max(start) + RESOLVE_TIMEOUT)?.into_iter().map(|ip| SocketAddr::new(ip, target_port)).collect(),
     };
     if addrs.is_empty() {
         bail!("{name} has no address");
@@ -2356,7 +2358,9 @@ mod tests {
         assert!(resolve_with(&dns, "nowhere.org", at).is_err());
         assert!(resolve_with(&dns, "empty.org", at).is_err());
         assert_eq!(found(&dns, "srv-ip.org", at), [addr("10.0.0.9:1")]);
-        assert_eq!(*dns.deadlines.borrow(), [SRV_TIMEOUT, SRV_TIMEOUT, RESOLVE_TIMEOUT]);
+        let deadlines = dns.deadlines.borrow();
+        assert_eq!(deadlines[..2], [SRV_TIMEOUT, SRV_TIMEOUT]);
+        assert!(deadlines[2] >= RESOLVE_TIMEOUT, "the address lookup gets its own full time after the record lookup");
     }
 
     #[test]
@@ -2426,6 +2430,19 @@ mod tests {
         assert_eq!(resolver.resolve("example.org", t0 + Duration::from_secs(2)).unwrap(), fallback, "briefly kept");
         let now = resolver.resolve("example.org", t0 + RESOLVE_RETRY + Duration::from_secs(1)).unwrap();
         assert_eq!((now.host.as_str(), now.port), ("mc.example.org.net.", 25570));
+    }
+
+    #[test]
+    fn a_failure_is_shared_for_a_moment_and_then_asked_again() {
+        let resolver = Resolver::new(fake_dns());
+        let t0 = Instant::now();
+        assert!(resolver.resolve("nowhere.org", t0).is_err());
+        let calls = resolver.lookup.calls.get();
+        let again = resolver.resolve("nowhere.org", t0 + Duration::from_secs(1)).unwrap_err();
+        assert!(format!("{again:#}").contains("nowhere.org"), "{again:#}");
+        assert_eq!(resolver.lookup.calls.get(), calls, "waiting accounts do not each look it up");
+        assert!(resolver.resolve("nowhere.org", t0 + RESOLVE_RETRY + Duration::from_secs(1)).is_err());
+        assert!(resolver.lookup.calls.get() > calls);
     }
 
     struct SlowDns {

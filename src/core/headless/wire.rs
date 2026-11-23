@@ -249,7 +249,7 @@ impl<'a> In<'a> {
                     ensure!(inner != 0 || n == 0, "list of end tags");
                     ensure!(stack.len() < MAX_NBT_DEPTH, "NBT nested too deep");
                     if n > 0 {
-                        push(&mut stack, Frame::List { items: Vec::with_capacity(n.min(1024)), inner, left: n })?;
+                        push(&mut stack, Frame::List { items: Vec::with_capacity(n.min(16)), inner, left: n })?;
                         tag = inner;
                         continue;
                     }

@@ -422,8 +422,8 @@ fn essential(phase: Phase, id: i32) -> bool {
     use cfg::clientbound as c;
     use play::clientbound as p;
     match phase {
-        Phase::Configuration => [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER].contains(&id),
-        _ => [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER].contains(&id),
+        Phase::Configuration => [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER, c::COOKIE_REQUEST, c::CODE_OF_CONDUCT, c::RESOURCE_PACK_PUSH, c::SELECT_KNOWN_PACKS].contains(&id),
+        _ => [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER, p::COOKIE_REQUEST].contains(&id),
     }
 }
 
@@ -842,13 +842,13 @@ mod tests {
     fn only_what_the_game_itself_cannot_survive_ends_a_connection_on_a_bad_packet() {
         use cfg::clientbound as c;
         use play::clientbound as p;
-        for id in [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER] {
-            assert!(essential(Phase::Configuration, id));
+        for id in [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER, c::COOKIE_REQUEST, c::CODE_OF_CONDUCT, c::RESOURCE_PACK_PUSH, c::SELECT_KNOWN_PACKS] {
+            assert!(essential(Phase::Configuration, id), "the server waits for an answer to {id}");
         }
-        for id in [c::REGISTRY_DATA, c::RESOURCE_PACK_PUSH, c::RESOURCE_PACK_POP, c::CODE_OF_CONDUCT, c::SELECT_KNOWN_PACKS] {
+        for id in [c::REGISTRY_DATA, c::RESOURCE_PACK_POP] {
             assert!(!essential(Phase::Configuration, id));
         }
-        for id in [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER] {
+        for id in [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER, p::COOKIE_REQUEST] {
             assert!(essential(Phase::Play, id));
         }
         for id in [p::SYSTEM_CHAT, p::PLAYER_CHAT, p::DISGUISED_CHAT, p::SET_HEALTH, p::RESPAWN, p::PLAYER_COMBAT_KILL, p::RESOURCE_PACK_PUSH, p::RESOURCE_PACK_POP, p::CHUNK_BATCH_FINISHED] {

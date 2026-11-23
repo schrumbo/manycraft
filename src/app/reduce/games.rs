@@ -447,7 +447,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
         StateKind::Dead => Phase::Dead { server, reason: reason_text },
         StateKind::Offer => return,
         StateKind::Disconnected => {
-            s.joined.remove(&key);
+            let was_joined = s.joined.remove(&key);
             s.held_joins.remove(&key);
             let woken = s.woken.remove(&key);
             if let Phase::Playing { since, .. } = i.phase
@@ -459,9 +459,8 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
             let generation = s.reconnects.entry(key.clone()).or_default();
             *generation += 1;
             fx.suspect_offline |= direct && !nearby && matches!(cause, DisconnectCause::ServerDown | DisconnectCause::Unknown);
-            let was_playing = matches!(i.phase, Phase::Playing { .. });
             let reaction = reconnect::react(cause, i.reconnect_attempts, policy, env.unit(), cut_off);
-            let reaction = if i.connection { unattended(reaction, cause, i.reconnect_attempts, policy, env.unit(), was_playing) } else { reaction };
+            let reaction = if i.connection { unattended(reaction, cause, i.reconnect_attempts, policy, env.unit(), was_joined) } else { reaction };
             let reaction = match reaction {
                 Reaction::Retry(_) | Reaction::WaitForNetwork if server.is_none() => Reaction::GiveUp,
                 Reaction::SignInAgain if offline => Reaction::NotAllowed,
@@ -517,13 +516,13 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
 }
 
 /// What a connection-only game does about `reaction`: it has nobody to ask, so only a ban, a dead sign-in, a declined pack
-/// or being replaced by the player's own session ends it. Every other drop retries without a cap, on the schedule that
+/// or being replaced by the player's own session after it had joined (dead or alive) ends it. Every other drop retries without a cap, on the schedule that
 /// cause already follows; a missing whitelist entry or a session that is still closing waits on the patient one.
-fn unattended(reaction: Reaction, cause: DisconnectCause, attempt: u32, policy: &Reconnect, unit: f64, was_playing: bool) -> Reaction {
+fn unattended(reaction: Reaction, cause: DisconnectCause, attempt: u32, policy: &Reconnect, unit: f64, was_joined: bool) -> Reaction {
     let patient = || Reaction::Retry(reconnect::wait(&policy.patient_secs, attempt, policy.jitter_percent, unit));
     match (reaction, cause) {
         (Reaction::NotAllowed, DisconnectCause::Whitelist) if policy.enabled => patient(),
-        (Reaction::NotAllowed, DisconnectCause::Duplicate) if policy.enabled && !was_playing => patient(),
+        (Reaction::NotAllowed, DisconnectCause::Duplicate) if policy.enabled && !was_joined => patient(),
         (Reaction::GiveUp, DisconnectCause::ServerFull | DisconnectCause::Kicked) if policy.enabled => patient(),
         (Reaction::GiveUp, DisconnectCause::ServerDown | DisconnectCause::Unknown) if policy.enabled => {
             Reaction::Retry(reconnect::wait(&policy.backoff_secs, attempt, policy.jitter_percent, unit))
@@ -1065,6 +1064,11 @@ mod tests {
         send_state(&mut m, &s, &key, StateKind::Playing, None);
         send_state(&mut m, &s, &key, StateKind::Disconnected, Some(Duplicate));
         assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }), "replaced by the player's own session while playing");
+        send_state(&mut m, &s, &key, StateKind::Menu, None);
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        send_state(&mut m, &s, &key, StateKind::Dead, None);
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(Duplicate));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }), "a dead account is still on the server, so the player's own session replaced it");
         for (cause, ends_in) in [(Banned, "banned"), (PackDeclined, "disconnected")] {
             send_state(&mut m, &s, &key, StateKind::Menu, None);
             send_state(&mut m, &s, &key, StateKind::Disconnected, Some(cause));
