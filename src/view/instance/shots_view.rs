@@ -12,10 +12,11 @@ use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::{Button, Look};
 use crate::view::kit::spinner::Spinner;
 use crate::view::kit::text::{figure, heading, secondary, strong};
-use crate::view::kit::use_theme;
+use crate::view::kit::{after, use_theme};
 use crate::view::theme::{font, iconsize, space};
 
 const DOUBLE: Duration = Duration::from_millis(400);
+const SETTLE: Duration = Duration::from_millis(80);
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 8.;
 const BUTTON_ZOOM: f32 = 1.25;
@@ -129,6 +130,9 @@ impl Component for Viewer {
             }
             let (path, stamp, neighbors) = (path.clone(), *stamp, neighbors.clone());
             loading.set(Some(spawn(async move {
+                if full(&path, stamp).is_none() {
+                    after(SETTLE).await;
+                }
                 load_full(path, stamp).await;
                 let next = ready.peek().wrapping_add(1);
                 ready.set(next);
