@@ -148,7 +148,8 @@ impl<'a> In<'a> {
         self.buf.len() - self.pos
     }
 
-    /// An element count behind a VarInt: never negative and never more than the bytes left, so a hostile count cannot allocate.
+    /// An element count behind a VarInt: never negative and never more than the bytes left. Elements wider in memory than on
+    /// the wire still need a cap of their own.
     pub fn list(&mut self) -> Result<usize> {
         let n = self.length()?;
         ensure!(n <= self.left(), "list of {n} past the packet");

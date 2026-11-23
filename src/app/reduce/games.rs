@@ -76,13 +76,13 @@ pub(super) fn reports(m: &mut Model, env: &Env, reports: Vec<Report>, out: &mut 
     let mut fx = Fx::default();
     for report in reports {
         let key = report.key().map(str::to_owned);
-        let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.needs_attention()));
+        let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
         let first_state = matches!(&report, Report::Mod { message: FromMod::State { .. }, .. }) && key.as_ref().is_some_and(|k| m.session.adopted.contains(k));
         let seeded = matches!(report, Report::Seed { .. }) || first_state;
         apply(m, env, report, &mut fx);
         let Some(key) = key else { continue };
         let Some(i) = m.games.get(&key) else { continue };
-        let after = (rank(&i.phase), i.needs_attention());
+        let after = (rank(&i.phase), i.phase.needs_attention());
         if before.is_some_and(|b| b.0 != after.0) {
             m.order_seq += 1;
         }

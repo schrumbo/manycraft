@@ -1,6 +1,6 @@
 //! What the server shows the player, kept for the manager's Bildschirm: the map in hand, the open menu and the titles.
-//! The player's own inventory is read only for the ids of the maps in it, and map pictures are kept only for those
-//! maps, at most [`MAX_MAPS`]; nothing else of the world is kept.
+//! The player's own inventory is read only for the ids of the maps in it. Pictures of those maps are kept while they are
+//! carried, of any other map at most [`MAX_MAPS`] for a few seconds; nothing else of the world is kept.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +16,7 @@ use crate::core::ipc::{Click, FromMod, MapPicture, Menu, Slot, Titles, Words};
 pub const SIDE: usize = 128;
 const PIXELS: usize = SIDE * SIDE;
 const MAX_MAPS: usize = 4;
+const MAX_SLOTS: usize = 256;
 const INVENTORY: usize = 46;
 const HOTBAR: usize = 36;
 const OFFHAND: usize = 45;
@@ -174,7 +175,7 @@ impl Screen {
         let window = r.varint()?;
         let state = r.varint()?;
         if window == 0 {
-            let stacks = item::stacks(r)?;
+            let stacks = item::stacks(r, INVENTORY)?;
             self.inventory = stacks.iter().map(|s| s.as_ref().and_then(|s| s.map)).collect();
             self.inventory.resize(INVENTORY, None);
             self.carried = item::stack(r)?;
@@ -184,7 +185,7 @@ impl Screen {
         let Some(open) = self.menu.as_mut().filter(|m| m.id == window) else { return Ok(()) };
         open.state = state;
         self.menu_dirty = true;
-        let read = item::stacks(r).and_then(|slots| Ok((slots, item::stack(r)?)));
+        let read = item::stacks(r, MAX_SLOTS).and_then(|slots| Ok((slots, item::stack(r)?)));
         match read {
             Ok((slots, carried)) => {
                 open.slots = slots;
@@ -297,9 +298,9 @@ impl Screen {
         let at = match self.pictures.iter().position(|p| p.id == id) {
             Some(at) => at,
             None => {
-                if self.pictures.len() >= MAX_MAPS {
-                    let shown = self.hand();
-                    let Some(oldest) = self.pictures.iter().enumerate().filter(|(_, p)| Some(p.id) != shown).min_by_key(|(_, p)| p.touched).map(|(i, _)| i) else { return Ok(()) };
+                let loose = |p: &Picture| !carried.contains(&p.id);
+                if !carried.contains(&id) && self.pictures.iter().filter(|p| loose(p)).count() >= MAX_MAPS {
+                    let Some(oldest) = self.pictures.iter().enumerate().filter(|(_, p)| loose(p)).min_by_key(|(_, p)| p.touched).map(|(i, _)| i) else { return Ok(()) };
                     self.pictures.remove(oldest);
                 }
                 self.pictures.push(Picture { id, colors: vec![0; PIXELS].into_boxed_slice(), touched: Instant::now() });
@@ -577,6 +578,20 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_claiming_more_slots_than_any_menu_has_is_unreadable() {
+        let mut s = Screen::default();
+        chest(&mut s);
+        s.changes();
+        let err = feed(&mut s, play::clientbound::CONTAINER_SET_CONTENT, |o| {
+            o.varint(3).varint(6).varint(100_000);
+            o.raw(&[0; 100_000]);
+            o.varint(0);
+        });
+        assert!(err.is_err());
+        assert!(matches!(shown_menu(&s.changes()), Some(Some(m)) if !m.readable && m.slots.is_empty()));
+    }
+
+    #[test]
     fn titles_stay_until_cleared_and_the_actionbar_survives_a_clear() {
         let mut s = Screen::default();
         feed(&mut s, play::clientbound::SET_TITLE_TEXT, |o| text(o, "Solve")).unwrap();
@@ -609,13 +624,13 @@ mod tests {
     }
 
     #[test]
-    fn at_most_four_pictures_are_kept_and_the_shown_one_stays() {
+    fn carried_pictures_stay_and_at_most_four_others_are_kept() {
         let mut s = Screen::default();
         inventory(&mut s, Some(1));
         for id in 1..=6 {
             patch(&mut s, id, 0, 0, &[50]).unwrap();
         }
-        assert_eq!(s.pictures.len(), MAX_MAPS);
+        assert_eq!(s.pictures.len(), MAX_MAPS + 1);
         assert!(s.pictures.iter().any(|p| p.id == 1));
     }
 }

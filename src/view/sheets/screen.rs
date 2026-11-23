@@ -9,7 +9,7 @@ use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use crate::app::event::Event as AppEvent;
-use crate::app::model::{Model, Need};
+use crate::app::model::{Game, Model, Need, Phase};
 use crate::core::headless::{MAP_SIDE, map_rgba};
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::{Click, Menu, Slot, Titles};
@@ -22,9 +22,11 @@ use crate::view::kit::text::{caption, figure, line, para, spacer, strong};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{held, ring, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, font, frame, iconsize, space};
+use crate::view::theme::{Theme, WAITING, font, frame, iconsize, space};
 
 const CELL_W: f32 = 72.;
+const CELL_MIN: f32 = 44.;
+const TITLE_LINES: usize = 3;
 const CELL_H: f32 = 52.;
 const NAME_LINES: usize = 2;
 const MAP_BESIDE: f32 = 2.;
@@ -40,21 +42,26 @@ pub fn open(store: Store, key: &str) {
     sheet::open(store.ui, Screen { key: key.to_owned() });
 }
 
-/// The game whose Bildschirm the palette opens: the one selected, or else the first that shows something unseen.
+/// The game whose Bildschirm the palette opens: the one selected, or else the first that shows something unseen, or else
+/// the first that shows anything.
 pub fn target(store: Store) -> Option<String> {
     let m = store.model.peek();
     let selected = store.ui.selection.peek();
-    let shows = |k: &String| m.games.get(k).is_some_and(|g| g.connection && g.phase.is_running() && g.shows.any());
-    if selected.len() == 1 {
-        return selected.iter().find(|k| shows(k)).cloned();
-    }
-    first_unseen(&m)
+    selected.iter().find(|k| selected.len() == 1 && m.games.get(*k).is_some_and(shows)).cloned().or_else(|| first_showing(&m))
 }
 
-fn first_unseen(m: &Model) -> Option<String> {
-    let mut keys: Vec<&String> = m.games.iter().filter(|(_, g)| g.need() == Some(Need::Screen)).map(|(k, _)| k).collect();
+fn shows(g: &Game) -> bool {
+    g.connection && g.phase.is_running() && g.shows.any()
+}
+
+fn first_showing(m: &Model) -> Option<String> {
+    let mut keys: Vec<(bool, &String)> = m.games.iter().filter(|(_, g)| shows(g)).map(|(k, g)| (g.need() != Some(Need::Screen), k)).collect();
     keys.sort();
-    keys.first().map(|k| (*k).clone())
+    keys.first().map(|(_, k)| (*k).clone())
+}
+
+fn connected(g: &Game) -> bool {
+    g.connection && matches!(g.phase, Phase::Playing { .. } | Phase::Queue { .. })
 }
 
 #[derive(PartialEq)]
@@ -78,12 +85,15 @@ impl Component for Screen {
         let (w, h) = *store.ui.window.read();
         let key = self.key.clone();
         let game = m.games.get(&key);
-        let live = game.is_some_and(|g| g.connection && g.phase.is_running());
+        let live = game.is_some_and(connected);
         let name = game.and_then(|g| m.account(g.account_id)).map(|a| a.name.clone()).unwrap_or_default();
         let screen = m.screens.get(&key).filter(|_| live);
         let map = screen.and_then(|s| s.map.as_ref().map(|p| (s.map_seq, p)));
         let menu = screen.and_then(|s| s.menu.as_ref());
-        let grid_w = menu.map_or(0., |m| grid_width(usize::from(m.columns.max(1))));
+        let room = (w - space::L * 2.).max(frame::SHEET_NARROW) - space::XL * 2.;
+        let columns = menu.map_or(9, |m| usize::from(m.columns.max(1)).max(9));
+        let cell = ((room - columns.saturating_sub(1) as f32 * space::XS) / columns as f32).clamp(CELL_MIN, CELL_W);
+        let grid_w = menu.map_or(0., |_| grid_width(columns, cell));
         let beside = menu.is_some() && map.is_some() && grid_w + MAP_SIDE as f32 * MAP_BESIDE + space::XL + space::XL * 2. + space::L * 2. <= w;
         let scale = if menu.is_some() { MAP_BESIDE } else { MAP_ALONE };
         let side = MAP_SIDE as f32 * scale;
@@ -106,7 +116,7 @@ impl Component for Screen {
             }
             held_picture.as_ref().map(|(_, i)| map_block(&t, i.clone(), side))
         });
-        let menu_block = menu.map(|mn| menu_block(&t, store, &key, mn, live, inventory));
+        let menu_block = menu.map(|mn| menu_block(&t, store, &key, mn, live, inventory, cell));
         match (shown_map, menu_block) {
             (Some(p), Some(mb)) if beside => body = body.child(rect().horizontal().spacing(space::XL).child(p).child(mb)),
             (p, mb) => {
@@ -122,18 +132,18 @@ impl Component for Screen {
             let text = if live { tr("Gerade zeigt der Server nichts. Eine Karte in der Hand oder ein geöffnetes Menü erscheint hier von selbst.") } else { tr("Das Konto ist nicht verbunden.") };
             body = body.child(para(&t, text, font::BODY, t.text2));
         }
-        if menu.is_some() {
+        if menu.is_some_and(|mn| mn.readable && mn.slots.len() >= usize::from(mn.top) + PLAYER_SLOTS) {
             let toggle = Button::new("screen.inventory", if *inventory.read() { tr("Inventar ausblenden") } else { tr("Inventar zeigen") }).plain().glyph(if *inventory.read() { Icon::ChevronUp } else { Icon::ChevronDown }).on_press(move |_| {
                 let open = *inventory.peek();
                 inventory.set(!open);
             });
             body = body.child(rect().horizontal().child(toggle));
         }
-        let recent: Vec<String> = m.chat.iter().rev().filter(|l| l.instance == key).take(RECENT_LINES).map(|l| l.from.as_ref().map_or_else(|| l.text.clone(), |f| format!("<{f}> {}", l.text))).collect();
+        let recent: Vec<String> = m.chat.iter().rev().filter(|l| l.reached(&key)).take(RECENT_LINES).map(|l| l.from.as_ref().map_or_else(|| l.text.clone(), |f| format!("<{f}> {}", l.text))).collect();
         if !recent.is_empty() {
             body = body.child(rect().width(Size::fill()).spacing(space::XXS).children(recent.into_iter().rev().map(|l| line(&t, l, font::CALLOUT, t.text2).width(Size::fill()).max_lines(1).text_overflow(TextOverflow::Ellipsis).into_element())));
         }
-        body = body.child(chat(store, &key, draft, live));
+        body = body.child(chat(store, &key, draft, live, map.is_some() || menu.is_some()));
         let scroll = ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px((h - frame::SHEET_TOP - ROOM).max(ROOM))).child(body);
         let ui = store.ui;
         let done = Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) };
@@ -142,20 +152,20 @@ impl Component for Screen {
     }
 }
 
-fn grid_width(columns: usize) -> f32 {
-    columns as f32 * CELL_W + columns.saturating_sub(1) as f32 * space::XS
+fn grid_width(columns: usize, cell: f32) -> f32 {
+    columns as f32 * cell + columns.saturating_sub(1) as f32 * space::XS
 }
 
 fn titles_block(t: &Theme, titles: &Titles) -> Element {
     let mut column = rect().width(Size::fill()).spacing(space::XXS);
     if let Some(title) = &titles.title {
-        column = column.child(strong(t, title.text.clone(), font::TITLE3, t.text1));
+        column = column.child(strong(t, title.text.clone(), font::TITLE3, t.text1).width(Size::fill()).max_lines(TITLE_LINES));
     }
     if let Some(subtitle) = &titles.subtitle {
-        column = column.child(line(t, subtitle.text.clone(), font::BODY, t.text2));
+        column = column.child(line(t, subtitle.text.clone(), font::BODY, t.text2).width(Size::fill()).max_lines(TITLE_LINES));
     }
     if let Some(bar) = &titles.actionbar {
-        column = column.child(line(t, bar.text.clone(), font::CALLOUT, t.text2));
+        column = column.child(line(t, bar.text.clone(), font::CALLOUT, t.text2).width(Size::fill()).max_lines(TITLE_LINES));
     }
     column.into_element()
 }
@@ -169,12 +179,12 @@ fn map_block(t: &Theme, handle: ImageHandle, side: f32) -> Element {
         .into_element()
 }
 
-fn menu_block(t: &Theme, store: Store, key: &str, menu: &Menu, live: bool, inventory: State<bool>) -> Element {
+fn menu_block(t: &Theme, store: Store, key: &str, menu: &Menu, live: bool, inventory: State<bool>, cell: f32) -> Element {
     let carried = menu.carried.as_ref();
     let k = key.to_owned();
     let id = menu.id;
     let close = Button::new("screen.close", tr("Menü schließen"))
-        .disabled(if !live { Some(tr("Das Konto ist nicht verbunden.")) } else { carried.map(|_| tr("Lege zuerst ab, was du hältst.")) })
+        .disabled(if !live { Some(tr("Das Konto ist nicht verbunden.")) } else { carried.filter(|_| menu.readable).map(|_| tr("Lege zuerst ab, was du hältst.")) })
         .on_press(move |_| store.dispatch(AppEvent::CloseMenu { key: k.clone(), menu: id }));
     let title = if menu.title.text.is_empty() { tr("Menü") } else { menu.title.text.clone() };
     let mut head = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(strong(t, title, font::BODY, t.text1).max_lines(1).text_overflow(TextOverflow::Ellipsis));
@@ -182,30 +192,29 @@ fn menu_block(t: &Theme, store: Store, key: &str, menu: &Menu, live: bool, inven
         head = head.child(line(t, trf("Hält: %@", &[&slot_label(c)]), font::CALLOUT, t.attention_text).max_lines(1).text_overflow(TextOverflow::Ellipsis));
     }
     head = head.child(spacer()).content(Content::flex()).child(close);
-    let mut column = rect().spacing(space::S).width(Size::px(grid_width(usize::from(menu.columns.max(1))).max(grid_width(9)))).child(head);
+    let mut column = rect().spacing(space::S).width(Size::px(grid_width(usize::from(menu.columns.max(1)).max(9), cell))).child(head);
     if !menu.readable {
         return column.child(para(t, tr("Dieses Menü kann Manycraft nicht lesen. Schließen geht trotzdem."), font::BODY, t.text2)).into_element();
     }
     let top = usize::from(menu.top).min(menu.slots.len());
     let columns = usize::from(menu.columns.max(1));
-    column = column.child(cells(store, key, menu, 0..top, columns, live));
+    column = column.child(cells(key, menu, 0..top, columns, live, cell));
     if *inventory.read() && menu.slots.len() >= top + PLAYER_SLOTS {
         column = column
             .child(caption(t, tr("Inventar")))
-            .child(cells(store, key, menu, top..top + HOTBAR, 9, live))
-            .child(cells(store, key, menu, top + HOTBAR..top + PLAYER_SLOTS, 9, live));
+            .child(cells(key, menu, top..top + HOTBAR, 9, live, cell))
+            .child(cells(key, menu, top + HOTBAR..top + PLAYER_SLOTS, 9, live, cell));
     }
     column.into_element()
 }
 
-fn cells(store: Store, key: &str, menu: &Menu, range: std::ops::Range<usize>, columns: usize, live: bool) -> Element {
-    let _ = store;
+fn cells(key: &str, menu: &Menu, range: std::ops::Range<usize>, columns: usize, live: bool, width: f32) -> Element {
     let indices: Vec<usize> = range.collect();
     let rows = indices.chunks(columns).map(|row| {
         rect()
             .horizontal()
             .spacing(space::XS)
-            .children(row.iter().map(|i| Cell { key: key.to_owned(), menu: menu.id, index: *i, slot: menu.slots.get(*i).cloned().flatten(), live }.into_element()))
+            .children(row.iter().map(|i| Cell { key: key.to_owned(), menu: menu.id, index: *i, slot: menu.slots.get(*i).cloned().flatten(), live, width }.into_element()))
             .into_element()
     });
     rect().spacing(space::XS).children(rows).into_element()
@@ -222,6 +231,7 @@ struct Cell {
     index: usize,
     slot: Option<Slot>,
     live: bool,
+    width: f32,
 }
 
 impl Component for Cell {
@@ -231,6 +241,7 @@ impl Component for Cell {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
+        let mut pressed = use_state(|| false);
         let label = self.slot.as_ref().map_or_else(|| tr("Leerer Platz"), slot_label);
         let spot = use_spot(&format!("screen.slot.{}", self.index), "slot", &label, self.live);
         let live = self.live;
@@ -241,32 +252,50 @@ impl Component for Cell {
         let click = move |click: Click| store.dispatch(AppEvent::ClickSlot { key: key.clone(), menu, slot: index, click });
         let right = click.clone();
         let fill = if self.slot.is_some() { t.control } else { t.well };
-        let wash = if live && *hovered.read() { t.hover } else { Color::TRANSPARENT };
+        let wash = if !live {
+            Color::TRANSPARENT
+        } else if *pressed.read() {
+            t.press
+        } else if *hovered.read() {
+            t.hover
+        } else {
+            Color::TRANSPARENT
+        };
         let mut cell = rect()
             .a11y_id(a11y)
             .a11y_focusable(live)
             .a11y_role(AccessibilityRole::Button)
             .a11y_alt(label.clone())
-            .width(Size::px(CELL_W))
+            .width(Size::px(self.width))
             .height(Size::px(CELL_H))
             .corner_radius(t.shape.small)
             .background(fill)
             .on_sized(spot)
             .cursor(if live { CursorIcon::Pointer } else { CursorIcon::Default })
             .on_pointer_enter(move |_| hovered.set(true))
-            .on_pointer_leave(move |_| hovered.set_if_modified(false))
+            .opacity(if live { 1. } else { WAITING })
+            .on_pointer_leave(move |_| {
+                hovered.set_if_modified(false);
+                pressed.set_if_modified(false);
+            })
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                if live && e.button == Some(MouseButton::Left) {
+                    pressed.set(true);
+                }
+            })
+            .on_mouse_up(move |_| pressed.set_if_modified(false))
             .on_all_press(move |e: Event<PressEventData>| {
                 if !live {
                     return;
                 }
-                let shift = match &*e {
+                let modifiers = match &*e {
                     PressEventData::Mouse(m) if m.button != Some(MouseButton::Left) => return,
-                    PressEventData::Keyboard(k) => k.modifiers.contains(Modifiers::SHIFT),
-                    _ => held().contains(Modifiers::SHIFT),
+                    PressEventData::Keyboard(k) => k.modifiers,
+                    _ => held() & Modifiers::SHIFT,
                 };
                 e.stop_propagation();
                 a11y.request_focus();
-                click(if shift { Click::Shift } else { Click::Left });
+                click(keyed(modifiers));
             })
             .on_secondary_down(move |e: Event<PressEventData>| {
                 if live {
@@ -299,18 +328,51 @@ impl Component for Cell {
     }
 }
 
-fn chat(store: Store, key: &str, mut draft: State<String>, live: bool) -> Element {
-    let k = key.to_owned();
-    Field::new("screen.chat", draft)
-        .placeholder(tr("Nachricht oder /Befehl"))
-        .disabled((!live).then(|| tr("Das Konto ist nicht verbunden.")))
-        .on_submit(move |text: String| {
-            let text = text.trim().to_owned();
-            if text.is_empty() {
-                return;
-            }
-            store.dispatch(AppEvent::SendChat { key: k.clone(), text });
-            draft.set(String::new());
-        })
-        .into_element()
+/// What a key press on a focused slot does: Shift moves the stack, Ctrl, Alt or Cmd takes or puts half, plain is a left click.
+fn keyed(modifiers: Modifiers) -> Click {
+    if modifiers.contains(Modifiers::SHIFT) {
+        Click::Shift
+    } else if modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::META) {
+        Click::Right
+    } else {
+        Click::Left
+    }
+}
+
+fn send(store: Store, key: &str, mut draft: State<String>) {
+    let text = draft.peek().trim().to_owned();
+    if text.is_empty() {
+        return;
+    }
+    store.dispatch(AppEvent::SendChat { key: key.to_owned(), text });
+    draft.set(String::new());
+}
+
+fn chat(store: Store, key: &str, draft: State<String>, live: bool, focus: bool) -> Element {
+    let offline = (!live).then(|| tr("Das Konto ist nicht verbunden."));
+    let (typed, pressed) = (key.to_owned(), key.to_owned());
+    let empty = draft.read().trim().is_empty();
+    let mut field = Field::new("screen.chat", draft).placeholder(tr("Nachricht oder /Befehl")).disabled(offline.clone()).on_submit(move |_: String| send(store, &typed, draft));
+    if focus && live {
+        field = field.auto_focus();
+    }
+    let button = Button::icon("screen.send", Icon::Send, tr("Senden")).disabled(offline.or_else(|| empty.then(|| tr("Schreib zuerst etwas.")))).on_press(move |_| send(store, &pressed, draft));
+    rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rect().width(Size::flex(1.)).child(field)).child(button).content(Content::flex()).into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use freya::prelude::Modifiers;
+
+    use super::keyed;
+    use crate::core::ipc::Click;
+
+    #[test]
+    fn keys_on_a_slot_map_to_the_three_clicks() {
+        assert_eq!(keyed(Modifiers::empty()), Click::Left);
+        assert_eq!(keyed(Modifiers::SHIFT), Click::Shift);
+        assert_eq!(keyed(Modifiers::CONTROL), Click::Right);
+        assert_eq!(keyed(Modifiers::META), Click::Right);
+        assert_eq!(keyed(Modifiers::SHIFT | Modifiers::CONTROL), Click::Shift);
+    }
 }

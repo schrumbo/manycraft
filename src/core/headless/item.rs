@@ -8,6 +8,7 @@ use super::v777::{component, consume_effect};
 use super::wire::In;
 
 const MAX_DEPTH: usize = 8;
+const MAX_LORE: usize = 256;
 
 /// What the player sees of an item stack.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -41,9 +42,10 @@ pub fn stack(r: &mut In) -> Result<Option<Stack>> {
     Ok(Some(Stack { item, count, name: view.name.or(view.item_name), lore: view.lore, glint: view.glint.unwrap_or(view.enchanted), map: view.map }))
 }
 
-/// Reads a list of optional item stacks (VarInt length).
-pub fn stacks(r: &mut In) -> Result<Vec<Option<Stack>>> {
+/// Reads a list of optional item stacks (VarInt length), at most `max` of them.
+pub fn stacks(r: &mut In, max: usize) -> Result<Vec<Option<Stack>>> {
     let n = r.list()?;
+    ensure!(n <= max, "{n} item stacks, more than {max}");
     (0..n).map(|_| stack(r)).collect()
 }
 
@@ -426,6 +428,7 @@ fn filterable(r: &mut In, value: fn(&mut In) -> Result<()>) -> Result<()> {
 
 fn lore(r: &mut In) -> Result<Vec<Line>> {
     let n = r.list()?;
+    ensure!(n <= MAX_LORE, "{n} lore lines");
     (0..n).map(|_| Ok(text::line(&r.nbt()?))).collect()
 }
 
@@ -721,7 +724,7 @@ mod tests {
         let mut o = Out::default();
         o.varint(3).raw(&item(2, 4, &[], &[])).varint(0).raw(&item(1, 5, &[], &[]));
         let mut r = In::new(&o.0);
-        let slots = stacks(&mut r).unwrap();
+        let slots = stacks(&mut r, 8).unwrap();
         assert_eq!(slots.iter().map(|s| s.as_ref().map(|s| s.item)).collect::<Vec<_>>(), [Some(4), None, Some(5)]);
         assert_eq!(r.left(), 0);
     }

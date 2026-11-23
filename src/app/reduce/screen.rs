@@ -8,12 +8,14 @@ use crate::core::ipc::{Click, FromMod, ToMod};
 /// Takes in what the server of `key` shows it now.
 pub(super) fn shown(m: &mut Model, key: &str, message: FromMod, out: &mut Vec<Effect>) {
     let Some(before) = m.games.get(key).filter(|g| g.connection).map(|g| g.shows) else { return };
+    m.session.map_seq += 1;
+    let seq = m.session.map_seq;
     let screen = m.screens.entry(key.to_owned()).or_default();
     let fresh = match message {
         FromMod::Map { map } => {
-            let fresh = map.is_some();
+            let fresh = map.as_ref().is_some_and(|new| screen.map.as_ref().is_none_or(|old| old.id != new.id));
             screen.map = map;
-            screen.map_seq += 1;
+            screen.map_seq = seq;
             fresh
         }
         FromMod::Menu { menu } => {
@@ -143,6 +145,22 @@ mod tests {
         assert!(m.games[&key].shows.map);
         shows(&mut m, &s, &key, FromMod::Map { map: None });
         assert!(!m.screens.contains_key(&key) && !m.games[&key].shows.any());
+    }
+
+    #[test]
+    fn a_seen_map_changing_asks_for_nothing_and_its_number_never_repeats() {
+        let (mut m, key, s) = playing();
+        let map = |id, c| FromMod::Map { map: Some(MapPicture { id, colors: vec![c; 16384] }) };
+        shows(&mut m, &s, &key, map(3, 0));
+        run(&mut m, &s, Instant::now(), Event::LookAtScreen(Some(key.clone())));
+        run(&mut m, &s, Instant::now(), Event::LookAtScreen(None));
+        let first = m.screens[&key].map_seq;
+        shows(&mut m, &s, &key, map(3, 1));
+        assert!(m.needs(None).is_empty(), "new pixels of a seen map ask for nothing");
+        shows(&mut m, &s, &key, FromMod::Map { map: None });
+        shows(&mut m, &s, &key, map(4, 2));
+        assert!(m.screens[&key].map_seq > first + 1, "a map after an emptied screen gets a new number");
+        assert_eq!(m.needs(None), [(Need::Screen, 1)]);
     }
 
     #[test]

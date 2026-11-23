@@ -245,7 +245,7 @@ impl Shows {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Screen {
     pub map: Option<MapPicture>,
-    /// Bumped whenever the map changes, so the view rebuilds its picture only then.
+    /// Changes whenever the map changes and never repeats, so the view rebuilds its picture only then.
     pub map_seq: u64,
     pub menu: Option<Menu>,
     pub titles: Titles,
@@ -314,6 +314,13 @@ pub struct ChatLine {
     pub text: String,
     /// The line as the game shows it, styled; empty when `from` and `text` say it all.
     pub runs: Vec<chat_text::Run>,
+}
+
+impl ChatLine {
+    /// Whether the game `key` received this line, first or as one of the copies joined to it.
+    pub fn reached(&self, key: &str) -> bool {
+        self.instance == key || self.also.iter().any(|(k, ..)| k == key)
+    }
 }
 
 /// Everything the views read. Only the reducer and the shell that runs its effects change it.
