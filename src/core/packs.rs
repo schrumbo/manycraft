@@ -26,6 +26,7 @@ const CDN: &str = "https://cdn.modrinth.com/";
 const SHOT_WIDTH: u32 = 960;
 const MAX_SIDE: u32 = 8192;
 const MAX_DECODED: u64 = 256 << 20;
+const MAX_ICON: u64 = 4 << 20;
 
 static HASHES: LazyLock<Mutex<HashMap<PathBuf, (u64, SystemTime, String)>>> = LazyLock::new(Mutex::default);
 
@@ -594,14 +595,60 @@ pub fn shot_file(url: &str) -> Result<PathBuf> {
     if !url.starts_with(CDN) {
         bail!("picture is not on Modrinth's CDN");
     }
-    let dir = paths::data_dir().join("cache").join("gallery");
-    let path = dir.join(format!("{}-{SHOT_WIDTH}.png", sha1_hex(url)));
+    cached_picture("gallery", url, |url| net::get_bytes(&net::agent(None)?, url))
+}
+
+/// A picture of a project description as a file in the cache folder, at most `SHOT_WIDTH` wide.
+/// Only public web hosts are fetched. Blocking: run it off the UI thread.
+pub fn readme_picture(url: &str) -> Result<PathBuf> {
+    if !public_https(url) {
+        bail!("picture is not on a public https host");
+    }
+    cached_picture("readme", url, |url| net::get_bytes_vetted(url, public_https))
+}
+
+/// The picture of a pack: its `pack.png`, in a folder as it is, in a zip copied to the cache folder.
+/// Blocking: run it off the UI thread.
+pub fn icon_file(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        return Some(path.join("pack.png")).filter(|p| p.is_file());
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    let stamp = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let out = paths::data_dir().join("cache").join("packicons").join(format!("{}-{}-{stamp}.png", sha1_hex(&path.to_string_lossy()), meta.len()));
+    if out.is_file() {
+        return Some(out);
+    }
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+    let entry = archive.by_name("pack.png").ok()?;
+    if entry.size() > MAX_ICON {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(entry, MAX_ICON), &mut bytes).ok()?;
+    net::write_atomic(&out, &bytes).ok()?;
+    Some(out)
+}
+
+fn cached_picture(folder: &str, url: &str, fetch: impl FnOnce(&str) -> Result<Vec<u8>>) -> Result<PathBuf> {
+    let path = paths::data_dir().join("cache").join(folder).join(format!("{}-{SHOT_WIDTH}.png", sha1_hex(url)));
     if path.is_file() {
         return Ok(path);
     }
-    let bytes = net::get_bytes(&net::agent(None)?, url)?;
+    let bytes = fetch(url)?;
     net::write_atomic(&path, &shrink(&bytes)?)?;
     Ok(path)
+}
+
+fn public_https(url: &str) -> bool {
+    let Some(rest) = url.get(..8).filter(|s| s.eq_ignore_ascii_case("https://")).map(|_| &url[8..]) else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = authority.rsplit_once(':').map_or(authority, |(h, port)| if port.chars().all(|c| c.is_ascii_digit()) { h } else { authority }).to_ascii_lowercase();
+    let private_suffix = [".local", ".localhost", ".internal", ".lan", ".home", ".corp"].iter().any(|s| host.ends_with(s));
+    host.contains('.') && !host.starts_with('[') && !private_suffix && host.parse::<std::net::IpAddr>().is_err() && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
 fn shrink(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -629,6 +676,22 @@ mod tests {
 
     fn found(project: &str, file: &str, sha1: &str) -> ModRef {
         ModRef { project_id: project.into(), version_id: format!("v-{project}"), title: project.into(), file_name: file.into(), url: String::new(), sha1: sha1.into() }
+    }
+
+    #[test]
+    fn readme_pictures_come_only_from_public_https_hosts() {
+        assert!(public_https("https://raw.githubusercontent.com/a/b/main/x.png"));
+        assert!(public_https("HTTPS://cdn.modrinth.com:443/x.png?v=1"));
+        assert!(!public_https("http://example.org/x.png"));
+        assert!(!public_https("https://localhost/x.png"));
+        assert!(!public_https("https://printer.local/x.png"));
+        assert!(!public_https("https://127.0.0.1/x.png"));
+        assert!(!public_https("https://192.168.0.2:8080/x.png"));
+        assert!(!public_https("https://[::1]/x.png"));
+        assert!(!public_https("https://user@example.org/x.png"));
+        assert!(!public_https("https://intranet/x.png"));
+        assert!(!public_https("file:///etc/passwd"));
+        assert!(!public_https("https://"));
     }
 
     #[test]

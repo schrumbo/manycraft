@@ -12,20 +12,23 @@ const TOTAL: Duration = Duration::from_secs(15 * 60);
 const MAX_JSON: u64 = 64 << 20;
 const MAX_FILE: u64 = 1 << 30;
 const RENAME_ATTEMPTS: u32 = 12;
+const MAX_HOPS: usize = 5;
 
 /// HTTP agent, routed through `proxy` when given (`socks5://user:pass@host:port`, `http://host:port`),
 /// otherwise through the proxy from the environment, if any. Connecting gives up after 10 s, a stalled read after 30 s,
 /// and a whole request after 15 minutes.
 pub fn agent(proxy: Option<&str>) -> Result<ureq::Agent> {
+    Ok(builder(proxy)?.build().into())
+}
+
+fn builder(proxy: Option<&str>) -> Result<ureq::config::ConfigBuilder<ureq::typestate::AgentScope>> {
     let proxy = proxy.map(ureq::Proxy::new).transpose().context("invalid proxy address")?.or_else(ureq::Proxy::try_from_env);
     Ok(ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT))
         .timeout_per_read(Some(PER_READ))
         .timeout_global(Some(TOTAL))
         .user_agent(concat!("Manycraft/", env!("CARGO_PKG_VERSION")))
-        .proxy(proxy)
-        .build()
-        .into())
+        .proxy(proxy))
 }
 
 /// HTTP agent for short calls: the whole request, connect to last byte, ends within `timeout`. Uses the proxy from the environment, if any.
@@ -110,6 +113,40 @@ pub fn get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
         let mut res = called(agent.get(url).call())?;
         res.body_mut().with_config().limit(MAX_JSON).read_to_vec().map_err(Failure::from)
     })
+}
+
+/// Fetches the body of `url` like `get_bytes`, but follows redirects by hand, at most `MAX_HOPS`,
+/// and only to targets `allow` accepts, `url` itself included.
+pub fn get_bytes_vetted(url: &str, allow: impl Fn(&str) -> bool) -> Result<Vec<u8>> {
+    let agent: ureq::Agent = builder(None)?.max_redirects(0).build().into();
+    let mut at = url.to_owned();
+    for _ in 0..=MAX_HOPS {
+        if !allow(&at) {
+            bail!("{at} is not an allowed address");
+        }
+        let next = retrying(&at, || {
+            let mut res = called(agent.get(&at).call())?;
+            if !res.status().is_redirection() {
+                return res.body_mut().with_config().limit(MAX_JSON).read_to_vec().map(|body| Err(body)).map_err(Failure::from);
+            }
+            let location = res.headers().get("location").and_then(|l| l.to_str().ok()).map(str::to_owned);
+            location.map(Ok).ok_or_else(|| Failure::Fatal(anyhow::anyhow!("redirect without a location")))
+        })?;
+        match next {
+            Err(body) => return Ok(body),
+            Ok(location) => at = resolve(&at, &location).context("unusable redirect")?,
+        }
+    }
+    bail!("too many redirects: {url}")
+}
+
+fn resolve(base: &str, location: &str) -> Option<String> {
+    if location.contains("://") {
+        return Some(location.to_owned());
+    }
+    let (scheme, rest) = base.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    location.starts_with('/').then(|| format!("{scheme}://{host}{location}"))
 }
 
 fn called<T>(outcome: Result<T, ureq::Error>) -> Result<T, Failure> {
@@ -317,6 +354,19 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::time::Instant;
+
+    #[test]
+    fn redirect_targets_resolve_against_the_origin() {
+        assert_eq!(resolve("https://a.org/x/y?q", "/z.png").as_deref(), Some("https://a.org/z.png"));
+        assert_eq!(resolve("https://a.org/x", "http://10.0.0.1/p").as_deref(), Some("http://10.0.0.1/p"));
+        assert_eq!(resolve("https://a.org/x", "z.png"), None);
+    }
+
+    #[test]
+    fn a_refused_address_is_not_requested() {
+        let err = get_bytes_vetted("http://127.0.0.1:9/x", |_| false).unwrap_err();
+        assert!(err.to_string().contains("not an allowed address"), "{err}");
+    }
 
     #[test]
     fn no_network_fails_at_once_without_retries() {

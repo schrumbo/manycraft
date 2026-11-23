@@ -13,6 +13,13 @@ use super::text::{hairline, line};
 use super::{open_external, use_theme};
 use crate::view::theme::{Theme, faces, font, frame, space};
 
+mod html;
+mod picture;
+mod table;
+
+pub use picture::Pic;
+pub use table::Align;
+
 const MAX_QUOTE_DEPTH: usize = 4;
 const MAX_NESTING: usize = 8;
 const MAX_INDENT: usize = 4;
@@ -53,6 +60,8 @@ pub enum Block {
     Quote(Vec<Block>),
     Code(String),
     Rule,
+    Table { align: Vec<Align>, head: Vec<Vec<Run>>, rows: Vec<Vec<Vec<Run>>> },
+    Images(Vec<Pic>),
 }
 
 #[derive(Clone, Default)]
@@ -323,7 +332,7 @@ fn starts_block(line: &str, depth: usize) -> bool {
 
 fn flush(out: &mut Vec<Block>, para: &mut Vec<&str>) {
     if !para.is_empty() {
-        out.push(Block::Paragraph(inline(&para.join(" "))));
+        out.push(Block::Paragraph(inline(&picture::without_pictures(&para.join(" ")))));
         para.clear();
     }
 }
@@ -412,11 +421,23 @@ fn parse(lines: &[&str], depth: usize) -> Vec<Block> {
                 i += 1;
             }
             out.push(Block::Quote(parse(&inner, depth + 1)));
+        } else if let Some((table, next)) = table::parse(lines, i) {
+            flush(&mut out, &mut para);
+            out.push(table);
+            i = next;
         } else if item_of(line).is_some() {
             flush(&mut out, &mut para);
             let (list, next) = list_from(lines, i, depth);
             out.push(list);
             i = next.max(i + 1);
+        } else if let Some(pics) = picture::only_pictures(line.trim()) {
+            flush(&mut out, &mut para);
+            let continues = i > 0 && !lines[i - 1].trim().is_empty();
+            match out.last_mut() {
+                Some(Block::Images(row)) if continues => row.extend(pics),
+                _ => out.push(Block::Images(pics)),
+            }
+            i += 1;
         } else {
             para.push(line.trim());
             i += 1;
@@ -549,7 +570,8 @@ fn references(text: &str) -> Cow<'_, str> {
 /// The blocks of `text`: headings, paragraphs joined across line breaks, lists, quotes, code fences and rules.
 /// Reference links (`[text][ref]`, `[ref]`) are resolved against their `[ref]: url` lines, which are not shown.
 pub fn blocks(text: &str) -> Vec<Block> {
-    let text = references(text);
+    let text = html::normalize(text);
+    let text = references(&text);
     let lines: Vec<&str> = text.lines().collect();
     parse(&lines, 0)
 }
@@ -585,6 +607,7 @@ struct Prose {
     size: f32,
     weight: FontWeight,
     color: Color,
+    align: TextAlign,
 }
 
 impl Component for Prose {
@@ -594,7 +617,7 @@ impl Component for Prose {
         let mut hovering = use_state(|| false);
         let mut pressed = use_state(|| None::<Range<usize>>);
         let links = link_ranges(&self.runs);
-        let mut p = paragraph().width(Size::fill()).line_height(frame::PARA_LINE).font_size(self.size).color(self.color).font_weight(self.weight).holder(holder.clone());
+        let mut p = paragraph().width(Size::fill()).line_height(frame::PARA_LINE).font_size(self.size).color(self.color).font_weight(self.weight).text_align(self.align).holder(holder.clone());
         if let Some(f) = &t.font {
             p = p.font_family(f.clone());
         }
@@ -651,7 +674,7 @@ impl Component for Prose {
 }
 
 fn prose(runs: &[Run], size: f32, weight: FontWeight, color: Color) -> Element {
-    Prose { runs: runs.to_vec(), size, weight, color }.into_element()
+    Prose { runs: runs.to_vec(), size, weight, color, align: TextAlign::Left }.into_element()
 }
 
 fn code_block(t: &Theme, text: &str) -> Element {
@@ -704,12 +727,21 @@ fn view_block(t: &Theme, block: &Block, color: Color) -> Element {
             .into_element(),
         Block::Code(text) => code_block(t, text),
         Block::Rule => hairline(t),
+        Block::Table { align, head, rows } => table::view(t, align, head, rows, color),
+        Block::Images(pics) => picture::view(pics),
     }
 }
 
-/// `blocks` as a column, body text in `color`.
+/// `blocks` as a column, body text in `color`; prose keeps a readable measure while tables, pictures and code use the width.
 pub fn view(t: &Theme, blocks: &[Block], color: Color) -> Element {
-    rect().width(Size::fill()).spacing(space::M).children(blocks.iter().map(|b| view_block(t, b, color))).into_element()
+    let column = blocks.iter().map(|b| {
+        let block = view_block(t, b, color);
+        match b {
+            Block::Table { .. } | Block::Images(_) | Block::Code(_) | Block::Rule => block,
+            _ => rect().width(Size::fill()).max_width(Size::px(frame::PROSE_MAX)).child(block).into_element(),
+        }
+    });
+    rect().width(Size::fill()).spacing(space::M).children(column).into_element()
 }
 
 #[cfg(test)]
@@ -909,5 +941,41 @@ mod tests {
         assert!(blocks("").is_empty());
         assert!(blocks("\n  \n").is_empty());
         assert!(inline("").is_empty());
+    }
+
+    #[test]
+    fn a_pipe_table_is_one_block_between_paragraphs() {
+        let got = blocks("Intro\n| a | b |\n|---|---|\n| 1 | 2 |\n\nOutro");
+        assert!(matches!(got[0], Block::Paragraph(_)));
+        assert!(matches!(&got[1], Block::Table { rows, .. } if rows.len() == 1));
+        assert!(matches!(got[2], Block::Paragraph(_)));
+        assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn badge_lines_form_one_row_of_pictures() {
+        let got = blocks("![a](https://x.org/a.svg)\n![b](https://x.org/b.svg)\n\n![c](https://x.org/c.png)");
+        assert!(matches!(&got[0], Block::Images(row) if row.len() == 2));
+        assert!(matches!(&got[1], Block::Images(row) if row.len() == 1));
+    }
+
+    #[test]
+    fn a_picture_among_words_is_its_alt_text() {
+        assert_eq!(blocks("See ![the logo](https://x.org/a.png) here"), vec![Block::Paragraph(vec![plain("See the logo here")])]);
+    }
+
+    #[test]
+    fn html_descriptions_read_like_markdown() {
+        let got = blocks("<h1 align=\"center\">Sodium</h1>\n<p align=\"center\"><a href=\"https://x.org\"><img src=\"https://x.org/a.png\" width=\"300\"></a></p>\n<ul><li>Fast</li><li>Free</li></ul>");
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[0], Block::Heading { level: 1, .. }));
+        assert!(matches!(&got[1], Block::Images(row) if row[0].width == Some(300) && row[0].link.as_deref() == Some("https://x.org")));
+        assert!(matches!(&got[2], Block::List(items) if items.len() == 2));
+    }
+
+    #[test]
+    fn a_reference_style_picture_is_resolved() {
+        let got = blocks("![logo][l]\n\n[l]: https://x.org/a.png");
+        assert!(matches!(&got[0], Block::Images(row) if row[0].url == "https://x.org/a.png"));
     }
 }

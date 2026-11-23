@@ -651,7 +651,7 @@ fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>
                 Ok(entry) => entry,
                 Err(e) if is_unavailable(&e) => {
                     seen.insert(project_id);
-                    skipped.push(trf("%1$@ „%2$@“ wird ohne installiert.", &[&e.to_string(), &parent]));
+                    skipped.push(trf("%1$@ „%2$@“ wird trotzdem installiert.", &[&e.to_string(), &parent]));
                     continue;
                 }
                 Err(e) => return Err(e.context(trf("Für „%@“ nötig", &[&parent]))),
@@ -1557,7 +1557,7 @@ Connection: close
         let defaults = defaults_from(&fx, SNAPSHOT, &Loader::Quilt(None)).unwrap();
         assert_eq!(titles(&defaults.mods), ["Lithium"]);
         assert!(defaults.notes.contains(&"„Fabric API“ läuft nicht mit Quilt 0.30.2.".to_owned()), "{:?}", defaults.notes);
-        assert!(defaults.notes.iter().any(|n| n.contains("„Lithium“ wird ohne installiert")), "{:?}", defaults.notes);
+        assert!(defaults.notes.iter().any(|n| n.contains("„Lithium“ wird trotzdem installiert")), "{:?}", defaults.notes);
     }
 
     #[test]

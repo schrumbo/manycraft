@@ -90,9 +90,10 @@ pub mod frame {
     pub const MENU_ROW: f32 = 28.;
     /// Rows a long menu shows before it scrolls.
     pub const MENU_ROWS: usize = 12;
-    /// The content width from which the instance page shows its inspector beside the tabs.
     /// The widest the content of an instance tab grows.
     pub const CONTENT_MAX: f32 = 760.;
+    /// The widest a run of prose gets, so a long text stays readable in a wide pane.
+    pub const PROSE_MAX: f32 = 720.;
     /// The width of the welcome card on the first run.
     pub const WELCOME: f32 = 440.;
     /// The width of the welcome card of the Start page.

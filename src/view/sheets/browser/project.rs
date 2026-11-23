@@ -12,7 +12,6 @@ use freya::prelude::*;
 use super::{Face, Facts, Flow, act_of, fit_name, run_hint, saved_when, status_line, stepped, trail_of, trail_view, version_blocked};
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::modrinth::{self, Details, Hit, Kind, Version};
-use crate::core::packs;
 use crate::ui::catalog;
 use crate::ui::forms::{self, Problem, downloads_short};
 use crate::ui::remote;
@@ -261,7 +260,7 @@ impl Pg {
         spawn_in_window(async move {
             let result = off_ui(move || {
                 catalog::details(&asked).map(|(details, saved)| {
-                    let blocks = markdown::blocks(&packs::readable(&details.body));
+                    let blocks = markdown::blocks(&details.body);
                     (details, blocks, saved)
                 })
             })

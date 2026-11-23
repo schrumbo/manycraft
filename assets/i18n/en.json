@@ -2166,5 +2166,22 @@
   "Mods, Ressourcenpakete, Shader und Datenpakete kommen in eine Instanz. Du kannst sie jederzeit wechseln.": "Mods, resource packs, shaders and data packs go into an instance. You can switch it at any time.",
   "Keine passende Instanz vorhanden.": "No compatible instance found.",
   "Wähle oben eine Welt oder füge Global Packs hinzu.": "Choose a world above or add Global Packs.",
-  "Filter: %@": "Filter: %@"
+  "Filter: %@": "Filter: %@",
+  "Auf Modrinth öffnen": "Open on Modrinth",
+  "Readme und Versionen": "Readme and versions",
+  "Mods-Ordner öffnen": "Open mods folder",
+  "Readme und Details": "Readme and details",
+  "Shader filtern": "Filter shaders",
+  "Ressourcenpakete filtern": "Filter resource packs",
+  "Nichts passt zu „%@“.": "Nothing matches “%@”.",
+  "Quellcode": "Source code",
+  "Wiki": "Wiki",
+  "Fehler melden": "Report an issue",
+  "Discord": "Discord",
+  "Auf Modrinth": "On Modrinth",
+  "%lld von %lld": "%lld of %lld",
+  "%1$@ „%2$@“ wird trotzdem installiert.": "%1$@ “%2$@” is installed anyway.",
+  "Neue Version verfügbar": "New version available",
+  "Update": "Update",
+  "Neu: %@": "New: %@"
 }
