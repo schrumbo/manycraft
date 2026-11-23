@@ -358,6 +358,15 @@ pub struct Details {
     pub gallery: Vec<Shot>,
     #[serde(default)]
     pub icon_url: Option<String>,
+    /// The project's own pages: where its source, wiki, bug tracker and Discord live.
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub wiki_url: Option<String>,
+    #[serde(default)]
+    pub issues_url: Option<String>,
+    #[serde(default)]
+    pub discord_url: Option<String>,
 }
 
 /// One picture of a project's gallery.
@@ -655,7 +664,10 @@ fn lookup_for(src: &dyn Source, key: &str, game_version: &str, loader: &Loader, 
     })
 }
 
-fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>, game_version: &str, loader: &Loader, target: &Target) -> Result<()> {
+/// Adds the required dependencies of `entries` to them, recursively. A dependency that has no build for the game and loader
+/// is left out and explained in the returned notes, since most mods run without it; any other failure is an error.
+fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>, game_version: &str, loader: &Loader, target: &Target) -> Result<Vec<String>> {
+    let mut skipped = Vec::new();
     let mut i = 0;
     while i < entries.len() {
         let parent = entries[i].found.title.clone();
@@ -669,13 +681,21 @@ fn expand(src: &dyn Source, entries: &mut Vec<Entry>, seen: &mut HashSet<String>
             if seen.contains(&project_id) {
                 continue;
             }
-            let entry = lookup_for(src, &project_id, game_version, loader, target).with_context(|| trf("Für „%@“ nötig", &[&parent]))?;
+            let entry = match lookup_for(src, &project_id, game_version, loader, target) {
+                Ok(entry) => entry,
+                Err(e) if is_unavailable(&e) => {
+                    seen.insert(project_id);
+                    skipped.push(trf("%1$@ „%2$@“ wird trotzdem installiert.", &[&e.to_string(), &parent]));
+                    continue;
+                }
+                Err(e) => return Err(e.context(trf("Für „%@“ nötig", &[&parent]))),
+            };
             seen.insert(entry.found.project_id.clone());
             entries.push(entry);
         }
         i += 1;
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn check_compatible(entries: &[Entry]) -> Result<()> {
@@ -689,11 +709,25 @@ fn check_compatible(entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
-fn resolve_all<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str, loader: &Loader) -> Result<(Vec<Entry>, usize)> {
+/// The mods a resolution settled on, with the required dependencies it had to leave out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Resolved {
+    pub mods: Vec<ModRef>,
+    /// One sentence per dependency that has no build for the game and loader.
+    pub skipped: Vec<String>,
+}
+
+struct Graph {
+    entries: Vec<Entry>,
+    requested: usize,
+    skipped: Vec<String>,
+}
+
+fn resolve_all<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str, loader: &Loader) -> Result<Graph> {
     resolve_for(src, roots, game_version, loader, &src.target(game_version, loader))
 }
 
-fn resolve_for<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str, loader: &Loader, target: &Target) -> Result<(Vec<Entry>, usize)> {
+fn resolve_for<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str, loader: &Loader, target: &Target) -> Result<Graph> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for root in roots {
@@ -703,12 +737,12 @@ fn resolve_for<S: AsRef<str>>(src: &dyn Source, roots: &[S], game_version: &str,
         }
     }
     let requested = entries.len();
-    expand(src, &mut entries, &mut seen, game_version, loader, target)?;
+    let skipped = expand(src, &mut entries, &mut seen, game_version, loader, target)?;
     check_compatible(&entries)?;
-    Ok((entries, requested))
+    Ok(Graph { entries, requested, skipped })
 }
 
-fn resolve_version_from(src: &dyn Source, version_id: &str, game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+fn resolve_version_from(src: &dyn Source, version_id: &str, game_version: &str, loader: &Loader) -> Result<Resolved> {
     let version = src.version(version_id)?;
     let project = src.project(&version.project_id)?.ok_or_else(|| Unavailable(format!("{} is not on Modrinth", version.project_id)))?;
     let root = Entry {
@@ -718,9 +752,9 @@ fn resolve_version_from(src: &dyn Source, version_id: &str, game_version: &str, 
     };
     let mut seen = HashSet::from([root.found.project_id.clone()]);
     let mut entries = vec![root];
-    expand(src, &mut entries, &mut seen, game_version, loader, &src.target(game_version, loader))?;
+    let skipped = expand(src, &mut entries, &mut seen, game_version, loader, &src.target(game_version, loader))?;
     check_compatible(&entries)?;
-    Ok(entries.into_iter().map(|e| e.found).collect())
+    Ok(Resolved { mods: entries.into_iter().map(|e| e.found).collect(), skipped })
 }
 
 fn clash(kept: &[Entry], fresh: &[Entry]) -> Option<(String, String)> {
@@ -735,11 +769,11 @@ fn defaults_from(src: &dyn Source, game_version: &str, loader: &Loader) -> Resul
 
 fn defaults_with(src: &dyn Source, game_version: &str, loader: &Loader, slots: &[&Slot]) -> Result<Defaults> {
     let target = src.target(game_version, loader);
-    let resolve_slot = |slot: &&Slot| -> Result<Result<Vec<Entry>, String>> {
+    let resolve_slot = |slot: &&Slot| -> Result<Result<Graph, String>> {
         let mut first = None;
         for id in slot.ids {
             match resolve_for(src, &[id], game_version, loader, &target) {
-                Ok((found, _)) => return Ok(Ok(found)),
+                Ok(graph) => return Ok(Ok(graph)),
                 Err(e) if net::no_connection(&e) => return Err(e),
                 Err(e) => {
                     first.get_or_insert_with(|| format!("{e:#}"));
@@ -755,14 +789,19 @@ fn defaults_with(src: &dyn Source, game_version: &str, loader: &Loader, slots: &
     let mut skipped = Vec::new();
     for (slot, found) in slots.iter().zip(resolved) {
         match found {
-            Ok(found) => {
-                let fresh: Vec<Entry> = found.into_iter().filter(|entry| !seen.contains(&entry.found.project_id)).collect();
+            Ok(graph) => {
+                let fresh: Vec<Entry> = graph.entries.into_iter().filter(|entry| !seen.contains(&entry.found.project_id)).collect();
                 if let Some((title, other)) = clash(&entries, &fresh) {
                     notes.push(trf("„%1$@“ passt nicht zu „%2$@“ und wurde ausgelassen.", &[&title, &other]));
                     skipped.push(slot.name.to_owned());
                 } else {
                     seen.extend(fresh.iter().map(|entry| entry.found.project_id.clone()));
                     entries.extend(fresh);
+                    for note in graph.skipped {
+                        if !notes.contains(&note) {
+                            notes.push(note);
+                        }
+                    }
                 }
             }
             Err(note) => {
@@ -1139,15 +1178,16 @@ pub fn resolve(slug_or_id: &str, game_version: &str, loader: &Loader) -> Result<
 
 /// The version `version_id` of a mod, whatever newer ones exist, with its required dependencies resolved like
 /// [`resolve_with_dependencies`]; the mod itself comes first. Two incompatible mods are an error naming both.
-pub fn resolve_version(version_id: &str, game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
+pub fn resolve_version(version_id: &str, game_version: &str, loader: &Loader) -> Result<Resolved> {
     resolve_version_from(&Api::new()?, version_id, game_version, loader)
 }
 
 /// Resolves every mod in `list` and, recursively, its required dependencies, each project once.
-/// Listed mods come first. Two incompatible mods are an error naming both.
-pub fn resolve_with_dependencies<S: AsRef<str>>(list: &[S], game_version: &str, loader: &Loader) -> Result<Vec<ModRef>> {
-    let (entries, _) = resolve_all(&Api::new()?, list, game_version, loader)?;
-    Ok(entries.into_iter().map(|e| e.found).collect())
+/// Listed mods come first. Two incompatible mods are an error naming both; a required dependency without a build for
+/// `game_version` and the loader is left out and named in `skipped`.
+pub fn resolve_with_dependencies<S: AsRef<str>>(list: &[S], game_version: &str, loader: &Loader) -> Result<Resolved> {
+    let graph = resolve_all(&Api::new()?, list, game_version, loader)?;
+    Ok(Resolved { mods: graph.entries.into_iter().map(|e| e.found).collect(), skipped: graph.skipped })
 }
 
 /// The performance preset for every mod loader, for Vanilla none, each mod with its dependencies: Debugify, Sodium,
@@ -1309,7 +1349,10 @@ fn run(args: &[String]) -> Result<i32> {
             println!("{} ({})  {} downloads\n  {}", hit.title, hit.slug, hit.downloads, hit.description);
         }
     } else {
-        let (entries, requested) = resolve_all(&Api::new()?, &words, &version, &Loader::default())?;
+        let Graph { entries, requested, skipped } = resolve_all(&Api::new()?, &words, &version, &Loader::default())?;
+        for note in skipped {
+            println!("{note}");
+        }
         for (i, entry) in entries.iter().enumerate() {
             let m = &entry.found;
             let marker = if i < requested { "" } else { "  + " };
@@ -1569,9 +1612,9 @@ Connection: close
         fx.add("lithium", r#"{"id":"id-l","slug":"lithium","title":"Lithium"}"#, r#"[{"id":"vl","project_id":"id-l","version_type":"release","date_published":"2026-11-01T00:00:00Z","game_versions":["26.4-snapshot-7"],"loaders":["fabric"],"files":[{"url":"https://x/l.jar","filename":"l.jar","primary":true,"hashes":{"sha1":"11"}}],"dependencies":[{"project_id":"P7dR8mSH","dependency_type":"required"}]}]"#);
         let lithium = Slot { name: "Lithium", ids: &["lithium"], windows_only: false };
         let defaults = defaults_with(&fx, SNAPSHOT, &Loader::Quilt(None), &[&lithium]).unwrap();
-        assert!(defaults.mods.is_empty(), "{:?}", titles(&defaults.mods));
-        assert_eq!(defaults.skipped, ["Lithium"]);
-        assert!(defaults.notes.contains(&"Für „Lithium“ nötig: „Fabric API“ läuft nicht mit Quilt 0.30.2.".to_owned()), "{:?}", defaults.notes);
+        assert_eq!(titles(&defaults.mods), ["Lithium"]);
+        assert!(defaults.skipped.is_empty(), "{:?}", defaults.skipped);
+        assert!(defaults.notes.contains(&"„Fabric API“ läuft nicht mit Quilt 0.30.2. „Lithium“ wird trotzdem installiert.".to_owned()), "{:?}", defaults.notes);
     }
 
     #[test]
@@ -1669,7 +1712,7 @@ Connection: close
     }
 
     fn resolved<S: AsRef<str>>(fx: &Fixtures, list: &[S]) -> Result<Vec<ModRef>> {
-        Ok(resolve_all(fx, list, "26.3", &fabric())?.0.into_iter().map(|e| e.found).collect())
+        Ok(resolve_all(fx, list, "26.3", &fabric())?.entries.into_iter().map(|e| e.found).collect())
     }
 
     #[test]
@@ -1768,7 +1811,7 @@ Connection: close
     #[test]
     fn required_dependencies_are_added_recursively() {
         let fx = Fixtures::recorded();
-        let (entries, requested) = resolve_all(&fx, &["modmenu"], "26.3", &fabric()).unwrap();
+        let Graph { entries, requested, .. } = resolve_all(&fx, &["modmenu"], "26.3", &fabric()).unwrap();
         let mods: Vec<ModRef> = entries.into_iter().map(|e| e.found).collect();
         assert_eq!(requested, 1);
         assert_eq!(titles(&mods)[0], "Mod Menu");
@@ -1826,8 +1869,8 @@ Connection: close
     fn a_pinned_version_is_kept_even_when_a_newer_one_exists() {
         let fx = with_old_a(&[]);
         let found = resolve_version_from(&fx, "v-a-old", "26.3", &fabric()).unwrap();
-        assert_eq!(found.iter().map(|m| m.version_id.as_str()).collect::<Vec<_>>(), ["v-a-old"]);
-        assert_eq!(found[0].title, "T-a");
+        assert_eq!(found.mods.iter().map(|m| m.version_id.as_str()).collect::<Vec<_>>(), ["v-a-old"]);
+        assert_eq!(found.mods[0].title, "T-a");
         assert_eq!(resolved(&fx, &["a"]).unwrap()[0].version_id, "v-a");
     }
 
@@ -1835,9 +1878,9 @@ Connection: close
     fn a_pinned_version_brings_its_own_required_dependencies_after_it() {
         let fx = with_old_a(&[("id-b", "required"), ("id-c", "optional")]);
         let found = resolve_version_from(&fx, "v-a-old", "26.3", &fabric()).unwrap();
-        assert_eq!(titles(&found), ["T-a", "T-b"]);
+        assert_eq!(titles(&found.mods), ["T-a", "T-b"]);
         let newest = resolve_version_from(&fx, "v-a", "26.3", &fabric()).unwrap();
-        assert_eq!(titles(&newest), ["T-a", "T-c"]);
+        assert_eq!(titles(&newest.mods), ["T-a", "T-c"]);
     }
 
     #[test]
@@ -1861,11 +1904,27 @@ Connection: close
     }
 
     #[test]
-    fn required_dependency_without_a_version_is_an_error_naming_both() {
-        let fx = Fixtures::synthetic(&[("a", &[("id-gone", "required")])]);
-        let err = format!("{:#}", resolved(&fx, &["a"]).unwrap_err());
-        assert!(err.contains("T-a"), "{err}");
+    fn required_dependency_without_a_version_is_left_out_and_named() {
+        let fx = Fixtures::synthetic(&[("a", &[("id-gone", "required"), ("id-b", "required")]), ("b", &[])]);
+        let graph = resolve_all(&fx, &["a"], "26.3", &fabric()).unwrap();
+        assert_eq!(graph.entries.iter().map(|e| e.found.title.as_str()).collect::<Vec<_>>(), ["T-a", "T-b"]);
+        assert_eq!(graph.skipped.len(), 1, "{:?}", graph.skipped);
+        assert!(graph.skipped[0].contains("id-gone") && graph.skipped[0].contains("T-a"), "{:?}", graph.skipped);
         assert!(resolved(&fx, &["nope"]).is_err_and(|e| is_unavailable(&e)));
+    }
+
+    #[test]
+    fn a_dependency_left_out_is_named_once_however_many_mods_need_it() {
+        let fx = Fixtures::synthetic(&[("a", &[("id-gone", "required")]), ("b", &[("id-gone", "required")])]);
+        assert_eq!(resolve_all(&fx, &["a", "b"], "26.3", &fabric()).unwrap().skipped.len(), 1);
+    }
+
+    #[test]
+    fn a_pinned_version_without_one_of_its_dependencies_still_resolves() {
+        let fx = with_old_a(&[("id-gone", "required")]);
+        let found = resolve_version_from(&fx, "v-a-old", "26.3", &fabric()).unwrap();
+        assert_eq!(titles(&found.mods), ["T-a"]);
+        assert_eq!(found.skipped.len(), 1);
     }
 
     #[test]

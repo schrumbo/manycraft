@@ -4,13 +4,14 @@ use std::rc::Rc;
 
 use freya::prelude::*;
 
+use crate::view::instance::cursor;
 use super::list::{self, Row, Sort};
-use super::row::ROW;
 use super::{Ctx, Fault, Live};
 use crate::app::event::Event as Msg;
 use crate::core::content::{self, Outcome, Trashed};
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::Instance;
+use crate::core::modrinth::Kind;
 use crate::ui::forms::{self, Problem};
 use crate::view::commands::{Extra, Shortcut};
 use crate::view::icons::Icon;
@@ -304,7 +305,7 @@ impl Ctx {
 
     pub(super) fn select_all(&self) {
         let all = self.order();
-        self.cursor.soft(|c| *c = all.last().cloned());
+        self.list.at.soft(|c| *c = all.last().cloned());
         self.anchor.soft(|a| *a = all.first().cloned());
         self.select(all);
     }
@@ -315,11 +316,11 @@ impl Ctx {
 
     pub(super) fn clear_filter(&self) {
         self.query.soft(String::clear);
-        self.list_focus.request_focus();
+        self.list.focus.request_focus();
     }
 
     pub(super) fn click(&self, file: &str) {
-        self.list_focus.request_focus();
+        self.list.focus.request_focus();
         let m = held();
         let toggle = if cfg!(target_os = "macos") { m.contains(Modifiers::META) } else { m.contains(Modifiers::CONTROL) };
         if m.contains(Modifiers::SHIFT) {
@@ -335,7 +336,7 @@ impl Ctx {
             self.select([file.to_owned()]);
             self.anchor.soft(|a| *a = Some(file.to_owned()));
         }
-        self.cursor.soft(|c| *c = Some(file.to_owned()));
+        self.list.stand(file);
     }
 
     fn extend_to(&self, file: &str) {
@@ -349,8 +350,7 @@ impl Ctx {
 
     pub(super) fn step(&self, delta: i64, extend: bool) {
         let order = self.order();
-        let cursor = self.cursor.got().flatten();
-        if let Some(next) = list::step(&order, cursor.as_deref(), delta) {
+        if let Some(next) = cursor::step(&order, self.list.current().as_deref(), delta) {
             self.go_to(&next, extend);
         }
     }
@@ -362,22 +362,13 @@ impl Ctx {
             self.select([file.to_owned()]);
             self.anchor.soft(|a| *a = Some(file.to_owned()));
         }
-        self.cursor.soft(|c| *c = Some(file.to_owned()));
+        self.list.stand(file);
         self.show(file);
     }
 
     fn show(&self, file: &str) {
         let Some(index) = list::row_of(&self.data.peek(), &self.rows(), file) else { return };
-        let top = index as f32 * ROW;
-        let bottom = top + ROW;
-        let view = *self.viewport.peek();
-        let mut scroll = self.scroll;
-        let from = -scroll.position().y;
-        if top < from {
-            scroll.scroll_to_y(-(top as i32));
-        } else if view > 0. && bottom > from + view {
-            scroll.scroll_to_y(-((bottom - view).ceil() as i32));
-        }
+        self.list.show(index);
     }
 
     pub(super) fn sort_by(&self, sort: Sort) {
@@ -391,16 +382,11 @@ impl Ctx {
         }
         let shift = e.modifiers.contains(Modifiers::SHIFT);
         match &e.key {
-            Key::Named(NamedKey::ArrowUp) => self.step(-1, shift),
-            Key::Named(NamedKey::ArrowDown) => self.step(1, shift),
-            Key::Named(NamedKey::PageUp) => self.step(-10, shift),
-            Key::Named(NamedKey::PageDown) => self.step(10, shift),
-            Key::Named(NamedKey::Home) => self.step(i64::MIN / 2, shift),
-            Key::Named(NamedKey::End) => self.step(i64::MAX / 2, shift),
+            key if cursor::motion(key).is_some() => self.step(cursor::motion(key).unwrap_or_default(), shift),
             Key::Named(NamedKey::Escape) if !self.selected.peek().is_empty() => self.clear_selection(),
             Key::Named(NamedKey::Escape) if !self.query.peek().is_empty() => self.clear_filter(),
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => self.delete(self.targets()),
-            Key::Named(NamedKey::Enter) if own => self.open_cursor_menu(),
+            Key::Named(NamedKey::Enter | NamedKey::ContextMenu) if own => self.open_cursor_menu(),
             Key::Character(c) if own && c == " " => self.toggle_selected(),
             _ => return false,
         }
@@ -408,11 +394,9 @@ impl Ctx {
     }
 
     fn open_cursor_menu(&self) {
-        let Some(file) = self.cursor.got().flatten() else { return };
+        let Some(file) = self.list.current() else { return };
         let Some(index) = list::row_of(&self.data.peek(), &self.rows(), &file) else { return };
-        let bounds = *self.bounds.peek();
-        let y = (bounds.y + index as f32 * ROW + scroll_offset(self) + ROW).clamp(bounds.y, bounds.y + bounds.h);
-        self.open_row_menu(&file, (bounds.x + space::XL, y));
+        self.open_row_menu(&file, self.list.menu_point(index));
     }
 
     fn toggle_selected(&self) {
@@ -563,7 +547,7 @@ impl Ctx {
                 Some(Ok((made, trashed))) => {
                     ctx.data.soft(|d| *d = Rc::new(d.without(&files)));
                     ctx.clear_selection();
-                    ctx.cursor.soft(|c| *c = None);
+                    ctx.list.at.soft(|c| *c = None);
                     if let Some(next) = next {
                         ctx.go_to(&next, false);
                     }
@@ -648,8 +632,8 @@ impl Ctx {
             self.select([file.to_owned()]);
             self.anchor.soft(|a| *a = Some(file.to_owned()));
         }
-        self.cursor.soft(|c| *c = Some(file.to_owned()));
-        self.list_focus.request_focus();
+        self.list.stand(file);
+        self.list.focus.request_focus();
         menu::open(self.store.ui, Menu::at(self.row_menu(), at));
     }
 
@@ -673,6 +657,15 @@ impl Ctx {
             let ctx = self.clone();
             items.push(Item::new("instance.mods.menu.fix", tr("Doppelte Mods bereinigen"), move |_| ctx.fix_all()).disabled(locked));
         }
+        if let [only] = chosen.as_slice()
+            && self.project_of(only).is_some()
+        {
+            let (show, web, file) = (self.clone(), self.clone(), only.clone());
+            let web_file = file.clone();
+            items.insert(0, Item::Separator);
+            items.insert(0, Item::new("instance.mods.menu.web", tr("Auf Modrinth öffnen"), move |_| web.show_on_modrinth(&web_file)));
+            items.insert(0, Item::new("instance.mods.menu.project", tr("Readme und Versionen"), move |_| show.show_project(&file)));
+        }
         let (copy, remove, files) = (self.clone(), self.clone(), chosen.clone());
         items.push(Item::Separator);
         items.push(Item::new("instance.mods.menu.copy", tr("Modliste kopieren"), move |_| copy.copy_list()));
@@ -690,6 +683,10 @@ impl Ctx {
         items.push(Item::new("instance.mods.more.copy", tr("Modliste kopieren"), move |_| ctx.copy_list()).disabled(data.entries().is_empty()));
         let ctx = self.clone();
         items.push(Item::new("instance.mods.more.bisect", tr("Fehlerhaften Mod finden…"), move |_| ctx.ask_bisect()).disabled(bisecting));
+        let ctx = self.clone();
+        items.push(Item::new("instance.mods.more.updates", tr("Nach Updates suchen"), move |_| ctx.check_updates()).disabled(self.why_updates().is_some()));
+        let ctx = self.clone();
+        items.push(Item::new("instance.mods.more.folder", tr("Mods-Ordner öffnen"), move |_| ctx.open_folder()));
         if data.analysis.dups > 0 {
             let ctx = self.clone();
             items.push(Item::Separator);
@@ -758,10 +755,42 @@ impl Ctx {
     }
 
     pub(super) fn check_updates(&self) {
-        super::updates::check(self);
+        super::updates::check(self, false);
     }
-}
 
-fn scroll_offset(ctx: &Ctx) -> f32 {
-    ctx.scroll.position().y
+    pub(super) fn check_updates_quietly(&self) {
+        super::updates::check(self, true);
+    }
+
+    fn project_of(&self, file: &str) -> Option<(String, String)> {
+        let data = self.data.peek().clone();
+        let e = data.entry(file)?;
+        match &e.source {
+            content::Source::Modrinth { project_id, .. } => Some((project_id.clone(), e.name())),
+            content::Source::Own => None,
+        }
+    }
+
+    /// Shows the readme and versions of the Modrinth project `file` came from.
+    pub(super) fn show_project(&self, file: &str) {
+        if let Some((project, name)) = self.project_of(file) {
+            crate::view::sheets::browser::open_project(self.store, &self.id, Kind::Mod, &project, &name);
+        }
+    }
+
+    fn show_on_modrinth(&self, file: &str) {
+        if let Some((project, _)) = self.project_of(file) {
+            crate::view::kit::open_external("modrinth", format!("https://modrinth.com/{}/{project}", Kind::Mod.project_type()));
+        }
+    }
+
+    pub(super) fn open_folder(&self) {
+        let Some(dir) = self.store.model.peek().instance(&self.id).map(Instance::mods_dir) else { return };
+        spawn_in_window(async move {
+            let made = dir.clone();
+            if let Some(Ok(())) = off_ui(move || std::fs::create_dir_all(&made)).await {
+                native::open(&dir);
+            }
+        });
+    }
 }

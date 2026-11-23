@@ -2,6 +2,8 @@
 
 pub(crate) mod actions;
 mod crash;
+mod cursor;
+mod entry;
 mod icon;
 mod inspector;
 mod logs;
@@ -31,7 +33,7 @@ use uuid::Uuid;
 pub use self::icon::InstanceIcon;
 pub use self::play::{Hero, Mini, play_now};
 pub use self::title::{Tabs, Title};
-use self::inspector::{Inspector, Strip};
+use self::inspector::Strip;
 use super::commands::{Extra, Shortcut};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
@@ -46,8 +48,6 @@ use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::core::modrinth::Kind;
 
-const SPLIT: f32 = frame::INSPECTOR_SPLIT;
-const INSPECTOR: f32 = frame::INSPECTOR;
 
 const TAB_DIGITS: [Code; 7] = [Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5, Code::Digit6, Code::Digit7];
 
@@ -405,28 +405,17 @@ impl Component for InstancePage {
             return gone(&t, store, m.loaded).into_element();
         };
         let room = ui.window.read().0 - ui.sidebar_room();
-        let wide = room >= SPLIT;
         let body = tab_body(&t, store, tab, f.clone());
         let body = if tab.reads() { page::reading(body).height(Size::fill()) } else { rect().width(Size::fill()).height(Size::fill()).child(body) };
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).child(body);
-        let mut left = rect().width(Size::flex(1.)).height(Size::fill());
-        if !wide {
-            left = left.child(Strip { id: self.id.clone() });
-            for n in inspector::notices(&t, store, &self.id) {
-                left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
-            }
+        let mut page = rect().width(Size::fill()).height(Size::fill()).child(Strip { id: self.id.clone() });
+        for n in inspector::notices(&t, store, &self.id) {
+            page = page.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
         }
         if room < frame::TOOLBAR_TABS {
-            left = left.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
+            page = page.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
         }
-        left = left.child(content).content(Content::flex());
-        let mut page = rect().width(Size::fill()).height(Size::fill()).horizontal().child(left);
-        if wide {
-            page = page
-                .child(rect().width(Size::px(1.)).height(Size::fill()).background(t.separator))
-                .child(rect().width(Size::px(INSPECTOR)).height(Size::fill()).background(t.sidebar).child(Inspector { id: self.id.clone() }));
-        }
-        page.content(Content::flex()).into_element()
+        page.child(content).content(Content::flex()).into_element()
     }
 }
 
@@ -458,8 +447,8 @@ fn tab_body(t: &super::theme::Theme, store: Store, tab: Tab, f: Facts) -> Elemen
                 .into_element()
         }
         Tab::Mods => mods::Mods { facts: f }.into_element(),
-        Tab::Packs => packlist::Packs { facts: f, kind: Kind::ResourcePack }.into_element(),
-        Tab::Shaders => packlist::Packs { facts: f, kind: Kind::Shader }.into_element(),
+        Tab::Packs => rect().key("packs").child(packlist::Packs { facts: f, kind: Kind::ResourcePack }).into_element(),
+        Tab::Shaders => rect().key("shaders").child(packlist::Packs { facts: f, kind: Kind::Shader }).into_element(),
         Tab::Worlds => worlds::Worlds { facts: f }.into_element(),
         Tab::Shots => shots::Shots { facts: f }.into_element(),
         Tab::Logs => logs::Logs { facts: f }.into_element(),

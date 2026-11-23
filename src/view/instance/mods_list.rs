@@ -201,21 +201,6 @@ pub fn row_of(data: &Data, rows: &[Row], file: &str) -> Option<usize> {
     rows.iter().position(|r| matches!(*r, Row::Mod(at) if data.entries().get(at).is_some_and(|e| e.file == file)))
 }
 
-/// The file `delta` rows from `cursor`, clamped to the list; the first or last when there is no cursor.
-pub fn step(order: &[String], cursor: Option<&str>, delta: i64) -> Option<String> {
-    if order.is_empty() {
-        return None;
-    }
-    let last = order.len() as i64 - 1;
-    let at = cursor.and_then(|c| order.iter().position(|f| f == c));
-    let next = match at {
-        Some(at) => (at as i64).saturating_add(delta).clamp(0, last),
-        None if delta < 0 => last,
-        None => 0,
-    };
-    order.get(next as usize).cloned()
-}
-
 /// The files from `anchor` to `file` in `order`, and the anchor used; `file` alone when the anchor is not listed.
 pub fn range(order: &[String], anchor: Option<&str>, file: &str) -> Option<(Vec<String>, String)> {
     let anchor = anchor.filter(|a| order.iter().any(|f| f == a)).unwrap_or(file).to_owned();
@@ -468,19 +453,6 @@ mod tests {
 
     fn list(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("{i}.jar")).collect()
-    }
-
-    #[test]
-    fn stepping_clamps_and_starts_at_the_ends() {
-        let order = list(5);
-        assert_eq!(step(&order, Some("2.jar"), 1).as_deref(), Some("3.jar"));
-        assert_eq!(step(&order, Some("4.jar"), 1).as_deref(), Some("4.jar"));
-        assert_eq!(step(&order, Some("1.jar"), -10).as_deref(), Some("0.jar"));
-        assert_eq!(step(&order, None, 1).as_deref(), Some("0.jar"));
-        assert_eq!(step(&order, None, -1).as_deref(), Some("4.jar"));
-        assert_eq!(step(&order, Some("2.jar"), i64::MAX / 2).as_deref(), Some("4.jar"));
-        assert_eq!(step(&order, Some("2.jar"), i64::MIN / 2).as_deref(), Some("0.jar"));
-        assert!(step(&[], None, 1).is_none());
     }
 
     #[test]

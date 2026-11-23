@@ -90,9 +90,6 @@ pub mod frame {
     pub const MENU_ROW: f32 = 28.;
     /// Rows a long menu shows before it scrolls.
     pub const MENU_ROWS: usize = 12;
-    /// The content width from which the instance page shows its inspector beside the tabs.
-    pub const INSPECTOR_SPLIT: f32 = 860.;
-    pub const INSPECTOR: f32 = 300.;
     /// The widest the content of an instance tab grows. Pages draw in [`crate::view::kit::page`] instead, which has no such cap.
     pub const CONTENT_MAX: f32 = 760.;
     /// The space around the content of a page, on every side.

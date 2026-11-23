@@ -1,4 +1,6 @@
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use freya::prelude::Span as Piece;
 use freya::prelude::*;
@@ -6,6 +8,7 @@ use freya::prelude::*;
 use super::ops::{changed, note};
 use super::{Live, problem_view, snapshots};
 use crate::core::i18n::{tr, trf};
+use crate::core::instance::Instance;
 use crate::core::modrinth::Update;
 use crate::core::snapshot::Reason;
 use crate::ui::forms::{self, Problem};
@@ -20,6 +23,27 @@ use crate::view::store::Store;
 use crate::view::theme::{Theme, control, faces, font, frame, iconsize, space};
 
 const NOTES_MAX: usize = 40;
+const FRESH: Duration = Duration::from_secs(600);
+
+thread_local! {
+    static LOOKED: RefCell<HashMap<String, (Instant, Vec<Update>)>> = RefCell::new(HashMap::new());
+}
+
+fn signature(made: &Instance) -> String {
+    format!("{}|{}|{}|{}", made.id, made.game_version, made.loader.name(), super::list::key_of(made))
+}
+
+fn looked(signature: &str) -> Option<Vec<Update>> {
+    LOOKED.with(|l| l.borrow().get(signature).filter(|(at, _)| at.elapsed() < FRESH).map(|(_, list)| list.clone()))
+}
+
+fn remember(signature: String, list: Vec<Update>) {
+    LOOKED.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|_, (at, _)| at.elapsed() < FRESH);
+        l.insert(signature, (Instant::now(), list));
+    });
+}
 const LIST_MAX: f32 = frame::PALETTE_ROW * 10.;
 
 /// What the tab knows about updates of its mods.
@@ -27,27 +51,51 @@ const LIST_MAX: f32 = frame::PALETTE_ROW * 10.;
 pub(in crate::view::instance) enum Found {
     #[default]
     Idle,
-    Checking,
+    /// `quiet` when nobody asked: the tab looked on its own and says nothing unless it finds something.
+    Checking { quiet: bool },
     Ready(Vec<Update>),
     Failed(String),
     Applying(Vec<Update>),
 }
 
-/// Looks for updates of the tab's mods and shows what it found above the list.
-pub(super) fn check(ctx: &super::Ctx) {
+/// The new version number of every mod with an update, by project; empty when the update does not state one.
+pub(super) fn marks(found: &Found) -> HashMap<String, String> {
+    match found {
+        Found::Ready(list) | Found::Applying(list) => list.iter().map(|u| (u.current.project_id.clone(), u.changelog.first().map(|(number, _)| number.clone()).unwrap_or_default())).collect(),
+        _ => HashMap::new(),
+    }
+}
+
+/// Looks for updates of the tab's mods and shows what it found above the list. A `quiet` look answers from the last one
+/// while it is fresh, and neither reports that all is current nor that it could not look.
+pub(super) fn check(ctx: &super::Ctx, quiet: bool) {
     let mut found = ctx.found;
-    if matches!(*found.peek(), Found::Checking | Found::Applying(_)) {
+    if matches!(*found.peek(), Found::Checking { .. } | Found::Applying(_)) {
         return;
     }
     let Some(made) = ctx.store.model.peek().instance(&ctx.id).cloned() else { return };
-    found.set(Found::Checking);
+    let key = signature(&made);
+    if quiet {
+        if made.mods.is_empty() {
+            return;
+        }
+        if let Some(list) = looked(&key) {
+            found.set(if list.is_empty() { Found::Idle } else { Found::Ready(list) });
+            return;
+        }
+    }
+    found.set(Found::Checking { quiet });
     spawn_in_window(async move {
         let result = off_ui(move || remote::mod_updates(&made)).await;
         if found.try_peek().is_none() {
             return;
         }
         found.set(match result {
-            Some(Ok(list)) => Found::Ready(list),
+            Some(Ok(list)) => {
+                remember(key, list.clone());
+                if list.is_empty() && quiet { Found::Idle } else { Found::Ready(list) }
+            }
+            _ if quiet => Found::Idle,
             Some(Err(e)) => Found::Failed(forms::explain_as(tr("Updates nicht geladen."), &e).text),
             None => Found::Failed(forms::unexplained()),
         });
@@ -82,23 +130,11 @@ pub(super) fn inline(t: &Theme, ctx: &super::Ctx, locked: Option<String>) -> Opt
     let state = ctx.found.read().clone();
     let (store, id) = (ctx.store, ctx.id.to_string());
     let mut found = ctx.found;
-    let bar = |glyph: Icon, color: Color, text: String| {
-        rect()
-            .width(Size::fill())
-            .height(Size::px(control::L))
-            .padding((0., space::S, 0., space::M))
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::S)
-            .corner_radius(t.shape.control)
-            .background(t.raised)
-            .child(icon(t, glyph, iconsize::S, color))
-            .child(line(t, text, font::CALLOUT, t.text1).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::flex(1.)))
-            .content(Content::flex())
-    };
+    let bar = |glyph: Icon, color: Color, text: String| crate::view::instance::entry::bar(t, glyph, color, text);
     let close = Button::icon("instance.mods.updates.close", Icon::Close, tr("Hinweis ausblenden")).plain().on_press(move |_| found.set(Found::Idle));
     let row = match state {
-        Found::Idle | Found::Checking => return None,
+        Found::Idle | Found::Checking { quiet: true } => return None,
+        Found::Checking { quiet: false } => bar(Icon::Refresh, t.text2, tr("Suche nach Updates …")),
         Found::Ready(list) if list.is_empty() => bar(Icon::Check, t.success_text, tr("Alle Mods sind aktuell.")).child(close),
         Found::Failed(text) => {
             let again = ctx.clone();

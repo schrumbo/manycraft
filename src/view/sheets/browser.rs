@@ -20,7 +20,7 @@ use crate::core::batch::ModRef;
 use crate::core::i18n::{Lang, lang, tr, trf};
 use crate::core::instance::{Instance, Loader};
 use crate::core::modicons;
-use crate::core::modrinth::{self, Filter, Hit, Kind, Page, Search, Sort, Support, Update, Version};
+use crate::core::modrinth::{self, Filter, Hit, Kind, Page, Resolved, Search, Sort, Support, Update, Version};
 use crate::core::packs::{self, Installed};
 use crate::core::versions::{GameVersion, shown};
 use crate::core::worlds::{self, World};
@@ -75,6 +75,43 @@ pub fn add_mods(store: Store, id: String) {
     let Some(made) = store.model.peek().instance(&id).cloned() else { return };
     let tab = if made.loader.takes_mods() { Kind::Mod } else { Kind::ResourcePack };
     content::show(store, &id, tab);
+}
+
+thread_local! {
+    static REQUESTED: RefCell<Option<(String, Hit)>> = const { RefCell::new(None) };
+}
+
+/// Shows the page of the Modrinth project `project_id` over the Mods page of instance `id` on the tab of `kind`.
+pub fn open_project(store: Store, id: &str, kind: Kind, project_id: &str, title: &str) {
+    if store.model.peek().instance(id).is_none() {
+        return;
+    }
+    let hit = Hit {
+        title: title.to_owned(),
+        slug: project_id.to_owned(),
+        project_id: project_id.to_owned(),
+        description: String::new(),
+        downloads: 0,
+        icon_url: None,
+        author: String::new(),
+        versions: Vec::new(),
+        categories: Vec::new(),
+    };
+    REQUESTED.with(|r| *r.borrow_mut() = Some((id.to_owned(), hit)));
+    content::show(store, id, kind);
+}
+
+fn requested(id: &str) -> Option<Hit> {
+    REQUESTED.with(|r| {
+        let mut r = r.borrow_mut();
+        match r.take() {
+            Some((wanted, hit)) if wanted == id => Some(hit),
+            other => {
+                *r = other;
+                None
+            }
+        }
+    })
 }
 
 /// Shows the Mods page of instance `id` on the tab of `kind`.
@@ -205,7 +242,7 @@ fn enter_route(page: bool, command: bool) -> Enter {
 }
 
 enum Notice {
-    Added(Vec<String>),
+    Added { extra: Vec<String>, skipped: Vec<String> },
     Making(String),
     NeedsShaderMod { id: &'static str, name: &'static str },
     NoShaderMod,
@@ -904,6 +941,16 @@ impl Flow {
         !self.undos.peek().is_empty()
     }
 
+    /// Tells what an add brought along, and which required dependencies it had to leave out; the first only while no undo is on offer.
+    fn announce_added(&self, extra: Vec<String>, skipped: Vec<String>) {
+        let extra = if self.undoable() { Vec::new() } else { extra };
+        if extra.is_empty() && skipped.is_empty() {
+            return;
+        }
+        let mut notice = self.notice;
+        notice.set(Some(Notice::Added { extra, skipped }));
+    }
+
     fn keep_undo(&self, next: Undo) {
         let mut undos = self.undos;
         keep_undo(&mut undos.write(), next);
@@ -1368,7 +1415,7 @@ impl Flow {
         self.set_version_busy(&id, Some(&version.id));
         self.clear_error();
         let mut notice = self.notice;
-        if matches!(notice.peek().as_ref(), Some(Notice::Added(_) | Notice::NeedsShaderMod { .. })) {
+        if matches!(notice.peek().as_ref(), Some(Notice::Added { .. } | Notice::NeedsShaderMod { .. })) {
             notice.set(None);
         }
         let flow = self.clone();
@@ -1393,24 +1440,27 @@ impl Flow {
             }
             match result {
                 Some(Ok(found)) => {
-                    let resolved: Vec<String> = found.iter().map(|m| m.project_id.clone()).collect();
-                    let merged = merge_version(&mut mods.write(), found, &id);
+                    let resolved: Vec<String> = found.mods.iter().map(|m| m.project_id.clone()).collect();
+                    let skipped = found.skipped;
+                    let merged = merge_version(&mut mods.write(), found.mods, &id);
                     if let Some(mut touched) = flow.scope.touched.filter(|t| t.try_peek().is_some()) {
                         touched.set(true);
                     }
                     if flow.alive() {
                         flow.forget_undo(&resolved);
                         let added: Vec<String> = merged.put.iter().filter(|p| **p != id).cloned().collect();
-                        if let Some((previous, at)) = merged.previous {
+                        let extra = if let Some((previous, at)) = merged.previous {
                             flow.keep_undo(Undo::Switched { pid: id.clone(), title, number, extra: merged.extra, back: Back::Mod { previous, at, added } });
-                        } else if !merged.extra.is_empty() && !flow.undoable() {
-                            notice.set(Some(Notice::Added(merged.extra)));
-                        }
+                            Vec::new()
+                        } else {
+                            merged.extra
+                        };
+                        flow.announce_added(extra, skipped);
                     }
                 }
                 other => {
                     if flow.alive() {
-                        flow.fail::<Vec<ModRef>>(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), other);
+                        flow.fail::<Resolved>(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), other);
                     }
                 }
             }
@@ -1487,7 +1537,7 @@ impl Flow {
         self.mark(&id, true);
         self.clear_error();
         let mut notice = self.notice;
-        if matches!(notice.peek().as_ref(), Some(Notice::Added(_) | Notice::NeedsShaderMod { .. })) {
+        if matches!(notice.peek().as_ref(), Some(Notice::Added { .. } | Notice::NeedsShaderMod { .. })) {
             notice.set(None);
         }
         let flow = self.clone();
@@ -1498,7 +1548,7 @@ impl Flow {
         spawn_in_window(async move {
             let ids = vec![id.clone()];
             let (asked_version, asked_loader) = (version.clone(), loader.clone());
-            let result = off_ui(move || remote::resolve(&ids, &asked_version, &asked_loader)).await;
+            let result = off_ui(move || remote::resolve_noted(&ids, &asked_version, &asked_loader)).await;
             if !flow.mark(&id, false) {
                 return;
             }
@@ -1512,11 +1562,12 @@ impl Flow {
             }
             match result {
                 Some(Ok(found)) => {
-                    let resolved: Vec<String> = found.iter().map(|m| m.project_id.clone()).collect();
+                    let resolved: Vec<String> = found.mods.iter().map(|m| m.project_id.clone()).collect();
+                    let skipped = found.skipped;
                     let mut extra = Vec::new();
                     {
                         let mut list = mods.write();
-                        for m in found {
+                        for m in found.mods {
                             if !list.iter().any(|have| have.project_id == m.project_id) {
                                 if m.project_id != id {
                                     extra.push(m.title.clone());
@@ -1530,14 +1581,12 @@ impl Flow {
                     }
                     if flow.alive() {
                         flow.forget_undo(&resolved);
-                        if !extra.is_empty() && !flow.undoable() {
-                            notice.set(Some(Notice::Added(extra)));
-                        }
+                        flow.announce_added(extra, skipped);
                     }
                 }
                 other => {
                     if flow.alive() {
-                        flow.fail::<Vec<ModRef>>(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), other);
+                        flow.fail::<Resolved>(trf("„%@“ ließ sich nicht hinzufügen.", &[&title]), other);
                     }
                 }
             }
@@ -1997,6 +2046,12 @@ impl Component for Browser {
         });
         let shelf = flow.clone();
         use_hook(move || shelf.shelf());
+        let asked = flow.clone();
+        use_side_effect_with_deps(&self.scope.made.as_ref().map(|m| m.id.clone()), move |id| {
+            if let Some(hit) = id.as_deref().and_then(requested) {
+                asked.open_page(hit);
+            }
+        });
         let back = *store.back.read();
         let retry = flow.clone();
         use_side_effect_with_deps(&back, move |_| retry.retry());
@@ -2525,12 +2580,24 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
     if let Some(Notice::Making(title)) = notice.as_ref() {
         return row().child(note(Icon::CircleCheck, t.success_text, trf("„%@“ wird als neue Instanz angelegt. Den Fortschritt siehst du in der Seitenleiste.", &[title]))).into_element();
     }
+    let skipped: &[String] = match notice.as_ref() {
+        Some(Notice::Added { skipped, .. }) => skipped,
+        _ => &[],
+    };
+    let warnings = |first: Option<Element>| {
+        let mut col = rect().width(Size::fill()).spacing(space::XS).children(first);
+        for text in skipped {
+            col = col.child(row().child(note(Icon::Alert, t.attention_text, text.clone())));
+        }
+        col.into_element()
+    };
     if let Some(top) = undos.last() {
-        return match top {
+        let main = match top {
             Undo::Removed(m, _) => row().child(note(Icon::Check, t.text2, trf("„%@“ entfernt.", &[&m.title]))).child(undo(flow)).into_element(),
             Undo::Trashed { title, .. } => row().child(note(Icon::Trash, t.text2, trf("„%@“ liegt im Papierkorb der Instanz.", &[title]))).child(undo(flow)).into_element(),
             Undo::Switched { title, number, extra, .. } => row().child(note(Icon::Check, t.text2, switched_text(title, number, extra))).child(undo(flow)).into_element(),
         };
+        return warnings(Some(main));
     }
     if notice.is_none()
         && let Some(dir) = flow.pack_dir(true)
@@ -2547,7 +2614,7 @@ fn notice_row(t: &Theme, flow: &Flow, saved: Option<SystemTime>) -> Element {
             .into_element();
     }
     match notice.as_ref() {
-        Some(Notice::Added(titles)) => row().child(note(Icon::CircleCheck, t.success_text, trf("Auch hinzugefügt: %@.", &[&titles.join(", ")]))).into_element(),
+        Some(Notice::Added { extra, .. }) => warnings((!extra.is_empty()).then(|| row().child(note(Icon::CircleCheck, t.success_text, trf("Auch hinzugefügt: %@.", &[&extra.join(", ")]))).into_element())),
         Some(Notice::Making(_)) => row().into_element(),
         Some(Notice::NeedsShaderMod { id, name }) => {
             let (id, name) = (*id, *name);
