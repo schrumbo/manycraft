@@ -673,6 +673,7 @@ impl Component for BatchSheet {
         let (name_problem, server_problem, version_problem) = flow.problems();
         let name_shown = name_problem.clone().filter(|_| tried || !flow.name.read().is_empty());
         let lock = saving.then(saving_text);
+        let proxied = store.model.read().accounts.iter().filter(|a| a.proxy.is_some() && chosen.contains(&a.id)).count();
         let game = instance.as_deref().and_then(|id| store.model.read().instance(id).map(|i| i.game_version.clone())).unwrap_or_else(|| version.clone());
 
         if *flow.asking.read() && editing {
@@ -741,7 +742,7 @@ impl Component for BatchSheet {
             .child(name_field)
             .child(background_section(&t, flow, background, running, &lock))
             .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory }, &lock))
-            .children(open.then(|| unattended::section(&t, flow.unattended, &game, running, &lock)));
+            .children(open.then(|| unattended::section(&t, flow.unattended, &game, running, &lock, proxied)));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
         if let Some(problem) = flow.save_error.read().clone() {

@@ -434,6 +434,13 @@ impl Store {
                     self.reload(true);
                 });
             }
+            Effect::RememberConduct { batch, server, hash } => {
+                let _ = std::thread::Builder::new().name("conduct".into()).spawn(move || {
+                    if let Err(e) = crate::core::batch::remember_conduct(&batch, &server, &hash) {
+                        eprintln!("conduct: {e:#}");
+                    }
+                });
+            }
             Effect::AddAccount => self.ui.page.set(Page::ACCOUNTS),
             Effect::AskQuit { running } => self.ask_quit(running),
             Effect::Quit { keep } => {

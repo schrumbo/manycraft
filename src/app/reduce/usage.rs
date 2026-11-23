@@ -29,7 +29,7 @@ pub(super) fn due(m: &mut Model, out: &mut Vec<Effect>) {
         }
         return;
     }
-    let mut pids: Vec<(String, u32)> = m.session.pids.iter().map(|(k, p)| (k.clone(), *p)).collect();
+    let mut pids: Vec<(String, u32)> = m.session.pids.iter().filter(|(k, _)| !m.games.get(*k).is_some_and(|g| g.connection)).map(|(k, p)| (k.clone(), *p)).collect();
     pids.sort_unstable();
     out.push(Effect::ReadUsage(pids));
 }

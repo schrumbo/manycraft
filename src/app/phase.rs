@@ -93,13 +93,13 @@ mod tests {
             Phase::NetworkLost { server: s() },
             Phase::ServerAway { server: s() },
             Phase::NoNetwork,
-            Phase::Offer { server: s(), offer: crate::core::ipc::Offer { id: s(), required: true, text: None } },
+            Phase::Offer { server: s(), offer: crate::core::ipc::Offer { id: s(), required: true, text: None, conduct: false } },
         ]
     }
 
     #[test]
     fn a_held_resource_pack_needs_the_user_and_only_the_mod_raises_it() {
-        let offer = Phase::Offer { server: "s".into(), offer: crate::core::ipc::Offer { id: "1".into(), required: false, text: None } };
+        let offer = Phase::Offer { server: "s".into(), offer: crate::core::ipc::Offer { id: "1".into(), required: false, text: None, conduct: false } };
         assert!(offer.needs_attention() && offer.is_running() && offer.reconnectable() && !offer.can_chat());
         assert_eq!(offer.need(), Some(super::super::model::Need::Offer));
         for from in all() {

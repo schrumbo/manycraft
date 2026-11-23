@@ -1402,10 +1402,10 @@ mod tests {
         let (shown, unseen) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut b = Batch::new("Farm", "i1");
         b.accounts = vec![shown, unseen];
-        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false, unattended: Unattended { headless: true, screenshots: Some(5), packs: batch::Packs::Decline } };
+        let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false, unattended: Unattended { mode: batch::RunMode::Hidden, screenshots: Some(5), packs: batch::Packs::Decline } };
         apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
         assert_eq!(b.accounts, [unseen]);
-        assert_eq!(b.unattended(), Unattended { headless: true, screenshots: Some(5), packs: batch::Packs::Decline });
+        assert_eq!(b.unattended(), Unattended { mode: batch::RunMode::Hidden, screenshots: Some(5), packs: batch::Packs::Decline });
     }
 
     #[test]

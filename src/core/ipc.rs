@@ -50,6 +50,9 @@ pub struct Offer {
     /// What the server says about the pack.
     #[serde(default)]
     pub text: Option<String>,
+    /// Whether this is a server's code of conduct, which only the user may accept, not a resource pack.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub conduct: bool,
 }
 
 /// Why a connection dropped, as the mod's classifier read the disconnect screen.
@@ -562,7 +565,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&ToMod::Answer { id: "p-1".into(), accept: true }).unwrap(), r#"{"t":"answer","id":"p-1","accept":true}"#);
         assert_eq!(serde_json::to_string(&ToMod::Capture { width: 640 }).unwrap(), r#"{"t":"capture","width":640}"#);
         let held = r#"{"t":"state","kind":"offer","server":"mc.example:25565","reason":null,"cause":null,"offer":{"id":"p-1","required":true,"text":"Bitte laden"}}"#;
-        let offer = Offer { id: "p-1".into(), required: true, text: Some("Bitte laden".into()) };
+        let offer = Offer { id: "p-1".into(), required: true, text: Some("Bitte laden".into()), conduct: false };
         assert_eq!(serde_json::from_str::<FromMod>(held).unwrap(), FromMod::State { kind: StateKind::Offer, server: Some("mc.example:25565".into()), reason: None, cause: None, offer: Some(offer) });
         let bare = r#"{"t":"state","kind":"offer","server":null,"reason":null,"cause":null,"offer":{"id":"p-2","required":false,"text":null}}"#;
         assert!(matches!(serde_json::from_str::<FromMod>(bare).unwrap(), FromMod::State { offer: Some(Offer { required: false, text: None, .. }), .. }));

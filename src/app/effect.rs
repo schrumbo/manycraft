@@ -51,6 +51,8 @@ pub enum Effect {
     ReadMemory,
     /// Reads the memory each of these games, by key and process, holds for itself.
     ReadUsage(Vec<(String, u32)>),
+    /// Keeps the acceptance of a code of conduct on `server` for the batch.
+    RememberConduct { batch: String, server: String, hash: String },
     /// Keeps the measured memory per game of each batch for the next run.
     SaveMeasured(HashMap<String, u32>),
     ReadPreview { key: String, path: PathBuf },

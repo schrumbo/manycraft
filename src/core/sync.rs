@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
@@ -84,8 +84,9 @@ impl Roots {
 }
 
 /// Takes the settings messages out of `raw` and passes every other event on, in order, on the returned receiver.
-pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> io::Result<Receiver<Event>> {
+pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> io::Result<(Receiver<Event>, Sender<Event>)> {
     let (tx, rx) = channel();
+    let out = tx.clone();
     std::thread::Builder::new().name("game-sync".into()).spawn(move || {
         let roots = Roots::current();
         let server = Live { server, games };
@@ -105,7 +106,7 @@ pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> 
             }
         }
     })?;
-    Ok(rx)
+    Ok((rx, out))
 }
 
 fn game_of(peers: &impl Peers, key: &str) -> Option<(String, String)> {

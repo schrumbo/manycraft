@@ -8,7 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -20,14 +20,14 @@ use hickory_resolver::proto::rr::RData;
 use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
-use super::batch::{self, Background, Batch, Packs};
+use super::batch::{self, Background, Batch, Packs, RunMode};
 use super::instance::{self, Instance, Loader};
 use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::options::LaunchOptions;
 use super::proxy::{self, Kind};
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
-use super::{adopt, auth, gpu, ipc, javas, lock, net, paths, scrub, stagger};
+use super::{adopt, auth, gpu, headless, ipc, javas, lock, net, paths, scrub, stagger};
 
 /// Pause between two instance starts unless the caller sets another.
 pub const DEFAULT_STAGGER: Duration = Duration::from_secs(3);
@@ -137,9 +137,14 @@ impl Target {
         self.batch.as_ref().map_or(Background::Full, |b| b.background)
     }
 
-    /// Whether its games run without any window.
+    /// Whether its games are the real game without any window.
     pub fn headless(&self) -> bool {
-        self.batch.as_ref().is_some_and(|b| b.headless)
+        self.batch.as_ref().is_some_and(|b| b.mode == RunMode::Hidden)
+    }
+
+    /// Whether its accounts only connect to the server, without the game.
+    pub fn connection_only(&self) -> bool {
+        self.batch.as_ref().is_some_and(|b| b.mode == RunMode::Connection)
     }
 
     fn packs(&self) -> Packs {
@@ -641,6 +646,10 @@ pub fn solo_key(instance: &Instance, account: Uuid) -> String {
 
 trait Process: Send {
     fn id(&self) -> u32;
+    /// Hands `message` over when the process takes messages by itself instead of through the IPC server.
+    fn deliver(&self, _message: &ipc::ToMod) -> Option<Result<()>> {
+        None
+    }
     fn try_wait(&mut self) -> io::Result<Option<Option<i32>>>;
     fn kill(&mut self) -> io::Result<()>;
     fn wait(&mut self) -> io::Result<Option<i32>>;
@@ -664,6 +673,38 @@ impl Process for Child {
 
     fn wait(&mut self) -> io::Result<Option<i32>> {
         Ok(Child::wait(self)?.code())
+    }
+}
+
+/// A connection-only account as a process: it has no id and ends when the connection does.
+struct Linked {
+    connection: headless::Connection,
+}
+
+impl Process for Linked {
+    fn id(&self) -> u32 {
+        0
+    }
+
+    fn deliver(&self, message: &ipc::ToMod) -> Option<Result<()>> {
+        Some(self.connection.send(message))
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<Option<i32>>> {
+        Ok((!self.connection.is_running()).then_some(None))
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        let _ = self.connection.send(&ipc::ToMod::Quit);
+        Ok(())
+    }
+
+    fn wait(&mut self) -> io::Result<Option<i32>> {
+        Ok(None)
+    }
+
+    fn close(&self) -> bool {
+        self.connection.send(&ipc::ToMod::Quit).is_ok()
     }
 }
 
@@ -790,15 +831,19 @@ impl RunningInstance {
 /// A target readied by `Fleet::prepare_launch`: mods synced, server found, game installed.
 pub struct Prepared {
     target: Target,
-    installed: Installed,
     server_addrs: Vec<SocketAddr>,
-    companion_jar: Option<PathBuf>,
+    way: Way,
+}
+
+enum Way {
+    Game { installed: Installed, companion_jar: Option<PathBuf> },
+    Connection,
 }
 
 impl Prepared {
     /// Whether the games run without the companion: no preview, no background mode, no swapping.
     pub fn plain(&self) -> bool {
-        self.companion_jar.is_none()
+        matches!(&self.way, Way::Game { companion_jar: None, .. })
     }
 }
 
@@ -831,6 +876,7 @@ pub struct Fleet {
     ledger: Option<adopt::Ledger>,
     adopted: Mutex<HashMap<String, String>>,
     line: stagger::Line,
+    events: Sender<ipc::Event>,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -867,8 +913,8 @@ impl Fleet {
 
     fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
-        let events = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), stagger: DEFAULT_STAGGER }, events))
+        let (events, sender) = sync::spawn(ipc.clone(), games.clone(), raw)?;
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), events: sender, stagger: DEFAULT_STAGGER }, events))
     }
 
     fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
@@ -933,11 +979,7 @@ impl Fleet {
     /// Fails as a whole when the game cannot be installed or the server not found; otherwise reports each account.
     pub fn start_batch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Vec<Started>> {
         let prepared = self.prepare_launch(target, accounts, companion_jar, progress)?;
-        let ipc_address = self.ipc.address();
-        let ipc_file = self.ipc_file();
-        let launch = |account: &Account, key: &str, token: &str| -> Result<Box<dyn Process>> {
-            Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token))
-        };
+        let launch = |account: &Account, key: &str, token: &str| self.launch_prepared(&prepared, account, key, token);
         Ok(self.start_all(target, accounts, &prepared.server_addrs, &SystemClock, launch))
     }
 
@@ -946,6 +988,9 @@ impl Fleet {
     /// built-in companion agent for the instance's game.
     pub fn prepare_launch(&self, target: &Target, accounts: &[Account], companion_jar: Option<&Path>, progress: &(dyn Fn(install::Progress) + Sync)) -> Result<Prepared> {
         let instance = &target.instance;
+        if target.connection_only() {
+            return self.prepare_connection(target, accounts);
+        }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
         if !self.instance_runs(&instance.id) {
             sync_mods(instance)?;
@@ -958,18 +1003,34 @@ impl Fleet {
             None if wants_companion(target, accounts) => super::companion::jar(&instance.game_version)?,
             None => None,
         };
-        Ok(Prepared { target: target.clone(), installed, server_addrs, companion_jar })
+        Ok(Prepared { target: target.clone(), server_addrs, way: Way::Game { installed, companion_jar } })
+    }
+
+    fn prepare_connection(&self, target: &Target, accounts: &[Account]) -> Result<Prepared> {
+        let version = &target.instance.game_version;
+        if !headless::supports(version) {
+            bail!(super::i18n::trf("„Nur Verbindung“ geht für Minecraft %@ noch nicht. Schalte es aus oder wähle eine andere Version.", &[version]));
+        }
+        let Some(server) = target.join() else { bail!(super::i18n::tr("„Nur Verbindung“ braucht einen Server. Trag im Batch einen ein.")) };
+        let server_addrs = server_addresses(Some(server), accounts, resolve_all, || !super::online::reachable())?;
+        Ok(Prepared { target: target.clone(), server_addrs, way: Way::Connection })
+    }
+
+    fn launch_prepared(&self, prepared: &Prepared, account: &Account, key: &str, token: &str) -> Result<Box<dyn Process>> {
+        match &prepared.way {
+            Way::Game { installed, companion_jar } => {
+                let (ipc_address, ipc_file) = (self.ipc.address(), self.ipc_file());
+                Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, companion_jar.as_deref(), installed, &ipc_address, ipc_file.as_deref(), key, token))
+            }
+            Way::Connection => connect_one(&prepared.target, account, key, &self.events),
+        }
     }
 
     /// Prepares and starts `account` in the prepared target right away and returns its key.
     /// Refuses a game that already runs, an account that already plays the instance elsewhere, and an account that is
     /// already on the same server in another batch.
     pub fn start_one(&self, prepared: &Prepared, account: &Account) -> Result<String> {
-        let ipc_address = self.ipc.address();
-        let ipc_file = self.ipc_file();
-        self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| {
-            Held::launch(&prepared.target.instance.id, || launch_one(&prepared.target, account, prepared.companion_jar.as_deref(), &prepared.installed, &ipc_address, ipc_file.as_deref(), key, token))
-        })
+        self.launch_checked(&prepared.target, account, &prepared.server_addrs, Instant::now(), |account, key, token| self.launch_prepared(prepared, account, key, token))
     }
 
     fn instance_runs(&self, instance_id: &str) -> bool {
@@ -978,6 +1039,9 @@ impl Fleet {
 
     /// Sends `message` to the companion of the instance `key`. Fails when it is not connected.
     pub fn send(&self, key: &str, message: &ipc::ToMod) -> Result<()> {
+        if let Some(sent) = lock(&self.running).get(key).and_then(|r| r.child.deliver(message)) {
+            return sent;
+        }
         self.ipc.send(key, message)
     }
 
@@ -1072,7 +1136,7 @@ impl Fleet {
         }
         let pid = child.id();
         let game_dir = target.instance.game_dir(account.id);
-        if let Some(ledger) = &self.ledger
+        if let Some(ledger) = self.ledger.as_ref().filter(|_| !target.connection_only())
             && let Some(seen) = adopt::identify(pid)
         {
             let run = adopt::Run {
@@ -1376,6 +1440,23 @@ fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) 
         bail!(super::i18n::trf("Der Proxy braucht Minecraft %@ oder neuer. Entferne ihn oder wähle eine neuere Version.", &[&super::companion::first()]));
     }
     Ok(())
+}
+
+/// Starts the connection of `account` to the batch's server: no game folder, no Java, only the signed-in session.
+fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ipc::Event>) -> Result<Box<dyn Process>> {
+    if account.proxy.is_some() {
+        bail!(super::i18n::tr("Mit einem Proxy geht „Nur Verbindung“ noch nicht. Entferne den Proxy oder schalte den Modus aus."));
+    }
+    let session = match account.kind {
+        AccountKind::Offline => {
+            account::validate_offline_name(&account.name)?;
+            None
+        }
+        AccountKind::Microsoft => Some(auth::session_for(account)?),
+    };
+    let address = target.join().context("no server")?.to_owned();
+    let spec = headless::Spec { key: key.to_owned(), address, name: account.name.clone(), uuid: account.id, session, version: target.instance.game_version.clone(), packs: target.packs() };
+    Ok(Box::new(Linked { connection: headless::start(spec, events.clone())? }))
 }
 
 /// A game without the companion would open its window, so a headless batch does not start one.
@@ -2822,6 +2903,18 @@ mod tests {
     }
 
     #[test]
+    fn a_connection_only_start_refuses_a_proxy_account() {
+        let mut t = target("A");
+        t.batch.as_mut().unwrap().mode = RunMode::Connection;
+        assert!(t.connection_only() && !t.headless());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut proxied = Account::offline("AltOne").unwrap();
+        proxied.proxy = Some("socks5://127.0.0.1:1080".into());
+        let err = connect_one(&t, &proxied, "k", &tx).err().expect("refused").to_string();
+        assert!(err.contains("Proxy"), "{err}");
+    }
+
+    #[test]
     fn a_headless_batch_starts_its_games_windowless_answers_packs_its_way_and_needs_the_companion() {
         let mut batch = target("A");
         let alt = Account::offline("AltOne").unwrap();
@@ -2829,7 +2922,7 @@ mod tests {
         assert!(!plain.jvm.contains(&HEADLESS_FLAG.to_owned()));
         assert!(identity_messages(&batch, &alt, true).contains(&ipc::ToMod::Packs { policy: Packs::Ask }));
         let b = batch.batch.as_mut().unwrap();
-        b.headless = true;
+        b.mode = RunMode::Hidden;
         b.packs = Packs::Decline;
         let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
         assert!(extra.jvm.contains(&HEADLESS_FLAG.to_owned()) && extra.jvm.contains(&"-Dmanycraft.hidden=true".to_owned()));

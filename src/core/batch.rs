@@ -112,10 +112,54 @@ impl Packs {
 /// Minutes between automatic screenshots a headless batch may choose.
 pub const SCREENSHOT_MINUTES: [u32; 5] = [1, 5, 15, 30, 60];
 
-/// How a batch runs unattended: without game windows, with screenshots, and how it answers resource packs.
+/// How the games of a batch run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    /// Real game windows, hidden or shown by the manager.
+    #[default]
+    Windows,
+    /// The real game without any window; previewed by screenshots.
+    Hidden,
+    /// A small protocol client without the game: no window, no picture.
+    Connection,
+}
+
+impl RunMode {
+    fn is_windows(&self) -> bool {
+        *self == Self::Windows
+    }
+
+    /// Whether the games run without any window.
+    pub fn windowless(self) -> bool {
+        self != Self::Windows
+    }
+}
+
+/// Whether the "connection only" mode is offered at all. The release flips it when the mode is not ready to ship.
+pub const CONNECTION_ONLY_OFFERED: bool = true;
+
+/// A server's code of conduct a batch's user accepted, by the hash of its text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conduct {
+    pub server: String,
+    pub hash: String,
+}
+
+/// A stable hash of a code of conduct's text, so a changed text asks again.
+pub fn conduct_hash(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.trim().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// How a batch runs unattended: how its games run, screenshots, and how it answers resource packs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Unattended {
-    pub headless: bool,
+    pub mode: RunMode,
     pub screenshots: Option<u32>,
     pub packs: Packs,
 }
@@ -150,15 +194,26 @@ pub struct Batch {
     /// Games keep the full compiler, so a played game runs as fast as a solo one at the cost of more memory per game.
     #[serde(default)]
     pub full_speed: bool,
-    /// Games run without any window: never shown, rendering only for screenshots.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub headless: bool,
+    /// How the games run: with windows, as the real game without any, or as a connection only. A `headless: true` from an
+    /// early build reads as the hidden game.
+    #[serde(default, alias = "headless", deserialize_with = "lenient_mode", skip_serializing_if = "RunMode::is_windows")]
+    pub mode: RunMode,
+    /// The codes of conduct the user accepted for this batch, one per server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conduct: Vec<Conduct>,
     /// Minutes between automatic screenshots of a headless game; `None` takes them only when asked.
     #[serde(default, deserialize_with = "lenient_minutes", skip_serializing_if = "Option::is_none")]
     pub screenshots: Option<u32>,
     /// What the games answer when a server offers a resource pack; a value from a newer version reads as the default.
     #[serde(default, deserialize_with = "lenient_packs", skip_serializing_if = "Packs::is_ask")]
     pub packs: Packs,
+}
+
+fn lenient_mode<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<RunMode, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(true) => RunMode::Hidden,
+        other => serde_json::from_value::<RunMode>(other).unwrap_or_default(),
+    })
 }
 
 fn lenient_minutes<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
@@ -204,7 +259,8 @@ impl Batch {
             memory_override: None,
             launch_parallel: 0,
             full_speed: false,
-            headless: false,
+            mode: RunMode::Windows,
+            conduct: Vec::new(),
             screenshots: None,
             packs: Packs::Ask,
         }
@@ -212,14 +268,25 @@ impl Batch {
 
     /// Its unattended settings.
     pub fn unattended(&self) -> Unattended {
-        Unattended { headless: self.headless, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs }
+        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs }
     }
 
     /// Takes over `u`; an interval it does not offer reads as none.
     pub fn set_unattended(&mut self, u: Unattended) {
-        self.headless = u.headless;
+        self.mode = u.mode;
         self.screenshots = u.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m));
         self.packs = u.packs;
+    }
+
+    /// Whether the user accepted the code of conduct with `hash` on `server` for this batch.
+    pub fn conduct_accepted(&self, server: &str, hash: &str) -> bool {
+        self.conduct.iter().any(|c| c.server.eq_ignore_ascii_case(server) && c.hash == hash)
+    }
+
+    /// Keeps the acceptance of the code of conduct with `hash` on `server`, replacing an older text of that server.
+    pub fn accept_conduct(&mut self, server: &str, hash: &str) {
+        self.conduct.retain(|c| !c.server.eq_ignore_ascii_case(server));
+        self.conduct.push(Conduct { server: server.to_owned(), hash: hash.to_owned() });
     }
 
     /// The name its measured memory per game is kept under: games with the full compiler hold more, so each choice has a
@@ -258,6 +325,13 @@ pub fn load_all() -> Result<Vec<Batch>> {
 /// Saves `batch` atomically under a lock, refusing to overwrite a change another Manycraft made since this thread loaded it.
 pub fn save(batch: &Batch) -> Result<()> {
     save_in(&batches_dir(), batch)
+}
+
+/// Keeps the user's acceptance of a code of conduct on `server` in the saved batch `id`, as it is on disk now.
+pub fn remember_conduct(id: &str, server: &str, hash: &str) -> Result<()> {
+    let mut batch = load_all()?.into_iter().find(|b| b.id == id).context("the batch is gone")?;
+    batch.accept_conduct(server, hash);
+    save(&batch)
 }
 
 /// Deletes the batch's file. Its instance, mods, configs and worlds stay; anything else in its folder stays too.
@@ -647,17 +721,37 @@ mod tests {
     fn unattended_settings_round_trip_and_read_old_or_odd_files_as_off() {
         let dir = tempfile::tempdir().unwrap();
         let mut b = Batch::new("a", "i1");
-        b.set_unattended(Unattended { headless: true, screenshots: Some(15), packs: Packs::Decline });
+        b.set_unattended(Unattended { mode: RunMode::Hidden, screenshots: Some(15), packs: Packs::Decline });
         save_in(dir.path(), &b).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![b.clone()]);
-        assert_eq!(b.unattended(), Unattended { headless: true, screenshots: Some(15), packs: Packs::Decline });
+        assert_eq!(b.unattended(), Unattended { mode: RunMode::Hidden, screenshots: Some(15), packs: Packs::Decline });
         let read = |extra: &str| serde_json::from_str::<Batch>(&format!(r#"{{"id":"a1","name":"A","instance_id":"i1"{extra}}}"#)).unwrap().unattended();
         assert_eq!(read(""), Unattended::default(), "a batch from before headless runs with windows and asks");
         assert_eq!(read(r#","screenshots":7,"packs":"maybe""#), Unattended::default(), "an interval it does not offer and an unknown answer read as off and ask");
-        assert_eq!(read(r#","headless":true,"screenshots":60,"packs":"accept""#), Unattended { headless: true, screenshots: Some(60), packs: Packs::Accept });
+        assert_eq!(read(r#","headless":true,"screenshots":60,"packs":"accept""#), Unattended { mode: RunMode::Hidden, screenshots: Some(60), packs: Packs::Accept }, "an early build's headless reads as the hidden game");
+        assert_eq!(read(r#","mode":"connection""#).mode, RunMode::Connection);
+        assert_eq!(read(r#","mode":"warp""#).mode, RunMode::Windows, "a mode from a newer version reads as windows");
+        assert_eq!(read(r#","headless":false"#).mode, RunMode::Windows);
         let mut odd = Batch::new("b", "i1");
-        odd.set_unattended(Unattended { headless: false, screenshots: Some(2), packs: Packs::Ask });
+        odd.set_unattended(Unattended { mode: RunMode::Windows, screenshots: Some(2), packs: Packs::Ask });
         assert_eq!(odd.screenshots, None);
+        let json = serde_json::to_string(&odd).unwrap();
+        assert!(!json.contains("mode") && !json.contains("conduct") && !json.contains("headless"), "defaults stay out of the file: {json}");
+    }
+
+    #[test]
+    fn a_code_of_conduct_is_remembered_per_server_by_its_text() {
+        let mut b = Batch::new("a", "i1");
+        let (old, new) = (conduct_hash("No griefing"), conduct_hash("No griefing, no AFK"));
+        assert_ne!(old, new);
+        assert_eq!(old, conduct_hash("  No griefing\n"), "surrounding space does not change the text");
+        assert!(!b.conduct_accepted("play.example.org", &old));
+        b.accept_conduct("play.example.org", &old);
+        assert!(b.conduct_accepted("PLAY.example.org", &old) && !b.conduct_accepted("play.example.org", &new) && !b.conduct_accepted("other.org", &old));
+        b.accept_conduct("play.example.org", &new);
+        assert_eq!(b.conduct.len(), 1, "a new text replaces the old one");
+        let back: Batch = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert!(back.conduct_accepted("play.example.org", &new));
     }
 
     #[test]

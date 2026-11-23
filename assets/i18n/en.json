@@ -2295,5 +2295,30 @@
   "Alle %lld Minuten": {
     "one": "Every minute",
     "other": "Every %lld minutes"
-  }
+  },
+  "Regeln annehmen": "Accept rules",
+  "Regeln ablehnen": "Decline rules",
+  "Alle Regeln annehmen": "Accept all rules",
+  "Verbindung beendet": "Connection ended",
+  "Server fragt nach seinen Regeln": "Server asks for its rules",
+  "„Nur Verbindung“ geht für Minecraft %@ noch nicht. Schalte es aus oder wähle eine andere Version.": "“Connection only” does not work for Minecraft %@ yet. Turn it off or pick another version.",
+  "„Nur Verbindung“ braucht einen Server. Trag im Batch einen ein.": "“Connection only” needs a server. Enter one in the batch.",
+  "Mit einem Proxy geht „Nur Verbindung“ noch nicht. Entferne den Proxy oder schalte den Modus aus.": "“Connection only” does not work with a proxy yet. Remove the proxy or turn the mode off.",
+  "%lld Serverregeln": "%lld server rules",
+  "Serverregeln annehmen": "Accept server rules",
+  "Serverregeln ablehnen": "Decline server rules",
+  "Läuft ohne Spiel – kein Bild": "Runs without the game – no picture",
+  "ohne Bild": "no picture",
+  "Serverregeln": "Server rules",
+  "Regeln": "Rules",
+  "seit %@": "since %@",
+  "Für diese Minecraft-Version noch nicht möglich.": "Not possible for this Minecraft version yet.",
+  "Verstecktes Spiel": "Hidden game",
+  "Nur Verbindung · Beta": "Connection only · Beta",
+  "Jedes Spiel hat sein echtes Fenster, das du im Manager ein- und ausblendest.": "Every game has its real window, which you show and hide in the manager.",
+  "Das echte Spiel läuft unsichtbar und sparsam, ohne Fenster. Mods, Screenshots und ältere Server gehen, es braucht aber den Speicher des Spiels.": "The real game runs unseen and lean, without a window. Mods, screenshots and older servers work, but it needs the memory of the game.",
+  "Kein Spiel und kein Bild, nur Chat und Status: braucht kaum Speicher, aber keine Mods und keine Screenshots. Ob ein Server das erlaubt, entscheidest du.": "No game and no picture, only chat and status: needs little memory, but no mods and no screenshots. Whether a server allows this is up to you.",
+  "Wie die Spiele laufen": "How the games run",
+  "Ein Konto mit Proxy startet in diesem Modus noch nicht.": "An account with a proxy does not start in this mode yet.",
+  "%lld Konten mit Proxy starten in diesem Modus noch nicht.": "%lld accounts with a proxy do not start in this mode yet."
 }

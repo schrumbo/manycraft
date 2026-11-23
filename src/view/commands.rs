@@ -48,6 +48,8 @@ pub enum Command {
     ScreenshotSelected,
     AcceptPacks,
     DeclinePacks,
+    AcceptRules,
+    DeclineRules,
     StartAll,
     StopAll,
     MessageSelected,
@@ -192,7 +194,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 65] = [
+    pub const ALL: [Command; 67] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -200,6 +202,8 @@ impl Command {
         Command::ScreenshotSelected,
         Command::AcceptPacks,
         Command::DeclinePacks,
+        Command::AcceptRules,
+        Command::DeclineRules,
         Command::MessageSelected,
         Command::MoveSelected,
         Command::LeaveSelected,
@@ -293,6 +297,8 @@ impl Command {
             Command::ScreenshotSelected => "ScreenshotSelected",
             Command::AcceptPacks => "AcceptPacks",
             Command::DeclinePacks => "DeclinePacks",
+            Command::AcceptRules => "AcceptRules",
+            Command::DeclineRules => "DeclineRules",
             Command::StartAll => "StartAll",
             Command::StopAll => "StopAll",
             Command::MessageSelected => "MessageSelected",
@@ -360,6 +366,8 @@ impl Command {
             Command::ScreenshotSelected => tr("Screenshot der Ausgewählten"),
             Command::AcceptPacks => tr("Ressourcenpakete annehmen"),
             Command::DeclinePacks => tr("Ressourcenpakete ablehnen"),
+            Command::AcceptRules => tr("Serverregeln annehmen"),
+            Command::DeclineRules => tr("Serverregeln ablehnen"),
             Command::StartAll => tr("Alle starten"),
             Command::StopAll => tr("Alle stoppen"),
             Command::MessageSelected => tr("Nachricht an Ausgewählte…"),
@@ -396,7 +404,7 @@ impl Command {
             Command::RestartSelected | Command::ReconnectSelected | Command::ReconnectDropped => Icon::Refresh,
             Command::MessageSelected => Icon::Message,
             Command::ScreenshotSelected => Icon::Image,
-            Command::AcceptPacks | Command::DeclinePacks => Icon::Package,
+            Command::AcceptPacks | Command::DeclinePacks | Command::AcceptRules | Command::DeclineRules => Icon::Package,
             Command::MoveSelected | Command::LeaveSelected | Command::GroupByBatch => Icon::Layers,
             Command::ShowUngrouped => Icon::Grid,
             Command::ShowHistory => Icon::Clock,
@@ -466,6 +474,8 @@ impl Command {
             Command::ScreenshotSelected => ks(Code::KeyS),
             Command::AcceptPacks => ks(Code::KeyY),
             Command::DeclinePacks => ka(Code::KeyY),
+            Command::AcceptRules => ks(Code::KeyL),
+            Command::DeclineRules => ka(Code::KeyL),
             Command::Larger => k(Code::Equal),
             Command::Smaller => k(Code::Minus),
             Command::Fit => k(Code::Digit0),
@@ -509,9 +519,11 @@ impl Command {
             Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
-            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
-            Command::AcceptPacks if selected.is_empty() => m.games.values().any(|g| matches!(g.phase, Phase::Offer { .. })),
-            Command::AcceptPacks | Command::DeclinePacks => grid && picked().any(|g| matches!(g.phase, Phase::Offer { .. })),
+            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && !g.connection && g.phase.server().is_some() && !g.stopping),
+            Command::AcceptPacks if selected.is_empty() => m.games.values().any(|g| g.phase.needs_pack_answer()),
+            Command::AcceptPacks | Command::DeclinePacks => grid && picked().any(|g| g.phase.needs_pack_answer()),
+            Command::AcceptRules if selected.is_empty() => m.games.values().any(|g| g.phase.needs_rules_answer()),
+            Command::AcceptRules | Command::DeclineRules => grid && picked().any(|g| g.phase.needs_rules_answer()),
             Command::ClearSelection => grid && !selected.is_empty(),
             Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
             Command::MoveSelected => grid && m.batches.len() > 1 && picked().any(|g| m.batch(&g.batch_id).is_some()),
@@ -624,6 +636,10 @@ impl Command {
                 let accept = self == Command::AcceptPacks;
                 store.dispatch(Event::AnswerPack { keys: offers(store, accept), accept });
             }
+            Command::AcceptRules | Command::DeclineRules => {
+                let accept = self == Command::AcceptRules;
+                store.dispatch(Event::AnswerRules { keys: rules(store, accept), accept });
+            }
             Command::StartAll => store.dispatch(Event::StartAll),
             Command::StopAll => store.dispatch(Event::StopAll),
             Command::MessageSelected => ui.message.set(true),
@@ -670,7 +686,14 @@ impl Command {
 
 fn offers(store: Store, accept: bool) -> Vec<String> {
     let m = store.model.peek();
-    let held = |k: &String| m.games.get(k).is_some_and(|g| matches!(g.phase, Phase::Offer { .. }));
+    let held = |k: &String| m.games.get(k).is_some_and(|g| g.phase.needs_pack_answer());
+    let selection = store.ui.selection.peek();
+    if selection.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { selection.iter().filter(|k| held(k)).cloned().collect() }
+}
+
+fn rules(store: Store, accept: bool) -> Vec<String> {
+    let m = store.model.peek();
+    let held = |k: &String| m.games.get(k).is_some_and(|g| g.phase.needs_rules_answer());
     let selection = store.ui.selection.peek();
     if selection.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { selection.iter().filter(|k| held(k)).cloned().collect() }
 }

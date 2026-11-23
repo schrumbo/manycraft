@@ -692,6 +692,12 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 (true, ..) => chat_text::styled(&runs, &text),
             };
             let text = if text.contains('§') { chat_text::plain(&chat_text::styled(&[], &text)) } else { text };
+            if let Some(i) = m.games.get_mut(&key).filter(|i| i.connection) {
+                i.last_chat = Some(match &from {
+                    Some(from) if !text.starts_with(from.as_str()) => format!("{from}: {text}"),
+                    _ => text.clone(),
+                });
+            }
             let (account, batch) = m.games.get(&key).map(|i| (i.name.clone(), i.batch_id.clone())).unwrap_or_default();
             if env.settings.merged_chat {
                 let server = m.games.get(&key).and_then(|i| i.phase.server().map(str::to_owned));

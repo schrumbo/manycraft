@@ -60,6 +60,16 @@ impl Phase {
         matches!(self, Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Crashed { .. } | Phase::Banned { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::Offer { .. })
     }
 
+    /// Whether a server waits for an answer about its resource pack.
+    pub fn needs_pack_answer(&self) -> bool {
+        matches!(self, Phase::Offer { offer, .. } if !offer.conduct)
+    }
+
+    /// Whether a server waits for an answer about its code of conduct.
+    pub fn needs_rules_answer(&self) -> bool {
+        matches!(self, Phase::Offer { offer, .. } if offer.conduct)
+    }
+
     /// Whether the instance is on its way or in the game: a process exists, or a restart after a crash is due.
     pub fn is_active(&self) -> bool {
         self.is_running() || matches!(self, Phase::Restarting { .. })
@@ -113,6 +123,7 @@ impl Phase {
     pub fn need(&self) -> Option<Need> {
         match self {
             Phase::LoginNeeded => Some(Need::SignIn),
+            Phase::Offer { offer, .. } if offer.conduct => Some(Need::Conduct),
             Phase::Offer { .. } => Some(Need::Offer),
             Phase::Disconnected { .. } => Some(Need::Disconnected),
             Phase::Dead { .. } => Some(Need::Dead),
@@ -135,6 +146,8 @@ pub enum Need {
     SignIn,
     /// A server offers a resource pack and waits for the answer.
     Offer,
+    /// A server asks for its code of conduct to be accepted; only the user may.
+    Conduct,
     Disconnected,
     Dead,
     Crashed,
@@ -143,7 +156,7 @@ pub enum Need {
 }
 
 impl Need {
-    pub const ALL: [Need; 7] = [Need::SignIn, Need::Offer, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
+    pub const ALL: [Need; 8] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
 }
 
 /// How many of a set of games each selection action acts on.
@@ -204,6 +217,10 @@ pub struct Game {
     pub measured_as: Option<String>,
     /// Runs without any window, fixed by how it was started: never shown, previewed only by screenshots.
     pub headless: bool,
+    /// Only a connection to the server, without the game, fixed by how it was started: no picture at all.
+    pub connection: bool,
+    /// The last public chat line it heard, for its tile.
+    pub last_chat: Option<String>,
 }
 
 impl Game {
@@ -214,7 +231,7 @@ impl Game {
 
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None }
     }
 
     /// Whether its window can be swapped in: a game with the mod past its start that has a window.
@@ -226,6 +243,7 @@ impl Game {
     /// screenshot where another game would be played.
     pub fn action(&self, busy: bool) -> Option<Primary> {
         match main_action(&self.phase, Stopping::of(self.stopping, self.overdue), busy) {
+            Some(Primary::Play) if self.connection => Some(Primary::Chat),
             Some(Primary::Play) if self.headless => Some(Primary::Screenshot),
             other => other,
         }
@@ -607,6 +625,10 @@ pub enum Primary {
     Screenshot,
     /// Lets the held resource pack in.
     AcceptPack,
+    /// Lets the server's code of conduct in.
+    AcceptRules,
+    /// Opens the chat of an account that only has a connection.
+    Chat,
 }
 
 /// How far a stop has come: not stopping, stopping, or stopping for long enough to end the game at once.
@@ -652,6 +674,7 @@ pub fn primary(phase: &Phase, stopping: Stopping) -> Option<Primary> {
         Phase::NoNetwork => Some(Primary::Retry),
         Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
         Phase::Restarting { .. } => Some(Primary::Start),
+        Phase::Offer { offer, .. } if offer.conduct => Some(Primary::AcceptRules),
         Phase::Offer { .. } => Some(Primary::AcceptPack),
     }
 }
@@ -670,6 +693,8 @@ impl Primary {
             Self::ForceQuit => tr("Sofort beenden"),
             Self::Screenshot => tr("Screenshot"),
             Self::AcceptPack => tr("Paket annehmen"),
+            Self::AcceptRules => tr("Regeln annehmen"),
+            Self::Chat => tr("Chat"),
         }
     }
 }
@@ -715,6 +740,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Disconnected { reason, .. } if reason.is_empty() => tr("Getrennt"),
         Phase::Disconnected { reason, .. } => trf("Getrennt · %@", &[reason]),
         Phase::Dead { .. } => tr("Gestorben"),
+        Phase::Crashed { .. } if i.connection => tr("Verbindung beendet"),
         Phase::Crashed { .. } => tr("Abgestürzt"),
         Phase::Banned { reason, .. } => banned_status(reason),
         Phase::LoginNeeded => tr("Anmeldung nötig"),
@@ -722,6 +748,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
         Phase::ServerAway { .. } => tr("Server weg · verbindet sich wieder, sobald er antwortet"),
         Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
+        Phase::Offer { offer, .. } if offer.conduct => tr("Server fragt nach seinen Regeln"),
         Phase::Offer { offer, .. } if offer.required => tr("Server verlangt ein Ressourcenpaket"),
         Phase::Offer { .. } => tr("Server bietet ein Ressourcenpaket an"),
     }

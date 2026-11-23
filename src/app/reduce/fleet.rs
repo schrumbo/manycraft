@@ -100,7 +100,8 @@ pub(super) fn launch(m: &mut Model, owner: &str, only: Option<&[String]>, kick: 
     }
     m.order_seq += 1;
     out.push(Effect::Redraw(Redraw::All));
-    if kick == Kick::Bulk || (kick == Kick::Plain && total > 1) {
+    let connection = target.connection_only();
+    if !connection && (kick == Kick::Bulk || (kick == Kick::Plain && total > 1)) {
         let keys: Vec<String> = accounts.iter().map(|a| target.key(a.id)).filter(|k| m.games.get(k).is_some_and(|g| g.phase.waiting())).collect();
         for key in &keys {
             m.session.memory_seq += 1;
@@ -115,7 +116,7 @@ pub(super) fn launch(m: &mut Model, owner: &str, only: Option<&[String]>, kick: 
         ask_memory(m, out);
         return;
     }
-    if !restart {
+    if !restart && !connection {
         out.push(Effect::CheckFit { count: u32::try_from(accounts.len()).unwrap_or(u32::MAX), memory_mb: target.memory_mb() });
     }
     started(m, owner, &target, &accounts);
@@ -127,7 +128,9 @@ fn started(m: &mut Model, owner: &str, target: &Target, accounts: &[Account]) {
     for a in accounts {
         if let Some(g) = m.games.get_mut(&target.key(a.id)) {
             g.measured_as = Some(measured.clone());
-            g.headless = target.headless();
+            g.headless = target.headless() || target.connection_only();
+            g.connection = target.connection_only();
+            g.last_chat = None;
         }
     }
 }

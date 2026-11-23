@@ -16,6 +16,7 @@ use crate::core::i18n::{tr, trf};
 use crate::view::commands::Command;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
+use crate::view::kit::badge::{Tone, badge};
 use crate::view::kit::button::Button;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::line;
@@ -48,6 +49,8 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::ForceQuit => store.dispatch(AppEvent::Stop(vec![key])),
         Primary::Screenshot => store.dispatch(AppEvent::Capture(vec![key])),
         Primary::AcceptPack => store.dispatch(AppEvent::AnswerPack { keys: vec![key], accept: true }),
+        Primary::AcceptRules => store.dispatch(AppEvent::AnswerRules { keys: vec![key], accept: true }),
+        Primary::Chat => open_chat(store, &key),
         Primary::SignIn => {
             let mut page = store.ui.page;
             page.set(Page::ACCOUNTS);
@@ -62,8 +65,15 @@ fn glyph(p: Primary) -> Icon {
         Primary::SignIn => Icon::LogIn,
         Primary::ForceQuit => Icon::Stop,
         Primary::Screenshot => Icon::Image,
-        Primary::AcceptPack => Icon::Package,
+        Primary::AcceptPack | Primary::AcceptRules => Icon::Package,
+        Primary::Chat => Icon::Message,
     }
+}
+
+fn open_chat(store: Store, key: &str) {
+    let mut shared = store.ui.chat;
+    shared.target.set(Some(crate::view::chat::Target::Instance(key.to_owned())));
+    crate::view::chat::focus(store);
 }
 
 fn action_of(g: &Game, m: &Model) -> Option<Primary> {
@@ -130,6 +140,7 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
             Primary::Reconnect => Some(Command::ReconnectSelected),
             Primary::Screenshot => Some(Command::ScreenshotSelected),
             Primary::AcceptPack => Some(Command::AcceptPacks),
+            Primary::AcceptRules => Some(Command::AcceptRules),
             _ => None,
         };
         if let Some(s) = same.filter(|c| c.available(store)).and_then(Command::shortcut) {
@@ -137,14 +148,20 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
         }
         items.push(item);
     }
-    let offered = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| matches!(g.phase, Phase::Offer { .. })));
-    for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected, Command::ScreenshotSelected, Command::AcceptPacks, Command::DeclinePacks] {
+    if !many && m.games.get(key).is_some_and(|g| g.connection) {
+        items.push(Item::new(format!("menu.{key}.play"), tr("Spielen"), |_| {}).disabled(true).detail(tr("Läuft ohne Spiel – kein Bild")));
+    }
+    let offered = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_pack_answer()));
+    let ruled = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_rules_answer()));
+    for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected, Command::ScreenshotSelected, Command::AcceptPacks, Command::DeclinePacks, Command::AcceptRules, Command::DeclineRules] {
         let doubled = match c {
             Command::StartSelected => matches!(primary, Some(Primary::Start | Primary::TakeOver)),
             Command::ReconnectSelected => matches!(primary, Some(Primary::Reconnect)),
             Command::ScreenshotSelected => matches!(primary, Some(Primary::Screenshot)),
             Command::AcceptPacks => matches!(primary, Some(Primary::AcceptPack)) || !offered,
             Command::DeclinePacks => !offered,
+            Command::AcceptRules => matches!(primary, Some(Primary::AcceptRules)) || !ruled,
+            Command::DeclineRules => !ruled,
             _ => false,
         };
         if !doubled {
@@ -185,6 +202,8 @@ fn single(c: Command) -> String {
         Command::ScreenshotSelected => tr("Screenshot"),
         Command::AcceptPacks => tr("Paket annehmen"),
         Command::DeclinePacks => tr("Paket ablehnen"),
+        Command::AcceptRules => tr("Regeln annehmen"),
+        Command::DeclineRules => tr("Regeln ablehnen"),
         other => other.label(),
     }
 }
@@ -284,7 +303,10 @@ impl Component for Tile {
                 pic = pic.child(cover(w, h, t.surface.with_af32(t.hidden_dim)));
             }
         }
-        if let Some(mark) = placeholder(&t, &game.phase, if preview.is_none() { face.clone() } else { None }) {
+        if game.connection {
+            pic = pic.child(bare(&t, game, &m, m.account(game.account_id), face.clone(), w, h));
+            pic = pic.child(rect().position(Position::new_absolute().left(space::S).top(space::S)).child(WithTip::new(Some(tr("Läuft ohne Spiel – kein Bild")), badge(&t, tr("ohne Bild"), Tone::Quiet))));
+        } else if let Some(mark) = placeholder(&t, &game.phase, if preview.is_none() { face.clone() } else { None }) {
             pic = pic.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(w)).height(Size::px(h)).center().child(mark));
         }
         if keyboard && selected {
@@ -569,6 +591,29 @@ fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<El
         (None, Some(face)) if *phase != Phase::Stopped => Some(image(face).width(Size::px(space::XXL)).height(Size::px(space::XXL)).opacity(0.5).into_element()),
         _ => None,
     }
+}
+
+const BARE_HEAD: f32 = 40.;
+const BARE_ROOM: f32 = 84.;
+const BARE_CHAT_ROOM: f32 = 112.;
+
+fn bare(t: &Theme, game: &Game, m: &Model, account: Option<&Account>, face: Option<ImageHandle>, w: f32, h: f32) -> Element {
+    let stopped = game.phase == Phase::Stopped && !game.stopping;
+    let roomy = h >= BARE_ROOM;
+    let mut column = rect().width(Size::px(w)).height(Size::px(h)).center().spacing(space::XS).padding((0., space::M));
+    let head = face_chip(t, account, face, if roomy { BARE_HEAD } else { BARE_HEAD * 0.7 });
+    column = column.child(rect().opacity(if stopped { 0.5 } else { 1. }).child(head));
+    if roomy && !stopped {
+        let place = match (&game.phase, words::since(&game.key, m)) {
+            (Phase::Playing { server, .. }, Some(since)) if !game.stopping => format!("{} · {since}", server.strip_suffix(":25565").unwrap_or(server)),
+            _ => words::caption(game, m),
+        };
+        column = column.child(line(t, place, font::CAPTION, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
+        if let Some(said) = game.last_chat.as_ref().filter(|_| h >= BARE_CHAT_ROOM) {
+            column = column.child(line(t, said.clone(), font::CAPTION2, t.text3).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
+        }
+    }
+    column.into_element()
 }
 
 fn face_chip(t: &Theme, account: Option<&Account>, face: Option<ImageHandle>, size: f32) -> Rect {
