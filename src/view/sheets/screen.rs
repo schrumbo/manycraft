@@ -9,7 +9,7 @@ use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use crate::app::event::Event as AppEvent;
-use crate::app::model::{Game, Model, Need, Phase};
+use crate::app::model::{Game, Model, Need};
 use crate::core::headless::{MAP_SIDE, map_rgba};
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::{Click, Menu, Slot, Titles};
@@ -61,7 +61,7 @@ fn first_showing(m: &Model) -> Option<String> {
 }
 
 fn connected(g: &Game) -> bool {
-    g.connection && matches!(g.phase, Phase::Playing { .. } | Phase::Queue { .. })
+    g.connection && g.phase.can_chat()
 }
 
 #[derive(PartialEq)]
@@ -118,10 +118,10 @@ impl Component for Screen {
         });
         let menu_block = menu.map(|mn| menu_block(&t, store, &key, mn, live, inventory, cell));
         match (shown_map, menu_block) {
-            (Some(p), Some(mb)) if beside => body = body.child(rect().horizontal().spacing(space::XL).child(p).child(mb)),
+            (Some(p), Some(mb)) if beside => body = body.child(rect().key("beside").horizontal().spacing(space::XL).child(p).child(mb)),
             (p, mb) => {
                 if let Some(p) = p {
-                    body = body.child(rect().width(Size::fill()).cross_align(Alignment::Center).child(p));
+                    body = body.child(rect().key("map").width(Size::fill()).cross_align(Alignment::Center).child(p));
                 }
                 if let Some(mb) = mb {
                     body = body.child(mb);
@@ -137,11 +137,11 @@ impl Component for Screen {
                 let open = *inventory.peek();
                 inventory.set(!open);
             });
-            body = body.child(rect().horizontal().child(toggle));
+            body = body.child(rect().key("toggle").horizontal().child(toggle));
         }
         let recent: Vec<String> = m.chat.iter().rev().filter(|l| l.reached(&key)).take(RECENT_LINES).map(|l| l.from.as_ref().map_or_else(|| l.text.clone(), |f| format!("<{f}> {}", l.text))).collect();
         if !recent.is_empty() {
-            body = body.child(rect().width(Size::fill()).spacing(space::XXS).children(recent.into_iter().rev().map(|l| line(&t, l, font::CALLOUT, t.text2).width(Size::fill()).max_lines(1).text_overflow(TextOverflow::Ellipsis).into_element())));
+            body = body.child(rect().key("recent").width(Size::fill()).spacing(space::XXS).children(recent.into_iter().rev().map(|l| line(&t, l, font::CALLOUT, t.text2).width(Size::fill()).max_lines(1).text_overflow(TextOverflow::Ellipsis).into_element())));
         }
         body = body.child(chat(store, &key, draft, live, map.is_some() || menu.is_some()));
         let scroll = ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px((h - frame::SHEET_TOP - ROOM).max(ROOM))).child(body);
@@ -157,7 +157,7 @@ fn grid_width(columns: usize, cell: f32) -> f32 {
 }
 
 fn titles_block(t: &Theme, titles: &Titles) -> Element {
-    let mut column = rect().width(Size::fill()).spacing(space::XXS);
+    let mut column = rect().key("titles").width(Size::fill()).spacing(space::XXS);
     if let Some(title) = &titles.title {
         column = column.child(strong(t, title.text.clone(), font::TITLE3, t.text1).width(Size::fill()).max_lines(TITLE_LINES));
     }
@@ -192,7 +192,7 @@ fn menu_block(t: &Theme, store: Store, key: &str, menu: &Menu, live: bool, inven
         head = head.child(line(t, trf("Hält: %@", &[&slot_label(c)]), font::CALLOUT, t.attention_text).max_lines(1).text_overflow(TextOverflow::Ellipsis));
     }
     head = head.child(spacer()).content(Content::flex()).child(close);
-    let mut column = rect().spacing(space::S).width(Size::px(grid_width(usize::from(menu.columns.max(1)).max(9), cell))).child(head);
+    let mut column = rect().key("menu").spacing(space::S).width(Size::px(grid_width(usize::from(menu.columns.max(1)).max(9), cell))).child(head);
     if !menu.readable {
         return column.child(para(t, tr("Dieses Menü kann Manycraft nicht lesen. Schließen geht trotzdem."), font::BODY, t.text2)).into_element();
     }
@@ -290,7 +290,8 @@ impl Component for Cell {
                 }
                 let modifiers = match &*e {
                     PressEventData::Mouse(m) if m.button != Some(MouseButton::Left) => return,
-                    PressEventData::Keyboard(k) => k.modifiers,
+                    PressEventData::Keyboard(k) if matches!(k.key, Key::Named(NamedKey::Enter)) => k.modifiers,
+                    PressEventData::Keyboard(_) => Modifiers::empty(),
                     _ => held() & Modifiers::SHIFT,
                 };
                 e.stop_propagation();
@@ -357,7 +358,7 @@ fn chat(store: Store, key: &str, draft: State<String>, live: bool, focus: bool) 
         field = field.auto_focus();
     }
     let button = Button::icon("screen.send", Icon::Send, tr("Senden")).disabled(offline.or_else(|| empty.then(|| tr("Schreib zuerst etwas.")))).on_press(move |_| send(store, &pressed, draft));
-    rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rect().width(Size::flex(1.)).child(field)).child(button).content(Content::flex()).into_element()
+    rect().key("chat").width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).child(rect().width(Size::flex(1.)).child(field)).child(button).content(Content::flex()).into_element()
 }
 
 #[cfg(test)]

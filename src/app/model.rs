@@ -233,6 +233,8 @@ pub struct Shows {
     pub map: bool,
     pub menu: bool,
     pub unseen: bool,
+    /// The map the user last looked at, so taking it back in hand asks for nothing.
+    pub seen_map: Option<i32>,
 }
 
 impl Shows {

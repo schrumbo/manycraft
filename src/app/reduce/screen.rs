@@ -13,7 +13,7 @@ pub(super) fn shown(m: &mut Model, key: &str, message: FromMod, out: &mut Vec<Ef
     let screen = m.screens.entry(key.to_owned()).or_default();
     let fresh = match message {
         FromMod::Map { map } => {
-            let fresh = map.as_ref().is_some_and(|new| screen.map.as_ref().is_none_or(|old| old.id != new.id));
+            let fresh = map.as_ref().is_some_and(|new| Some(new.id) != before.seen_map && screen.map.as_ref().is_none_or(|old| old.id != new.id));
             screen.map = map;
             screen.map_seq = seq;
             fresh
@@ -30,11 +30,13 @@ pub(super) fn shown(m: &mut Model, key: &str, message: FromMod, out: &mut Vec<Ef
         _ => return,
     };
     let (map, menu) = (screen.map.is_some(), screen.menu.is_some());
+    let shown_map = screen.map.as_ref().map(|p| p.id);
     if screen.is_empty() {
         m.screens.remove(key);
     }
     let looking = m.session.screen_open.as_deref() == Some(key);
-    let shows = Shows { map, menu, unseen: (map || menu) && !looking && (before.unseen || fresh) };
+    let seen_map = if looking { shown_map.or(before.seen_map) } else { before.seen_map };
+    let shows = Shows { map, menu, unseen: (map || menu) && !looking && (before.unseen || fresh), seen_map };
     if let Some(g) = m.games.get_mut(key) {
         g.shows = shows;
     }
@@ -54,12 +56,14 @@ pub(super) fn forget(m: &mut Model, key: &str) {
 
 /// The user looks at the screen of `key`, or at none: what it shows stops asking for them.
 pub(super) fn look(m: &mut Model, key: Option<String>, out: &mut Vec<Effect>) {
-    if let Some(g) = key.as_deref().and_then(|k| m.games.get_mut(k))
-        && g.shows.unseen
-    {
-        g.shows.unseen = false;
-        m.order_seq += 1;
-        out.push(Effect::Redraw(Redraw::All));
+    let held = key.as_deref().and_then(|k| m.screens.get(k)).and_then(|s| s.map.as_ref()).map(|p| p.id);
+    if let Some(g) = key.as_deref().and_then(|k| m.games.get_mut(k)) {
+        g.shows.seen_map = held.or(g.shows.seen_map);
+        if g.shows.unseen {
+            g.shows.unseen = false;
+            m.order_seq += 1;
+            out.push(Effect::Redraw(Redraw::All));
+        }
     }
     m.session.screen_open = key;
 }
@@ -161,6 +165,11 @@ mod tests {
         shows(&mut m, &s, &key, map(4, 2));
         assert!(m.screens[&key].map_seq > first + 1, "a map after an emptied screen gets a new number");
         assert_eq!(m.needs(None), [(Need::Screen, 1)]);
+        run(&mut m, &s, Instant::now(), Event::LookAtScreen(Some(key.clone())));
+        run(&mut m, &s, Instant::now(), Event::LookAtScreen(None));
+        shows(&mut m, &s, &key, FromMod::Map { map: None });
+        shows(&mut m, &s, &key, map(4, 2));
+        assert!(m.needs(None).is_empty(), "a seen map taken back in hand asks for nothing");
     }
 
     #[test]
