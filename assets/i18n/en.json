@@ -51,6 +51,7 @@
   "%@ und %lld weitere": "%@ and %lld more",
   "Lädt Minecraft · %lld %%": "Loading Minecraft · %lld %%",
   "Verbindet neu · Versuch %lld von %lld": "Reconnecting · attempt %lld of %lld",
+  "Verbindet neu…": "Reconnecting…",
   "Gesperrt": "Banned",
   "Unerwartet beendet": "Ended unexpectedly",
   "Gesperrt · %@": "Banned · %@",

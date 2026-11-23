@@ -439,6 +439,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
 fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(Line, DisconnectCause)>> {
     use login::clientbound as c;
     use login::serverbound as s;
+    let mut verified = false;
     loop {
         let packet = reader.next(|_| true)?;
         let mut r = In::new(packet.body);
@@ -446,7 +447,9 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
             c::LOGIN_DISCONNECT => {
                 let json = r.string()?;
                 let value = serde_json::from_str(&json).unwrap_or(Value::String(json));
-                return Ok(Some(dropped(text::line(&value))));
+                let (reason, cause) = dropped(text::line(&value));
+                let cause = if verified && cause == DisconnectCause::Auth { DisconnectCause::ServerDown } else { cause };
+                return Ok(Some((reason, cause)));
             }
             c::HELLO => {
                 let server_id = r.string()?;
@@ -464,6 +467,7 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
                         let cause = classify(&reason.keys, &reason.text);
                         return Ok(Some((reason, cause)));
                     }
+                    verified = true;
                 }
                 let sealed_secret = crypto::rsa_encrypt(&key, &secret)?;
                 let sealed_token = crypto::rsa_encrypt(&key, &token)?;
