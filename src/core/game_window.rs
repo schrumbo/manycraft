@@ -168,6 +168,12 @@ pub fn raise(pid: u32) -> bool {
         if app.is_null() {
             return false;
         }
+        let cooperative: bool = msg_send![app, respondsToSelector: objc2::sel!(activateFromApplication:options:)];
+        if cooperative {
+            let current: *mut AnyObject = msg_send![class!(NSRunningApplication), currentApplication];
+            let raised: bool = msg_send![app, activateFromApplication: current, options: 1usize];
+            return raised;
+        }
         let raised: bool = msg_send![app, activateWithOptions: 2usize];
         raised
     }
