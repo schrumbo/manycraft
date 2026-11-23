@@ -30,6 +30,8 @@ pub const CLOSE_INK: Color = Color::WHITE;
 pub const WAITING: f32 = 0.45;
 
 const SHADE_DEPTH: f32 = 0.6;
+const INITIALS: f64 = 3.;
+const KNOB: f64 = 3.;
 
 /// Fixed sizes of the window's frame around the content.
 pub mod frame {
@@ -119,6 +121,8 @@ pub mod frame {
     pub const SWITCH_STRETCH: f32 = 4.;
     /// How strongly the ink of secondary text tints the track of a switch that is off, enough to stand out at 3:1.
     pub const SWITCH_OFF: f32 = 0.7;
+    /// How visible a switch stays while it cannot be changed: dimmed, yet on still reads as on.
+    pub const SWITCH_LOCKED: f32 = 0.85;
     pub const RING: f32 = 2.;
     pub const RING_GAP: f32 = 2.;
     pub const PROGRESS: f32 = 3.;
@@ -220,6 +224,8 @@ pub struct Theme {
     pub deep: Color,
     /// The colour of shadows and of darkening washes: the deepest colour, taken further down in the dark appearance.
     pub shade: Color,
+    /// The knob of a switch that is on: the palest colour where it stands out from the accent, else the text on the accent.
+    pub knob: Color,
     pub identity: Vec<Color>,
     pub shape: Shape,
     pub elevation: Elevation,
@@ -279,6 +285,7 @@ impl Theme {
         let pale = tones.iter().copied().max_by(|a, b| light(a).total_cmp(&light(b))).unwrap_or(Rgba::WHITE);
         let deep = tones.iter().copied().min_by(|a, b| light(a).total_cmp(&light(b))).unwrap_or(Rgba::BLACK);
         let shade = color(if dark { deep.mix(Rgba::BLACK, SHADE_DEPTH) } else { deep });
+        let knob = color(if pale.contrast(p.get(Token::Accent)) >= KNOB { pale } else { p.get(Token::OnAccent) });
         let (pale, deep) = (color(pale), color(deep));
         Self {
             dark,
@@ -311,6 +318,7 @@ impl Theme {
             pale,
             deep,
             shade,
+            knob,
             identity: p.identity.iter().map(|&c| color(c)).collect(),
             shape: Shape {
                 tile: radius::CARD * r,
@@ -354,16 +362,30 @@ impl Theme {
         self.identity.get(index % self.identity.len().max(1)).copied().unwrap_or(self.accent)
     }
 
-    /// Text colour that reads on identity colour `fill`: the palette's deepest or palest colour, whichever stands out more.
+    /// Text colour that reads on identity colour `fill`: the palette's deepest or palest colour, whichever stands out more;
+    /// when neither reaches 3:1, the one on the far side of `fill`, taken further out.
     pub fn ink_on(&self, fill: Color) -> Color {
         let back = rgba(fill);
-        if rgba(self.deep).contrast(back) >= rgba(self.pale).contrast(back) { self.deep } else { self.pale }
+        let (deep, pale) = (rgba(self.deep).contrast(back), rgba(self.pale).contrast(back));
+        let ink = if deep.max(pale) >= INITIALS { if deep >= pale { self.deep } else { self.pale } } else if back.ink() == Rgba::BLACK { self.deep } else { self.pale };
+        color(rgba(ink).readable_on(back, INITIALS))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hue(c: Color) -> f32 {
+        let (r, g, b) = (f32::from(c.r()) / 255., f32::from(c.g()) / 255., f32::from(c.b()) / 255.);
+        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        let d = max - min;
+        if d == 0. {
+            return 0.;
+        }
+        let h = if max == r { ((g - b) / d).rem_euclid(6.) } else if max == g { (b - r) / d + 2. } else { (r - g) / d + 4. };
+        h * 60.
+    }
 
     fn over(top: Color, under: Color) -> Color {
         let a = f32::from(top.a()) / 255.;
@@ -410,7 +432,7 @@ mod tests {
                 }
             }
             pairs.extend([("tile-ring", t.tile_ring, t.surface, 3.), ("on-accent", t.on_accent, t.accent, 4.5), ("on-attention", t.on_attention, t.attention, 4.5), ("on-danger", t.on_danger, t.danger, 4.5)]);
-            pairs.push(("switch knob", t.on_accent, t.accent, 3.));
+            pairs.push(("switch knob", t.knob, t.accent, 3.));
             for fill in &t.identity {
                 pairs.push(("initials", t.ink_on(*fill), *fill, 3.));
             }
@@ -421,18 +443,26 @@ mod tests {
             for c in [t.surface, t.sidebar, t.raised, t.well, t.control, t.separator, t.text1, t.text2, t.text3, t.accent, t.on_accent, t.on_danger, t.pale, t.deep, t.shade] {
                 assert!(rgba(c) != Rgba::WHITE && rgba(c) != Rgba::BLACK, "{side}: pure white or black {c:?}");
             }
-            assert!(rgba(t.danger).contrast(rgba(t.accent)) >= 1.4, "{side}: danger and accent differ in hue only");
+            assert!(rgba(t.danger).contrast(rgba(t.accent)) >= 1.4, "{side}: the danger mark differs from the accent in hue only");
+            for (danger, accent) in [(t.danger, t.accent), (t.danger_text, t.accent_text)] {
+                let apart = (hue(danger) - hue(accent)).abs();
+                assert!(apart.min(360. - apart) >= 25., "{side}: danger {danger:?} too close in hue to the accent {accent:?}");
+            }
         }
     }
 
     #[test]
-    fn every_built_in_keeps_knobs_and_shadows_apart_from_what_they_sit_on() {
+    fn every_built_in_keeps_ink_knobs_and_shadows_apart_from_what_they_sit_on() {
         let library = Library::load(&std::env::temp_dir().join("manycraft-no-user-themes"));
         for source in &library.themes {
             for dark in [false, true].into_iter().filter(|d| source.has(*d)) {
                 let t = Theme::new(source, dark);
                 let side = format!("{} {}", source.id, if dark { "dark" } else { "light" });
-                let knob = rgba(t.on_accent).contrast(rgba(t.accent));
+                for fill in &t.identity {
+                    let ratio = rgba(t.ink_on(*fill)).contrast(rgba(*fill));
+                    assert!(ratio >= INITIALS, "{side}: initials {ratio:.2}:1 on {fill:?}");
+                }
+                let knob = rgba(t.knob).contrast(rgba(t.accent));
                 assert!(knob >= 3., "{side}: switch knob {knob:.2}:1 on the accent");
                 for ground in [t.surface, t.sidebar, t.raised, t.well, t.control] {
                     assert!(rgba(t.shade).contrast(Rgba::BLACK) <= rgba(ground).contrast(Rgba::BLACK), "{side}: shadow lighter than {ground:?}");

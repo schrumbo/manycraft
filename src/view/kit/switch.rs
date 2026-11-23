@@ -73,7 +73,7 @@ impl Component for Switch {
             .height(Size::px(frame::SWITCH_H))
             .corner_radius(frame::SWITCH_H / 2.)
             .background(track)
-            .opacity(if self.disabled { 0.45 } else { 1. })
+            .opacity(if self.disabled { frame::SWITCH_LOCKED } else { 1. })
             .on_sized(spot);
         let wash = if self.disabled { None } else if *pressed.read() { Some(t.press) } else if *hovered.read() { Some(t.hover) } else { None };
         if let Some(wash) = wash {
@@ -85,7 +85,7 @@ impl Component for Switch {
                 .width(Size::px(knob + stretch))
                 .height(Size::px(knob))
                 .corner_radius(knob / 2.)
-                .background(blend(t.pale, t.on_accent, at))
+                .background(blend(t.pale, t.knob, at))
                 .shadow(Shadow::from((0., 1., 2., 0., t.shade.with_af32(0.3)))),
         );
         if !self.disabled {
