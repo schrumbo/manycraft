@@ -6,7 +6,8 @@ use super::{Block, Prose, Run, inline};
 use crate::view::kit::use_theme;
 use crate::view::theme::{Theme, font, space};
 
-const LONGEST: (usize, usize) = (4, 48);
+const LONGEST: (usize, usize) = (8, 48);
+const CELL_PADDING: f32 = 8.;
 
 /// How the text of a table column lines up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +98,11 @@ fn width_of(runs: &[Run]) -> usize {
     runs.iter().map(|r| r.text.chars().count()).sum()
 }
 
+fn longest_word(runs: &[Run]) -> usize {
+    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+    text.split_whitespace().map(|w| w.chars().count()).max().unwrap_or(0)
+}
+
 #[derive(PartialEq)]
 struct Row {
     cells: Vec<Vec<Run>>,
@@ -134,8 +140,10 @@ impl Component for Row {
 pub(super) fn view(t: &Theme, align: &[Align], head: &[Vec<Run>], rows: &[Vec<Vec<Run>>], color: Color) -> Element {
     let weights: Vec<f32> = (0..align.len())
         .map(|c| {
-            let longest = std::iter::once(head.get(c)).chain(rows.iter().map(|r| r.get(c))).flatten().map(|runs| width_of(runs)).max().unwrap_or(0);
-            longest.clamp(LONGEST.0, LONGEST.1) as f32
+            let cells = || std::iter::once(head.get(c)).chain(rows.iter().map(|r| r.get(c))).flatten();
+            let longest = cells().map(|runs| width_of(runs)).max().unwrap_or(0).clamp(LONGEST.0, LONGEST.1);
+            let word = cells().map(|runs| longest_word(runs)).max().unwrap_or(0).min(LONGEST.1);
+            longest.max(word) as f32 + CELL_PADDING
         })
         .collect();
     let row = |cells: &[Vec<Run>], header: bool, last: bool| Row { cells: cells.to_vec(), align: align.to_vec(), weights: weights.clone(), header, last, color }.into_element();
@@ -152,6 +160,13 @@ pub(super) fn view(t: &Theme, align: &[Align], head: &[Vec<Run>], rows: &[Vec<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_longest_word_of_the_runs_counts() {
+        let runs = inline("short **extraordinary** tail");
+        assert_eq!(longest_word(&runs), "extraordinary".len());
+        assert_eq!(longest_word(&[]), 0);
+    }
 
     #[test]
     fn a_table_beyond_the_limits_stays_text() {
