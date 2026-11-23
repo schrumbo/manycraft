@@ -69,7 +69,7 @@ impl Component for WardrobePage {
         let mut dropping = use_state(|| false);
         let m = store.model.read();
         let split = *room.read() >= frame::SPLIT;
-        let stage = stage::stage(&t, ctl, &m, if split { Size::px(STAGE) } else { Size::fill() });
+        let stage = stage::stage(&t, ctl, &m, if split { Size::px(STAGE) } else { Size::fill() }, split);
         let library = library::library(&t, ctl, if split { Size::flex(1.) } else { Size::fill() }, *dropping.read());
         let mut body = page::column();
         body = if split {

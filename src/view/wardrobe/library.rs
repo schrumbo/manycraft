@@ -53,7 +53,7 @@ fn hang(ctl: Ctl, hung: &Hung, worn: bool, enabled: bool, width: f32) -> Element
         let model_file = menu_file.clone();
         let remove_file = menu_file.clone();
         let items = vec![
-            Item::new("wardrobe.menu.wear", tr("Anziehen"), move |_| ctl.wear_skin(&wear_file)).glyph(Icon::Shirt).disabled(!enabled || worn),
+            Item::new("wardrobe.menu.wear", tr("Anziehen"), move |_| ctl.wear_skin(&wear_file)).disabled(!enabled || worn),
             Item::new("wardrobe.menu.rename", tr("Umbenennen…"), move |_| rename::open(ctl, rename_file.clone(), rename_name.clone())),
             Item::new("wardrobe.menu.model", if model == Arms::Slim { tr("Klassische Arme") } else { tr("Schlanke Arme") }, move |_| ctl.set_model(&model_file, if model == Arms::Slim { Arms::Classic } else { Arms::Slim })),
             Item::Separator,

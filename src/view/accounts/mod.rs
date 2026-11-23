@@ -357,7 +357,7 @@ pub fn context(store: Store, id: Uuid, at: (f32, f32)) -> Vec<Item> {
         items.push(Item::new("accounts.menu.signin", if microsoft.len() == 1 { tr("Erneut anmelden") } else { tr("Nacheinander neu anmelden") }, move |_| sign_in(store, again.clone())).disabled(!can_want(&Want::SignInAgain(Vec::new()))));
     }
     if one && !microsoft.is_empty() {
-        items.push(Item::new("accounts.menu.skin", tr("Skin ändern…"), move |_| {
+        items.push(Item::new("accounts.menu.skin", tr("Skin ändern"), move |_| {
             want(store, Want::ChangeSkin(id));
         }).disabled(!can_want(&Want::ChangeSkin(id))));
     }

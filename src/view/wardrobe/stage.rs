@@ -16,7 +16,8 @@ use crate::view::kit::text::{caption, para, secondary, strong};
 use crate::view::kit::Bounds;
 use crate::view::theme::{Theme, font, iconsize, space};
 
-pub const PREVIEW: f32 = 7.;
+const PREVIEW: f32 = 7.;
+const PREVIEW_NARROW: f32 = 5.;
 const CAPE: f32 = 3.;
 const CHOICE: f32 = 88.;
 const CAPES_PER_ROW: usize = 3;
@@ -85,14 +86,14 @@ fn arms_text(model: Arms) -> String {
     }
 }
 
-fn preview(t: &Theme, ctl: Ctl, account: &Account, look: Option<&Look>) -> Element {
+fn preview(t: &Theme, ctl: Ctl, account: &Account, look: Option<&Look>, scale: f32) -> Element {
     let mut card = rect().width(Size::fill()).padding(space::L).background(t.well).corner_radius(t.shape.control).cross_align(Alignment::Center).spacing(space::M);
     let Some(look) = look else {
-        return card.height(Size::px(32. * PREVIEW + space::L * 2.)).center().child(spinner::waiting(t, tr("Lädt …"))).into_element();
+        return card.height(Size::px(32. * scale + space::L * 2.)).center().child(spinner::waiting(t, tr("Lädt …"))).into_element();
     };
     match ctl.views.read().clone() {
         Some((front, back)) => {
-            card = card.child(rect().horizontal().spacing(space::XL).child(pixels(front, 16. * PREVIEW, 32. * PREVIEW)).child(pixels(back, 16. * PREVIEW, 32. * PREVIEW)));
+            card = card.child(rect().horizontal().spacing(space::XL).child(pixels(front, 16. * scale, 32. * scale)).child(pixels(back, 16. * scale, 32. * scale)));
             let name = look.worn.as_deref().and_then(|file| ctl.shelf.read().iter().find(|h| h.skin.file == file).map(|h| h.skin.name.clone()));
             let mut text = rect().cross_align(Alignment::Center).spacing(2.);
             text = text.child(strong(t, name.unwrap_or_else(|| trf("Skin von %@", &[&account.name])), font::BODY, t.text1));
@@ -100,7 +101,7 @@ fn preview(t: &Theme, ctl: Ctl, account: &Account, look: Option<&Look>) -> Eleme
             card = card.child(text);
         }
         None if look.microsoft => {
-            card = card.height(Size::px(32. * PREVIEW + space::L * 2.)).center().child(secondary(t, tr("Kein Skin gefunden.")));
+            card = card.height(Size::px(32. * scale + space::L * 2.)).center().child(secondary(t, tr("Kein Skin gefunden.")));
         }
         None => {}
     }
@@ -176,7 +177,7 @@ fn empty(t: &Theme, ctl: Ctl) -> Element {
 }
 
 /// The left side of the page: who is dressed, how they look now and which cape they wear.
-pub fn stage(t: &Theme, ctl: Ctl, m: &Model, width: Size) -> Element {
+pub fn stage(t: &Theme, ctl: Ctl, m: &Model, width: Size, wide: bool) -> Element {
     let account = ctl.account();
     let mut column = rect().width(width).spacing(space::M);
     column = column.child(chooser(t, ctl, m, account.as_ref()));
@@ -204,12 +205,16 @@ pub fn stage(t: &Theme, ctl: Ctl, m: &Model, width: Size) -> Element {
         column = column.child(strip);
     }
     let look = ctl.look.read().clone();
-    column = column.child(preview(t, ctl, &account, look.as_ref()));
+    let unknown = look.as_ref().is_some_and(|l| l.microsoft && !l.known) && matches!(phase, Phase::Failed(..));
+    if !unknown {
+        column = column.child(preview(t, ctl, &account, look.as_ref(), if wide { PREVIEW } else { PREVIEW_NARROW }));
+    }
     if matches!(phase, Phase::Refreshing) {
         column = column.child(spinner::beside(caption(t, tr("Wird aktualisiert …"))));
     }
     if let Some(look) = &look
         && look.microsoft
+        && look.known
     {
         column = column.child(capes(t, ctl, look));
     }

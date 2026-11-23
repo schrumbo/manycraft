@@ -43,6 +43,7 @@ pub struct Look {
     pub capes: Vec<Owns>,
     pub cape: Option<String>,
     pub microsoft: bool,
+    pub known: bool,
 }
 
 /// Where the account's outfit comes from right now.
@@ -62,15 +63,16 @@ struct Data {
     capes: Vec<(String, String, Option<RgbaImage>)>,
     cape: Option<String>,
     microsoft: bool,
+    known: bool,
 }
 
 fn data(account: &Account, outfit: Option<&Outfit>) -> Data {
     if account.kind != AccountKind::Microsoft {
         let own = wardrobe::default_for(account.id);
-        return Data { worn: own.as_ref().map(|(image, _)| wardrobe::file_of(image)), model: own.as_ref().map(|(_, m)| *m).unwrap_or_default(), skin: own.map(|(image, _)| image), capes: Vec::new(), cape: None, microsoft: false };
+        return Data { worn: own.as_ref().map(|(image, _)| wardrobe::file_of(image)), model: own.as_ref().map(|(_, m)| *m).unwrap_or_default(), skin: own.map(|(image, _)| image), capes: Vec::new(), cape: None, microsoft: false, known: true };
     }
     let Some(outfit) = outfit else {
-        return Data { skin: None, model: Model::Classic, worn: None, capes: Vec::new(), cape: None, microsoft: true };
+        return Data { skin: None, model: Model::Classic, worn: None, capes: Vec::new(), cape: None, microsoft: true, known: false };
     };
     let skin = outfit.skin.as_deref().and_then(wardrobe::texture);
     Data {
@@ -80,6 +82,7 @@ fn data(account: &Account, outfit: Option<&Outfit>) -> Data {
         capes: outfit.capes.iter().map(|c| (c.id.clone(), c.alias.clone(), wardrobe::texture(&c.texture).and_then(|t| change::cape_front(&t)))).collect(),
         cape: outfit.cape.clone(),
         microsoft: true,
+        known: true,
     }
 }
 
@@ -184,7 +187,7 @@ impl Ctl {
 
     fn set_look(mut self, d: Data) {
         let capes = d.capes.into_iter().map(|(id, alias, front)| Owns { thumb: front.as_ref().and_then(handle), id, alias, front }).collect();
-        self.look.set(Some(Look { skin: d.skin, model: d.model, worn: d.worn, capes, cape: d.cape, microsoft: d.microsoft }));
+        self.look.set(Some(Look { skin: d.skin, model: d.model, worn: d.worn, capes, cape: d.cape, microsoft: d.microsoft, known: d.known }));
         self.redraw();
     }
 
