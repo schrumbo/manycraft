@@ -14,6 +14,7 @@ Rust/GPUI desktop app that runs many Minecraft instances behind one window, plus
 ## Rules
 
 - Instances stay real Minecraft windows. The manager shows previews and swaps the real window into its place; it never streams gameplay.
+- Long-term win over quick win: fix root causes, keep modules deep and coherent, refactor what you touch when that is the clean path. No hacks, workarounds, duplicated logic or patched symptoms to finish faster. Maintainability and code quality outrank speed.
 - Performance is a feature: hidden instances cost as little as possible, the manager idles at 0 frames. Budgets in `.claude/rules/performance.md`.
 - Account tokens live only in the OS keychain and never appear in logs, errors or Debug output.
 - A proxy set on an account applies to login and game connection; without the companion mod such an instance must not connect.

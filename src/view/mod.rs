@@ -25,6 +25,7 @@ mod theme;
 mod tray;
 mod ui;
 mod updates;
+mod wardrobe;
 
 use std::rc::Rc;
 use std::sync::Mutex;

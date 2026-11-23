@@ -10,7 +10,7 @@ use freya::winit::event::WindowEvent;
 use freya::winit::window::Window;
 use freya_winit::plugins::{FreyaPlugin, PluginEvent, PluginHandle};
 
-use crate::core::place::{Mode, Place, Rect};
+use crate::core::place::{Mode, Rect};
 use crate::core::drive;
 #[cfg(not(target_os = "windows"))]
 use crate::core::manager_window;
@@ -206,7 +206,7 @@ pub fn place() -> Option<(Rect, Mode)> {
 }
 
 /// Gets the manager out of the way of the game that takes its place. A driven window stays, so agents keep seeing it.
-pub fn hide(_place: Option<Place>) {
+pub fn hide() {
     if drive::fenced("hide", "main window") {
         return;
     }
@@ -226,23 +226,30 @@ fn with_window(f: impl FnOnce(&mut Window) + 'static) {
     platform.with_window(freya::prelude::Platform::window_id(), f);
 }
 
-/// Brings the manager back in front, in the place the game had.
-pub fn show(place: Option<Place>) {
+/// The command that brings a window back without touching its size or whether it is maximized: a minimized one is restored to
+/// the state it had before, a hidden or visible one is only shown. `SW_RESTORE` on a window that is not minimized would
+/// take it out of its maximized state.
+#[cfg(target_os = "windows")]
+fn reveal_command(minimized: bool) -> windows_sys::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, SW_SHOW};
+    if minimized { SW_RESTORE } else { SW_SHOW }
+}
+
+/// Brings the manager back in front exactly as the person left it: its size, its place and whether it is maximized stay.
+pub fn show() {
     if drive::fenced("show", "main window") {
         return;
     }
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = hwnd() {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow};
-        unsafe { ShowWindow(hwnd, SW_RESTORE) };
-        if let Some(p) = place.filter(|p| p.mode == Mode::Normal) {
-            unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), p.frame.x, p.frame.y, p.frame.w as i32, p.frame.h as i32, SWP_NOZORDER | SWP_NOACTIVATE) };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow};
+        unsafe {
+            ShowWindow(hwnd, reveal_command(IsIconic(hwnd) != 0));
+            SetForegroundWindow(hwnd);
         }
-        unsafe { SetForegroundWindow(hwnd) };
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = place;
         with_window(|w| {
             w.set_visible(true);
             w.set_minimized(false);
@@ -389,5 +396,18 @@ pub fn unstow() {
         w.set_visible(true);
         w.set_minimized(false);
     });
-    show(None);
+    show();
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, SW_SHOW};
+
+    use super::reveal_command;
+
+    #[test]
+    fn only_a_minimized_window_is_restored_so_a_maximized_one_stays_maximized() {
+        assert_eq!(reveal_command(true), SW_RESTORE);
+        assert_eq!(reveal_command(false), SW_SHOW);
+    }
 }
