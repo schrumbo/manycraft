@@ -17,7 +17,7 @@ pub fn run(args: &[String]) -> Option<i32> {
     Some(run(rest))
 }
 
-const COMMANDS: [(&str, fn(&[String]) -> i32); 15] = [
+const COMMANDS: [(&str, fn(&[String]) -> i32); 16] = [
     ("login", super::auth::cli),
     ("launch", super::launch::cli),
     ("batch", super::fleet::cli),
@@ -28,6 +28,7 @@ const COMMANDS: [(&str, fn(&[String]) -> i32); 15] = [
     ("mrpack", super::mrpack::cli),
     ("clean", super::install::clean::cli),
     ("smoke", super::smoke::cli),
+    ("headless", super::headless::cli),
     ("folders", super::folders::cli),
     ("apply-update", super::updater::install::cli),
     ("help", help),
@@ -47,7 +48,7 @@ pub fn is_command(first: &str) -> bool {
 fn help(_: &[String]) -> i32 {
     println!("manycraft [--play <instance> [--account <id>]] [file.mrpack]
 
-commands: login, launch, batch, instance, mods, prism, launchers, mrpack, clean, smoke, folders, help");
+commands: login, launch, batch, instance, mods, prism, launchers, mrpack, clean, smoke, headless, folders, help");
     0
 }
 
