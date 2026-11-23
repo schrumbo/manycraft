@@ -5,7 +5,7 @@ use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
 use super::super::model::{ChatLine, Game, Model, Phase, rank};
 use super::super::phase::{self, Why};
-use super::super::session::{Alert, Frame, Reveal};
+use super::super::session::{Alert, Frame, HeldJoin, Reveal};
 use super::{Env, fleet, go, headless, notify, redraw, show};
 use crate::core::account::AccountKind;
 use crate::core::chat_text;
@@ -300,6 +300,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     s.usage.remove(&key);
     s.unplaced.remove(&key);
     s.joined.remove(&key);
+    s.held_joins.remove(&key);
     s.woken.remove(&key);
     s.adopted.remove(&key);
     let unknown = s.foreign.remove(&key) && code.is_none();
@@ -417,6 +418,11 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                 Phase::Playing { server: server_text, since }
             } else {
                 s.started.entry(key.clone()).or_insert(env.now);
+                if matches!(i.phase, Phase::Offer { .. })
+                    && let Some(HeldJoin { generation, lines, delay }) = s.held_joins.remove(&key)
+                {
+                    fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
+                }
                 if !matches!(i.phase, Phase::Dead { .. }) && !server_text.is_empty() && s.joined.insert(key.clone()) {
                     event = Some((Kind::Connected, server.clone(), String::new()));
                     fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, What::Back, "", server.as_deref())));
@@ -775,7 +781,7 @@ pub(super) fn join_due(m: &mut Model, key: String, generation: u64, mut lines: V
         return;
     };
     if matches!(game.phase, Phase::Offer { .. }) {
-        out.push(Effect::After { delay, event: Box::new(Event::JoinDue { key, generation, lines, delay }) });
+        m.session.held_joins.insert(key, HeldJoin { generation, lines, delay });
         return;
     }
     if !matches!(game.phase, Phase::Playing { .. }) {

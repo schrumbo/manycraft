@@ -504,8 +504,8 @@ impl Command {
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
             Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
-            Command::AcceptPacks => m.games.values().any(|g| matches!(g.phase, Phase::Offer { .. })),
-            Command::DeclinePacks => picked().any(|g| matches!(g.phase, Phase::Offer { .. })),
+            Command::AcceptPacks if selected.is_empty() => m.games.values().any(|g| matches!(g.phase, Phase::Offer { .. })),
+            Command::AcceptPacks | Command::DeclinePacks => grid && picked().any(|g| matches!(g.phase, Phase::Offer { .. })),
             Command::ClearSelection => grid && !selected.is_empty(),
             Command::MessageSelected => grid && selected.len() >= 2 && m.able(&selected.iter().cloned().collect::<Vec<_>>()).message > 0,
             Command::MoveSelected => grid && m.batches.len() > 1 && picked().any(|g| m.batch(&g.batch_id).is_some()),
@@ -660,8 +660,8 @@ impl Command {
 fn offers(store: Store, accept: bool) -> Vec<String> {
     let m = store.model.peek();
     let held = |k: &String| m.games.get(k).is_some_and(|g| matches!(g.phase, Phase::Offer { .. }));
-    let picked: Vec<String> = store.ui.selection.peek().iter().filter(|k| held(k)).cloned().collect();
-    if picked.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { picked }
+    let selection = store.ui.selection.peek();
+    if selection.is_empty() && accept { m.games.keys().filter(|k| held(k)).cloned().collect() } else { selection.iter().filter(|k| held(k)).cloned().collect() }
 }
 
 /// Whether `command` still runs while a sheet, menu, the palette or a text field has the keyboard: Quit, and the palette

@@ -1,7 +1,7 @@
 //! What the core remembers about the running games between events: timer generations, processes, restarts, collected notifications.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::model::Phase;
 use crate::core::phone;
@@ -34,6 +34,14 @@ impl Alert {
 pub struct Timer {
     pub generation: u64,
     pub minutes: u32,
+}
+
+/// Join commands that came due while their game held a resource pack: the rest of them, sent once it is answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldJoin {
+    pub generation: u64,
+    pub lines: Vec<String>,
+    pub delay: Duration,
 }
 
 /// What a game that was asked to show covers once it appears.
@@ -94,6 +102,8 @@ pub struct Session {
     pub started: HashMap<String, Instant>,
     /// Games that joined a server and have not left it since.
     pub joined: HashSet<String>,
+    /// Join commands waiting for their game's resource pack offer to be answered.
+    pub held_joins: HashMap<String, HeldJoin>,
     /// Servers whose status ping is on its way or waits for its next turn.
     pub probes: HashSet<String>,
     /// Games a server's answer woke from waiting that have not reached it yet; their next drop spends a try.

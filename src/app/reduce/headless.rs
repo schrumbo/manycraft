@@ -228,8 +228,9 @@ mod tests {
         report(&mut m, &s, offer(&key, "pack-1", false));
         let fx = run(&mut m, &s, Instant::now(), join);
         assert!(!fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { .. }, .. })), "nothing typed while the offer waits");
-        let again = later(&fx).into_iter().find_map(|(_, e)| if let Event::JoinDue { key, generation, lines, delay } = e { Some(Event::JoinDue { key: key.clone(), generation: *generation, lines: lines.clone(), delay: *delay }) } else { None }).expect("tried again later");
-        report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        assert!(later(&fx).is_empty(), "no polling while the offer waits");
+        let fx = report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let again = later(&fx).into_iter().find_map(|(_, e)| if let Event::JoinDue { key, generation, lines, delay } = e { Some(Event::JoinDue { key: key.clone(), generation: *generation, lines: lines.clone(), delay: *delay }) } else { None }).expect("released once answered");
         let fx = run(&mut m, &s, Instant::now(), again);
         assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { text }, .. } if text == "/login pw")), "{fx:?}");
     }
