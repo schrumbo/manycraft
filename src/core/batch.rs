@@ -103,6 +103,10 @@ pub enum Packs {
 
 impl Packs {
     pub const ALL: [Self; 3] = [Self::Ask, Self::Accept, Self::Decline];
+
+    fn is_ask(&self) -> bool {
+        *self == Self::Ask
+    }
 }
 
 /// Minutes between automatic screenshots a headless batch may choose.
@@ -147,13 +151,13 @@ pub struct Batch {
     #[serde(default)]
     pub full_speed: bool,
     /// Games run without any window: never shown, rendering only for screenshots.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headless: bool,
     /// Minutes between automatic screenshots of a headless game; `None` takes them only when asked.
-    #[serde(default, deserialize_with = "lenient_minutes")]
+    #[serde(default, deserialize_with = "lenient_minutes", skip_serializing_if = "Option::is_none")]
     pub screenshots: Option<u32>,
     /// What the games answer when a server offers a resource pack; a value from a newer version reads as the default.
-    #[serde(default, deserialize_with = "lenient_packs")]
+    #[serde(default, deserialize_with = "lenient_packs", skip_serializing_if = "Packs::is_ask")]
     pub packs: Packs,
 }
 
