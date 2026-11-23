@@ -771,7 +771,14 @@ pub(super) fn join_due(m: &mut Model, key: String, generation: u64, mut lines: V
     if lines.is_empty() || m.session.joins.get(&key) != Some(&generation) {
         return;
     }
-    if !m.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Playing { .. }) && !i.stopping) {
+    let Some(game) = m.games.get(&key).filter(|i| !i.stopping) else {
+        return;
+    };
+    if matches!(game.phase, Phase::Offer { .. }) {
+        out.push(Effect::After { delay, event: Box::new(Event::JoinDue { key, generation, lines, delay }) });
+        return;
+    }
+    if !matches!(game.phase, Phase::Playing { .. }) {
         return;
     }
     let text = lines.remove(0);

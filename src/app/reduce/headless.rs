@@ -219,6 +219,22 @@ mod tests {
     }
 
     #[test]
+    fn join_commands_wait_out_a_pack_offer_and_go_once_it_is_answered() {
+        let (mut m, key, s) = headless(None);
+        m.batches[0].join_commands = vec!["/login pw".into()];
+        connected(&mut m, &s, &key);
+        let fx = report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let join = later(&fx).into_iter().find_map(|(_, e)| if let Event::JoinDue { key, generation, lines, delay } = e { Some(Event::JoinDue { key: key.clone(), generation: *generation, lines: lines.clone(), delay: *delay }) } else { None }).expect("join commands scheduled");
+        report(&mut m, &s, offer(&key, "pack-1", false));
+        let fx = run(&mut m, &s, Instant::now(), join);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { .. }, .. })), "nothing typed while the offer waits");
+        let again = later(&fx).into_iter().find_map(|(_, e)| if let Event::JoinDue { key, generation, lines, delay } = e { Some(Event::JoinDue { key: key.clone(), generation: *generation, lines: lines.clone(), delay: *delay }) } else { None }).expect("tried again later");
+        report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
+        let fx = run(&mut m, &s, Instant::now(), again);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { text }, .. } if text == "/login pw")), "{fx:?}");
+    }
+
+    #[test]
     fn a_declined_required_pack_drops_with_its_reason_and_no_reconnect() {
         let (mut m, key, s) = headless(None);
         connected(&mut m, &s, &key);

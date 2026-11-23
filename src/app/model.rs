@@ -106,7 +106,7 @@ impl Phase {
 
     /// Whether the game window can be swapped in: the mod answers and the game is past its start.
     pub fn playable(&self) -> bool {
-        matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::Disconnected { .. } | Phase::Dead { .. } | Phase::Offer { .. })
+        matches!(self, Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::Disconnected { .. } | Phase::Dead { .. })
     }
 
     /// What kind of work the user has here, when there is some.

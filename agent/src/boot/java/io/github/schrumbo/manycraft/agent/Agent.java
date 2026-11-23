@@ -75,6 +75,9 @@ public final class Agent {
 				return;
 			}
 			loaded = true;
+			if (Hooks.headless() && !(Patches.has("hidden") && Patches.has("frame"))) {
+				haltHeadless();
+			}
 			if (Proxies.requested() && !proxyHooked(anchor.getClass().getClassLoader())) {
 				log("a proxy is set but its hooks are missing " + Patches.applied() + ", stopping the game instead of connecting without it");
 				Runtime.getRuntime().halt(1);

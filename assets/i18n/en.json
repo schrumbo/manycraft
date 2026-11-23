@@ -2174,7 +2174,7 @@
   "Ressourcenpaket": "Resource pack",
   "Server verlangt ein Ressourcenpaket": "Server requires a resource pack",
   "Server bietet ein Ressourcenpaket an": "Server offers a resource pack",
-  "Der Server verlangt ein Ressourcenpaket, der Batch lehnt es ab": "The server requires a resource pack and the batch declines it",
+  "Der Server verlangt ein Ressourcenpaket, es wurde abgelehnt": "The server requires a resource pack and it was declined",
   "Ohne Spielfenster geht erst ab Minecraft %@. Schalte es aus oder wähle eine neuere Version.": "Running without a game window needs Minecraft %@ or newer. Turn it off or pick a newer version.",
   "Screenshot der Ausgewählten": "Screenshot selected",
   "Ressourcenpakete annehmen": "Accept resource packs",

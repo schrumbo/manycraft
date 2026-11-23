@@ -436,7 +436,7 @@ final class Companion implements Bridge {
 			return;
 		}
 		if (message instanceof Protocol.Incoming.Packs p) {
-			packs.policy(p.policy());
+			packs.policy(mc, p.policy());
 			return;
 		}
 		if (message instanceof Protocol.Incoming.Answer a) {

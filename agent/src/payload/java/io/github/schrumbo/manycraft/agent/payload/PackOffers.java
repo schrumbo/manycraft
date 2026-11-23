@@ -28,9 +28,17 @@ final class PackOffers {
 	private volatile String policy = "ask";
 	private volatile Held held;
 
-	void policy(String value) {
-		if (value.equals("ask") || value.equals("accept") || value.equals("decline")) {
-			policy = value;
+	void policy(Minecraft mc, String value) {
+		if (!value.equals("ask") && !value.equals("accept") && !value.equals("decline")) {
+			return;
+		}
+		policy = value;
+		Held h = held;
+		if (h != null && !value.equals("ask")) {
+			held = null;
+			if (connected(h.listener())) {
+				apply(mc, h.listener(), h.requests(), h.offer().required(), value.equals("accept"));
+			}
 		}
 	}
 
@@ -76,7 +84,20 @@ final class PackOffers {
 		}
 		held = null;
 		if (connected(h.listener())) {
+			remember(h.listener(), h.offer().required(), accept);
 			apply(mc, h.listener(), h.requests(), h.offer().required(), accept);
+		}
+	}
+
+	private static void remember(ClientCommonPacketListenerImpl listener, boolean required, boolean accept) {
+		ServerData data = Access.get(SERVER_DATA, listener);
+		if (data == null) {
+			return;
+		}
+		if (accept) {
+			data.setResourcePackStatus(ServerData.ServerPackStatus.ENABLED);
+		} else if (!required) {
+			data.setResourcePackStatus(ServerData.ServerPackStatus.DISABLED);
 		}
 	}
 
@@ -113,7 +134,7 @@ final class PackOffers {
 
 	private static boolean connected(ClientCommonPacketListenerImpl listener) {
 		Connection connection = Access.get(CONNECTION, listener);
-		return connection != null && connection.isConnected();
+		return connection != null && connection.isConnected() && connection.getPacketListener() == listener;
 	}
 
 	private static URL url(String text) {
