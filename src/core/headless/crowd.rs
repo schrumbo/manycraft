@@ -20,7 +20,7 @@ const MAX_PLAYERS: usize = 1024;
 const MAX_VARIANTS: usize = 1024;
 const SKINS: &str = "http://textures.minecraft.net/texture/";
 const AGEABLE: &[&str] = &[
-    "armadillo", "axolotl", "bee", "camel", "camel_husk", "cat", "chicken", "cow", "dolphin", "donkey", "fox", "frog", "goat", "happy_ghast", "hoglin", "horse", "llama", "mooshroom", "mule", "ocelot", "panda", "parrot", "pig", "polar_bear", "rabbit", "sheep", "skeleton_horse", "sniffer", "strider", "trader_llama", "turtle", "villager", "wandering_trader", "wolf", "zombie_horse", "zoglin", "zombie", "husk", "drowned", "zombie_villager",
+    "armadillo", "axolotl", "bee", "camel", "camel_husk", "cat", "chicken", "cow", "dolphin", "donkey", "fox", "frog", "goat", "happy_ghast", "hoglin", "horse", "llama", "mooshroom", "mule", "ocelot", "panda", "parrot", "pig", "polar_bear", "rabbit", "sheep", "skeleton_horse", "sniffer", "strider", "trader_llama", "turtle", "villager", "wandering_trader", "wolf", "zombie_horse", "zoglin", "zombie", "husk", "drowned", "zombie_villager", "zombified_piglin",
 ];
 const VARIANTS: &[&str] = &["cat_variant", "wolf_variant", "pig_variant", "cow_variant", "chicken_variant", "frog_variant"];
 
@@ -46,7 +46,7 @@ struct Mob {
     baby: bool,
     name_shown: bool,
     name: Option<Box<Line>>,
-    equipment: Option<Box<[Option<Item>; 6]>>,
+    equipment: Option<Box<[Option<Worn>; 6]>>,
     data: Option<Box<Data>>,
 }
 
@@ -263,10 +263,10 @@ impl Crowd {
 
     fn equipment(&mut self, r: &mut In) -> Result<()> {
         let id = r.varint()?;
-        let mut worn: Vec<(usize, Option<Item>)> = Vec::new();
+        let mut worn: Vec<(usize, Option<Worn>)> = Vec::new();
         loop {
             let slot = r.u8()?;
-            worn.push((usize::from(slot & 0x7F), item::stack(r)?.as_ref().and_then(picture_item)));
+            worn.push((usize::from(slot & 0x7F), item::stack(r)?.as_ref().and_then(Worn::new)));
             if slot & 0x80 == 0 {
                 break;
             }
@@ -377,7 +377,7 @@ impl Crowd {
             pose: pose(mob.pose),
             flags: mob.flags,
             name,
-            equipment: mob.equipment.as_deref().cloned().unwrap_or_default(),
+            equipment: mob.equipment.as_deref().map(|worn| worn.map(|w| w.and_then(Worn::item))).unwrap_or_default(),
             data,
         }
     }
@@ -431,8 +431,16 @@ impl Mob {
             return;
         }
         let variant = |registry: &str, id: i32| -> String { variants.get(registry).and_then(|v| usize::try_from(id).ok().and_then(|i| v.get(i))).cloned().unwrap_or_default() };
-        let data = self.data.get_or_insert_with(|| Box::new(Data::None));
-        match (&mut **data, index, value) {
+        let Some(data) = self.data.as_deref_mut() else {
+            if kind == "item"
+                && index == d::item_entity::DATA_ITEM
+                && let Meta::Stack(stack) = value
+            {
+                self.data = stack.as_ref().and_then(picture_item).map(|item| Box::new(Data::Item { item }));
+            }
+            return;
+        };
+        match (data, index, value) {
             (Data::Player { skin, .. }, d::avatar::DATA_PLAYER_MODE_CUSTOMISATION, Meta::Byte(p)) => skin.parts = p,
             (Data::Player { main_left, .. }, d::avatar::DATA_PLAYER_MAIN_HAND, Meta::Enum(arm)) => *main_left = arm == 0,
             (slot, d::item_entity::DATA_ITEM, Meta::Stack(stack)) if kind == "item" => {
@@ -639,6 +647,27 @@ fn bare(name: &str) -> &str {
 
 fn listed(names: &'static [&'static str], id: i32) -> &'static str {
     usize::try_from(id).ok().and_then(|i| names.get(i)).copied().unwrap_or_default()
+}
+
+/// An item an entity wears or holds, kept small: an index into the item table.
+#[derive(Clone, Copy, Debug)]
+struct Worn {
+    item: u16,
+    count: u8,
+    glint: bool,
+    dye: Option<u32>,
+}
+
+impl Worn {
+    fn new(stack: &Stack) -> Option<Self> {
+        let item = u16::try_from(stack.item).ok().filter(|i| usize::from(*i) < ITEMS.len())?;
+        Some(Self { item, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye })
+    }
+
+    fn item(self) -> Option<Item> {
+        let &(id, ..) = ITEMS.get(usize::from(self.item))?;
+        Some(Item { id, count: self.count, glint: self.glint, dye: self.dye, trim: None, profile: None })
+    }
 }
 
 fn picture_item(stack: &Stack) -> Option<Item> {

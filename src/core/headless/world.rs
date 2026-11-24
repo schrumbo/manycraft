@@ -213,12 +213,13 @@ impl World {
         Ok(())
     }
 
-    /// Reads the weather from a `game_event`: rain stopping, and rain and thunder strength.
+    /// Reads the weather from a `game_event` as the game does: rain starting from nothing, stopping from full, and rain
+    /// and thunder strength.
     pub fn weather(&mut self, r: &mut In) -> Result<()> {
         let (event, value) = (r.u8()?, r.f32()?);
         match event {
-            1 => self.sky.rain = 1.0,
-            2 => (self.sky.rain, self.sky.thunder) = (0.0, 0.0),
+            1 => self.sky.rain = 0.0,
+            2 => self.sky.rain = 1.0,
             7 => self.sky.rain = value.clamp(0.0, 1.0),
             8 => self.sky.thunder = value.clamp(0.0, 1.0),
             _ => {}
@@ -947,7 +948,7 @@ mod tests {
         let mut o = Out::default();
         o.i64(5).varint(2).varint(0).raw(&[100]).f32(0.0).f32(1.0).varint(1).raw(&[0x88, 0xA1, 0x02]).f32(0.0).f32(1.0);
         w.time(&mut In::new(&o.0)).unwrap();
-        for (event, value) in [(1, 0.0), (8, 0.5)] {
+        for (event, value) in [(1, 0.0), (2, 0.0), (8, 0.5)] {
             let mut o = Out::default();
             o.u8(event).f32(value);
             w.weather(&mut In::new(&o.0)).unwrap();
