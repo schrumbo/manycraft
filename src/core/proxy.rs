@@ -94,9 +94,32 @@ pub fn check(proxy: &Proxy) -> Result<(), Fault> {
     outcome.ok_or(Fault::Unreachable).and_then(|accepted| if accepted { Ok(()) } else { Err(Fault::Rejected) })
 }
 
+/// Where a tunnel leads: an address, or a host name that the proxy looks up itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Address(SocketAddr),
+    Name(String, u16),
+}
+
+impl std::fmt::Display for Destination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Address(address) => address.fmt(f),
+            Self::Name(host, port) if host.contains(':') => write!(f, "[{host}]:{port}"),
+            Self::Name(host, port) => write!(f, "{host}:{port}"),
+        }
+    }
+}
+
 /// A connection to `to` through the proxy, or none when the proxy does not answer, refuses the sign-in or cannot reach `to`.
 /// Blocks for a few seconds at most: call it off the UI thread.
 pub fn tunnel(proxy: &Proxy, to: SocketAddr) -> Option<TcpStream> {
+    tunnel_to(proxy, &Destination::Address(to))
+}
+
+/// A connection to `to` through the proxy; a name is resolved by the proxy, never on this machine. None when the proxy
+/// does not answer, refuses the sign-in or cannot reach `to`. The stream keeps short read and write timeouts.
+pub fn tunnel_to(proxy: &Proxy, to: &Destination) -> Option<TcpStream> {
     let mut stream = connect(proxy)?;
     let open = match proxy.kind {
         Kind::Socks => socks_hello(&mut stream, proxy)? && socks_connect(&mut stream, to)?,
@@ -137,19 +160,29 @@ fn socks_hello(stream: &mut TcpStream, proxy: &Proxy) -> Option<bool> {
     }
 }
 
-fn socks_connect(stream: &mut TcpStream, to: SocketAddr) -> Option<bool> {
+fn socks_connect(stream: &mut TcpStream, to: &Destination) -> Option<bool> {
     let mut request = vec![5, 1, 0];
-    match to.ip() {
-        IpAddr::V4(ip) => {
-            request.push(1);
-            request.extend_from_slice(&ip.octets());
+    let port = match to {
+        Destination::Address(address) => {
+            match address.ip() {
+                IpAddr::V4(ip) => {
+                    request.push(1);
+                    request.extend_from_slice(&ip.octets());
+                }
+                IpAddr::V6(ip) => {
+                    request.push(4);
+                    request.extend_from_slice(&ip.octets());
+                }
+            }
+            address.port()
         }
-        IpAddr::V6(ip) => {
-            request.push(4);
-            request.extend_from_slice(&ip.octets());
+        Destination::Name(host, port) => {
+            request.extend([3, u8::try_from(host.len()).ok().filter(|n| *n > 0)?]);
+            request.extend_from_slice(host.as_bytes());
+            *port
         }
-    }
-    request.extend_from_slice(&to.port().to_be_bytes());
+    };
+    request.extend_from_slice(&port.to_be_bytes());
     stream.write_all(&request).ok()?;
     let mut head = [0u8; 4];
     stream.read_exact(&mut head).ok()?;
@@ -342,6 +375,35 @@ mod tests {
             let _ = s.write_all(b"HTTP/1.1 400 Bad\r\n\r\n");
         });
         assert_eq!(check(&proxy(Kind::Socks, port, None)), Err(Fault::Unreachable));
+    }
+
+    #[test]
+    fn a_socks_tunnel_to_a_name_lets_the_proxy_resolve_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let port = serve(move |mut s| {
+            let mut hello = [0u8; 3];
+            s.read_exact(&mut hello).unwrap();
+            s.write_all(&[5, 0]).unwrap();
+            let mut head = [0u8; 5];
+            s.read_exact(&mut head).unwrap();
+            let mut rest = vec![0u8; usize::from(head[4]) + 2];
+            s.read_exact(&mut rest).unwrap();
+            tx.send((head[3], rest)).unwrap();
+            s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+        });
+        assert!(tunnel_to(&proxy(Kind::Socks, port, None), &Destination::Name("mc.example".into(), 25565)).is_some());
+        let (atyp, rest) = rx.recv().unwrap();
+        assert_eq!(atyp, 3);
+        assert_eq!(&rest[..10], b"mc.example");
+        assert_eq!(&rest[10..], &25565u16.to_be_bytes());
+    }
+
+    #[test]
+    fn an_http_tunnel_to_a_name_asks_for_the_name() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let port = http_server("200 Connection established", tx);
+        assert!(tunnel_to(&proxy(Kind::Http, port, None), &Destination::Name("::1".into(), 443)).is_some());
+        assert!(rx.recv().unwrap().starts_with("CONNECT [::1]:443 HTTP/1.1"));
     }
 
     #[test]
