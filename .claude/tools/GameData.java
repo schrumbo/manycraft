@@ -18,6 +18,8 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializer;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.server.Bootstrap;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.DefaultAttributes;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.EmptyBlockGetter;
@@ -30,7 +32,8 @@ import net.minecraft.world.level.material.MapColor;
  * Writes what the connection-only client needs from the game code itself, as tab-separated lines: the map colours
  * (packed id, ARGB), the items (protocol id, name, translation key, block map colour or -1), the menu types, the
  * data component types and the consume effect types (protocol id, name), and the block states (protocol id, map colour,
- * kind: 0 air or unseen, 1 full cube, 2 fluid, 3 other solid, 4 no collision), the entity types, the villager types and professions, the
+ * kind: 0 air or unseen, 1 full cube, 2 fluid, 3 other solid, 4 no collision), the entity types (protocol id, name, 1 for
+ * living entities), the villager types and professions, the
  * attributes, the mob effects, the particle types (protocol id, name, 1 when it carries no options), the entity data serializers
  * (protocol id, field name) and every entity data accessor of the entity classes in the server jar (class, field, index,
  * serializer id). Run by headless-packets with the server's classpath and the path of that jar.
@@ -56,7 +59,9 @@ public class GameData {
             names(out, "menu", BuiltInRegistries.MENU);
             names(out, "component", BuiltInRegistries.DATA_COMPONENT_TYPE);
             names(out, "consume_effect", BuiltInRegistries.CONSUME_EFFECT_TYPE);
-            names(out, "entity", BuiltInRegistries.ENTITY_TYPE);
+            for (EntityType<?> type : BuiltInRegistries.ENTITY_TYPE) {
+                out.print("entity\t" + BuiltInRegistries.ENTITY_TYPE.getId(type) + "\t" + BuiltInRegistries.ENTITY_TYPE.getKey(type).getPath() + "\t" + (DefaultAttributes.hasSupplier(type) ? 1 : 0) + "\n");
+            }
             names(out, "villager_type", BuiltInRegistries.VILLAGER_TYPE);
             names(out, "villager_profession", BuiltInRegistries.VILLAGER_PROFESSION);
             names(out, "attribute", BuiltInRegistries.ATTRIBUTE);

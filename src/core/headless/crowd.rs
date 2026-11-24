@@ -14,7 +14,7 @@ use super::item::{self, Stack};
 use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Text};
 use super::text::{self, Line};
 use super::v777::entity_data as d;
-use super::v777::{ENTITY_TYPES, ITEMS, PARTICLE_TYPES, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
+use super::v777::{ENTITY_TYPES, ITEMS, LIVING_ENTITY_TYPES, PARTICLE_TYPES, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
 use super::wire::In;
 
 const MAX_ENTITIES: usize = 512;
@@ -337,11 +337,11 @@ impl Crowd {
         Ok(())
     }
 
-    /// The entities within `range` blocks of `eye` as the renderer takes them, and the hand of the account
-    /// `me` holding `held`.
-    pub fn seen(&self, eye: [f64; 3], range: f64, me: Uuid, held: Option<&Stack>, left_handed: bool) -> Seen {
+    /// The entities within `range` blocks of `eye` as the renderer takes them, with name tags as `tag` turns a team
+    /// member's name into what shows (the flag: whether its kind obeys team name tag visibility), and the hand of the account `me` holding `held`.
+    pub fn seen(&self, eye: [f64; 3], range: f64, me: Uuid, held: Option<&Stack>, left_handed: bool, tag: impl Fn(&str, Text, bool) -> Option<Text>) -> Seen {
         let near = |p: &[f64; 3]| (p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2) <= range * range;
-        let entities = self.near.iter().filter(|(_, m)| near(&m.pos)).map(|(id, m)| self.entity(*id, m)).collect();
+        let entities = self.near.iter().filter(|(_, m)| near(&m.pos)).map(|(id, m)| self.entity(*id, m, &tag)).collect();
         let hand = Hand { main: held.and_then(picture_item), left_handed, skin: self.skin(me) };
         Seen { entities, hand }
     }
@@ -352,16 +352,18 @@ impl Crowd {
         Skin { url, uuid, slim: profile.is_some_and(|p| p.slim), parts: 0x7F }
     }
 
-    fn entity(&self, id: i32, mob: &Mob) -> Entity {
+    fn entity(&self, id: i32, mob: &Mob, tag: &impl Fn(&str, Text, bool) -> Option<Text>) -> Entity {
         let kind = ENTITY_TYPES[usize::from(mob.kind)];
         let mut data = mob.data.as_deref().cloned().unwrap_or_default();
-        let mut name = mob.name.as_deref().filter(|_| mob.name_shown).map(|line| line.runs.clone());
+        let mut name = mob.name.as_deref().filter(|_| mob.name_shown).map(|line| (mob.uuid.to_string(), line.runs.clone()));
         if let Data::Player { skin, .. } = &mut data {
             let parts = skin.parts;
             *skin = self.skin(mob.uuid);
             skin.parts = parts;
-            name = name.or_else(|| self.players.get(&mob.uuid).map(|p| vec![Run { text: p.name.clone(), ..Run::default() }]));
+            name = self.players.get(&mob.uuid).map(|p| (p.name.clone(), vec![Run { text: p.name.clone(), ..Run::default() }]));
         }
+        let hideable = kind != "armor_stand" && LIVING_ENTITY_TYPES.binary_search(&mob.kind).is_ok();
+        let name = name.and_then(|(member, text)| tag(&member, text, hideable));
         Entity {
             id,
             kind,
@@ -744,7 +746,7 @@ mod tests {
     }
 
     fn seen(c: &Crowd) -> Vec<Entity> {
-        let mut all = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false).entities;
+        let mut all = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, |_, name, _| Some(name)).entities;
         all.sort_by_key(|e| e.id);
         all
     }
@@ -832,6 +834,9 @@ mod tests {
         let Data::Player { skin, main_left } = &e.data else { panic!() };
         assert_eq!((skin.url.as_deref(), skin.slim, skin.parts, *main_left), (Some(format!("{SKINS}{hash}").as_str()), true, 0x7E, false));
         assert_eq!(e.name.as_ref().unwrap()[0].text, "Alex");
+        let keyed = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, |member, _, hideable| hideable.then(|| vec![Run { text: member.into(), ..Run::default() }])).entities;
+        assert_eq!(keyed[0].name.as_ref().unwrap()[0].text, "Alex");
+        assert!(c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, |_, _, _| None).entities[0].name.is_none());
         assert_eq!(e.equipment[render::slot::MAIN_HAND].as_ref().unwrap().id, "iron_sword");
         assert_eq!(e.equipment[render::slot::HEAD].as_ref().unwrap().id, "diamond_helmet");
     }

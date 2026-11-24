@@ -223,7 +223,7 @@ impl Shared {
         let height = (width * 9 / 16).max(1);
         let [x, _, z] = link.position;
         let eye = [link.position[0], link.position[1] + picture::EYE_HEIGHT, link.position[2]];
-        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed());
+        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed(), |member, name, hideable| link.status.tag(member, name, hideable));
         let hud = link.status.hud(&link.screen);
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, hud, position: link.position, rotation: link.rotation, width, height };
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
@@ -569,7 +569,11 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
                 write(&mut shared.lock(), s::COOKIE_RESPONSE, Out::default().string(&cookie).bool(false))?;
             }
             c::LOGIN_FINISHED => {
+                let uuid = r.uuid()?;
+                let name = r.string()?;
                 let mut link = shared.lock();
+                link.me = uuid;
+                link.status.profile(name);
                 write(&mut link, s::LOGIN_ACKNOWLEDGED, &mut Out::default())?;
                 link.phase = Phase::Configuration;
                 write(&mut link, cfg::serverbound::CUSTOM_PAYLOAD, Out::default().string("minecraft:brand").string(BRAND))?;

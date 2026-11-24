@@ -35,6 +35,9 @@ const CHANGE_GAME_MODE: u8 = 3;
 const KEEP_ATTRIBUTES: u8 = 1;
 const KEEP_DATA: u8 = 2;
 const MAX_NAME: usize = 256;
+const TAGS_NEVER: i32 = 1;
+const TAGS_FOR_OWN_TEAM: i32 = 2;
+const TAGS_FOR_OTHER_TEAMS: i32 = 3;
 const TEAM_COLORS: [u32; 16] = [
     0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xFFAA00, 0xAAAAAA, 0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 ];
@@ -54,6 +57,7 @@ struct Entry {
 struct Squad {
     team: Team,
     color: Option<usize>,
+    tags: i32,
 }
 
 /// One connection's view of its own player.
@@ -111,6 +115,11 @@ impl Status {
             bosses: Vec::new(),
             chat: VecDeque::new(),
         }
+    }
+
+    /// Takes the name the server gave the own player at login, which its team membership goes by.
+    pub fn profile(&mut self, name: String) {
+        self.name = name;
     }
 
     /// Forgets everything the server said, as a new connection or configuration does.
@@ -433,6 +442,23 @@ impl Status {
         Ok(())
     }
 
+    /// The name tag of `member` (a player name, or an entity's UUID) reading `name` as this player sees it: in its
+    /// team's prefix, suffix and colour, or none when the team hides it from this player and `hideable` says its kind
+    /// obeys that, as players and mobs do but armor stands and other entities do not.
+    pub fn tag(&self, member: &str, name: Text, hideable: bool) -> Option<Text> {
+        let Some((team, squad)) = self.members.get(member).and_then(|t| Some((t, self.teams.get(t)?))) else {
+            return Some(name);
+        };
+        let own = self.members.get(&self.name);
+        let shown = match squad.tags {
+            TAGS_NEVER => false,
+            TAGS_FOR_OWN_TEAM => own.is_none_or(|o| o == team),
+            TAGS_FOR_OTHER_TEAMS => own.is_none_or(|o| o != team),
+            _ => true,
+        };
+        (shown || !hideable).then(|| formatted(&squad.team, name))
+    }
+
     fn sidebar(&self) -> Option<Sidebar> {
         let own = self.members.get(&self.name).and_then(|t| self.teams.get(t)).and_then(|s| s.color);
         let name = own.and_then(|c| self.slots[TEAM_SLOTS + c].as_ref()).or(self.slots[SIDEBAR].as_ref())?;
@@ -453,15 +479,26 @@ impl Status {
     }
 }
 
+/// `name` as its team shows it: between prefix and suffix, all three in the team colour where they set none.
+fn formatted(team: &Team, name: Text) -> Text {
+    let mut runs: Text = team.prefix.iter().cloned().chain(name).chain(team.suffix.iter().cloned()).collect();
+    if let Some(color) = team.color {
+        for run in runs.iter_mut().filter(|r| r.color.is_none()) {
+            run.color = Some(color);
+        }
+    }
+    runs
+}
+
 fn squad(r: &mut In) -> Result<Squad> {
     let _display = r.nbt()?;
     let prefix = text::line(&r.nbt()?).runs;
     let suffix = text::line(&r.nbt()?).runs;
-    let _visibility = r.varint()?;
+    let tags = r.varint()?;
     let _collision = r.varint()?;
     let color = if r.bool()? { usize::try_from(r.varint()?).ok().filter(|c| *c < TEAM_COLORS.len()) } else { None };
     let _options = r.u8()?;
-    Ok(Squad { team: Team { prefix, suffix, color: color.map(|c| TEAM_COLORS[c]) }, color })
+    Ok(Squad { team: Team { prefix, suffix, color: color.map(|c| TEAM_COLORS[c]) }, color, tags })
 }
 
 fn number(r: &mut In) -> Result<Option<Number>> {
@@ -531,6 +568,51 @@ mod tests {
         let mut status = Status::new(name.into());
         status.login(7, true);
         status
+    }
+
+    fn join(st: &mut Status, team: &str, tags: i32, color: Option<i32>, members: &[&str]) {
+        feed(st, c::SET_PLAYER_TEAM, |o| {
+            o.string(team).u8(0);
+            text(o, team);
+            text(o, "[T] ");
+            text(o, "!");
+            o.varint(tags).varint(0).bool(color.is_some());
+            if let Some(color) = color {
+                o.varint(color);
+            }
+            o.u8(0).varint(i32::try_from(members.len()).unwrap());
+            for m in members {
+                o.string(m);
+            }
+        });
+    }
+
+    #[test]
+    fn name_tags_carry_their_team_and_obey_its_visibility() {
+        let mut st = joined("Dev");
+        let name = |s: &str| vec![chat_text::Run { text: s.into(), ..chat_text::Run::default() }];
+        assert_eq!(st.tag("Alex", name("Alex"), true), Some(name("Alex")));
+        join(&mut st, "blue", 0, Some(9), &["Alex"]);
+        let tag = st.tag("Alex", name("Alex"), true).unwrap();
+        assert_eq!(chat_text::plain(&tag), "[T] Alex!");
+        assert!(tag.iter().all(|r| r.color == Some(0x5555FF)));
+        join(&mut st, "ghosts", TAGS_NEVER, None, &["0000-uuid"]);
+        assert_eq!(st.tag("0000-uuid", name("Zombie"), true), None);
+        assert_eq!(chat_text::plain(&st.tag("0000-uuid", name("Hologram"), false).unwrap()), "[T] Hologram!");
+        join(&mut st, "friends", TAGS_FOR_OWN_TEAM, None, &["Bob"]);
+        join(&mut st, "rivals", TAGS_FOR_OTHER_TEAMS, None, &["Cleo"]);
+        assert!(st.tag("Bob", name("Bob"), true).is_some() && st.tag("Cleo", name("Cleo"), true).is_some());
+        feed(&mut st, c::SET_PLAYER_TEAM, |o| {
+            o.string("friends").u8(3).varint(1).string("Dev");
+        });
+        assert!(st.tag("Bob", name("Bob"), true).is_some() && st.tag("Cleo", name("Cleo"), true).is_some());
+        feed(&mut st, c::SET_PLAYER_TEAM, |o| {
+            o.string("rivals").u8(3).varint(1).string("Dev");
+        });
+        assert!(st.tag("Bob", name("Bob"), true).is_none() && st.tag("Cleo", name("Cleo"), true).is_none());
+        assert_eq!(chat_text::plain(&st.tag("Alex", name("Alex"), true).unwrap()), "[T] Alex!");
+        st.profile("Nobody".into());
+        assert!(st.tag("Bob", name("Bob"), true).is_some() && st.tag("Cleo", name("Cleo"), true).is_some());
     }
 
     #[test]
