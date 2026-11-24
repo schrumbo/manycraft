@@ -695,13 +695,13 @@ impl Worn {
 
     fn item(self) -> Option<Item> {
         let &(id, ..) = ITEMS.get(usize::from(self.item))?;
-        Some(Item { id, count: self.count, glint: self.glint, dye: self.dye, trim: None, profile: None })
+        Some(Item { id, count: self.count, glint: self.glint, dye: self.dye, trim: None, profile: None, map: None })
     }
 }
 
 fn picture_item(stack: &Stack) -> Option<Item> {
     let &(id, ..) = usize::try_from(stack.item).ok().and_then(|i| ITEMS.get(i))?;
-    Some(Item { id, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye, trim: None, profile: None })
+    Some(Item { id, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye, trim: None, profile: None, map: None })
 }
 
 fn textures(value: &str) -> Option<(Option<[u8; 32]>, bool)> {

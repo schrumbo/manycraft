@@ -198,7 +198,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 70] = [
+    pub const ALL: [Command; 71] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
