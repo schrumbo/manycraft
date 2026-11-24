@@ -8,6 +8,7 @@
 mod anvil;
 mod assets;
 mod block;
+mod entity;
 mod light;
 mod model;
 mod random;
@@ -19,6 +20,7 @@ mod states;
 use serde_json::Value;
 
 pub use self::assets::{Assets, shared};
+pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, Nobody, Pose, Skin, Span, Text, slot};
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
 use self::scene::{Scene, View};
