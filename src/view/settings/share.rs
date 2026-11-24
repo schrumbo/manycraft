@@ -26,13 +26,13 @@ impl Component for ShareGroup {
         let store = use_store();
         let mut chosen = use_state(BTreeSet::<String>::new);
         let mut busy = use_state(|| false);
-        let mut versions = use_state(|| None::<Vec<(Item, Vec<Version>)>>);
+        let mut versions = use_state(|| None::<Vec<(Item, Option<Vec<Version>>)>>);
         let mut picked = use_state(|| [0usize; 3]);
         let mut asked = use_state(|| 0u32);
         use_side_effect(move || {
             let _ = asked.read();
             spawn(async move {
-                let found = off_ui(|| ITEMS.into_iter().map(|i| (i, share::versions(i).unwrap_or_default())).collect::<Vec<_>>()).await;
+                let found = off_ui(|| ITEMS.into_iter().map(|i| (i, share::versions(i).ok())).collect::<Vec<_>>()).await;
                 if versions.try_peek().is_some() {
                     versions.set(found);
                     picked.set([0; 3]);
@@ -40,9 +40,14 @@ impl Component for ShareGroup {
             });
         });
 
-        let apart: Vec<(String, String)> = store.model.read().instances.iter().filter(|i| i.sync != Sharing::ALL).map(|i| (i.id.clone(), i.name.clone())).collect();
+        let (any, apart): (bool, Vec<(String, String)>) = {
+            let model = store.model.read();
+            (!model.instances.is_empty(), model.instances.iter().filter(|i| i.sync != Sharing::ALL).map(|i| (i.id.clone(), i.name.clone())).collect())
+        };
         let mut rows: Vec<Element> = Vec::new();
-        if apart.is_empty() {
+        if !any {
+            rows.push(Line::new("settings.share.none", tr("Noch keine Instanzen")).dim(true).into_element());
+        } else if apart.is_empty() {
             rows.push(Line::new("settings.share.all", tr("Alle Instanzen teilen ihre Einstellungen.")).into_element());
         }
         for (id, name) in &apart {
@@ -57,7 +62,11 @@ impl Component for ShareGroup {
                 }
                 chosen.set(next);
             };
-            rows.push(Line::new(format!("settings.share.pick.{id}.row"), name.clone()).control(Switch::new(format!("settings.share.pick.{id}"), name.clone(), on).disabled(*busy.read()).on_toggle(flip.clone())).on_press(move |_| flip(!on)).into_element());
+            rows.push(Line::new(format!("settings.share.pick.{id}.row"), name.clone()).control(Switch::new(format!("settings.share.pick.{id}"), name.clone(), on).disabled(*busy.read()).on_toggle(flip.clone())).on_press(move |_| {
+                if !*busy.peek() {
+                    flip(!on);
+                }
+            }).into_element());
         }
         let count = chosen.read().iter().filter(|id| apart.iter().any(|(a, _)| a == *id)).count();
         if !apart.is_empty() {
@@ -106,12 +115,14 @@ impl Component for ShareGroup {
                     Item::Config => ("config", tr("Mod-Einstellungen")),
                     Item::Servers => ("servers", tr("Serverliste")),
                 };
-                let found: Vec<Version> = list.as_ref().and_then(|l| l.iter().find(|(i, _)| *i == item)).map(|(_, v)| v.clone()).unwrap_or_default();
+                let entry = list.as_ref().and_then(|l| l.iter().find(|(i, _)| *i == item)).map(|(_, v)| v.clone());
                 let mut line = Line::new(format!("settings.share.history.{key}.row"), label.clone());
-                if found.is_empty() {
-                    let hint = if list.is_none() { tr("Wird geladen …") } else { tr("Noch keine.") };
-                    return line.hint(hint).dim(true).into_element();
-                }
+                let found = match entry {
+                    None => return line.hint(tr("Wird geladen …")).dim(true).into_element(),
+                    Some(None) => return line.hint(tr("Die früheren Stände lassen sich nicht lesen.")).dim(true).into_element(),
+                    Some(Some(found)) if found.is_empty() => return line.hint(tr("Noch keine.")).dim(true).into_element(),
+                    Some(Some(found)) => found,
+                };
                 let at = picked.read()[n].min(found.len() - 1);
                 let labels: Vec<String> = found.iter().map(describe).collect();
                 let restore_one = found[at].clone();
@@ -120,7 +131,12 @@ impl Component for ShareGroup {
                     next[n] = i;
                     picked.set(next);
                 });
-                let back = Button::new(format!("settings.share.history.{key}.restore"), tr("Zurückholen")).on_press(move |_| restore(store, restore_one.clone(), asked));
+                let why = busy.read().then(|| tr("Wird zurückgeholt …"));
+                let back = Button::new(format!("settings.share.history.{key}.restore"), tr("Zurückholen")).disabled(why).on_press(move |_| {
+                    if !*busy.peek() {
+                        restore(store, restore_one.clone(), asked, busy);
+                    }
+                });
                 line = line.control(rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(select).child(back));
                 line.into_element()
             })
@@ -140,7 +156,8 @@ fn describe(v: &Version) -> String {
     }
 }
 
-fn restore(store: Store, version: Version, mut asked: State<u32>) {
+fn restore(store: Store, version: Version, mut asked: State<u32>, mut busy: State<bool>) {
+    busy.set(true);
     spawn(async move {
         match off_ui(move || share::restore(&version)).await {
             Some(Ok(())) => {
@@ -154,6 +171,7 @@ fn restore(store: Store, version: Version, mut asked: State<u32>) {
             }
         }
         if asked.try_peek().is_some() {
+            busy.set(false);
             let next = asked.peek().wrapping_add(1);
             asked.set(next);
         }
