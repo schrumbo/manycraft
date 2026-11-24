@@ -278,6 +278,10 @@ impl<P: Pixels> Sim<P> {
                 let visible = matches!(message, ToMod::Show { .. });
                 self.at(Duration::ZERO, None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Window { visible, focused: visible } }));
             }
+            ToMod::ChatLine { id, text } => {
+                self.at(Duration::from_millis(50), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::ChatOutcome { id, outcome: crate::core::ipc::ChatOutcome::Sent } }));
+                self.message(key, ToMod::ChatSend { text });
+            }
             ToMod::ChatSend { text } => {
                 let from = self.names.get(key).cloned();
                 let runs = from.iter().map(|f| Run { text: format!("<{f}> "), ..Run::default() }).chain([Run { text: text.clone(), ..Run::default() }]).collect();

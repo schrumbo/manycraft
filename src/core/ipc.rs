@@ -86,6 +86,34 @@ pub enum ChatKind {
     Whisper,
 }
 
+/// What became of a chat line the user typed: it went to the server, or it did not and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "why", rename_all = "snake_case")]
+pub enum ChatOutcome {
+    /// Written to the server's connection; whether the server ran it is its own business.
+    Sent,
+    /// Handed to a game that cannot say whether it went out.
+    Unconfirmed,
+    Refused(ChatRefusal),
+}
+
+/// Why a chat line did not go out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRefusal {
+    /// The account is not on a server (still joining, in a menu, switching server).
+    NotInGame,
+    /// Longer than the game allows (256 characters).
+    TooLong,
+    /// Holds characters the server refuses.
+    BadText,
+    /// The account disconnected before its turn came.
+    Dropped,
+    /// The connection failed while writing it, or a newer game reports a reason this version does not know.
+    #[serde(other)]
+    Failed,
+}
+
 /// Hotkey actions the mod forwards from inside the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +133,8 @@ pub enum FromMod {
     /// A chat line: its sender and words, and with a current agent the whole line as the game shows it.
     Chat { kind: ChatKind, from: Option<String>, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] runs: Vec<crate::core::chat_text::Run> },
     Preview { seq: u32, w: u32, h: u32 },
+    /// What became of the line sent as [`ToMod::ChatLine`] `id`.
+    ChatOutcome { id: u64, outcome: ChatOutcome },
     Hotkey { action: HotkeyAction },
     Window { visible: bool, focused: bool },
     /// The `options.txt` keys this save changed, with the player's values, never the background ones.
@@ -193,6 +223,8 @@ pub enum ToMod {
     /// How often the game captures a preview and how wide it is.
     Profile { preview_interval_ms: u32, preview_width: u32 },
     ChatSend { text: String },
+    /// Like `ChatSend`, and the account answers with [`FromMod::ChatOutcome`] for `id`.
+    ChatLine { id: u64, text: String },
     Reconnect,
     Respawn,
     Quit,
@@ -259,7 +291,7 @@ pub enum Event {
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 enum Opening {
-    Hello { instance: String, token: String, pid: u32, mod_version: String },
+    Hello { instance: String, token: String, pid: u32, mod_version: String, #[serde(default)] features: Vec<String> },
     Reopen,
     Play { instance: String, account: Option<String> },
 }
@@ -268,6 +300,7 @@ struct Link {
     id: u64,
     stream: Arc<TcpStream>,
     writing: Mutex<()>,
+    lines: bool,
 }
 
 #[derive(Default)]
@@ -282,6 +315,7 @@ pub struct Server {
     port: u16,
     shared: Arc<Mutex<Shared>>,
     next_id: Arc<AtomicU64>,
+    events: Sender<Event>,
 }
 
 impl Server {
@@ -297,8 +331,8 @@ impl Server {
             None => TcpListener::bind("127.0.0.1:0").context("cannot open the local instance port")?,
         };
         let port = listener.local_addr()?.port();
-        let server = Server { port, shared: Arc::default(), next_id: Arc::default() };
         let (tx, rx) = channel();
+        let server = Server { port, shared: Arc::default(), next_id: Arc::default(), events: tx.clone() };
         let accepting = server.clone();
         std::thread::Builder::new().name("ipc-accept".into()).spawn(move || {
             loop {
@@ -357,16 +391,32 @@ impl Server {
     }
 
     /// Sends `message` to `instance`. Fails when it is not connected; a link that fails to take a message is closed.
+    ///
+    /// A mod that cannot report what became of a [`ToMod::ChatLine`] gets it as a plain [`ToMod::ChatSend`], and its
+    /// line counts as [`ChatOutcome::Unconfirmed`] once written.
     pub fn send(&self, instance: &str, message: &ToMod) -> Result<()> {
+        let link = self.lock().links.get(instance).cloned().with_context(|| format!("instance {instance} is not connected"))?;
+        let plain;
+        let (message, unconfirmed) = match message {
+            ToMod::ChatLine { id, text } if !link.lines => {
+                plain = ToMod::ChatSend { text: text.clone() };
+                (&plain, Some(*id))
+            }
+            other => (other, None),
+        };
         let mut line = serde_json::to_vec(message)?;
         line.push(b'\n');
-        let link = self.lock().links.get(instance).cloned().with_context(|| format!("instance {instance} is not connected"))?;
         let written = {
             let _turn = link.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             (&*link.stream).write_all(&line)
         };
         if written.is_err() {
             let _ = link.stream.shutdown(Shutdown::Both);
+        }
+        if written.is_ok()
+            && let Some(id) = unconfirmed
+        {
+            let _ = self.events.send(Event::Message { instance: instance.to_owned(), message: FromMod::ChatOutcome { id, outcome: ChatOutcome::Unconfirmed } });
         }
         written.with_context(|| format!("instance {instance} is not reachable"))
     }
@@ -382,8 +432,8 @@ impl Server {
         let stream = Arc::new(stream);
         let mut lines = BufReader::new(StreamReader(Arc::clone(&stream)).take(MAX_LINE));
         let mut line = String::new();
-        let (instance, token, pid, mod_version) = match read_message(&mut lines, &mut line) {
-            Some(Opening::Hello { instance, token, pid, mod_version }) => (instance, token, pid, mod_version),
+        let (instance, token, pid, mod_version, features) = match read_message(&mut lines, &mut line) {
+            Some(Opening::Hello { instance, token, pid, mod_version, features }) => (instance, token, pid, mod_version, features),
             Some(Opening::Reopen) => {
                 let _ = tx.send(Event::Reopen);
                 return;
@@ -403,7 +453,7 @@ impl Server {
             if shared.tokens.get(&instance) != Some(&token) {
                 return;
             }
-            let link = Arc::new(Link { id, stream: Arc::clone(&stream), writing: Mutex::new(()) });
+            let link = Arc::new(Link { id, stream: Arc::clone(&stream), writing: Mutex::new(()), lines: features.iter().any(|f| f == "chat_lines") });
             if let Some(old) = shared.links.insert(instance.clone(), link) {
                 let _ = old.stream.shutdown(Shutdown::Both);
             }
@@ -611,6 +661,12 @@ mod tests {
         assert_eq!(serde_json::to_string(&ToMod::Hide).unwrap(), r#"{"t":"hide"}"#);
         assert_eq!(serde_json::to_string(&ToMod::Respawn).unwrap(), r#"{"t":"respawn"}"#);
         assert_eq!(serde_json::to_string(&ToMod::ChatSend { text: "/home".into() }).unwrap(), r#"{"t":"chat_send","text":"/home"}"#);
+        assert_eq!(serde_json::to_string(&ToMod::ChatLine { id: 7, text: "/home".into() }).unwrap(), r#"{"t":"chat_line","id":7,"text":"/home"}"#);
+        let outcome = |id, outcome| serde_json::to_string(&FromMod::ChatOutcome { id, outcome }).unwrap();
+        assert_eq!(outcome(7, ChatOutcome::Sent), r#"{"t":"chat_outcome","id":7,"outcome":{"state":"sent"}}"#);
+        assert_eq!(outcome(8, ChatOutcome::Refused(ChatRefusal::NotInGame)), r#"{"t":"chat_outcome","id":8,"outcome":{"state":"refused","why":"not_in_game"}}"#);
+        let heard = r#"{"t":"chat_outcome","id":9,"outcome":{"state":"refused","why":"dropped"}}"#;
+        assert_eq!(serde_json::from_str::<FromMod>(heard).unwrap(), FromMod::ChatOutcome { id: 9, outcome: ChatOutcome::Refused(ChatRefusal::Dropped) });
         assert_eq!(serde_json::to_string(&ToMod::Show { x: -5, y: 10, w: 800, h: 600, mode: Mode::Normal }).unwrap(), r#"{"t":"show","x":-5,"y":10,"w":800,"h":600}"#);
         assert_eq!(serde_json::to_string(&ToMod::Show { x: 0, y: 0, w: 800, h: 600, mode: Mode::Fullscreen }).unwrap(), r#"{"t":"show","x":0,"y":0,"w":800,"h":600,"mode":"fullscreen"}"#);
         let identity = ToMod::Identity { name: "Alt".into(), batch: "Farm".into(), rgb: 0x12_34_56, icon: Some("icon.png".into()) };

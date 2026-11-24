@@ -12,7 +12,7 @@ use freya::prelude::*;
 
 use self::picker::{List, Step, face, mark, step};
 pub use self::target::Target;
-use self::target::{Choice, at_query, at_word, batches_of, choices, exists, filter, name, on_page, reached, resolve_at};
+use self::target::{Choice, at_query, at_word, choices, exists, filter, keys_of, name, on_page, reached, resolve_at};
 use super::commands::{Command, Extra, Shortcut};
 use super::drive::use_spot;
 use super::icons::{Icon, icon};
@@ -28,15 +28,17 @@ use super::store::{Store, use_store};
 use super::ui::{Filter, Page};
 use super::theme::{Theme, color, control, font, frame, iconsize, level, space};
 use crate::app::event::Event as AppEvent;
-use crate::app::model::{ChatLine, Model};
+use crate::app::model::{ChatLine, Model, Said};
 use crate::core::batch::MAX_CHAT_CHARS;
 use crate::core::chat_text::{self, Run};
+use crate::core::ipc::ChatRefusal;
 use crate::core::i18n::{clock as clock_text, date, tr, trf};
 use crate::core::settings;
 use crate::core::themes::Rgba;
 use crate::core::winstate;
 
 const KEPT_HISTORY: usize = 100;
+const MISSED_SHOWN: usize = 4;
 const SHOWN_CHARS: usize = 600;
 const PAGE: usize = 200;
 const TIME_W: f32 = 40.;
@@ -73,7 +75,7 @@ pub struct Shared {
     pub recall: State<Option<usize>>,
     /// What was being typed before the arrows went back in the history.
     pub typed: State<String>,
-    pub sent: State<Option<String>>,
+    pub sent: State<bool>,
     pub rejected: State<Option<(String, String)>>,
     /// How many of the newest lines the list holds.
     pub shown: State<usize>,
@@ -106,7 +108,7 @@ impl Shared {
             history: State::create(Vec::new()),
             recall: State::create(None),
             typed: State::create(String::new()),
-            sent: State::create(None),
+            sent: State::create(false),
             rejected: State::create(None),
             shown: State::create(PAGE),
             top: State::create(None),
@@ -139,7 +141,7 @@ fn pick(store: Store, target: Target) {
     let mut shared = store.ui.chat;
     shared.target.set(Some(target));
     shared.picker.set_if_modified(false);
-    shared.sent.set(None);
+    shared.sent.set(false);
     shared.rejected.set(None);
     shared.focus.set(Some(Instant::now()));
 }
@@ -149,7 +151,7 @@ fn follow_page(store: Store) {
     let mut shared = store.ui.chat;
     shared.target.set(None);
     shared.picker.set_if_modified(false);
-    shared.sent.set(None);
+    shared.sent.set(false);
     shared.rejected.set(None);
     shared.focus.set(Some(Instant::now()));
 }
@@ -182,34 +184,26 @@ fn send(store: Store, scope: &Option<String>) {
     if let Some((word, _)) = at_word(&text) {
         let problem = trf("„@%@“ passt nicht zu genau einem Account. Wähle den Absender links.", &[&word]);
         shared.rejected.set(Some((text.clone(), problem)));
-        shared.sent.set(None);
+        shared.sent.set(false);
         return;
     }
     if text.is_empty() {
         return;
     }
-    let (target, reach, batches) = {
+    let (target, reach, keys) = {
         let m = store.model.peek();
         let target = target_of(&m, shared, scope);
         let reach = target.as_ref().map_or(0, |t| reached(&m, t));
-        let batches = target.as_ref().map(|t| batches_of(&m, t)).unwrap_or_default();
-        (target, reach, batches)
+        let keys = target.as_ref().map(|t| keys_of(&m, t)).unwrap_or_default();
+        (target, reach, keys)
     };
     let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer sendet."))).or_else(|| (reach == 0).then(|| tr("Dort ist gerade niemand im Spiel.")));
     if let Some(problem) = problem {
         shared.rejected.set(Some((text, problem)));
-        shared.sent.set(None);
+        shared.sent.set(false);
         return;
     }
-    let Some(target) = target else { return };
-    match &target {
-        Target::Instance(key) => store.dispatch(AppEvent::SendChat { key: key.clone(), text: text.clone() }),
-        _ => {
-            for batch in batches {
-                store.dispatch(AppEvent::Broadcast { batch, text: text.clone() });
-            }
-        }
-    }
+    store.dispatch(AppEvent::Say { keys, text: text.clone() });
     let mut history = shared.history.peek().clone();
     if history.last() != Some(&text) {
         history.push(text);
@@ -221,8 +215,47 @@ fn send(store: Store, scope: &Option<String>) {
     shared.recall.set(None);
     shared.typed.set(String::new());
     shared.rejected.set(None);
-    shared.sent.set(Some(if reach == 1 { tr("An 1 Account gesendet.") } else { trf("An %lld Accounts gesendet.", &[&reach]) }));
+    shared.sent.set(true);
     shared.draft.set(String::new());
+}
+
+/// What became of the line sent last, as the one line under the field says it.
+fn summary(said: &Said) -> String {
+    let (sent, waiting, unconfirmed, missed) = said.counts();
+    let mut parts = Vec::new();
+    if sent > 0 || (waiting + unconfirmed + missed == 0) {
+        parts.push(trf("An %lld gesendet", &[&sent]));
+    }
+    if waiting > 0 {
+        parts.push(trf("%lld warten noch", &[&waiting]));
+    }
+    if unconfirmed > 0 {
+        parts.push(trf("%lld ohne Rückmeldung", &[&unconfirmed]));
+    }
+    if missed > 0 {
+        parts.push(trf("%lld nicht angekommen", &[&missed]));
+    }
+    parts.join(" · ")
+}
+
+/// The accounts that did not get the line sent last, each with why, at most `MISSED_SHOWN` of them.
+fn missed_lines(said: &Said) -> Vec<String> {
+    let all: Vec<(&str, ChatRefusal)> = said.missed().collect();
+    let mut out: Vec<String> = all.iter().take(MISSED_SHOWN).map(|(name, why)| format!("{name}: {}", refusal_text(*why))).collect();
+    if all.len() > MISSED_SHOWN {
+        out.push(trf("und %lld weitere", &[&(all.len() - MISSED_SHOWN)]));
+    }
+    out
+}
+
+fn refusal_text(why: ChatRefusal) -> String {
+    match why {
+        ChatRefusal::NotInGame => tr("nicht im Spiel"),
+        ChatRefusal::TooLong => tr("Zeile zu lang"),
+        ChatRefusal::BadText => tr("enthält Zeichen, die der Server ablehnt"),
+        ChatRefusal::Dropped => tr("Verbindung weg, bevor die Zeile dran war"),
+        ChatRefusal::Failed => tr("Verbindung zum Spiel gestört"),
+    }
 }
 
 fn step_history(store: Store, delta: isize) {
@@ -425,7 +458,7 @@ impl Component for Conversation {
             }
             if *shared.scope.peek() != *scope {
                 shared.scope.set(scope.clone());
-                shared.sent.set(None);
+                shared.sent.set(false);
                 shared.rejected.set(None);
                 shared.shown.set(PAGE);
                 shared.top.set(None);
@@ -1082,8 +1115,8 @@ impl Component for Composer {
             if shared.rejected.peek().as_ref().is_some_and(|(text, _)| value.trim() != text) {
                 shared.rejected.set(None);
             }
-            if !value.is_empty() && shared.sent.peek().is_some() {
-                shared.sent.set(None);
+            if !value.is_empty() && *shared.sent.peek() {
+                shared.sent.set(false);
             }
             shared.at_hot.set_if_modified(None);
             if shared.at_closed.peek().as_ref().is_some_and(|c| c != value) && at_query(value).is_none() {
@@ -1106,7 +1139,10 @@ impl Component for Composer {
             Some(tg) if reach == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
             Some(_) => None,
         };
-        let hint = shared.sent.read().clone().or_else(|| absent.clone());
+        let said = if *shared.sent.read() { m.said.clone() } else { None };
+        let attention = said.as_ref().is_some_and(|s| s.counts().3 > 0);
+        let hint = said.as_ref().map(summary).or_else(|| absent.clone());
+        let missed = said.as_ref().map(missed_lines).unwrap_or_default();
         let joins: Vec<String> = match &target {
             Some(Target::Batch(id)) => m.batch(id).map(|b| b.join_lines()).unwrap_or_default(),
             _ => Vec::new(),
@@ -1143,9 +1179,13 @@ impl Component for Composer {
             .child(send_button.on_press(move |_| send(store, &scope_press)));
         let note = match shared.rejected.read().clone() {
             Some((_, why)) => Some(line(&t, why, font::CAPTION, t.danger_text)),
-            None => hint.map(|h| caption(&t, h).max_lines(1).text_overflow(TextOverflow::Ellipsis)),
+            None => hint.map(|h| if attention { line(&t, h, font::CAPTION, t.attention_text) } else { caption(&t, h) }),
         };
-        let note = rect().width(Size::fill()).height(Size::px((font::CAPTION * font::LINE).ceil())).maybe_child(note);
+        let rows = 1 + missed.len();
+        let mut note = rect().width(Size::fill()).height(Size::px((font::CAPTION * font::LINE).ceil() * rows as f32)).maybe_child(note);
+        for text in missed {
+            note = note.child(caption(&t, text));
+        }
         let keys_list = suggest.as_ref().map(|(_, l)| l.clone());
         let mut col = rect()
             .width(Size::fill())
@@ -1396,7 +1436,7 @@ fn in_scope(line: &ChatLine, batch: Option<&str>) -> bool {
 }
 
 fn line_problem(text: &str) -> Option<String> {
-    let n = text.chars().count();
+    let n = text.encode_utf16().count();
     (n > MAX_CHAT_CHARS).then(|| trf("Zu lang: %lld von höchstens %lld Zeichen.", &[&n, &MAX_CHAT_CHARS]))
 }
 

@@ -24,6 +24,8 @@ final class Protocol {
 
 		record ChatSend(String text) implements Incoming {}
 
+		record ChatLine(long id, String text) implements Incoming {}
+
 		record Reconnect() implements Incoming {}
 
 		record Respawn() implements Incoming {}
@@ -62,6 +64,7 @@ final class Protocol {
 		o.addProperty("pid", pid);
 		o.addProperty("mod_version", modVersion);
 		JsonArray features = new JsonArray();
+		features.add("chat_lines");
 		hooks.forEach((name, applied) -> {
 			if (applied) {
 				features.add(name);
@@ -147,6 +150,18 @@ final class Protocol {
 		return GSON.toJson(message("closing"));
 	}
 
+	static String chatOutcome(long id, String state, String why) {
+		JsonObject o = message("chat_outcome");
+		o.addProperty("id", id);
+		JsonObject outcome = new JsonObject();
+		outcome.addProperty("state", state);
+		if (why != null) {
+			outcome.addProperty("why", why);
+		}
+		o.add("outcome", outcome);
+		return GSON.toJson(o);
+	}
+
 	static String window(boolean visible, boolean focused) {
 		JsonObject o = message("window");
 		o.addProperty("visible", visible);
@@ -182,6 +197,7 @@ final class Protocol {
 				case "hide" -> new Incoming.Hide();
 				case "profile" -> new Incoming.Profile(integer(o, "fps"), integer(o, "render_distance"), integer(o, "preview_interval_ms"), integer(o, "preview_width"));
 				case "chat_send" -> string(o, "text") == null ? null : new Incoming.ChatSend(string(o, "text"));
+				case "chat_line" -> string(o, "text") == null || o.get("id") == null ? null : new Incoming.ChatLine(o.get("id").getAsLong(), string(o, "text"));
 				case "reconnect" -> new Incoming.Reconnect();
 				case "respawn" -> new Incoming.Respawn();
 				case "quit" -> new Incoming.Quit();
