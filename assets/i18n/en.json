@@ -2333,6 +2333,7 @@
   "Kein Account ist angemeldet.": "No account is signed in.",
   "An %lld gesendet": "Sent to %lld",
   "%lld warten noch": "%lld still waiting",
+  "1 wartet noch": "1 still waiting",
   "%lld ohne Rückmeldung": "%lld without confirmation",
   "%lld nicht angekommen": "%lld did not get it",
   "nicht im Spiel": "not in the game",
