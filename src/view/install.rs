@@ -340,7 +340,7 @@ fn local_io(e: &anyhow::Error) -> bool {
     io.is_some_and(|i| !matches!(i.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull)) && !network
 }
 
-fn explain(label: &str, e: &anyhow::Error) -> String {
+pub(crate) fn explain(label: &str, e: &anyhow::Error) -> String {
     let Some(refused) = e.chain().find_map(|c| c.downcast_ref::<Refused>()) else {
         let what = trf("„%@“ wurde nicht installiert.", &[&label]);
         return if local_io(e) { format!("{what} {}", tr("Die Datei ist beschädigt oder lässt sich nicht lesen.")) } else { explain_as(what, e).text };

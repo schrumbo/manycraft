@@ -24,6 +24,8 @@ const SHADER_SETTINGS: [&str; 2] = ["iris.properties", "oculus.properties"];
 const OPTION_KEYS: [&str; 2] = ["resourcePacks:", "incompatibleResourcePacks:"];
 const CDN: &str = "https://cdn.modrinth.com/";
 const SHOT_WIDTH: u32 = 960;
+const SHOT_LARGE_WIDTH: u32 = 2560;
+const KEPT_LARGE: usize = 40;
 const MAX_SIDE: u32 = 8192;
 const MAX_DECODED: u64 = 256 << 20;
 const MAX_ICON: u64 = 4 << 20;
@@ -600,7 +602,20 @@ pub fn shot_file(url: &str) -> Result<PathBuf> {
     if !url.starts_with(CDN) {
         bail!("picture is not on Modrinth's CDN");
     }
-    cached_picture("gallery", url, |url| net::get_bytes(&net::agent(None)?, url))
+    cached_picture("gallery", url, SHOT_WIDTH, |url| net::get_bytes(&net::agent(None)?, url))
+}
+
+/// A gallery picture as a file in the cache folder, at most `SHOT_LARGE_WIDTH` wide; the newest `KEPT_LARGE` stay.
+/// Blocking: run it off the UI thread.
+pub fn shot_file_large(url: &str) -> Result<PathBuf> {
+    if !url.starts_with(CDN) {
+        bail!("picture is not on Modrinth's CDN");
+    }
+    let path = cached_picture("gallery-large", url, SHOT_LARGE_WIDTH, |url| net::get_bytes(&net::agent(None)?, url))?;
+    if let Some(dir) = path.parent() {
+        super::modrinth::prune(dir, KEPT_LARGE);
+    }
+    Ok(path)
 }
 
 /// A picture of a project description as a file in the cache folder, at most `SHOT_WIDTH` wide.
@@ -609,7 +624,7 @@ pub fn readme_picture(url: &str) -> Result<PathBuf> {
     if !public_https(url) {
         bail!("picture is not on a public https host");
     }
-    cached_picture("readme", url, |url| net::get_bytes_vetted(url, public_https))
+    cached_picture("readme", url, SHOT_WIDTH, |url| net::get_bytes_vetted(url, public_https))
 }
 
 /// The picture of a pack: its `pack.png`, in a folder as it is, in a zip copied to the cache folder.
@@ -635,13 +650,13 @@ pub fn icon_file(path: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-fn cached_picture(folder: &str, url: &str, fetch: impl FnOnce(&str) -> Result<Vec<u8>>) -> Result<PathBuf> {
-    let path = paths::data_dir().join("cache").join(folder).join(format!("{}-{SHOT_WIDTH}.png", sha1_hex(url)));
+fn cached_picture(folder: &str, url: &str, width: u32, fetch: impl FnOnce(&str) -> Result<Vec<u8>>) -> Result<PathBuf> {
+    let path = paths::data_dir().join("cache").join(folder).join(format!("{}-{width}.png", sha1_hex(url)));
     if path.is_file() {
         return Ok(path);
     }
     let bytes = fetch(url)?;
-    net::write_atomic(&path, &shrink(&bytes)?)?;
+    net::write_atomic(&path, &shrink(&bytes, width)?)?;
     Ok(path)
 }
 
@@ -656,7 +671,7 @@ fn public_https(url: &str) -> bool {
     host.contains('.') && !host.starts_with('[') && !private_suffix && host.parse::<std::net::IpAddr>().is_err() && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
-fn shrink(bytes: &[u8]) -> Result<Vec<u8>> {
+fn shrink(bytes: &[u8], width: u32) -> Result<Vec<u8>> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
@@ -664,7 +679,7 @@ fn shrink(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut reader = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     reader.limits(limits);
     let full = reader.decode().context("not a supported picture")?;
-    let small = if full.width() > SHOT_WIDTH { full.resize(SHOT_WIDTH, MAX_SIDE, FilterType::Triangle) } else { full };
+    let small = if full.width() > width { full.resize(width, MAX_SIDE, FilterType::Triangle) } else { full };
     let mut out = std::io::Cursor::new(Vec::new());
     small.write_to(&mut out, ImageFormat::Png)?;
     Ok(out.into_inner())

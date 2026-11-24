@@ -158,6 +158,7 @@ struct Converter {
     links: Vec<Option<String>>,
     ordered: Vec<bool>,
     cells: usize,
+    summary: Option<usize>,
 }
 
 impl Converter {
@@ -193,7 +194,7 @@ impl Converter {
             "code" | "kbd" => self.out.push('`'),
             "summary" => {
                 self.blank();
-                self.out.push_str("**");
+                self.summary = Some(self.out.len());
             }
             "li" => {
                 if !self.out.ends_with('\n') {
@@ -223,7 +224,16 @@ impl Converter {
             "i" | "em" => self.out.push('*'),
             "code" | "kbd" => self.out.push('`'),
             "summary" => {
-                self.out.push_str("**");
+                if let Some(at) = self.summary.take() {
+                    let body = self.out.split_off(at);
+                    let text = body.trim();
+                    if text.is_empty() {
+                    } else if text.contains('\n') {
+                        self.out.push_str(text);
+                    } else {
+                        self.out.push_str(&format!("**{text}**"));
+                    }
+                }
                 self.blank();
             }
             "ul" | "ol" => {
@@ -306,7 +316,7 @@ fn table(inner: &str, depth: usize) -> String {
 }
 
 fn convert(s: &str, depth: usize) -> String {
-    let mut conv = Converter { out: String::with_capacity(s.len()), links: Vec::new(), ordered: Vec::new(), cells: 0 };
+    let mut conv = Converter { out: String::with_capacity(s.len()), links: Vec::new(), ordered: Vec::new(), cells: 0, summary: None };
     let mut i = 0;
     while i < s.len() {
         let rest = &s[i..];
@@ -400,9 +410,23 @@ fn convert(s: &str, depth: usize) -> String {
     conv.out
 }
 
-fn fenced(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("```") || t.starts_with("~~~")
+/// The marker of a code fence on `line`: its character, its length and whether nothing but an info string follows.
+fn fence(line: &str) -> Option<(char, usize, bool)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let t = &line[indent..];
+    let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let run = t.chars().take_while(|x| *x == c).count();
+    if run < 3 {
+        return None;
+    }
+    let rest = &t[run..];
+    if c == '`' && rest.contains('`') {
+        return None;
+    }
+    Some((c, run, rest.trim().is_empty()))
 }
 
 /// `text` with its HTML as the Markdown it stands for: links, pictures, headings, emphasis, lists, tables and line breaks.
@@ -413,17 +437,19 @@ pub fn normalize(text: &str) -> Cow<'_, str> {
     }
     let mut out = String::with_capacity(text.len());
     let mut chunk = String::new();
-    let mut inside = false;
+    let mut inside: Option<(char, usize)> = None;
     for line in text.lines() {
-        if fenced(line) {
-            if !inside {
+        let marker = fence(line);
+        let closes = matches!((inside, marker), (Some((c, n)), Some((mc, mn, true))) if c == mc && mn >= n);
+        if closes || (inside.is_none() && marker.is_some()) {
+            if inside.is_none() {
                 out.push_str(&convert(&chunk, 0));
                 chunk.clear();
             }
-            inside = !inside;
+            inside = if closes { None } else { marker.map(|(c, n, _)| (c, n)) };
             out.push_str(line);
             out.push('\n');
-        } else if inside {
+        } else if inside.is_some() {
             out.push_str(line);
             out.push('\n');
         } else {
@@ -525,6 +551,28 @@ mod tests {
     fn a_table_becomes_a_pipe_table() {
         let got = md("<table><tr><th>Mod</th><th>Use</th></tr><tr><td>Sodium</td><td>Speed | fps</td></tr></table>");
         assert_eq!(got, "| Mod | Use |\n| --- | --- |\n| Sodium | Speed \\| fps |");
+    }
+
+    #[test]
+    fn one_line_backtick_spans_are_not_fences() {
+        let src = "<center>\n\n```Early access```<br>\n[<img src=\"https://x.org/a.png\" alt=\"A\"/>](https://x.org)\n\n</center>\n\n<details>\n<summary>list</summary>\n\n```\nA, B\n```\n</details>\n\n<b>after</b>";
+        let got = md(src);
+        assert!(got.contains("[![A](https://x.org/a.png)](https://x.org)"), "{got}");
+        assert!(got.contains("**list**") && got.contains("**after**"), "{got}");
+        assert!(!got.contains("<"), "{got}");
+    }
+
+    #[test]
+    fn a_longer_fence_is_closed_only_by_an_equal_or_longer_one() {
+        let src = "````\n```\n<b>x</b>\n````\n<b>y</b>";
+        assert_eq!(md(src), "````\n```\n<b>x</b>\n````\n**y**");
+    }
+
+    #[test]
+    fn a_summary_with_a_heading_inside_does_not_leave_loose_stars() {
+        let got = md("<details><summary> <img src=\"https://x.org/a.png\" width=\"64\"> <br>\n\n### All <br> <a href=\"https://x.org\">go</a>\n\n</summary>\n\n- one\n</details>");
+        assert!(!got.contains("**"), "{got}");
+        assert!(got.contains("### All"), "{got}");
     }
 
     #[test]

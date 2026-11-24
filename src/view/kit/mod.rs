@@ -25,6 +25,7 @@ pub mod switch;
 pub mod text;
 pub mod toast;
 pub mod tooltip;
+pub mod zoom;
 
 use std::rc::Rc;
 use std::time::Duration;

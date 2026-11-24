@@ -13,6 +13,7 @@ use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 mod content;
+mod gallery;
 mod project;
 
 use super::instance::{self, Load, body_max, problem_view};
@@ -2172,7 +2173,10 @@ impl Component for Browser {
                 None => results(&t, &flow, &facts, kind, &typed, category.is_some(), all, status, more, sel, epoch, has_more, page, visible, fresh),
             });
         column = column.child(region);
-        column = column.child(at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill()));
+        let notice = || at_least(control::M, notice_row(&t, &flow, saved)).width(Size::fill());
+        if !paged {
+            column = column.child(notice());
+        }
         if paged {
             let (esc, enter, arrive) = (flow.clone(), flow.clone(), flow.clone());
             use_hook(move || {
@@ -2208,18 +2212,31 @@ impl Component for Browser {
                         _ => {}
                     }
                 })
-                .child(match aside {
-                    Some(aside) => rect()
+                .child(
+                    rect()
                         .width(Size::fill())
                         .height(Size::fill())
-                        .horizontal()
-                        .spacing(space::M)
+                        .spacing(space::XS)
                         .content(Content::flex())
-                        .child(column.width(Size::flex(PANE_LIST)).height(Size::fill()).content(Content::flex()))
-                        .child(aside)
-                        .into_element(),
-                    None => column.height(Size::fill()).content(Content::flex()).into_element(),
-                })
+                        .child(
+                            rect()
+                                .width(Size::fill())
+                                .height(Size::flex(1.))
+                                .child(match aside {
+                                    Some(aside) => rect()
+                                        .width(Size::fill())
+                                        .height(Size::fill())
+                                        .horizontal()
+                                        .spacing(space::M)
+                                        .content(Content::flex())
+                                        .child(column.width(Size::flex(PANE_LIST)).height(Size::fill()).content(Content::flex()))
+                                        .child(aside)
+                                        .into_element(),
+                                    None => column.height(Size::fill()).content(Content::flex()).into_element(),
+                                }),
+                        )
+                        .child(notice()),
+                )
                 .into_element();
         }
 

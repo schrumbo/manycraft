@@ -91,6 +91,7 @@ impl Component for WardrobePage {
             .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
             .on_file_drop(move |e: Event<FileEventData>| {
                 dropping.set_if_modified(false);
+                crate::view::kit::drop::claim(&e);
                 ctl.add_paths(e.file_paths.clone());
             })
             .child(page::scrolling(scroll, body))

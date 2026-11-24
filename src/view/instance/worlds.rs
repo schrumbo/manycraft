@@ -1204,6 +1204,7 @@ impl Component for Worlds {
             .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
             .on_file_drop(move |e: Event<FileEventData>| {
                 dropping.set_if_modified(false);
+                crate::view::kit::drop::claim(&e);
                 drop_page.import(e.file_paths.clone());
             });
         let wash = (*dropping.read()).then(|| {

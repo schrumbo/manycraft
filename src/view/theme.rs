@@ -130,6 +130,8 @@ pub mod frame {
     pub const RING: f32 = 2.;
     pub const RING_GAP: f32 = 2.;
     pub const PROGRESS: f32 = 3.;
+    /// The frame around the window while files are dragged over it.
+    pub const DROP_FRAME: f32 = 3.;
     /// The soft edge over a list that scrolls on, and how far above the list it paints.
     pub const FADE: f32 = 20.;
     pub const FADE_LAYER: i16 = 64;
