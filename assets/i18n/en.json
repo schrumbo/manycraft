@@ -2430,5 +2430,14 @@
   "Der erste entsteht von selbst, sobald der Account in einer Welt ist. Ein Doppelklick auf die Kachel nimmt sofort einen auf.": "The first one is taken on its own as soon as the account is in a world. Double-click the tile to take one right away.",
   "Bleiben nur, solange Manycraft läuft.": "Kept only while Manycraft runs.",
   "Stand %@": "As of %@",
-  "Der letzte Screenshot. Er bleibt nur, solange Manycraft läuft.": "The last screenshot. It is kept only while Manycraft runs."
+  "Der letzte Screenshot. Er bleibt nur, solange Manycraft läuft.": "The last screenshot. It is kept only while Manycraft runs.",
+  "Beim geschützten Spiel endet dabei die Anmeldung: Es kann keinem Server mehr beitreten.": "The protected game loses its login: it can't join a server anymore.",
+  "Es hat einen Proxy und wird sofort getrennt.": "It has a proxy and disconnects at once.",
+  "Sie haben einen Proxy und werden sofort getrennt.": "They have a proxy and disconnect at once.",
+  "Eins davon hat einen Proxy und wird sofort getrennt.": "One of them has a proxy and disconnects at once.",
+  "%lld davon haben einen Proxy und werden sofort getrennt.": "%lld of them have a proxy and disconnect at once.",
+  "Bei %lld geschützten Spielen endet dabei die Anmeldung: Sie können keinem Server mehr beitreten.": "%lld protected games lose their login: they can't join a server anymore.",
+  "Beende sie vorher, wenn du das nicht willst.": "Quit them first if you don't want that.",
+  "Geschützte Spiele verlieren ihre Anmeldung": "Protected games lose their login",
+  "Trotzdem neu starten": "Restart Anyway"
 }

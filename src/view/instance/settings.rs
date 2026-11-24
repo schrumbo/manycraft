@@ -699,7 +699,8 @@ impl Component for Protection {
         if usable {
             line = line.on_press(move |_| hide_login(store, &press, !on));
         }
-        group(&t, Some(tr("Schutz")), vec![line.into_element()], None)
+        let running = store.model.read().games.values().any(|g| g.instance_id == made.id && g.phase.is_running());
+        group(&t, Some(tr("Schutz")), vec![line.into_element()], running.then(|| tr("Ein Spiel dieser Instanz läuft. Was du umstellst, gilt ab seinem nächsten Start.")))
     }
 }
 
