@@ -211,7 +211,7 @@ fn figure<'a>(e: &Entity, assets: &'a Assets, skin: Option<&Arc<Sheet>>) -> Opti
         }
         ("slime" | "magma_cube", data) => {
             let size = match data {
-                Data::Slime { size } => f32::from((*size).max(1)),
+                Data::Slime { size } => f32::from((*size).clamp(1, 127)),
                 _ => 1.0,
             };
             scale = [size * 0.999; 3];
@@ -255,7 +255,6 @@ fn figure<'a>(e: &Entity, assets: &'a Assets, skin: Option<&Arc<Sheet>>) -> Opti
                 "bogged" => "entity/skeleton/bogged".into(),
                 "zombified_piglin" => format!("entity/piglin/zombified_piglin{suffix}"),
                 "mooshroom" => format!("entity/cow/mooshroom_red{suffix}"),
-                "witch" => "entity/witch".into(),
                 _ => format!("entity/{kind}/{kind}{suffix}"),
             };
             let layer = format!("minecraft:{kind}{suffix}#main");
@@ -523,16 +522,11 @@ fn display(painter: &mut Painter, assets: &Assets, e: &Entity, lightmap: &Lightm
     }
 }
 
-/// How far an entity's shadow reaches and how dark it is, as its renderer sets them.
-fn shadow_of(e: &Entity) -> (f32, f32) {
+/// How far a mob's shadow reaches, as its renderer sets it.
+fn shadow_of(e: &Entity) -> f32 {
     let radius = match plain(e.kind) {
-        "item" => return (0.15, 0.75),
-        "block_display" | "item_display" | "text_display" => return match &e.data {
-            Data::Display { common, .. } => (common.shadow_radius, common.shadow_strength),
-            _ => (0.0, 0.0),
-        },
         "slime" | "magma_cube" => match e.data {
-            Data::Slime { size } => 0.25 * f32::from(size.clamp(1, 16)),
+            Data::Slime { size } => 0.25 * f32::from(size.clamp(1, 127)),
             _ => 0.25,
         },
         "cow" | "mooshroom" | "pig" | "sheep" | "iron_golem" | "panda" | "polar_bear" | "cave_spider" | "goat" | "camel" | "sniffer" | "turtle" => 0.7,
@@ -543,13 +537,16 @@ fn shadow_of(e: &Entity) -> (f32, f32) {
         "armor_stand" | "item_frame" | "glow_item_frame" | "marker" | "interaction" => 0.0,
         _ => 0.5,
     };
-    (if e.baby { radius * 0.5 } else { radius }, 1.0)
+    if e.baby { radius * 0.5 } else { radius }
 }
 
 /// Darkens the ground under an entity with the game's round shadow.
 #[allow(clippy::too_many_arguments)]
 fn shadow<W: Blocks>(painter: &mut Painter, scene: &Scene<'_, W>, sheet: &Sheet, e: &Entity, radius: f32, strength: f32) {
-    let radius = radius.min(32.0);
+    if !radius.is_finite() || !strength.is_finite() {
+        return;
+    }
+    let (radius, strength) = (radius.min(32.0), strength.clamp(0.0, 1.0));
     let d = [0, 1, 2].map(|k| e.pos[k] - painter.view.eye[k]);
     let pow = ((1.0 - (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / 256.0) as f32) * strength;
     if radius <= 0.0 || pow <= 0.0 {
@@ -596,14 +593,15 @@ fn shadow<W: Blocks>(painter: &mut Painter, scene: &Scene<'_, W>, sheet: &Sheet,
 }
 
 /// Draws an item lying on the ground.
-fn dropped(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3]) {
-    let Data::Item { item } = &e.data else { return };
-    let Some(model) = Model::of(assets, item) else { return };
+fn dropped(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3]) -> bool {
+    let Data::Item { item } = &e.data else { return false };
+    let Some(model) = Model::of(assets, item) else { return false };
     let ground = model.placed(&Affine::IDENTITY, Context::Ground);
     let low = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]].iter().map(|p| ground.apply(*p)[1]).fold(f32::MAX, f32::min);
     let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
     let at = Affine::at(rel).translate([0.0, 0.1 - low + 0.0625, 0.0]).rotate_y(e.yaw.to_radians());
     model.draw(painter, assets, &at, Context::Ground, light);
+    true
 }
 
 /// Draws the account's own hand and held item over the picture, as the game shows them in first person.
@@ -668,13 +666,11 @@ pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
         let (sky, block) = scene.light(probe[0], probe[1], probe[2]);
         let lit = lightmap.color(light::pack(sky, block));
         let kind = plain(e.kind);
-        if let Some(sheet) = &shadow_sheet {
-            let (radius, strength) = shadow_of(e);
-            shadow(&mut painter, scene, sheet, e, radius, strength);
-        }
         match kind {
             "item" => {
-                dropped(&mut painter, assets, e, lit);
+                if dropped(&mut painter, assets, e, lit) && let Some(sheet) = &shadow_sheet {
+                    shadow(&mut painter, scene, sheet, e, 0.15, 0.75);
+                }
                 continue;
             }
             "item_frame" | "glow_item_frame" => {
@@ -683,11 +679,17 @@ pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
             }
             "block_display" | "item_display" | "text_display" => {
                 display(&mut painter, assets, e, lightmap, lit);
+                if let (Some(sheet), Data::Display { common, .. }) = (&shadow_sheet, &e.data) {
+                    shadow(&mut painter, scene, sheet, e, common.shadow_radius, common.shadow_strength);
+                }
                 continue;
             }
             _ => {}
         }
         let Some(figure) = figure(e, assets, skin.as_ref()) else { continue };
+        if let Some(sheet) = &shadow_sheet {
+            shadow(&mut painter, scene, sheet, e, shadow_of(e), 1.0);
+        }
         let at = placement(e, view.eye, figure.scale);
         for coat in &figure.coats {
             let paint = Paint { light: if coat.glow { WHITE } else { lit }, tint: coat.tint, mode: coat.mode };

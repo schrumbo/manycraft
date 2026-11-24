@@ -245,7 +245,8 @@ impl Assets {
         if let Some(found) = sheets.get(path) {
             return found.clone();
         }
-        let decoded = self.pngs.get(path).and_then(|bytes| Sheet::png(bytes)).map(Arc::new);
+        let bytes = self.pngs.get(path)?;
+        let decoded = Sheet::png(bytes).map(Arc::new);
         sheets.insert(path.to_string(), decoded.clone());
         decoded
     }

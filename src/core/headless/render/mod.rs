@@ -11,6 +11,8 @@ mod actor;
 mod block;
 mod entity;
 mod figure;
+mod font;
+pub mod hud;
 mod item;
 mod skins;
 mod light;
