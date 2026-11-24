@@ -207,7 +207,11 @@ impl Window {
         let mut child = command.spawn().context("cannot start the sign-in window")?;
         let mut stdin = child.stdin.take().context("the sign-in window has no input")?;
         let stdout = child.stdout.take().context("the sign-in window has no output")?;
-        writeln!(stdin, "{}", serde_json::to_string(request)?).and_then(|()| stdin.flush()).context("cannot talk to the sign-in window")?;
+        if let Err(e) = writeln!(stdin, "{}", serde_json::to_string(request)?).and_then(|()| stdin.flush())
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(e).context("cannot talk to the sign-in window");
+        }
         let (tx, lines) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
