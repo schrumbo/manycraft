@@ -543,30 +543,12 @@ fn after_image(s: &str) -> Option<&str> {
 
 fn lone_image(s: &str) -> bool {
     match after_image(s) {
-        Some(rest) => rest.is_empty(),
+        Some(rest) => rest.is_empty() || (rest.starts_with('{') && rest.ends_with('}') && !rest.contains(')')),
         None => s.strip_prefix('[').and_then(after_image).and_then(|rest| rest.strip_prefix("](")).is_some_and(|url| url.strip_suffix(')').is_some_and(|u| !u.contains(')'))),
     }
 }
 
-fn without_attributes(line: &str) -> Cow<'_, str> {
-    if !line.contains("){") {
-        return Cow::Borrowed(line);
-    }
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(at) = rest.find("){") {
-        let (head, tail) = rest.split_at(at + 1);
-        out.push_str(head);
-        match tail.find('}') {
-            Some(end) if tail[1..end].contains('=') && tail[1..end].chars().all(|c| c.is_alphanumeric() || matches!(c, '=' | '%' | ' ' | '.' | '-' | '_')) => rest = &tail[end + 1..],
-            _ => rest = tail,
-        }
-    }
-    out.push_str(rest);
-    Cow::Owned(out)
-}
-
-/// `text` with the size attributes after pictures (`{width=550}`) dropped and a heading that holds nothing but a picture shown as the picture.
+/// `text` with a heading that holds nothing but a picture, with or without a size like `{width=550}`, shown as the picture.
 fn image_lines(text: &str) -> Cow<'_, str> {
     if !text.contains("![") {
         return Cow::Borrowed(text);
@@ -584,9 +566,8 @@ fn image_lines(text: &str) -> Cow<'_, str> {
             fence = Some((mark, run));
             out.push_str(line);
         } else {
-            let line = without_attributes(line);
-            let (hashes, rest) = heading_of(&line).map_or((false, ""), |(_, rest)| (true, rest));
-            out.push_str(if hashes && lone_image(rest.trim()) { rest.trim() } else { &line });
+            let picture = heading_of(line).map(|(_, rest)| rest.trim()).filter(|rest| lone_image(rest));
+            out.push_str(picture.unwrap_or(line));
         }
         out.push('\n');
     }
@@ -810,7 +791,6 @@ mod tests {
         let found = blocks("# ![A](https://x.org/a.png){width=550}\n\ntext\n\n# ![B](https://x.org/b.png) Title");
         assert!(matches!(found[0], Block::Images(_)), "first block is not the picture");
         assert!(matches!(found.last(), Some(Block::Heading { .. })));
-        assert_eq!(without_attributes("[a](u){target=_blank} {x}").as_ref(), "[a](u) {x}");
     }
 
     #[test]
