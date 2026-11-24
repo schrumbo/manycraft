@@ -42,7 +42,7 @@ struct World {
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
-    World { mother: Mother::at(root.join(DIR)), roots: Roots { instances: root.join("instances") }, root, _tmp: tmp }
+    World { mother: Mother::at(root.join(DIR)), roots: Roots { instances: root.join("instances"), mother: Mother::at(root.join(DIR)) }, root, _tmp: tmp }
 }
 
 const ACCOUNT: &str = "0000000000000000000000000000000a";
@@ -107,7 +107,7 @@ fn a_reset_at_start_never_reaches_the_sync_folder() {
     w.put_mother("config/mod.json", "{\"a\":1}");
     let a = w.instance("A", Sharing::ALL);
     inbound_in(&w.mother, &a, false).unwrap();
-    assert!(read(&a.dir.join("options.txt")).contains("fov:0.5"));
+    assert!(composed(&w, &a).contains("fov:0.5"));
     assert_eq!(read(&a.dir.join("config").join("mod.json")), "{\"a\":1}");
     let game = w.game(&a);
     let p = w.peers(&[("k1", &a)]);
@@ -120,7 +120,7 @@ fn a_reset_at_start_never_reaches_the_sync_folder() {
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
     assert_eq!(w.mother("config/mod.json").unwrap(), "{\"a\":1}");
-    assert!(read(&a.dir.join("options.txt")).contains("fov:0.5"));
+    assert!(composed(&w, &a).contains("fov:0.5"));
     inbound_in(&w.mother, &a, false).unwrap();
     assert_eq!(read(&a.dir.join("config").join("mod.json")), "{\"a\":1}");
 }
@@ -139,7 +139,7 @@ fn a_missing_options_file_the_game_recreates_never_reaches_the_sync_folder() {
     t.loaded("k1");
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
-    assert!(read(&a.dir.join("options.txt")).contains("fov:0.5"));
+    assert!(composed(&w, &a).contains("fov:0.5"));
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn a_change_after_loading_reaches_the_sync_folder_and_the_next_start_of_another_
     t.loaded("k1");
     t.options(&w.roots, &p, "k1", &values(&[("fov", "0.9")]));
     assert!(w.mother("options.txt").unwrap().contains("fov:0.9"));
-    assert!(read(&a.dir.join("options.txt")).contains("fov:0.9"));
+    assert!(composed(&w, &a).contains("fov:0.9"));
     let plain = a.dir.join("games").join("other");
     fs::create_dir_all(&plain).unwrap();
     t.started(&w.roots, &p, start("k2", &a, &plain, false));
@@ -168,7 +168,7 @@ fn a_change_after_loading_reaches_the_sync_folder_and_the_next_start_of_another_
     t.ended(&w.roots, &p, "k2", 1);
     assert!(w.mother("options.txt").unwrap().contains("guiScale:3"));
     inbound_in(&w.mother, &b, false).unwrap();
-    let theirs = read(&b.dir.join("options.txt"));
+    let theirs = composed(&w, &b);
     assert!(theirs.contains("fov:0.9") && theirs.contains("guiScale:3") && theirs.contains("version:3955"), "{theirs}");
 }
 
@@ -208,7 +208,7 @@ fullscreen:false
     t.options(&w.roots, &p, "k1", &values(&[("fullscreen", "true"), ("lastServer", "x"), ("version", "9999"), ("resourcePacks", "[\"file/a.zip\"]"), ("incompatibleResourcePacks", "[]"), ("fov", "0.7")]));
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.7\n");
     inbound_in(&w.mother, &b, false).unwrap();
-    assert_eq!(read(&b.dir.join("options.txt")), "version:3955\nfullscreen:false\nresourcePacks:[\"own\"]\nfov:0.7\n");
+    assert_eq!(composed(&w, &b), "version:3955\nfullscreen:false\nresourcePacks:[\"own\"]\nfov:0.7\n");
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn an_instance_that_opted_out_neither_reads_nor_writes() {
     fs::create_dir_all(c.dir.join("config")).unwrap();
     fs::write(c.dir.join("config").join("mod.json"), "own").unwrap();
     inbound_in(&w.mother, &c, false).unwrap();
-    assert_eq!(read(&c.dir.join("options.txt")), "fov:0.1\n");
+    assert_eq!(composed(&w, &c), "fov:0.1\n");
     assert_eq!(read(&c.dir.join("config").join("mod.json")), "own");
     assert!(!c.dir.join("servers.dat").exists());
     let game = w.game(&c);
@@ -239,7 +239,7 @@ fn an_instance_that_opted_out_neither_reads_nor_writes() {
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
     assert_eq!(w.mother("servers.dat").unwrap(), "shared list");
     assert_eq!(w.mother("config/mod.json").unwrap(), "shared");
-    assert_eq!(read(&c.dir.join("options.txt")), "fov:0.2\n");
+    assert_eq!(composed(&w, &c), "fov:0.2\n");
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn turning_sharing_on_keeps_the_own_copy_first() {
     fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
     fs::create_dir_all(a.dir.join("config")).unwrap();
     fs::write(a.dir.join("config").join("mod.json"), "mine").unwrap();
-    let made = set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL).unwrap();
+    let made = set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL, false).unwrap();
     assert_eq!(made.sync, Sharing::ALL);
     assert_eq!(crate::core::instance::load_all_in(&w.roots.instances).unwrap()[0].sync, Sharing::ALL);
     let own: Vec<Version> = history::versions(&w.mother, Item::Options).unwrap().into_iter().filter(|v| v.own).collect();
@@ -259,7 +259,8 @@ fn turning_sharing_on_keeps_the_own_copy_first() {
     assert_eq!(history::files(&w.mother, &own[0]).unwrap(), vec![("options.txt".to_owned(), b"fov:0.1\n".to_vec())]);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
     assert_eq!(w.mother("config/mod.json").unwrap(), "mine");
-    assert_eq!(read(&a.dir.join("options.txt")), "fov:0.1\n");
+    assert!(!a.dir.join("options.txt").exists());
+    assert_eq!(composed(&w, &a), "fov:0.5\n");
 }
 
 #[test]
@@ -331,7 +332,7 @@ fn turning_on_many_takes_the_most_recently_played_and_keeps_the_others() {
     played(&w, &b, 10);
     played(&w, &c, 600);
     let ids = vec![a.id.clone(), b.id.clone(), c.id.clone()];
-    let made = turn_on_in(&w.mother, &w.roots.instances, &ids).unwrap();
+    let made = turn_on_in(&w.mother, &w.roots.instances, &ids, &[]).unwrap();
     assert!(made.iter().all(|i| i.sync == Sharing::ALL));
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.2\n");
     assert_eq!(w.mother("config/mod.json").unwrap(), "0.2");
@@ -339,7 +340,7 @@ fn turning_on_many_takes_the_most_recently_played_and_keeps_the_others() {
     for name in ["A", "B", "C"] {
         assert!(own.iter().any(|s| s == name), "{name} not kept: {own:?}");
     }
-    assert_eq!(read(&a.dir.join("options.txt")), "version:3955\nfov:0.1\n");
+    assert_eq!(composed(&w, &a), "version:3955\nfov:0.2\n");
 }
 
 fn tree(root: &Path, skip: &[&str]) -> BTreeMap<PathBuf, (Vec<u8>, Option<SystemTime>)> {
@@ -375,8 +376,8 @@ fn nothing_outside_instance_folders_and_the_sync_folder_is_touched() {
     let b = w.instance("B", Sharing::ALL);
     fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
     let before = tree(&w.root, &["instances", "sync"]);
-    set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL).unwrap();
-    turn_on_in(&w.mother, &w.roots.instances, &[b.id.clone()]).unwrap();
+    set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL, false).unwrap();
+    turn_on_in(&w.mother, &w.roots.instances, &[b.id.clone()], &[]).unwrap();
     inbound_in(&w.mother, &b, false).unwrap();
     let game = w.game(&b);
     let p = w.peers(&[("k1", &b)]);
@@ -397,7 +398,7 @@ fn a_game_that_ends_before_loading_sends_nothing_up() {
     w.put_mother("servers.dat", "list");
     let a = w.instance("A", Sharing::ALL);
     inbound_in(&w.mother, &a, false).unwrap();
-    let template = read(&a.dir.join("options.txt"));
+    let template = composed(&w, &a);
     let game = w.game(&a);
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
@@ -407,7 +408,7 @@ fn a_game_that_ends_before_loading_sends_nothing_up() {
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
     assert_eq!(w.mother("servers.dat").unwrap(), "list");
-    assert_eq!(read(&a.dir.join("options.txt")), template);
+    assert_eq!(composed(&w, &a), template);
 }
 
 #[test]
@@ -416,7 +417,7 @@ fn a_hidden_muted_batch_game_never_moves_its_background_values() {
     w.put_mother("options.txt", "renderDistance:12\nsoundCategory_master:1.0\n");
     let a = w.instance("A", Sharing::ALL);
     inbound_in(&w.mother, &a, false).unwrap();
-    let template = read(&a.dir.join("options.txt"));
+    let template = composed(&w, &a);
     let game = w.game(&a);
     save(&game.join("options.txt"), &template).unwrap();
     let p = w.peers(&[("k1", &a)]);
@@ -426,7 +427,7 @@ fn a_hidden_muted_batch_game_never_moves_its_background_values() {
     save(&game.join("options.txt"), "renderDistance:2\nsoundCategory_master:0.0\n").unwrap();
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "renderDistance:12\nsoundCategory_master:1.0\n");
-    assert_eq!(read(&a.dir.join("options.txt")), template);
+    assert_eq!(composed(&w, &a), template);
 }
 
 #[test]
@@ -443,7 +444,7 @@ fn a_server_list_saved_after_loading_reaches_the_sync_folder_and_running_sharers
     fs::write(ga.join("servers.dat"), "new list").unwrap();
     t.servers(&w.roots, &p, "k1");
     assert_eq!(w.mother("servers.dat").unwrap(), "new list");
-    assert_eq!(read(&b.dir.join("servers.dat")), "new list");
+    assert_eq!(read(&servers_for(&w.mother, &b.dir)), "new list");
     assert_eq!(read(&gb.join("servers.dat")), "new list");
     assert!(p.sent.borrow().contains(&("k2".to_owned(), ToMod::Servers)));
 }
@@ -500,7 +501,7 @@ fn holds_template(game: &Path) {
 fn a_deleted_game_options_file_starts_with_the_shared_values() {
     let w = world();
     let (template, game) = template_and_game(&w);
-    verify_game(&template, &game, Some(4440)).unwrap();
+    verify_game(fs::read_to_string(&template).ok().as_deref(), &game, Some(4440)).unwrap();
     holds_template(&game);
 }
 
@@ -509,10 +510,10 @@ fn a_garbage_game_options_file_starts_with_the_shared_values() {
     let w = world();
     let (template, game) = template_and_game(&w);
     fs::write(&game, b"\x00\xff\xfe garbage").unwrap();
-    verify_game(&template, &game, Some(4440)).unwrap();
+    verify_game(fs::read_to_string(&template).ok().as_deref(), &game, Some(4440)).unwrap();
     holds_template(&game);
     fs::write(&game, "fov:0.0\nguiScale:1\n").unwrap();
-    verify_game(&template, &game, Some(4440)).unwrap();
+    verify_game(fs::read_to_string(&template).ok().as_deref(), &game, Some(4440)).unwrap();
     holds_template(&game);
 }
 
@@ -524,7 +525,7 @@ fn a_read_only_game_options_file_starts_with_the_shared_values() {
     let mut perms = fs::metadata(&game).unwrap().permissions();
     perms.set_readonly(true);
     fs::set_permissions(&game, perms).unwrap();
-    verify_game(&template, &game, Some(4440)).unwrap();
+    verify_game(fs::read_to_string(&template).ok().as_deref(), &game, Some(4440)).unwrap();
     holds_template(&game);
 }
 
@@ -539,7 +540,7 @@ fn a_dangling_link_as_game_options_file_starts_with_the_shared_values() {
     if linked.is_err() {
         return;
     }
-    verify_game(&template, &game, Some(4440)).unwrap();
+    verify_game(fs::read_to_string(&template).ok().as_deref(), &game, Some(4440)).unwrap();
     holds_template(&game);
     assert!(!w.root.join("nowhere.txt").exists());
 }
@@ -549,7 +550,7 @@ fn a_game_folder_that_cannot_take_the_options_refuses_the_start() {
     let w = world();
     let (template, game) = template_and_game(&w);
     fs::create_dir_all(game.join("blocked")).unwrap();
-    assert!(verify_game(&template, &game, Some(4440)).is_err());
+    assert!(verify_game(fs::read_to_string(&template).ok().as_deref(), &game, Some(4440)).is_err());
 }
 
 #[test]
@@ -593,7 +594,7 @@ fn options_of_games_before_1_13_move_neither_way() {
     assert_eq!(w.mother("options.txt"), None);
     w.put_mother("options.txt", "key_key.jump:key.keyboard.space\n");
     inbound_in(&w.mother, &old, false).unwrap();
-    assert_eq!(read(&old.dir.join("options.txt")), "key_key.jump:57\nlang:en_US\n");
+    assert_eq!(composed(&w, &old), "key_key.jump:57\nlang:en_US\n");
     let game = w.game(&old);
     let p = w.peers(&[]);
     let mut t = w.tracker();
@@ -606,8 +607,8 @@ fn options_of_games_before_1_13_move_neither_way() {
     let fresh = w.instance("Fresh", Sharing::NONE);
     let older = old_instance(&w, "Older", "1.8.9");
     fs::write(older.dir.join("options.txt"), "key_key.jump:57\n").unwrap();
-    set_in(&w.mother, &w.roots.instances, &older.id, Sharing::NONE).unwrap();
-    turn_on_in(&w.mother, &w.roots.instances, &[older.id.clone(), fresh.id.clone()]).unwrap();
+    set_in(&w.mother, &w.roots.instances, &older.id, Sharing::NONE, false).unwrap();
+    turn_on_in(&w.mother, &w.roots.instances, &[older.id.clone(), fresh.id.clone()], &[]).unwrap();
     assert_eq!(w.mother("options.txt").unwrap(), "key_key.jump:key.keyboard.space\n");
     assert!(own_files(&w, Item::Options).iter().all(|b| !String::from_utf8_lossy(b).contains(":57")));
 }
@@ -619,9 +620,12 @@ fn every_own_copy_that_differs_is_kept_before_the_shared_one_replaces_it() {
     w.put_mother("options.txt", "fov:0.5\n");
     let a = w.instance("A", Sharing::ALL);
     inbound_in(&w.mother, &a, false).unwrap();
+    crate::core::fleet::remove_link(&a.dir.join("config")).unwrap();
+    fs::create_dir_all(a.dir.join("config")).unwrap();
     fs::write(a.dir.join("config").join("mod.json"), "{\"by hand\":1}").unwrap();
     fs::write(a.dir.join("options.txt"), "fov:0.3\n").unwrap();
     inbound_in(&w.mother, &a, false).unwrap();
+    assert!(is_link(&a.dir.join("config")));
     assert_eq!(read(&a.dir.join("config").join("mod.json")), "{\"shared\":1}");
     assert!(own_files(&w, Item::Config).contains(&b"{\"by hand\":1}".to_vec()));
     assert!(own_files(&w, Item::Options).contains(&b"fov:0.3\n".to_vec()));
@@ -648,7 +652,8 @@ fn an_options_template_that_is_not_utf8_keeps_its_own_lines_and_bytes() {
     fs::write(a.dir.join("options.txt"), &raw).unwrap();
     inbound_in(&w.mother, &a, false).unwrap();
     let now = String::from_utf8_lossy(&fs::read(a.dir.join("options.txt")).unwrap()).into_owned();
-    assert!(now.contains("version:3955") && now.contains("resourcePacks:") && now.contains("fov:0.5"), "{now}");
+    assert!(now.contains("version:3955") && now.contains("resourcePacks:") && !now.contains("fov"), "{now}");
+    assert!(composed(&w, &a).contains("fov:0.5"));
     assert!(own_files(&w, Item::Options).contains(&raw));
 }
 
@@ -661,7 +666,7 @@ fn a_broken_history_index_moves_aside_and_starts_still_work() {
     let a = w.instance("A", Sharing::ALL);
     fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
     inbound_in(&w.mother, &a, false).unwrap();
-    assert!(read(&a.dir.join("options.txt")).contains("fov:0.5"));
+    assert!(composed(&w, &a).contains("fov:0.5"));
     let aside: Vec<PathBuf> = fs::read_dir(&w.mother.root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("history.broken-")).collect();
     assert_eq!(aside.len(), 1);
     assert_eq!(read(&aside[0].join("kept").join("options.txt")), "fov:0.2\n");
@@ -740,11 +745,11 @@ fn an_old_options_template_after_a_version_change_never_reaches_the_sync_folder(
     assert_eq!(w.mother("options.txt"), None);
     let b = w.instance("B", Sharing::NONE);
     fs::write(b.dir.join("options.txt"), "key_key.jump:57\n").unwrap();
-    set_in(&w.mother, &w.roots.instances, &b.id, Sharing::ALL).unwrap();
+    set_in(&w.mother, &w.roots.instances, &b.id, Sharing::ALL, false).unwrap();
     assert_eq!(w.mother("options.txt"), None);
     w.put_mother("options.txt", "key_key.jump:key.keyboard.space\n");
     inbound_in(&w.mother, &a, false).unwrap();
-    let now = read(&a.dir.join("options.txt"));
+    let now = composed(&w, &a);
     assert!(now.contains("key_key.jump:key.keyboard.space") && !now.contains(":57"), "{now}");
     assert!(own_files(&w, Item::Options).contains(&b"version:1343\nkey_key.jump:57\nfov:0.1\n".to_vec()));
 }
@@ -788,7 +793,7 @@ fn a_first_companion_start_keeps_its_detected_setup_out_of_the_sync_folder_and_t
     w.put_mother("options.txt", "fov:0.5\n");
     let a = w.instance("A", Sharing::ALL);
     inbound_in(&w.mother, &a, false).unwrap();
-    let template = fs::read_to_string(a.dir.join("options.txt")).unwrap();
+    let template = composed(&w, &a);
     let game = w.game(&a);
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
@@ -796,7 +801,7 @@ fn a_first_companion_start_keeps_its_detected_setup_out_of_the_sync_folder_and_t
     t.loaded("k1");
     t.options(&w.roots, &p, "k1", &values(&[("renderDistance", "16")]));
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
-    assert_eq!(fs::read_to_string(a.dir.join("options.txt")).unwrap(), template);
+    assert_eq!(composed(&w, &a), template);
     t.options(&w.roots, &p, "k1", &values(&[("fov", "0.9")]));
     assert!(w.mother("options.txt").unwrap().contains("fov:0.9"));
 }
@@ -904,4 +909,179 @@ fn save(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
         fs::File::options().write(true).open(path)?.set_modified(before + Duration::from_millis(10))?;
     }
     Ok(())
+}
+
+fn composed(w: &World, own: &Own) -> String {
+    options_for(&w.mother, &own.dir).unwrap().unwrap_or_default()
+}
+
+#[test]
+fn a_sharing_instance_keeps_no_copy_of_what_it_shares() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    fs::write(a.dir.join("options.txt"), "version:3955\nfov:0.1\nresourcePacks:[\"x\"]\n").unwrap();
+    fs::write(a.dir.join("servers.dat"), b"mine").unwrap();
+    fs::create_dir_all(a.dir.join("config")).unwrap();
+    fs::write(a.dir.join("config").join("a.toml"), "x = 1\n").unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert_eq!(read(&a.dir.join("options.txt")), "resourcePacks:[\"x\"]\nversion:3955\n");
+    assert!(!a.dir.join("servers.dat").exists());
+    assert!(is_link(&a.dir.join("config")));
+    assert_eq!(w.mother("servers.dat").unwrap(), "mine");
+    assert_eq!(w.mother("config/a.toml").unwrap(), "x = 1\n");
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+    assert_eq!(read(&a.dir.join("config").join("a.toml")), "x = 1\n");
+    let mine = composed(&w, &a);
+    assert!(mine.contains("fov:0.5") && mine.contains("resourcePacks:[\"x\"]") && mine.contains("version:3955"), "{mine}");
+    assert_eq!(own_files(&w, Item::Options), vec![b"version:3955\nfov:0.1\nresourcePacks:[\"x\"]\n".to_vec()]);
+    assert_eq!(own_files(&w, Item::Servers), vec![b"mine".to_vec()]);
+    assert_eq!(own_files(&w, Item::Config), vec![b"x = 1\n".to_vec()]);
+    assert_eq!(servers_for(&w.mother, &a.dir), w.mother.path("servers.dat"));
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert!(is_link(&a.dir.join("config")));
+    assert_eq!(own_files(&w, Item::Config).len(), 1);
+}
+
+#[test]
+fn an_instance_that_does_not_share_stays_untouched() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    w.put_mother("config/a.toml", "x = 9\n");
+    let a = w.instance("A", Sharing::NONE);
+    fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
+    fs::create_dir_all(a.dir.join("config")).unwrap();
+    fs::write(a.dir.join("config").join("a.toml"), "x = 1\n").unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert_eq!(read(&a.dir.join("options.txt")), "fov:0.1\n");
+    assert!(!is_link(&a.dir.join("config")));
+    assert_eq!(read(&a.dir.join("config").join("a.toml")), "x = 1\n");
+    assert_eq!(composed(&w, &a), "fov:0.1\n");
+}
+
+#[test]
+fn a_config_folder_that_cannot_become_a_link_stays_as_it_was() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    fs::write(w.mother.path("config"), "in the way").unwrap();
+    let a = w.instance("A", Sharing { options: false, config: true, servers: false });
+    fs::create_dir_all(a.dir.join("config")).unwrap();
+    fs::write(a.dir.join("config").join("a.toml"), "x = 1\n").unwrap();
+    assert!(inbound_in(&w.mother, &a, false).is_err());
+    assert!(!is_link(&a.dir.join("config")));
+    assert_eq!(read(&a.dir.join("config").join("a.toml")), "x = 1\n");
+}
+
+#[test]
+fn turning_sharing_off_gives_the_instance_a_real_copy_of_the_shared_state() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    w.put_mother("servers.dat", "list");
+    w.put_mother("config/a.toml", "x = 1\n");
+    let a = w.instance("A", Sharing::ALL);
+    fs::write(a.dir.join("options.txt"), "resourcePacks:[\"x\"]\n").unwrap();
+    inbound_in(&w.mother, &a, false).unwrap();
+    let made = set_in(&w.mother, &w.roots.instances, &a.id, Sharing::NONE, false).unwrap();
+    assert_eq!(made.sync, Sharing::NONE);
+    let mine = read(&a.dir.join("options.txt"));
+    assert!(mine.contains("fov:0.5") && mine.contains("resourcePacks"), "{mine}");
+    assert_eq!(read(&a.dir.join("servers.dat")), "list");
+    assert!(!is_link(&a.dir.join("config")));
+    fs::write(a.dir.join("config").join("a.toml"), "x = 2\n").unwrap();
+    assert_eq!(w.mother("config/a.toml").unwrap(), "x = 1\n");
+    assert!(w.mother.path("config").is_dir());
+}
+
+#[test]
+fn turning_config_off_while_a_game_runs_waits_for_the_next_start() {
+    let w = world();
+    w.put_mother("config/a.toml", "x = 1\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    set_in(&w.mother, &w.roots.instances, &a.id, Sharing { config: false, ..Sharing::ALL }, true).unwrap();
+    assert!(is_link(&a.dir.join("config")));
+    inbound_in(&w.mother, &a, true).unwrap();
+    assert!(is_link(&a.dir.join("config")));
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert!(!is_link(&a.dir.join("config")));
+    assert_eq!(read(&a.dir.join("config").join("a.toml")), "x = 1\n");
+    set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL, true).unwrap();
+    assert!(!is_link(&a.dir.join("config")));
+    inbound_in(&w.mother, &a, false).unwrap();
+    assert!(is_link(&a.dir.join("config")));
+}
+
+#[test]
+fn a_start_that_breaks_shared_mod_settings_gets_them_back_and_says_so() {
+    let w = world();
+    w.put_mother("config/a.json", "{\"a\":1}");
+    w.put_mother("config/b.toml", "y = 1\n");
+    w.put_mother("config/c.toml", "z = 1\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[("k1", &a)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &a, &game, true));
+    fs::write(a.dir.join("config").join("a.json"), "{broken").unwrap();
+    fs::remove_file(a.dir.join("config").join("b.toml")).unwrap();
+    fs::write(a.dir.join("config").join("c.toml"), "z = 2\n").unwrap();
+    t.loaded("k1");
+    assert_eq!(w.mother("config/a.json").unwrap(), "{\"a\":1}");
+    assert_eq!(w.mother("config/b.toml").unwrap(), "y = 1\n");
+    assert_eq!(w.mother("config/c.toml").unwrap(), "z = 2\n");
+    let noted = notes::read(&w.mother);
+    assert_eq!(noted.len(), 1);
+    assert_eq!(noted[0].instance, "A");
+    assert_eq!(noted[0].files, vec!["a.json".to_owned(), "b.toml".to_owned()]);
+    fs::write(a.dir.join("config").join("a.json"), "").unwrap();
+    scan_now(&mut t);
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("config/a.json").unwrap(), "{\"a\":1}");
+    assert_eq!(notes::read(&w.mother).len(), 2);
+}
+
+#[test]
+fn a_game_that_crashes_while_starting_still_gets_broken_settings_back() {
+    let w = world();
+    w.put_mother("config/a.json", "{\"a\":1}");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &a, &game, false));
+    fs::write(a.dir.join("config").join("a.json"), "").unwrap();
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("config/a.json").unwrap(), "{\"a\":1}");
+}
+
+#[test]
+fn every_start_keeps_the_shared_mod_settings_that_changed_since() {
+    let w = world();
+    w.put_mother("config/a.toml", "x = 1\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    inbound_in(&w.mother, &a, true).unwrap();
+    fs::write(w.mother.path("config/a.toml"), "x = 2\n").unwrap();
+    inbound_in(&w.mother, &a, true).unwrap();
+    let kept: Vec<Version> = history::versions(&w.mother, Item::Config).unwrap().into_iter().filter(|v| !v.own).collect();
+    assert_eq!(kept.len(), 2);
+    assert_eq!(history::files(&w.mother, &kept[0]).unwrap(), vec![("config/a.toml".to_owned(), b"x = 2\n".to_vec())]);
+}
+
+#[test]
+fn a_sharing_instance_keeps_only_its_own_keys_and_tells_every_game() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let p = w.peers(&[("k1", &a)]);
+    let sent = crate::core::sync::instance_options(&w.roots, &p, &a.id, &values(&[("fov", "0.9"), ("resourcePacks", "[\"y\"]"), ("fullscreen", "true")])).unwrap();
+    assert_eq!(sent, values(&[("fov", "0.9"), ("resourcePacks", "[\"y\"]")]));
+    assert_eq!(read(&a.dir.join("options.txt")), "resourcePacks:[\"y\"]\n");
+    assert_eq!(p.sent.borrow().len(), 1);
+    fs::write(w.mother.path("options.txt"), "fov:0.9\n").unwrap();
+    let again = crate::core::sync::instance_options(&w.roots, &p, &a.id, &values(&[("fov", "0.9")])).unwrap();
+    assert!(again.is_empty());
 }

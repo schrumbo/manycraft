@@ -6,13 +6,15 @@ use freya::prelude::*;
 
 use crate::app::event::Event;
 use crate::core::i18n::{self, tr, trf};
-use crate::core::share::{self, ITEMS, Item, Sharing, Version};
+use crate::core::share::{self, ITEMS, Item, Note, Sharing, Version};
 use crate::ui::forms;
 use crate::view::kit::button::Button;
 use crate::view::kit::group::{Line, group};
 use crate::view::kit::select::Select;
 use crate::view::kit::switch::Switch;
+use crate::view::instance::sharing::{folder_line, label, note_line, sharers};
 use crate::view::kit::{off_ui, toast, use_theme};
+use crate::view::native;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{control, space};
 
@@ -29,20 +31,33 @@ impl Component for ShareGroup {
         let mut versions = use_state(|| None::<Vec<(Item, Option<Vec<Version>>)>>);
         let mut picked = use_state(|| [0usize; 3]);
         let mut asked = use_state(|| 0u32);
+        let mut notes = use_state(Vec::<Note>::new);
+        let mut present = use_state(|| [false; 3]);
         use_side_effect(move || {
             let _ = asked.read();
             spawn_in_window(async move {
-                let found = off_ui(|| ITEMS.into_iter().map(|i| (i, share::versions(i).ok())).collect::<Vec<_>>()).await;
-                if versions.try_peek().is_some() {
-                    versions.set(found);
+                let found = off_ui(|| (ITEMS.into_iter().map(|i| (i, share::versions(i).ok())).collect::<Vec<_>>(), share::notes(), ITEMS.map(|i| share::folder().join(file_of(i)).exists()))).await;
+                if versions.try_peek().is_some()
+                    && let Some((found, noted, there)) = found
+                {
+                    versions.set(Some(found));
                     picked.set([0; 3]);
+                    notes.set(noted);
+                    present.set(there);
                 }
             });
         });
+        let who = sharers(store, None);
+        let mut file_rows: Vec<Element> = ITEMS.into_iter().enumerate().map(|(n, item)| file_line(item, &who[n], present.read()[n])).collect();
+        if let Some(note) = notes.read().first() {
+            file_rows.push(note_line(&t, "settings.share.note", note, notes));
+        }
+        file_rows.push(folder_line("settings.share.folder"));
+        let files = group(&t, Some(tr("Gemeinsame Dateien")), file_rows, Some(tr("Es gibt jede Datei nur einmal. Alle teilenden Instanzen lesen und ändern dieselbe. Bevor ein Spiel startet, hebt Manycraft den Stand auf und holt ihn zurück, wenn der Start ihn zurücksetzt.")));
 
-        let (any, apart): (bool, Vec<(String, String, Sharing)>) = {
+        let (any, apart, running): (bool, Vec<(String, String, Sharing)>, Vec<String>) = {
             let model = store.model.read();
-            (!model.instances.is_empty(), model.instances.iter().filter(|i| i.sync != Sharing::ALL).map(|i| (i.id.clone(), i.name.clone(), i.sync)).collect())
+            (!model.instances.is_empty(), model.instances.iter().filter(|i| i.sync != Sharing::ALL).map(|i| (i.id.clone(), i.name.clone(), i.sync)).collect(), model.instances.iter().filter(|i| model.games.values().any(|g| g.instance_id == i.id && g.phase.is_active())).map(|i| i.id.clone()).collect())
         };
         let mut rows: Vec<Element> = Vec::new();
         if !any {
@@ -85,14 +100,16 @@ impl Component for ShareGroup {
                 }
                 let earlier: Vec<(String, Sharing)> = before.iter().filter(|(id, _)| ids.contains(id)).cloned().collect();
                 busy.set(true);
+                let running = running.clone();
+                let back = running.clone();
                 spawn_in_window(async move {
-                    match off_ui(move || share::turn_on(&ids)).await {
+                    match off_ui(move || share::turn_on(&ids, &running)).await {
                         Some(Ok(done)) => {
                             let note = if done.len() > 1 { trf("Teilen ist an für %@ Instanzen.", &[&done.len()]) } else { tr("Teilen ist an.") };
                             for made in done {
                                 store.dispatch(Event::InstanceChanged(made));
                             }
-                            let undo = EventHandler::new(move |_| take_back(store, earlier.clone()));
+                            let undo = EventHandler::new(move |_| take_back(store, earlier.clone(), back.clone()));
                             let _ = toast::show(store.ui, note, Some(undo));
                         }
                         Some(Err(e)) => {
@@ -155,14 +172,14 @@ impl Component for ShareGroup {
             })
             .collect()
         };
-        let history = group(&t, Some(tr("Frühere Stände")), history_rows, Some(tr("Zurückholen macht einen Stand wieder zum geteilten; der jetzige bleibt hier. Instanzen bekommen ihn beim nächsten Start.")));
-        rect().width(Size::fill()).spacing(space::XL).child(turn_on).child(history)
+        let history = group(&t, Some(tr("Frühere Stände")), history_rows, Some(tr("Zurückholen macht einen Stand wieder zum gemeinsamen; der jetzige bleibt hier.")));
+        rect().width(Size::fill()).spacing(space::XL).child(files).child(turn_on).child(history)
     }
 }
 
-fn take_back(store: Store, earlier: Vec<(String, Sharing)>) {
+fn take_back(store: Store, earlier: Vec<(String, Sharing)>, running: Vec<String>) {
     spawn_in_window(async move {
-        match off_ui(move || earlier.iter().map(|(id, sync)| share::set(id, *sync)).collect::<anyhow::Result<Vec<_>>>()).await {
+        match off_ui(move || earlier.iter().map(|(id, sync)| share::set(id, *sync, running.contains(id))).collect::<anyhow::Result<Vec<_>>>()).await {
             Some(Ok(made)) => {
                 for one in made {
                     store.dispatch(Event::InstanceChanged(one));
@@ -176,6 +193,33 @@ fn take_back(store: Store, earlier: Vec<(String, Sharing)>) {
             }
         }
     });
+}
+
+fn file_of(item: Item) -> &'static str {
+    match item {
+        Item::Options => "options.txt",
+        Item::Config => "config",
+        Item::Servers => "servers.dat",
+    }
+}
+
+/// One shared file: who shares it and a way to open it.
+fn file_line(item: Item, who: &[String], present: bool) -> Element {
+    let key = file_of(item).replace('.', "_");
+    let names = match who.len() {
+        0 => tr("Noch teilt keine Instanz."),
+        1..=3 => trf("Geteilt von %@.", &[&who.join(", ")]),
+        n => trf("Geteilt von %@ und %@ weiteren.", &[&who[..2].join(", "), &(n - 2)]),
+    };
+    let mut line = Line::new(format!("settings.share.file.{key}"), label(item));
+    if item == Item::Servers {
+        return line.hint(format!("{names} {}", tr("Bearbeiten im Spiel unter Mehrspieler."))).into_element();
+    }
+    let path = share::folder().join(file_of(item));
+    let why = (!present).then(|| tr("Entsteht, sobald ein teilendes Spiel etwas speichert."));
+    let open = Button::new(format!("settings.share.file.{key}.open"), if item == Item::Config { tr("Ordner öffnen") } else { tr("Öffnen") }).plain().disabled(why).on_press(move |_| native::open(&path));
+    line = line.hint(names).control(open);
+    line.into_element()
 }
 
 fn missing(sync: Sharing) -> String {
@@ -209,7 +253,7 @@ fn restore(store: Store, version: Version, mut asked: State<u32>, mut busy: Stat
     spawn_in_window(async move {
         match off_ui(move || share::restore(&version)).await {
             Some(Ok(())) => {
-                let _ = toast::show(store.ui, tr("Zurückgeholt. Instanzen bekommen den Stand beim nächsten Start."), None);
+                let _ = toast::show(store.ui, tr("Zurückgeholt. Mod-Einstellungen gelten sofort, Spiel-Optionen und Serverliste ab dem nächsten Start."), None);
             }
             Some(Err(e)) => {
                 let _ = toast::show(store.ui, forms::explain_as(tr("Nicht zurückgeholt."), &e).text, None);

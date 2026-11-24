@@ -98,6 +98,16 @@ impl History {
         self.store(None, &folder, rel, bytes, stamp.as_ref().map(|s| s.source.clone()), stamp.map(|s| s.written))
     }
 
+    /// Keeps `bytes`, the current version of `rel`, unless the history kept that version of it last.
+    pub(super) fn snapshot(&mut self, rel: &str, bytes: &[u8]) -> Result<()> {
+        let sha = hash(bytes);
+        let last = self.index.entries.iter().filter(|e| e.instance.is_none() && e.rel == rel).max_by_key(|e| e.at);
+        if last.is_some_and(|e| e.sha == sha) {
+            return Ok(());
+        }
+        self.keep(rel, bytes)
+    }
+
     /// Records that `source` wrote the version of `rel` that is now shared.
     pub(super) fn wrote(&mut self, rel: &str, source: &Own) {
         self.index.current.insert(rel.to_owned(), Stamp { source: Source { id: source.id.clone(), name: source.name.clone() }, written: self.at });
