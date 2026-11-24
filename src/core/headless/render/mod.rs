@@ -12,6 +12,7 @@ mod block;
 mod entity;
 mod figure;
 mod item;
+mod skins;
 mod light;
 mod model;
 mod random;
@@ -165,8 +166,9 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, c
     let mut scene = Scene::new(world, assets, biomes, camera.pos, i32::from(distance));
     let mut later = Later::default();
     scene.draw(&view, &lightmap, &mut target, &mut later);
-    actor::draw(entities, world, assets, &lightmap, &view, &mut target, end + 16.0, &|_| None);
+    actor::draw(entities, &scene, assets, &lightmap, &view, &mut target, end + 16.0);
     later.draw(&mut target);
+    actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
     if let Some(texture) = &assets.vignette {
         let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
         target.vignette(texture, light::vignette(sky_light, block_light, light::sky_level(time, sky.rain, sky.thunder)));
@@ -279,6 +281,18 @@ mod tests {
         }
     }
 
+    struct Holding(Vec<Entity>, Hand);
+
+    impl Entities for Holding {
+        fn entities(&self) -> &[Entity] {
+            &self.0
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            Some(&self.1)
+        }
+    }
+
     fn item(id: &str) -> Item {
         Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None }
     }
@@ -354,6 +368,13 @@ mod tests {
         let _ = out;
         let props: Vec<Entity> = row.iter().skip(16).enumerate().map(|(i, e)| { let mut e = e.clone(); e.pos = [i as f64 * 1.2 - 4.0, 63.0 + if matches!(e.data, Data::Frame { .. } | Data::Display { .. }) { 1.0 } else { 0.0 }, 4.0]; e }).collect();
         render(&Flat, &[Biome::default()], &Crowd(props), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-props.png")).ok();
+        let solo = vec![crowd_entity("player 0.5 63 3.5 180 main=diamond_sword").unwrap()];
+        render(&Flat, &[Biome::default()], &Crowd(solo.clone()), &Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-front.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(solo), &Camera { pos: [3.5, 64.62, 3.5], yaw: 90.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-side.png")).ok();
+        for (name, main) in [("sword", Some(item("diamond_sword"))), ("empty", None), ("block", Some(item("oak_log")))] {
+            let hand = Hand { main, left_handed: false, skin: Skin { parts: 0x7F, ..Skin::default() } };
+            render(&Flat, &[Biome::default()], &Holding(row.clone(), hand), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join(format!("manycraft-render-hand-{name}.png"))).ok();
+        }
         let changed = bare.pixels().zip(image.pixels()).filter(|(a, b)| a != b).count();
         assert!(changed > 640 * 360 / 20, "the mobs cover part of the picture: {changed}");
         let many: Vec<Entity> = (0..200).map(|i| { let mut e = row[i % row.len()].clone(); e.pos = [(i % 20) as f64 - 10.0, 63.0, 6.0 + (i / 20) as f64 * 2.0]; e }).collect();
