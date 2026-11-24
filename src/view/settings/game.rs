@@ -63,8 +63,8 @@ impl Component for GameGroup {
                 }
             });
         });
-        let most = MemoryLine { p, limit: Limit::Most, saved: Some(game.memory_mb) }.into_element();
-        let least = MemoryLine { p, limit: Limit::Least, saved: game.memory_min_mb }.into_element();
+        let most = MemoryLine { p, limit: Limit::Most, saved: Some(game.memory_mb), ceiling: game.memory_mb }.into_element();
+        let least = MemoryLine { p, limit: Limit::Least, saved: game.memory_min_mb, ceiling: game.memory_mb }.into_element();
 
         let mut choices: Vec<(Option<Option<PathBuf>>, String)> = vec![(Some(None), tr("Automatisch (empfohlen)"))];
         for found in javas.read().iter().flatten() {
@@ -135,6 +135,7 @@ struct MemoryLine {
     p: Prefs,
     limit: Limit,
     saved: Option<u32>,
+    ceiling: u32,
 }
 
 fn saved_text(mb: Option<u32>) -> String {
@@ -204,7 +205,7 @@ impl Component for MemoryLine {
                 field.placeholder(DEFAULT_MEMORY_MB.to_string()).steps(Steps { floor: MEMORY_FLOOR_MB, ceiling, from: self.saved.unwrap_or(DEFAULT_MEMORY_MB) })
             }
             Limit::Least => {
-                let ceiling = settings::active().game.memory_mb;
+                let ceiling = self.ceiling;
                 field.placeholder(tr("Automatisch")).steps(Steps { floor: MEMORY_MIN_FLOOR_MB, ceiling, from: ceiling.min(1024) })
             }
         };

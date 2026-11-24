@@ -63,7 +63,7 @@ impl Memory {
 
 fn moved(typed: &str, steps: Steps, up: bool) -> u32 {
     let now = crate::core::options::parse_memory(typed).ok().flatten().unwrap_or(steps.from);
-    let next = if up { (now / STEP + 1) * STEP } else { now.div_ceil(STEP).saturating_sub(1) * STEP };
+    let next = if up { (now / STEP).saturating_add(1).saturating_mul(STEP) } else { now.div_ceil(STEP).saturating_sub(1) * STEP };
     next.clamp(steps.floor, steps.ceiling.max(steps.floor))
 }
 

@@ -634,6 +634,9 @@ impl ApplicationHandler<NativeEvent> for WinitRenderer {
                         Theme::Dark => PreferredTheme::Dark,
                     });
                 }
+                WindowEvent::Occluded(true) => {
+                    app.driver.release_caches();
+                }
                 WindowEvent::ScaleFactorChanged { .. } => {
                     app.scale_factor_changed();
                 }

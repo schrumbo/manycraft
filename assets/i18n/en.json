@@ -1047,7 +1047,7 @@
   "Minecraft %@ braucht Java %@, gewählt ist Java %@.": "Minecraft %@ needs Java %@, Java %@ is chosen.",
   "In %@ ist kein Java.": "There is no Java in %@.",
   "Die Java-Version „%@“ ist unbekannt.": "The Java version “%@” is unknown.",
-  "Den Arbeitsspeicher stellst du unter „Arbeitsspeicher“ ein.": "Set the memory under “Memory”.",
+  "Den Arbeitsspeicher stellst du in den Einstellungen unter „Maximaler“ und „Minimaler Arbeitsspeicher“ ein.": "Set the memory in the settings under “Maximum memory” and “Minimum memory”.",
   "Gib Breite und Höhe an.": "Enter width and height.",
   "Jedes Java-Argument beginnt mit „-“, „%@“ nicht.": "Every Java argument starts with “-”, “%@” does not.",
   "„%@“ setzt Manycraft selbst.": "Manycraft sets “%@” itself.",

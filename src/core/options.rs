@@ -153,7 +153,7 @@ pub fn check_jvm_args(args: &[String]) -> Result<(), String> {
         return Err(trf("Jedes Java-Argument beginnt mit „-“, „%@“ nicht.", &[arg]));
     }
     if args.iter().any(|a| a.starts_with("-Xmx") || a.starts_with("-Xms")) {
-        return Err(super::i18n::tr("Den Arbeitsspeicher stellst du unter „Arbeitsspeicher“ ein."));
+        return Err(super::i18n::tr("Den Arbeitsspeicher stellst du in den Einstellungen unter „Maximaler“ und „Minimaler Arbeitsspeicher“ ein."));
     }
     Ok(())
 }

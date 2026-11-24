@@ -398,7 +398,7 @@ impl Component for Create {
             list: use_state(Vec::new),
             versions: use_state(|| Load::Loading),
             supported: use_state(|| None),
-            memory: use_state(move || forms::memory_step(crate::core::settings::active().game.memory_mb, 0, memory_max)),
+            memory: use_state(|| crate::core::settings::active().game.memory_mb),
             free: use_state(|| None),
             saving: use_state(|| false),
             save_error: use_state(|| None),

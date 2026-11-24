@@ -9,25 +9,41 @@ fn plays_alone(g: &Game) -> bool {
     g.alone() && g.phase.is_running() && !g.phase.waiting()
 }
 
-fn wanted(m: &Model, env: &Env) -> bool {
-    env.settings.while_playing != WhilePlaying::Keep && m.games.values().any(plays_alone) && !m.games.values().any(|g| !g.alone() && g.phase.is_running())
+fn batch_active(m: &Model) -> bool {
+    m.games.values().any(|g| !g.alone() && g.phase.stoppable())
 }
 
-/// Puts the manager away when a game played alone has just launched, and brings it back when the last one ended, a batch started, or one of them needs the user.
+fn wanted(m: &Model, env: &Env) -> bool {
+    env.settings.while_playing != WhilePlaying::Keep && m.games.values().any(plays_alone) && !batch_active(m)
+}
+
+fn in_trouble(m: &Model, key: &str) -> bool {
+    m.games.get(key).is_some_and(|g| g.phase.needs_attention())
+}
+
+/// Puts the manager away when a game played alone has just launched, and brings it back when the last one ended, a batch
+/// started, or one of them needs the user.
 pub(super) fn settle(m: &mut Model, env: &Env, launched: bool, out: &mut Vec<Effect>) {
     if wanted(m, env) {
         if launched || !m.session.slimmed.is_empty() {
-            let first = m.session.slimmed.is_empty();
             let playing: Vec<String> = m.games.values().filter(|g| plays_alone(g)).map(|g| g.key.clone()).collect();
+            let fresh = playing.iter().any(|k| !m.session.slimmed.contains(k));
             m.session.slimmed.extend(playing);
-            if first {
+            if launched && fresh {
                 out.push(Effect::Slim { tray: env.settings.while_playing == WhilePlaying::Tray });
             }
         }
+        let trouble: Vec<String> = m.session.slimmed.iter().filter(|k| in_trouble(m, k)).cloned().collect();
+        if !trouble.is_empty() {
+            for k in &trouble {
+                m.session.slimmed.remove(k);
+            }
+            out.push(Effect::ShowManager);
+        }
     } else if !m.session.slimmed.is_empty() {
         let kept = std::mem::take(&mut m.session.slimmed);
-        let trouble = kept.iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_attention()));
-        if env.settings.reopen_after || trouble {
+        let trouble = kept.iter().any(|k| in_trouble(m, k));
+        if env.settings.reopen_after || trouble || batch_active(m) {
             out.push(Effect::ShowManager);
         }
     }
@@ -138,6 +154,57 @@ mod tests {
         m.games.insert(other.key.clone(), other);
         launch(&mut m, &key);
         assert!(!comes_back(&report(&mut m, &s, Report::Exited { key, code: Some(0) })));
+    }
+
+    fn add_solo(m: &mut Model, key: &str) {
+        let mut g = m.games.values().next().unwrap().clone();
+        g.key = key.into();
+        g.phase = Phase::Stopped;
+        m.games.insert(g.key.clone(), g);
+    }
+
+    #[test]
+    fn a_second_game_launched_after_the_manager_came_back_puts_it_away_again() {
+        let (mut m, key) = solo_model();
+        add_solo(&mut m, "second");
+        assert_eq!(slims(&launch(&mut m, &key)), [false]);
+        assert_eq!(slims(&launch(&mut m, "second")), [false]);
+    }
+
+    #[test]
+    fn a_crash_while_another_game_plays_calls_the_manager_back_once() {
+        let s = settings();
+        let (mut m, key) = solo_model();
+        add_solo(&mut m, "second");
+        launch(&mut m, &key);
+        launch(&mut m, "second");
+        let fx = report(&mut m, &s, Report::Exited { key, code: Some(1) });
+        assert!(comes_back(&fx));
+        assert!(!comes_back(&report(&mut m, &s, Report::Connected { key: "second".into(), pid: 2 })));
+    }
+
+    #[test]
+    fn a_batch_game_waiting_to_restart_still_keeps_the_manager_out_of_the_way() {
+        let (mut m, key) = solo_model();
+        let mut g = Game::new("b-1".into(), "batch".into(), "i".into(), Uuid::from_u128(9), "B".into());
+        g.phase = Phase::Restarting { attempt: 1, of: 3 };
+        m.games.insert(g.key.clone(), g);
+        m.batches.push(Batch::new("batch", "i"));
+        assert!(slims(&launch(&mut m, &key)).is_empty());
+    }
+
+    #[test]
+    fn a_batch_game_is_called_back_even_when_staying_closed_was_chosen() {
+        let mut s = settings();
+        s.reopen_after = false;
+        let (mut m, key) = solo_model();
+        launch(&mut m, &key);
+        let mut g = Game::new("b-1".into(), "batch".into(), "i".into(), Uuid::from_u128(9), "B".into());
+        g.phase = Phase::Menu;
+        m.games.insert(g.key.clone(), g);
+        m.batches.push(Batch::new("batch", "i"));
+        let fx = run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "batch".into(), percent: 1 }]));
+        assert!(comes_back(&fx));
     }
 
     #[test]
