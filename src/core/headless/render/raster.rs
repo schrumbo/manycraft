@@ -99,17 +99,22 @@ impl Target {
 
     /// Draws a quad; opaque and cutout ones write depth, translucent ones blend.
     pub fn quad(&mut self, v: &[Vertex; 4], texture: &Texture, mode: Transparency) {
-        self.clipped(v, texture, mode, 1.0);
+        self.clipped(v, texture, mode, 1.0, true);
     }
 
     /// Blends a quad over the picture with its texture's alpha times `opacity`, without writing depth.
     pub fn blend(&mut self, v: &[Vertex; 4], texture: &Texture, opacity: f32) {
         if opacity > 0.0 {
-            self.clipped(v, texture, Transparency::Translucent, opacity.min(1.0));
+            self.clipped(v, texture, Transparency::Translucent, opacity.min(1.0), true);
         }
     }
 
-    fn clipped(&mut self, v: &[Vertex; 4], texture: &Texture, mode: Transparency, opacity: f32) {
+    /// Blends a quad over everything drawn so far, whatever lies in front of it; for see-through text.
+    pub fn overlay(&mut self, v: &[Vertex; 4], texture: &Texture) {
+        self.clipped(v, texture, Transparency::Translucent, 1.0, false);
+    }
+
+    fn clipped(&mut self, v: &[Vertex; 4], texture: &Texture, mode: Transparency, opacity: f32, test: bool) {
         let mut poly = [Vertex::default(); 8];
         let mut n = 0;
         for i in 0..4 {
@@ -133,7 +138,7 @@ impl Target {
         }
         let level = self.level(&v[..], texture);
         for i in 1..n - 1 {
-            self.triangle(&poly[0], &poly[i], &poly[i + 1], texture, mode, level, opacity);
+            self.triangle(&poly[0], &poly[i], &poly[i + 1], texture, mode, level, opacity, test);
         }
     }
 
@@ -223,7 +228,7 @@ impl Target {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn triangle(&mut self, a: &Vertex, b: &Vertex, c: &Vertex, texture: &Texture, mode: Transparency, level: usize, opacity: f32) {
+    fn triangle(&mut self, a: &Vertex, b: &Vertex, c: &Vertex, texture: &Texture, mode: Transparency, level: usize, opacity: f32, test: bool) {
         let (cx, cy) = (self.width as f32 * 0.5, self.height as f32 * 0.5);
         let project = |v: &Vertex| {
             let w = 1.0 / v.p[2];
@@ -261,7 +266,7 @@ impl Target {
                 let iw = at(7);
                 let z = 1.0 / iw;
                 let i = row + x;
-                if z >= self.depth[i] {
+                if test && z >= self.depth[i] {
                     continue;
                 }
                 let texel = texture.sample(at(0) * z, at(1) * z, level);

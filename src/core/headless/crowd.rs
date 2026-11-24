@@ -8,8 +8,10 @@ use base64::Engine;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::chat_text::Run;
+
 use super::item::{self, Stack};
-use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Span, Text};
+use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Text};
 use super::text::{self, Line};
 use super::v777::entity_data as d;
 use super::v777::{ENTITY_TYPES, ITEMS, PARTICLE_TYPES, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
@@ -353,12 +355,12 @@ impl Crowd {
     fn entity(&self, id: i32, mob: &Mob) -> Entity {
         let kind = ENTITY_TYPES[usize::from(mob.kind)];
         let mut data = mob.data.as_deref().cloned().unwrap_or_default();
-        let mut name = mob.name.as_deref().filter(|_| mob.name_shown).map(spans);
+        let mut name = mob.name.as_deref().filter(|_| mob.name_shown).map(|line| line.runs.clone());
         if let Data::Player { skin, .. } = &mut data {
             let parts = skin.parts;
             *skin = self.skin(mob.uuid);
             skin.parts = parts;
-            name = name.or_else(|| self.players.get(&mob.uuid).map(|p| vec![Span { text: p.name.clone(), ..Span::default() }]));
+            name = name.or_else(|| self.players.get(&mob.uuid).map(|p| vec![Run { text: p.name.clone(), ..Run::default() }]));
         }
         Entity {
             id,
@@ -502,7 +504,7 @@ fn display(common: &mut Display, kind: &mut DisplayKind, index: u8, value: Meta)
         (DisplayKind::Block { state }, d::display_block_display::DATA_BLOCK_STATE_ID, Meta::State(s)) => *state = s,
         (DisplayKind::Item { item, .. }, d::display_item_display::DATA_ITEM_STACK_ID, Meta::Stack(stack)) => *item = stack.as_ref().and_then(picture_item),
         (DisplayKind::Item { transform, .. }, d::display_item_display::DATA_ITEM_DISPLAY_ID, Meta::Byte(b)) => *transform = b.min(8),
-        (DisplayKind::Text { text, .. }, d::display_text_display::DATA_TEXT_ID, Meta::Text(line)) => *text = spans(&line),
+        (DisplayKind::Text { text, .. }, d::display_text_display::DATA_TEXT_ID, Meta::Text(line)) => *text = line.runs.clone(),
         (DisplayKind::Text { line_width, .. }, d::display_text_display::DATA_LINE_WIDTH_ID, Meta::Int(w)) => *line_width = w,
         (DisplayKind::Text { background, .. }, d::display_text_display::DATA_BACKGROUND_COLOR_ID, Meta::Int(c)) => *background = c as u32,
         (DisplayKind::Text { opacity, .. }, d::display_text_display::DATA_TEXT_OPACITY_ID, Meta::Byte(o)) => *opacity = o,
@@ -698,11 +700,6 @@ impl Worn {
 fn picture_item(stack: &Stack) -> Option<Item> {
     let &(id, ..) = usize::try_from(stack.item).ok().and_then(|i| ITEMS.get(i))?;
     Some(Item { id, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye, trim: None, profile: None })
-}
-
-/// The styled runs of a read component, as the renderer takes text.
-pub fn spans(line: &Line) -> Text {
-    line.runs.iter().map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, underline: r.underline, strike: r.strike }).collect()
 }
 
 fn textures(value: &str) -> Option<(Option<[u8; 32]>, bool)> {

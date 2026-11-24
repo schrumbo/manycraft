@@ -318,9 +318,13 @@ pub fn blend(dst: &mut Rgba<u8>, src: [u8; 4]) {
         *dst = Rgba([src[0], src[1], src[2], 255.max(dst.0[3])]);
         return;
     }
-    let inv = 255 - a;
-    for c in 0..3 {
-        dst.0[c] = ((u32::from(src[c]) * a + u32::from(dst.0[c]) * inv + 127) / 255) as u8;
+    let below = u32::from(dst.0[3]) * (255 - a);
+    let out = a * 255 + below;
+    if out == 0 {
+        return;
     }
-    dst.0[3] = (a + u32::from(dst.0[3]) * inv / 255).min(255) as u8;
+    for c in 0..3 {
+        dst.0[c] = ((u32::from(src[c]) * a * 255 + u32::from(dst.0[c]) * below + out / 2) / out) as u8;
+    }
+    dst.0[3] = ((out + 127) / 255).min(255) as u8;
 }

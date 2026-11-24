@@ -9,6 +9,7 @@ use super::assets::{Assets, Transparency};
 use super::entity::{Data, DisplayKind, Entities, Entity, Pose as Stance, Skin, slot};
 use super::figure::{Affine, Painter, Paint, Part, Pose, Sheet};
 use super::item::{Context, Model};
+use super::label::Label;
 use super::light::{self, Lightmap};
 use super::raster::Target;
 use super::raster::Vertex;
@@ -461,8 +462,9 @@ fn y_rot(facing: u8) -> f32 {
 }
 
 /// Draws an item frame and what it holds.
-fn frame(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3]) {
+fn frame(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3], hidden: bool) {
     let Data::Frame { item, rotation, facing, glow, invisible } = &e.data else { return };
+    let invisible = &(*invisible || hidden);
     let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
     let d = step(*facing);
     let (x_rot, y_rot) = if *facing >= 2 { (0.0, 180.0 - y_rot(*facing)) } else { (-90.0 * d[1], 180.0) };
@@ -489,9 +491,9 @@ fn block_model(painter: &mut Painter, assets: &Assets, variant: &super::model::V
     }
 }
 
-/// Draws a block, item or text display entity.
-fn display(painter: &mut Painter, assets: &Assets, e: &Entity, lightmap: &Lightmap, lit: [f32; 3]) {
-    let Data::Display { common, kind } = &e.data else { return };
+/// Draws a block or item display entity; a text display is handed back to be drawn with the other text.
+fn display<'a>(painter: &mut Painter, assets: &Assets, e: &'a Entity, lightmap: &Lightmap, lit: [f32; 3]) -> Option<Label<'a>> {
+    let Data::Display { common, kind } = &e.data else { return None };
     let light = common.brightness.map_or(lit, |(sky, block)| lightmap.color(light::pack(sky.min(15), block.min(15))));
     let f = painter.view.forward;
     let camera_yaw = (-f[0]).atan2(f[2]).to_degrees();
@@ -508,17 +510,86 @@ fn display(painter: &mut Painter, assets: &Assets, e: &Entity, lightmap: &Lightm
     let at = Affine::at(rel).rotate_y((-yaw).to_radians()).rotate_x(pitch.to_radians()).translate(translation).quat(common.left_rotation).scale(scale).quat(common.right_rotation);
     match kind {
         DisplayKind::Block { state } => {
-            let Some(state) = super::block::decode(*state) else { return };
-            let Some(blockstate) = super::model::Source::blockstate(assets, state.name) else { return };
+            let Some(state) = super::block::decode(*state) else { return None };
+            let Some(blockstate) = super::model::Source::blockstate(assets, state.name) else { return None };
             for variant in super::model::variants(blockstate, &state, 0) {
                 block_model(painter, assets, &variant, &at, light);
             }
         }
         DisplayKind::Item { item: Some(item), transform } => {
-            let Some(model) = Model::of(assets, item) else { return };
-            model.draw(painter, assets, &at.rotate_y(PI), Context::from_id(*transform), light);
+            if let Some(model) = Model::of(assets, item) {
+                model.draw(painter, assets, &at.rotate_y(PI), Context::from_id(*transform), light);
+            }
         }
-        _ => {}
+        DisplayKind::Text { .. } => return Some(Label::Display { at, kind, light }),
+        DisplayKind::Item { item: None, .. } => {}
+    }
+    None
+}
+
+/// Where an entity's name hangs above its feet: the top of its box in its current pose, plus half a block.
+fn name_height(e: &Entity) -> f32 {
+    let kind = plain(e.kind);
+    let height = match (kind, e.pose, &e.data) {
+        (_, Stance::Sleeping, _) => 0.2,
+        ("player", Stance::Crouching, _) => 1.5,
+        ("player", Stance::Swimming | Stance::FallFlying, _) => 0.6,
+        ("armor_stand", _, Data::ArmorStand { marker: true, .. }) => 0.0,
+        ("armor_stand", _, Data::ArmorStand { small: true, .. }) => standing_height(kind) * 0.5,
+        ("slime" | "magma_cube", _, Data::Slime { size }) => standing_height(kind) * f32::from((*size).clamp(1, 127)),
+        ("sniffer", _, _) => 2.05,
+        _ => standing_height(kind),
+    };
+    (if e.baby { height * 0.5 } else { height }) + 0.5
+}
+
+/// The height of an entity type's standing box, where the game hangs its name.
+fn standing_height(kind: &str) -> f32 {
+    match kind {
+        "block_display" | "interaction" | "item_display" | "lightning_bolt" | "marker" | "text_display" => 0.0,
+        "cushion" | "egg" | "ender_pearl" | "experience_bottle" | "eye_of_ender" | "firework_rocket" | "item" | "llama_spit" | "ominous_item_spawner" | "splash_potion" | "lingering_potion" | "snowball" | "fishing_bobber" => 0.25,
+        "cod" | "endermite" | "silverfish" | "tadpole" => 0.3,
+        "breeze_wind_charge" | "shulker_bullet" | "small_fireball" | "wind_charge" | "wither_skull" => 0.3125,
+        "salmon" | "tropical_fish" | "turtle" => 0.4,
+        "axolotl" => 0.42,
+        "sulfur_cube" => 0.49,
+        "magma_cube" | "slime" => 0.52,
+        "allay" | "dolphin" | "rabbit" => 0.6,
+        "armadillo" => 0.65,
+        "cat" | "chest_minecart" | "chicken" | "command_block_minecart" | "fox" | "furnace_minecart" | "hopper_minecart" | "minecart" | "ocelot" | "pufferfish" | "spawner_minecart" | "tnt_minecart" => 0.7,
+        "evoker_fangs" | "glow_squid" | "squid" | "vex" => 0.8,
+        "guardian" | "wolf" => 0.85,
+        "bat" | "parrot" | "pig" | "spider" => 0.9,
+        "nautilus" | "zombie_nautilus" => 0.95,
+        "copper_golem" | "falling_block" | "tnt" => 0.98,
+        "dragon_fireball" | "fireball" | "shulker" => 1.0,
+        "panda" => 1.25,
+        "goat" | "sheep" => 1.3,
+        "cow" | "hoglin" | "mooshroom" | "polar_bear" | "zoglin" => 1.4,
+        "donkey" => 1.5,
+        "horse" | "mule" | "skeleton_horse" | "zombie_horse" => 1.6,
+        "creeper" | "strider" => 1.7,
+        "sniffer" => 1.75,
+        "breeze" => 1.77,
+        "blaze" | "mannequin" | "player" => 1.8,
+        "llama" | "trader_llama" => 1.87,
+        "snow_golem" => 1.9,
+        "drowned" | "evoker" | "husk" | "illusioner" | "piglin" | "piglin_brute" | "pillager" | "villager" | "vindicator" | "wandering_trader" | "witch" | "zombie" | "zombie_villager" | "zombified_piglin" => 1.95,
+        "armor_stand" => 1.975,
+        "bogged" | "parched" | "skeleton" | "stray" => 1.99,
+        "elder_guardian" => 1.9975,
+        "end_crystal" => 2.0,
+        "ravager" => 2.2,
+        "camel" | "camel_husk" => 2.375,
+        "wither_skeleton" => 2.4,
+        "creaking" | "iron_golem" => 2.7,
+        "enderman" | "warden" => 2.9,
+        "wither" => 3.5,
+        "ghast" | "happy_ghast" => 4.0,
+        "ender_dragon" => 8.0,
+        "giant" => 12.0,
+        _ if kind.ends_with("_boat") || kind.ends_with("_raft") => 0.5625,
+        _ => 0.5,
     }
 }
 
@@ -650,14 +721,16 @@ pub fn hand<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
 }
 
 /// Draws every entity within `reach` blocks of the camera.
-pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &Assets, lightmap: &Lightmap, view: &View, target: &mut Target, reach: f32) {
+pub fn draw<'e, W: Blocks>(entities: &'e impl Entities, scene: &Scene<'_, W>, assets: &Assets, lightmap: &Lightmap, view: &View, target: &mut Target, reach: f32) -> Vec<Label<'e>> {
     let mut painter = Painter { target, view };
     let shadow_sheet = assets.sheet("misc/shadow");
+    let mut labels = Vec::new();
     for e in entities.entities() {
         let d = [0, 1, 2].map(|k| (e.pos[k] - view.eye[k]) as f32);
-        if !d.iter().all(|v| v.is_finite()) || d[0].abs() > reach || d[2].abs() > reach || d[1].abs() > 384.0 || e.flags & INVISIBLE != 0 {
+        if !d.iter().all(|v| v.is_finite()) || d[0].abs() > reach || d[2].abs() > reach || d[1].abs() > 384.0 {
             continue;
         }
+        let invisible = e.flags & INVISIBLE != 0;
         let skin = match &e.data {
             Data::Player { skin: Skin { url: Some(url), .. }, .. } => assets.skins.get(url),
             _ => None,
@@ -666,6 +739,14 @@ pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
         let (sky, block) = scene.light(probe[0], probe[1], probe[2]);
         let lit = lightmap.color(light::pack(sky, block));
         let kind = plain(e.kind);
+        if let Some(name) = &e.name {
+            let discrete = e.pose == Stance::Crouching;
+            let far = if discrete { 32.0 } else { 64.0 };
+            if d.iter().map(|v| v * v).sum::<f32>() < far * far && (!invisible || kind == "armor_stand") {
+                let at = [d[0], d[1] + name_height(e), d[2]];
+                labels.push(Label::Name { at, text: name, discrete, light: lit, glow: lightmap.color(light::pack(sky, block.max(2))) });
+            }
+        }
         match kind {
             "item" => {
                 if dropped(&mut painter, assets, e, lit) && let Some(sheet) = &shadow_sheet {
@@ -674,11 +755,11 @@ pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
                 continue;
             }
             "item_frame" | "glow_item_frame" => {
-                frame(&mut painter, assets, e, lit);
+                frame(&mut painter, assets, e, lit, invisible);
                 continue;
             }
             "block_display" | "item_display" | "text_display" => {
-                display(&mut painter, assets, e, lightmap, lit);
+                labels.extend(display(&mut painter, assets, e, lightmap, lit));
                 if let (Some(sheet), Data::Display { common, .. }) = (&shadow_sheet, &e.data) {
                     shadow(&mut painter, scene, sheet, e, common.shadow_radius, common.shadow_strength);
                 }
@@ -687,11 +768,11 @@ pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
             _ => {}
         }
         let Some(figure) = figure(e, assets, skin.as_ref()) else { continue };
-        if let Some(sheet) = &shadow_sheet {
+        if !invisible && let Some(sheet) = &shadow_sheet {
             shadow(&mut painter, scene, sheet, e, shadow_of(e), 1.0);
         }
         let at = placement(e, view.eye, figure.scale);
-        for coat in &figure.coats {
+        for coat in figure.coats.iter().filter(|_| !invisible) {
             let paint = Paint { light: if coat.glow { WHITE } else { lit }, tint: coat.tint, mode: coat.mode };
             let hide = coat.hide;
             let rig = figure.rig;
@@ -710,6 +791,7 @@ pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
             }
         }
     }
+    labels
 }
 
 #[cfg(test)]
