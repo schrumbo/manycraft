@@ -13,8 +13,9 @@ use crate::core::sync::{self, OPTIONS_FILE, Peers, Roots, SERVERS_FILE};
 
 const SCAN_EVERY: Duration = Duration::from_secs(3);
 const SHOWN_GRACE: Duration = Duration::from_secs(180);
-/// How long after loading a game's first start keeps writing its own defaults.
-const FRESH_GRACE: Duration = Duration::from_secs(60);
+/// How long after loading a game's first start may still save what it detected; the game does so within seconds, a
+/// person changing options takes longer.
+const FRESH_GRACE: Duration = Duration::from_secs(10);
 const LOG_STEP: u64 = 4 * 1024 * 1024;
 const LOADED_MARKS: [&str; 2] = ["Sound engine started", "Error starting SoundSystem"];
 
@@ -61,7 +62,7 @@ struct Base {
 
 impl Base {
     /// Whether what the game writes now is still its own first-start setup rather than a choice: only its first save
-    /// after loading, and only within a minute.
+    /// after loading, and only within seconds.
     fn settling(&self, start: &Start, now: Instant) -> bool {
         start.fresh && !self.settled && now.saturating_duration_since(self.at) < FRESH_GRACE
     }

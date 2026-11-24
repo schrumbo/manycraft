@@ -876,3 +876,21 @@ fn a_first_start_shares_a_choice_made_right_after_it_saved_its_defaults() {
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
 }
+
+#[test]
+fn a_first_start_that_saves_nothing_on_its_own_shares_the_first_choice() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
+    t.loaded("k1");
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:12\n").unwrap();
+    t.tick(Instant::now() + Duration::from_secs(25));
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
+}
