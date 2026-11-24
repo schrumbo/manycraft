@@ -357,7 +357,7 @@ impl Component for Row {
                 if let PressEventData::Keyboard(k) = &*e {
                     tile::keyed(store, &key, k);
                 } else if track.write().double(Instant::now()) {
-                    tile::primary(store, &key);
+                    tile::double_press(store, &key);
                 } else {
                     tile::pick(store, &key, index);
                 }

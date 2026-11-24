@@ -2332,5 +2332,9 @@
   "Die Liste unter Mehrspieler.": "The list under Multiplayer.",
   "Nicht umgestellt.": "Not switched.",
   "Teilen": "Sharing",
-  "Erst ab Minecraft 1.13. Ältere Versionen speichern Tasten anders und behalten ihre eigenen.": "From Minecraft 1.13 on. Older versions store keys differently and keep their own."
+  "Erst ab Minecraft 1.13. Ältere Versionen speichern Tasten anders und behalten ihre eigenen.": "From Minecraft 1.13 on. Older versions store keys differently and keep their own.",
+  "Screenshots ansehen": "View screenshots",
+  "Noch keine Screenshots. Doppelklick auf die Kachel nimmt einen auf.": "No screenshots yet. Double-click the tile to take one.",
+  "%@ · von oben": "%@ · from above",
+  "%@ · Blick": "%@ · eyes"
 }
