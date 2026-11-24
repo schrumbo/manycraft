@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use md5::Digest;
 use uuid::Uuid;
 
-use super::{paths, store};
+use super::{keychain, paths, store};
 
 const FILE: &str = "accounts.json";
 /// The keychain service every secret of Manycraft is stored under.
@@ -122,11 +122,17 @@ pub fn reinsert(accounts: &mut Vec<Account>, account: Account, index: usize) {
 
 /// Stores the refresh token for account `id` in the OS keychain.
 pub fn store_token(id: Uuid, token: &str) -> Result<()> {
+    if keychain::pooled() {
+        return keychain::set(&id.to_string(), token).context("cannot save the sign-in in the system keychain");
+    }
     entry(id)?.set_secret(token.as_bytes()).context("cannot save the sign-in in the system keychain")
 }
 
 /// Reads the refresh token for account `id`; `None` when the keychain has none.
 pub fn read_token(id: Uuid) -> Result<Option<String>> {
+    if keychain::pooled() {
+        return keychain::get(&id.to_string()).context("cannot read the sign-in from the system keychain");
+    }
     match entry(id)?.get_secret() {
         Ok(bytes) => Ok(Some(String::from_utf8(bytes).context("the stored sign-in is unreadable")?)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -136,6 +142,10 @@ pub fn read_token(id: Uuid) -> Result<Option<String>> {
 
 /// Removes the refresh token and the saved game session for account `id`; missing ones are not an error.
 pub fn delete_token(id: Uuid) -> Result<()> {
+    if keychain::pooled() {
+        keychain::delete(&id.to_string()).context("cannot remove the sign-in from the system keychain")?;
+        return keychain::delete(&format!("{id}.session")).context("cannot remove the sign-in from the system keychain");
+    }
     for entry in [entry(id)?, session_entry(id)?] {
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
@@ -147,11 +157,17 @@ pub fn delete_token(id: Uuid) -> Result<()> {
 
 /// Stores the game session of account `id` in the OS keychain, for starting while the sign-in cannot be refreshed.
 pub fn store_session(id: Uuid, session: &str) -> Result<()> {
+    if keychain::pooled() {
+        return keychain::set(&format!("{id}.session"), session).context("cannot save the game session in the system keychain");
+    }
     session_entry(id)?.set_secret(session.as_bytes()).context("cannot save the game session in the system keychain")
 }
 
 /// Reads the game session of account `id`; `None` when the keychain has none.
 pub fn read_session(id: Uuid) -> Result<Option<String>> {
+    if keychain::pooled() {
+        return keychain::get(&format!("{id}.session")).context("cannot read the game session from the system keychain");
+    }
     match session_entry(id)?.get_secret() {
         Ok(bytes) => Ok(Some(String::from_utf8(bytes).context("the stored game session is unreadable")?)),
         Err(keyring::Error::NoEntry) => Ok(None),

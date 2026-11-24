@@ -38,6 +38,7 @@ pub mod instance;
 pub mod install;
 #[allow(dead_code)]
 pub mod ipc;
+pub mod keychain;
 pub mod javas;
 pub mod launch;
 pub mod logs;

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::i18n::{tr, trf};
-use super::{account, drive, settings};
+use super::{account, drive, keychain, settings};
 
 const TELEGRAM_API: &str = "https://api.telegram.org";
 /// The ntfy server a new setup uses.
@@ -150,6 +150,9 @@ pub fn read_secret(slot: Slot) -> Result<Secret, String> {
     if fenced() {
         return Ok(Secret::new(lock(&KEPT).get(&slot).cloned().unwrap_or_default()));
     }
+    if keychain::pooled() {
+        return keychain::get(slot.account()).map(|v| Secret::new(v.unwrap_or_default())).map_err(|_| tr("Der Passwortspeicher des Systems ist nicht erreichbar."));
+    }
     match entry(slot)?.get_password() {
         Ok(value) => Ok(Secret::new(value)),
         Err(keyring::Error::NoEntry) => Ok(Secret::default()),
@@ -167,6 +170,10 @@ pub fn store_secret(slot: Slot, secret: &Secret) -> Result<(), String> {
             kept.insert(slot, secret.expose().to_owned());
         }
         return Ok(());
+    }
+    if keychain::pooled() {
+        let result = if secret.is_empty() { keychain::delete(slot.account()) } else { keychain::set(slot.account(), secret.expose()) };
+        return result.map_err(|_| tr("Der Passwortspeicher des Systems hat die Angabe nicht gespeichert."));
     }
     let entry = entry(slot)?;
     let result = if secret.is_empty() {

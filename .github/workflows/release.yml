@@ -115,6 +115,9 @@ jobs:
           mkdir -p target/release
           lipo -create -output target/release/manycraft target/aarch64-apple-darwin/release/manycraft target/x86_64-apple-darwin/release/manycraft
       - name: Bundle and DMG
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           APP="dist/Manycraft.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -122,7 +125,7 @@ jobs:
           cp packaging/icons/manycraft.icns "$APP/Contents/Resources/"
           cp -R packaging/macos/en.lproj "$APP/Contents/Resources/"
           sed "s/VERSION/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
-          codesign --force --deep --sign - "$APP"
+          bash packaging/macos/sign.sh "$APP"
           ln -s /Applications dist/Applications
           DMG="Manycraft-$VERSION-macos-universal.dmg"
           SIZE=$(( $(du -sm dist | cut -f1) * 2 + 64 ))m
