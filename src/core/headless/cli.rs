@@ -98,7 +98,7 @@ fn run(args: &[String]) -> Result<()> {
                 let (who, text) = rest.split_once(' ').unwrap_or((rest, ""));
                 send(Some(who), &ToMod::ChatSend { text: text.to_owned() });
             }
-            "shot" => send((!rest.is_empty()).then_some(rest), &ToMod::Capture { width: 640 }),
+            "shot" => send((!rest.is_empty()).then_some(rest), &ToMod::Capture { width: 1280 }),
             "reconnect" => send(None, &ToMod::Reconnect),
             "respawn" => send(None, &ToMod::Respawn),
             "accept" | "decline" => {
