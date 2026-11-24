@@ -639,8 +639,7 @@ fn export_with(batch: &Instance, dir: &Path, loader: &Loader, out: &Path, fetch:
         extra.push((format!("overrides/{OPTIONS_FILE}"), options));
     }
     for folder in SHARED {
-        let path = dir.join(folder);
-        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+        if let Some(path) = super::share::folder_in(dir, folder) {
             shared_files(&path, &format!("overrides/{folder}"), 0, &mut extra)?;
         }
     }

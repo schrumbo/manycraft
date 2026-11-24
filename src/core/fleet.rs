@@ -179,7 +179,9 @@ struct Shared {
     shaderpacks: PathBuf,
     datapacks: PathBuf,
     options: PathBuf,
+    shared_options: Option<PathBuf>,
     servers: PathBuf,
+    shared_servers: bool,
     saves: PathBuf,
 }
 
@@ -192,7 +194,9 @@ impl Shared {
             shaderpacks: instance.shaderpacks_dir(),
             datapacks: instance.datapacks_dir(),
             options: instance.options_template(),
-            servers: instance.servers_template(),
+            shared_options: share::flags_in(&instance.dir()).options.then(|| share::Mother::current().path(OPTIONS_FILE)),
+            servers: share::game_servers(&instance.dir()),
+            shared_servers: share::flags_in(&instance.dir()).servers,
             saves: instance.dir().join(super::launchers::SAVES_SEED),
         }
     }
@@ -246,9 +250,11 @@ fn prepare_in(dir: &Path, shared: &Shared, siblings: &[PathBuf]) -> Result<()> {
         link(&dir.join(name), target)?;
     }
     drop_companion(&shared.mods);
-    sync::adopt_options(&shared.options, dir, siblings)?;
-    copy_options(&shared.options, &dir.join(OPTIONS_FILE))?;
-    sync::copy_servers(&shared.servers, dir, siblings)?;
+    if shared.shared_options.is_none() {
+        sync::adopt_options(&shared.options, dir, siblings)?;
+    }
+    copy_options(share::compose(&shared.options, shared.shared_options.as_deref())?.as_deref(), &dir.join(OPTIONS_FILE))?;
+    sync::copy_servers(&shared.servers, dir, siblings, !shared.shared_servers)?;
     adopt_saves(&shared.saves, dir)
 }
 
@@ -313,35 +319,35 @@ fn is_junction(_path: &Path) -> bool {
     false
 }
 
+/// Makes `link` a link to the folder `target`: a junction on Windows, a symbolic link elsewhere.
 #[cfg(windows)]
-fn create_link(target: &Path, link: &Path) -> io::Result<()> {
+pub(crate) fn create_link(target: &Path, link: &Path) -> io::Result<()> {
     junction::create(target, link)
 }
 
+/// Makes `link` a link to the folder `target`: a junction on Windows, a symbolic link elsewhere.
 #[cfg(not(windows))]
-fn create_link(target: &Path, link: &Path) -> io::Result<()> {
+pub(crate) fn create_link(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
+/// Removes the link at `path`, never what it leads to.
 #[cfg(windows)]
-fn remove_link(path: &Path) -> Result<()> {
+pub(crate) fn remove_link(path: &Path) -> Result<()> {
     fs::remove_dir(path).or_else(|_| fs::remove_file(path)).with_context(|| format!("cannot remove the link {}", path.display()))
 }
 
+/// Removes the link at `path`, never what it leads to.
 #[cfg(not(windows))]
-fn remove_link(path: &Path) -> Result<()> {
+pub(crate) fn remove_link(path: &Path) -> Result<()> {
     fs::remove_file(path).with_context(|| format!("cannot remove the link {}", path.display()))
 }
 
-fn copy_options(template: &Path, dest: &Path) -> Result<()> {
-    let text = match fs::read_to_string(template) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
-    };
+fn copy_options(template: Option<&str>, dest: &Path) -> Result<()> {
+    let Some(text) = template else { return Ok(()) };
     let existing = fs::read_to_string(dest).ok();
     share::writable(dest);
-    net::write_atomic(dest, merge_options(&text, existing.as_deref(), PER_INSTANCE_KEYS).as_bytes())
+    net::write_atomic(dest, merge_options(text, existing.as_deref(), PER_INSTANCE_KEYS).as_bytes())
 }
 
 fn merge_options(template: &str, existing: Option<&str>, keys: &[&str]) -> String {
@@ -1547,7 +1553,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     if matches!(instance.loader, Loader::Forge(_) | Loader::NeoForge(_)) {
         quiet_early_window(&instance.config_dir())?;
     }
-    share::verify_game(&instance.options_template(), &game_dir.join(OPTIONS_FILE), share::data_version(&installed.classpath, &[&installed.game_version, &installed.version_name]))?;
+    share::verify_game(share::game_options(&instance.dir())?.as_deref(), &game_dir.join(OPTIONS_FILE), share::data_version(&installed.classpath, &[&installed.game_version, &installed.version_name]))?;
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token)?;
     extra.jvm.splice(0..0, batch_defaults(target, installed, companion_jar.is_some()));
@@ -2148,7 +2154,9 @@ mod tests {
             shaderpacks: batch.join("shaderpacks"),
             datapacks: batch.join("datapacks"),
             options: batch.join(OPTIONS_FILE),
+            shared_options: None,
             servers: batch.join(sync::SERVERS_FILE),
+            shared_servers: false,
             saves: batch.join(super::super::launchers::SAVES_SEED),
         };
         Dirs { inst: base.join("inst"), mods: shared.mods.clone(), config: shared.config.clone(), template: shared.options.clone(), shared, _root: root }
