@@ -160,11 +160,27 @@ impl Crowd {
 
     fn moved(&mut self, r: &mut In, position: bool, rotation: bool) -> Result<()> {
         let id = r.varint()?;
-        let delta = if position { [r.i16()?, r.i16()?, r.i16()?] } else { [0; 3] };
+        let mut steps = Vec::new();
+        if position {
+            let count = (r.varint()? as u32) >> 1;
+            if count == 0 {
+                steps.push([r.i16()?, r.i16()?, r.i16()?]);
+            }
+            for _ in 0..count {
+                r.varint()?;
+                steps.push([r.i16()?, r.i16()?, r.i16()?]);
+            }
+        } else {
+            r.bool()?;
+        }
         let turn = if rotation { Some((angle(r.u8()?), angle(r.u8()?))) } else { None };
         if let Some(mob) = self.near.get_mut(&id) {
-            for (p, d) in mob.pos.iter_mut().zip(delta) {
-                *p += f64::from(d) / 4096.0;
+            for step in steps {
+                for (p, d) in mob.pos.iter_mut().zip(step) {
+                    if d != 0 {
+                        *p = ((*p * 4096.0).round() + f64::from(d)) / 4096.0;
+                    }
+                }
             }
             if let Some((yaw, pitch)) = turn {
                 mob.yaw = yaw;
@@ -203,10 +219,19 @@ impl Crowd {
 
     fn sync(&mut self, r: &mut In) -> Result<()> {
         let id = r.varint()?;
-        if r.varint()? != 0 {
-            return Ok(());
-        }
-        let pos = [r.f64()?, r.f64()?, r.f64()?];
+        let pos = match r.varint()? {
+            0 => [r.f64()?, r.f64()?, r.f64()?],
+            1 => {
+                let mut last = None;
+                for _ in 0..r.list()? {
+                    last = Some([r.f64()?, r.f64()?, r.f64()?]);
+                    r.varint()?;
+                }
+                let Some(last) = last else { return Ok(()) };
+                last
+            }
+            _ => return Ok(()),
+        };
         let (yaw, pitch) = (r.f32()?, r.f32()?);
         if let Some(mob) = self.near.get_mut(&id) {
             mob.pos = pos;
@@ -680,8 +705,14 @@ mod tests {
         })
         .unwrap();
         let mut o = Out::default();
-        o.varint(7).i16(4096).i16(0).i16(-2048).u8(0x40).u8(0).bool(true);
+        o.varint(7).varint(1).i16(4096).i16(0).i16(-2048).u8(0x40).u8(0);
         c.moved(&mut In::new(&o.0), true, true).unwrap();
+        let mut o = Out::default();
+        o.varint(7).varint(4).varint(1).i16(2048).i16(0).i16(0).varint(1).i16(-2048).i16(0).i16(0);
+        c.moved(&mut In::new(&o.0), true, false).unwrap();
+        let mut o = Out::default();
+        o.varint(7).bool(true).u8(0x40).u8(0);
+        c.moved(&mut In::new(&o.0), false, true).unwrap();
         let mut o = Out::default();
         o.varint(7).u8(0xC0);
         c.head(&mut In::new(&o.0)).unwrap();
