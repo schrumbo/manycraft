@@ -1,7 +1,7 @@
 //! What a connection-only account has seen of the world: the block data of the chunks the server sent, kept deflated in
 //! memory, the blocks changed since, and the dimension it is in, so a picture can be drawn on request.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::sync::{Arc, LazyLock};
 
@@ -13,13 +13,15 @@ use serde_json::Value;
 
 use super::render::Biome;
 use super::v777::{BLOCK_LOOKS, BLOCK_STATES};
-use super::wire::In;
+use super::wire::{In, Out};
 
 const MAX_CHUNKS: usize = 1024;
 const MAX_BYTES: usize = 512 << 10;
 const MAX_CHANGES: usize = 2048;
 const MAX_TYPES: usize = 256;
 const MAX_BIOMES: usize = 4096;
+const MAX_RELIT: usize = 64 << 10;
+const LIGHT: usize = BLOCKS / 2;
 /// The most sections a dimension may stack: 4064 blocks, the game's own limit.
 pub const MAX_SECTIONS: usize = 254;
 const MAX_INFLATED: usize = 4 << 20;
@@ -73,6 +75,11 @@ pub struct Dimension {
 }
 
 impl Dimension {
+    /// How many sections a chunk of this dimension has.
+    pub fn sections(&self) -> usize {
+        usize::try_from(self.height / 16).unwrap_or(0).min(MAX_SECTIONS)
+    }
+
     fn sane(&self) -> bool {
         let span = (MAX_SECTIONS * 16) as i32;
         self.height > 0 && self.height <= span && self.height % 16 == 0 && self.floor % 16 == 0 && self.floor >= -span / 2 && self.floor <= span / 2 - self.height
@@ -94,6 +101,33 @@ pub struct World {
     types: Vec<Dimension>,
     dimension: Dimension,
     biomes: Arc<[Biome]>,
+    relit: HashMap<(i32, i32), Relit>,
+}
+
+/// Light a `light_update` sent for some sections of a kept chunk after the chunk itself, by section counted from one
+/// below the floor; the newest wins.
+#[derive(Clone, Debug, Default)]
+pub struct Relit {
+    pub sky: BTreeMap<usize, Light>,
+    pub block: BTreeMap<usize, Light>,
+}
+
+impl Relit {
+    /// Lays this light over the sky and block light of a chunk's sections, bottom up.
+    pub fn apply<'a>(&self, sections: impl IntoIterator<Item = (&'a mut Light, &'a mut Light)>) {
+        for (i, (sky, block)) in sections.into_iter().enumerate() {
+            if let Some(light) = self.sky.get(&(i + 1)) {
+                *sky = light.clone();
+            }
+            if let Some(light) = self.block.get(&(i + 1)) {
+                *block = light.clone();
+            }
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.sky.values().chain(self.block.values()).map(|l| if matches!(l, Light::Levels(_)) { LIGHT + 32 } else { 32 }).sum()
+    }
 }
 
 /// One kept chunk: its position and its deflated block data.
@@ -106,6 +140,7 @@ pub struct Snapshot {
     pub chunks: Vec<Kept>,
     pub changes: Vec<([i32; 3], u32)>,
     pub biomes: Arc<[Biome]>,
+    pub relit: Vec<((i32, i32), Relit)>,
 }
 
 impl World {
@@ -151,6 +186,7 @@ impl World {
         self.chunks = HashMap::new();
         self.kept = 0;
         self.changes = HashMap::new();
+        self.relit = HashMap::new();
     }
 
     /// Keeps the block data of a `level_chunk_with_light` packet; past the memory budget the chunks farthest from chunk
@@ -163,15 +199,18 @@ impl World {
             r.take(longs.checked_mul(8).context("heightmap too long")?)?;
         }
         let data = r.bytes()?;
-        ensure!(data.len() <= MAX_INFLATED, "chunk data of {} bytes", data.len());
-        let mut packed = ZlibEncoder::new(Vec::new(), Compression::fast());
-        packed.write_all(data)?;
-        let packed: Arc<[u8]> = packed.finish()?.into();
+        let light = match block_entities(r) {
+            Ok(()) => r.take(r.left()).unwrap_or_default(),
+            Err(_) => &[],
+        };
+        let light = if light.len() <= most_light(self.dimension.sections()) { light } else { &[] };
+        let packed = pack(data, light)?;
         self.kept += packed.len();
         if let Some(old) = self.chunks.insert(at, packed) {
             self.kept -= old.len();
         }
         self.changes.retain(|p, _| (p[0] >> 4, p[2] >> 4) != at);
+        self.relit.remove(&at);
         while self.kept > MAX_BYTES || self.chunks.len() > MAX_CHUNKS {
             let far = |c: &(i32, i32)| c.0.abs_diff(near.0).max(c.1.abs_diff(near.1));
             let Some(&gone) = self.chunks.keys().max_by_key(|c| far(c)) else { break };
@@ -185,6 +224,40 @@ impl World {
             self.kept -= old.len();
         }
         self.changes.retain(|p, _| (p[0] >> 4, p[2] >> 4) != at);
+        self.relit.remove(&at);
+    }
+
+    /// Applies a `light_update` packet to its kept chunk: the sections it names get the light sent, the rest keep theirs.
+    /// Past the budget for such light, the chunk holding most of it takes it into its kept data.
+    pub fn light(&mut self, r: &mut In) -> Result<()> {
+        let at = (r.varint()?, r.varint()?);
+        if !self.chunks.contains_key(&at) {
+            return Ok(());
+        }
+        let (sky, block) = sent(r, self.dimension.sections())?;
+        let relit = self.relit.entry(at).or_default();
+        relit.sky.extend(sky);
+        relit.block.extend(block);
+        while self.relit.values().map(Relit::bytes).sum::<usize>() > MAX_RELIT {
+            let Some(most) = self.relit.iter().max_by_key(|(_, l)| l.bytes()).map(|(at, _)| *at) else { break };
+            self.fold(most)?;
+        }
+        Ok(())
+    }
+
+    fn fold(&mut self, at: (i32, i32)) -> Result<()> {
+        let (Some(relit), Some(packed)) = (self.relit.remove(&at), self.chunks.get(&at)) else { return Ok(()) };
+        let kept = inflate(packed)?;
+        let (data, light) = split(&kept)?;
+        let count = self.dimension.sections();
+        let (mut sky, mut block) = lights(light, count).unwrap_or_else(|_| (unknown(count), unknown(count)));
+        relit.apply(sky.iter_mut().zip(block.iter_mut()));
+        let packed = pack(data, &region(&sky, &block))?;
+        self.kept += packed.len();
+        if let Some(old) = self.chunks.insert(at, packed) {
+            self.kept -= old.len();
+        }
+        Ok(())
     }
 
     /// Drops the chunk of a `forget_level_chunk` packet.
@@ -232,6 +305,7 @@ impl World {
             chunks: self.chunks.iter().filter(|(at, _)| near(at)).map(|(at, data)| (*at, Arc::clone(data))).collect(),
             changes: self.changes.iter().filter(|(p, _)| near(&(p[0] >> 4, p[2] >> 4))).map(|(p, s)| (*p, *s)).collect(),
             biomes: Arc::clone(&self.biomes),
+            relit: self.relit.iter().filter(|(at, _)| near(at)).map(|(at, l)| (*at, l.clone())).collect(),
         }
     }
 
@@ -239,16 +313,73 @@ impl World {
     #[cfg(test)]
     pub fn bytes(&self) -> usize {
         let chunks: usize = self.chunks.values().map(|c| c.len() + 48).sum();
-        chunks + self.changes.capacity() * 24 + self.types.capacity() * 8
+        chunks + self.changes.capacity() * 24 + self.types.capacity() * 8 + self.relit.values().map(Relit::bytes).sum::<usize>()
     }
+}
+
+fn pack(data: &[u8], light: &[u8]) -> Result<Arc<[u8]>> {
+    ensure!(data.len() + light.len() <= MAX_INFLATED - 4, "chunk data of {} bytes", data.len() + light.len());
+    let mut packed = ZlibEncoder::new(Vec::new(), Compression::default());
+    packed.write_all(&(data.len() as u32).to_le_bytes())?;
+    packed.write_all(data)?;
+    packed.write_all(light)?;
+    Ok(packed.finish()?.into())
+}
+
+fn most_light(count: usize) -> usize {
+    let masks = 4 * (5 + 8 * (count + 2).div_ceil(64));
+    masks + 2 * (5 + (count + 2) * (3 + LIGHT))
 }
 
 /// The looks of one 16³ section, `y * 256 + z * 16 + x`.
 pub type Section = Box<[Look; BLOCKS]>;
 
+fn block_entities(r: &mut In) -> Result<()> {
+    for _ in 0..r.list()? {
+        r.u8()?;
+        r.i16()?;
+        r.varint()?;
+        r.nbt()?;
+    }
+    Ok(())
+}
+
 /// The looks of the sections of one chunk's deflated block data, bottom up; `None` for a section of air only.
 pub fn sections(packed: &[u8], dimension: Dimension) -> Result<Vec<Option<Section>>> {
-    Ok(columns(packed, dimension)?.into_iter().map(|(blocks, _)| looks(blocks)).collect())
+    let kept = inflate(packed)?;
+    let (data, _) = split(&kept)?;
+    Ok(columns(data, dimension)?.into_iter().map(|(blocks, _)| looks(blocks)).collect())
+}
+
+/// The light of one section as the server sent it.
+#[derive(Clone, Debug)]
+pub enum Light {
+    /// Nothing sent for this section.
+    Unknown,
+    /// Sent as all dark.
+    Dark,
+    /// Two levels a byte, `y * 256 + z * 16 + x`, the even index in the low half.
+    Levels(Box<[u8; LIGHT]>),
+}
+
+impl Light {
+    /// The level (0..15) of block `i` of the section, or `None` when unknown.
+    pub fn level(&self, i: usize) -> Option<u8> {
+        match self {
+            Light::Unknown => None,
+            Light::Dark => Some(0),
+            Light::Levels(l) => Some(l[i / 2] >> (i % 2 * 4) & 15),
+        }
+    }
+}
+
+/// What a picture needs of one section.
+pub struct Cell {
+    /// No states for a section of air only.
+    pub states: Option<States>,
+    pub biomes: Biomes,
+    pub sky: Light,
+    pub block: Light,
 }
 
 /// The global block states of one 16³ section, `y * 256 + z * 16 + x`.
@@ -257,10 +388,113 @@ pub type States = Box<[u16; BLOCKS]>;
 /// The biome ids of one section's 4³ cells, `y * 16 + z * 4 + x`.
 pub type Biomes = [u16; BIOMES];
 
-/// The block states and biomes of the sections of one chunk's deflated block data, bottom up; no states for a section of
-/// air only.
-pub fn states(packed: &[u8], dimension: Dimension) -> Result<Vec<(Option<States>, Biomes)>> {
-    Ok(columns(packed, dimension)?.into_iter().map(|(blocks, biomes)| (block_states(blocks), biome_ids(biomes))).collect())
+/// The block states, biomes and light of the sections of one kept chunk, bottom up.
+pub fn cells(packed: &[u8], dimension: Dimension) -> Result<Vec<Cell>> {
+    let kept = inflate(packed)?;
+    let (data, light) = split(&kept)?;
+    let columns = columns(data, dimension)?;
+    let (mut sky, mut block) = lights(light, columns.len()).unwrap_or_default();
+    sky.resize_with(columns.len(), || Light::Unknown);
+    block.resize_with(columns.len(), || Light::Unknown);
+    Ok(columns.into_iter().zip(sky.into_iter().zip(block)).map(|((blocks, biomes), (sky, block))| Cell { states: block_states(blocks), biomes: biome_ids(biomes), sky, block }).collect())
+}
+
+fn inflate(packed: &[u8]) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    ZlibDecoder::new(packed).take(MAX_INFLATED as u64 + 1).read_to_end(&mut data)?;
+    ensure!(data.len() <= MAX_INFLATED, "chunk data inflates past {MAX_INFLATED} bytes");
+    Ok(data)
+}
+
+fn split(kept: &[u8]) -> Result<(&[u8], &[u8])> {
+    let (len, rest) = kept.split_first_chunk::<4>().context("kept chunk without its length")?;
+    let len = u32::from_le_bytes(*len) as usize;
+    ensure!(len <= rest.len(), "kept chunk shorter than its block data");
+    Ok(rest.split_at(len))
+}
+
+fn lights(region: &[u8], count: usize) -> Result<(Vec<Light>, Vec<Light>)> {
+    let (sky, block) = sent(&mut In::new(region), count)?;
+    let place = |sent: Vec<(usize, Light)>| {
+        let mut out = unknown(count);
+        for (i, light) in sent {
+            if let Some(slot) = i.checked_sub(1).and_then(|i| out.get_mut(i)) {
+                *slot = light;
+            }
+        }
+        out
+    };
+    Ok((place(sky), place(block)))
+}
+
+fn unknown(count: usize) -> Vec<Light> {
+    (0..count).map(|_| Light::Unknown).collect()
+}
+
+type Sent = Vec<(usize, Light)>;
+
+fn sent(r: &mut In, count: usize) -> Result<(Sent, Sent)> {
+    let (sky, block, empty_sky, empty_block) = (mask(r)?, mask(r)?, mask(r)?, mask(r)?);
+    let sky = arrays(r, &sky, &empty_sky, count)?;
+    Ok((sky, arrays(r, &block, &empty_block, count)?))
+}
+
+fn region(sky: &[Light], block: &[Light]) -> Vec<u8> {
+    let bits = |kept: &[Light], dark: bool| {
+        let mut mask = vec![0u64; (kept.len() + 2).div_ceil(64)];
+        for (i, light) in kept.iter().enumerate() {
+            if matches!((light, dark), (Light::Levels(_), false) | (Light::Dark, true)) {
+                mask[(i + 1) / 64] |= 1 << ((i + 1) % 64);
+            }
+        }
+        mask
+    };
+    let mut out = Out::default();
+    for mask in [bits(sky, false), bits(block, false), bits(sky, true), bits(block, true)] {
+        out.varint(mask.len() as i32);
+        for word in mask {
+            out.i64(word as i64);
+        }
+    }
+    for kept in [sky, block] {
+        let levels: Vec<&[u8; LIGHT]> = kept.iter().filter_map(|l| if let Light::Levels(l) = l { Some(&**l) } else { None }).collect();
+        out.varint(levels.len() as i32);
+        for l in levels {
+            out.bytes(l);
+        }
+    }
+    out.0
+}
+
+fn mask(r: &mut In) -> Result<Vec<u64>> {
+    (0..r.list()?).map(|_| r.i64().map(|v| v as u64)).collect()
+}
+
+fn bit(mask: &[u64], i: usize) -> bool {
+    mask.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
+}
+
+fn arrays(r: &mut In, has: &[u64], empty: &[u64], count: usize) -> Result<Sent> {
+    let n = r.list()?;
+    ensure!(n <= count + 2, "{n} light arrays for {count} sections");
+    let mut read = 0;
+    let mut out = Vec::new();
+    for i in 0..count + 2 {
+        if bit(has, i) {
+            if read < n {
+                read += 1;
+                if let Ok(levels) = <[u8; LIGHT]>::try_from(r.bytes()?) {
+                    out.push((i, Light::Levels(Box::new(levels))));
+                }
+            }
+        } else if bit(empty, i) {
+            out.push((i, Light::Dark));
+        }
+    }
+    for _ in read..n {
+        r.bytes()?;
+    }
+    Ok(out)
 }
 
 enum Values {
@@ -303,12 +537,9 @@ fn biome_ids(values: Values) -> Biomes {
     }
 }
 
-fn columns(packed: &[u8], dimension: Dimension) -> Result<Vec<(Values, Values)>> {
-    let mut data = Vec::new();
-    ZlibDecoder::new(packed).take(MAX_INFLATED as u64 + 1).read_to_end(&mut data)?;
-    ensure!(data.len() <= MAX_INFLATED, "chunk data inflates past {MAX_INFLATED} bytes");
+fn columns(data: &[u8], dimension: Dimension) -> Result<Vec<(Values, Values)>> {
     let count = usize::try_from(dimension.height / 16).unwrap_or(0).min(MAX_SECTIONS);
-    let mut r = In::new(&data);
+    let mut r = In::new(data);
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         if r.left() == 0 {
@@ -412,6 +643,7 @@ mod tests {
 
     fn packed(bytes: &[u8]) -> Vec<u8> {
         let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+        z.write_all(&(bytes.len() as u32).to_le_bytes()).unwrap();
         z.write_all(bytes).unwrap();
         z.finish().unwrap()
     }
@@ -563,6 +795,85 @@ mod tests {
         let mut huge = Out::default();
         huge.i32(0).i32(1).varint(0).bytes(&vec![0; MAX_INFLATED + 1]);
         assert!(w.chunk(&mut In::new(&huge.0), (0, 0)).is_err());
+    }
+
+    #[test]
+    fn a_kept_chunk_gives_back_its_states_biome_cells_and_light() {
+        let stone = state(solid);
+        let mut data = Out::default();
+        data.i16(4096).i16(0).u8(0).varint(stone as i32);
+        data.u8(2).varint(4).varint(10).varint(11).varint(12).varint(13);
+        for _ in 0..2 {
+            data.i64((0..32).fold(0u64, |long, k| long | ((k % 4) << (k * 2))) as i64);
+        }
+        let mut sky = vec![0u8; 2048];
+        sky[0] = 0x5F;
+        let mut packet = Out::default();
+        packet.i32(0).i32(0).varint(0).bytes(&data.0).varint(0);
+        packet.varint(1).i64(2).varint(0).varint(0).varint(1).i64(2);
+        packet.varint(1).bytes(&sky).varint(0);
+        let mut w = World::default();
+        w.dimension = Dimension { floor: 0, height: 16 };
+        w.chunk(&mut In::new(&packet.0), (0, 0)).unwrap();
+        let kept = cells(&w.snapshot(0.0, 0.0, 0).chunks[0].1, w.dimension).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].states.as_ref().unwrap()[4095], stone as u16);
+        assert_eq!(kept[0].biomes[..6], [10, 11, 12, 13, 10, 11]);
+        assert_eq!((kept[0].sky.level(0), kept[0].sky.level(1), kept[0].sky.level(2)), (Some(15), Some(5), Some(0)));
+        assert_eq!(kept[0].block.level(7), Some(0), "an empty section reads dark");
+        let bare = cells(&packed(&data.0), w.dimension).unwrap();
+        assert!(bare[0].sky.level(0).is_none(), "no light sent is unknown light");
+    }
+
+    #[test]
+    fn a_light_update_relights_only_the_sections_it_names_and_survives_folding() {
+        let mut sky = vec![0u8; 2048];
+        sky[0] = 0x5F;
+        let mut air = Out::default();
+        for _ in 0..2 {
+            air.i16(0).i16(0).u8(0).varint(0).u8(0).varint(0);
+        }
+        let mut packet = Out::default();
+        packet.i32(0).i32(0).varint(0).bytes(&air.0).varint(0);
+        packet.varint(1).i64(2).varint(0).varint(0).varint(0);
+        packet.varint(1).bytes(&sky).varint(0);
+        let mut w = World::default();
+        w.dimension = Dimension { floor: 0, height: 32 };
+        w.chunk(&mut In::new(&packet.0), (0, 0)).unwrap();
+        let mut torch = vec![0u8; 2048];
+        torch[1] = 0xE0;
+        let mut update = Out::default();
+        update.varint(0).varint(0).varint(1).i64(4).varint(1).i64(2).varint(0).varint(0);
+        update.varint(1).bytes(&sky).varint(1).bytes(&torch);
+        w.light(&mut In::new(&update.0)).unwrap();
+        update.0[0] = 1;
+        w.light(&mut In::new(&update.0)).unwrap();
+        assert_eq!(w.relit.len(), 1, "light for a chunk not kept is not kept");
+        let snap = w.snapshot(0.0, 0.0, 0);
+        let (mut s, mut b) = lights(&inflate(&snap.chunks[0].1).map(|k| split(&k).unwrap().1.to_vec()).unwrap(), 2).unwrap();
+        snap.relit[0].1.apply(s.iter_mut().zip(b.iter_mut()));
+        let levels = |s: &[Light], b: &[Light]| (s[0].level(0), s[1].level(0), b[0].level(3), b[1].level(0));
+        assert_eq!(levels(&s, &b), (Some(15), Some(15), Some(14), None));
+        w.fold((0, 0)).unwrap();
+        assert!(w.relit.is_empty());
+        let kept = cells(&w.snapshot(0.0, 0.0, 0).chunks[0].1, w.dimension).unwrap();
+        let (s, b): (Vec<Light>, Vec<Light>) = kept.into_iter().map(|c| (c.sky, c.block)).unzip();
+        assert_eq!(levels(&s, &b), (Some(15), Some(15), Some(14), None), "folded light reads as before");
+    }
+
+    #[test]
+    fn light_with_more_arrays_than_sections_is_not_read() {
+        let mut region = Out::default();
+        region.varint(0).varint(0).varint(0).varint(0).varint(1000);
+        region.raw(&[0; 1000]).varint(0);
+        assert!(lights(&region.0, 2).is_err());
+        let mut packet = Out::default();
+        packet.i32(0).i32(0).varint(0).bytes(&[]).varint(0).raw(&vec![0; most_light(1) + 1]);
+        let mut w = World::default();
+        w.dimension = Dimension { floor: 0, height: 16 };
+        w.chunk(&mut In::new(&packet.0), (0, 0)).unwrap();
+        let kept = inflate(&w.chunks[&(0, 0)]).unwrap();
+        assert!(split(&kept).unwrap().1.is_empty(), "light past what the dimension can have is dropped, the chunk is kept");
     }
 
     #[test]

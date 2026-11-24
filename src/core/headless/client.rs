@@ -496,7 +496,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id),
+        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id),
     }
 }
 
@@ -723,7 +723,7 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::DISCONNECT => return Ok(Some(dropped(text::line(&r.nbt()?)))),
         c::PLAYER_POSITION => teleported(shared, link, r)?,
-        c::LOGIN | c::LEVEL_CHUNK_WITH_LIGHT | c::FORGET_LEVEL_CHUNK | c::BLOCK_UPDATE | c::SECTION_BLOCKS_UPDATE => {
+        c::LOGIN | c::LEVEL_CHUNK_WITH_LIGHT | c::LIGHT_UPDATE | c::FORGET_LEVEL_CHUNK | c::BLOCK_UPDATE | c::SECTION_BLOCKS_UPDATE => {
             if let Err(e) = seen(link, id, r) {
                 eprintln!("{}: world packet {id} not read: {e:#}", shared.key);
             }
@@ -803,6 +803,7 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
         c::FORGET_LEVEL_CHUNK => link.world.forget(r)?,
         c::BLOCK_UPDATE => link.world.block(r)?,
         c::SECTION_BLOCKS_UPDATE => link.world.section(r)?,
+        c::LIGHT_UPDATE => link.world.light(r)?,
         _ => {}
     }
     Ok(())

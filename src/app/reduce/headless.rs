@@ -12,8 +12,8 @@ use super::go;
 use crate::core::batch;
 use crate::core::ipc::{Offer, ToMod};
 
-/// How wide a screenshot of a game without a window is: sharp on a large tile, small enough for fifty of them.
-pub const SHOT_WIDTH: u32 = 640;
+/// How wide a screenshot of a game without a window is: 1280 × 720, sharp enough to keep.
+pub const SHOT_WIDTH: u32 = 1280;
 
 /// Takes a screenshot of each of `keys` that runs without a window and has a mod to take it.
 pub(super) fn capture(m: &Model, keys: &[String], out: &mut Vec<Effect>) {

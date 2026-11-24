@@ -83,6 +83,7 @@ pub mod play {
         pub const FORGET_LEVEL_CHUNK: i32 = 38;
         pub const BLOCK_UPDATE: i32 = 8;
         pub const SECTION_BLOCKS_UPDATE: i32 = 86;
+        pub const LIGHT_UPDATE: i32 = 49;
     }
     pub mod serverbound {
         pub const ACCEPT_TELEPORTATION: i32 = 0;
