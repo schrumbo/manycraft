@@ -191,6 +191,7 @@ pub struct Line {
     pub played: Option<std::time::SystemTime>,
     pub running: Option<Vec<String>>,
     pub loading: Option<u8>,
+    pub meter: Option<crate::app::meter::Meter>,
     pub trouble: bool,
 }
 
@@ -215,6 +216,7 @@ pub fn lines(store: Store, list: &[&Instance], infos: &Infos) -> Vec<Line> {
                 played: infos.get(&i.id).and_then(|n| n.played),
                 running: (!keys.is_empty()).then_some(keys),
                 loading: crate::view::instance::loading(&m, &i.id),
+                meter: crate::view::install::game_meter(&m, &i.id),
                 trouble: m.solo_games(&i.id).any(|g| g.phase.needs_attention()),
             }
         })

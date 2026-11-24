@@ -107,6 +107,7 @@ impl Component for Bar {
 pub struct Wait {
     id: String,
     how: How,
+    compact: bool,
 }
 
 #[derive(PartialEq)]
@@ -119,17 +120,23 @@ enum How {
 impl Wait {
     /// Work that reports `meter`; `id` names it for the drive tool.
     pub fn new(id: impl Into<String>, meter: Meter) -> Self {
-        Wait { id: id.into(), how: How::Measured(meter) }
+        Wait { id: id.into(), how: How::Measured(meter), compact: false }
     }
 
     /// Work that cannot be measured: a sliding bar with `step` and, after two seconds, how long it has run.
     pub fn working(id: impl Into<String>, step: impl Into<String>) -> Self {
-        Wait { id: id.into(), how: How::Unmeasured(step.into()) }
+        Wait { id: id.into(), how: How::Unmeasured(step.into()), compact: false }
     }
 
     /// A wait for the person that has `of` fixed steps, now at `at`: a bar that stands still at that step, with no animation.
     pub fn stepped(id: impl Into<String>, step: impl Into<String>, at: usize, of: usize) -> Self {
-        Wait { id: id.into(), how: How::Stepped(step.into(), at, of) }
+        Wait { id: id.into(), how: How::Stepped(step.into(), at, of), compact: false }
+    }
+
+    /// Step and figures on one line under the bar, for a slot that must not grow.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 }
 
@@ -151,10 +158,11 @@ impl Component for Wait {
         let said = if detail.is_empty() { step.clone() } else { format!("{step} · {detail}") };
         let spot = use_spot(&self.id, "progressbar", &said, false);
         let bar = if ticking { Bar::new(share) } else { Bar::new(share).still() };
-        rect()
-            .width(Size::fill())
-            .spacing(space::XS)
-            .on_sized(spot)
+        let column = rect().width(Size::fill()).spacing(space::XS).on_sized(spot);
+        if self.compact {
+            return column.child(bar.named(said.clone())).child(line(&t, said, font::CALLOUT, t.text2).width(Size::fill()));
+        }
+        column
             .child(bar.named(said))
             .child(line(&t, step, font::CALLOUT, t.text2).width(Size::fill()))
             .maybe_child((!detail.is_empty()).then(|| caption(&t, detail).width(Size::fill())))
@@ -211,12 +219,19 @@ pub struct Tracked {
     step: String,
     tally: Tally,
     unit: Unit,
+    compact: bool,
 }
 
 impl Tracked {
     /// Counts files: the tally holds how many are done of how many there are.
     pub fn new(id: impl Into<String>, step: impl Into<String>, tally: Tally) -> Self {
-        Tracked { id: id.into(), step: step.into(), tally, unit: Unit::Count }
+        Tracked { id: id.into(), step: step.into(), tally, unit: Unit::Count, compact: false }
+    }
+
+    /// One line under the bar, see [`Wait::compact`].
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     /// Counts bytes instead; a total of 0 says the size is not known.
@@ -233,7 +248,8 @@ impl Component for Tracked {
         let (done, total) = self.tally.get();
         meter.borrow_mut().note(&self.step, done as u64, total as u64, self.unit, now);
         let current = meter.borrow().clone();
-        Wait::new(self.id.clone(), current)
+        let wait = Wait::new(self.id.clone(), current);
+        if self.compact { wait.compact() } else { wait }
     }
 }
 

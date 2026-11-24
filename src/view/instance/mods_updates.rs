@@ -155,7 +155,8 @@ pub(super) fn inline(t: &Theme, ctx: &super::Ctx, locked: Option<String>) -> Opt
         }
         Found::Applying(list, tally) => rect()
             .width(Size::fill())
-            .padding((space::S, space::S, space::S, space::M))
+            .height(Size::px(control::L))
+            .padding((0., space::S, 0., space::M))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
@@ -163,7 +164,7 @@ pub(super) fn inline(t: &Theme, ctx: &super::Ctx, locked: Option<String>) -> Opt
             .background(t.raised)
             .content(Content::flex())
             .child(icon(t, Icon::Download, iconsize::S, t.accent_text))
-            .child(rect().width(Size::flex(1.)).child(Tracked::new("instance.mods.updates.progress", trf("%@ wird aktualisiert …", &[&label_of(&list)]), tally)))
+            .child(rect().width(Size::flex(1.)).child(Tracked::new("instance.mods.updates.progress", updating_text(&list), tally).compact()))
             .child(Button::new("instance.mods.updates.all", tr("Alle aktualisieren")).primary().busy(true).disabled(Some(tr("Wird aktualisiert …")))),
     };
     Some(row.into_element())
@@ -192,6 +193,13 @@ fn label_of(selection: &[Update]) -> String {
     match selection {
         [one] => trf("„%@“", &[&one.current.title]),
         many => trf("%lld Mods", &[&many.len()]),
+    }
+}
+
+fn updating_text(selection: &[Update]) -> String {
+    match selection {
+        [one] => trf("%@ wird aktualisiert …", &[&trf("„%@“", &[&one.current.title])]),
+        many => trf("%lld Mods werden aktualisiert …", &[&many.len()]),
     }
 }
 
@@ -335,7 +343,7 @@ impl Component for Updates {
                 let mut column = rect()
                     .width(Size::fill())
                     .spacing(space::S)
-                    .child(rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(strong(&t, count, font::CALLOUT, t.text2).width(Size::flex(1.))).child(toggle))
+                    .child(rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(if busy { rect().width(Size::flex(1.)).child(Tracked::new("instance.mods.updates.sheet.progress", updating_text(&chosen_of(&state, &picked)), tally.clone()).compact()).into_element() } else { strong(&t, count, font::CALLOUT, t.text2).width(Size::flex(1.)).into_element() }).child(toggle))
                     .child(
                         rect().width(Size::fill()).corner_radius(t.shape.tile).border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner)).overflow(Overflow::Clip).child(ScrollView::new().max_height(Size::px(LIST_MAX)).height(Size::auto()).child(rows)),
                     );
@@ -347,9 +355,6 @@ impl Component for Updates {
         };
 
         let mut content = rect().width(Size::fill()).spacing(space::M).child(body);
-        if busy {
-            content = content.child(Tracked::new("instance.mods.updates.sheet.progress", trf("%@ wird aktualisiert …", &[&label_of(&chosen_of(&state, &picked))]), tally.clone()));
-        }
         if let Some(problem) = error.read().clone() {
             content = content.child(problem_view(&t, "instance.mods.updates.apply", Icon::Alert, &problem, details));
         }

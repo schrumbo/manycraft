@@ -465,6 +465,9 @@ fn waiting(id: &str, text: String) -> Element {
 }
 
 fn signing_in(at: usize, text: String) -> Element {
+    if at == 2 {
+        return Wait::working(format!("account.add.step{at}"), text).into_element();
+    }
     Wait::stepped(format!("account.add.step{at}"), text, at, SIGN_IN_STEPS).into_element()
 }
 

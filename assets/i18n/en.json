@@ -2231,5 +2231,6 @@
   "Proxy wird geprüft": "Checking the proxy",
   "Warte auf deine Anmeldung im Fenster": "Waiting for you to sign in in the window",
   "Warte auf deine Anmeldung im Browser": "Waiting for you to sign in in the browser",
-  "Anmeldung wird abgeschlossen": "Finishing the sign-in"
+  "Anmeldung wird abgeschlossen": "Finishing the sign-in",
+  "%lld Mods werden aktualisiert …": "Updating %lld mods …"
 }

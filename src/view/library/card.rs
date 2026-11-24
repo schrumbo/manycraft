@@ -99,7 +99,11 @@ impl Component for Card {
             name = name.child(mark);
         }
         name = name.child(body(&t, l.name.clone()).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis));
-        card.child(picture).child(name).child(caption(&t, l.what.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+        let card = card.child(picture).child(name);
+        match &l.meter {
+            Some(meter) => card.child(Wait::new(format!("library.card.{}.progress", l.id), meter.clone()).compact()),
+            None => card.child(caption(&t, l.what.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis)),
+        }
     }
 }
 
@@ -159,9 +163,9 @@ impl Component for Ghost {
             .child(side)
             .child(body(&t, e.name.clone()).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis));
         let card = if matches!(e.stage, Stage::Running(_)) && !e.stopping() {
-            card.child(Wait::new(format!("library.arriving.{id}.progress"), e.meter.clone()))
+            card.child(rect().width(Size::fill()).height(Size::px(frame::GHOST_WAIT)).child(Wait::new(format!("library.arriving.{id}.progress"), e.meter.clone())))
         } else {
-            card.child(caption(&t, e.state()).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+            card.child(rect().width(Size::fill()).height(Size::px(frame::GHOST_WAIT)).child(caption(&t, e.state()).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill())))
         };
         if failed {
             card.child(

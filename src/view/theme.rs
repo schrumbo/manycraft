@@ -73,6 +73,8 @@ pub mod frame {
     pub const PROGRESS_EDGE: f32 = 2.;
     /// The height of a progress bar.
     pub const BAR: f32 = 6.;
+    /// The height a ghost card keeps for its progress or its state line, so cards that wait and cards that work stand level.
+    pub const GHOST_WAIT: f32 = 48.;
     pub const SHEET: f32 = 560.;
     /// The width of a sheet that only asks or tells.
     pub const SHEET_NARROW: f32 = 448.;
