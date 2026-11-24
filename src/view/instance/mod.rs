@@ -11,6 +11,7 @@ mod logs;
 mod logs_lines;
 mod logs_select;
 mod logs_viewer;
+pub(crate) mod memory;
 mod mods;
 mod packlist;
 mod play;

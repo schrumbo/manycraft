@@ -84,6 +84,8 @@ pub struct Session {
     pub screen_open: Option<String>,
     /// Bumped by every map a connection-only account shows, across all of them, so a picture's number never repeats.
     pub map_seq: u64,
+    /// The games played alone while the manager window is put away for them; it comes back when none runs.
+    pub slimmed: std::collections::HashSet<String>,
     /// The screenshot timer of each game without a window whose batch takes them on an interval, by key.
     pub captures: HashMap<String, Timer>,
     /// Bumped by every screenshot timer armed, so a timer of an older one does nothing.

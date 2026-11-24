@@ -483,6 +483,24 @@ impl GraphicsDriver {
         }
     }
 
+    /// Frees the GPU resources and Skia's global resource cache; the next frame rebuilds what it draws.
+    pub fn release_caches(&mut self) {
+        match self {
+            #[cfg(all(
+                any(target_os = "linux", target_os = "windows", target_os = "android"),
+                feature = "gpu"
+            ))]
+            Self::OpenGl(driver) => driver.release_caches(),
+            #[cfg(all(target_os = "macos", feature = "gpu"))]
+            Self::Metal(driver) => driver.release_caches(),
+            #[cfg(all(any(target_os = "linux", target_os = "windows"), feature = "gpu"))]
+            Self::Vulkan(driver) => driver.release_caches(),
+            Self::Software(_) => {}
+        }
+        let limit = freya_engine::prelude::set_resource_cache_total_bytes_limit(0);
+        freya_engine::prelude::set_resource_cache_total_bytes_limit(limit);
+    }
+
     pub fn resource_cache_usage(&self) -> Option<(usize, usize)> {
         match self {
             #[cfg(all(

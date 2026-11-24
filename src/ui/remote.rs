@@ -883,11 +883,11 @@ pub fn save_instance(id: &str, base: &InstanceEdit, edit: InstanceEdit) -> Resul
     })
 }
 
-/// Sets whether the games of instance `id` played alone start with the companion, and returns the instance.
-pub fn save_companion(id: &str, on: bool) -> Result<setup::Instance> {
+/// Sets the memory instance `id` starts its games with, or with `None` lets it follow the launcher default, and returns the instance.
+pub fn save_memory_min(id: &str, min: Option<u32>) -> Result<setup::Instance> {
     saved(|| {
         let mut made = find_instance(id)?;
-        made.companion = on;
+        made.set_memory_min(min);
         setup::save(&made)?;
         Ok(made)
     })
