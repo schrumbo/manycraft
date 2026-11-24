@@ -526,7 +526,11 @@ pub fn save_sign_in(flow: &Flow, mut tokens: Tokens, proxy: Option<&str>, expect
         };
         match saved() {
             Err(e) if !retried && format!("{e:#}").contains("changed by another Manycraft") => retried = true,
-            done => return done,
+            Ok(account) => {
+                vault::publish(session.uuid, &session.access_token, session.expires_at);
+                return Ok(account);
+            }
+            Err(e) => return Err(e),
         }
     }
 }
