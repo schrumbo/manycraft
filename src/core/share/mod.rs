@@ -252,7 +252,7 @@ pub(crate) fn join_in(mother: &Mother, own: &Own, joining: bool, replace: bool) 
                 plan.options = options_join(mother, own, history, replace)?;
             }
             if flags.servers {
-                plan.servers = servers_join(mother, own, history)?;
+                plan.servers = servers_join(mother, own, history, replace)?;
             }
             if flags.config {
                 if !joining {
@@ -326,7 +326,7 @@ fn options_join(mother: &Mother, own: &Own, history: &mut History, replace: bool
     if usable && shared.is_empty() {
         return Ok(None);
     }
-    history.backup(own, OPTIONS_FILE, &raw)?;
+    history.backup(own, OPTIONS_FILE, &raw, replace)?;
     if usable {
         let theirs = read_text(&mother.path(OPTIONS_FILE))?.filter(|t| keys::readable(t));
         let filled = theirs.as_deref().map_or_else(|| shared.clone(), |t| keys::merge(&shared, t));
@@ -338,9 +338,9 @@ fn options_join(mother: &Mother, own: &Own, history: &mut History, replace: bool
     Ok(Some((!rest.is_empty()).then_some(rest)))
 }
 
-fn servers_join(mother: &Mother, own: &Own, history: &mut History) -> Result<bool> {
+fn servers_join(mother: &Mother, own: &Own, history: &mut History, replace: bool) -> Result<bool> {
     let Some(mine) = read_file(&own.file(SERVERS_FILE))? else { return Ok(false) };
-    history.backup(own, SERVERS_FILE, &mine)?;
+    history.backup(own, SERVERS_FILE, &mine, replace)?;
     if !mine.is_empty() && read_file(&mother.path(SERVERS_FILE))?.is_none() {
         put_locked(mother, history, own, vec![(SERVERS_FILE.to_owned(), mine)])?;
     }
@@ -355,7 +355,7 @@ fn config_join(mother: &Mother, own: &Own, history: &mut History, replace: bool)
     }
     let mine = own_files(own, Item::Config)?;
     for (rel, bytes) in &mine {
-        history.backup(own, rel, bytes)?;
+        history.backup(own, rel, bytes, replace)?;
     }
     let shared = mother.path(CONFIG);
     let holds_any = replace && !files_in(&shared)?.is_empty();

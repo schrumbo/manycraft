@@ -10,7 +10,7 @@ use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::core::share::{self, ITEMS, Item, Setup, Sharing, Standing};
 use crate::view::kit::button::Button;
-use crate::view::kit::check;
+use crate::view::kit::check::Check;
 use crate::view::kit::group::{Line, group};
 use crate::view::kit::select::Select;
 use crate::view::kit::{off_ui, toast, use_theme};
@@ -55,14 +55,11 @@ impl Component for SetupPanel {
             .map(|item| {
                 let on = wanted.get(item);
                 let key = format!("sync.setup.kind.{}", label(item));
-                Line::new(key, label(item))
-                    .hint(blurb(item))
-                    .control(check::mark(&t, on))
-                    .on_press(move |_| {
-                        let next = kinds.peek().with(item, !on);
-                        kinds.set(next);
-                    })
-                    .into_element()
+                let mut flip = move |_: ()| {
+                    let next = kinds.peek().with(item, !on);
+                    kinds.set(next);
+                };
+                Line::new(key, label(item)).hint(blurb(item)).control(Check::new(label(item), on, flip)).on_press(move |_| flip(())).into_element()
             })
             .collect();
         let kinds_group = group(&t, Some(tr("Was wird synchronisiert")), kind_rows, None);
@@ -91,19 +88,14 @@ impl Component for SetupPanel {
             let on = picked.contains(&w.id);
             let hint = trf("Eigene Dateien gehen in den Verlauf: %@.", &[&names(&gap)]);
             let (wid, current) = (w.id.clone(), picked.clone());
-            rows.push(
-                Line::new(id, w.name.clone())
-                    .hint(hint)
-                    .control(check::mark(&t, on))
-                    .on_press(move |_| {
-                        let mut next = current.clone();
-                        if !next.remove(&wid) {
-                            next.insert(wid.clone());
-                        }
-                        chosen.set(Some(next));
-                    })
-                    .into_element(),
-            );
+            let mut flip = move |_: ()| {
+                let mut next = current.clone();
+                if !next.remove(&wid) {
+                    next.insert(wid.clone());
+                }
+                chosen.set(Some(next));
+            };
+            rows.push(Line::new(id, w.name.clone()).hint(hint).control(Check::new(w.name.clone(), on, flip.clone())).on_press(move |_| flip(())).into_element());
         }
         let selectable: BTreeSet<String> = targets.iter().filter(|w| !missing(w).is_empty()).map(|w| w.id.clone()).collect();
         let count = picked.iter().filter(|id| selectable.contains(*id)).count();

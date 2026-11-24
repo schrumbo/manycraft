@@ -129,11 +129,11 @@ impl History {
         self.index.bases.insert(key, Stamp { source: Source { id: source.id.clone(), name: source.name.clone() }, written: self.at });
     }
 
-    /// Keeps `bytes`, the own copy of `rel` of `own`, unless it is the copy kept last.
-    pub(super) fn backup(&mut self, own: &Own, rel: &str, bytes: &[u8]) -> Result<()> {
+    /// Keeps `bytes`, the own copy of `rel` of `own`, unless it is the copy kept last and `always` is not set.
+    pub(super) fn backup(&mut self, own: &Own, rel: &str, bytes: &[u8], always: bool) -> Result<()> {
         let sha = hash(bytes);
         let last = self.index.entries.iter().filter(|e| e.instance.as_deref() == Some(own.id.as_str()) && e.rel == rel).max_by_key(|e| e.at);
-        if last.is_some_and(|e| e.sha == sha) {
+        if !always && last.is_some_and(|e| e.sha == sha) {
             return Ok(());
         }
         let folder = format!("{INSTANCES}/{}/{}", own.id, stamp_name(self.at));
@@ -293,7 +293,7 @@ pub(super) fn own_latest(mother: &Mother, id: &str, item: Item, since: i64) -> R
     let root = mother.root.join(DIR);
     let index = read_index(&root)?;
     let mut newest: BTreeMap<&str, &Entry> = BTreeMap::new();
-    for e in index.entries.iter().filter(|e| e.instance.as_deref() == Some(id) && e.at > since && item.holds(&e.rel)) {
+    for e in index.entries.iter().filter(|e| e.instance.as_deref() == Some(id) && e.at >= since && item.holds(&e.rel)) {
         if newest.get(e.rel.as_str()).is_none_or(|n| n.at < e.at) {
             newest.insert(e.rel.as_str(), e);
         }
