@@ -214,7 +214,7 @@ impl Component for Album {
                 .center()
                 .spacing(space::S)
                 .child(heading(&t, tr("Noch kein Screenshot")))
-                .child(secondary(&t, tr("Der erste entsteht von selbst, sobald der Account in einer Welt ist. Ein Doppelklick auf die Kachel nimmt sofort einen auf.")).text_align(TextAlign::Center))
+                .child(rect().max_width(Size::px(frame::WELCOME)).child(secondary(&t, tr("Der erste entsteht von selbst, sobald der Account in einer Welt ist. Ein Doppelklick auf die Kachel nimmt sofort einen auf.")).text_align(TextAlign::Center)))
                 .into_element()
         } else {
             let above = at % 2 == 1;
