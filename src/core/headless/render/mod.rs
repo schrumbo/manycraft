@@ -17,6 +17,7 @@ mod item;
 mod label;
 mod skins;
 mod light;
+mod map;
 mod model;
 mod random;
 mod raster;
@@ -27,7 +28,7 @@ mod states;
 use serde_json::Value;
 
 pub use self::assets::{Assets, shared};
-pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, Nobody, Pose, Skin, Text, slot};
+pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, MapPicture, Nobody, Pose, Skin, Text, slot};
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
 use self::scene::{Scene, View};
@@ -299,8 +300,46 @@ mod tests {
         }
     }
 
+    struct Mapped(Vec<Entity>, MapPicture);
+
+    impl Entities for Mapped {
+        fn entities(&self) -> &[Entity] {
+            &self.0
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            None
+        }
+
+        fn map(&self, id: i32) -> Option<&MapPicture> {
+            (id == 7).then_some(&self.1)
+        }
+    }
+
+    #[test]
+    fn a_filled_map_in_a_frame_shows_its_picture() {
+        let Some(jar) = jar() else { return };
+        let assets = Assets::open(&jar).unwrap();
+        let mut frame = crowd_entity("item_frame 0.5 64.5 2.5 180 item=filled_map facing=2").unwrap();
+        if let Data::Frame { item: Some(item), .. } = &mut frame.data {
+            item.map = Some(7);
+        }
+        let mut colors = [12 * 4 + 2; 128 * 128];
+        for z in 0..64 {
+            colors[z * 128..z * 128 + 64].fill(28 * 4 + 2);
+        }
+        let quarter = MapPicture { colors: std::sync::Arc::new(colors) };
+        let camera = Camera { pos: [0.5, 64.5, 0.5], yaw: 0.0, pitch: 0.0, fov: 70.0, distance: 2 };
+        let shown = render(&Flat, &[Biome::default()], &Mapped(vec![frame.clone()], quarter), &camera, &Sky::default(), 64, 64, &assets);
+        let unknown = render(&Flat, &[Biome::default()], &Crowd(vec![frame]), &camera, &Sky::default(), 64, 64, &assets);
+        let (north_west, south_east) = (shown.get_pixel(28, 28).0, shown.get_pixel(36, 36).0);
+        assert!(north_west[0] > north_west[1] * 2 && north_west[0] > north_west[2] * 2, "north-west quarter is red: {north_west:?}");
+        assert!(south_east[2] > south_east[0] * 2, "the rest is water blue: {south_east:?}");
+        assert_ne!(shown.get_pixel(36, 36), unknown.get_pixel(36, 36));
+    }
+
     fn item(id: &str) -> Item {
-        Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None }
+        Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None, map: None }
     }
 
     /// An entity from `kind x y z yaw [key=value …]`, the scene format the comparison shots share with the server

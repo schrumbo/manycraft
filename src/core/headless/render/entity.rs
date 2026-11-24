@@ -1,6 +1,8 @@
 //! What a picture shows besides blocks: players, mobs, dropped items, item frames, armor stands and display entities,
 //! as plain data the caller fills from what the server sent.
 
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::core::chat_text::Run;
@@ -11,6 +13,17 @@ pub trait Entities {
     fn entities(&self) -> &[Entity];
     /// The account's own first-person hand, when the picture is taken through its eyes.
     fn hand(&self) -> Option<&Hand>;
+    /// The picture of the map with this id, when the server sent it.
+    fn map(&self, _id: i32) -> Option<&MapPicture> {
+        None
+    }
+}
+
+/// A map's picture as the server sent it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapPicture {
+    /// Packed colours (base colour × 4 + shade, 0 transparent), rows from the north-west corner.
+    pub colors: Arc<[u8; 128 * 128]>,
 }
 
 /// No entities and no hand.
@@ -56,6 +69,8 @@ pub struct Item {
     pub trim: Option<(String, String)>,
     /// The skin of a player head.
     pub profile: Option<Skin>,
+    /// The id of a filled map's picture.
+    pub map: Option<i32>,
 }
 
 /// Indices into [`Entity::equipment`].

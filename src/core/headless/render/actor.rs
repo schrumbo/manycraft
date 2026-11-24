@@ -11,6 +11,7 @@ use super::figure::{Affine, Painter, Paint, Part, Pose, Sheet};
 use super::item::{Context, Model};
 use super::label::Label;
 use super::light::{self, Lightmap};
+use super::map;
 use super::raster::Target;
 use super::raster::Vertex;
 use super::scene::{Scene, View};
@@ -462,7 +463,7 @@ fn y_rot(facing: u8) -> f32 {
 }
 
 /// Draws an item frame and what it holds.
-fn frame(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3], hidden: bool) {
+fn frame(painter: &mut Painter, assets: &Assets, entities: &impl Entities, lightmap: &Lightmap, e: &Entity, light: [f32; 3], hidden: bool) {
     let Data::Frame { item, rotation, facing, glow, invisible } = &e.data else { return };
     let invisible = &(*invisible || hidden);
     let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
@@ -476,8 +477,16 @@ fn frame(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3], hi
         block_model(painter, assets, &variant, &at.translate([-0.5, -0.5, -0.5]), light);
     }
     let Some(item) = item else { return };
+    let at = at.translate([0.0, 0.0, if *invisible { 0.5 } else { 0.4375 }]);
+    if let Some(picture) = item.map.filter(|_| plain(item.id) == "filled_map").and_then(|id| entities.map(id)) {
+        let at = at.rotate_z((f32::from(*rotation % 4) * 90.0).to_radians()).rotate_z(PI).scale([1.0 / 128.0; 3]).translate([-64.0, -64.0, -1.0]);
+        let corners = [[0.0, 128.0, -0.01], [128.0, 128.0, -0.01], [128.0, 0.0, -0.01], [0.0, 0.0, -0.01]];
+        let light = if *glow { lightmap.color(light::pack(15, 13)) } else { light };
+        painter.face(corners.map(|p| at.apply(p)), [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], &map::texture(picture), &Paint { light, tint: WHITE, mode: Transparency::Cutout }, Some(1.0));
+        return;
+    }
     let Some(model) = Model::of(assets, item) else { return };
-    let at = at.translate([0.0, 0.0, if *invisible { 0.5 } else { 0.4375 }]).rotate_z((f32::from(*rotation) * 45.0).to_radians()).scale([0.5; 3]);
+    let at = at.rotate_z((f32::from(*rotation) * 45.0).to_radians()).scale([0.5; 3]);
     model.draw(painter, assets, &at, Context::Fixed, if *glow { WHITE } else { light });
 }
 
@@ -759,7 +768,7 @@ pub fn draw<'e, W: Blocks>(entities: &'e impl Entities, scene: &Scene<'_, W>, as
                 continue;
             }
             "item_frame" | "glow_item_frame" => {
-                frame(&mut painter, assets, e, lit, invisible);
+                frame(&mut painter, assets, entities, lightmap, e, lit, invisible);
                 continue;
             }
             "block_display" | "item_display" | "text_display" => {
