@@ -675,6 +675,9 @@ fn dropped(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3]) 
     true
 }
 
+/// The game draws the own hand with this fixed field of view, whatever the world's.
+const HAND_FOV: f32 = 70.0;
+
 /// Draws the account's own hand and held item over the picture, as the game shows them in first person.
 pub fn hand<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &Assets, lightmap: &Lightmap, view: &View, target: &mut Target) {
     let Some(hand) = entities.hand() else { return };
@@ -685,6 +688,7 @@ pub fn hand<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
     let left = hand.left_handed;
     let invert = if left { -1.0 } else { 1.0 };
     target.clear_depth();
+    target.set_fov(HAND_FOV);
     let mut painter = Painter { target, view };
     if let Some(item) = &hand.main {
         if let Some(model) = Model::of(assets, item) {
@@ -714,7 +718,7 @@ pub fn hand<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &
             return false;
         }
         if name == arm_name {
-            p.rotation = [0.0; 3];
+            p.rotation = [0.0, 0.0, invert * 0.1];
         }
         true
     });

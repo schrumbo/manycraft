@@ -92,6 +92,11 @@ impl Target {
         !(out(&|v| v[2] < NEAR) || out(&|v| v[0] > v[2] * hw) || out(&|v| v[0] < -v[2] * hw) || out(&|v| v[1] > v[2] * hh) || out(&|v| v[1] < -v[2] * hh))
     }
 
+    /// Projects what is drawn next with a vertical field of view of `fov` degrees.
+    pub fn set_fov(&mut self, fov: f32) {
+        self.focal = self.height as f32 * 0.5 / (fov.to_radians() * 0.5).tan();
+    }
+
     /// Forgets all depth, so what is drawn next lies in front of everything drawn so far.
     pub fn clear_depth(&mut self) {
         self.depth.fill(f32::INFINITY);
@@ -326,6 +331,15 @@ mod tests {
         later.draw(&mut t);
         let c = t.color[16 * 32 + 16];
         assert!((c[0] - 0.498).abs() < 0.01 && (c[2] - 0.502).abs() < 0.01, "{c:?}");
+    }
+
+    #[test]
+    fn a_new_field_of_view_projects_what_is_drawn_next() {
+        let mut t = target();
+        t.set_fov(60.0);
+        let corner = t.ray(0.0, 0.0);
+        let half = 30.0f32.to_radians().tan();
+        assert!((corner[0] + half).abs() < 1e-4 && (corner[1] - half).abs() < 1e-4, "{corner:?}");
     }
 
     #[test]

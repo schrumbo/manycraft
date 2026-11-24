@@ -401,7 +401,7 @@ mod tests {
     }
 
     /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
-    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
+    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`), holding the item in `RENDER_HAND` (`<item|-> [uuid]`, `-` the bare arm of `uuid`'s default skin) when set.
     #[test]
     #[ignore]
     fn shots() {
@@ -430,8 +430,15 @@ mod tests {
             let camera = Camera { pos: [x, y, z], yaw: n(4) as f32, pitch: n(5) as f32, fov, distance: 2 };
             let sky = Sky { time: Some(n(6) as i64), rain: 0.0, thunder: 0.0 };
             let start = std::time::Instant::now();
-            let crowd = Crowd(std::env::var("RENDER_ENTITIES").ok().map(|p| std::fs::read_to_string(p).unwrap().lines().filter(|l| l.starts_with(f[0])).filter_map(|l| crowd_entity(l.split_once(' ')?.1)).collect()).unwrap_or_default());
-            let image = render(&world, &biomes, &crowd, &camera, &sky, w, h, &assets);
+            let crowd: Vec<Entity> = std::env::var("RENDER_ENTITIES").ok().map(|p| std::fs::read_to_string(p).unwrap().lines().filter(|l| l.starts_with(f[0])).filter_map(|l| crowd_entity(l.split_once(' ')?.1)).collect()).unwrap_or_default();
+            let image = match std::env::var("RENDER_HAND") {
+                Ok(held) => {
+                    let (held, uuid) = held.split_once(' ').unwrap_or((&held, ""));
+                    let skin = Skin { uuid: uuid::Uuid::parse_str(uuid).unwrap_or_default(), parts: 0x7F, ..Skin::default() };
+                    render(&world, &biomes, &Holding(crowd, Hand { main: (held != "-").then(|| item(held)), left_handed: false, skin }), &camera, &sky, w, h, &assets)
+                }
+                Err(_) => render(&world, &biomes, &Crowd(crowd), &camera, &sky, w, h, &assets),
+            };
             eprintln!("{} eye {y:.2} {:?}", f[0], start.elapsed());
             image.save(out.join(format!("ours-{}.png", f[0]))).unwrap();
         }
