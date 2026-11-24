@@ -8,6 +8,7 @@ use super::block::{self, State};
 use super::light::{self, CORNERS, Lightmap, Packed, Samples};
 use super::model::{self, Dir, Source};
 use super::random::{self, Legacy};
+use super::states::STATES;
 use super::raster::{Later, Target, Vertex};
 use super::{Biome, Blocks, Modifier};
 
@@ -262,7 +263,7 @@ impl<'a, W: Blocks> Scene<'a, W> {
         let chunk = |v: f64| (v.floor() as i32) >> 4;
         let (cx, cy, cz) = (chunk(eye[0]), chunk(eye[1]), chunk(eye[2]));
         let floor = world.floor();
-        let top = floor + world.height();
+        let top = floor.saturating_add(world.height());
         let y0 = ((cy - distance) * 16).max(floor) - 1;
         let y1 = ((cy + distance + 1) * 16).min(top) + 1;
         let lo = [(cx - distance) * 16 - 1, y0, (cz - distance) * 16 - 1];
@@ -281,6 +282,7 @@ impl<'a, W: Blocks> Scene<'a, W> {
                     let (wx, wy, wz) = (lo[0] + x, lo[1] + y, lo[2] + z);
                     let i = ((y * size[2] + z) * size[0] + x) as usize;
                     let state = if wy < floor || wy >= top { 0 } else { world.state(wx, wy, wz) };
+                    let state = if state < STATES { state } else { 0 };
                     let at = if state == last_state {
                         last_index
                     } else {

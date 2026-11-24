@@ -4,16 +4,17 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 
 use super::model::Source;
 
 const IDLE: Duration = Duration::from_secs(60);
 const SWEEP: Duration = Duration::from_secs(10);
+const RETRY: Duration = Duration::from_secs(60);
 const MAX_ENTRY: u64 = 8 << 20;
 const VERSION: &str = "26.3";
 
@@ -202,33 +203,77 @@ impl Assets {
     }
 }
 
-struct Held {
-    assets: Arc<Assets>,
-    used: Instant,
+enum Slot {
+    Empty,
+    Loading,
+    Ready { assets: Arc<Assets>, used: Instant },
+    Failed { at: Instant, error: String },
 }
 
-static HELD: Mutex<Option<Held>> = Mutex::new(None);
+static SLOT: Mutex<Slot> = Mutex::new(Slot::Empty);
+static SETTLED: Condvar = Condvar::new();
+
+fn slot() -> MutexGuard<'static, Slot> {
+    SLOT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+struct Loading;
+
+impl Drop for Loading {
+    fn drop(&mut self) {
+        let mut slot = slot();
+        if matches!(*slot, Slot::Loading) {
+            *slot = Slot::Empty;
+        }
+        SETTLED.notify_all();
+    }
+}
 
 /// The shared art, loaded from the 26.3 client jar on first use (fetching the jar into the shared versions folder if
-/// needed) and dropped after a minute without a picture.
+/// needed) and dropped after a minute without a picture. One caller loads while the others wait; after a failed load
+/// every caller gets that error for a minute instead of trying again.
 pub fn shared() -> Result<Arc<Assets>> {
-    let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(h) = held.as_mut() {
-        h.used = Instant::now();
-        return Ok(Arc::clone(&h.assets));
-    }
-    let jar = crate::core::install::client_jar(VERSION)?;
-    let assets = Arc::new(Assets::open(&jar)?);
-    *held = Some(Held { assets: Arc::clone(&assets), used: Instant::now() });
-    std::thread::Builder::new().name("render-assets".into()).spawn(|| {
-        loop {
-            std::thread::sleep(SWEEP);
-            let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
-            if held.as_ref().is_none_or(|h| h.used.elapsed() >= IDLE) {
-                *held = None;
-                return;
+    let mut guard = slot();
+    loop {
+        match &mut *guard {
+            Slot::Ready { assets, used } => {
+                *used = Instant::now();
+                return Ok(Arc::clone(assets));
             }
+            Slot::Loading => guard = SETTLED.wait(guard).unwrap_or_else(PoisonError::into_inner),
+            Slot::Failed { at, error } if at.elapsed() < RETRY => return Err(anyhow!("{error}")),
+            _ => break,
         }
-    })?;
-    Ok(assets)
+    }
+    *guard = Slot::Loading;
+    drop(guard);
+    let loading = Loading;
+    let loaded = crate::core::install::with_client_jar(VERSION, Assets::open).map(Arc::new);
+    let mut guard = slot();
+    *guard = match &loaded {
+        Ok(assets) => Slot::Ready { assets: Arc::clone(assets), used: Instant::now() },
+        Err(e) => Slot::Failed { at: Instant::now(), error: format!("{e:#}") },
+    };
+    drop(guard);
+    drop(loading);
+    if loaded.is_ok() {
+        let sweeper = std::thread::Builder::new().name("render-assets".into()).spawn(|| {
+            loop {
+                std::thread::sleep(SWEEP);
+                let mut slot = slot();
+                match &*slot {
+                    Slot::Ready { used, .. } if used.elapsed() < IDLE => {}
+                    Slot::Ready { .. } => {
+                        *slot = Slot::Empty;
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        });
+        if sweeper.is_err() {
+            *slot() = Slot::Empty;
+        }
+    }
+    loaded
 }

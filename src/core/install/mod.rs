@@ -293,9 +293,10 @@ pub fn install(game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress)
     install_in(&root, &dl, &net::agent_within(QUICK_METADATA), online::offline(), game_version, loader, progress)
 }
 
-/// The client jar of `game_version` in the shared versions folder, fetched with its metadata when it is missing or damaged.
-/// It is the same file an install of that version uses, so it exists once on disk.
-pub fn client_jar(game_version: &str) -> Result<PathBuf> {
+/// Hands `read` the client jar of `game_version` in the shared versions folder, fetched with its metadata when it is
+/// missing or damaged, while cleanup leaves the shared folders alone. It is the same file an install of that version
+/// uses, so it exists once on disk.
+pub fn with_client_jar<T>(game_version: &str, read: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
     let _in_use = clean::in_use()?;
     let root = paths::data_dir();
     let versions = root.join("versions");
@@ -309,7 +310,7 @@ pub fn client_jar(game_version: &str) -> Result<PathBuf> {
     let _lock = lock(&dir)?;
     let jar = dir.join(format!("{game_version}.jar"));
     dl.all(Stage::Client, &[Job::new(client.url.clone(), jar.clone(), client.sha1.clone(), client.size)], &|_| {})?;
-    Ok(jar)
+    read(&jar)
 }
 
 fn install_in(root: &Path, dl: &Downloader, quick: &ureq::Agent, offline: bool, game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {

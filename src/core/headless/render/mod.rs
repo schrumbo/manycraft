@@ -48,7 +48,7 @@ pub struct Camera {
     pub pitch: f32,
     /// Vertical field of view in degrees; the game's default is 70.
     pub fov: f32,
-    /// Render distance in chunks: blocks farther than this many chunks are not drawn and fog ends there.
+    /// Render distance in chunks (1..=4): blocks farther than this many chunks are not drawn and fog ends there.
     pub distance: u8,
 }
 
@@ -139,14 +139,17 @@ impl View {
 const NOON: i64 = 6000;
 
 /// Draws what `camera` sees of `world` as an RGBA picture of `width` × `height`, rows top down.
+/// Sides are clamped to 1..=4096, the render distance to 1..=4; a camera off the map or not a number is moved onto it.
 pub fn render(world: &impl Blocks, biomes: &[Biome], camera: &Camera, sky: &Sky, width: u32, height: u32, assets: &Assets) -> image::RgbaImage {
-    let (w, h) = (width.max(1) as usize, height.max(1) as usize);
+    let (w, h) = (width.clamp(1, MAX_SIDE) as usize, height.clamp(1, MAX_SIDE) as usize);
+    let camera = &sane_camera(camera, world);
+    let sky = &Sky { time: sky.time, rain: unit(sky.rain), thunder: unit(sky.thunder) };
     let view = View::new(camera);
     let ticks = sky.time.unwrap_or(NOON);
     let time = ticks.rem_euclid(24000) as f32;
     let eye = camera.pos.map(|v| v.floor() as i32);
     let here = biomes.get(usize::from(world.biome(eye[0], eye[1], eye[2]))).cloned().unwrap_or_default();
-    let distance = camera.distance.max(1);
+    let distance = camera.distance.clamp(1, MAX_DISTANCE);
     let air = Atmosphere::new(ticks, sky.rain, sky.thunder, &here, distance, view.forward, camera.pos[1]);
     let end = f32::from(distance) * 16.0;
     let fog = Fog { color: air.fog, start: end - (end / 10.0).clamp(4.0, 64.0), end, sphere: [-160.0 * sky.rain, 1024.0 - 256.0 * sky.rain] };
@@ -167,6 +170,29 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], camera: &Camera, sky: &Sky,
         *px = image::Rgba([c[0], c[1], c[2], 1.0].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8));
     }
     out
+}
+
+const MAX_SIDE: u32 = 4096;
+const MAX_DISTANCE: u8 = 4;
+const MAX_HORIZONTAL: f64 = 30_000_000.0;
+
+fn unit(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+}
+
+fn sane_camera(camera: &Camera, world: &impl Blocks) -> Camera {
+    let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let angle = |v: f32| if v.is_finite() { v } else { 0.0 };
+    let floor = f64::from(world.floor());
+    let top = floor + f64::from(world.height().max(0));
+    let [x, y, z] = camera.pos.map(finite);
+    Camera {
+        pos: [x.clamp(-MAX_HORIZONTAL, MAX_HORIZONTAL), y.clamp(floor - 64.0, top + 64.0), z.clamp(-MAX_HORIZONTAL, MAX_HORIZONTAL)],
+        yaw: angle(camera.yaw),
+        pitch: angle(camera.pitch).clamp(-90.0, 90.0),
+        fov: if camera.fov.is_finite() { camera.fov.clamp(10.0, 170.0) } else { 70.0 },
+        distance: camera.distance,
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +252,16 @@ mod tests {
 
     /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
     /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
+    #[test]
+    fn odd_input_draws_a_picture_instead_of_failing() {
+        let Some(jar) = jar() else { return };
+        let assets = Assets::open(&jar).unwrap();
+        let camera = Camera { pos: [f64::NAN, 1e12, f64::INFINITY], yaw: f32::NAN, pitch: 400.0, fov: f32::NAN, distance: 255 };
+        let sky = Sky { time: Some(i64::MIN), rain: f32::NAN, thunder: f32::INFINITY };
+        let image = render(&Flat, &[], &camera, &sky, 0, 100_000, &assets);
+        assert_eq!(image.dimensions(), (1, MAX_SIDE));
+    }
+
     #[test]
     #[ignore]
     fn shots() {
