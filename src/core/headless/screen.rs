@@ -1,5 +1,5 @@
 //! What the server shows the player, kept for the manager's Bildschirm: the map in hand, the open menu and the titles.
-//! The player's own inventory is read only for the ids of the maps in it. Pictures of those maps are kept while they are
+//! The player's own inventory is read only for the ids of the maps in it and the stacks in its hands. Pictures of those maps are kept while they are
 //! carried, of any other map at most [`MAX_MAPS`] for a few seconds; nothing else of the world is kept.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -46,6 +46,7 @@ struct Open {
 pub struct Screen {
     held: usize,
     inventory: Vec<Option<i32>>,
+    hands: [Option<Stack>; 10],
     pictures: Vec<Picture>,
     menu: Option<Open>,
     carried: Option<Stack>,
@@ -176,9 +177,10 @@ impl Screen {
         let state = r.varint()?;
         if window == 0 {
             let stacks = item::stacks(r, INVENTORY)?;
-            self.inventory = stacks.iter().map(|s| s.as_ref().and_then(|s| s.map)).collect();
-            self.inventory.resize(INVENTORY, None);
             self.carried = item::stack(r)?;
+            self.inventory = vec![None; INVENTORY];
+            self.hands = Default::default();
+            self.set_inventory(stacks.into_iter().enumerate());
             self.inventory_changed();
             return Ok(());
         }
@@ -192,8 +194,8 @@ impl Screen {
                 open.readable = true;
                 self.carried = carried;
                 let top = open.slots.len().saturating_sub(SHOWN_INVENTORY);
-                let maps: Vec<(usize, Option<i32>)> = open.slots[top..].iter().enumerate().map(|(i, s)| (inventory_index(i), s.as_ref().and_then(|s| s.map))).collect();
-                self.set_inventory(&maps);
+                let mine: Vec<(usize, Option<Stack>)> = open.slots[top..].iter().enumerate().map(|(i, s)| (inventory_index(i), s.clone())).collect();
+                self.set_inventory(mine);
                 Ok(())
             }
             Err(e) => {
@@ -211,19 +213,19 @@ impl Screen {
         let stack = item::stack(r)?;
         if window == 0 {
             if let Some(slot) = slot.filter(|s| *s < INVENTORY) {
-                self.set_inventory(&[(slot, stack.as_ref().and_then(|s| s.map))]);
+                self.set_inventory([(slot, stack)]);
             }
             return Ok(());
         }
         let Some(open) = self.menu.as_mut().filter(|m| m.id == window) else { return Ok(()) };
         open.state = state;
         let Some(slot) = slot.filter(|s| *s < open.slots.len()) else { return Ok(()) };
-        let map = stack.as_ref().and_then(|s| s.map);
+        let mine = stack.clone();
         open.slots[slot] = stack;
         let top = open.slots.len().saturating_sub(SHOWN_INVENTORY);
         self.menu_dirty = true;
         if let Some(i) = slot.checked_sub(top) {
-            self.set_inventory(&[(inventory_index(i), map)]);
+            self.set_inventory([(inventory_index(i), mine)]);
         }
         Ok(())
     }
@@ -237,18 +239,27 @@ impl Screen {
             Ok(40) => OFFHAND,
             _ => return Ok(()),
         };
-        self.set_inventory(&[(index, stack.as_ref().and_then(|s| s.map))]);
+        self.set_inventory([(index, stack)]);
         Ok(())
     }
 
-    fn set_inventory(&mut self, maps: &[(usize, Option<i32>)]) {
+    fn set_inventory(&mut self, slots: impl IntoIterator<Item = (usize, Option<Stack>)>) {
         self.inventory.resize(INVENTORY, None);
         let mut changed = false;
-        for (index, map) in maps {
-            if let Some(cell) = self.inventory.get_mut(*index)
-                && *cell != *map
+        for (index, stack) in slots {
+            let map = stack.as_ref().and_then(|s| s.map);
+            let hand = match index {
+                HOTBAR..OFFHAND => Some(index - HOTBAR),
+                OFFHAND => Some(9),
+                _ => None,
+            };
+            if let Some(kept) = hand.and_then(|h| self.hands.get_mut(h)) {
+                *kept = stack;
+            }
+            if let Some(cell) = self.inventory.get_mut(index)
+                && *cell != map
             {
-                *cell = *map;
+                *cell = map;
                 changed = true;
             }
         }
@@ -267,6 +278,11 @@ impl Screen {
     fn hand(&self) -> Option<i32> {
         let get = |i: usize| self.inventory.get(i).copied().flatten();
         get(HOTBAR + self.held).or_else(|| get(OFFHAND))
+    }
+
+    /// The stack in the player's main hand.
+    pub fn held(&self) -> Option<&Stack> {
+        self.hands.get(self.held)?.as_ref()
     }
 
     fn shown_picture(&self) -> Option<&Picture> {

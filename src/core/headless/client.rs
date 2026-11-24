@@ -15,6 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::crowd::Crowd;
 use super::picture::{self, Request, View};
 use super::screen::Screen;
 use super::Spec;
@@ -38,6 +39,7 @@ const BRAND: &str = "vanilla";
 const INTENTION_LOGIN: i32 = 2;
 const VIEW_DISTANCE: u8 = 2;
 const PICTURE_RADIUS: i32 = VIEW_DISTANCE as i32 + 1;
+const SEEN_RANGE: f64 = 48.0;
 const MIN_PICTURE: u32 = 16;
 const MAX_PICTURE: u32 = 1280;
 
@@ -109,6 +111,8 @@ struct Link {
     shown: Option<Shown>,
     screen: Screen,
     world: World,
+    crowd: Crowd,
+    me: Uuid,
 }
 
 /// What the connection's thread and its handle share.
@@ -142,6 +146,8 @@ impl Shared {
             shown: None,
             screen: Screen::default(),
             world: World::default(),
+            crowd: Crowd::default(),
+            me: spec.uuid,
         };
         Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), shots: spec.shots.clone(), drawing: Arc::default() }
     }
@@ -212,7 +218,9 @@ impl Shared {
         let width = width.clamp(MIN_PICTURE, MAX_PICTURE);
         let height = (width * 9 / 16).max(1);
         let [x, _, z] = link.position;
-        let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), position: link.position, rotation: link.rotation, width, height };
+        let eye = [link.position[0], link.position[1] + picture::EYE_HEIGHT, link.position[2]];
+        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), false);
+        let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, position: link.position, rotation: link.rotation, width, height };
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
         let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Drawing(Arc::clone(&self.drawing)));
         picture::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
@@ -335,6 +343,7 @@ pub fn run(shared: &Shared, spec: &Spec) {
                     link.held.clear();
                     link.dead = None;
                     link.world.clear();
+                    link.crowd = Crowd::default();
                     shared.report(&mut link, StateKind::Disconnected, Some(reason.text), Some(cause), None);
                 }
                 let mut link = shared.lock();
@@ -496,7 +505,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id),
+        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Crowd::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
     }
 }
 
@@ -648,12 +657,21 @@ fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &
                     eprintln!("{}: biomes not read: {e:#}", shared.key);
                 }
             }
+            "minecraft:world_clock" => {
+                if let Err(e) = link.world.clocks(r) {
+                    eprintln!("{}: world clocks not read: {e:#}", shared.key);
+                }
+            }
             "minecraft:dimension_type" => {
                 if let Err(e) = link.world.dimension_types(r) {
                     eprintln!("{}: dimension types not read: {e:#}", shared.key);
                 }
             }
-            _ => {}
+            other => {
+                if let Err(e) = link.crowd.registry(other, r) {
+                    eprintln!("{}: registry {other} not read: {e:#}", shared.key);
+                }
+            }
         },
         c::RESOURCE_PACK_PUSH => pushed(shared, link, r)?,
         c::RESOURCE_PACK_POP => popped(shared, link, r)?,
@@ -705,6 +723,11 @@ fn popped(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
 fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatType]) -> Result<Option<(Line, DisconnectCause)>> {
     use play::clientbound as c;
     use play::serverbound as s;
+    if Crowd::reads(id) {
+        let me = link.position;
+        link.crowd.read(id, r, me)?;
+        return Ok(None);
+    }
     if Screen::reads(id) {
         if let Err(e) = link.screen.read(id, r) {
             eprintln!("{}: screen packet {id} not read: {e:#}", shared.key);
@@ -730,6 +753,7 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::RESPAWN => {
             link.world.clear();
+            link.crowd.clear();
             if let Ok(kind) = r.varint() {
                 link.world.enter(kind);
             }
@@ -756,11 +780,14 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         c::SYSTEM_CHAT => system_chat(shared, r)?,
         c::PLAYER_CHAT => player_chat(shared, link, r, types)?,
         c::DISGUISED_CHAT => disguised_chat(shared, r, types)?,
+        c::SET_TIME => link.world.time(r)?,
+        c::GAME_EVENT => link.world.weather(r)?,
         c::CHUNK_BATCH_FINISHED => write(link, s::CHUNK_BATCH_RECEIVED, Out::default().f32(CHUNKS_PER_TICK))?,
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
             link.screen.reset();
             link.world.clear();
+            link.crowd = Crowd::default();
             shared.show_screen(link);
             link.phase = Phase::Configuration;
             link.unacked = 0;
@@ -783,6 +810,7 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
     match id {
         c::LOGIN => {
             link.world.clear();
+            link.crowd.clear();
             let _entity = r.i32()?;
             let _hardcore = r.bool()?;
             for _ in 0..r.list()? {

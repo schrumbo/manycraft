@@ -28,7 +28,7 @@ PACKETS = {
         "serverbound": ["client_information", "cookie_response", "custom_payload", "finish_configuration", "keep_alive", "pong", "resource_pack", "select_known_packs", "accept_code_of_conduct"],
     },
     "play": {
-        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update"],
+        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update", "add_entity", "remove_entities", "move_entity_pos", "move_entity_pos_rot", "move_entity_rot", "rotate_head", "teleport_entity", "entity_position_sync", "set_entity_data", "set_equipment", "player_info_update", "player_info_remove", "set_time", "game_event"],
         "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close"],
     },
 }
@@ -42,12 +42,14 @@ def game_data(work, inner):
     libraries = [str(p) for p in (Path(work) / "libraries").rglob("*.jar")]
     out = Path(work) / "gamedata.tsv"
     classpath = __import__("os").pathsep.join([str(inner), *libraries])
-    subprocess.run(["java", "-cp", classpath, str(GAME_DATA), str(out)], cwd=work, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    rows = {"color": [], "item": [], "menu": [], "component": [], "consume_effect": [], "block": []}
+    subprocess.run(["java", "-cp", classpath, str(GAME_DATA), str(out), str(inner)], cwd=work, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rows = {"color": [], "item": [], "menu": [], "component": [], "consume_effect": [], "block": [], "entity": [], "villager_type": [], "villager_profession": [], "serializer": [], "accessor": []}
     for line in out.read_text(encoding="utf-8").splitlines():
         kind, *fields = line.split("\t")
         rows[kind].append(fields)
     for kind in rows:
+        if kind == "accessor":
+            continue
         rows[kind].sort(key=lambda r: int(r[0]))
         assert [int(r[0]) for r in rows[kind]] == list(range(len(rows[kind]))), f"{kind} ids are not dense"
     return rows
@@ -55,6 +57,15 @@ def game_data(work, inner):
 
 def const_name(name):
     return name.upper().replace("/", "_")
+
+
+def snake(name):
+    out = ""
+    for i, c in enumerate(name.replace("$", "_")):
+        if c.isupper() and i and out[-1] != "_":
+            out += "_"
+        out += c.lower()
+    return out
 
 
 def main():
@@ -139,6 +150,38 @@ def main():
     lines.append("pub mod consume_effect {")
     for pid, name in data["consume_effect"]:
         lines.append(f"    pub const {const_name(name)}: i32 = {pid};")
+    lines.append("}")
+    lines.append("")
+    lines.append("/// Entity types by protocol id.")
+    lines.append("pub static ENTITY_TYPES: &[&str] = &[")
+    for _, name in data["entity"]:
+        lines.append(f"    {rust_str(name)},")
+    lines.append("];")
+    lines.append("")
+    for kind, title in (("villager_type", "Villager types"), ("villager_profession", "Villager professions")):
+        lines.append(f"/// {title} by protocol id.")
+        lines.append(f"pub static {kind.upper()}S: &[&str] = &[")
+        for _, name in data[kind]:
+            lines.append(f"    {rust_str(name)},")
+        lines.append("];")
+        lines.append("")
+    lines.append("/// Entity data serializers by protocol id.")
+    lines.append("pub mod serializer {")
+    for pid, name in data["serializer"]:
+        lines.append(f"    pub const {name}: i32 = {pid};")
+    lines.append("}")
+    lines.append("")
+    lines.append("/// Entity data indices by entity class, as the game assigns them.")
+    lines.append("#[allow(dead_code)]")
+    lines.append("pub mod entity_data {")
+    by_class = {}
+    for cls, field, index, _ in data["accessor"]:
+        by_class.setdefault(snake(cls), []).append((field, index))
+    for cls in sorted(by_class):
+        lines.append(f"    pub mod {cls} {{")
+        for field, index in sorted(by_class[cls], key=lambda f: int(f[1])):
+            lines.append(f"        pub const {field}: u8 = {index};")
+        lines.append("    }")
     lines.append("}")
     OUT.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote {OUT.relative_to(ROOT)}: protocol {version['protocol_version']}, {len(texts)} texts, {len(data['item'])} items, {len(data['component'])} components")

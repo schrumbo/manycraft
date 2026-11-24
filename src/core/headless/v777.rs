@@ -84,6 +84,20 @@ pub mod play {
         pub const BLOCK_UPDATE: i32 = 8;
         pub const SECTION_BLOCKS_UPDATE: i32 = 86;
         pub const LIGHT_UPDATE: i32 = 49;
+        pub const ADD_ENTITY: i32 = 1;
+        pub const REMOVE_ENTITIES: i32 = 78;
+        pub const MOVE_ENTITY_POS: i32 = 54;
+        pub const MOVE_ENTITY_POS_ROT: i32 = 55;
+        pub const MOVE_ENTITY_ROT: i32 = 57;
+        pub const ROTATE_HEAD: i32 = 85;
+        pub const TELEPORT_ENTITY: i32 = 128;
+        pub const ENTITY_POSITION_SYNC: i32 = 35;
+        pub const SET_ENTITY_DATA: i32 = 101;
+        pub const SET_EQUIPMENT: i32 = 104;
+        pub const PLAYER_INFO_UPDATE: i32 = 71;
+        pub const PLAYER_INFO_REMOVE: i32 = 70;
+        pub const SET_TIME: i32 = 115;
+        pub const GAME_EVENT: i32 = 39;
     }
     pub mod serverbound {
         pub const ACCEPT_TELEPORTATION: i32 = 0;
@@ -5728,4 +5742,700 @@ pub mod consume_effect {
     pub const CLEAR_ALL_EFFECTS: i32 = 2;
     pub const TELEPORT_RANDOMLY: i32 = 3;
     pub const PLAY_SOUND: i32 = 4;
+}
+
+/// Entity types by protocol id.
+pub static ENTITY_TYPES: &[&str] = &[
+    "acacia_boat",
+    "acacia_chest_boat",
+    "allay",
+    "area_effect_cloud",
+    "armadillo",
+    "armor_stand",
+    "arrow",
+    "axolotl",
+    "bamboo_chest_raft",
+    "bamboo_raft",
+    "bat",
+    "bee",
+    "birch_boat",
+    "birch_chest_boat",
+    "blaze",
+    "block_display",
+    "bogged",
+    "breeze",
+    "breeze_wind_charge",
+    "camel",
+    "camel_husk",
+    "cat",
+    "cave_spider",
+    "cherry_boat",
+    "cherry_chest_boat",
+    "chest_minecart",
+    "chicken",
+    "cod",
+    "copper_golem",
+    "command_block_minecart",
+    "cow",
+    "creaking",
+    "creeper",
+    "cushion",
+    "dark_oak_boat",
+    "dark_oak_chest_boat",
+    "dolphin",
+    "donkey",
+    "dragon_fireball",
+    "drowned",
+    "egg",
+    "elder_guardian",
+    "enderman",
+    "endermite",
+    "ender_dragon",
+    "ender_pearl",
+    "end_crystal",
+    "evoker",
+    "evoker_fangs",
+    "experience_bottle",
+    "experience_orb",
+    "eye_of_ender",
+    "falling_block",
+    "fireball",
+    "firework_rocket",
+    "fox",
+    "frog",
+    "furnace_minecart",
+    "ghast",
+    "happy_ghast",
+    "giant",
+    "glow_item_frame",
+    "glow_squid",
+    "goat",
+    "guardian",
+    "hoglin",
+    "hopper_minecart",
+    "horse",
+    "husk",
+    "illusioner",
+    "interaction",
+    "iron_golem",
+    "item",
+    "item_display",
+    "item_frame",
+    "jungle_boat",
+    "jungle_chest_boat",
+    "leash_knot",
+    "lightning_bolt",
+    "llama",
+    "llama_spit",
+    "magma_cube",
+    "mangrove_boat",
+    "mangrove_chest_boat",
+    "mannequin",
+    "marker",
+    "minecart",
+    "mooshroom",
+    "mule",
+    "nautilus",
+    "oak_boat",
+    "oak_chest_boat",
+    "ocelot",
+    "ominous_item_spawner",
+    "painting",
+    "pale_oak_boat",
+    "pale_oak_chest_boat",
+    "panda",
+    "parched",
+    "parrot",
+    "phantom",
+    "pig",
+    "piglin",
+    "piglin_brute",
+    "pillager",
+    "polar_bear",
+    "poplar_boat",
+    "poplar_chest_boat",
+    "splash_potion",
+    "lingering_potion",
+    "pufferfish",
+    "rabbit",
+    "ravager",
+    "salmon",
+    "sheep",
+    "shulker",
+    "shulker_bullet",
+    "silverfish",
+    "skeleton",
+    "skeleton_horse",
+    "slime",
+    "small_fireball",
+    "sniffer",
+    "snowball",
+    "snow_golem",
+    "spawner_minecart",
+    "spectral_arrow",
+    "spider",
+    "spruce_boat",
+    "spruce_chest_boat",
+    "squid",
+    "stray",
+    "strider",
+    "sulfur_cube",
+    "tadpole",
+    "text_display",
+    "tnt",
+    "tnt_minecart",
+    "trader_llama",
+    "trident",
+    "tropical_fish",
+    "turtle",
+    "vex",
+    "villager",
+    "vindicator",
+    "wandering_trader",
+    "warden",
+    "wind_charge",
+    "witch",
+    "wither",
+    "wither_skeleton",
+    "wither_skull",
+    "wolf",
+    "zoglin",
+    "zombie",
+    "zombie_horse",
+    "zombie_nautilus",
+    "zombie_villager",
+    "zombified_piglin",
+    "player",
+    "fishing_bobber",
+];
+
+/// Villager types by protocol id.
+pub static VILLAGER_TYPES: &[&str] = &[
+    "desert",
+    "jungle",
+    "plains",
+    "savanna",
+    "snow",
+    "swamp",
+    "taiga",
+];
+
+/// Villager professions by protocol id.
+pub static VILLAGER_PROFESSIONS: &[&str] = &[
+    "none",
+    "armorer",
+    "butcher",
+    "cartographer",
+    "cleric",
+    "farmer",
+    "fisherman",
+    "fletcher",
+    "leatherworker",
+    "librarian",
+    "mason",
+    "nitwit",
+    "shepherd",
+    "toolsmith",
+    "weaponsmith",
+];
+
+/// Entity data serializers by protocol id.
+pub mod serializer {
+    pub const BYTE: i32 = 0;
+    pub const INT: i32 = 1;
+    pub const LONG: i32 = 2;
+    pub const FLOAT: i32 = 3;
+    pub const STRING: i32 = 4;
+    pub const COMPONENT: i32 = 5;
+    pub const OPTIONAL_COMPONENT: i32 = 6;
+    pub const ITEM_STACK: i32 = 7;
+    pub const BOOLEAN: i32 = 8;
+    pub const ROTATIONS: i32 = 9;
+    pub const BLOCK_POS: i32 = 10;
+    pub const OPTIONAL_BLOCK_POS: i32 = 11;
+    pub const DIRECTION: i32 = 12;
+    pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
+    pub const BLOCK_STATE: i32 = 14;
+    pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    pub const PARTICLE: i32 = 16;
+    pub const PARTICLES: i32 = 17;
+    pub const VILLAGER_DATA: i32 = 18;
+    pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
+    pub const POSE: i32 = 20;
+    pub const CAT_VARIANT: i32 = 21;
+    pub const CAT_SOUND_VARIANT: i32 = 22;
+    pub const COW_VARIANT: i32 = 23;
+    pub const COW_SOUND_VARIANT: i32 = 24;
+    pub const WOLF_VARIANT: i32 = 25;
+    pub const WOLF_SOUND_VARIANT: i32 = 26;
+    pub const FROG_VARIANT: i32 = 27;
+    pub const PIG_VARIANT: i32 = 28;
+    pub const PIG_SOUND_VARIANT: i32 = 29;
+    pub const CHICKEN_VARIANT: i32 = 30;
+    pub const CHICKEN_SOUND_VARIANT: i32 = 31;
+    pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 32;
+    pub const OPTIONAL_GLOBAL_POS: i32 = 33;
+    pub const PAINTING_VARIANT: i32 = 34;
+    pub const SNIFFER_STATE: i32 = 35;
+    pub const ARMADILLO_STATE: i32 = 36;
+    pub const COPPER_GOLEM_STATE: i32 = 37;
+    pub const WEATHERING_COPPER_STATE: i32 = 38;
+    pub const VECTOR3: i32 = 39;
+    pub const QUATERNION: i32 = 40;
+    pub const RESOLVABLE_PROFILE: i32 = 41;
+    pub const HUMANOID_ARM: i32 = 42;
+    pub const DYE_COLOR: i32 = 43;
+}
+
+/// Entity data indices by entity class, as the game assigns them.
+#[allow(dead_code)]
+pub mod entity_data {
+    pub mod abstract_arrow {
+        pub const ID_FLAGS: u8 = 8;
+        pub const PIERCE_LEVEL: u8 = 9;
+        pub const IN_GROUND: u8 = 10;
+    }
+    pub mod abstract_boat {
+        pub const DATA_ID_PADDLE_LEFT: u8 = 11;
+        pub const DATA_ID_PADDLE_RIGHT: u8 = 12;
+        pub const DATA_ID_BUBBLE_TIME: u8 = 13;
+    }
+    pub mod abstract_chested_horse {
+        pub const DATA_ID_CHEST: u8 = 19;
+    }
+    pub mod abstract_cube_mob {
+        pub const ID_SIZE: u8 = 18;
+    }
+    pub mod abstract_fish {
+        pub const FROM_BUCKET: u8 = 16;
+    }
+    pub mod abstract_horse {
+        pub const DATA_ID_FLAGS: u8 = 18;
+    }
+    pub mod abstract_minecart {
+        pub const DATA_ID_CUSTOM_DISPLAY_BLOCK: u8 = 11;
+        pub const DATA_ID_DISPLAY_OFFSET: u8 = 12;
+    }
+    pub mod abstract_nautilus {
+        pub const DASH: u8 = 20;
+    }
+    pub mod abstract_piglin {
+        pub const DATA_IMMUNE_TO_ZOMBIFICATION: u8 = 16;
+    }
+    pub mod abstract_villager {
+        pub const DATA_UNHAPPY_COUNTER: u8 = 18;
+    }
+    pub mod ageable_mob {
+        pub const DATA_BABY_ID: u8 = 16;
+        pub const AGE_LOCKED: u8 = 17;
+    }
+    pub mod allay {
+        pub const DATA_DANCING: u8 = 16;
+        pub const DATA_CAN_DUPLICATE: u8 = 17;
+    }
+    pub mod area_effect_cloud {
+        pub const DATA_RADIUS: u8 = 8;
+        pub const DATA_WAITING: u8 = 9;
+        pub const DATA_PARTICLE: u8 = 10;
+    }
+    pub mod armadillo {
+        pub const ARMADILLO_STATE: u8 = 18;
+    }
+    pub mod armor_stand {
+        pub const DATA_CLIENT_FLAGS: u8 = 15;
+        pub const DATA_HEAD_POSE: u8 = 16;
+        pub const DATA_BODY_POSE: u8 = 17;
+        pub const DATA_LEFT_ARM_POSE: u8 = 18;
+        pub const DATA_RIGHT_ARM_POSE: u8 = 19;
+        pub const DATA_LEFT_LEG_POSE: u8 = 20;
+        pub const DATA_RIGHT_LEG_POSE: u8 = 21;
+    }
+    pub mod arrow {
+        pub const ID_EFFECT_COLOR: u8 = 11;
+    }
+    pub mod avatar {
+        pub const DATA_PLAYER_MAIN_HAND: u8 = 15;
+        pub const DATA_PLAYER_MODE_CUSTOMISATION: u8 = 16;
+    }
+    pub mod axolotl {
+        pub const DATA_VARIANT: u8 = 18;
+        pub const DATA_PLAYING_DEAD: u8 = 19;
+        pub const FROM_BUCKET: u8 = 20;
+    }
+    pub mod bat {
+        pub const DATA_ID_FLAGS: u8 = 16;
+    }
+    pub mod bee {
+        pub const DATA_FLAGS_ID: u8 = 18;
+        pub const DATA_ANGER_END_TIME: u8 = 19;
+    }
+    pub mod blaze {
+        pub const DATA_FLAGS_ID: u8 = 16;
+    }
+    pub mod bogged {
+        pub const DATA_SHEARED: u8 = 16;
+    }
+    pub mod camel {
+        pub const DASH: u8 = 19;
+        pub const LAST_POSE_CHANGE_TICK: u8 = 20;
+    }
+    pub mod cat {
+        pub const DATA_VARIANT_ID: u8 = 20;
+        pub const IS_LYING: u8 = 21;
+        pub const RELAX_STATE_ONE: u8 = 22;
+        pub const DATA_COLLAR_COLOR: u8 = 23;
+        pub const DATA_SOUND_VARIANT_ID: u8 = 24;
+    }
+    pub mod chicken {
+        pub const DATA_VARIANT_ID: u8 = 18;
+        pub const DATA_SOUND_VARIANT_ID: u8 = 19;
+    }
+    pub mod copper_golem {
+        pub const DATA_WEATHER_STATE: u8 = 16;
+        pub const COPPER_GOLEM_STATE: u8 = 17;
+    }
+    pub mod cow {
+        pub const DATA_VARIANT_ID: u8 = 18;
+        pub const DATA_SOUND_VARIANT_ID: u8 = 19;
+    }
+    pub mod creaking {
+        pub const CAN_MOVE: u8 = 16;
+        pub const IS_ACTIVE: u8 = 17;
+        pub const IS_TEARING_DOWN: u8 = 18;
+        pub const HOME_POS: u8 = 19;
+    }
+    pub mod creeper {
+        pub const DATA_SWELL_DIR: u8 = 16;
+        pub const DATA_IS_POWERED: u8 = 17;
+        pub const DATA_IS_IGNITED: u8 = 18;
+    }
+    pub mod cushion {
+        pub const DATA_COLOR: u8 = 8;
+    }
+    pub mod display {
+        pub const DATA_TRANSFORMATION_INTERPOLATION_START_DELTA_TICKS_ID: u8 = 8;
+        pub const DATA_TRANSFORMATION_INTERPOLATION_DURATION_ID: u8 = 9;
+        pub const DATA_POS_ROT_INTERPOLATION_DURATION_ID: u8 = 10;
+        pub const DATA_TRANSLATION_ID: u8 = 11;
+        pub const DATA_SCALE_ID: u8 = 12;
+        pub const DATA_LEFT_ROTATION_ID: u8 = 13;
+        pub const DATA_RIGHT_ROTATION_ID: u8 = 14;
+        pub const DATA_BILLBOARD_RENDER_CONSTRAINTS_ID: u8 = 15;
+        pub const DATA_BRIGHTNESS_OVERRIDE_ID: u8 = 16;
+        pub const DATA_VIEW_RANGE_ID: u8 = 17;
+        pub const DATA_SHADOW_RADIUS_ID: u8 = 18;
+        pub const DATA_SHADOW_STRENGTH_ID: u8 = 19;
+        pub const DATA_WIDTH_ID: u8 = 20;
+        pub const DATA_HEIGHT_ID: u8 = 21;
+        pub const DATA_GLOW_COLOR_OVERRIDE_ID: u8 = 22;
+    }
+    pub mod display_block_display {
+        pub const DATA_BLOCK_STATE_ID: u8 = 23;
+    }
+    pub mod display_item_display {
+        pub const DATA_ITEM_STACK_ID: u8 = 23;
+        pub const DATA_ITEM_DISPLAY_ID: u8 = 24;
+    }
+    pub mod display_text_display {
+        pub const DATA_TEXT_ID: u8 = 23;
+        pub const DATA_LINE_WIDTH_ID: u8 = 24;
+        pub const DATA_BACKGROUND_COLOR_ID: u8 = 25;
+        pub const DATA_TEXT_OPACITY_ID: u8 = 26;
+        pub const DATA_STYLE_FLAGS_ID: u8 = 27;
+    }
+    pub mod dolphin {
+        pub const GOT_FISH: u8 = 18;
+        pub const MOISTNESS_LEVEL: u8 = 19;
+    }
+    pub mod end_crystal {
+        pub const DATA_BEAM_TARGET: u8 = 8;
+        pub const DATA_SHOW_BOTTOM: u8 = 9;
+    }
+    pub mod ender_dragon {
+        pub const DATA_PHASE: u8 = 16;
+    }
+    pub mod enderman {
+        pub const DATA_CARRY_STATE: u8 = 16;
+        pub const DATA_CREEPY: u8 = 17;
+        pub const DATA_STARED_AT: u8 = 18;
+    }
+    pub mod entity {
+        pub const DATA_SHARED_FLAGS_ID: u8 = 0;
+        pub const DATA_AIR_SUPPLY_ID: u8 = 1;
+        pub const DATA_CUSTOM_NAME: u8 = 2;
+        pub const DATA_CUSTOM_NAME_VISIBLE: u8 = 3;
+        pub const DATA_SILENT: u8 = 4;
+        pub const DATA_NO_GRAVITY: u8 = 5;
+        pub const DATA_POSE: u8 = 6;
+        pub const DATA_TICKS_FROZEN: u8 = 7;
+    }
+    pub mod experience_orb {
+        pub const DATA_VALUE: u8 = 8;
+    }
+    pub mod eye_of_ender {
+        pub const DATA_ITEM_STACK: u8 = 8;
+    }
+    pub mod falling_block_entity {
+        pub const DATA_START_POS: u8 = 8;
+    }
+    pub mod fireball {
+        pub const DATA_ITEM_STACK: u8 = 8;
+    }
+    pub mod firework_rocket_entity {
+        pub const DATA_ID_FIREWORKS_ITEM: u8 = 8;
+        pub const DATA_ATTACHED_TO_TARGET: u8 = 9;
+        pub const DATA_SHOT_AT_ANGLE: u8 = 10;
+    }
+    pub mod fishing_hook {
+        pub const DATA_HOOKED_ENTITY: u8 = 8;
+        pub const DATA_BITING: u8 = 9;
+    }
+    pub mod fox {
+        pub const DATA_TYPE_ID: u8 = 18;
+        pub const DATA_FLAGS_ID: u8 = 19;
+        pub const DATA_TRUSTED_ID_0: u8 = 20;
+        pub const DATA_TRUSTED_ID_1: u8 = 21;
+    }
+    pub mod frog {
+        pub const DATA_VARIANT_ID: u8 = 18;
+        pub const DATA_TONGUE_TARGET_ID: u8 = 19;
+    }
+    pub mod ghast {
+        pub const DATA_IS_CHARGING: u8 = 16;
+    }
+    pub mod glow_squid {
+        pub const DATA_DARK_TICKS_REMAINING: u8 = 18;
+    }
+    pub mod goat {
+        pub const DATA_IS_SCREAMING_GOAT: u8 = 18;
+        pub const DATA_HAS_LEFT_HORN: u8 = 19;
+        pub const DATA_HAS_RIGHT_HORN: u8 = 20;
+    }
+    pub mod guardian {
+        pub const DATA_ID_MOVING: u8 = 16;
+        pub const DATA_ID_ATTACK_TARGET: u8 = 17;
+    }
+    pub mod hanging_entity {
+        pub const DATA_DIRECTION: u8 = 8;
+    }
+    pub mod happy_ghast {
+        pub const IS_LEASH_HOLDER: u8 = 18;
+        pub const STAYS_STILL: u8 = 19;
+    }
+    pub mod hoglin {
+        pub const DATA_IMMUNE_TO_ZOMBIFICATION: u8 = 18;
+    }
+    pub mod horse {
+        pub const DATA_ID_TYPE_VARIANT: u8 = 19;
+    }
+    pub mod interaction {
+        pub const DATA_WIDTH_ID: u8 = 8;
+        pub const DATA_HEIGHT_ID: u8 = 9;
+        pub const DATA_RESPONSE_ID: u8 = 10;
+    }
+    pub mod iron_golem {
+        pub const DATA_FLAGS_ID: u8 = 16;
+    }
+    pub mod item_entity {
+        pub const DATA_ITEM: u8 = 8;
+    }
+    pub mod item_frame {
+        pub const DATA_ITEM: u8 = 9;
+        pub const DATA_ROTATION: u8 = 10;
+    }
+    pub mod living_entity {
+        pub const DATA_LIVING_ENTITY_FLAGS: u8 = 8;
+        pub const DATA_HEALTH_ID: u8 = 9;
+        pub const DATA_EFFECT_PARTICLES: u8 = 10;
+        pub const DATA_EFFECT_AMBIENCE_ID: u8 = 11;
+        pub const DATA_ARROW_COUNT_ID: u8 = 12;
+        pub const DATA_STINGER_COUNT_ID: u8 = 13;
+        pub const SLEEPING_POS_ID: u8 = 14;
+    }
+    pub mod llama {
+        pub const DATA_STRENGTH_ID: u8 = 20;
+        pub const DATA_VARIANT_ID: u8 = 21;
+    }
+    pub mod mannequin {
+        pub const DATA_PROFILE: u8 = 17;
+        pub const DATA_IMMOVABLE: u8 = 18;
+        pub const DATA_DESCRIPTION: u8 = 19;
+    }
+    pub mod minecart_command_block {
+        pub const DATA_ID_COMMAND_NAME: u8 = 13;
+        pub const DATA_ID_LAST_OUTPUT: u8 = 14;
+    }
+    pub mod minecart_furnace {
+        pub const DATA_ID_FUEL: u8 = 13;
+    }
+    pub mod mob {
+        pub const DATA_MOB_FLAGS_ID: u8 = 15;
+    }
+    pub mod mushroom_cow {
+        pub const DATA_TYPE: u8 = 18;
+    }
+    pub mod ocelot {
+        pub const DATA_TRUSTING: u8 = 18;
+    }
+    pub mod ominous_item_spawner {
+        pub const DATA_ITEM: u8 = 8;
+    }
+    pub mod painting {
+        pub const DATA_PAINTING_VARIANT_ID: u8 = 9;
+    }
+    pub mod panda {
+        pub const UNHAPPY_COUNTER: u8 = 18;
+        pub const SNEEZE_COUNTER: u8 = 19;
+        pub const EAT_COUNTER: u8 = 20;
+        pub const MAIN_GENE_ID: u8 = 21;
+        pub const HIDDEN_GENE_ID: u8 = 22;
+        pub const DATA_ID_FLAGS: u8 = 23;
+    }
+    pub mod parrot {
+        pub const DATA_VARIANT_ID: u8 = 20;
+    }
+    pub mod phantom {
+        pub const ID_SIZE: u8 = 16;
+    }
+    pub mod pig {
+        pub const DATA_BOOST_TIME: u8 = 18;
+        pub const DATA_VARIANT_ID: u8 = 19;
+        pub const DATA_SOUND_VARIANT_ID: u8 = 20;
+    }
+    pub mod piglin {
+        pub const DATA_BABY_ID: u8 = 17;
+        pub const DATA_IS_CHARGING_CROSSBOW: u8 = 18;
+        pub const DATA_IS_DANCING: u8 = 19;
+    }
+    pub mod pillager {
+        pub const IS_CHARGING_CROSSBOW: u8 = 17;
+    }
+    pub mod player {
+        pub const DATA_PLAYER_ABSORPTION_ID: u8 = 17;
+        pub const DATA_SCORE_ID: u8 = 18;
+        pub const DATA_SHOULDER_PARROT_LEFT: u8 = 19;
+        pub const DATA_SHOULDER_PARROT_RIGHT: u8 = 20;
+    }
+    pub mod polar_bear {
+        pub const DATA_STANDING_ID: u8 = 18;
+    }
+    pub mod primed_tnt {
+        pub const DATA_FUSE_ID: u8 = 8;
+        pub const DATA_BLOCK_STATE_ID: u8 = 9;
+    }
+    pub mod pufferfish {
+        pub const PUFF_STATE: u8 = 17;
+    }
+    pub mod rabbit {
+        pub const DATA_TYPE_ID: u8 = 18;
+    }
+    pub mod raider {
+        pub const IS_CELEBRATING: u8 = 16;
+    }
+    pub mod salmon {
+        pub const DATA_TYPE: u8 = 17;
+    }
+    pub mod sheep {
+        pub const DATA_WOOL_ID: u8 = 18;
+    }
+    pub mod shulker {
+        pub const DATA_ATTACH_FACE_ID: u8 = 16;
+        pub const DATA_PEEK_ID: u8 = 17;
+        pub const DATA_COLOR_ID: u8 = 18;
+    }
+    pub mod skeleton {
+        pub const DATA_STRAY_CONVERSION_ID: u8 = 16;
+    }
+    pub mod sniffer {
+        pub const DATA_STATE: u8 = 18;
+        pub const DATA_DROP_SEED_AT_TICK: u8 = 19;
+    }
+    pub mod snow_golem {
+        pub const DATA_PUMPKIN_ID: u8 = 16;
+    }
+    pub mod spellcaster_illager {
+        pub const DATA_SPELL_CASTING_ID: u8 = 17;
+    }
+    pub mod spider {
+        pub const DATA_FLAGS_ID: u8 = 16;
+    }
+    pub mod strider {
+        pub const DATA_BOOST_TIME: u8 = 18;
+        pub const DATA_SUFFOCATING: u8 = 19;
+    }
+    pub mod sulfur_cube {
+        pub const MAX_FUSE: u8 = 19;
+        pub const FROM_BUCKET: u8 = 20;
+    }
+    pub mod tadpole {
+        pub const AGE_LOCKED: u8 = 17;
+    }
+    pub mod tamable_animal {
+        pub const DATA_FLAGS_ID: u8 = 18;
+        pub const DATA_OWNERUUID_ID: u8 = 19;
+    }
+    pub mod throwable_item_projectile {
+        pub const DATA_ITEM_STACK: u8 = 8;
+    }
+    pub mod thrown_trident {
+        pub const ID_LOYALTY: u8 = 11;
+        pub const ID_FOIL: u8 = 12;
+    }
+    pub mod tropical_fish {
+        pub const DATA_ID_TYPE_VARIANT: u8 = 17;
+    }
+    pub mod turtle {
+        pub const HAS_EGG: u8 = 18;
+        pub const LAYING_EGG: u8 = 19;
+    }
+    pub mod vehicle_entity {
+        pub const DATA_ID_HURT: u8 = 8;
+        pub const DATA_ID_HURTDIR: u8 = 9;
+        pub const DATA_ID_DAMAGE: u8 = 10;
+    }
+    pub mod vex {
+        pub const DATA_FLAGS_ID: u8 = 16;
+    }
+    pub mod villager {
+        pub const DATA_VILLAGER_DATA: u8 = 19;
+        pub const DATA_VILLAGER_DATA_FINALIZED: u8 = 20;
+    }
+    pub mod warden {
+        pub const CLIENT_ANGER_LEVEL: u8 = 16;
+    }
+    pub mod witch {
+        pub const DATA_USING_ITEM: u8 = 17;
+    }
+    pub mod wither_boss {
+        pub const DATA_TARGET_A: u8 = 16;
+        pub const DATA_TARGET_B: u8 = 17;
+        pub const DATA_TARGET_C: u8 = 18;
+        pub const DATA_ID_INV: u8 = 19;
+    }
+    pub mod wither_skull {
+        pub const DATA_DANGEROUS: u8 = 8;
+    }
+    pub mod wolf {
+        pub const DATA_INTERESTED_ID: u8 = 20;
+        pub const DATA_COLLAR_COLOR: u8 = 21;
+        pub const DATA_ANGER_END_TIME: u8 = 22;
+        pub const DATA_VARIANT_ID: u8 = 23;
+        pub const DATA_SOUND_VARIANT_ID: u8 = 24;
+    }
+    pub mod zoglin {
+        pub const DATA_BABY_ID: u8 = 16;
+    }
+    pub mod zombie {
+        pub const DATA_BABY_ID: u8 = 16;
+        pub const DATA_SPECIAL_TYPE_ID: u8 = 17;
+        pub const DATA_DROWNED_CONVERSION_ID: u8 = 18;
+    }
+    pub mod zombie_nautilus {
+        pub const DATA_VARIANT_ID: u8 = 21;
+    }
+    pub mod zombie_villager {
+        pub const DATA_CONVERTING_ID: u8 = 19;
+        pub const DATA_VILLAGER_DATA: u8 = 20;
+        pub const DATA_VILLAGER_DATA_FINALIZED: u8 = 21;
+    }
 }

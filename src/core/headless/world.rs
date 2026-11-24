@@ -11,7 +11,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use serde_json::Value;
 
-use super::render::Biome;
+use super::render::{Biome, Sky};
 use super::v777::{BLOCK_LOOKS, BLOCK_STATES};
 use super::wire::{In, Out};
 
@@ -21,6 +21,8 @@ const MAX_CHANGES: usize = 2048;
 const MAX_TYPES: usize = 256;
 const MAX_BIOMES: usize = 4096;
 const MAX_RELIT: usize = 64 << 10;
+const MAX_CLOCKS: usize = 64;
+const DAY: i64 = 24000;
 const LIGHT: usize = BLOCKS / 2;
 /// The most sections a dimension may stack: 4064 blocks, the game's own limit.
 pub const MAX_SECTIONS: usize = 254;
@@ -102,6 +104,8 @@ pub struct World {
     dimension: Dimension,
     biomes: Arc<[Biome]>,
     relit: HashMap<(i32, i32), Relit>,
+    clocks: Vec<String>,
+    sky: Sky,
 }
 
 /// Light a `light_update` sent for some sections of a kept chunk after the chunk itself, by section counted from one
@@ -141,6 +145,7 @@ pub struct Snapshot {
     pub changes: Vec<([i32; 3], u32)>,
     pub biomes: Arc<[Biome]>,
     pub relit: Vec<((i32, i32), Relit)>,
+    pub sky: Sky,
 }
 
 impl World {
@@ -172,6 +177,52 @@ impl World {
             }
         }
         self.biomes = biomes.into();
+        Ok(())
+    }
+
+    /// Reads the server's `minecraft:world_clock` registry, whose name is already read: the clock names in registry order.
+    pub fn clocks(&mut self, r: &mut In) -> Result<()> {
+        self.clocks.clear();
+        for _ in 0..r.list()? {
+            let name = r.string()?;
+            r.optional_nbt()?;
+            if self.clocks.len() < MAX_CLOCKS {
+                self.clocks.push(name);
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads `set_time`: the time of day is the overworld clock's, or another clock's when it sends no overworld clock.
+    pub fn time(&mut self, r: &mut In) -> Result<()> {
+        let _age = r.i64()?;
+        let mut day = None;
+        for _ in 0..r.list()? {
+            let clock = r.varint()?;
+            let ticks = r.varlong()?;
+            r.f32()?;
+            r.f32()?;
+            let overworld = usize::try_from(clock).ok().and_then(|i| self.clocks.get(i)).is_some_and(|n| n.trim_start_matches("minecraft:") == "overworld");
+            if day.is_none() || overworld {
+                day = Some(ticks.rem_euclid(DAY));
+            }
+        }
+        if day.is_some() {
+            self.sky.time = day;
+        }
+        Ok(())
+    }
+
+    /// Reads the weather from a `game_event`: rain stopping, and rain and thunder strength.
+    pub fn weather(&mut self, r: &mut In) -> Result<()> {
+        let (event, value) = (r.u8()?, r.f32()?);
+        match event {
+            1 => self.sky.rain = 1.0,
+            2 => (self.sky.rain, self.sky.thunder) = (0.0, 0.0),
+            7 => self.sky.rain = value.clamp(0.0, 1.0),
+            8 => self.sky.thunder = value.clamp(0.0, 1.0),
+            _ => {}
+        }
         Ok(())
     }
 
@@ -306,6 +357,7 @@ impl World {
             changes: self.changes.iter().filter(|(p, _)| near(&(p[0] >> 4, p[2] >> 4))).map(|(p, s)| (*p, *s)).collect(),
             biomes: Arc::clone(&self.biomes),
             relit: self.relit.iter().filter(|(at, _)| near(at)).map(|(at, l)| (*at, l.clone())).collect(),
+            sky: self.sky,
         }
     }
 
@@ -883,5 +935,22 @@ mod tests {
         for bad in [(0, 0), (0, 2_000_000_000), (-64, 380), (-2_000_000_000, 384), (2016, 32), (-8, 384), (2_147_483_632, 16)] {
             assert!(!Dimension { floor: bad.0, height: bad.1 }.sane(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_sky_follows_the_overworld_clock_and_the_weather_events() {
+        let mut w = World::default();
+        let mut o = Out::default();
+        o.varint(2).string("minecraft:the_end").bool(false).string("minecraft:overworld").bool(false);
+        w.clocks(&mut In::new(&o.0)).unwrap();
+        let mut o = Out::default();
+        o.i64(5).varint(2).varint(0).raw(&[100]).f32(0.0).f32(1.0).varint(1).raw(&[0x88, 0xA1, 0x02]).f32(0.0).f32(1.0);
+        w.time(&mut In::new(&o.0)).unwrap();
+        for (event, value) in [(1, 0.0), (8, 0.5)] {
+            let mut o = Out::default();
+            o.u8(event).f32(value);
+            w.weather(&mut In::new(&o.0)).unwrap();
+        }
+        assert_eq!(w.snapshot(0.0, 0.0, 1).sky, Sky { time: Some(13_000), rain: 1.0, thunder: 0.5 });
     }
 }

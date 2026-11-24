@@ -7,11 +7,13 @@ use std::sync::{LazyLock, Mutex};
 
 use std::collections::HashMap;
 
-use super::render::{self, Blocks, Camera, Sky};
+use super::render::{self, Blocks, Camera};
+use super::crowd::Seen;
 use super::v777::MAP_COLORS;
 use super::world::{self, Cell, Class, Dimension, Look, Section, Snapshot};
 
-const EYE_HEIGHT: f64 = 1.62;
+/// How high a player's eyes are above its feet.
+pub const EYE_HEIGHT: f64 = 1.62;
 const FOV_Y: f32 = 70.0;
 const REACH: f32 = 96.0;
 const FOG_FROM: f32 = 0.55;
@@ -38,6 +40,8 @@ pub enum View {
 #[derive(Clone, Debug)]
 pub struct Request {
     pub world: Snapshot,
+    /// The entities near the player and its hand.
+    pub seen: Seen,
     /// Where the player stands (feet).
     pub position: [f64; 3],
     /// Yaw and pitch in degrees, as the game sends them.
@@ -108,7 +112,7 @@ fn textured(request: &Request) -> anyhow::Result<Vec<u8>> {
     let area = Area::new(&request.world, ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4), u32::from(DISTANCE) + 1);
     let (w, h) = (request.width.max(1), request.height.max(1));
     let camera = Camera { pos: [x, y + EYE_HEIGHT, z], yaw: request.rotation[0], pitch: request.rotation[1], fov: FOV_Y, distance: DISTANCE };
-    Ok(render::render(&area, &request.world.biomes, &render::Nobody, &camera, &Sky::default(), w, h, &assets).into_raw())
+    Ok(render::render(&area, &request.world.biomes, &request.seen, &camera, &request.world.sky, w, h, &assets).into_raw())
 }
 
 struct Area {
@@ -471,7 +475,7 @@ mod tests {
     }
 
     fn request(world: Snapshot, rotation: [f32; 2]) -> Request {
-        Request { world, position: [8.5, 0.0, 8.5], rotation, width: 64, height: 36 }
+        Request { world, seen: Seen::default(), position: [8.5, 0.0, 8.5], rotation, width: 64, height: 36 }
     }
 
     #[test]

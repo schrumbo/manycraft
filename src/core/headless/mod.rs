@@ -12,6 +12,7 @@ mod classify;
 mod cli;
 mod client;
 mod conn;
+mod crowd;
 mod crypto;
 mod item;
 mod picture;
