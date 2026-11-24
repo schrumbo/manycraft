@@ -14,7 +14,7 @@ mod client;
 mod conn;
 mod crypto;
 mod item;
-mod render;
+mod picture;
 pub mod resume;
 mod screen;
 mod text;

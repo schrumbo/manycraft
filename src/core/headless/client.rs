@@ -15,7 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::render::{self, Request, View};
+use super::picture::{self, Request, View};
 use super::screen::Screen;
 use super::Spec;
 use super::classify::classify;
@@ -212,7 +212,7 @@ impl Shared {
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), position: link.position, rotation: link.rotation, width, height };
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
         let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Drawing(Arc::clone(&self.drawing)));
-        render::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
+        picture::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
             let above = pictures.pop().unwrap_or_default();
             let eyes = pictures.pop().unwrap_or_default();
             if let Some(dir) = shots {
