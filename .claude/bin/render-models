@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Regenerates src/core/headless/render/models.bin from the 26.3 client jar: every entity model layer with its parts' rest
+poses and the baked polygons of their cubes, dumped by RenderModels.java and packed small.
+
+render-models [client.jar]   default: the launcher's 26.3 client jar
+
+Format, zlib-deflated: u16 layer count; per layer a name and a part. A name is u8 length + UTF-8. A part is its name,
+9 f32 (pivot x y z, rotation x y z in radians, scale x y z), u8 visible, u16 polygon count, per polygon 4 corners of
+i16 x y z (pixels * 64) and i16 u v (texture fraction * 16384), then u8 child count and the children.
+"""
+import json
+import math
+import os
+import struct
+import subprocess
+import sys
+import zlib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+OUT = ROOT / "src" / "core" / "headless" / "render" / "models.bin"
+MC = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / ".minecraft"
+
+
+def classpath(jar):
+    meta = json.loads((jar.parent / (jar.stem + ".json")).read_text(encoding="utf-8"))
+    paths = [str(jar)]
+    for lib in meta["libraries"]:
+        art = lib.get("downloads", {}).get("artifact")
+        if art and not any(r.get("action") == "allow" and r.get("os", {}).get("name") not in (None, "windows") for r in lib.get("rules", [])):
+            paths.append(str(MC / "libraries" / art["path"]))
+    return os.pathsep.join(paths)
+
+
+def name(s):
+    b = s.encode("utf-8")
+    return struct.pack("<B", len(b)) + b
+
+
+def num(v):
+    return 0.0 if not math.isfinite(v) else v
+
+
+def part(key, p):
+    out = name(key) + struct.pack("<9fB", *map(num, p["pose"]), 1 if p["visible"] else 0)
+    out += struct.pack("<H", len(p["polys"]))
+    for poly in p["polys"]:
+        assert len(poly) == 20, "every polygon is a quad"
+        for i in range(4):
+            x, y, z, u, v = poly[i * 5:i * 5 + 5]
+            out += struct.pack("<5h", round(x * 64), round(y * 64), round(z * 64), round(u * 16384), round(v * 16384))
+    out += struct.pack("<B", len(p["children"]))
+    for k, c in p["children"].items():
+        out += part(k, c)
+    return out
+
+
+def main():
+    jar = Path(sys.argv[1]) if len(sys.argv) > 1 else MC / "versions" / "26.3" / "26.3.jar"
+    args = Path(ROOT / "target" / "render-models.args")
+    args.parent.mkdir(parents=True, exist_ok=True)
+    args.write_text('-cp "' + classpath(jar).replace("\\", "/") + '"\n', encoding="utf-8")
+    dump = subprocess.run(["java", "@" + str(args), str(Path(__file__).with_name("RenderModels.java"))], check=True, capture_output=True).stdout
+    layers = json.loads(dump.decode("utf-8").replace("NaN", "0"))
+    body = struct.pack("<H", len(layers))
+    for key, root in layers.items():
+        body += name(key) + part("root", root)
+    OUT.write_bytes(zlib.compress(body, 9))
+    print(f"{len(layers)} layers, {len(body)} bytes, {OUT.stat().st_size} packed")
+
+
+if __name__ == "__main__":
+    main()
