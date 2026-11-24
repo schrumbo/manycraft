@@ -7,9 +7,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Result, ensure};
 
 use super::item::{self, Stack};
+use super::render::hud;
+use super::status::ticks;
 use super::text::{self, Line};
 use super::v777::{ITEMS, MAP_COLORS, MENUS, play};
 use super::wire::{In, Out};
+use crate::core::chat_text::Run;
 use crate::core::ipc::{Click, FromMod, MapPicture, Menu, Slot, Titles, Words};
 
 /// The side of a map picture in pixels.
@@ -25,6 +28,8 @@ const PICKUP: i32 = 0;
 const QUICK_MOVE: i32 = 1;
 const AIR: i32 = 0;
 const NEVER_HELD: i32 = -1;
+const FADES: [i32; 3] = [10, 70, 20];
+const ACTION_BAR_TICKS: i32 = 60;
 
 struct Picture {
     id: i32,
@@ -55,13 +60,16 @@ pub struct Screen {
     map_dirty: bool,
     menu_dirty: bool,
     titles_dirty: bool,
+    title_at: Option<Instant>,
+    bar_at: Option<Instant>,
+    fades: Option<[i32; 3]>,
 }
 
 impl Screen {
     /// Whether `id` is a packet this screen reads.
     pub fn reads(id: i32) -> bool {
         use play::clientbound as c;
-        [c::OPEN_SCREEN, c::CONTAINER_SET_CONTENT, c::CONTAINER_SET_SLOT, c::CONTAINER_CLOSE, c::SET_CURSOR_ITEM, c::SET_PLAYER_INVENTORY, c::SET_HELD_SLOT, c::MAP_ITEM_DATA, c::SET_TITLE_TEXT, c::SET_SUBTITLE_TEXT, c::SET_ACTION_BAR_TEXT, c::CLEAR_TITLES].contains(&id)
+        [c::OPEN_SCREEN, c::CONTAINER_SET_CONTENT, c::CONTAINER_SET_SLOT, c::CONTAINER_CLOSE, c::SET_CURSOR_ITEM, c::SET_PLAYER_INVENTORY, c::SET_HELD_SLOT, c::MAP_ITEM_DATA, c::SET_TITLE_TEXT, c::SET_SUBTITLE_TEXT, c::SET_ACTION_BAR_TEXT, c::CLEAR_TITLES, c::SET_TITLES_ANIMATION].contains(&id)
     }
 
     /// Takes in packet `id`. A packet it cannot read leaves the rest as it was; an unreadable menu shows as such.
@@ -92,13 +100,37 @@ impl Screen {
                 Ok(())
             }
             c::MAP_ITEM_DATA => self.map(r),
-            c::SET_TITLE_TEXT => self.title(r, |t| &mut t.title),
-            c::SET_SUBTITLE_TEXT => self.title(r, |t| &mut t.subtitle),
-            c::SET_ACTION_BAR_TEXT => self.title(r, |t| &mut t.actionbar),
+            c::SET_TITLE_TEXT => {
+                self.title(&text::line(&r.nbt()?), |t| &mut t.title);
+                self.title_at = Some(Instant::now());
+                Ok(())
+            }
+            c::SET_SUBTITLE_TEXT => {
+                self.title(&text::line(&r.nbt()?), |t| &mut t.subtitle);
+                Ok(())
+            }
+            c::SET_ACTION_BAR_TEXT => {
+                self.overlay(&text::line(&r.nbt()?));
+                Ok(())
+            }
             c::CLEAR_TITLES => {
                 if self.titles.title.take().is_some() | self.titles.subtitle.take().is_some() {
                     self.titles_dirty = true;
                 }
+                self.title_at = None;
+                if r.bool()? {
+                    self.fades = None;
+                }
+                Ok(())
+            }
+            c::SET_TITLES_ANIMATION => {
+                let kept = self.fades.unwrap_or(FADES);
+                let mut fades = [0; 3];
+                for (fade, old) in fades.iter_mut().zip(kept) {
+                    let new = r.i32()?;
+                    *fade = if new >= 0 { new } else { old };
+                }
+                self.fades = Some(fades);
                 Ok(())
             }
             _ => Ok(()),
@@ -280,6 +312,32 @@ impl Screen {
         get(HOTBAR + self.held).or_else(|| get(OFFHAND))
     }
 
+    /// The line above the hotbar, from `line`, as the action bar packet and overlay chat set it.
+    pub fn overlay(&mut self, line: &Line) {
+        self.title(line, |t| &mut t.actionbar);
+        self.bar_at = Some(Instant::now());
+    }
+
+    /// The hotbar and the offhand (the last of ten), and the selected hotbar slot.
+    pub fn hands(&self) -> (&[Option<Stack>; 10], usize) {
+        (&self.hands, self.held)
+    }
+
+    /// The title and subtitle as the game shows them now, while they show.
+    pub fn hud_title(&self) -> Option<hud::Title> {
+        let age = ticks(self.title_at?.elapsed());
+        let [fade_in, stay, fade_out] = self.fades.unwrap_or(FADES);
+        let shown = age < fade_in.saturating_add(stay).saturating_add(fade_out) && (self.titles.title.is_some() || self.titles.subtitle.is_some());
+        shown.then(|| hud::Title { title: runs(self.titles.title.as_ref()), subtitle: runs(self.titles.subtitle.as_ref()), fade_in, stay, fade_out, age })
+    }
+
+    /// The action bar as the game shows it now, while it shows.
+    pub fn hud_action_bar(&self) -> Option<hud::ActionBar> {
+        let words = self.titles.actionbar.as_ref()?;
+        let age = ticks(self.bar_at?.elapsed());
+        (age < ACTION_BAR_TICKS).then(|| hud::ActionBar { text: runs(Some(words)), ticks_left: ACTION_BAR_TICKS - age, animated: false })
+    }
+
     /// The stack in the player's main hand.
     pub fn held(&self) -> Option<&Stack> {
         self.hands.get(self.held)?.as_ref()
@@ -333,16 +391,22 @@ impl Screen {
         Ok(())
     }
 
-    fn title(&mut self, r: &mut In, field: impl Fn(&mut Titles) -> &mut Option<Words>) -> Result<()> {
-        let line = text::line(&r.nbt()?);
-        let words = (!line.text.trim().is_empty()).then(|| words(&line));
+    fn title(&mut self, line: &Line, field: impl Fn(&mut Titles) -> &mut Option<Words>) {
+        let words = (!line.text.trim().is_empty()).then(|| words(line));
         let slot = field(&mut self.titles);
         if slot.as_ref().map(|w| (&w.text, &w.runs)) != words.as_ref().map(|w| (&w.text, &w.runs)) {
             *slot = words;
             self.titles.at = now();
             self.titles_dirty = true;
         }
-        Ok(())
+    }
+}
+
+fn runs(words: Option<&Words>) -> hud::Text {
+    match words {
+        Some(w) if !w.runs.is_empty() => w.runs.clone(),
+        Some(w) => vec![Run { text: w.text.clone(), ..Run::default() }],
+        None => Vec::new(),
     }
 }
 
@@ -623,6 +687,29 @@ mod tests {
         })
         .unwrap();
         assert!(s.titles.title.is_none() && s.titles.actionbar.is_some());
+    }
+
+    #[test]
+    fn the_display_shows_titles_for_their_fade_times_and_the_action_bar_for_three_seconds() {
+        let mut s = Screen::default();
+        feed(&mut s, play::clientbound::SET_TITLES_ANIMATION, |o| {
+            o.i32(5).i32(-1).i32(0);
+        })
+        .unwrap();
+        feed(&mut s, play::clientbound::SET_SUBTITLE_TEXT, |o| text(o, "below")).unwrap();
+        assert!(s.hud_title().is_none());
+        feed(&mut s, play::clientbound::SET_TITLE_TEXT, |o| text(o, "Hello")).unwrap();
+        let title = s.hud_title().unwrap();
+        assert_eq!((crate::core::chat_text::plain(&title.title), crate::core::chat_text::plain(&title.subtitle)), ("Hello".into(), "below".into()));
+        assert_eq!((title.fade_in, title.stay, title.fade_out, title.age), (5, 70, 0, 0));
+        s.overlay(&text::line(&serde_json::json!("Overlay")));
+        let bar = s.hud_action_bar().unwrap();
+        assert_eq!((crate::core::chat_text::plain(&bar.text), bar.ticks_left), ("Overlay".into(), ACTION_BAR_TICKS));
+        feed(&mut s, play::clientbound::CLEAR_TITLES, |o| {
+            o.bool(true);
+        })
+        .unwrap();
+        assert!(s.hud_title().is_none() && s.fades.is_none());
     }
 
     #[test]

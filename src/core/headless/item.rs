@@ -20,6 +20,9 @@ pub struct Stack {
     pub glint: bool,
     pub map: Option<i32>,
     pub dye: Option<u32>,
+    /// Damage taken, and the damage it survives when the stack sets its own (`Some(0)`: it cannot break).
+    pub damage: i32,
+    pub max_damage: Option<i32>,
 }
 
 #[derive(Default)]
@@ -31,6 +34,9 @@ struct View {
     glint: Option<bool>,
     map: Option<i32>,
     dye: Option<u32>,
+    damage: i32,
+    max_damage: Option<i32>,
+    unbreakable: bool,
 }
 
 /// Reads an optional item stack; `None` for an empty slot.
@@ -41,7 +47,7 @@ pub fn stack(r: &mut In) -> Result<Option<Stack>> {
     }
     let item = r.varint()?;
     let view = patch(r, 0)?;
-    Ok(Some(Stack { item, count, name: view.name.or(view.item_name), lore: view.lore, glint: view.glint.unwrap_or(view.enchanted), map: view.map, dye: view.dye }))
+    Ok(Some(Stack { item, count, name: view.name.or(view.item_name), lore: view.lore, glint: view.glint.unwrap_or(view.enchanted), map: view.map, dye: view.dye, damage: view.damage, max_damage: if view.unbreakable { Some(0) } else { view.max_damage } }))
 }
 
 /// Reads a list of optional item stacks (VarInt length), at most `max` of them.
@@ -65,7 +71,9 @@ fn patch(r: &mut In, depth: usize) -> Result<View> {
         read(r, id, depth, &mut view)?;
     }
     for _ in 0..removed {
-        r.varint()?;
+        if r.varint()? == component::MAX_DAMAGE {
+            view.max_damage = Some(0);
+        }
     }
     Ok(view)
 }
@@ -86,6 +94,9 @@ fn read(r: &mut In, id: i32, depth: usize, view: &mut View) -> Result<()> {
         component::ENCHANTMENT_GLINT_OVERRIDE => view.glint = Some(r.bool()?),
         component::MAP_ID => view.map = Some(r.varint()?),
         component::DYED_COLOR => view.dye = Some(r.i32()? as u32),
+        component::DAMAGE => view.damage = r.varint()?,
+        component::MAX_DAMAGE => view.max_damage = Some(r.varint()?),
+        component::UNBREAKABLE => view.unbreakable = true,
         _ => {
             if !plain(r, id)? {
                 structured(r, id, depth)?;
@@ -105,10 +116,8 @@ fn plain(r: &mut In, id: i32) -> Result<bool> {
         | component::LOCK
         | component::CONTAINER_LOOT
         | component::BUCKET_ENTITY_DATA => nbt(r)?,
-        component::UNBREAKABLE | component::CREATIVE_SLOT_LOCK | component::GLIDER | component::WAXED => {}
+        component::CREATIVE_SLOT_LOCK | component::GLIDER | component::WAXED => {}
         component::MAX_STACK_SIZE
-        | component::MAX_DAMAGE
-        | component::DAMAGE
         | component::REPAIR_COST
         | component::ADDITIONAL_TRADE_COST
         | component::VILLAGER_FOOD
@@ -750,7 +759,7 @@ mod tests {
             }),
         ];
         let s = decode(&item(2, 9, &comps, &[]));
-        assert_eq!(s, Stack { item: 9, count: 2, name: Some(line("Hi")), lore: vec![line("a"), line("b")], glint: true, map: Some(12), dye: None });
+        assert_eq!(s, Stack { item: 9, count: 2, name: Some(line("Hi")), lore: vec![line("a"), line("b")], glint: true, map: Some(12), dye: None, damage: 0, max_damage: None });
     }
 
     #[test]

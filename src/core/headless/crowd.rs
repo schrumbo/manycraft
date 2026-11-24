@@ -12,7 +12,7 @@ use super::item::{self, Stack};
 use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Span, Text};
 use super::text::{self, Line};
 use super::v777::entity_data as d;
-use super::v777::{ENTITY_TYPES, ITEMS, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
+use super::v777::{ENTITY_TYPES, ITEMS, PARTICLE_TYPES, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
 use super::wire::In;
 
 const MAX_ENTITIES: usize = 512;
@@ -57,7 +57,8 @@ struct Profile {
     slim: bool,
 }
 
-enum Meta {
+/// One entity data value, as far as anything reads it.
+pub(super) enum Meta {
     Byte(u8),
     Int(i32),
     Float(f32),
@@ -250,15 +251,8 @@ impl Crowd {
     fn data(&mut self, r: &mut In) -> Result<()> {
         let id = r.varint()?;
         let Some(mob) = self.near.get_mut(&id) else { return Ok(()) };
-        loop {
-            let index = r.u8()?;
-            if index == 0xFF {
-                return Ok(());
-            }
-            let serializer = r.varint()?;
-            let value = meta(r, serializer)?;
-            mob.set(index, value, &self.variants);
-        }
+        let variants = &self.variants;
+        items(r, |index, value| mob.set(index, value, variants))
     }
 
     fn equipment(&mut self, r: &mut In) -> Result<()> {
@@ -544,6 +538,28 @@ fn initial(kind: &str, extra: i32) -> Option<Data> {
     }
 }
 
+/// Reads entity data values up to their end mark and hands each to `each` with its index.
+pub(super) fn items(r: &mut In, mut each: impl FnMut(u8, Meta)) -> Result<()> {
+    loop {
+        let index = r.u8()?;
+        if index == 0xFF {
+            return Ok(());
+        }
+        let serializer = r.varint()?;
+        each(index, meta(r, serializer)?);
+    }
+}
+
+fn particle(r: &mut In) -> Result<()> {
+    let kind = r.varint()?;
+    match usize::try_from(kind).ok().and_then(|k| PARTICLE_TYPES.get(k)) {
+        Some((_, true)) => Ok(()),
+        Some(("entity_effect", _)) => r.i32().map(drop),
+        Some((name, _)) => bail!("particle {name} in entity data is not read"),
+        None => bail!("particle type {kind}"),
+    }
+}
+
 fn meta(r: &mut In, serializer: i32) -> Result<Meta> {
     let three = |r: &mut In| -> Result<[f32; 3]> { Ok([r.f32()?, r.f32()?, r.f32()?]) };
     Ok(match serializer {
@@ -608,7 +624,16 @@ fn meta(r: &mut In, serializer: i32) -> Result<Meta> {
             item::profile(r)?;
             Meta::Skipped
         }
-        s::PARTICLE | s::PARTICLES => bail!("particles in entity data are not read"),
+        s::PARTICLE => {
+            particle(r)?;
+            Meta::Skipped
+        }
+        s::PARTICLES => {
+            for _ in 0..r.list()? {
+                particle(r)?;
+            }
+            Meta::Skipped
+        }
         other => bail!("entity data of serializer {other} not read"),
     })
 }
@@ -820,7 +845,7 @@ mod tests {
         add(&mut c, 3, "sheep", [0.0; 3]);
         let read = data(&mut c, 3, |o| {
             o.u8(d::sheep::DATA_WOOL_ID).varint(s::BYTE).u8(0x14);
-            o.u8(99).varint(s::PARTICLE).varint(0).u8(0xFF);
+            o.u8(99).varint(999).varint(0).u8(0xFF);
         });
         assert!(read.is_err());
         assert_eq!(seen(&c)[0].data, Data::Sheep { color: 4, sheared: true });

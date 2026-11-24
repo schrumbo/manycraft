@@ -18,6 +18,7 @@ use uuid::Uuid;
 use super::crowd::Crowd;
 use super::picture::{self, Request, View};
 use super::screen::Screen;
+use super::status::Status;
 use super::Spec;
 use super::classify::classify;
 use super::conn::{Reader, Writer};
@@ -28,6 +29,7 @@ use super::wire::{In, Out};
 use super::world::World;
 use crate::core::auth::Session;
 use crate::core::batch::Packs;
+use crate::core::chat_text::Run;
 use crate::core::fleet::Resolved;
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
 
@@ -112,6 +114,7 @@ struct Link {
     screen: Screen,
     world: World,
     crowd: Crowd,
+    status: Status,
     me: Uuid,
 }
 
@@ -147,6 +150,7 @@ impl Shared {
             screen: Screen::default(),
             world: World::default(),
             crowd: Crowd::default(),
+            status: Status::new(spec.name.clone()),
             me: spec.uuid,
         };
         Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), shots: spec.shots.clone(), drawing: Arc::default() }
@@ -219,8 +223,9 @@ impl Shared {
         let height = (width * 9 / 16).max(1);
         let [x, _, z] = link.position;
         let eye = [link.position[0], link.position[1] + picture::EYE_HEIGHT, link.position[2]];
-        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), false);
-        let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, position: link.position, rotation: link.rotation, width, height };
+        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed());
+        let hud = link.status.hud(&link.screen);
+        let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, hud, position: link.position, rotation: link.rotation, width, height };
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
         let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Drawing(Arc::clone(&self.drawing)));
         picture::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
@@ -379,6 +384,7 @@ fn session(shared: &Shared, spec: &Spec) -> End {
         link.held.clear();
         link.unacked = 0;
         link.crowd = Crowd::default();
+        link.status.reset();
         shared.report(&mut link, StateKind::Connecting, None, None, None);
     }
     let outcome = join(shared, spec);
@@ -505,7 +511,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Crowd::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
+        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Crowd::reads(id) || Status::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
     }
 }
 
@@ -723,6 +729,17 @@ fn popped(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
 fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatType]) -> Result<Option<(Line, DisconnectCause)>> {
     use play::clientbound as c;
     use play::serverbound as s;
+    if id == c::SET_ENTITY_DATA
+        && let Err(e) = link.status.data(&mut r.clone())
+    {
+        eprintln!("{}: own entity data not read: {e:#}", shared.key);
+    }
+    if Status::reads(id) {
+        if let Err(e) = link.status.read(id, r) {
+            eprintln!("{}: status packet {id} not read: {e:#}", shared.key);
+        }
+        return Ok(None);
+    }
     if Crowd::reads(id) {
         let me = link.position;
         link.crowd.read(id, r, me)?;
@@ -754,9 +771,15 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         c::RESPAWN => {
             link.world.clear();
             link.crowd.clear();
+            let mut keep = 0;
             if let Ok(kind) = r.varint() {
                 link.world.enter(kind);
+                if let Ok(mode) = spawn_mode(r) {
+                    link.status.game_mode(mode);
+                    keep = respawn_keep(r).unwrap_or(0);
+                }
             }
+            link.status.respawned(keep);
             link.loaded = false;
             if link.dead.take().is_some() {
                 shared.settle(link);
@@ -764,6 +787,8 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::SET_HEALTH => {
             let health = r.f32()?;
+            let (food, saturation) = (r.varint()?, r.f32()?);
+            link.status.health(health, food, saturation);
             if health <= 0.0 && link.dead.is_none() {
                 link.dead = Some(died());
                 shared.settle(link);
@@ -777,17 +802,22 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             link.dead = Some(if message.is_empty() { died() } else { message });
             shared.settle(link);
         }
-        c::SYSTEM_CHAT => system_chat(shared, r)?,
+        c::SYSTEM_CHAT => system_chat(shared, link, r)?,
         c::PLAYER_CHAT => player_chat(shared, link, r, types)?,
-        c::DISGUISED_CHAT => disguised_chat(shared, r, types)?,
+        c::DISGUISED_CHAT => disguised_chat(shared, link, r, types)?,
         c::SET_TIME => link.world.time(r)?,
-        c::GAME_EVENT => link.world.weather(r)?,
+        c::GAME_EVENT => {
+            let (event, value) = (r.u8()?, r.f32()?);
+            link.world.weather(event, value);
+            link.status.game_event(event, value);
+        }
         c::CHUNK_BATCH_FINISHED => write(link, s::CHUNK_BATCH_RECEIVED, Out::default().f32(CHUNKS_PER_TICK))?,
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
             link.screen.reset();
             link.world.clear();
             link.crowd = Crowd::default();
+            link.status.reset();
             shared.show_screen(link);
             link.phase = Phase::Configuration;
             link.unacked = 0;
@@ -811,8 +841,9 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
         c::LOGIN => {
             link.world.clear();
             link.crowd.clear();
-            let _entity = r.i32()?;
-            let _hardcore = r.bool()?;
+            let entity = r.i32()?;
+            let hardcore = r.bool()?;
+            link.status.login(entity, hardcore);
             for _ in 0..r.list()? {
                 r.string()?;
             }
@@ -823,6 +854,7 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
                 r.bool()?;
             }
             link.world.enter(r.varint()?);
+            link.status.game_mode(spawn_mode(r)?);
         }
         c::LEVEL_CHUNK_WITH_LIGHT => {
             let [x, _, z] = link.position;
@@ -888,21 +920,53 @@ fn teleported(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     Ok(())
 }
 
-fn system_chat(shared: &Shared, r: &mut In) -> Result<()> {
+/// The game mode from the rest of a spawn info, after its dimension type.
+fn spawn_mode(r: &mut In) -> Result<i32> {
+    r.string()?;
+    r.i64()?;
+    r.varint()
+}
+
+/// What a respawn keeps (1 attribute modifiers, 2 entity data), from the rest of its spawn info after the game mode.
+fn respawn_keep(r: &mut In) -> Result<u8> {
+    r.varint()?;
+    r.bool()?;
+    r.bool()?;
+    if r.bool()? {
+        r.string()?;
+        r.i64()?;
+    }
+    r.varint()?;
+    r.varint()?;
+    r.u8()
+}
+
+fn system_chat(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     let line = text::line(&r.nbt()?);
-    if !r.bool()? && !line.text.is_empty() {
-        shared.emit(FromMod::Chat { kind: ChatKind::System, from: None, text: line.text, runs: line.runs });
+    if r.bool()? {
+        link.screen.overlay(&line);
+        shared.show_screen(link);
+    } else if !line.text.is_empty() {
+        said(shared, link, FromMod::Chat { kind: ChatKind::System, from: None, text: line.text, runs: line.runs });
     }
     Ok(())
 }
 
-fn disguised_chat(shared: &Shared, r: &mut In, types: &[ChatType]) -> Result<()> {
+fn disguised_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType]) -> Result<()> {
     let message = r.nbt()?;
     let text = text::line(&message).text;
     if let Some(message) = bound(r, types, &message, text)? {
-        shared.emit(message);
+        said(shared, link, message);
     }
     Ok(())
+}
+
+/// Hands a chat line to the manager and keeps it for the chat in pictures.
+fn said(shared: &Shared, link: &mut Link, message: FromMod) {
+    if let FromMod::Chat { text, runs, .. } = &message {
+        link.status.chat(if runs.is_empty() { vec![Run { text: text.clone(), ..Run::default() }] } else { runs.clone() });
+    }
+    shared.emit(message);
 }
 
 fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType]) -> Result<()> {
@@ -937,7 +1001,7 @@ fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType])
     }
     let shown = unsigned.unwrap_or_else(|| Value::String(content.clone()));
     if let Some(message) = bound(r, types, &shown, content)? {
-        shared.emit(message);
+        said(shared, link, message);
     }
     Ok(())
 }
@@ -1031,6 +1095,14 @@ mod tests {
         }
         for id in [p::SYSTEM_CHAT, p::PLAYER_CHAT, p::DISGUISED_CHAT, p::SET_HEALTH, p::RESPAWN, p::PLAYER_COMBAT_KILL, p::RESOURCE_PACK_PUSH, p::RESOURCE_PACK_POP, p::CHUNK_BATCH_FINISHED] {
             assert!(!essential(Phase::Play, id));
+        }
+    }
+
+    #[test]
+    fn what_the_heads_up_display_shows_is_read_but_never_essential() {
+        use play::clientbound as p;
+        for id in [p::SET_EXPERIENCE, p::UPDATE_ATTRIBUTES, p::UPDATE_MOB_EFFECT, p::REMOVE_MOB_EFFECT, p::SET_OBJECTIVE, p::SET_DISPLAY_OBJECTIVE, p::SET_SCORE, p::RESET_SCORE, p::SET_PLAYER_TEAM, p::BOSS_EVENT, p::SET_TITLES_ANIMATION, p::SET_ENTITY_DATA, p::GAME_EVENT] {
+            assert!(wanted(Phase::Play, id) && !essential(Phase::Play, id), "packet {id}");
         }
     }
 
