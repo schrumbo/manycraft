@@ -3,6 +3,7 @@
 mod game;
 mod look;
 mod phone;
+mod share;
 
 use freya::prelude::*;
 
@@ -10,6 +11,7 @@ pub(crate) use self::game::gpu_label;
 use self::game::GameGroup;
 use self::look::LookGroup;
 use self::phone::PhoneGroup;
+use self::share::ShareGroup;
 use crate::app::event::Event;
 use crate::app::model::UpdateStatus;
 use crate::core::i18n::{tr, trf};
@@ -30,7 +32,7 @@ use crate::view::updates;
 
 const PAGE: f32 = 600.;
 const JUMPS: f32 = 180.;
-const SECTIONS: usize = 10;
+const SECTIONS: usize = 11;
 const SPY: f32 = space::XL * 2.;
 const ATTEMPTS: (i64, i64) = (1, 100);
 const WHILE_PLAYING: [WhilePlaying; 3] = [WhilePlaying::Minimize, WhilePlaying::Tray, WhilePlaying::Keep];
@@ -237,7 +239,7 @@ impl Component for SettingsPage {
             ],
             None,
         );
-        let sections: [Element; SECTIONS] = [LookGroup.into_element(), GameGroup.into_element(), ingame, connection, notices, PhoneGroup.into_element(), chat, hotkeys, UpdatesGroup.into_element(), advanced];
+        let sections: [Element; SECTIONS] = [LookGroup.into_element(), GameGroup.into_element(), ShareGroup.into_element(), ingame, connection, notices, PhoneGroup.into_element(), chat, hotkeys, UpdatesGroup.into_element(), advanced];
         let wide = *width.read() >= PAGE + (JUMPS + space::XL) * 2.;
         let mut column = rect().width(Size::fill()).max_width(Size::px(PAGE)).spacing(space::XL);
         for (i, section) in sections.into_iter().enumerate() {
@@ -260,7 +262,7 @@ fn measure(mut heights: State<[f32; SECTIONS]>, i: usize, h: f32) {
 }
 
 fn titles() -> [String; SECTIONS] {
-    ["Allgemein", "Spiel", "Im Spiel", "Verbindung", "Benachrichtigungen", "Aufs Handy", "Chat", "Tastenkürzel", "Updates", "Erweitert"].map(tr)
+    ["Allgemein", "Spiel", "Teilen", "Im Spiel", "Verbindung", "Benachrichtigungen", "Aufs Handy", "Chat", "Tastenkürzel", "Updates", "Erweitert"].map(tr)
 }
 
 /// Where section `i` starts in the scrolled page.
