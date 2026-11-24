@@ -183,6 +183,7 @@ struct Pg {
     versions: State<Load<Rc<Vec<Version>>>>,
     titles: State<Rc<HashMap<String, String>>>,
     room: State<f32>,
+    thumbs: gallery::Thumbs,
     section: State<Section>,
     epoch: State<u64>,
 }
@@ -305,6 +306,7 @@ impl Component for ProjectPage {
             versions: use_state(|| Load::Loading),
             titles: use_state(|| Rc::new(HashMap::new())),
             room: use_state(|| 520.),
+            thumbs: use_state(HashMap::new),
             section: use_state(|| Section::About),
             epoch: use_state(|| 0),
         };
@@ -451,7 +453,7 @@ fn gallery_view(t: &Theme, pg: &Pg) -> Element {
     let items: Vec<gallery::Item> = shots.into_iter().map(|s| gallery::Item { title: s.title, large: s.raw_url.unwrap_or_else(|| s.url.clone()), thumb: s.url }).collect();
     let (ui, project) = (pg.flow.store.ui, pg.hit.title.clone());
     let shown = items.clone();
-    gallery::grid(t, &items, pg.room, EventHandler::new(move |at: usize| gallery::open(ui, project.clone(), shown.clone(), at)))
+    gallery::grid(t, &items, pg.room, pg.thumbs, EventHandler::new(move |at: usize| gallery::open(ui, project.clone(), shown.clone(), at)))
 }
 
 fn mark_view(t: &Theme, mark: Mark) -> Element {

@@ -14,7 +14,8 @@ pub fn claim(e: &Event<FileEventData>) {
 }
 
 /// Lets `root`, the whole window, take files dropped where nothing else took them. `dropping` follows whether files are
-/// dragged over the window; draw [`outline`] while it is set.
+/// dragged over the window; draw [`outline`] while it is set. A sheet, the palette or a menu has the window's attention,
+/// so nothing is asked there.
 pub fn window(root: Rect, mut dropping: State<bool>, on_drop: impl Fn(Vec<PathBuf>) + 'static) -> Rect {
     root.on_global_file_hover(move |_| dropping.set_if_modified(true))
         .on_global_file_hover_cancelled(move |_| dropping.set_if_modified(false))
@@ -26,8 +27,8 @@ pub fn window(root: Rect, mut dropping: State<bool>, on_drop: impl Fn(Vec<PathBu
 }
 
 /// The accent frame around the window while files are dragged over it.
-pub fn outline(t: &Theme, dropping: State<bool>) -> Option<Element> {
-    (*dropping.read()).then(|| {
+pub fn outline(t: &Theme, dropping: State<bool>, layered: bool) -> Option<Element> {
+    (*dropping.read() && !layered).then(|| {
         rect()
             .position(Position::new_absolute().left(0.).top(0.))
             .layer(Layer::Relative(level::FLOAT))

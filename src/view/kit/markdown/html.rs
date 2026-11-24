@@ -228,7 +228,7 @@ impl Converter {
                     let body = self.out.split_off(at);
                     let text = body.trim();
                     if text.is_empty() {
-                    } else if text.contains('\n') {
+                    } else if text.contains('\n') || text.starts_with('#') {
                         self.out.push_str(text);
                     } else {
                         self.out.push_str(&format!("**{text}**"));
@@ -411,7 +411,7 @@ fn convert(s: &str, depth: usize) -> String {
 }
 
 /// The marker of a code fence on `line`: its character, its length and whether nothing but an info string follows.
-fn fence(line: &str) -> Option<(char, usize, bool)> {
+pub(super) fn fence(line: &str) -> Option<(char, usize, bool)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
         return None;
@@ -560,6 +560,12 @@ mod tests {
         assert!(got.contains("[![A](https://x.org/a.png)](https://x.org)"), "{got}");
         assert!(got.contains("**list**") && got.contains("**after**"), "{got}");
         assert!(!got.contains("<"), "{got}");
+    }
+
+    #[test]
+    fn a_summary_that_is_a_heading_stays_a_heading() {
+        let got = md("<details><summary><h2>Features</h2></summary>\n\n- one\n</details>");
+        assert!(got.contains("## Features") && !got.contains("**"), "{got}");
     }
 
     #[test]

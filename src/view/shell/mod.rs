@@ -133,7 +133,7 @@ impl Component for Shell {
             .child(menu::Host)
             .child(toast::Host)
             .child(tooltip::host(ui))
-            .maybe_child(super::kit::drop::outline(&t, dropping))
+            .maybe_child(super::kit::drop::outline(&t, dropping, ui.layered()))
     }
 }
 

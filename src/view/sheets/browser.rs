@@ -2117,7 +2117,7 @@ impl Component for Browser {
         let mut column = rect().width(Size::fill()).spacing(space::XS).on_global_key_down({
             let flow = flow.clone();
             move |e: Event<KeyboardEventData>| {
-                if flow.store.ui.menu.peek().is_some() || *flow.store.ui.palette.peek() || flow.other_field_typing() {
+                if flow.store.ui.menu.peek().is_some() || *flow.store.ui.palette.peek() || flow.other_field_typing() || (paged && flow.store.ui.layered()) {
                     return;
                 }
                 if drive_rows(&flow, &e.key, e.modifiers) {

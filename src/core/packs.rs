@@ -612,6 +612,9 @@ pub fn shot_file_large(url: &str) -> Result<PathBuf> {
         bail!("picture is not on Modrinth's CDN");
     }
     let path = cached_picture("gallery-large", url, SHOT_LARGE_WIDTH, |url| net::get_bytes(&net::agent(None)?, url))?;
+    if let Ok(file) = std::fs::File::options().write(true).open(&path) {
+        let _ = file.set_modified(std::time::SystemTime::now());
+    }
     if let Some(dir) = path.parent() {
         super::modrinth::prune(dir, KEPT_LARGE);
     }

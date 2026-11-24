@@ -25,6 +25,7 @@ use crate::view::theme::{Theme, font, iconsize, space};
 const THUMB_BOX: (u32, u32) = (1024, 576);
 const LARGE_BOX: (u32, u32) = (2560, 4096);
 const AT_ONCE: usize = 2;
+const AT_ONCE_LARGE: usize = 1;
 const TILE_MIN: f32 = 200.;
 const TILE_MAX: f32 = 360.;
 const GAP: f32 = space::M;
@@ -45,27 +46,34 @@ pub(super) struct Item {
     pub large: String,
 }
 
+/// The thumbnails of a gallery by url, kept while the project page is open so a regrid or a section switch costs no decoding.
+pub(super) type Thumbs = State<HashMap<String, Pic>>;
+
 #[derive(Clone, PartialEq)]
-enum Pic {
+pub(super) enum Pic {
     Loading,
     Ready { handle: ImageHandle, size: (u32, u32) },
     Failed,
 }
 
-static GATE: LazyLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> = LazyLock::new(|| async_channel::bounded(AT_ONCE));
+type Gate = (async_channel::Sender<()>, async_channel::Receiver<()>);
 
-struct Slot;
+static THUMBS: LazyLock<Gate> = LazyLock::new(|| async_channel::bounded(AT_ONCE));
+static LARGE: LazyLock<Gate> = LazyLock::new(|| async_channel::bounded(AT_ONCE_LARGE));
+
+struct Slot(&'static Gate);
 
 impl Slot {
-    async fn take() -> Self {
-        let _ = GATE.0.send(()).await;
-        Self
+    async fn take(large: bool) -> Self {
+        let gate: &'static Gate = if large { &LARGE } else { &THUMBS };
+        let _ = gate.0.send(()).await;
+        Self(gate)
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        let _ = GATE.1.try_recv();
+        let _ = self.0.1.try_recv();
     }
 }
 
@@ -78,16 +86,25 @@ fn bounded(img: image::DynamicImage, bound: (u32, u32)) -> image::DynamicImage {
     if img.width() > bound.0 || img.height() > bound.1 { img.thumbnail(bound.0, bound.1) } else { img }
 }
 
-async fn fetch(url: String, large: bool) -> Pic {
-    let slot = Slot::take().await;
+/// The picture at `url`, or `None` when `wanted` says nobody waits for it any more by the time its turn comes.
+/// A large picture that cannot be read falls back to `fallback`, the small copy.
+async fn fetch(url: String, fallback: Option<String>, wanted: impl Fn() -> bool) -> Option<Pic> {
+    let large = fallback.is_some();
+    let slot = Slot::take(large).await;
+    if !wanted() {
+        return None;
+    }
     let decoded = off_ui(move || {
         let _slot = slot;
-        let path = if large { catalog::shot_large(&url) } else { catalog::shot(&url) };
-        path.ok().and_then(|p| decode(&p, if large { LARGE_BOX } else { THUMB_BOX }))
+        let first = if large { catalog::shot_large(&url) } else { catalog::shot(&url) };
+        first.ok().and_then(|p| decode(&p, if large { LARGE_BOX } else { THUMB_BOX })).or_else(|| {
+            let small = catalog::shot(fallback.as_deref()?).ok()?;
+            decode(&small, THUMB_BOX)
+        })
     })
     .await
     .flatten();
-    decoded.and_then(|(w, h, rgba)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul).map(|handle| Pic::Ready { handle, size: (w, h) })).unwrap_or(Pic::Failed)
+    Some(decoded.and_then(|(w, h, rgba)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul).map(|handle| Pic::Ready { handle, size: (w, h) })).unwrap_or(Pic::Failed))
 }
 
 fn columns(room: f32) -> usize {
@@ -99,7 +116,7 @@ fn tile_width(room: f32, columns: usize) -> f32 {
 }
 
 /// The pictures of `items` as a grid of thumbnails with their titles; `room` follows the grid's width.
-pub(super) fn grid(t: &Theme, items: &[Item], room: State<f32>, on_open: EventHandler<usize>) -> Element {
+pub(super) fn grid(t: &Theme, items: &[Item], room: State<f32>, thumbs: Thumbs, on_open: EventHandler<usize>) -> Element {
     let mut measured = room;
     let width = *room.read();
     let cols = columns(width);
@@ -113,7 +130,7 @@ pub(super) fn grid(t: &Theme, items: &[Item], room: State<f32>, on_open: EventHa
             .horizontal()
             .spacing(GAP)
             .children(chunk.iter().enumerate().map(|(c, item)| {
-                Tile { index: r * cols + c, url: item.thumb.clone(), label: item.title.clone().filter(|s| !s.trim().is_empty()), titled, w, on_open: on_open.clone() }.into_element()
+                Tile { index: r * cols + c, url: item.thumb.clone(), thumbs, label: item.title.clone().filter(|s| !s.trim().is_empty()), titled, w, on_open: on_open.clone() }.into_element()
             }))
     });
     rect()
@@ -128,6 +145,7 @@ pub(super) fn grid(t: &Theme, items: &[Item], room: State<f32>, on_open: EventHa
 struct Tile {
     index: usize,
     url: String,
+    thumbs: Thumbs,
     label: Option<String>,
     titled: bool,
     w: f32,
@@ -140,20 +158,26 @@ impl Component for Tile {
         let a11y = use_a11y();
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
-        let mut pic = use_state(|| Pic::Loading);
+        let thumbs = self.thumbs;
         use_side_effect_with_deps(&self.url, move |url| {
+            let mut thumbs = thumbs;
+            if thumbs.peek().contains_key(url) {
+                return;
+            }
+            thumbs.write().insert(url.clone(), Pic::Loading);
             let url = url.clone();
-            pic.set(Pic::Loading);
             spawn_in_window(async move {
-                let next = fetch(url, false).await;
-                if let Some(mut p) = pic.try_write() {
-                    *p = next;
+                if let Some(next) = fetch(url.clone(), None, move || thumbs.try_peek().is_some()).await
+                    && let Some(mut map) = thumbs.try_write()
+                {
+                    map.insert(url, next);
                 }
             });
         });
+        let pic = thumbs.read().get(&self.url).cloned().unwrap_or(Pic::Loading);
         let h = (self.w / ASPECT).round();
         let frame = rect().width(Size::px(self.w)).height(Size::px(h)).corner_radius(t.shape.control).overflow(Overflow::Clip).center();
-        let frame = match pic.read().clone() {
+        let frame = match pic {
             Pic::Ready { handle, .. } => frame.background(t.well).child(image(handle).width(Size::px(self.w)).height(Size::px(h)).aspect_ratio(AspectRatio::Min).image_cover(ImageCover::Center)).into_element(),
             Pic::Failed => WithTip::new(Some(tr("Bild ließ sich nicht laden.")), frame.background(t.well).child(icon(&t, Icon::ImageOff, iconsize::L, t.text3))).fill().into_element(),
             Pic::Loading => frame.background(t.hover).into_element(),
@@ -250,10 +274,11 @@ impl Component for Lightbox {
                 }
             }
             for i in missing {
-                let url = items[i].large.clone();
+                let (url, thumb) = (items[i].large.clone(), items[i].thumb.clone());
                 spawn_in_window(async move {
-                    let next = fetch(url, true).await;
-                    if let Some(mut map) = pics.try_write()
+                    let wanted = move || pics.try_peek().is_some_and(|map| map.contains_key(&i));
+                    if let Some(next) = fetch(url, Some(thumb), wanted).await
+                        && let Some(mut map) = pics.try_write()
                         && map.contains_key(&i)
                     {
                         map.insert(i, next);
@@ -288,6 +313,8 @@ impl Component for Lightbox {
             let next = (current as isize).saturating_add(by).clamp(0, count as isize - 1) as usize;
             if next != current {
                 put(pose, FIT);
+                pressed.set(None);
+                drag.set_if_modified(None);
                 at.set(next);
             }
         };
@@ -387,10 +414,10 @@ impl Component for Lightbox {
         };
         let middle = (area.1 / 2. - 14.).max(0.);
         if current > 0 {
-            surface = surface.child(rect().position(Position::new_absolute().left(space::M).top(middle)).child(Button::icon("browser.gallery.previous", Icon::ChevronLeft, tr("Vorheriges Bild")).look(Look::Secondary).tip(Shortcut::bare(Code::ArrowLeft).label()).on_press(move |_| step(-1))));
+            surface = surface.child(rect().position(Position::new_absolute().left(space::M).top(middle)).on_pointer_down(|e: Event<PointerEventData>| e.stop_propagation()).child(Button::icon("browser.gallery.previous", Icon::ChevronLeft, tr("Vorheriges Bild")).look(Look::Secondary).tip(Shortcut::bare(Code::ArrowLeft).label()).on_press(move |_| step(-1))));
         }
         if !last {
-            surface = surface.child(rect().position(Position::new_absolute().right(space::M).top(middle)).child(Button::icon("browser.gallery.next", Icon::ChevronRight, tr("Nächstes Bild")).look(Look::Secondary).tip(Shortcut::bare(Code::ArrowRight).label()).on_press(move |_| step(1))));
+            surface = surface.child(rect().position(Position::new_absolute().right(space::M).top(middle)).on_pointer_down(|e: Event<PointerEventData>| e.stop_propagation()).child(Button::icon("browser.gallery.next", Icon::ChevronRight, tr("Nächstes Bild")).look(Look::Secondary).tip(Shortcut::bare(Code::ArrowRight).label()).on_press(move |_| step(1))));
         }
         let caption_line = self.items.get(current).and_then(|i| i.title.clone()).filter(|s| !s.trim().is_empty());
         let stage_h = (win_h - STAGE_CHROME).clamp(STAGE_MIN, STAGE_MAX);

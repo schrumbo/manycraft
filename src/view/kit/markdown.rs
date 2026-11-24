@@ -286,10 +286,7 @@ fn is_rule(line: &str) -> bool {
 }
 
 fn fence_of(line: &str) -> Option<(char, usize)> {
-    let t = line.trim_start();
-    let first = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
-    let run = t.chars().take_while(|c| *c == first).count();
-    (run >= 3).then_some((first, run))
+    html::fence(line).map(|(mark, run, _)| (mark, run))
 }
 
 fn heading_of(line: &str) -> Option<(u8, &str)> {
@@ -747,6 +744,14 @@ pub fn view(t: &Theme, blocks: &[Block], color: Color) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readme_with_a_one_line_backtick_span_and_html_has_one_code_block() {
+        let src = "<center>\n\n```Early access```<br>\n[<img src=\"https://x.org/a.png\" alt=\"A\"/>](https://x.org)\n\n</center>\n\n<details>\n<summary>list</summary>\n\n```\nA, B\n```\n</details>\n\n<b>after</b>";
+        let found = blocks(src);
+        let codes: Vec<&String> = found.iter().filter_map(|b| if let Block::Code(c) = b { Some(c) } else { None }).collect();
+        assert_eq!(codes, vec!["A, B"], "{} blocks", found.len());
+    }
 
     fn plain(text: &str) -> Run {
         Run { text: text.to_owned(), ..Run::default() }
