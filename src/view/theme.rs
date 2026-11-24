@@ -152,8 +152,6 @@ pub mod frame {
     pub const PARA_LINE: f32 = 1.35;
     /// The outline of an empty checkbox.
     pub const BOX_EDGE: f32 = 1.5;
-    /// The height of a gallery image on a project page.
-    pub const SHOT_HEIGHT: f32 = 270.;
     /// The height of a version or dependency row on a project page.
     pub const VERSION_ROW: f32 = 44.;
     /// The widest the add button of a version row lets its label grow.
