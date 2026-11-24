@@ -3,6 +3,8 @@
 
 use uuid::Uuid;
 
+use crate::core::chat_text::Run;
+
 /// The entities a picture shows and the account's own hand.
 pub trait Entities {
     /// The entities to draw, positions in world coordinates.
@@ -24,20 +26,8 @@ impl Entities for Nobody {
     }
 }
 
-/// A run of styled text; a `\n` in `text` starts a new line.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Span {
-    pub text: String,
-    /// RGB; `None` is the default colour.
-    pub color: Option<u32>,
-    pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub strike: bool,
-}
-
-/// Styled text: its runs in order.
-pub type Text = Vec<Span>;
+/// Styled text: its runs in order; a `\n` starts a new line.
+pub type Text = Vec<Run>;
 
 /// A player's skin.
 #[derive(Clone, Debug, Default, PartialEq)]

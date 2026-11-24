@@ -1,7 +1,7 @@
 """Regenerates src/core/headless/v777.rs from a Minecraft server jar: packet ids from the data generator's packets.json,
 the protocol number from version.json, the English texts the connection-only client shows for chat, deaths and kicks,
 and from the game code itself (GameData.java) the map colours, items, menu types, data component types and how each
-block state looks in a picture.
+block state looks in a picture; the default durability of items from the generator's item component reports.
 
 headless-packets [server.jar]   default: the test server's 26.3 jar
 """
@@ -28,7 +28,7 @@ PACKETS = {
         "serverbound": ["client_information", "cookie_response", "custom_payload", "finish_configuration", "keep_alive", "pong", "resource_pack", "select_known_packs", "accept_code_of_conduct"],
     },
     "play": {
-        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update", "add_entity", "remove_entities", "move_entity_pos", "move_entity_pos_rot", "move_entity_rot", "rotate_head", "teleport_entity", "entity_position_sync", "set_entity_data", "set_equipment", "player_info_update", "player_info_remove", "set_time", "game_event"],
+        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update", "add_entity", "remove_entities", "move_entity_pos", "move_entity_pos_rot", "move_entity_rot", "rotate_head", "teleport_entity", "entity_position_sync", "set_entity_data", "set_equipment", "player_info_update", "player_info_remove", "set_time", "game_event", "set_experience", "update_attributes", "update_mob_effect", "remove_mob_effect", "set_objective", "set_display_objective", "set_score", "reset_score", "set_player_team", "boss_event", "set_titles_animation"],
         "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close"],
     },
 }
@@ -43,7 +43,7 @@ def game_data(work, inner):
     out = Path(work) / "gamedata.tsv"
     classpath = __import__("os").pathsep.join([str(inner), *libraries])
     subprocess.run(["java", "-cp", classpath, str(GAME_DATA), str(out), str(inner)], cwd=work, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    rows = {"color": [], "item": [], "menu": [], "component": [], "consume_effect": [], "block": [], "entity": [], "villager_type": [], "villager_profession": [], "serializer": [], "accessor": []}
+    rows = {"color": [], "item": [], "menu": [], "component": [], "consume_effect": [], "block": [], "entity": [], "villager_type": [], "villager_profession": [], "attribute": [], "mob_effect": [], "particle": [], "serializer": [], "accessor": []}
     for line in out.read_text(encoding="utf-8").splitlines():
         kind, *fields = line.split("\t")
         rows[kind].append(fields)
@@ -73,6 +73,7 @@ def main():
     with tempfile.TemporaryDirectory() as work:
         subprocess.run(["java", "-DbundlerMainClass=net.minecraft.data.Main", "-jar", str(jar), "--reports", "--output", str(Path(work) / "out")], cwd=work, check=True, stdout=subprocess.DEVNULL)
         packets = json.loads((Path(work) / "out" / "reports" / "packets.json").read_text(encoding="utf-8"))
+        item_report = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in (Path(work) / "out" / "reports" / "minecraft" / "components" / "item").glob("*.json")}
         inner = next((Path(work) / "versions").glob("*/*.jar"))
         with zipfile.ZipFile(inner) as z:
             version = json.loads(z.read("version.json"))
@@ -158,13 +159,28 @@ def main():
         lines.append(f"    {rust_str(name)},")
     lines.append("];")
     lines.append("")
-    for kind, title in (("villager_type", "Villager types"), ("villager_profession", "Villager professions")):
+    for kind, title in (("villager_type", "Villager types"), ("villager_profession", "Villager professions"), ("attribute", "Attributes"), ("mob_effect", "Mob effects")):
         lines.append(f"/// {title} by protocol id.")
         lines.append(f"pub static {kind.upper()}S: &[&str] = &[")
         for _, name in data[kind]:
             lines.append(f"    {rust_str(name)},")
         lines.append("];")
         lines.append("")
+    lines.append("/// Particle types by protocol id, and whether the type carries no options.")
+    lines.append("pub static PARTICLE_TYPES: &[(&str, bool)] = &[")
+    for _, name, simple in data["particle"]:
+        lines.append(f"    ({rust_str(name)}, {'true' if simple == '1' else 'false'}),")
+    lines.append("];")
+    lines.append("")
+    lines.append("/// How much damage items that break survive by default, by item protocol id, sorted.")
+    lines.append("pub static MAX_DAMAGE: &[(u16, u16)] = &[")
+    ids = {name: int(pid) for pid, name, *_ in data["item"]}
+    durable = sorted((ids[name], entry.get("components", {}).get("minecraft:max_damage", 0)) for name, entry in item_report.items())
+    for item, most in durable:
+        if most > 0:
+            lines.append(f"    ({item}, {most}),")
+    lines.append("];")
+    lines.append("")
     lines.append("/// Entity data serializers by protocol id.")
     lines.append("pub mod serializer {")
     for pid, name in data["serializer"]:

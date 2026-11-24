@@ -11,6 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 
 use super::figure::{Models, Sheet};
+use super::font::Font;
 use super::skins::Skins;
 use super::model::Source;
 
@@ -123,6 +124,8 @@ pub struct Assets {
     data: HashMap<String, Value>,
     /// Player skins fetched for these pictures.
     pub(super) skins: Skins,
+    /// The default font, for name tags and text displays.
+    pub(super) font: Option<Font>,
 }
 
 impl Source for Assets {
@@ -150,7 +153,8 @@ impl Assets {
     /// Reads what pictures need from a client jar.
     pub fn from_jar(reader: impl Read + Seek) -> Result<Self> {
         let mut zip = zip::ZipArchive::new(reader).context("not a jar")?;
-        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new(), skins: Skins::default() };
+        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new(), skins: Skins::default(), font: None };
+        let mut fonts: HashMap<String, Vec<u8>> = HashMap::new();
         let mut bytes = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;
@@ -175,12 +179,17 @@ impl Assets {
                 continue;
             }
             let sheet = (path.starts_with("textures/entity/") || path.starts_with("textures/item/") || path.starts_with("textures/trims/") || path == "textures/misc/shadow.png" || path.starts_with("textures/map/")) && path.ends_with(".png");
-            let wanted = sheet || path.starts_with("blockstates/") || path.starts_with("models/block/") || path.starts_with("models/item/") || path.starts_with("items/") || path.starts_with("equipment/") || path.starts_with("textures/block/") || path.starts_with("textures/colormap/") || path.starts_with("textures/environment/") || path == "textures/misc/vignette.png";
+            let font = path.starts_with("font/") || path.starts_with("textures/font/");
+            let wanted = sheet || font || path.starts_with("blockstates/") || path.starts_with("models/block/") || path.starts_with("models/item/") || path.starts_with("items/") || path.starts_with("equipment/") || path.starts_with("textures/block/") || path.starts_with("textures/colormap/") || path.starts_with("textures/environment/") || path == "textures/misc/vignette.png";
             if !wanted || entry.size() > MAX_ENTRY {
                 continue;
             }
             bytes.clear();
             entry.read_to_end(&mut bytes)?;
+            if font {
+                fonts.insert(path, bytes.clone());
+                continue;
+            }
             if sheet {
                 let key = path.strip_prefix("textures/").and_then(|p| p.strip_suffix(".png")).unwrap_or(&path);
                 assets.pngs.insert(key.to_string(), bytes.clone());
@@ -221,6 +230,7 @@ impl Assets {
             }
         }
         anyhow::ensure!(!assets.blockstates.is_empty() && !assets.textures.is_empty(), "the jar has no block art");
+        assets.font = Font::load(|p| fonts.get(p).cloned());
         Ok(assets)
     }
 

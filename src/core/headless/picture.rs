@@ -7,6 +7,7 @@ use std::sync::{LazyLock, Mutex};
 
 use std::collections::HashMap;
 
+use super::render::hud::{self, Hud};
 use super::render::{self, Blocks, Camera};
 use super::crowd::Seen;
 use super::v777::MAP_COLORS;
@@ -42,6 +43,8 @@ pub struct Request {
     pub world: Snapshot,
     /// The entities near the player and its hand.
     pub seen: Seen,
+    /// What the game shows over the world, drawn on the view from the eyes.
+    pub hud: Hud,
     /// Where the player stands (feet).
     pub position: [f64; 3],
     /// Yaw and pitch in degrees, as the game sends them.
@@ -61,10 +64,11 @@ pub fn queue(request: Request, views: Vec<View>, done: impl FnOnce(Vec<Vec<u8>>)
         let mut scene = None;
         let pictures = views.into_iter().map(|view| {
             if view == View::Eyes {
-                match textured(&request) {
-                    Ok(picture) => return picture,
-                    Err(e) => eprintln!("textured picture not drawn, drawing the plain one: {e:#}"),
-                }
+                let picture = textured(&request).unwrap_or_else(|e| {
+                    eprintln!("textured picture not drawn, drawing the plain one: {e:#}");
+                    paint(scene.get_or_insert_with(|| Scene::new(&request.world)), &request, view)
+                });
+                return overlaid(picture, &request);
             }
             paint(scene.get_or_insert_with(|| Scene::new(&request.world)), &request, view)
         });
@@ -104,6 +108,18 @@ fn paint(scene: &Scene, request: &Request, view: View) -> Vec<u8> {
         View::Above => above(scene, request, w, h, &mut rgba),
     }
     rgba
+}
+
+fn overlaid(picture: Vec<u8>, request: &Request) -> Vec<u8> {
+    let (w, h) = (request.width.max(1), request.height.max(1));
+    if picture.len() != w as usize * h as usize * 4 {
+        return picture;
+    }
+    let Some(mut image) = image::RgbaImage::from_raw(w, h, picture) else { return Vec::new() };
+    if let Err(e) = hud::draw(&mut image, &request.hud) {
+        eprintln!("heads-up display not drawn: {e:#}");
+    }
+    image.into_raw()
 }
 
 fn textured(request: &Request) -> anyhow::Result<Vec<u8>> {
@@ -475,7 +491,7 @@ mod tests {
     }
 
     fn request(world: Snapshot, rotation: [f32; 2]) -> Request {
-        Request { world, seen: Seen::default(), position: [8.5, 0.0, 8.5], rotation, width: 64, height: 36 }
+        Request { world, seen: Seen::default(), hud: Hud::default(), position: [8.5, 0.0, 8.5], rotation, width: 64, height: 36 }
     }
 
     #[test]

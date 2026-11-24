@@ -140,6 +140,7 @@ fn push(stack: &mut Vec<Frame>, frame: Frame) -> Result<()> {
 }
 
 /// A packet body being read.
+#[derive(Clone)]
 pub struct In<'a> {
     buf: &'a [u8],
     pos: usize,

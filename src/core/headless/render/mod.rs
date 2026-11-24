@@ -14,6 +14,7 @@ mod figure;
 mod font;
 pub mod hud;
 mod item;
+mod label;
 mod skins;
 mod light;
 mod model;
@@ -26,7 +27,7 @@ mod states;
 use serde_json::Value;
 
 pub use self::assets::{Assets, shared};
-pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, Nobody, Pose, Skin, Span, Text, slot};
+pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, Nobody, Pose, Skin, Text, slot};
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
 use self::scene::{Scene, View};
@@ -168,8 +169,11 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, c
     let mut scene = Scene::new(world, assets, biomes, camera.pos, i32::from(distance));
     let mut later = Later::default();
     scene.draw(&view, &lightmap, &mut target, &mut later);
-    actor::draw(entities, &scene, assets, &lightmap, &view, &mut target, end + 16.0);
+    let mut labels = actor::draw(entities, &scene, assets, &lightmap, &view, &mut target, end + 16.0);
     later.draw(&mut target);
+    if let Some(font) = &assets.font {
+        label::draw(&mut figure::Painter { target: &mut target, view: &view }, font, &mut labels);
+    }
     actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
     if let Some(texture) = &assets.vignette {
         let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
@@ -324,13 +328,19 @@ mod tests {
             "item" => Data::Item { item: item(kv("item")?) },
             "item_frame" | "glow_item_frame" => Data::Frame { item: kv("item").map(item), rotation: kv("rot").and_then(|v| v.parse().ok()).unwrap_or(0), facing: kv("facing").and_then(|v| v.parse().ok()).unwrap_or(3), glow: f[0] == "glow_item_frame", invisible: flag("invisible") },
             "armor_stand" => Data::ArmorStand { small: flag("small"), arms: flag("arms"), no_plate: false, marker: false, poses: [[0.0; 3], [0.0; 3], [-10.0, 0.0, -10.0], [-15.0, 0.0, 10.0], [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0]] },
-            "block_display" | "item_display" => {
+            "block_display" | "item_display" | "text_display" => {
                 let scale = kv("scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
                 let common = Display { scale: [scale; 3], billboard: kv("billboard").and_then(|v| v.parse().ok()).unwrap_or(0), ..Display::default() };
-                let kind = if f[0] == "block_display" {
-                    DisplayKind::Block { state: block::encode(kv("block")?, &[])? }
-                } else {
-                    DisplayKind::Item { item: kv("item").map(item), transform: kv("transform").and_then(|v| v.parse().ok()).unwrap_or(0) }
+                let kind = match f[0] {
+                    "block_display" => DisplayKind::Block { state: block::encode(kv("block")?, &[])? },
+                    "item_display" => DisplayKind::Item { item: kv("item").map(item), transform: kv("transform").and_then(|v| v.parse().ok()).unwrap_or(0) },
+                    _ => DisplayKind::Text {
+                        text: vec![crate::core::chat_text::Run { text: kv("text")?.replace('_', " ").replace('|', "\n"), color: kv("color").and_then(|c| u32::from_str_radix(c, 16).ok()), ..Default::default() }],
+                        line_width: kv("width").and_then(|v| v.parse().ok()).unwrap_or(200),
+                        background: kv("background").and_then(|c| u32::from_str_radix(c, 16).ok()).unwrap_or(0x4000_0000),
+                        opacity: 255,
+                        flags: kv("flags").and_then(|v| v.parse().ok()).unwrap_or(0),
+                    },
                 };
                 Data::Display { common, kind }
             }
@@ -345,8 +355,8 @@ mod tests {
             head_yaw: kv("head").and_then(|v| v.parse().ok()).unwrap_or(yaw),
             baby: flag("baby"),
             pose: if flag("sneak") { Pose::Crouching } else { Pose::Standing },
-            flags: 0,
-            name: kv("name").map(|t| vec![Span { text: t.replace('_', " "), ..Span::default() }]),
+            flags: if flag("hidden") { 0x20 } else { 0 },
+            name: kv("name").map(|t| vec![crate::core::chat_text::Run { text: t.replace('_', " "), color: kv("color").and_then(|c| u32::from_str_radix(c, 16).ok()), ..Default::default() }]),
             equipment,
             data,
         })
@@ -370,6 +380,9 @@ mod tests {
         let _ = out;
         let props: Vec<Entity> = row.iter().skip(16).enumerate().map(|(i, e)| { let mut e = e.clone(); e.pos = [i as f64 * 1.2 - 4.0, 63.0 + if matches!(e.data, Data::Frame { .. } | Data::Display { .. }) { 1.0 } else { 0.0 }, 4.0]; e }).collect();
         render(&Flat, &[Biome::default()], &Crowd(props), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-props.png")).ok();
+        let labels: Vec<Entity> = ["text_display -2.5 64.2 4 180 text=Welcome_to_the|§_spawn_§ flags=1 billboard=0", "text_display 0.5 65.4 4.5 180 text=Left_aligned|text_on_a|red_background flags=8 background=A0FF0000 billboard=3", "text_display 3.5 64.2 4 180 text=Right|aligned_lines flags=18 color=FFD700", "player -1.5 63 5 180 name=Steve main=diamond_sword", "villager 1.5 63 5 180 name=Farmer_Bob color=55FF55", "armor_stand 3 63 3.5 180 hidden name=Hidden_hologram head=golden_helmet", "player 4.5 63 6 180 sneak name=Sneaky"].iter().filter_map(|l| crowd_entity(l)).collect();
+        assert_eq!(labels.len(), 7);
+        render(&Flat, &[Biome::default()], &Crowd(labels), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-labels.png")).ok();
         let solo = vec![crowd_entity("player 0.5 63 3.5 180 main=diamond_sword").unwrap()];
         render(&Flat, &[Biome::default()], &Crowd(solo.clone()), &Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-front.png")).ok();
         render(&Flat, &[Biome::default()], &Crowd(solo), &Camera { pos: [3.5, 64.62, 3.5], yaw: 90.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-side.png")).ok();

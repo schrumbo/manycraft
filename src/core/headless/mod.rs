@@ -19,6 +19,7 @@ mod picture;
 pub mod render;
 pub mod resume;
 mod screen;
+mod status;
 mod text;
 mod v777;
 mod wire;

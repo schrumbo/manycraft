@@ -11,6 +11,8 @@ import java.util.zip.ZipFile;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
+import net.minecraft.core.particles.ParticleType;
+import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializer;
@@ -28,7 +30,8 @@ import net.minecraft.world.level.material.MapColor;
  * Writes what the connection-only client needs from the game code itself, as tab-separated lines: the map colours
  * (packed id, ARGB), the items (protocol id, name, translation key, block map colour or -1), the menu types, the
  * data component types and the consume effect types (protocol id, name), and the block states (protocol id, map colour,
- * kind: 0 air or unseen, 1 full cube, 2 fluid, 3 other solid, 4 no collision), the entity types, the villager types and professions, the entity data serializers
+ * kind: 0 air or unseen, 1 full cube, 2 fluid, 3 other solid, 4 no collision), the entity types, the villager types and professions, the
+ * attributes, the mob effects, the particle types (protocol id, name, 1 when it carries no options), the entity data serializers
  * (protocol id, field name) and every entity data accessor of the entity classes in the server jar (class, field, index,
  * serializer id). Run by headless-packets with the server's classpath and the path of that jar.
  */
@@ -56,6 +59,11 @@ public class GameData {
             names(out, "entity", BuiltInRegistries.ENTITY_TYPE);
             names(out, "villager_type", BuiltInRegistries.VILLAGER_TYPE);
             names(out, "villager_profession", BuiltInRegistries.VILLAGER_PROFESSION);
+            names(out, "attribute", BuiltInRegistries.ATTRIBUTE);
+            names(out, "mob_effect", BuiltInRegistries.MOB_EFFECT);
+            for (ParticleType<?> type : BuiltInRegistries.PARTICLE_TYPE) {
+                out.print("particle\t" + BuiltInRegistries.PARTICLE_TYPE.getId(type) + "\t" + BuiltInRegistries.PARTICLE_TYPE.getKey(type).getPath() + "\t" + (type instanceof SimpleParticleType ? 1 : 0) + "\n");
+            }
             for (Field f : EntityDataSerializers.class.getDeclaredFields()) {
                 if (Modifier.isStatic(f.getModifiers()) && EntityDataSerializer.class.isAssignableFrom(f.getType())) {
                     f.setAccessible(true);

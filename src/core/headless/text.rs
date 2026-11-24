@@ -53,6 +53,15 @@ enum Work<'a> {
     Text(&'a str, Style),
 }
 
+/// The style `component` (or a style compound) sets at its top level, as a run without text.
+pub fn style(component: &Value) -> Run {
+    let style = match component {
+        Value::Object(map) => styled(map, Style::default()),
+        _ => Style::default(),
+    };
+    Run { text: String::new(), color: style.color, bold: style.bold, italic: style.italic, underline: style.underline, strike: style.strike }
+}
+
 /// The English text of translation `key` with `args` filled in, as the game would show it.
 pub fn translate(key: &str, args: &[Value]) -> Line {
     let mut map = Map::new();

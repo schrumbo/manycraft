@@ -8,11 +8,13 @@ use base64::Engine;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::chat_text::Run;
+
 use super::item::{self, Stack};
-use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Span, Text};
+use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Text};
 use super::text::{self, Line};
 use super::v777::entity_data as d;
-use super::v777::{ENTITY_TYPES, ITEMS, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
+use super::v777::{ENTITY_TYPES, ITEMS, PARTICLE_TYPES, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
 use super::wire::In;
 
 const MAX_ENTITIES: usize = 512;
@@ -20,7 +22,7 @@ const MAX_PLAYERS: usize = 1024;
 const MAX_VARIANTS: usize = 1024;
 const SKINS: &str = "http://textures.minecraft.net/texture/";
 const AGEABLE: &[&str] = &[
-    "armadillo", "axolotl", "bee", "camel", "camel_husk", "cat", "chicken", "cow", "dolphin", "donkey", "fox", "frog", "goat", "happy_ghast", "hoglin", "horse", "llama", "mooshroom", "mule", "ocelot", "panda", "parrot", "pig", "polar_bear", "rabbit", "sheep", "skeleton_horse", "sniffer", "strider", "trader_llama", "turtle", "villager", "wandering_trader", "wolf", "zombie_horse", "zoglin", "zombie", "husk", "drowned", "zombie_villager",
+    "armadillo", "axolotl", "bee", "camel", "camel_husk", "cat", "chicken", "cow", "dolphin", "donkey", "fox", "frog", "goat", "happy_ghast", "hoglin", "horse", "llama", "mooshroom", "mule", "ocelot", "panda", "parrot", "pig", "polar_bear", "rabbit", "sheep", "skeleton_horse", "sniffer", "strider", "trader_llama", "turtle", "villager", "wandering_trader", "wolf", "zombie_horse", "zoglin", "zombie", "husk", "drowned", "zombie_villager", "zombified_piglin",
 ];
 const VARIANTS: &[&str] = &["cat_variant", "wolf_variant", "pig_variant", "cow_variant", "chicken_variant", "frog_variant"];
 
@@ -46,7 +48,7 @@ struct Mob {
     baby: bool,
     name_shown: bool,
     name: Option<Box<Line>>,
-    equipment: Option<Box<[Option<Item>; 6]>>,
+    equipment: Option<Box<[Option<Worn>; 6]>>,
     data: Option<Box<Data>>,
 }
 
@@ -57,7 +59,8 @@ struct Profile {
     slim: bool,
 }
 
-enum Meta {
+/// One entity data value, as far as anything reads it.
+pub(super) enum Meta {
     Byte(u8),
     Int(i32),
     Float(f32),
@@ -250,23 +253,16 @@ impl Crowd {
     fn data(&mut self, r: &mut In) -> Result<()> {
         let id = r.varint()?;
         let Some(mob) = self.near.get_mut(&id) else { return Ok(()) };
-        loop {
-            let index = r.u8()?;
-            if index == 0xFF {
-                return Ok(());
-            }
-            let serializer = r.varint()?;
-            let value = meta(r, serializer)?;
-            mob.set(index, value, &self.variants);
-        }
+        let variants = &self.variants;
+        items(r, |index, value| mob.set(index, value, variants))
     }
 
     fn equipment(&mut self, r: &mut In) -> Result<()> {
         let id = r.varint()?;
-        let mut worn: Vec<(usize, Option<Item>)> = Vec::new();
+        let mut worn: Vec<(usize, Option<Worn>)> = Vec::new();
         loop {
             let slot = r.u8()?;
-            worn.push((usize::from(slot & 0x7F), item::stack(r)?.as_ref().and_then(picture_item)));
+            worn.push((usize::from(slot & 0x7F), item::stack(r)?.as_ref().and_then(Worn::new)));
             if slot & 0x80 == 0 {
                 break;
             }
@@ -359,12 +355,12 @@ impl Crowd {
     fn entity(&self, id: i32, mob: &Mob) -> Entity {
         let kind = ENTITY_TYPES[usize::from(mob.kind)];
         let mut data = mob.data.as_deref().cloned().unwrap_or_default();
-        let mut name = mob.name.as_deref().filter(|_| mob.name_shown).map(spans);
+        let mut name = mob.name.as_deref().filter(|_| mob.name_shown).map(|line| line.runs.clone());
         if let Data::Player { skin, .. } = &mut data {
             let parts = skin.parts;
             *skin = self.skin(mob.uuid);
             skin.parts = parts;
-            name = name.or_else(|| self.players.get(&mob.uuid).map(|p| vec![Span { text: p.name.clone(), ..Span::default() }]));
+            name = name.or_else(|| self.players.get(&mob.uuid).map(|p| vec![Run { text: p.name.clone(), ..Run::default() }]));
         }
         Entity {
             id,
@@ -377,7 +373,7 @@ impl Crowd {
             pose: pose(mob.pose),
             flags: mob.flags,
             name,
-            equipment: mob.equipment.as_deref().cloned().unwrap_or_default(),
+            equipment: mob.equipment.as_deref().map(|worn| worn.map(|w| w.and_then(Worn::item))).unwrap_or_default(),
             data,
         }
     }
@@ -431,8 +427,16 @@ impl Mob {
             return;
         }
         let variant = |registry: &str, id: i32| -> String { variants.get(registry).and_then(|v| usize::try_from(id).ok().and_then(|i| v.get(i))).cloned().unwrap_or_default() };
-        let data = self.data.get_or_insert_with(|| Box::new(Data::None));
-        match (&mut **data, index, value) {
+        let Some(data) = self.data.as_deref_mut() else {
+            if kind == "item"
+                && index == d::item_entity::DATA_ITEM
+                && let Meta::Stack(stack) = value
+            {
+                self.data = stack.as_ref().and_then(picture_item).map(|item| Box::new(Data::Item { item }));
+            }
+            return;
+        };
+        match (data, index, value) {
             (Data::Player { skin, .. }, d::avatar::DATA_PLAYER_MODE_CUSTOMISATION, Meta::Byte(p)) => skin.parts = p,
             (Data::Player { main_left, .. }, d::avatar::DATA_PLAYER_MAIN_HAND, Meta::Enum(arm)) => *main_left = arm == 0,
             (slot, d::item_entity::DATA_ITEM, Meta::Stack(stack)) if kind == "item" => {
@@ -500,7 +504,7 @@ fn display(common: &mut Display, kind: &mut DisplayKind, index: u8, value: Meta)
         (DisplayKind::Block { state }, d::display_block_display::DATA_BLOCK_STATE_ID, Meta::State(s)) => *state = s,
         (DisplayKind::Item { item, .. }, d::display_item_display::DATA_ITEM_STACK_ID, Meta::Stack(stack)) => *item = stack.as_ref().and_then(picture_item),
         (DisplayKind::Item { transform, .. }, d::display_item_display::DATA_ITEM_DISPLAY_ID, Meta::Byte(b)) => *transform = b.min(8),
-        (DisplayKind::Text { text, .. }, d::display_text_display::DATA_TEXT_ID, Meta::Text(line)) => *text = spans(&line),
+        (DisplayKind::Text { text, .. }, d::display_text_display::DATA_TEXT_ID, Meta::Text(line)) => *text = line.runs.clone(),
         (DisplayKind::Text { line_width, .. }, d::display_text_display::DATA_LINE_WIDTH_ID, Meta::Int(w)) => *line_width = w,
         (DisplayKind::Text { background, .. }, d::display_text_display::DATA_BACKGROUND_COLOR_ID, Meta::Int(c)) => *background = c as u32,
         (DisplayKind::Text { opacity, .. }, d::display_text_display::DATA_TEXT_OPACITY_ID, Meta::Byte(o)) => *opacity = o,
@@ -533,6 +537,28 @@ fn initial(kind: &str, extra: i32) -> Option<Data> {
         "creeper" => Some(Data::Creeper { charged: false }),
         "pig" | "cow" | "chicken" | "frog" => variant("temperate"),
         _ => None,
+    }
+}
+
+/// Reads entity data values up to their end mark and hands each to `each` with its index.
+pub(super) fn items(r: &mut In, mut each: impl FnMut(u8, Meta)) -> Result<()> {
+    loop {
+        let index = r.u8()?;
+        if index == 0xFF {
+            return Ok(());
+        }
+        let serializer = r.varint()?;
+        each(index, meta(r, serializer)?);
+    }
+}
+
+fn particle(r: &mut In) -> Result<()> {
+    let kind = r.varint()?;
+    match usize::try_from(kind).ok().and_then(|k| PARTICLE_TYPES.get(k)) {
+        Some((_, true)) => Ok(()),
+        Some(("entity_effect", _)) => r.i32().map(drop),
+        Some((name, _)) => bail!("particle {name} in entity data is not read"),
+        None => bail!("particle type {kind}"),
     }
 }
 
@@ -600,7 +626,16 @@ fn meta(r: &mut In, serializer: i32) -> Result<Meta> {
             item::profile(r)?;
             Meta::Skipped
         }
-        s::PARTICLE | s::PARTICLES => bail!("particles in entity data are not read"),
+        s::PARTICLE => {
+            particle(r)?;
+            Meta::Skipped
+        }
+        s::PARTICLES => {
+            for _ in 0..r.list()? {
+                particle(r)?;
+            }
+            Meta::Skipped
+        }
         other => bail!("entity data of serializer {other} not read"),
     })
 }
@@ -641,14 +676,30 @@ fn listed(names: &'static [&'static str], id: i32) -> &'static str {
     usize::try_from(id).ok().and_then(|i| names.get(i)).copied().unwrap_or_default()
 }
 
+/// An item an entity wears or holds, kept small: an index into the item table.
+#[derive(Clone, Copy, Debug)]
+struct Worn {
+    item: u16,
+    count: u8,
+    glint: bool,
+    dye: Option<u32>,
+}
+
+impl Worn {
+    fn new(stack: &Stack) -> Option<Self> {
+        let item = u16::try_from(stack.item).ok().filter(|i| usize::from(*i) < ITEMS.len())?;
+        Some(Self { item, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye })
+    }
+
+    fn item(self) -> Option<Item> {
+        let &(id, ..) = ITEMS.get(usize::from(self.item))?;
+        Some(Item { id, count: self.count, glint: self.glint, dye: self.dye, trim: None, profile: None })
+    }
+}
+
 fn picture_item(stack: &Stack) -> Option<Item> {
     let &(id, ..) = usize::try_from(stack.item).ok().and_then(|i| ITEMS.get(i))?;
     Some(Item { id, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye, trim: None, profile: None })
-}
-
-/// The styled runs of a read component, as the renderer takes text.
-pub fn spans(line: &Line) -> Text {
-    line.runs.iter().map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, underline: r.underline, strike: r.strike }).collect()
 }
 
 fn textures(value: &str) -> Option<(Option<[u8; 32]>, bool)> {
@@ -791,7 +842,7 @@ mod tests {
         add(&mut c, 3, "sheep", [0.0; 3]);
         let read = data(&mut c, 3, |o| {
             o.u8(d::sheep::DATA_WOOL_ID).varint(s::BYTE).u8(0x14);
-            o.u8(99).varint(s::PARTICLE).varint(0).u8(0xFF);
+            o.u8(99).varint(999).varint(0).u8(0xFF);
         });
         assert!(read.is_err());
         assert_eq!(seen(&c)[0].data, Data::Sheep { color: 4, sheared: true });
