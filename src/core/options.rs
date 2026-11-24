@@ -80,6 +80,9 @@ pub struct LaunchOptions {
     pub gpu: Option<Gpu>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<Renderer>,
+    /// Whether the game gets a stand-in instead of the account's login, which stays with Manycraft's vault.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_login: bool,
 }
 
 impl LaunchOptions {

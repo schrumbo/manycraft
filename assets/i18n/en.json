@@ -2360,5 +2360,22 @@
   "Die Serverliste wird geteilt.": "The server list is shared.",
   "Eigene Kopie der Spiel-Optionen.": "Own copy of the game options.",
   "Eigene Kopie der Mod-Einstellungen.": "Own copy of the mod settings.",
-  "Eigene Kopie der Serverliste.": "Own copy of the server list."
+  "Eigene Kopie der Serverliste.": "Own copy of the server list.",
+  "Schutz": "Protection",
+  "Anmeldung vor Mods verbergen": "Hide login from mods",
+  "Das Spiel bekommt nur einen Platzhalter, deine echte Anmeldung bleibt bei Manycraft. Realms und Mods, die deine Anmeldung selbst brauchen, funktionieren damit nicht.": "The game only gets a stand-in; your real login stays with Manycraft. Realms and mods that need your login themselves won't work.",
+  "Minecraft %@ kann die Anmeldung nicht verbergen. Die Instanz startet so nicht.": "Minecraft %@ can't hide the login. The instance won't start like this.",
+  "Minecraft %@ kann die Anmeldung nicht verbergen. Schalte den Schutz aus oder wähle eine neuere Version.": "Minecraft %@ can't hide the login. Turn the protection off or choose a newer version.",
+  "Alle Accounts abmelden": "Sign out all accounts",
+  "Alle Accounts abmelden…": "Sign Out All Accounts…",
+  "Entfernt alle gespeicherten Anmeldungen von diesem Computer. Sinnvoll, wenn du einer Mod nicht mehr traust.": "Removes every saved login from this computer. Useful when you no longer trust a mod.",
+  "Abmelden…": "Sign Out…",
+  "Alle Accounts abmelden?": "Sign out all accounts?",
+  "Die Accounts bleiben in der Liste, aber jeder muss sich vor dem nächsten Spielen neu anmelden. Laufende Spiele laufen weiter, bis du sie beendest.": "The accounts stay in the list, but each one has to sign in again before playing next. Running games keep going until you quit them.",
+  "Alle abmelden": "Sign Out All",
+  "Alle Accounts abgemeldet. Hat jemand deine Anmeldung schon kopiert, gilt sie weiter, bis du dich bei Microsoft überall abmeldest.": "All accounts signed out. If someone already copied your login, it stays valid until you sign out everywhere at Microsoft.",
+  "Microsoft-Kontoseite öffnen": "Open Microsoft Account Page",
+  "%@ Accounts konnten nicht abgemeldet werden.": "%@ accounts couldn't be signed out.",
+  "Wird abgemeldet …": "Signing out…",
+  "Kein Account ist angemeldet.": "No account is signed in."
 }

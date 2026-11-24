@@ -28,6 +28,7 @@ use super::options::LaunchOptions;
 use super::proxy::{self, Kind};
 use super::share;
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
+use super::vault::{self, Vault};
 use super::{adopt, auth, gpu, headless, ipc, javas, lock, net, paths, scrub, stagger};
 
 /// Pause between two instance starts unless the caller sets another.
@@ -623,10 +624,13 @@ struct Extra {
     secrets: Vec<(String, String)>,
 }
 
-fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str) -> Result<Extra> {
+fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_address: &str, key: &str, token: &str, vault: Option<&Vault>) -> Result<Extra> {
     let instance = &target.instance;
     let mut jvm = instance.jvm_args.clone();
     jvm.extend([format!("-Dmanycraft.ipc={ipc_address}"), format!("-Dmanycraft.instance={key}")]);
+    if let Some(vault) = vault {
+        jvm.extend(vault.jvm_args());
+    }
     if target.batch.is_some() {
         jvm.extend([format!("-Dmanycraft.preview={}", game_dir.join(PREVIEW_FILE).display()), "-Dmanycraft.hidden=true".to_owned()]);
     }
@@ -643,10 +647,19 @@ fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_addr
     }
     if let Some(url) = &account.proxy {
         let proxy = proxy::parse(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
-        secrets.push((PROXY_VAR.to_owned(), url.clone()));
-        match proxy.kind {
-            Kind::Socks => game.extend(["--proxyHost".to_owned(), proxy.host, "--proxyPort".to_owned(), proxy.port.to_string()]),
-            Kind::Http => jvm.extend([format!("-Dhttps.proxyHost={}", proxy.host), format!("-Dhttps.proxyPort={}", proxy.port)]),
+        match vault {
+            Some(vault) => {
+                let (Some(relay), Some(url)) = (vault.relay(), vault.relay_url()) else { bail!("the vault of {} has no relay for its proxy", account.name) };
+                secrets.push((PROXY_VAR.to_owned(), url));
+                game.extend(["--proxyHost".to_owned(), relay.ip().to_string(), "--proxyPort".to_owned(), relay.port().to_string()]);
+            }
+            None => {
+                secrets.push((PROXY_VAR.to_owned(), url.clone()));
+                match proxy.kind {
+                    Kind::Socks => game.extend(["--proxyHost".to_owned(), proxy.host, "--proxyPort".to_owned(), proxy.port.to_string()]),
+                    Kind::Http => jvm.extend([format!("-Dhttps.proxyHost={}", proxy.host), format!("-Dhttps.proxyPort={}", proxy.port)]),
+                }
+            }
         }
     }
     Ok(Extra { jvm, game, secrets })
@@ -865,12 +878,20 @@ struct Held {
     child: Child,
     in_use: Option<lock::Guard>,
     instance_in_use: Option<lock::Guard>,
+    vault: Option<Vault>,
 }
 
 impl Held {
-    fn launch(instance: &str, launch: impl FnOnce() -> Result<Child>) -> Result<Box<dyn Process>> {
+    fn launch(instance: &str, launch: impl FnOnce() -> Result<(Child, Option<Vault>)>) -> Result<Box<dyn Process>> {
         let hold = instance::hold(instance).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
-        Ok(Box::new(Self { child: launch()?, in_use: install::clean::in_use().ok(), instance_in_use: Some(hold) }))
+        let (child, vault) = launch()?;
+        Ok(Box::new(Self { child, in_use: install::clean::in_use().ok(), instance_in_use: Some(hold), vault }))
+    }
+
+    fn release(&mut self) {
+        self.in_use = None;
+        self.instance_in_use = None;
+        self.vault = None;
     }
 }
 
@@ -882,8 +903,7 @@ impl Process for Held {
     fn try_wait(&mut self) -> io::Result<Option<Option<i32>>> {
         let exit = Process::try_wait(&mut self.child)?;
         if exit.is_some() {
-            self.in_use = None;
-            self.instance_in_use = None;
+            self.release();
         }
         Ok(exit)
     }
@@ -894,8 +914,7 @@ impl Process for Held {
 
     fn wait(&mut self) -> io::Result<Option<i32>> {
         let code = Process::wait(&mut self.child);
-        self.in_use = None;
-        self.instance_in_use = None;
+        self.release();
         code
     }
 }
@@ -1545,7 +1564,7 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
 }
 
 #[allow(clippy::too_many_arguments)]
-fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, ipc_file: Option<&Path>, key: &str, token: &str) -> Result<Child> {
+fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, installed: &Installed, ipc_address: &str, ipc_file: Option<&Path>, key: &str, token: &str) -> Result<(Child, Option<Vault>)> {
     let instance = &target.instance;
     let game_dir = prepare(instance, account)?;
     require_companion_for_proxy(account, companion_jar)?;
@@ -1555,7 +1574,8 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     }
     share::verify_game(share::game_options(&instance.dir())?.as_deref(), &game_dir.join(OPTIONS_FILE), share::data_version(&installed.classpath, &[&installed.game_version, &installed.version_name]))?;
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
-    let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token)?;
+    let vault = open_vault(target, account, installed)?;
+    let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token, vault.as_ref())?;
     extra.jvm.splice(0..0, batch_defaults(target, installed, companion_jar.is_some()));
     if let Some(jar) = companion_jar {
         extra.jvm.push(format!("-javaagent:{}", jar.display()));
@@ -1568,13 +1588,14 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
             account::validate_offline_name(&account.name)?;
             None
         }
-        AccountKind::Microsoft => Some(launch::Session::from(auth::session_for(account)?)),
+        AccountKind::Microsoft => Some(game_session(auth::session_for(account)?, vault.as_ref())),
     };
     let spec = LaunchSpec {
         installed: installed.clone(),
         game_dir,
         session,
         offline_name: account.name.clone(),
+        offline_stand_in: vault.as_ref().map(|v| v.stand_in().as_str().to_owned()),
         memory_mb: target.memory_mb(),
         memory_min_mb: target.memory_min_mb(),
         server: target.join().map(str::to_owned),
@@ -1586,7 +1607,32 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         extra_game: extra.game,
         env: launch::SecretEnv(extra.secrets),
     };
-    launch::spawn(&spec)
+    Ok((launch::spawn(&spec)?, vault))
+}
+
+/// The vault of a game whose instance hides its login, opened before the session so a renewed login reaches it; none
+/// when the instance does not ask for one. A version that cannot hide its login does not start at all.
+fn open_vault(target: &Target, account: &Account, installed: &Installed) -> Result<Option<Vault>> {
+    if !target.instance.options.hide_login {
+        return Ok(None);
+    }
+    let Some(login) = vault::Login::of(&installed.classpath) else {
+        bail!(super::i18n::trf("Minecraft %@ kann die Anmeldung nicht verbergen. Schalte den Schutz aus oder wähle eine neuere Version.", &[&target.instance.game_version]));
+    };
+    let refresh = (account.kind == AccountKind::Microsoft).then(|| {
+        let account = account.clone();
+        Box::new(move || auth::session_for(&account).map(|_| ())) as vault::Refresh
+    });
+    Vault::start(login, account.id, account.proxy.as_deref(), refresh).map(Some)
+}
+
+/// The session a game gets; behind a vault its login is the vault's stand-in, so the real one never reaches the game.
+fn game_session(session: auth::Session, vault: Option<&Vault>) -> launch::Session {
+    let mut session = launch::Session::from(session);
+    if let Some(vault) = vault {
+        session.access_token = vault.stand_in().as_str().to_owned();
+    }
+    session
 }
 
 /// The JVM arguments a game of `target` starts with before the instance's own: the batch defaults for batch games, which
@@ -2848,7 +2894,7 @@ mod tests {
         };
         let mut alt = Account::offline("AltOne").unwrap();
         alt.proxy = Some("socks5://10.1.1.1:1081".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert_eq!(extra.game, ["--fullscreen", "--width", "1280", "--height", "720", "--graphicsBackend", "opengl", "--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
     }
 
@@ -2935,11 +2981,72 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_login_never_reaches_the_game_command_or_environment() {
+        const REAL: &str = "REAL-MINECRAFT-ACCESS-TOKEN";
+        let mut batch = target("A");
+        batch.instance.options.hide_login = true;
+        let mut alt = Account::offline("AltOne").unwrap();
+        alt.kind = AccountKind::Microsoft;
+        alt.proxy = Some("socks5://us%40r:p%3Ass@10.1.1.1:1081".into());
+        let vault = Vault::start(vault::Login::Discovery, alt.id, alt.proxy.as_deref(), None).unwrap();
+        let session = auth::Session { name: alt.name.clone(), uuid: alt.id, access_token: REAL.into(), xuid: "2535".into(), expires_at: SystemTime::now() + Duration::from_secs(3600) };
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", Some(&vault)).unwrap();
+        let mut installed = installed_needing("java-runtime-epsilon", 25);
+        installed.profile = serde_json::from_value(serde_json::json!({"id": "26.3", "mainClass": "net.minecraft.client.main.Main", "minecraftArguments": "--username ${auth_player_name} --accessToken ${auth_access_token} --session ${auth_session}"})).unwrap();
+        let spec = LaunchSpec {
+            installed,
+            game_dir: PathBuf::from("inst"),
+            session: Some(game_session(session, Some(&vault))),
+            offline_name: alt.name.clone(),
+            offline_stand_in: Some(vault.stand_in().as_str().to_owned()),
+            memory_mb: 2048,
+            memory_min_mb: None,
+            server: None,
+            world: None,
+            extra_jvm: extra.jvm,
+            extra_game: extra.game.clone(),
+            env: launch::SecretEnv(extra.secrets.clone()),
+        };
+        let args = spec.arguments().unwrap().as_slice().to_vec();
+        let everything = args.iter().chain(&extra.game).chain(extra.secrets.iter().map(|(_, v)| v)).cloned().collect::<Vec<_>>().join(" ");
+        for secret in [REAL, "us%40r", "us@r", "p%3Ass", "p:ss", "10.1.1.1"] {
+            assert!(!everything.contains(secret), "{secret} reaches the game: {everything}");
+        }
+        let stand_in = vault.stand_in().as_str();
+        assert_eq!(args.iter().position(|a| a == "--accessToken").map(|i| args[i + 1].as_str()), Some(stand_in));
+        assert!(args.iter().any(|a| a.starts_with("token:") && a.contains(stand_in)));
+        assert!(args.iter().any(|a| a.starts_with("-Dminecraft.api.discovery.host=http://127.0.0.1:")));
+        let relay = vault.relay().unwrap();
+        assert_eq!(extra.game, ["--proxyHost".to_owned(), "127.0.0.1".to_owned(), "--proxyPort".to_owned(), relay.port().to_string()]);
+        assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), vault.relay_url().unwrap())));
+        assert!(vault.relay_url().unwrap().starts_with("socks5://manycraft:"));
+    }
+
+    #[test]
+    fn an_instance_that_does_not_hide_its_login_gets_no_vault() {
+        let batch = target("A");
+        let alt = Account::offline("AltOne").unwrap();
+        assert!(open_vault(&batch, &alt, &installed_needing("java-runtime-epsilon", 25)).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_version_that_cannot_hide_its_login_does_not_start_behind_a_vault() {
+        let mut batch = target("A");
+        batch.instance.options.hide_login = true;
+        let alt = Account::offline("AltOne").unwrap();
+        let mut installed = installed_needing("java-runtime-delta", 8);
+        installed.classpath = vec![PathBuf::from("libraries/com/mojang/authlib/1.5.25/authlib-1.5.25.jar")];
+        assert!(open_vault(&batch, &alt, &installed).is_err());
+        installed.classpath = vec![PathBuf::from("libraries/com/mojang/authlib/10.0.77/authlib-10.0.77.jar")];
+        assert!(open_vault(&batch, &alt, &installed).unwrap().is_some());
+    }
+
+    #[test]
     fn proxy_credentials_go_through_the_environment_never_the_command_line() {
         let batch = target("A");
         let mut alt = Account::offline("AltOne").unwrap();
         alt.proxy = Some("socks5://us%40r:p%3Ass@10.1.1.1:1081".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert_eq!(extra.game, ["--proxyHost", "10.1.1.1", "--proxyPort", "1081"]);
         assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), "socks5://us%40r:p%3Ass@10.1.1.1:1081".to_owned())));
         assert!(extra.secrets.contains(&("MANYCRAFT_TOKEN".to_owned(), "tok".to_owned())));
@@ -2952,15 +3059,15 @@ mod tests {
         assert!(extra.jvm.contains(&"-Dmanycraft.instance=k".to_owned()));
         assert!(extra.jvm.contains(&"-Dmanycraft.ipc=127.0.0.1:9".to_owned()));
         alt.proxy = Some("http://proxy.example:3128".into());
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert!(extra.game.is_empty());
         assert!(extra.jvm.contains(&"-Dhttps.proxyHost=proxy.example".to_owned()) && extra.jvm.contains(&"-Dhttps.proxyPort=3128".to_owned()));
         alt.proxy = None;
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert!(extra.game.is_empty() && !extra.jvm.iter().any(|a| a.contains("proxy")));
         assert_eq!(extra.secrets.len(), 1);
         alt.proxy = Some("ftp://x:1".into());
-        assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k", "tok").is_err());
+        assert!(extra_arguments(&batch, &alt, Path::new("inst"), "", "k", "tok", None).is_err());
     }
 
     #[test]
@@ -3231,7 +3338,7 @@ mod tests {
         let batch = target("A");
         let alt = Account::offline("AltOne").unwrap();
         let dir = batch.instance.game_dir(alt.id);
-        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, &dir, "127.0.0.1:9", "k", "tok", None).unwrap();
         assert!(extra.jvm.contains(&format!("-Dmanycraft.preview={}", preview_path(&batch.instance, alt.id).display())));
     }
 
@@ -3267,13 +3374,13 @@ mod tests {
     fn a_headless_batch_starts_its_games_windowless_answers_packs_its_way_and_needs_the_companion() {
         let mut batch = target("A");
         let alt = Account::offline("AltOne").unwrap();
-        let plain = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let plain = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert!(!plain.jvm.contains(&HEADLESS_FLAG.to_owned()));
         assert!(identity_messages(&batch, &alt, true).contains(&ipc::ToMod::Packs { policy: Packs::Ask }));
         let b = batch.batch.as_mut().unwrap();
         b.mode = RunMode::Hidden;
         b.packs = Packs::Decline;
-        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&batch, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert!(extra.jvm.contains(&HEADLESS_FLAG.to_owned()) && extra.jvm.contains(&"-Dmanycraft.hidden=true".to_owned()));
         assert_eq!(extra.secrets.iter().any(|(k, _)| k == MAC_BACKGROUND_VAR), cfg!(target_os = "macos"));
         assert!(identity_messages(&batch, &alt, true).contains(&ipc::ToMod::Packs { policy: Packs::Decline }));
@@ -3299,7 +3406,7 @@ mod tests {
     fn a_game_played_alone_opens_as_a_normal_window_without_previews_or_background_mode() {
         let alone = Target::solo(&target("A").instance);
         let alt = Account::offline("AltOne").unwrap();
-        let extra = extra_arguments(&alone, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok").unwrap();
+        let extra = extra_arguments(&alone, &alt, Path::new("inst"), "127.0.0.1:9", "k", "tok", None).unwrap();
         assert!(!extra.jvm.iter().any(|a| a.starts_with("-Dmanycraft.hidden") || a.starts_with("-Dmanycraft.preview")), "{:?}", extra.jvm);
         assert!(extra.jvm.contains(&"-Dmanycraft.ipc=127.0.0.1:9".to_owned()));
         assert!(identity_messages(&alone, &alt, true).contains(&ipc::ToMod::Level(ipc::Level::Full)));

@@ -86,6 +86,7 @@ pub mod sync;
 pub mod themes;
 pub mod trash;
 pub mod updater;
+pub mod vault;
 pub mod versions;
 pub mod wardrobe;
 pub mod webauth;

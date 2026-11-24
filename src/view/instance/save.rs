@@ -21,6 +21,7 @@ pub enum OptionChange {
     Window(Option<WindowSize>),
     Gpu(Option<Gpu>),
     Renderer(Option<Renderer>),
+    HideLogin(bool),
 }
 
 impl OptionChange {
@@ -31,6 +32,7 @@ impl OptionChange {
             Self::Window(size) => options.window = *size,
             Self::Gpu(gpu) => options.gpu = *gpu,
             Self::Renderer(renderer) => options.renderer = *renderer,
+            Self::HideLogin(on) => options.hide_login = *on,
         }
     }
 }
