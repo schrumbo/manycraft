@@ -28,7 +28,6 @@ import net.minecraft.network.chat.ChatType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.PlayerChatMessage;
 import net.minecraft.network.protocol.common.ClientboundResourcePackPushPacket;
-import net.minecraft.util.StringUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +57,24 @@ final class Companion implements Bridge {
 	private final ManagerLink link;
 	private final StateReporter state;
 	private final ChatBridge chat;
+	private final ChatLines lines = new ChatLines(new ChatLines.Sink() {
+		@Override
+		public boolean inGame() {
+			return Companion.this.inGame();
+		}
+
+		@Override
+		public boolean send(String text) {
+			return sendChat(text);
+		}
+
+		@Override
+		public void outcome(Long id, String state, String why) {
+			if (id != null) {
+				Companion.this.send(Protocol.chatOutcome(id, state, why));
+			}
+		}
+	});
 	private final PreviewService preview;
 	private final GameIdentity identity = new GameIdentity();
 	private final OptionSync options = new OptionSync();
@@ -358,6 +375,7 @@ final class Companion implements Bridge {
 		try {
 			link.ensureRunning();
 			drain(mc);
+			lines.tick();
 			packs.tick();
 			state.tick(mc);
 			GameWindow.tick();
@@ -462,7 +480,8 @@ final class Companion implements Bridge {
 			case Protocol.Incoming.Hide hide -> bg.hide();
 			case Protocol.Incoming.Profile profile -> bg.applyProfile(profile);
 			case Protocol.Incoming.Level level -> bg.applyLevel(level.level(), level.custom());
-			case Protocol.Incoming.ChatSend chatSend -> sendChat(mc, chatSend.text());
+			case Protocol.Incoming.ChatSend chatSend -> lines.add(null, chatSend.text());
+			case Protocol.Incoming.ChatLine chatLine -> lines.add(chatLine.id(), chatLine.text());
 			case Protocol.Incoming.Reconnect reconnect -> reconnect(mc);
 			case Protocol.Incoming.Respawn respawn -> respawn(mc);
 			case Protocol.Incoming.Capture c -> capture(Math.clamp(c.width(), 16, 1280));
@@ -471,17 +490,24 @@ final class Companion implements Bridge {
 		}
 	}
 
-	private void sendChat(Minecraft mc, String text) {
-		var connection = mc.getConnection();
-		String clean = StringUtil.trimChatMessage(StringUtil.filterText(StringUtils.normalizeSpace(text.trim())));
+	private boolean inGame() {
+		Minecraft mc = Minecraft.getInstance();
+		return mc != null && mc.getConnection() != null && mc.player != null;
+	}
+
+	private boolean sendChat(String text) {
+		Minecraft mc = Minecraft.getInstance();
+		var connection = mc == null ? null : mc.getConnection();
+		String clean = StringUtils.normalizeSpace(text);
 		if (connection == null || mc.player == null || clean.isEmpty()) {
-			return;
+			return false;
 		}
 		if (clean.startsWith("/")) {
 			connection.sendCommand(clean.substring(1));
 		} else {
 			connection.sendChat(clean);
 		}
+		return true;
 	}
 
 	private void reconnect(Minecraft mc) {

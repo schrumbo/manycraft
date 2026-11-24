@@ -8,6 +8,7 @@ mod notify;
 mod previews;
 pub mod usage;
 mod quit;
+mod said;
 mod screen;
 mod show;
 mod slim;
@@ -195,6 +196,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::ChatSend { text } });
             }
         }
+        Event::Say { keys, text } => said::say(model, &keys, text, &mut out),
         Event::Broadcast { batch, text } => {
             for i in model.games.values().filter(|i| i.batch_id == batch && i.phase.can_chat()) {
                 out.push(Effect::Send { key: i.key.clone(), message: crate::core::ipc::ToMod::ChatSend { text: text.clone() } });
@@ -271,6 +273,7 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
             Report::Mod { message: FromMod::Map { .. } | FromMod::Menu { .. } | FromMod::Titles { .. }, .. } => {}
+            Report::Mod { message: FromMod::ChatOutcome { .. }, .. } => chat = true,
             Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => {
                 if m.games.get(key).is_some_and(|g| g.connection) && m.session.visible.contains(key) {
                     return Redraw::All;

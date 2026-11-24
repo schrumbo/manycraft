@@ -14,7 +14,7 @@ use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
 use crate::core::instance::Instance;
 use crate::core::i18n::{tr, trf};
-use crate::core::ipc::{MapPicture, Menu, Offer, Titles};
+use crate::core::ipc::{ChatOutcome, ChatRefusal, MapPicture, Menu, Offer, Titles};
 use crate::core::proxy::Fault;
 
 use super::session::{Frame, Session};
@@ -379,7 +379,62 @@ pub struct Model {
     pub active_account: Option<Uuid>,
     /// What servers show connection-only accounts besides the world, by game key, only while they show any.
     pub screens: HashMap<String, Screen>,
+    /// The line the user sent last and what became of it at each account.
+    pub said: Option<Said>,
+    /// How many lines were ever handed to an account, so each line has its own number.
+    pub said_seq: u64,
     pub session: Session,
+}
+
+/// What became of a line at one account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Handed over, not yet written to the server: it waits for its turn under the server's spam limit.
+    Waiting,
+    /// Written to the server's connection.
+    Sent,
+    /// Handed to a game that cannot say whether it went out.
+    Unconfirmed,
+    Refused(ChatRefusal),
+}
+
+/// One account's share of a sent line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SaidRow {
+    pub key: String,
+    pub name: String,
+    pub id: u64,
+    pub delivery: Delivery,
+}
+
+/// The line the user sent last, with every account it was meant for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Said {
+    pub text: String,
+    pub rows: Vec<SaidRow>,
+}
+
+impl Said {
+    /// How many accounts got it written to their connection, how many still wait, how many could not tell, and how
+    /// many did not get it.
+    pub fn counts(&self) -> (usize, usize, usize, usize) {
+        let count = |f: fn(&Delivery) -> bool| self.rows.iter().filter(|r| f(&r.delivery)).count();
+        (count(|d| *d == Delivery::Sent), count(|d| *d == Delivery::Waiting), count(|d| *d == Delivery::Unconfirmed), count(|d| matches!(d, Delivery::Refused(_))))
+    }
+
+    /// The accounts that did not get it, with why, in the order they were given.
+    pub fn missed(&self) -> impl Iterator<Item = (&str, ChatRefusal)> {
+        self.rows.iter().filter_map(|r| if let Delivery::Refused(why) = r.delivery { Some((r.name.as_str(), why)) } else { None })
+    }
+
+    pub(super) fn settle(&mut self, id: u64, outcome: ChatOutcome) {
+        let Some(row) = self.rows.iter_mut().find(|r| r.id == id) else { return };
+        row.delivery = match outcome {
+            ChatOutcome::Sent => Delivery::Sent,
+            ChatOutcome::Unconfirmed => Delivery::Unconfirmed,
+            ChatOutcome::Refused(why) => Delivery::Refused(why),
+        };
+    }
 }
 
 /// An import as the sidebar shows it.

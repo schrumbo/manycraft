@@ -26,7 +26,7 @@ class ProtocolTest {
 		assertEquals("sek", o.get("token").getAsString());
 		assertEquals(42L, o.get("pid").getAsLong());
 		assertEquals("0.1.0", o.get("mod_version").getAsString());
-		assertEquals("[\"core\",\"options\"]", o.get("features").toString());
+		assertEquals("[\"chat_lines\",\"core\",\"options\"]", o.get("features").toString());
 	}
 
 	@Test
@@ -165,6 +165,10 @@ class ProtocolTest {
 		assertTrue(Protocol.parse("{\"t\":\"nope\"}").isEmpty());
 		assertTrue(Protocol.parse("{\"t\":\"show\",\"x\":1}").isEmpty());
 		assertTrue(Protocol.parse("{\"t\":\"chat_send\"}").isEmpty());
+		assertEquals(new Protocol.Incoming.ChatLine(7, "/home"), Protocol.parse("{\"t\":\"chat_line\",\"id\":7,\"text\":\"/home\"}").orElseThrow());
+		assertTrue(Protocol.parse("{\"t\":\"chat_line\",\"text\":\"x\"}").isEmpty());
+		assertEquals("{\"t\":\"chat_outcome\",\"id\":7,\"outcome\":{\"state\":\"refused\",\"why\":\"dropped\"}}", Protocol.chatOutcome(7, "refused", "dropped"));
+		assertEquals("{\"t\":\"chat_outcome\",\"id\":8,\"outcome\":{\"state\":\"sent\"}}", Protocol.chatOutcome(8, "sent", null));
 	}
 
 	@Test

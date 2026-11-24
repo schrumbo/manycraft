@@ -7,7 +7,7 @@ use super::super::meter::{self, Meter, Unit};
 use super::super::model::{ChatLine, Game, Model, Phase, rank};
 use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, HeldJoin, Reveal};
-use super::{Env, fleet, go, headless, notify, redraw, screen, show};
+use super::{Env, fleet, go, headless, notify, redraw, said, screen, show};
 use crate::core::account::AccountKind;
 use crate::core::batch::RunMode;
 use crate::core::chat_text;
@@ -740,6 +740,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text, runs }, server.as_deref(), true, env.now, KEPT_CHAT);
             }
         }
+        FromMod::ChatOutcome { id, outcome } => said::outcome(m, id, outcome),
         FromMod::Preview { .. } => {
             let s = &mut m.session;
             let recent = s.read_at.get(&key).is_some_and(|t| env.now.saturating_duration_since(*t) < OFFSCREEN_PREVIEW);

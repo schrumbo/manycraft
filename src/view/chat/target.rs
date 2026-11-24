@@ -60,16 +60,14 @@ pub fn reached(m: &Model, target: &Target) -> usize {
     }
 }
 
-/// The batches a line to `target` goes out through, each with the games that get it.
-pub fn batches_of(m: &Model, target: &Target) -> Vec<String> {
-    let mut out: Vec<String> = match target {
-        Target::All => m.games.values().filter(|g| g.phase.can_chat()).map(|g| g.batch_id.clone()).collect(),
-        Target::Batch(id) => vec![id.clone()],
-        Target::Instance(_) => Vec::new(),
+/// The games a line to `target` is meant for: every one that runs, on a server or not, so those that miss it say why.
+pub fn keys_of(m: &Model, target: &Target) -> Vec<String> {
+    let meant = |g: &&crate::app::model::Game| match target {
+        Target::All => true,
+        Target::Batch(id) => g.batch_id == *id,
+        Target::Instance(key) => g.key == *key,
     };
-    out.sort();
-    out.dedup();
-    out
+    m.games.values().filter(|g| g.phase.is_running()).filter(meant).map(|g| g.key.clone()).collect()
 }
 
 /// The short name of `target` for the composer: "Alle", the batch or the account.

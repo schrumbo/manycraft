@@ -205,9 +205,15 @@ impl<P: Pixels> Real<P> {
         })?;
         let (sends, outgoing) = mpsc::channel::<(String, ToMod)>();
         let sender = Arc::clone(&fleet);
+        let failed = out.clone();
         std::thread::Builder::new().name("fleet-send".into()).spawn(move || {
             while let Ok((key, message)) = outgoing.recv() {
-                let _ = sender.send(&key, &message);
+                if sender.send(&key, &message).is_err()
+                    && let ToMod::ChatLine { id, .. } = message
+                {
+                    let outcome = crate::core::ipc::ChatOutcome::Refused(crate::core::ipc::ChatRefusal::Failed);
+                    let _ = failed.send_blocking(Update::Ipc(crate::core::ipc::Event::Message { instance: key, message: crate::core::ipc::FromMod::ChatOutcome { id, outcome } }));
+                }
             }
         })?;
         Ok(Self { fleet, out, watch, owners: Arc::default(), runs: AtomicU64::new(0), sends, previews, refreshing: Arc::default(), checking: Arc::default(), adopted: Mutex::new(adopted), resumed: Mutex::new(if adopt::is_manager() { headless::resume::take() } else { Vec::new() }) })

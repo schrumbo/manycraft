@@ -1709,8 +1709,6 @@
   "1 im Spiel": "1 in game",
   "1 neue Zeile": "1 new line",
   "Account oder Batch suchen": "Search accounts or batches",
-  "An %lld Accounts gesendet.": "Sent to %lld accounts.",
-  "An 1 Account gesendet.": "Sent to 1 account.",
   "An alle senden": "Send to Everyone",
   "Beim Betreten sendet jeder Account: %@": "On joining, every account sends: %@",
   "Dort ist gerade niemand im Spiel.": "Nobody there is in the game right now.",
@@ -2360,5 +2358,14 @@
   "Die Serverliste wird geteilt.": "The server list is shared.",
   "Eigene Kopie der Spiel-Optionen.": "Own copy of the game options.",
   "Eigene Kopie der Mod-Einstellungen.": "Own copy of the mod settings.",
-  "Eigene Kopie der Serverliste.": "Own copy of the server list."
+  "Eigene Kopie der Serverliste.": "Own copy of the server list.",
+  "An %lld gesendet": "Sent to %lld",
+  "%lld warten noch": "%lld still waiting",
+  "%lld ohne Rückmeldung": "%lld without confirmation",
+  "%lld nicht angekommen": "%lld did not get it",
+  "nicht im Spiel": "not in the game",
+  "Zeile zu lang": "line too long",
+  "enthält Zeichen, die der Server ablehnt": "contains characters the server refuses",
+  "Verbindung weg, bevor die Zeile dran war": "connection lost before its turn",
+  "Verbindung zum Spiel gestört": "connection to the game failed"
 }

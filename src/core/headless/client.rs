@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
@@ -29,9 +29,10 @@ use super::wire::{In, Out};
 use super::world::World;
 use crate::core::auth::Session;
 use crate::core::batch::Packs;
+use crate::core::chat_pace::{Next, Queue};
 use crate::core::chat_text::Run;
 use crate::core::fleet::Resolved;
-use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
+use crate::core::ipc::{ChatKind, ChatOutcome, ChatRefusal, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -110,6 +111,8 @@ struct Link {
     rotation: [f32; 2],
     chat_clock: i64,
     unacked: i32,
+    lines: Queue<(Option<u64>, String)>,
+    closed: bool,
     shown: Option<Shown>,
     screen: Screen,
     world: World,
@@ -146,6 +149,8 @@ impl Shared {
             rotation: [0.0; 2],
             chat_clock: 0,
             unacked: 0,
+            lines: Queue::new(Instant::now()),
+            closed: false,
             shown: None,
             screen: Screen::default(),
             world: World::default(),
@@ -178,6 +183,61 @@ impl Shared {
         self.wake.notify_all();
     }
 
+    fn outcome(&self, id: Option<u64>, outcome: ChatOutcome) {
+        if let Some(id) = id {
+            self.emit(FromMod::ChatOutcome { id, outcome });
+        }
+    }
+
+    /// Takes a typed line: refused at once when it cannot go out, otherwise it waits for its turn under the server's
+    /// spam limit.
+    fn enqueue(&self, link: &mut Link, id: Option<u64>, text: &str) {
+        let text = text.trim();
+        if let Some(why) = refusal(link, text) {
+            self.outcome(id, ChatOutcome::Refused(why));
+            return;
+        }
+        link.lines.push((id, text.to_owned()));
+        self.wake.notify_all();
+    }
+
+    /// Sends the lines whose turn has come; returns how long until the next one's.
+    fn pump(&self, link: &mut Link) -> Option<Duration> {
+        loop {
+            match link.lines.next(Instant::now()) {
+                Next::Ready((id, text)) => {
+                    let outcome = match refusal(link, &text) {
+                        Some(why) => ChatOutcome::Refused(why),
+                        None => match chat(link, &text) {
+                            Ok(()) => ChatOutcome::Sent,
+                            Err(_) => ChatOutcome::Refused(ChatRefusal::Failed),
+                        },
+                    };
+                    self.outcome(id, outcome);
+                }
+                Next::Wait(wait) => return Some(wait),
+                Next::Empty => return None,
+            }
+        }
+    }
+
+    /// Reports the lines that never got their turn; they are not sent after a reconnect.
+    fn drop_lines(&self, link: &mut Link) {
+        for (id, _) in link.lines.drain() {
+            self.outcome(id, ChatOutcome::Refused(ChatRefusal::Dropped));
+        }
+    }
+
+    fn pace(&self) {
+        let mut link = self.lock();
+        while !link.closed {
+            link = match self.pump(&mut link) {
+                Some(wait) => self.wake.wait_timeout(link, wait).unwrap_or_else(PoisonError::into_inner).0,
+                None => self.wake.wait(link).unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+    }
+
     /// Acts on `message` from the manager.
     pub fn send(&self, message: &ToMod) -> Result<()> {
         let mut link = self.lock();
@@ -189,7 +249,8 @@ impl Shared {
                     write(&mut link, play::serverbound::CLIENT_COMMAND, Out::default().varint(PERFORM_RESPAWN))?;
                 }
             }
-            ToMod::ChatSend { text } => chat(&mut link, text)?,
+            ToMod::ChatSend { text } => self.enqueue(&mut link, None, text),
+            ToMod::ChatLine { id, text } => self.enqueue(&mut link, Some(*id), text),
             ToMod::Packs { policy } => link.packs = *policy,
             ToMod::Answer { id, accept } => self.answer(&mut link, id, *accept)?,
             ToMod::Click { menu, slot, click } => {
@@ -309,13 +370,23 @@ fn answer_pack(link: &mut Link, id: Uuid, accept: bool) -> Result<()> {
     Ok(())
 }
 
+/// Why `text` cannot go out as a chat line right now, if it cannot.
+fn refusal(link: &Link, text: &str) -> Option<ChatRefusal> {
+    if link.phase != Phase::Play {
+        return Some(ChatRefusal::NotInGame);
+    }
+    if text.encode_utf16().count() > MAX_CHAT {
+        return Some(ChatRefusal::TooLong);
+    }
+    if text.is_empty() || text.chars().any(|c| c == '§' || c < ' ' || c == '\u{7f}') {
+        return Some(ChatRefusal::BadText);
+    }
+    None
+}
+
 /// Sends what the user typed: a command when it starts with `/`, otherwise a chat message, both unsigned.
 fn chat(link: &mut Link, text: &str) -> Result<()> {
-    ensure!(link.phase == Phase::Play, "not on a server");
     let text = text.trim();
-    ensure!(!text.is_empty(), "nothing to send");
-    ensure!(text.encode_utf16().count() <= MAX_CHAT, "longer than {MAX_CHAT} characters");
-    ensure!(!text.chars().any(|c| c == '§' || c < ' ' || c == '\u{7f}'), "contains characters the server refuses");
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     link.chat_clock = now.max(link.chat_clock + 1);
     let mut salt = [0u8; 8];
@@ -336,15 +407,30 @@ fn chat(link: &mut Link, text: &str) -> Result<()> {
 
 /// Runs the connection until it is told to quit: joins, and after a drop waits to be told to reconnect.
 pub fn run(shared: &Shared, spec: &Spec) {
+    thread::scope(|scope| {
+        scope.spawn(|| shared.pace());
+        keep_connected(shared, spec);
+        let mut link = shared.lock();
+        link.closed = true;
+        shared.drop_lines(&mut link);
+        shared.wake.notify_all();
+    });
+}
+
+fn keep_connected(shared: &Shared, spec: &Spec) {
     let _ended = Ended(shared);
     let _ = shared.events.send(Event::Connected { instance: shared.key.clone(), pid: 0, mod_version: format!("connection-only protocol {PROTOCOL}") });
     loop {
         match session(shared, spec) {
             End::Quit => break,
-            End::Reconnect => continue,
+            End::Reconnect => {
+                let mut link = shared.lock();
+                shared.drop_lines(&mut link);
+            }
             End::Dropped(reason, cause) => {
                 {
                     let mut link = shared.lock();
+                    shared.drop_lines(&mut link);
                     link.held.clear();
                     link.dead = None;
                     link.world.clear();

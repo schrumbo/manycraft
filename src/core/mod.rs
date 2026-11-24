@@ -10,6 +10,7 @@ pub mod backup;
 pub mod batch;
 pub mod bin;
 pub mod browser;
+pub mod chat_pace;
 pub mod chat_text;
 pub mod cli;
 #[allow(dead_code)]
