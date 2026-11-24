@@ -4,11 +4,11 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-const COST: Duration = Duration::from_secs(1);
+const COST: Duration = Duration::from_millis(1350);
 const BURST: u32 = 6;
 
-/// How much a player may send now: a burst of six lines, then one per second, which stays well under the limit even
-/// when the server runs a little slow.
+/// How much a player may send now: a burst of six lines, then one per 1.35 seconds. The server's own count falls by 20
+/// per second and grows by 20 per line, so this keeps under its limit even when it ticks at 15 per second.
 #[derive(Clone, Copy, Debug)]
 pub struct Pace {
     load: Duration,
@@ -92,7 +92,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_burst_then_one_per_second_in_order() {
+    fn a_burst_then_a_steady_pace_in_order() {
         let t0 = Instant::now();
         let mut q = Queue::new(t0);
         for i in 0..10 {
@@ -104,7 +104,7 @@ mod tests {
         }
         assert_eq!(out, vec![0, 1, 2, 3, 4, 5]);
         assert_eq!(q.next(t0), Next::Wait(COST));
-        assert_eq!(q.next(t0 + Duration::from_millis(400)), Next::Wait(Duration::from_millis(600)));
+        assert_eq!(q.next(t0 + Duration::from_millis(400)), Next::Wait(COST - Duration::from_millis(400)));
         assert_eq!(q.next(t0 + COST), Next::Ready(6));
         assert_eq!(q.next(t0 + COST), Next::Wait(COST));
         assert_eq!(q.len(), 3);

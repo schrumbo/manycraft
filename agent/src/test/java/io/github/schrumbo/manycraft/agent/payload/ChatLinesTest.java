@@ -41,7 +41,7 @@ class ChatLinesTest {
 		assertEquals(6, fake.sent.size());
 		assertEquals("/cmd 0", fake.sent.get(0));
 		assertEquals("/cmd 5", fake.sent.get(5));
-		for (int t = 0; t < 19; t++) {
+		for (int t = 0; t < ChatLines.COST - 1; t++) {
 			lines.tick();
 		}
 		assertEquals(6, fake.sent.size());

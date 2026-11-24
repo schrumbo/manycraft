@@ -1436,7 +1436,7 @@ fn in_scope(line: &ChatLine, batch: Option<&str>) -> bool {
 }
 
 fn line_problem(text: &str) -> Option<String> {
-    let n = text.chars().count();
+    let n = text.encode_utf16().count();
     (n > MAX_CHAT_CHARS).then(|| trf("Zu lang: %lld von höchstens %lld Zeichen.", &[&n, &MAX_CHAT_CHARS]))
 }
 

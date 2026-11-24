@@ -409,12 +409,21 @@ fn chat(link: &mut Link, text: &str) -> Result<()> {
 pub fn run(shared: &Shared, spec: &Spec) {
     thread::scope(|scope| {
         scope.spawn(|| shared.pace());
+        let _closing = Closing(shared);
         keep_connected(shared, spec);
-        let mut link = shared.lock();
-        link.closed = true;
-        shared.drop_lines(&mut link);
-        shared.wake.notify_all();
     });
+}
+
+/// Ends the pacer and reports the lines that never got their turn, also when the connection's thread panics.
+struct Closing<'a>(&'a Shared);
+
+impl Drop for Closing<'_> {
+    fn drop(&mut self) {
+        let mut link = self.0.lock();
+        link.closed = true;
+        self.0.drop_lines(&mut link);
+        self.0.wake.notify_all();
+    }
 }
 
 fn keep_connected(shared: &Shared, spec: &Spec) {

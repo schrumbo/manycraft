@@ -109,7 +109,8 @@ pub enum ChatRefusal {
     BadText,
     /// The account disconnected before its turn came.
     Dropped,
-    /// The connection failed while writing it.
+    /// The connection failed while writing it, or a newer game reports a reason this version does not know.
+    #[serde(other)]
     Failed,
 }
 

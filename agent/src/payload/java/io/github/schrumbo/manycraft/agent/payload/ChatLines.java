@@ -7,7 +7,8 @@ import java.util.ArrayDeque;
  * line or command, takes 1 per tick off it and kicks above 200. A burst of six, then one per second.
  */
 final class ChatLines {
-	static final int COST = 20;
+	/** The server counts 20 per line; this budgets 27 so a server that ticks at 15 per second still keeps up. */
+	static final int COST = 27;
 	static final int BURST = 6;
 	static final int MAX_LENGTH = 256;
 	private static final int LIMIT = (BURST - 1) * COST;
@@ -32,7 +33,7 @@ final class ChatLines {
 
 	/** Why the trimmed text cannot go out as a line, or null. */
 	static String refusal(String text) {
-		if (text.codePointCount(0, text.length()) > MAX_LENGTH) {
+		if (text.length() > MAX_LENGTH) {
 			return "too_long";
 		}
 		if (text.isEmpty() || text.chars().anyMatch(c -> c == 0xa7 || c < ' ' || c == 0x7f)) {
@@ -63,7 +64,13 @@ final class ChatLines {
 		while (!lines.isEmpty() && load <= LIMIT) {
 			Line line = lines.poll();
 			load += COST;
-			if (sink.send(line.text())) {
+			boolean sent;
+			try {
+				sent = sink.send(line.text());
+			} catch (RuntimeException e) {
+				sent = false;
+			}
+			if (sent) {
 				sink.outcome(line.id(), "sent", null);
 			} else {
 				sink.outcome(line.id(), "refused", "failed");

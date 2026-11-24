@@ -263,6 +263,9 @@ fn go(m: &mut Model, key: &str, to: Phase, why: Why, out: &mut Vec<Effect>) -> b
         return false;
     }
     i.phase = to;
+    if !i.phase.can_chat() {
+        said::drop_waiting(m, key);
+    }
     true
 }
 

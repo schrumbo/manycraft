@@ -25,10 +25,19 @@ pub(super) fn say(m: &mut Model, keys: &[String], text: String, out: &mut Vec<Ef
     out.push(Effect::Redraw(Redraw::Chat));
 }
 
-/// An account reports what became of line `id`.
-pub(super) fn outcome(m: &mut Model, id: u64, outcome: ChatOutcome) {
+/// The account `key` reports what became of line `id`.
+pub(super) fn outcome(m: &mut Model, key: &str, id: u64, outcome: ChatOutcome) {
     if let Some(said) = m.said.as_mut() {
-        said.settle(id, outcome);
+        said.settle(key, id, outcome);
+    }
+}
+
+/// The game `key` left its server: what still waited for its turn will not be sent.
+pub(super) fn drop_waiting(m: &mut Model, key: &str) {
+    if let Some(said) = m.said.as_mut() {
+        for row in said.rows.iter_mut().filter(|r| r.key == key && r.delivery == Delivery::Waiting) {
+            row.delivery = Delivery::Refused(ChatRefusal::Dropped);
+        }
     }
 }
 
@@ -72,12 +81,32 @@ mod tests {
         let (a, b) = (game(&mut m, "a", playing()), game(&mut m, "b", playing()));
         say(&mut m, &[a, b], "hi".into(), &mut Vec::new());
         let ids: Vec<u64> = m.said.as_ref().unwrap().rows.iter().map(|r| r.id).collect();
-        outcome(&mut m, ids[0], ChatOutcome::Sent);
-        outcome(&mut m, ids[1], ChatOutcome::Refused(ChatRefusal::Dropped));
-        outcome(&mut m, 999, ChatOutcome::Sent);
+        outcome(&mut m, "k-a", ids[0], ChatOutcome::Sent);
+        outcome(&mut m, "k-b", ids[1], ChatOutcome::Refused(ChatRefusal::Dropped));
+        outcome(&mut m, "k-a", 999, ChatOutcome::Sent);
         assert_eq!(m.said.as_ref().unwrap().counts(), (1, 0, 0, 1));
         say(&mut m, &[], "next".into(), &mut Vec::new());
-        outcome(&mut m, ids[0], ChatOutcome::Sent);
+        outcome(&mut m, "k-a", ids[0], ChatOutcome::Sent);
         assert_eq!(m.said.as_ref().unwrap().counts(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn an_outcome_of_another_account_does_not_settle_the_row() {
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let (a, b) = (game(&mut m, "a", playing()), game(&mut m, "b", playing()));
+        say(&mut m, &[a, b], "hi".into(), &mut Vec::new());
+        let id = m.said.as_ref().unwrap().rows[0].id;
+        outcome(&mut m, "k-b", id, ChatOutcome::Sent);
+        assert_eq!(m.said.as_ref().unwrap().counts(), (0, 2, 0, 0));
+    }
+
+    #[test]
+    fn leaving_the_server_drops_what_waits() {
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let (a, b) = (game(&mut m, "a", playing()), game(&mut m, "b", playing()));
+        say(&mut m, &[a.clone(), b], "hi".into(), &mut Vec::new());
+        drop_waiting(&mut m, &a);
+        assert_eq!(m.said.as_ref().unwrap().counts(), (0, 1, 0, 1));
+        assert_eq!(m.said.as_ref().unwrap().missed().collect::<Vec<_>>(), vec![("a", ChatRefusal::Dropped)]);
     }
 }

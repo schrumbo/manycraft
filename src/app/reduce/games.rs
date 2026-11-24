@@ -287,8 +287,10 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             }
         }
         Report::Mod { key, message } => {
-            m.session.lost.remove(&key);
-            m.set_hint(&key, |h| h.link_lost = false);
+            if !matches!(message, FromMod::ChatOutcome { .. }) {
+                m.session.lost.remove(&key);
+                m.set_hint(&key, |h| h.link_lost = false);
+            }
             on_message(m, env, key, message, fx);
         }
     }
@@ -740,7 +742,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text, runs }, server.as_deref(), true, env.now, KEPT_CHAT);
             }
         }
-        FromMod::ChatOutcome { id, outcome } => said::outcome(m, id, outcome),
+        FromMod::ChatOutcome { id, outcome } => said::outcome(m, &key, id, outcome),
         FromMod::Preview { .. } => {
             let s = &mut m.session;
             let recent = s.read_at.get(&key).is_some_and(|t| env.now.saturating_duration_since(*t) < OFFSCREEN_PREVIEW);

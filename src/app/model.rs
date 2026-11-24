@@ -427,8 +427,8 @@ impl Said {
         self.rows.iter().filter_map(|r| if let Delivery::Refused(why) = r.delivery { Some((r.name.as_str(), why)) } else { None })
     }
 
-    pub(super) fn settle(&mut self, id: u64, outcome: ChatOutcome) {
-        let Some(row) = self.rows.iter_mut().find(|r| r.id == id) else { return };
+    pub(super) fn settle(&mut self, key: &str, id: u64, outcome: ChatOutcome) {
+        let Some(row) = self.rows.iter_mut().find(|r| r.id == id && r.key == key) else { return };
         row.delivery = match outcome {
             ChatOutcome::Sent => Delivery::Sent,
             ChatOutcome::Unconfirmed => Delivery::Unconfirmed,
