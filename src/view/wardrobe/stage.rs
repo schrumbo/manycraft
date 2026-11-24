@@ -1,7 +1,10 @@
 use freya::prelude::*;
 
 use super::card::{Card, pixels, rows};
-use super::ctl::{Ctl, Look, Phase};
+use super::ctl::Ctl;
+use super::desk::Look;
+use super::lane::{Lane, Pending};
+use super::text::step_text;
 use crate::app::model::Model;
 use crate::core::account::{Account, AccountKind};
 use crate::core::i18n::{tr, trf};
@@ -88,13 +91,13 @@ fn arms_text(model: Arms) -> String {
 
 fn preview(t: &Theme, ctl: Ctl, account: &Account, look: Option<&Look>, scale: f32) -> Element {
     let mut card = rect().width(Size::fill()).padding(space::L).background(t.well).corner_radius(t.shape.control).cross_align(Alignment::Center).spacing(space::M);
-    let Some(look) = look else {
+    let Some(look) = look.filter(|l| l.known || l.skin.is_some()) else {
         return card.height(Size::px(32. * scale + space::L * 2.)).center().child(spinner::waiting(t, tr("Lädt …"))).into_element();
     };
-    match ctl.views.read().clone() {
+    match ctl.views() {
         Some((front, back)) => {
             card = card.child(rect().horizontal().spacing(space::XL).child(pixels(front, 16. * scale, 32. * scale)).child(pixels(back, 16. * scale, 32. * scale)));
-            let name = look.worn.as_deref().and_then(|file| ctl.shelf.read().iter().find(|h| h.skin.file == file).map(|h| h.skin.name.clone()));
+            let name = look.worn.as_deref().and_then(|file| ctl.shelf().iter().find(|h| h.skin.file == file).map(|h| h.skin.name.clone()));
             let mut text = rect().cross_align(Alignment::Center).spacing(2.);
             text = text.child(strong(t, name.unwrap_or_else(|| trf("Skin von %@", &[&account.name])), font::BODY, t.text1));
             text = text.child(caption(t, arms_text(look.model)));
@@ -111,14 +114,19 @@ fn preview(t: &Theme, ctl: Ctl, account: &Account, look: Option<&Look>, scale: f
     card.into_element()
 }
 
-fn capes(t: &Theme, ctl: Ctl, look: &Look) -> Element {
-    let enabled = ctl.can_wear();
+fn pending_text(p: Pending) -> String {
+    match p {
+        Pending::Waiting => tr("Wartet …"),
+        Pending::Working(_) => tr("Wird angezogen …"),
+    }
+}
+
+fn capes(t: &Theme, ctl: Ctl, look: &Look, lane: &Lane) -> Element {
+    let failed = |key: String| lane.failed(&key).map(|f| (tr("Nicht geändert"), f.problem.text.clone()));
     let mut column = rect().width(Size::fill()).spacing(space::S).child(strong(t, tr("Umhang"), font::CALLOUT, t.text2));
     if look.capes.is_empty() {
         return column.child(secondary(t, tr("Dieser Account besitzt noch keinen Umhang."))).into_element();
     }
-    let busy = ctl.busy.read().clone();
-    let none_busy = busy.as_deref() == Some("cape:");
     let none = Card {
         id: "wardrobe.cape.none".into(),
         label: tr("Kein Umhang"),
@@ -126,11 +134,13 @@ fn capes(t: &Theme, ctl: Ctl, look: &Look) -> Element {
         detail: None,
         picture: rect().width(Size::px(10. * CAPE)).height(Size::px(16. * CAPE)).center().child(icon(t, Icon::CircleOff, iconsize::M, t.text3)).into_element(),
         worn: look.cape.is_none(),
-        enabled,
-        busy: none_busy,
+        enabled: true,
+        pending: lane.cape_pending(None).map(pending_text),
+        failed: failed("cape:".into()),
         width: CHOICE,
         on_press: EventHandler::new(move |_| ctl.wear_cape(None)),
         on_secondary: None,
+        remove: None,
     };
     let mut cards = vec![rect().key("none").child(none).into_element()];
     for (i, cape) in look.capes.iter().enumerate() {
@@ -146,11 +156,13 @@ fn capes(t: &Theme, ctl: Ctl, look: &Look) -> Element {
             detail: None,
             picture,
             worn: look.cape.as_deref() == Some(cape.id.as_str()),
-            enabled,
-            busy: busy.as_deref() == Some(format!("cape:{}", cape.id).as_str()),
+            enabled: true,
+            pending: lane.cape_pending(Some(&cape.id)).map(pending_text),
+            failed: failed(format!("cape:{}", cape.id)),
             width: CHOICE,
             on_press: EventHandler::new(move |_| ctl.wear_cape(Some(id.clone()))),
             on_secondary: None,
+            remove: None,
         };
         cards.push(rect().key(cape.id.clone()).child(card).into_element());
     }
@@ -185,38 +197,40 @@ pub fn stage(t: &Theme, ctl: Ctl, m: &Model, width: Size, wide: bool) -> Element
         return column.child(empty(t, ctl)).into_element();
     };
     let store = ctl.store;
-    let phase = ctl.phase.read().clone();
     let id = account.id;
-    if let Some((problem, signin)) = ctl.error.read().clone() {
-        let mut strip = rect().width(Size::fill()).spacing(space::S).child(problem_view(t, "wardrobe.error", &problem, ctl.details));
-        if signin {
+    let lane = ctl.lane();
+    if let Some(failure) = lane.failure() {
+        let mut strip = rect().width(Size::fill()).spacing(space::S).child(problem_view(t, "wardrobe.error", &failure.problem, ctl.details));
+        if failure.signin {
             strip = strip.child(rect().horizontal().child(Button::new("wardrobe.signin", tr("Erneut anmelden")).primary().on_press(move |_| sign_in(store, vec![id]))));
         }
         column = column.child(strip);
     }
-    if let Phase::Failed(problem, signin) = &phase {
+    if let Some((problem, signin)) = &lane.load {
         let mut strip = rect().width(Size::fill()).spacing(space::S).child(problem_view(t, "wardrobe.load", problem, ctl.details));
         let button = if *signin {
             Button::new("wardrobe.signin", tr("Erneut anmelden")).primary().on_press(move |_| sign_in(store, vec![id]))
         } else {
-            Button::new("wardrobe.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| ctl.load(true))
+            Button::new("wardrobe.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| ctl.reload())
         };
         strip = strip.child(rect().horizontal().child(button));
         column = column.child(strip);
     }
-    let look = ctl.look.read().clone();
-    let unknown = look.as_ref().is_some_and(|l| l.microsoft && !l.known) && matches!(phase, Phase::Failed(..));
+    let look = ctl.look();
+    let unknown = look.as_ref().is_some_and(|l| l.microsoft && !l.known) && lane.load.is_some();
     if !unknown {
         column = column.child(preview(t, ctl, &account, look.as_ref(), if wide { PREVIEW } else { PREVIEW_NARROW }));
     }
-    if matches!(phase, Phase::Refreshing) {
-        column = column.child(spinner::beside(caption(t, tr("Wird aktualisiert …"))));
+    if let Some((step, waiting)) = lane.working() {
+        let text = step.map_or_else(|| tr("Wird verarbeitet …"), step_text);
+        let text = if waiting > 0 { trf("%@ · %lld warten", &[&text, &waiting]) } else { text };
+        column = column.child(spinner::beside(caption(t, text)));
     }
     if let Some(look) = &look
         && look.microsoft
         && look.known
     {
-        column = column.child(capes(t, ctl, look));
+        column = column.child(capes(t, ctl, look, &lane));
     }
     column.into_element()
 }

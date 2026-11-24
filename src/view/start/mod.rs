@@ -151,7 +151,7 @@ impl Component for StartPage {
             let mut rows = rect().width(Size::fill()).spacing(space::XS);
             for b in &m.batches {
                 let games = || m.games.values().filter(|g| g.batch_id == b.id);
-                let (total, running, active) = (games().count(), games().filter(|g| g.phase.counts_as_running()).count(), games().any(|g| g.phase.is_active()));
+                let (total, running, active) = (games().count(), games().filter(|g| g.counts_as_running()).count(), games().any(|g| g.phase.is_active()));
                 let attention = m.attention_count(Some(&b.id));
                 rows = rows.child(rect().key(&b.id).width(Size::fill()).child(BatchRow { id: b.id.clone(), name: b.name.clone(), total, running, active, attention }));
             }

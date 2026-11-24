@@ -113,6 +113,74 @@ pub enum FromMod {
     Servers,
     /// The player closed the game window; the game is quitting.
     Closing,
+    /// The map a connection-only account holds, or none.
+    Map { map: Option<MapPicture> },
+    /// The menu the server opened for a connection-only account, or none.
+    Menu { menu: Option<Menu> },
+    /// The title, subtitle and action bar a connection-only account was shown.
+    Titles { titles: Titles },
+}
+
+/// Text as a server shows it, with its colours.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Words {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<crate::core::chat_text::Run>,
+}
+
+/// A map picture: 128 by 128 map colour ids, row by row from the top.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MapPicture {
+    pub id: i32,
+    pub colors: Vec<u8>,
+}
+
+/// An open menu: its slots, the menu's own `top` ones first and the player's inventory after them, in rows of `columns`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Menu {
+    pub id: i32,
+    pub kind: String,
+    pub title: Words,
+    pub columns: u8,
+    pub top: u16,
+    pub slots: Vec<Option<Slot>>,
+    /// The stack held on the cursor.
+    pub carried: Option<Slot>,
+    /// Whether its items could be read; an unreadable menu has no slots but can be closed.
+    pub readable: bool,
+}
+
+/// An item stack in a menu slot.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Slot {
+    pub item: String,
+    pub name: Words,
+    pub count: u32,
+    pub lore: Vec<Words>,
+    pub glint: bool,
+    /// The map colour of its block as `0xRRGGBB`.
+    pub rgb: Option<u32>,
+    /// Whether the name was given to the stack rather than being the item's.
+    pub named: bool,
+}
+
+/// What a server last showed big or above the hotbar; `at` is the Unix second of the last change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Titles {
+    pub title: Option<Words>,
+    pub subtitle: Option<Words>,
+    pub actionbar: Option<Words>,
+    pub at: i64,
+}
+
+/// A click on a menu slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Click {
+    Left,
+    Right,
+    Shift,
 }
 
 /// Messages from the manager to the mod.
@@ -147,6 +215,10 @@ pub enum ToMod {
     Answer { id: String, accept: bool },
     /// Renders one finished frame and sends it as a preview at most `width` wide.
     Capture { width: u32 },
+    /// The user's click on `slot` of the open menu `menu` of a connection-only account.
+    Click { menu: i32, slot: i16, click: Click },
+    /// Closes the open menu `menu` of a connection-only account.
+    CloseMenu { menu: i32 },
 }
 
 /// A background level as the mod reads it: the level name, plus frames per second and sight for `custom`.

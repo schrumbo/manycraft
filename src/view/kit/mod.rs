@@ -14,6 +14,7 @@ pub mod markdown;
 pub mod menu;
 pub mod more;
 pub mod page;
+pub mod progress;
 pub mod row;
 pub mod segmented;
 pub mod select;

@@ -20,12 +20,12 @@ use crate::view::kit::drop::DropTarget;
 use crate::view::kit::field::{self, Field};
 use crate::view::kit::group::{Line, group, status};
 use crate::view::kit::sheet::{self, Card, Primary};
-use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{line, para};
 use crate::view::install::{self, Source};
 use crate::view::kit::{fades, off_thread, off_ui, ring, use_arrows, use_theme};
 use crate::view::native;
+use crate::view::readme;
 use crate::view::sheets::instance::Origin;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
@@ -501,7 +501,7 @@ fn pick_body(flow: Flow, t: &Theme, list: &[Shown], (scroll, mut viewport, mut c
     let busy = *flow.picking.read() || *flow.scanning.read();
     body = body.child(PickFile { busy, press: EventHandler::new(move |_| flow.pick_files()) });
     if loading {
-        return body.child(rect().padding((space::L, 0.)).child(spinner::waiting(t, tr("Suche Launcher …")))).into_element();
+        return body.child(rect().padding((space::L, 0.)).child(readme::loading(t))).into_element();
     }
     let total = flow.total();
     if total == 0 {

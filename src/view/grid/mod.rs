@@ -103,7 +103,7 @@ pub fn shown(m: &Model, filter: &Filter, show: Show, search: &str) -> Vec<String
         .filter_map(|k| m.games.get(k))
         .filter(|g| batch.is_none_or(|b| g.batch_id == b))
         .filter(|g| fleet::solo_instance(&g.batch_id).is_none())
-        .filter(|g| *filter != Filter::Attention || g.phase.needs_attention())
+        .filter(|g| *filter != Filter::Attention || g.needs_attention())
         .filter(|g| words::fits(g, show))
         .filter(|g| words::found(g, m, &words))
         .map(|g| g.key.clone())
@@ -118,7 +118,7 @@ pub fn fits_show(g: &Game, show: Show) -> bool {
 /// The filter in effect: a kind of work nobody needs any more shows everyone again.
 pub fn show_of(m: &Model, filter: &Filter, show: Show) -> Show {
     match show {
-        Show::Need(n) if !m.games.values().any(|g| g.phase.need() == Some(n) && filter_has(filter, g)) => Show::All,
+        Show::Need(n) if !m.games.values().any(|g| g.need() == Some(n) && filter_has(filter, g)) => Show::All,
         Show::Running | Show::Stopped if *filter == Filter::Attention => Show::All,
         other => other,
     }
@@ -521,8 +521,8 @@ pub fn count_line(m: &Model, shown: &[String]) -> Option<String> {
     if total == 0 {
         return None;
     }
-    let running = games().filter(|g: &&Game| g.phase.counts_as_running()).count();
-    let attention = games().filter(|g| g.phase.needs_attention()).count();
+    let running = games().filter(|g: &&Game| g.counts_as_running()).count();
+    let attention = games().filter(|g| g.needs_attention()).count();
     let mut parts = vec![trf("%lld von %lld laufen", &[&running, &total])];
     if attention == 1 {
         parts.push(tr("1 braucht dich"));

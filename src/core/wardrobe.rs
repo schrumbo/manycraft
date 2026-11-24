@@ -21,6 +21,21 @@ const NAME_MAX: usize = 48;
 /// How long a cached outfit counts as current; the page asks again after that.
 pub const FRESH: u64 = 10 * 60;
 
+/// Whether an outfit fetched at `fetched` (Unix seconds) counts as current.
+pub fn fresh(fetched: u64) -> bool {
+    now().saturating_sub(fetched) < FRESH
+}
+
+/// What a long call to Minecraft services is doing right now, for the page to say so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    SignIn,
+    Profile,
+    Capes { done: usize, total: usize },
+    Upload,
+    Saving,
+}
+
 /// Where a skin of the library came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -201,11 +216,6 @@ pub fn list() -> Vec<Skin> {
     read_index(&library_dir()).map(|i| i.skins).unwrap_or_default()
 }
 
-/// The picture of `skin`.
-pub fn image(skin: &Skin) -> Option<RgbaImage> {
-    change::check_png(&std::fs::read(library_dir().join(&skin.file)).ok()?).ok()
-}
-
 /// The file of `skin`, for uploading.
 pub fn bytes(skin: &Skin) -> Result<Vec<u8>> {
     std::fs::read(library_dir().join(&skin.file)).with_context(|| format!("cannot read {}", skin.file))
@@ -242,6 +252,26 @@ fn remove_in(dir: &Path, file: &str) -> Result<()> {
     locked(dir, |index| {
         index.skins.retain(|s| s.file != file);
         let _ = std::fs::remove_file(dir.join(file));
+        Ok(())
+    })
+}
+
+/// Puts a removed skin back at place `at` of the library, with the name and arms it had.
+pub fn restore(skin: &Skin, png: &[u8], at: usize) -> Result<()> {
+    restore_in(&library_dir(), skin, png, at)
+}
+
+fn restore_in(dir: &Path, skin: &Skin, png: &[u8], at: usize) -> Result<()> {
+    if !valid_file(&skin.file) {
+        return Ok(());
+    }
+    change::check_png(png)?;
+    locked(dir, |index| {
+        if index.skins.iter().any(|s| s.file == skin.file) {
+            return Ok(());
+        }
+        net::write_atomic(&dir.join(&skin.file), png)?;
+        index.skins.insert(at.min(index.skins.len()), skin.clone());
         Ok(())
     })
 }
@@ -392,13 +422,6 @@ pub struct Outfit {
     pub fetched: u64,
 }
 
-impl Outfit {
-    /// Whether the outfit is recent enough to show without asking again.
-    pub fn fresh(&self) -> bool {
-        now().saturating_sub(self.fetched) < FRESH
-    }
-}
-
 fn outfit_path(id: Uuid) -> PathBuf {
     cache_dir().join(format!("outfit-{}.json", id.simple()))
 }
@@ -437,23 +460,26 @@ pub struct Told {
 
 /// Asks Minecraft services what `account` wears and owns, keeps the pictures and the answer on disk, and puts a skin
 /// the library has not seen into it. Blocking: run it off the UI thread.
-pub fn refresh(account: &Account) -> Result<Told> {
+pub fn refresh(account: &Account, step: &dyn Fn(Step)) -> Result<Told> {
     let started = now();
     let before = cached(account.id);
     let outfit = if drive::fenced("skin profile", &account.name) {
-        canned::outfit(account)?
+        canned::outfit(account, step)?
     } else {
+        step(Step::SignIn);
         let session = auth::session_for(account)?;
         let services = Services::new(account.proxy.as_deref(), session.access_token)?;
-        read(&services)?
+        read(&services, step)?
     };
     if let Some(newer) = cached(account.id).filter(|c| c.fetched >= started && Some(c) != before.as_ref()) {
         return Ok(Told { outfit: newer, face: None });
     }
+    step(Step::Saving);
     settle(account, before.as_ref(), outfit)
 }
 
-fn read(services: &Services) -> Result<Outfit> {
+fn read(services: &Services, step: &dyn Fn(Step)) -> Result<Outfit> {
+    step(Step::Profile);
     let wardrobe = services.wardrobe()?;
     let skin = wardrobe.skin_url.as_deref().and_then(change::texture_hash);
     if let (Some(texture), Some(url)) = (&skin, wardrobe.skin_url.as_deref())
@@ -463,7 +489,9 @@ fn read(services: &Services) -> Result<Outfit> {
         keep_texture(texture, &picture)?;
     }
     let mut capes = Vec::new();
-    for cape in &wardrobe.capes {
+    let total = wardrobe.capes.len();
+    for (done, cape) in wardrobe.capes.iter().enumerate() {
+        step(Step::Capes { done, total });
         let Some(texture) = change::texture_hash(&cape.url) else { continue };
         if !texture_path(&texture).is_file()
             && let Ok(picture) = services.texture(&cape.url)
@@ -508,25 +536,27 @@ pub struct Changed {
     pub error: Option<anyhow::Error>,
 }
 
-/// Puts `skin` on `account`, and wears `cape` (`Some(None)` takes it off). Blocking: run it off the UI thread.
-pub fn wear(account: &Account, skin: Option<(&Skin, Model)>, cape: Option<Option<&str>>) -> Changed {
+/// Puts the skin file `upload` on `account`, and wears `cape` (`Some(None)` takes it off). Blocking: run it off the UI thread.
+pub fn wear(account: &Account, upload: Option<(&[u8], Model)>, cape: Option<Option<&str>>, step: &dyn Fn(Step)) -> Changed {
     let before = cached(account.id);
-    let png = match skin.map(|(s, _)| bytes(s)).transpose() {
-        Ok(png) => png,
-        Err(e) => return Changed { told: None, error: Some(e) },
-    };
-    let upload = png.as_deref().zip(skin.map(|(_, m)| m));
+    let png = upload.map(|(png, _)| png);
     let applied = if drive::fenced("skin wear", &account.name) {
+        step(Step::Upload);
         canned::apply(before.as_ref(), upload, cape)
     } else {
+        step(Step::SignIn);
         match auth::session_for(account).and_then(|s| Services::new(account.proxy.as_deref(), s.access_token)) {
-            Ok(services) => change::apply(&services, upload, cape),
+            Ok(services) => {
+                step(Step::Upload);
+                change::apply(&services, upload, cape)
+            }
             Err(e) => change::Applied { wardrobe: None, skin_done: false, error: Some(e) },
         }
     };
+    step(Step::Saving);
     let told = applied.wardrobe.and_then(|w| {
         let worn = w.skin_url.as_deref().and_then(change::texture_hash);
-        if let (Some(texture), Some(png)) = (&worn, png.as_deref())
+        if let (Some(texture), Some(png)) = (&worn, png)
             && let Ok(picture) = change::check_png(png)
         {
             let _ = keep_texture(texture, &picture);
@@ -577,6 +607,34 @@ mod tests {
             let e = fetch_player(bad).unwrap_err();
             assert_eq!(e.downcast_ref::<AddError>(), Some(&AddError::BadName), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_removed_skin_comes_back_where_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = add_in(dir.path(), &fetched(10, "Alpha")).unwrap().skin;
+        let second = add_in(dir.path(), &fetched(100, "Beta")).unwrap().skin;
+        let third = add_in(dir.path(), &fetched(200, "Gamma")).unwrap().skin;
+        let kept = std::fs::read(dir.path().join(&second.file)).unwrap();
+        remove_in(dir.path(), &second.file).unwrap();
+        restore_in(dir.path(), &second, &kept, 1).unwrap();
+        restore_in(dir.path(), &second, &kept, 0).unwrap();
+        let order: Vec<String> = read_index(dir.path()).unwrap().skins.into_iter().map(|s| s.file).collect();
+        assert_eq!(order, [third.file, second.file.clone(), first.file]);
+        assert!(restore_in(dir.path(), &second, b"not a png", 0).is_err());
+    }
+
+    #[test]
+    fn restoring_clamps_the_place_and_ignores_bad_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let only = add_in(dir.path(), &fetched(10, "Alpha")).unwrap().skin;
+        let kept = std::fs::read(dir.path().join(&only.file)).unwrap();
+        remove_in(dir.path(), &only.file).unwrap();
+        restore_in(dir.path(), &only, &kept, 99).unwrap();
+        assert_eq!(read_index(dir.path()).unwrap().skins.len(), 1);
+        let bad = Skin { file: "../x.png".into(), ..only };
+        restore_in(dir.path(), &bad, &kept, 0).unwrap();
+        assert_eq!(read_index(dir.path()).unwrap().skins.len(), 1);
     }
 
     #[test]
@@ -672,11 +730,9 @@ mod tests {
 
     #[test]
     fn an_outfit_is_fresh_for_a_while() {
-        let mut outfit = Outfit { fetched: now(), ..Outfit::default() };
-        assert!(outfit.fresh());
-        outfit.fetched = now() - FRESH - 1;
-        assert!(!outfit.fresh());
-        assert!(!Outfit::default().fresh());
+        assert!(fresh(now()));
+        assert!(!fresh(now() - FRESH - 1));
+        assert!(!fresh(Outfit::default().fetched));
     }
 
     #[test]

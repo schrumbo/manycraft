@@ -34,7 +34,7 @@ enum PreviewJob {
 
 /// What the fleet reports back to the UI thread.
 pub enum Update<P> {
-    Preparing { batch: String, percent: u8 },
+    Preparing { batch: String, progress: install::Progress },
     /// The game is installed; the accounts of `batch` wait in line to start.
     Prepared { batch: String },
     Launched { key: String, plain: bool },
@@ -237,13 +237,13 @@ impl<P: Pixels> Backend for Real<P> {
                     }
                 }
             };
-            let last = Mutex::new(u8::MAX);
+            let last = Mutex::new(None);
             let progress = |p: install::Progress| {
-                let percent = (p.done * 100).checked_div(p.total).unwrap_or(0).min(100) as u8;
+                let mark = (p.stage, p.percent());
                 let mut last = lock(&last);
-                if *last != percent {
-                    *last = percent;
-                    let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), percent });
+                if *last != Some(mark) {
+                    *last = Some(mark);
+                    let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), progress: p });
                 }
             };
             let prepared = match fleet.prepare_launch(&target, &accounts, None, &progress) {

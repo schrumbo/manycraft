@@ -8,6 +8,7 @@ mod notify;
 mod previews;
 pub mod usage;
 mod quit;
+mod screen;
 mod show;
 
 use std::cell::Cell;
@@ -159,6 +160,9 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::Reconnect(key) => fleet::reconnect(model, &key, &mut out),
         Event::ReconnectMany(keys) => fleet::reconnect_each(model, &keys, &mut out),
+        Event::ClickSlot { key, menu, slot, click } => screen::click(model, key, menu, slot, click, &mut out),
+        Event::CloseMenu { key, menu } => screen::close(model, key, menu, &mut out),
+        Event::LookAtScreen(key) => screen::look(model, key, &mut out),
         Event::Respawn(key) => {
             if model.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. })) {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::Respawn });
@@ -262,6 +266,7 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
     for report in reports {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
+            Report::Mod { message: FromMod::Map { .. } | FromMod::Menu { .. } | FromMod::Titles { .. }, .. } => {}
             Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => {
                 if m.games.get(key).is_some_and(|g| g.connection) && m.session.visible.contains(key) {
                     return Redraw::All;

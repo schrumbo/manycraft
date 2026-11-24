@@ -5,6 +5,7 @@ pub mod batch;
 pub mod browser;
 pub mod import;
 pub mod instance;
+pub mod screen;
 pub mod trash;
 pub mod unattended;
 pub mod updates;

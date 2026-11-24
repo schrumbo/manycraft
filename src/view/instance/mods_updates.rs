@@ -15,6 +15,7 @@ use crate::ui::forms::{self, Problem};
 use crate::ui::remote;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
+use crate::view::kit::progress::{Tally, Tracked};
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, line, secondary, strong};
@@ -55,13 +56,13 @@ pub(in crate::view::instance) enum Found {
     Checking { quiet: bool },
     Ready(Vec<Update>),
     Failed(String),
-    Applying(Vec<Update>),
+    Applying(Vec<Update>, Tally),
 }
 
 /// The new version number of every mod with an update, by project; empty when the update does not state one.
 pub(super) fn marks(found: &Found) -> HashMap<String, String> {
     match found {
-        Found::Ready(list) | Found::Applying(list) => list.iter().map(|u| (u.current.project_id.clone(), u.changelog.first().map(|(number, _)| number.clone()).unwrap_or_default())).collect(),
+        Found::Ready(list) | Found::Applying(list, _) => list.iter().map(|u| (u.current.project_id.clone(), u.changelog.first().map(|(number, _)| number.clone()).unwrap_or_default())).collect(),
         _ => HashMap::new(),
     }
 }
@@ -70,7 +71,7 @@ pub(super) fn marks(found: &Found) -> HashMap<String, String> {
 /// while it is fresh, and neither reports that all is current nor that it could not look.
 pub(super) fn check(ctx: &super::Ctx, quiet: bool) {
     let mut found = ctx.found;
-    if matches!(*found.peek(), Found::Checking { .. } | Found::Applying(_)) {
+    if matches!(*found.peek(), Found::Checking { .. } | Found::Applying(..)) {
         return;
     }
     let Some(made) = ctx.store.model.peek().instance(&ctx.id).cloned() else { return };
@@ -103,11 +104,12 @@ pub(super) fn check(ctx: &super::Ctx, quiet: bool) {
 }
 
 fn apply_all(store: Store, id: String, list: Vec<Update>, mut found: State<Found>) {
-    found.set(Found::Applying(list.clone()));
+    let tally = Tally::default();
+    found.set(Found::Applying(list.clone(), tally.clone()));
     spawn_in_window(async move {
         let running = is_running(store, &id);
         let (work_id, sent) = (id.clone(), list.clone());
-        let result = off_ui(move || remote::apply_updates(&work_id, &sent, running)).await;
+        let result = off_ui(move || remote::apply_updates_counted(&work_id, &sent, running, &|done, total| tally.set(done, total))).await;
         let alive = found.try_peek().is_some();
         match result {
             Some(Ok(made)) => {
@@ -151,7 +153,19 @@ pub(super) fn inline(t: &Theme, ctx: &super::Ctx, locked: Option<String>) -> Opt
                 .child(Button::new("instance.mods.updates.all", tr("Alle aktualisieren")).primary().disabled(locked).on_press(move |_| apply_all(store, id.clone(), list.clone(), found)))
                 .child(close)
         }
-        Found::Applying(list) => bar(Icon::Download, t.accent_text, trf("%@ wird aktualisiert …", &[&label_of(&list)])).child(Button::new("instance.mods.updates.all", tr("Alle aktualisieren")).primary().busy(true).disabled(Some(tr("Wird aktualisiert …")))),
+        Found::Applying(list, tally) => rect()
+            .width(Size::fill())
+            .height(Size::px(control::L))
+            .padding((0., space::S, 0., space::M))
+            .horizontal()
+            .cross_align(Alignment::Center)
+            .spacing(space::S)
+            .corner_radius(t.shape.control)
+            .background(t.raised)
+            .content(Content::flex())
+            .child(icon(t, Icon::Download, iconsize::S, t.accent_text))
+            .child(rect().width(Size::flex(1.)).child(Tracked::new("instance.mods.updates.progress", updating_text(&list), tally).compact()))
+            .child(Button::new("instance.mods.updates.all", tr("Alle aktualisieren")).primary().busy(true).disabled(Some(tr("Wird aktualisiert …")))),
     };
     Some(row.into_element())
 }
@@ -182,6 +196,13 @@ fn label_of(selection: &[Update]) -> String {
     }
 }
 
+fn updating_text(selection: &[Update]) -> String {
+    match selection {
+        [one] => trf("%@ wird aktualisiert …", &[&trf("„%@“", &[&one.current.title])]),
+        many => trf("%lld Mods werden aktualisiert …", &[&many.len()]),
+    }
+}
+
 fn offer_updated(store: Store, id: String, updates: Vec<Update>, label: String) {
     toast::show(store.ui, trf("%@ aktualisiert.", &[&label]), Some(EventHandler::new(move |_| undo_updates(store, id.clone(), updates.clone(), label.clone()))));
 }
@@ -208,16 +229,17 @@ fn undo_updates(store: Store, id: String, updates: Vec<Update>, label: String) {
     });
 }
 
-fn apply_now(store: Store, id: String, selection: Vec<Update>, applying: State<bool>, error: State<Option<Problem>>) {
+fn apply_now(store: Store, id: String, selection: Vec<Update>, applying: State<bool>, error: State<Option<Problem>>, tally: Tally) {
     if selection.is_empty() || applying.got() != Some(false) {
         return;
     }
     applying.soft(|a| *a = true);
     error.soft(|e| *e = None);
+    tally.set(0, 0);
     spawn_in_window(async move {
         let running = is_running(store, &id);
         let (work_id, sent) = (id.clone(), selection.clone());
-        let result = off_ui(move || remote::apply_updates(&work_id, &sent, running)).await;
+        let result = off_ui(move || remote::apply_updates_counted(&work_id, &sent, running, &|done, total| tally.set(done, total))).await;
         let alive = applying.try_peek().is_some();
         applying.soft(|a| *a = false);
         match result {
@@ -257,6 +279,7 @@ impl Component for Updates {
         let mut chosen = use_state(HashSet::<String>::new);
         let mut open = use_state(HashSet::<String>::new);
         let applying = use_state(|| false);
+        let tally = use_hook(Tally::default);
         let error = use_state(|| None::<Problem>);
         let mut details = use_state(|| false);
         let mut asked = use_state(|| 0u32);
@@ -320,7 +343,7 @@ impl Component for Updates {
                 let mut column = rect()
                     .width(Size::fill())
                     .spacing(space::S)
-                    .child(rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(strong(&t, count, font::CALLOUT, t.text2).width(Size::flex(1.))).child(toggle))
+                    .child(rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).content(Content::flex()).child(if busy { rect().width(Size::flex(1.)).child(Tracked::new("instance.mods.updates.sheet.progress", updating_text(&chosen_of(&state, &picked)), tally.clone()).compact()).into_element() } else { strong(&t, count, font::CALLOUT, t.text2).width(Size::flex(1.)).into_element() }).child(toggle))
                     .child(
                         rect().width(Size::fill()).corner_radius(t.shape.tile).border(Border::new().fill(t.separator).width(1.).alignment(BorderAlignment::Inner)).overflow(Overflow::Clip).child(ScrollView::new().max_height(Size::px(LIST_MAX)).height(Size::auto()).child(rows)),
                     );
@@ -343,8 +366,8 @@ impl Component for Updates {
                 if selection.is_empty() || *applying.peek() {
                     return;
                 }
-                let (job, work) = (selection.clone(), id.clone());
-                snapshots::before(store, &id, Reason::ModUpdates(job.len()), move || apply_now(store, work, job, applying, error));
+                let (job, work, tally) = (selection.clone(), id.clone(), tally.clone());
+                snapshots::before(store, &id, Reason::ModUpdates(job.len()), move || apply_now(store, work, job, applying, error, tally));
             }
         };
         let mut card = Card::new("instance.mods.updates", tr("Mod-Updates")).message(name).body(content).width(frame::SHEET * 1.25);

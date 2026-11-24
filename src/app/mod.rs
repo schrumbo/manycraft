@@ -2,6 +2,7 @@
 
 pub mod effect;
 pub mod event;
+pub mod meter;
 pub mod model;
 pub mod phase;
 pub mod reduce;
