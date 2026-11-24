@@ -34,6 +34,8 @@ pub enum Page {
     Discover,
     /// Skins and capes, to switch between and to add to.
     Wardrobe,
+    /// Keeping settings, mod settings and the server list the same across instances: set up, overview, history.
+    Sync,
     /// The mosaic of every game, or of one batch, or of those that need the person.
     Grid(Filter),
     Instance(String),
@@ -284,7 +286,7 @@ pub fn kept(page: &Page) -> Option<(winstate::Page, Option<String>)> {
         Page::Grid(Filter::Batch(b)) => Some((winstate::Page::Grid, Some(b.clone()))),
         Page::Grid(_) => Some((winstate::Page::Grid, None)),
         Page::Instance(id) | Page::Browse(id, _) => Some((winstate::Page::Instance, Some(id.clone()))),
-        Page::Wardrobe | Page::Settings(_) => None,
+        Page::Wardrobe | Page::Sync | Page::Settings(_) => None,
     }
 }
 

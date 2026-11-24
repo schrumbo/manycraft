@@ -193,7 +193,7 @@ impl Instance {
             default_account: None,
             pack: None,
             group: None,
-            sync: super::share::Sharing::ALL,
+            sync: super::share::for_new(),
             kept: serde_json::Map::new(),
         }
     }

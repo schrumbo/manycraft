@@ -311,38 +311,6 @@ fn concurrent_writes_end_with_the_last_writer_and_a_whole_file() {
     assert!((0..8).any(|i| config == format!("{{\"by\":{i},\"n\":9}}").repeat(200)), "torn file");
 }
 
-fn played(w: &World, own: &Own, ago: u64) {
-    let logs = w.game(own).join("logs");
-    fs::create_dir_all(&logs).unwrap();
-    let log = logs.join("latest.log");
-    fs::write(&log, "x").unwrap();
-    fs::File::options().write(true).open(&log).unwrap().set_modified(SystemTime::now() - Duration::from_secs(ago)).unwrap();
-}
-
-#[test]
-fn turning_on_many_takes_the_most_recently_played_and_keeps_the_others() {
-    let w = world();
-    let (a, b, c) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE), w.instance("C", Sharing::NONE));
-    for (own, fov) in [(&a, "0.1"), (&b, "0.2"), (&c, "0.3")] {
-        fs::write(own.dir.join("options.txt"), format!("version:3955\nfov:{fov}\n")).unwrap();
-        fs::create_dir_all(own.dir.join("config")).unwrap();
-        fs::write(own.dir.join("config").join("mod.json"), fov).unwrap();
-    }
-    played(&w, &a, 3000);
-    played(&w, &b, 10);
-    played(&w, &c, 600);
-    let ids = vec![a.id.clone(), b.id.clone(), c.id.clone()];
-    let made = turn_on_in(&w.mother, &w.roots.instances, &ids, &[]).unwrap();
-    assert!(made.iter().all(|i| i.sync == Sharing::ALL));
-    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.2\n");
-    assert_eq!(w.mother("config/mod.json").unwrap(), "0.2");
-    let own: Vec<String> = history::versions(&w.mother, Item::Options).unwrap().into_iter().filter(|v| v.own).filter_map(|v| v.source).collect();
-    for name in ["A", "B", "C"] {
-        assert!(own.iter().any(|s| s == name), "{name} not kept: {own:?}");
-    }
-    assert_eq!(composed(&w, &a), "version:3955\nfov:0.2\n");
-}
-
 fn tree(root: &Path, skip: &[&str]) -> BTreeMap<PathBuf, (Vec<u8>, Option<SystemTime>)> {
     let mut out = BTreeMap::new();
     let mut todo = vec![root.to_path_buf()];
@@ -377,7 +345,7 @@ fn nothing_outside_instance_folders_and_the_sync_folder_is_touched() {
     fs::write(a.dir.join("options.txt"), "fov:0.1\n").unwrap();
     let before = tree(&w.root, &["instances", "sync"]);
     set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL, false).unwrap();
-    turn_on_in(&w.mother, &w.roots.instances, &[b.id.clone()], &[]).unwrap();
+    set_in(&w.mother, &w.roots.instances, &b.id, Sharing::ALL, false).unwrap();
     inbound_in(&w.mother, &b, false).unwrap();
     let game = w.game(&b);
     let p = w.peers(&[("k1", &b)]);
@@ -608,7 +576,9 @@ fn options_of_games_before_1_13_move_neither_way() {
     let older = old_instance(&w, "Older", "1.8.9");
     fs::write(older.dir.join("options.txt"), "key_key.jump:57\n").unwrap();
     set_in(&w.mother, &w.roots.instances, &older.id, Sharing::NONE, false).unwrap();
-    turn_on_in(&w.mother, &w.roots.instances, &[older.id.clone(), fresh.id.clone()], &[]).unwrap();
+    for own in [&older, &fresh] {
+        set_in(&w.mother, &w.roots.instances, &own.id, Sharing::ALL, false).unwrap();
+    }
     assert_eq!(w.mother("options.txt").unwrap(), "key_key.jump:key.keyboard.space\n");
     assert!(own_files(&w, Item::Options).iter().all(|b| !String::from_utf8_lossy(b).contains(":57")));
 }
@@ -1160,4 +1130,277 @@ fn a_config_link_that_cannot_be_made_now_still_saves_the_choice_for_the_next_sta
     assert_eq!(made.sync, Sharing::ALL);
     assert!(!is_link(&a.dir.join("config")));
     assert_eq!(read(&a.dir.join("config").join("mine.json")), "{\"m\":1}");
+}
+
+fn fill(own: &Own, options: Option<&str>, servers: Option<&str>, config: &[(&str, &str)]) {
+    if let Some(t) = options {
+        fs::write(own.dir.join("options.txt"), t).unwrap();
+    }
+    if let Some(s) = servers {
+        fs::write(own.dir.join("servers.dat"), s).unwrap();
+    }
+    for (name, text) in config {
+        fs::create_dir_all(own.dir.join("config")).unwrap();
+        fs::write(own.dir.join("config").join(name), text).unwrap();
+    }
+}
+
+fn loaded(w: &World, id: &str) -> Instance {
+    crate::core::instance::load_all_in(&w.roots.instances).unwrap().into_iter().find(|i| i.id == id).unwrap()
+}
+
+fn ask(base: &Own, items: Sharing, replace: &[&Own]) -> Setup {
+    Setup { base: base.id.clone(), items, replace: replace.iter().map(|o| o.id.clone()).collect() }
+}
+
+#[test]
+fn a_setup_makes_the_base_shared_and_replaces_the_chosen_instances_after_keeping_their_files() {
+    let w = world();
+    let (a, b, c) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE), w.instance("C", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\ngamma:1\n"), Some("list A"), &[("mod.json", "A"), ("same.json", "a")]);
+    fill(&b, Some("version:3955\nfov:0.1\nonly_b:7\n"), Some("list B"), &[("mod.json", "B"), ("b.json", "b")]);
+    fill(&c, Some("version:3955\nfov:0.2\n"), Some("list C"), &[("mod.json", "C")]);
+    let done = setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&b]), &[]).unwrap();
+    assert_eq!(done.instances.len(), 2);
+    assert!(done.nothing.is_empty());
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\ngamma:1\n");
+    assert_eq!(w.mother("servers.dat").unwrap(), "list A");
+    assert_eq!(w.mother("config/mod.json").unwrap(), "A");
+    assert_eq!(w.mother("config/b.json"), None);
+    assert_eq!(loaded(&w, &a.id).sync, Sharing::ALL);
+    assert_eq!(loaded(&w, &b.id).sync, Sharing::ALL);
+    assert_eq!(loaded(&w, &c.id).sync, Sharing::NONE);
+    assert_eq!(composed(&w, &b), "version:3955\nfov:0.5\ngamma:1\n");
+    assert!(!b.dir.join("servers.dat").exists());
+    assert_eq!(read(&c.dir.join("options.txt")), "version:3955\nfov:0.2\n");
+    assert_eq!(read(&c.dir.join("servers.dat")), "list C");
+    let own: Vec<Version> = history::versions(&w.mother, Item::Options).unwrap().into_iter().filter(|v| v.own && v.source.as_deref() == Some("B")).collect();
+    assert_eq!(history::files(&w.mother, &own[0]).unwrap()[0].1, b"version:3955\nfov:0.1\nonly_b:7\n".to_vec());
+    let servers: Vec<Version> = history::versions(&w.mother, Item::Servers).unwrap().into_iter().filter(|v| v.own && v.source.as_deref() == Some("B")).collect();
+    assert_eq!(history::files(&w.mother, &servers[0]).unwrap()[0].1, b"list B".to_vec());
+    let config: Vec<Version> = history::versions(&w.mother, Item::Config).unwrap().into_iter().filter(|v| v.own && v.source.as_deref() == Some("B")).collect();
+    assert_eq!(history::files(&w.mother, &config[0]).unwrap().len(), 2);
+}
+
+#[test]
+fn a_replaced_instance_never_adds_its_own_values_to_the_shared_state() {
+    let w = world();
+    let (a, b) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[("mod.json", "A")]);
+    fill(&b, Some("version:3955\nfov:0.1\nextra:1\n"), Some("list B"), &[("mod.json", "B"), ("extra.json", "b")]);
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&b]), &[]).unwrap();
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+    assert_eq!(w.mother("config/mod.json").unwrap(), "A");
+    assert_eq!(w.mother("config/extra.json"), None);
+    assert_eq!(w.mother("servers.dat").unwrap(), "list B");
+}
+
+#[test]
+fn a_setup_replaces_same_named_settings_and_keeps_other_shared_ones() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.9\nold:1\n");
+    w.put_mother("servers.dat", "old list");
+    w.put_mother("config/keep.json", "keep");
+    w.put_mother("config/mod.json", "old");
+    let a = w.instance("A", Sharing::NONE);
+    fill(&a, Some("version:3955\nfov:0.5\n"), Some("list A"), &[("mod.json", "A")]);
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[]), &[]).unwrap();
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\nold:1\n");
+    assert_eq!(w.mother("servers.dat").unwrap(), "list A");
+    assert_eq!(w.mother("config/mod.json").unwrap(), "A");
+    assert_eq!(w.mother("config/keep.json").unwrap(), "keep");
+    let kept: Vec<Version> = history::versions(&w.mother, Item::Servers).unwrap().into_iter().filter(|v| !v.own).collect();
+    assert_eq!(history::files(&w.mother, &kept[0]).unwrap()[0].1, b"old list".to_vec());
+}
+
+#[test]
+fn an_item_the_base_already_shares_stays_as_it_is() {
+    let w = world();
+    let a = w.instance("A", Sharing { options: true, config: false, servers: false });
+    let b = w.instance("B", Sharing::NONE);
+    w.put_mother("options.txt", "fov:0.5\n");
+    fill(&b, Some("version:3955\nfov:0.1\n"), None, &[]);
+    let done = setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing { options: true, config: false, servers: false }, &[&b]), &[]).unwrap();
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+    assert_eq!(composed(&w, &b), "version:3955\nfov:0.5\n");
+    assert_eq!(done.instances.len(), 2);
+    assert_eq!(loaded(&w, &b.id).sync, Sharing { options: true, config: false, servers: false });
+}
+
+#[test]
+fn what_the_base_lacks_stays_as_it_was_and_is_reported() {
+    let w = world();
+    w.put_mother("servers.dat", "shared list");
+    let a = w.instance("A", Sharing::NONE);
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[]);
+    let done = setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[]), &[]).unwrap();
+    assert_eq!(done.nothing, vec![Item::Config, Item::Servers]);
+    assert_eq!(w.mother("servers.dat").unwrap(), "shared list");
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+}
+
+#[test]
+fn a_setup_refuses_nothing_to_share_a_missing_base_and_options_that_cannot_travel() {
+    let w = world();
+    let a = w.instance("A", Sharing::NONE);
+    assert!(setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::NONE, &[]), &[]).is_err());
+    let missing = Setup { base: "nope".into(), items: Sharing::ALL, replace: vec![] };
+    assert!(setup_in(&w.mother, &w.roots.instances, &missing, &[]).is_err());
+    let old = Instance { sync: Sharing::NONE, ..Instance::new("Old", "1.8.9", Loader::Vanilla) };
+    save_in(&w.roots.instances, &old).unwrap();
+    let ask_old = Setup { base: old.id.clone(), items: Sharing::ALL, replace: vec![] };
+    assert!(setup_in(&w.mother, &w.roots.instances, &ask_old, &[]).is_err());
+    assert!(w.mother("options.txt").is_none());
+    assert_eq!(loaded(&w, &old.id).sync, Sharing::NONE);
+    let only_servers = Setup { items: Sharing { options: false, config: false, servers: true }, ..ask_old };
+    fs::write(dir_in(&w.roots.instances, &old.id).join("servers.dat"), "old list").unwrap();
+    setup_in(&w.mother, &w.roots.instances, &only_servers, &[]).unwrap();
+    assert_eq!(w.mother("servers.dat").unwrap(), "old list");
+}
+
+#[test]
+fn an_old_instance_among_the_replaced_ones_keeps_its_own_options() {
+    let w = world();
+    let a = w.instance("A", Sharing::NONE);
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[]);
+    let old = Instance { sync: Sharing::NONE, ..Instance::new("Old", "1.8.9", Loader::Vanilla) };
+    save_in(&w.roots.instances, &old).unwrap();
+    fs::write(dir_in(&w.roots.instances, &old.id).join("options.txt"), "key_key.attack:-100\n").unwrap();
+    let request = Setup { base: a.id.clone(), items: Sharing::ALL, replace: vec![old.id.clone()] };
+    setup_in(&w.mother, &w.roots.instances, &request, &[]).unwrap();
+    assert_eq!(read(&dir_in(&w.roots.instances, &old.id).join("options.txt")), "key_key.attack:-100\n");
+    assert!(loaded(&w, &old.id).sync.config);
+    assert!(!flags_in(&dir_in(&w.roots.instances, &old.id)).options);
+}
+
+#[test]
+fn the_base_and_the_last_change_of_each_item_are_known() {
+    let w = world();
+    let (a, b) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), Some("list"), &[("mod.json", "A")]);
+    assert!(standing_in(&w.mother).iter().all(|s| !s.present && s.base.is_none() && s.changed.is_none()));
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&b]), &[]).unwrap();
+    for s in standing_in(&w.mother) {
+        assert!(s.present, "{:?}", s.item);
+        assert_eq!(s.base.as_ref().map(|b| b.0.as_str()), Some("A"));
+        assert_eq!(s.changed.as_ref().map(|b| b.0.as_str()), Some("A"));
+    }
+    put_options(&w.mother, &b, &values(&[("fov", "0.9")])).unwrap();
+    let s = standing_in(&w.mother);
+    assert_eq!(s[0].base.as_ref().unwrap().0, "A");
+    assert_eq!(s[0].changed.as_ref().unwrap().0, "B");
+}
+
+#[test]
+fn a_first_join_into_an_empty_sync_folder_founds_the_base() {
+    let w = world();
+    let a = w.instance("A", Sharing::ALL);
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[]);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let b = w.instance("B", Sharing::ALL);
+    fill(&b, Some("version:3955\nfov:0.1\nzoom:1\n"), None, &[]);
+    inbound_in(&w.mother, &b, false).unwrap();
+    assert_eq!(standing_in(&w.mother)[0].base.as_ref().unwrap().0, "A");
+}
+
+#[test]
+fn undoing_a_setup_puts_every_byte_back() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.9\n");
+    w.put_mother("servers.dat", "old list");
+    w.put_mother("config/mod.json", "old");
+    let (a, b) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), Some("list A"), &[("mod.json", "A")]);
+    fill(&b, Some("version:3955\nfov:0.1\nextra:1\n"), Some("list B"), &[("mod.json", "B"), ("b.json", "b")]);
+    let (opt_a, opt_b) = (read(&a.dir.join("options.txt")), read(&b.dir.join("options.txt")));
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&b]), &[]).unwrap();
+    assert_eq!(last_in(&w.mother).unwrap().instances, 2);
+    let back = undo_in(&w.mother, &w.roots.instances, &[]).unwrap();
+    assert_eq!(back.len(), 2);
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
+    assert_eq!(w.mother("servers.dat").unwrap(), "old list");
+    assert_eq!(w.mother("config/mod.json").unwrap(), "old");
+    for (own, opts, list, cfg) in [(&a, &opt_a, "list A", "A"), (&b, &opt_b, "list B", "B")] {
+        assert_eq!(loaded(&w, &own.id).sync, Sharing::NONE);
+        assert_eq!(&read(&own.dir.join("options.txt")), opts);
+        assert_eq!(read(&own.dir.join("servers.dat")), list);
+        assert_eq!(read(&own.dir.join("config").join("mod.json")), cfg);
+        assert!(!is_link(&own.dir.join("config")));
+    }
+    assert_eq!(read(&b.dir.join("config").join("b.json")), "b");
+    assert!(last_in(&w.mother).unwrap().undone);
+    assert!(undo_in(&w.mother, &w.roots.instances, &[]).is_err());
+}
+
+#[test]
+fn undoing_leaves_what_an_instance_chose_before_the_setup_alone() {
+    let w = world();
+    let a = w.instance("A", Sharing { options: false, config: false, servers: true });
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[]);
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[]), &[]).unwrap();
+    undo_in(&w.mother, &w.roots.instances, &[]).unwrap();
+    assert_eq!(loaded(&w, &a.id).sync, Sharing { options: false, config: false, servers: true });
+    assert_eq!(read(&a.dir.join("options.txt")), "version:3955\nfov:0.5\n");
+}
+
+#[test]
+fn a_running_instance_keeps_its_config_folder_until_its_next_start_and_the_undo_keeps_it_too() {
+    let w = world();
+    let (a, b) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[("mod.json", "A")]);
+    fill(&b, Some("version:3955\nfov:0.1\n"), Some("list B"), &[("mod.json", "B")]);
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&b]), &[b.id.clone()]).unwrap();
+    assert!(!is_link(&b.dir.join("config")));
+    assert_eq!(read(&b.dir.join("config").join("mod.json")), "B");
+    assert_eq!(w.mother("config/mod.json").unwrap(), "A");
+    assert_eq!(composed(&w, &b), "version:3955\nfov:0.5\n");
+    undo_in(&w.mother, &w.roots.instances, &[b.id.clone()]).unwrap();
+    assert_eq!(read(&b.dir.join("config").join("mod.json")), "B");
+    assert_eq!(w.mother("config/mod.json").unwrap(), "A");
+    assert_eq!(read(&b.dir.join("servers.dat")), "list B");
+}
+
+#[test]
+fn a_game_of_a_replaced_instance_that_changed_nothing_leaves_the_shared_state_alone() {
+    let w = world();
+    let (a, b) = (w.instance("A", Sharing::NONE), w.instance("B", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), Some("list A"), &[]);
+    fill(&b, Some("version:3955\nfov:0.1\n"), Some("list B"), &[]);
+    let game = w.game(&b);
+    fs::write(game.join("servers.dat"), "list B").unwrap();
+    fs::write(game.join("options.txt"), "version:3955\nfov:0.1\n").unwrap();
+    let p = w.peers(&[("k1", &b)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &b, &game, true));
+    t.loaded("k1");
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&b]), &[b.id.clone()]).unwrap();
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("servers.dat").unwrap(), "list A");
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
+}
+
+#[test]
+fn only_the_newest_setup_can_be_taken_back_and_the_log_stays_short() {
+    let w = world();
+    let a = w.instance("A", Sharing::NONE);
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[]);
+    for _ in 0..7 {
+        setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[]), &[]).unwrap();
+    }
+    assert_eq!(setup::records(&w.mother).len(), 5);
+    assert_eq!(last_in(&w.mother).unwrap().base, "A");
+}
+
+#[test]
+fn undo_never_writes_an_own_copy_older_than_the_setup_over_newer_files() {
+    let w = world();
+    let (a, x) = (w.instance("A", Sharing::NONE), w.instance("X", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[("mod.json", "A")]);
+    fill(&x, None, None, &[("mod.json", "v0")]);
+    set_in(&w.mother, &w.roots.instances, &x.id, Sharing::ALL, false).unwrap();
+    set_in(&w.mother, &w.roots.instances, &x.id, Sharing::NONE, false).unwrap();
+    fs::write(x.dir.join("config").join("mod.json"), "v1").unwrap();
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&x]), &[x.id.clone()]).unwrap();
+    undo_in(&w.mother, &w.roots.instances, &[x.id.clone()]).unwrap();
+    assert_eq!(read(&x.dir.join("config").join("mod.json")), "v1");
 }
