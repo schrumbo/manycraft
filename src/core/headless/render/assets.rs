@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 
+use super::figure::{Models, Sheet};
 use super::model::Source;
 
 const IDLE: Duration = Duration::from_secs(60);
@@ -115,6 +116,10 @@ pub struct Assets {
     pub(super) sun: Option<Texture>,
     pub(super) moon: [Option<Texture>; 8],
     pub(super) vignette: Option<Texture>,
+    pub(super) figures: Models,
+    pngs: HashMap<String, Vec<u8>>,
+    sheets: Mutex<HashMap<String, Option<Arc<Sheet>>>>,
+    data: HashMap<String, Value>,
 }
 
 impl Source for Assets {
@@ -142,18 +147,47 @@ impl Assets {
     /// Reads what pictures need from a client jar.
     pub fn from_jar(reader: impl Read + Seek) -> Result<Self> {
         let mut zip = zip::ZipArchive::new(reader).context("not a jar")?;
-        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None };
+        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new() };
         let mut bytes = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;
-            let Some(path) = entry.name().ok().and_then(|n| n.strip_prefix("assets/minecraft/").map(str::to_string)) else { continue };
-            let wanted = path.starts_with("blockstates/") || path.starts_with("models/block/") || path.starts_with("textures/block/") || path.starts_with("textures/colormap/") || path.starts_with("textures/environment/") || path == "textures/misc/vignette.png";
+            let Some(name) = entry.name().ok().map(|n| n.to_string()) else { continue };
+            if let Some(key) = name.strip_prefix("data/minecraft/").and_then(|p| p.strip_suffix(".json")).filter(|p| p.split('/').next().is_some_and(|dir| dir.ends_with("_variant"))) {
+                if entry.size() <= MAX_ENTRY {
+                    bytes.clear();
+                    entry.read_to_end(&mut bytes)?;
+                    if let Ok(v) = serde_json::from_slice(&bytes) {
+                        assets.data.insert(key.to_string(), v);
+                    }
+                }
+                continue;
+            }
+            let Some(path) = name.strip_prefix("assets/minecraft/").map(str::to_string) else { continue };
+            if path.ends_with(".png.mcmeta") && path.starts_with("textures/entity/") {
+                bytes.clear();
+                entry.read_to_end(&mut bytes)?;
+                if let Ok(v) = serde_json::from_slice(&bytes) {
+                    assets.data.insert(path.trim_end_matches(".png.mcmeta").trim_start_matches("textures/").to_string() + ".mcmeta", v);
+                }
+                continue;
+            }
+            let sheet = (path.starts_with("textures/entity/") || path.starts_with("textures/item/") || path.starts_with("textures/trims/") || path == "textures/misc/shadow.png" || path.starts_with("textures/map/")) && path.ends_with(".png");
+            let wanted = sheet || path.starts_with("blockstates/") || path.starts_with("models/block/") || path.starts_with("models/item/") || path.starts_with("items/") || path.starts_with("equipment/") || path.starts_with("textures/block/") || path.starts_with("textures/colormap/") || path.starts_with("textures/environment/") || path == "textures/misc/vignette.png";
             if !wanted || entry.size() > MAX_ENTRY {
                 continue;
             }
             bytes.clear();
             entry.read_to_end(&mut bytes)?;
-            if let Some(name) = path.strip_prefix("blockstates/").and_then(|p| p.strip_suffix(".json")) {
+            if sheet {
+                let key = path.strip_prefix("textures/").and_then(|p| p.strip_suffix(".png")).unwrap_or(&path);
+                assets.pngs.insert(key.to_string(), bytes.clone());
+                continue;
+            }
+            if let Some(key) = path.strip_prefix("items/").or_else(|| path.strip_prefix("equipment/").map(|_| path.as_str())).and_then(|p| p.strip_suffix(".json")) {
+                if let Ok(v) = serde_json::from_slice(&bytes) {
+                    assets.data.insert(key.to_string(), v);
+                }
+            } else if let Some(name) = path.strip_prefix("blockstates/").and_then(|p| p.strip_suffix(".json")) {
                 if let Ok(v) = serde_json::from_slice(&bytes) {
                     assets.blockstates.insert(name.to_string(), v);
                 }
@@ -200,6 +234,23 @@ impl Assets {
 
     pub fn texture(&self, id: u32) -> &Texture {
         &self.textures[id as usize]
+    }
+
+    /// The model sheet `path` (`entity/cow/cow`, `item/stick`), decoded on first use.
+    pub fn sheet(&self, path: &str) -> Option<Arc<Sheet>> {
+        let mut sheets = self.sheets.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(found) = sheets.get(path) {
+            return found.clone();
+        }
+        let decoded = self.pngs.get(path).and_then(|bytes| Sheet::png(bytes)).map(Arc::new);
+        sheets.insert(path.to_string(), decoded.clone());
+        decoded
+    }
+
+    /// A data file by path without extension: an item definition (`diamond_sword`), an equipment asset
+    /// (`equipment/iron`) or a mob variant (`cow_variant/temperate`).
+    pub fn data(&self, key: &str) -> Option<&Value> {
+        self.data.get(key)
     }
 }
 
