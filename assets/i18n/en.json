@@ -6,6 +6,8 @@
   "OK": "OK",
   "%lld importieren": "Import %lld",
   "Die Datei wird als neue Instanz kopiert, die Datei selbst bleibt unverändert.": "The file is copied into a new instance; the file itself stays unchanged.",
+  "Ziehe eine .mrpack- oder .zip-Datei oder einen Instanz-Ordner auf das Fenster.": "Drop a .mrpack or .zip file or an instance folder on the window.",
+  "Mit den Pfeilen geht es zu den anderen Bildern.": "Use the arrows to reach the other pictures.",
   "Bild %lld": "Picture %lld",
   "Vorheriges Bild": "Previous picture",
   "Nächstes Bild": "Next picture",

@@ -405,7 +405,7 @@ impl Component for Lightbox {
             .on_global_pointer_up(move |_: Event<PointerEventData>| drag.set_if_modified(None));
         surface = match shown {
             Pic::Loading => surface.center().child(rect().width(Size::percent(60.)).height(Size::percent(60.)).corner_radius(t.shape.tile).background(t.hover)),
-            Pic::Failed => surface.center().spacing(space::M).child(icon(&t, Icon::ImageOff, iconsize::L * 2., t.text3)).child(strong(&t, tr("Das Bild lässt sich nicht öffnen."), font::BODY, t.text1)),
+            Pic::Failed => surface.center().spacing(space::M).child(icon(&t, Icon::ImageOff, iconsize::L * 2., t.text3)).child(strong(&t, tr("Das Bild lässt sich nicht öffnen."), font::BODY, t.text1)).child(secondary(&t, tr("Mit den Pfeilen geht es zu den anderen Bildern."))),
             Pic::Ready { handle, .. } => {
                 let left = (area.0 - drawn.0) / 2. + pan.0;
                 let top = (area.1 - drawn.1) / 2. + pan.1;
