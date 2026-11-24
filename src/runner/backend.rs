@@ -410,10 +410,11 @@ impl<P: Pixels> Backend for Real<P> {
         for _ in 0..3 {
             let keys = self.fleet.running_keys();
             if keys.is_empty() {
-                return;
+                break;
             }
             self.fleet.stop_all(&keys);
         }
+        self.fleet.settle_sharing();
     }
 
     fn leave(&self) {

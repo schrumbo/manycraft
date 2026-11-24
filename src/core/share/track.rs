@@ -47,6 +47,7 @@ struct Game {
     shown: Option<Instant>,
     read: u64,
     base: Option<Base>,
+    saved_early: bool,
 }
 
 #[derive(Debug)]
@@ -100,7 +101,7 @@ impl Tracker {
             self.config.insert(start.instance.clone(), None);
         }
         self.config.entry(start.instance.clone()).or_insert(None);
-        self.games.insert(key.clone(), Game { start, shown: None, read: 0, base: None });
+        self.games.insert(key.clone(), Game { start, shown: None, read: 0, base: None, saved_early: false });
         if adopted {
             self.loaded(&key);
         }
@@ -116,7 +117,7 @@ impl Tracker {
         let seen = file_stamp(&path);
         let options = read_text(&path).ok().flatten().map(|t| keys::map(&t)).unwrap_or_default();
         let servers = read_file(&game.start.game.join(SERVERS_FILE)).ok().flatten();
-        game.base = Some(Base { options, servers, seen, at: Instant::now(), settled: false });
+        game.base = Some(Base { options, servers, seen, at: Instant::now(), settled: game.saved_early });
         let instance = game.start.instance.clone();
         let dir = game.start.dir.clone();
         let waiting = self.games.values().any(|g| g.start.instance == instance && g.base.is_none());
@@ -125,22 +126,28 @@ impl Tracker {
         }
     }
 
-    /// The game `key` saved the options `values` changed.
+    /// The game `key` saved the options `values` changed. The companion leaves out keys the save only added, so what
+    /// arrives is a choice, except the first save of a first start, which holds what the game detected.
     pub(crate) fn options(&mut self, roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap<String, String>) {
         let Some(game) = self.games.get_mut(key) else { return };
-        let Some(base) = game.base.as_mut() else { return };
+        let Some(base) = game.base.as_mut() else {
+            game.saved_early = true;
+            return;
+        };
         let start = game.start.clone();
+        let settling = base.settling(&start, Instant::now());
+        base.settled = true;
+        base.options.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+        if settling {
+            return;
+        }
         if let Err(e) = sync::instance_options(roots, peers, &start.instance, values) {
             eprintln!("the options of {} were not kept: {e:#}", start.name);
         }
-        let settling = base.settling(&game.start, Instant::now());
-        base.settled |= settling;
-        let mine = if settling { BTreeMap::new() } else { keys::changed(&base.options, values) };
-        base.options.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
-        if mine.is_empty() || !flags_in(&start.dir).options {
+        if values.is_empty() || !flags_in(&start.dir).options {
             return;
         }
-        self.options_up(roots, peers, &start.own(), &mine);
+        self.options_up(roots, peers, &start.own(), values);
     }
 
     fn options_up(&self, roots: &Roots, peers: &impl Peers, own: &Own, changes: &BTreeMap<String, String>) {
@@ -308,8 +315,11 @@ fn learn_defaults(path: &Path, base: &mut Base, settling: bool) {
     if now == base.seen {
         return;
     }
-    base.seen = now;
     let Ok(Some(text)) = read_text(path) else { return };
+    if !keys::readable(&text) || file_stamp(path) != now {
+        return;
+    }
+    base.seen = now;
     base.settled |= settling;
     for (k, v) in keys::map(&text) {
         if settling {

@@ -1088,6 +1088,11 @@ impl Fleet {
 
     /// Waits until the settings of every game that ended were shared, so neither a start writes over what they saved
     /// nor quitting loses it; with `always`, also when no game ended, for exits already on their way.
+    /// Waits until the settings of games that ended were shared, at most a few seconds.
+    pub fn settle_sharing(&self) {
+        self.settle_exits(true);
+    }
+
     fn settle_exits(&self, always: bool) {
         let ended: Vec<(String, u32)> = lock(&self.running).iter_mut().filter_map(|(k, r)| (!r.poll()).then(|| (k.clone(), r.pid))).collect();
         if ended.is_empty() && !always {

@@ -764,15 +764,77 @@ fn keys_a_game_adds_after_loading_never_reach_the_sync_folder() {
     fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
     t.ended(&w.roots, &p, "k2", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
-    let companion = a.dir.join("games").join("c");
-    fs::create_dir_all(&companion).unwrap();
-    fs::write(companion.join("options.txt"), "fov:0.5\n").unwrap();
-    t.started(&w.roots, &p, start("k1", &a, &companion, true));
+}
+
+#[test]
+fn a_companion_game_shares_its_first_change_of_a_key_it_added_after_loading() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[("k1", &a)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &a, &game, true));
+    fs::write(game.join("options.txt"), "fov:0.5\n").unwrap();
     t.loaded("k1");
-    t.options(&w.roots, &p, "k1", &values(&[("fov", "0.5"), ("cloudRange", "64")]));
+    t.options(&w.roots, &p, "k1", &values(&[("renderDistance", "16")]));
+    assert!(w.mother("options.txt").unwrap().contains("renderDistance:16"));
+}
+
+#[test]
+fn a_first_companion_start_keeps_its_detected_setup_out_of_the_sync_folder_and_the_template() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let template = fs::read_to_string(a.dir.join("options.txt")).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[("k1", &a)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, true) });
+    t.loaded("k1");
+    t.options(&w.roots, &p, "k1", &values(&[("renderDistance", "16")]));
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
-    t.options(&w.roots, &p, "k1", &values(&[("cloudRange", "32")]));
-    assert!(w.mother("options.txt").unwrap().contains("cloudRange:32"));
+    assert_eq!(fs::read_to_string(a.dir.join("options.txt")).unwrap(), template);
+    t.options(&w.roots, &p, "k1", &values(&[("fov", "0.9")]));
+    assert!(w.mother("options.txt").unwrap().contains("fov:0.9"));
+}
+
+#[test]
+fn a_first_companion_start_that_saved_its_setup_while_loading_shares_the_next_change() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[("k1", &a)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, true) });
+    t.options(&w.roots, &p, "k1", &values(&[("renderDistance", "16")]));
+    t.loaded("k1");
+    t.options(&w.roots, &p, "k1", &values(&[("fov", "0.9")]));
+    assert!(w.mother("options.txt").unwrap().contains("fov:0.9"));
+}
+
+#[test]
+fn a_half_written_options_file_is_not_learned() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\n").unwrap();
+    t.loaded("k1");
+    fs::write(game.join("options.txt"), "").unwrap();
+    t.tick(Instant::now());
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.7\n").unwrap();
+    t.tick(Instant::now());
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
 }
 
 #[test]
