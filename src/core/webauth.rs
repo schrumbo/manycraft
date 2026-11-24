@@ -457,9 +457,9 @@ mod tests {
 
     #[test]
     fn child_protocol_browser_and_denied() {
-        let mut w = window(if cfg!(windows) { "'ready'; 'browser'" } else { "echo ready; echo browser" });
+        let mut w = window(if cfg!(windows) { "[Console]::In.ReadLine() | Out-Null; 'ready'; 'browser'" } else { "read l; echo ready; echo browser" });
         assert_eq!(w.wait(&AtomicBool::new(false), || {}), Outcome::Browser);
-        let mut w = window(if cfg!(windows) { "'ready'; 'error access_denied no'" } else { "echo ready; echo 'error access_denied no'" });
+        let mut w = window(if cfg!(windows) { "[Console]::In.ReadLine() | Out-Null; 'ready'; 'error access_denied no'" } else { "read l; echo ready; echo 'error access_denied no'" });
         assert_eq!(w.wait(&AtomicBool::new(false), || {}), Outcome::Denied { error: "access_denied".into(), description: "no".into() });
     }
 
