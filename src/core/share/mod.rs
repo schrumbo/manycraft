@@ -4,6 +4,7 @@
 
 mod history;
 mod keys;
+mod notes;
 mod track;
 
 use std::collections::BTreeMap;
@@ -22,6 +23,7 @@ use super::{lock, net, paths};
 
 use history::History;
 pub use history::Version;
+pub use notes::Note;
 pub(crate) use track::{Start, Tracker};
 
 /// Folder in the data folder that holds what sharing instances share.
@@ -120,7 +122,8 @@ impl Mother {
         Self { root }
     }
 
-    fn path(&self, rel: &str) -> PathBuf {
+    /// The file or folder `rel`, with `/` between parts, in the sync folder.
+    pub(crate) fn path(&self, rel: &str) -> PathBuf {
         rel.split('/').fold(self.root.clone(), |p, part| p.join(part))
     }
 
@@ -174,33 +177,240 @@ pub fn options_travel(game: &str) -> bool {
     }
 }
 
-/// Before a game of `instance` starts: what the sync folder holds wins over the instance's own copy of every item the
-/// instance shares, and an item the sync folder lacks is taken from the instance. With `joining`, a game of the
-/// instance already runs and its `config/` folder stays as it is. Fails when the instance's copy cannot be made to match.
+/// The options the games of the instance in folder `dir` start from: its own file, and for an instance that shares
+/// them the shared keys of the sync folder over the keys only the instance keeps.
+pub fn game_options(dir: &Path) -> Result<Option<String>> {
+    options_for(&Mother::current(), dir)
+}
+
+pub(crate) fn options_for(mother: &Mother, dir: &Path) -> Result<Option<String>> {
+    compose(&dir.join(OPTIONS_FILE), flags_in(dir).options.then(|| mother.path(OPTIONS_FILE)).as_deref())
+}
+
+/// The options in `own` with the shared keys of the file `shared` over them, when there is one that reads as options.
+pub(crate) fn compose(own: &Path, shared: Option<&Path>) -> Result<Option<String>> {
+    let mine = read_text(own)?;
+    let Some(shared) = shared else { return Ok(mine) };
+    let Some(theirs) = read_text(shared)?.filter(|t| keys::readable(t)) else { return Ok(mine) };
+    Ok(Some(keys::merge(&mine.unwrap_or_default(), &theirs)))
+}
+
+/// The server list the games of the instance in folder `dir` start from: the shared one when the instance shares it.
+pub fn game_servers(dir: &Path) -> PathBuf {
+    servers_for(&Mother::current(), dir)
+}
+
+pub(crate) fn servers_for(mother: &Mother, dir: &Path) -> PathBuf {
+    if flags_in(dir).servers { mother.path(SERVERS_FILE) } else { dir.join(SERVERS_FILE) }
+}
+
+/// Whether the options key `key` stays with each instance even when it shares its options.
+pub(crate) fn kept_apart(key: &str) -> bool {
+    keys::excluded(key)
+}
+
+/// Before a game of `instance` starts: its folder holds no copy of what it shares. Its own options keep only the keys
+/// that stay with the instance, its own server list goes, its `config` folder becomes a link to the shared one, and an
+/// item it stopped sharing gets back a real folder. Every own copy is kept in the history first and fills what the sync
+/// folder lacks. With `joining`, a game of the instance already runs and its `config` folder stays as it is.
 pub fn inbound(instance: &Instance, joining: bool) -> Result<()> {
     inbound_in(&Mother::current(), &Own::of(instance), joining)
 }
 
 pub(crate) fn inbound_in(mother: &Mother, own: &Own, joining: bool) -> Result<()> {
-    let flags = flags_in(&own.dir);
-    if !flags.any() || !own.dir.is_dir() {
+    if !own.dir.is_dir() {
         return Ok(());
     }
     super::sync::with_templates(|| {
         let _held = mother.lock()?;
-        kept(mother, |history| {
+        let flags = flags_in(&own.dir);
+        let plan = kept(mother, |history| {
+            let mut plan = Plan::default();
             if flags.options {
-                options_in(mother, own, history)?;
+                plan.options = options_join(mother, own, history)?;
             }
             if flags.servers {
-                servers_in(mother, own, history)?;
+                plan.servers = servers_join(mother, own, history)?;
             }
-            if flags.config && !joining {
-                config_in(mother, own, history)?;
+            if flags.config {
+                if !joining {
+                    config_join(mother, own, history)?;
+                }
+                snapshot(mother, history)?;
             }
-            Ok(())
-        })
+            Ok(plan)
+        })?;
+        plan.apply(mother, own, flags.config, joining)
     })
+}
+
+/// What a join changes in the instance folder once the history kept every own copy.
+#[derive(Default)]
+struct Plan {
+    options: Option<Option<String>>,
+    servers: bool,
+}
+
+impl Plan {
+    fn apply(self, mother: &Mother, own: &Own, config: bool, joining: bool) -> Result<()> {
+        if let Some(rest) = self.options {
+            let path = own.file(OPTIONS_FILE);
+            match rest {
+                Some(text) => net::write_atomic(&path, text.as_bytes())?,
+                None => remove(&path)?,
+            }
+        }
+        if self.servers {
+            remove(&own.file(SERVERS_FILE))?;
+        }
+        if joining {
+            return Ok(());
+        }
+        let path = own.file(CONFIG);
+        let shared = mother.path(CONFIG);
+        let linked = is_link(&path) && points_at(&path, &shared);
+        match (config, linked) {
+            (true, false) => link_config(&path, &shared),
+            (false, true) => unlink_config(&path, &shared),
+            (false, false) => {
+                let fresh = path.with_file_name(format!("{CONFIG}.own-new"));
+                if fs::symlink_metadata(&path).is_err() && fresh.is_dir() {
+                    fs::rename(&fresh, &path).with_context(|| format!("cannot move {} back", fresh.display()))?;
+                }
+                Ok(())
+            }
+            (true, true) => Ok(()),
+        }
+    }
+}
+
+fn remove(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            writable(path);
+            fs::remove_file(path).with_context(|| format!("cannot remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Keeps the own options of `own` when they hold shared keys and fills the sync folder from them when it has none;
+/// returns what the own file keeps: the keys that stay with the instance, or nothing.
+fn options_join(mother: &Mother, own: &Own, history: &mut History) -> Result<Option<Option<String>>> {
+    let Some(raw) = read_file(&own.file(OPTIONS_FILE))? else { return Ok(None) };
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let usable = keys::readable(&text) && !keys::legacy(&text);
+    let shared = if usable { keys::shared(&text) } else { String::new() };
+    if usable && shared.is_empty() {
+        return Ok(None);
+    }
+    history.backup(own, OPTIONS_FILE, &raw)?;
+    if usable {
+        let theirs = read_text(&mother.path(OPTIONS_FILE))?.filter(|t| keys::readable(t));
+        let filled = theirs.as_deref().map_or_else(|| shared.clone(), |t| keys::merge(&shared, t));
+        if theirs.as_deref().is_none_or(|t| keys::map(t) != keys::map(&filled)) {
+            put_locked(mother, history, own, vec![(OPTIONS_FILE.to_owned(), filled.into_bytes())])?;
+        }
+    }
+    let rest = if usable { keys::apart(&text) } else { String::new() };
+    Ok(Some((!rest.is_empty()).then_some(rest)))
+}
+
+fn servers_join(mother: &Mother, own: &Own, history: &mut History) -> Result<bool> {
+    let Some(mine) = read_file(&own.file(SERVERS_FILE))? else { return Ok(false) };
+    history.backup(own, SERVERS_FILE, &mine)?;
+    if !mine.is_empty() && read_file(&mother.path(SERVERS_FILE))?.is_none() {
+        put_locked(mother, history, own, vec![(SERVERS_FILE.to_owned(), mine)])?;
+    }
+    Ok(true)
+}
+
+/// Keeps every file of a real `config` folder of `own` and fills the empty shared one from it.
+fn config_join(mother: &Mother, own: &Own, history: &mut History) -> Result<()> {
+    let path = own.file(CONFIG);
+    if is_link(&path) || fs::symlink_metadata(&path).is_err() {
+        return Ok(());
+    }
+    let mine = own_files(own, Item::Config)?;
+    for (rel, bytes) in &mine {
+        history.backup(own, rel, bytes)?;
+    }
+    let shared = mother.path(CONFIG);
+    let missing: Vec<(String, Vec<u8>)> = mine
+        .into_iter()
+        .filter(|(rel, _)| {
+            let path = mother.path(rel);
+            fs::symlink_metadata(&path).is_err() && path.ancestors().skip(1).take_while(|p| p.starts_with(&shared)).all(|p| fs::metadata(p).map_or(true, |m| m.is_dir()))
+        })
+        .collect();
+    if !missing.is_empty() {
+        put_locked(mother, history, own, missing)?;
+    }
+    Ok(())
+}
+
+/// Keeps each shared mod setting that changed since the history kept it last, so the state before a start stays
+/// restorable even though games write the shared folder directly.
+fn snapshot(mother: &Mother, history: &mut History) -> Result<()> {
+    for (rel, path) in files_in(&mother.path(CONFIG))? {
+        let Ok(bytes) = fs::read(&path) else { continue };
+        history.snapshot(&format!("{CONFIG}/{rel}"), &bytes)?;
+    }
+    Ok(())
+}
+
+/// Makes the `config` folder at `path` a link to `shared`. A real folder moves aside first and comes back when the link
+/// cannot be made; once linked it goes, since the history keeps its files.
+fn link_config(path: &Path, shared: &Path) -> Result<()> {
+    fs::create_dir_all(shared).with_context(|| format!("cannot create {}", shared.display()))?;
+    let aside = if is_link(path) {
+        super::fleet::remove_link(path)?;
+        None
+    } else if fs::symlink_metadata(path).is_ok() {
+        let free = (1..).map(|n| path.with_file_name(format!("{CONFIG}.own-{n}"))).find(|p| fs::symlink_metadata(p).is_err()).context("no free name")?;
+        fs::rename(path, &free).with_context(|| tr("Der Ordner „config“ der Instanz ist gerade in Benutzung. Schließ das Spiel und versuch es noch einmal."))?;
+        Some(free)
+    } else {
+        None
+    };
+    if let Err(e) = super::fleet::create_link(shared, path) {
+        if let Some(free) = &aside {
+            let _ = fs::rename(free, path);
+        }
+        return Err(e).with_context(|| format!("cannot link {} to {}", path.display(), shared.display()));
+    }
+    if let Some(free) = aside
+        && let Err(e) = fs::remove_dir_all(&free)
+    {
+        eprintln!("the old config folder {} stays: {e}", free.display());
+    }
+    Ok(())
+}
+
+/// Turns the link at `path` into a real folder holding a copy of `shared`; the link stays when the copy fails.
+fn unlink_config(path: &Path, shared: &Path) -> Result<()> {
+    let fresh = path.with_file_name(format!("{CONFIG}.own-new"));
+    let _ = fs::remove_dir_all(&fresh);
+    let copied = (|| -> Result<()> {
+        for (rel, from) in files_in(shared)? {
+            let to = rel.split('/').fold(fresh.clone(), |p, part| p.join(part));
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+            }
+            fs::copy(&from, &to).with_context(|| format!("cannot copy {}", from.display()))?;
+        }
+        fs::create_dir_all(&fresh).with_context(|| format!("cannot create {}", fresh.display()))
+    })();
+    if let Err(e) = copied {
+        let _ = fs::remove_dir_all(&fresh);
+        return Err(e);
+    }
+    super::fleet::remove_link(path)?;
+    fs::rename(&fresh, path).with_context(|| format!("cannot move {} to {}", fresh.display(), path.display()))
+}
+
+fn points_at(link: &Path, target: &Path) -> bool {
+    matches!((fs::canonicalize(link), fs::canonicalize(target)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Runs `work` on the history and records what it kept even when `work` fails halfway, so no kept version is lost.
@@ -211,75 +421,6 @@ fn kept<T>(mother: &Mother, work: impl FnOnce(&mut History) -> Result<T>) -> Res
     let value = done?;
     saved?;
     Ok(value)
-}
-
-fn options_in(mother: &Mother, own: &Own, history: &mut History) -> Result<()> {
-    let template = own.file(OPTIONS_FILE);
-    let raw = read_file(&template)?;
-    let mine = raw.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
-    let Some(theirs) = read_text(&mother.path(OPTIONS_FILE))? else {
-        if let Some(mine) = mine.filter(|t| keys::readable(t) && !keys::legacy(t)) {
-            put_locked(mother, history, own, vec![(OPTIONS_FILE.to_owned(), keys::shared(&mine).into_bytes())])?;
-        }
-        return Ok(());
-    };
-    let wanted: BTreeMap<String, String> = keys::map(&theirs).into_iter().filter(|(k, _)| !keys::excluded(k)).collect();
-    let base = mine.clone().filter(|t| keys::readable(t) && !keys::legacy(t)).unwrap_or_default();
-    if keys::covers(&base, &wanted) && mine.is_some() {
-        return Ok(());
-    }
-    if let Some(raw) = &raw {
-        history.backup(own, OPTIONS_FILE, raw)?;
-    }
-    let merged = keys::merge(&base, &theirs);
-    settle(&template, merged.as_bytes(), || read_text(&template).ok().flatten().is_some_and(|t| keys::covers(&t, &wanted)), tr("Die geteilten Spiel-Optionen ließen sich nicht in die Instanz schreiben."))
-}
-
-fn servers_in(mother: &Mother, own: &Own, history: &mut History) -> Result<()> {
-    let template = own.file(SERVERS_FILE);
-    let mine = read_file(&template)?;
-    let Some(theirs) = read_file(&mother.path(SERVERS_FILE))? else {
-        if let Some(mine) = mine.filter(|b| !b.is_empty()) {
-            put_locked(mother, history, own, vec![(SERVERS_FILE.to_owned(), mine)])?;
-        }
-        return Ok(());
-    };
-    if mine.as_deref() == Some(theirs.as_slice()) {
-        return Ok(());
-    }
-    if let Some(mine) = &mine {
-        history.backup(own, SERVERS_FILE, mine)?;
-    }
-    settle(&template, &theirs, || read_file(&template).ok().flatten().as_deref() == Some(theirs.as_slice()), tr("Die geteilte Serverliste ließ sich nicht in die Instanz schreiben."))
-}
-
-fn config_in(mother: &Mother, own: &Own, history: &mut History) -> Result<()> {
-    let shared = files_in(&mother.path(CONFIG))?;
-    if shared.is_empty() {
-        let mine = files_in(&own.file(CONFIG))?;
-        if !mine.is_empty() {
-            let files = mine.into_iter().map(|(rel, path)| Ok((format!("{CONFIG}/{rel}"), fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?))).collect::<Result<Vec<_>>>()?;
-            put_locked(mother, history, own, files)?;
-        }
-        return Ok(());
-    }
-    for (rel, path) in shared {
-        let bytes = fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
-        let full = format!("{CONFIG}/{rel}");
-        if through_link(&own.file(CONFIG), &rel) {
-            continue;
-        }
-        let target = own.file(&full);
-        let mine = read_file(&target)?;
-        if mine.as_deref() == Some(bytes.as_slice()) {
-            continue;
-        }
-        if let Some(mine) = &mine {
-            history.backup(own, &full, mine)?;
-        }
-        settle(&target, &bytes, || read_file(&target).ok().flatten().as_deref() == Some(bytes.as_slice()), trf("Die geteilte Mod-Einstellung „%@“ ließ sich nicht in die Instanz schreiben.", &[&rel]))?;
-    }
-    Ok(())
 }
 
 /// Writes `bytes` to `path` until `holds` says it arrived: once, then once more after making the file writable.
@@ -293,17 +434,6 @@ fn settle(path: &Path, bytes: &[u8], holds: impl Fn() -> bool, why: String) -> R
         Ok(()) => bail!("{why}"),
         Err(e) => Err(e.context(why)),
     }
-}
-
-/// Whether writing `rel` under `base` would go through a linked folder, out of the instance.
-fn through_link(base: &Path, rel: &str) -> bool {
-    let parts: Vec<&str> = rel.split('/').collect();
-    let mut at = base.to_path_buf();
-    is_link(&at)
-        || parts[..parts.len().saturating_sub(1)].iter().any(|part| {
-            at.push(part);
-            is_link(&at)
-        })
 }
 
 /// Makes the file at `path` one a write can replace: a link is removed and a read-only file made writable.
@@ -321,43 +451,75 @@ pub(crate) fn writable(path: &Path) {
     }
 }
 
-/// Right before a game starts: makes sure its `options.txt` at `game` holds every key of the instance `template` but the
+/// Right before a game starts: makes sure its `options.txt` at `game` holds every key of the options `template` but the
 /// per-game ones and a data version, rebuilding a missing or unreadable file from the template with `fallback` as the
 /// version when nothing else names one. Tries again writable once, then refuses the start.
-pub fn verify_game(template: &Path, game: &Path, fallback: Option<u32>) -> Result<()> {
-    let Some(ours) = read_text(template)? else { return Ok(()) };
-    let wanted: BTreeMap<String, String> = keys::map(&ours).into_iter().filter(|(k, _)| k != "version" && !super::sync::PER_INSTANCE_KEYS.contains(&k.as_str())).collect();
+pub fn verify_game(template: Option<&str>, game: &Path, fallback: Option<u32>) -> Result<()> {
+    let Some(ours) = template else { return Ok(()) };
+    let wanted: BTreeMap<String, String> = keys::map(ours).into_iter().filter(|(k, _)| k != "version" && !super::sync::PER_INSTANCE_KEYS.contains(&k.as_str())).collect();
     let existing = read_text(game).ok().flatten();
-    let versioned = existing.as_deref().and_then(keys::version).or_else(|| keys::version(&ours)).or(fallback).is_some();
+    let versioned = existing.as_deref().and_then(keys::version).or_else(|| keys::version(ours)).or(fallback).is_some();
     let holds = || read_text(game).ok().flatten().is_some_and(|t| keys::readable(&t) && keys::covers(&t, &wanted) && (!versioned || keys::version(&t).is_some()));
     if holds() {
         return Ok(());
     }
-    let text = keys::game_file(&ours, existing.as_deref(), fallback);
+    let text = keys::game_file(ours, existing.as_deref(), fallback);
     settle(game, text.as_bytes(), holds, tr("Die Spiel-Optionen dieses Accounts ließen sich nicht vorbereiten. Prüf, ob die Datei „options.txt“ im Spielordner beschreibbar ist."))
 }
 
-/// Saves which items instance `id` shares and returns it. An item turned on first keeps the instance's own copy in the
-/// history and, when the sync folder lacks it, becomes it; otherwise the sync folder wins at the next start.
-pub fn set(id: &str, sharing: Sharing) -> Result<Instance> {
-    set_in(&Mother::current(), &instance::instances_dir(), id, sharing)
+/// Saves which items instance `id` shares and returns it. An item turned off first gets a real copy of the shared
+/// state in the instance folder; an item turned on keeps the own copy in the history and then uses the shared one.
+/// While a game of the instance runs (`running`), its `config` folder changes at the next start.
+pub fn set(id: &str, sharing: Sharing, running: bool) -> Result<Instance> {
+    set_in(&Mother::current(), &instance::instances_dir(), id, sharing, running)
 }
 
-pub(crate) fn set_in(mother: &Mother, root: &Path, id: &str, sharing: Sharing) -> Result<Instance> {
+pub(crate) fn set_in(mother: &Mother, root: &Path, id: &str, sharing: Sharing, running: bool) -> Result<Instance> {
     let mut made = find(root, id)?;
-    let on: Vec<Item> = ITEMS.into_iter().filter(|i| sharing.get(*i) && !made.sync.get(*i) && travels(&made, *i)).collect();
-    join(mother, &Own { id: made.id.clone(), name: made.name.clone(), dir: instance::dir_in(root, id) }, &on)?;
+    let own = Own { id: made.id.clone(), name: made.name.clone(), dir: instance::dir_in(root, id) };
+    let off: Vec<Item> = ITEMS.into_iter().filter(|i| !sharing.get(*i) && made.sync.get(*i) && travels(&made, *i)).collect();
+    if !off.is_empty() {
+        super::sync::with_templates(|| {
+            let _held = mother.lock()?;
+            leave(mother, &own, &off)
+        })?;
+    }
     made.sync = sharing;
-    save(root, made)
+    let made = save(root, made)?;
+    if let Err(e) = inbound_in(mother, &own, running) {
+        eprintln!("{} switches its shared files at the next start: {e:#}", own.name);
+    }
+    Ok(made)
+}
+
+/// Gives `own` real copies of the shared `items` it stops sharing; the `config` folder follows at the next join.
+fn leave(mother: &Mother, own: &Own, items: &[Item]) -> Result<()> {
+    for item in items {
+        match item {
+            Item::Options => {
+                if let Some(text) = compose(&own.file(OPTIONS_FILE), Some(&mother.path(OPTIONS_FILE)))? {
+                    net::write_atomic(&own.file(OPTIONS_FILE), text.as_bytes())?;
+                }
+            }
+            Item::Servers => {
+                if let Some(bytes) = read_file(&mother.path(SERVERS_FILE))? {
+                    net::write_atomic(&own.file(SERVERS_FILE), &bytes)?;
+                }
+            }
+            Item::Config => {}
+        }
+    }
+    Ok(())
 }
 
 /// Turns sharing of every item on for the instances `ids`, the most recently played first, so that it fills what the
-/// sync folder lacks and the others keep their own copies in the history.
-pub fn turn_on(ids: &[String]) -> Result<Vec<Instance>> {
-    turn_on_in(&Mother::current(), &instance::instances_dir(), ids)
+/// sync folder lacks and the others keep their own copies in the history. The `config` folder of an instance in
+/// `running` changes at its next start.
+pub fn turn_on(ids: &[String], running: &[String]) -> Result<Vec<Instance>> {
+    turn_on_in(&Mother::current(), &instance::instances_dir(), ids, running)
 }
 
-pub(crate) fn turn_on_in(mother: &Mother, root: &Path, ids: &[String]) -> Result<Vec<Instance>> {
+pub(crate) fn turn_on_in(mother: &Mother, root: &Path, ids: &[String], running: &[String]) -> Result<Vec<Instance>> {
     let mut chosen: Vec<(Instance, PathBuf, Option<std::time::SystemTime>)> = instance::load_all_in(root)?
         .into_iter()
         .filter(|i| ids.contains(&i.id))
@@ -369,11 +531,18 @@ pub(crate) fn turn_on_in(mother: &Mother, root: &Path, ids: &[String]) -> Result
         .collect();
     chosen.sort_by(|a, b| b.2.cmp(&a.2));
     let mut done = Vec::new();
+    let mut failed = false;
     for (mut made, dir, _) in chosen {
-        let on: Vec<Item> = ITEMS.into_iter().filter(|i| !made.sync.get(*i) && travels(&made, *i)).collect();
-        join(mother, &Own { id: made.id.clone(), name: made.name.clone(), dir }, &on)?;
+        let own = Own { id: made.id.clone(), name: made.name.clone(), dir };
         made.sync = Sharing::ALL;
         done.push(save(root, made)?);
+        if failed {
+            continue;
+        }
+        if let Err(e) = inbound_in(mother, &own, running.contains(&own.id)) {
+            eprintln!("{} switches its shared files at the next start: {e:#}", own.name);
+            failed = true;
+        }
     }
     Ok(done)
 }
@@ -402,46 +571,41 @@ fn save(root: &Path, made: Instance) -> Result<Instance> {
     }
 }
 
-/// Keeps the own copy of each of `items` of `own` and fills what the sync folder lacks from it.
-fn join(mother: &Mother, own: &Own, items: &[Item]) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    super::sync::with_templates(|| {
-        let _held = mother.lock()?;
-        kept(mother, |history| {
-            for item in items {
-                let mine = own_files(own, *item)?;
-                for (rel, bytes) in &mine {
-                    history.backup(own, rel, bytes)?;
-                }
-                if !present(mother, *item)? {
-                    let up: Vec<(String, Vec<u8>)> = match item {
-                        Item::Options => mine.into_iter().map(|(rel, b)| (rel, String::from_utf8_lossy(&b).into_owned())).filter(|(_, t)| keys::readable(t) && !keys::legacy(t)).map(|(rel, t)| (rel, keys::shared(&t).into_bytes())).collect(),
-                        _ => mine,
-                    };
-                    if !up.is_empty() {
-                        put_locked(mother, history, own, up)?;
-                    }
-                }
-            }
-            Ok(())
-        })
-    })
-}
-
-fn present(mother: &Mother, item: Item) -> Result<bool> {
-    Ok(match item {
-        Item::Config => !files_in(&mother.path(CONFIG))?.is_empty(),
-        _ => fs::symlink_metadata(mother.path(item.rel())).is_ok(),
-    })
-}
-
 fn own_files(own: &Own, item: Item) -> Result<Vec<(String, Vec<u8>)>> {
     match item {
         Item::Config => files_in(&own.file(CONFIG))?.into_iter().map(|(rel, path)| Ok((format!("{CONFIG}/{rel}"), fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?))).collect(),
         _ => Ok(read_file(&own.file(item.rel()))?.map(|b| (item.rel().to_owned(), b)).into_iter().collect()),
     }
+}
+
+/// What sharing restored on its own lately, newest first.
+pub fn notes() -> Vec<Note> {
+    notes::read(&Mother::current())
+}
+
+/// Forgets what sharing restored on its own once the person saw it.
+pub fn clear_notes() -> Result<()> {
+    notes::clear(&Mother::current())
+}
+
+/// The folder `name` of the instance folder `dir` to read when copying the instance out, `None` without one. A shared
+/// `config` link reads as the shared folder it points at.
+pub fn folder_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    if fs::symlink_metadata(&path).ok()?.is_dir() {
+        return Some(path);
+    }
+    linked(dir, name).then(|| fs::canonicalize(&path).ok()).flatten().filter(|p| p.is_dir())
+}
+
+/// Whether `name` in the instance folder `dir` is a link to a shared folder, which belongs to every sharing instance.
+pub fn linked(dir: &Path, name: &str) -> bool {
+    name == CONFIG && is_link(&dir.join(name))
+}
+
+/// The sync folder, where the shared files live.
+pub fn folder() -> PathBuf {
+    Mother::current().root
 }
 
 /// The earlier versions of `item`, newest first.
@@ -501,6 +665,32 @@ fn put_locked(mother: &Mother, history: &mut History, source: &Own, files: Vec<(
         changed += 1;
     }
     Ok(changed)
+}
+
+/// Puts each mod setting in `back` a game broke back to its good state, unless something wrote it again since it was
+/// seen broken, and keeps the ones it changed, `seen`, in the history. Returns the paths it put back.
+fn mend_config(mother: &Mother, back: &[(String, Vec<u8>, Option<Vec<u8>>)], seen: &[(String, Vec<u8>)]) -> Result<Vec<String>> {
+    super::sync::with_templates(|| {
+        let _held = mother.lock()?;
+        kept(mother, |history| {
+            for (rel, bytes) in seen {
+                history.snapshot(rel, bytes)?;
+            }
+            let mut put = Vec::new();
+            for (rel, good, broke) in back {
+                let path = mother.path(rel);
+                if read_file(&path)? != *broke {
+                    continue;
+                }
+                if let Some(broke) = broke {
+                    history.snapshot(rel, broke)?;
+                }
+                net::write_atomic(&path, good)?;
+                put.push(rel.clone());
+            }
+            Ok(put)
+        })
+    })
 }
 
 fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {

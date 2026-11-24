@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::instance::{self, games_dir};
 use super::ipc::{self, Event, FromMod, ToMod};
-use super::share::{Mother, Start, Tracker};
+use super::share::{self, Mother, Start, Tracker};
 use super::{net, paths};
 
 /// Options every game keeps for itself: window, screen and session state.
@@ -70,11 +70,12 @@ impl Peers for Live {
 
 pub(crate) struct Roots {
     pub(crate) instances: PathBuf,
+    pub(crate) mother: Mother,
 }
 
 impl Roots {
     fn current() -> Self {
-        Self { instances: paths::instances_dir() }
+        Self { instances: paths::instances_dir(), mother: Mother::current() }
     }
 
     pub(crate) fn instance(&self, instance: &str) -> PathBuf {
@@ -174,34 +175,44 @@ fn options_saved(roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap
     instance_options(roots, peers, &instance, values).map(|_| ())
 }
 
-/// Sets the shared keys of `values` that differ in the template of `instance` and sends them to its running games;
-/// returns them.
+/// Sets the keys of `values` that differ from what the games of `instance` start from and sends them to its running
+/// games; returns them. The template keeps them, but for an instance sharing its options only the keys that stay with
+/// it: the shared ones go to the sync folder on their own way.
 pub(crate) fn instance_options(roots: &Roots, peers: &impl Peers, instance: &str, values: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
     let changes = {
         let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
-        let template = roots.instance(instance).join(OPTIONS_FILE);
-        if !roots.instance(instance).is_dir() {
+        let dir = roots.instance(instance);
+        let template = dir.join(OPTIONS_FILE);
+        if !dir.is_dir() {
             return Ok(BTreeMap::new());
         }
-        let (text, changes) = match fs::read_to_string(&template) {
-            Ok(text) => {
-                let changes = changed(Some(&text), values);
-                (text, changes)
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (String::new(), changed(None, values)),
+        let text = match fs::read_to_string(&template) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
         };
-        if changes.is_empty() {
-            return Ok(changes);
+        let shares = share::flags_in(&dir).options;
+        let start = if shares { share::options_for(&roots.mother, &dir)? } else { text.clone() };
+        let changes = changed(start.as_deref(), values);
+        let kept: BTreeMap<String, String> = changes.iter().filter(|(k, _)| !shares || share::kept_apart(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        if !kept.is_empty() {
+            net::write_atomic(&template, apply(text.as_deref().unwrap_or_default(), &kept).as_bytes())?;
         }
-        net::write_atomic(&template, apply(&text, &changes).as_bytes())?;
         changes
     };
-    let message = ToMod::Options { values: changes.clone() };
+    send_options(peers, instance, &changes);
+    Ok(changes)
+}
+
+/// Sends the options `values` to every running game of `instance`.
+pub(crate) fn send_options(peers: &impl Peers, instance: &str, values: &BTreeMap<String, String>) {
+    if values.is_empty() {
+        return;
+    }
+    let message = ToMod::Options { values: values.clone() };
     for game in in_instance(peers, instance) {
         peers.send(&game, &message);
     }
-    Ok(changes)
 }
 
 #[cfg(test)]
@@ -212,7 +223,8 @@ fn servers_saved(roots: &Roots, peers: &impl Peers, key: &str) -> Result<()> {
     instance_servers(roots, peers, &instance, &bytes, Some(key))
 }
 
-/// Makes `bytes` the server list of `instance` and of its running games but `except`, and tells those games.
+/// Makes `bytes` the server list of `instance` and of its running games but `except`, and tells those games. An instance
+/// sharing its list keeps none of its own; the sync folder takes it on its own way.
 pub(crate) fn instance_servers(roots: &Roots, peers: &impl Peers, instance: &str, bytes: &[u8], except: Option<&str>) -> Result<()> {
     let targets: Vec<String> = in_instance(peers, instance).into_iter().filter(|k| Some(k.as_str()) != except).collect();
     {
@@ -220,7 +232,9 @@ pub(crate) fn instance_servers(roots: &Roots, peers: &impl Peers, instance: &str
         if !roots.instance(instance).is_dir() {
             return Ok(());
         }
-        net::write_atomic(&roots.instance(instance).join(SERVERS_FILE), bytes)?;
+        if !share::flags_in(&roots.instance(instance)).servers {
+            net::write_atomic(&roots.instance(instance).join(SERVERS_FILE), bytes)?;
+        }
         for other in &targets {
             if let Some((_, account)) = game_of(peers, other) {
                 let _ = net::write_atomic(&roots.game(instance, &account).join(SERVERS_FILE), bytes);
@@ -287,11 +301,15 @@ pub(super) fn adopt_options(template: &Path, dir: &Path, siblings: &[PathBuf]) -
     net::write_atomic(template, shared_lines(&String::from_utf8_lossy(&bytes)).as_bytes())
 }
 
-/// Copies the instance server list `template` into the game folder `dir`. Without a template, the newest list among
-/// `dir` and `siblings` becomes it, and every other list that differs is first kept next to itself as `servers.dat.old-N`.
-pub(super) fn copy_servers(template: &Path, dir: &Path, siblings: &[PathBuf]) -> Result<()> {
+/// Copies the server list `template` into the game folder `dir`. Without a template and with `adopting`, the newest list
+/// among `dir` and `siblings` becomes it, and every other list that differs is first kept next to itself as
+/// `servers.dat.old-N`.
+pub(super) fn copy_servers(template: &Path, dir: &Path, siblings: &[PathBuf], adopting: bool) -> Result<()> {
     let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
     if fs::symlink_metadata(template).is_err() {
+        if !adopting {
+            return Ok(());
+        }
         let Some(bytes) = adopt(dir, siblings, SERVERS_FILE)? else { return Ok(()) };
         net::write_atomic(template, &bytes)?;
     }
@@ -365,7 +383,7 @@ mod tests {
 
     fn world() -> World {
         let root = tempfile::tempdir().unwrap();
-        let roots = Roots { instances: root.path().join("instances") };
+        let roots = Roots { instances: root.path().join("instances"), mother: Mother::at(root.path().join("sync")) };
         for key in [A, B, C, OTHER] {
             let (b, a) = split_key(key).unwrap();
             fs::create_dir_all(roots.instance(b)).unwrap();
@@ -540,12 +558,12 @@ mod tests {
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
         fs::File::options().write(true).open(dir("a3").join(SERVERS_FILE)).unwrap().set_modified(later).unwrap();
         let template = w.roots.instance("b1").join(SERVERS_FILE);
-        copy_servers(&template, &dir("a1"), &[dir("a2"), dir("a3")]).unwrap();
+        copy_servers(&template, &dir("a1"), &[dir("a2"), dir("a3")], true).unwrap();
         assert_eq!(fs::read(&template).unwrap(), b"newest");
         assert_eq!(fs::read(dir("a1").join(SERVERS_FILE)).unwrap(), b"newest");
         assert_eq!(fs::read(dir("a2").join("servers.dat.old-1")).unwrap(), b"older");
         assert!(!dir("a3").join("servers.dat.old-1").exists());
-        copy_servers(&template, &dir("a2"), &[dir("a1"), dir("a3")]).unwrap();
+        copy_servers(&template, &dir("a2"), &[dir("a1"), dir("a3")], true).unwrap();
         assert_eq!(fs::read(dir("a2").join(SERVERS_FILE)).unwrap(), b"newest");
         assert!(!dir("a2").join("servers.dat.old-2").exists());
     }
@@ -554,7 +572,7 @@ mod tests {
     fn without_any_list_nothing_is_written() {
         let w = world();
         let template = w.roots.instance("b1").join(SERVERS_FILE);
-        copy_servers(&template, &w.roots.game("b1", "a1"), &[]).unwrap();
+        copy_servers(&template, &w.roots.game("b1", "a1"), &[], true).unwrap();
         assert!(!template.exists());
         assert!(!w.roots.game("b1", "a1").join(SERVERS_FILE).exists());
     }

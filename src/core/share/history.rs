@@ -98,6 +98,16 @@ impl History {
         self.store(None, &folder, rel, bytes, stamp.as_ref().map(|s| s.source.clone()), stamp.map(|s| s.written))
     }
 
+    /// Keeps `bytes`, the current version of `rel`, unless the history kept that version of it last.
+    pub(super) fn snapshot(&mut self, rel: &str, bytes: &[u8]) -> Result<()> {
+        let sha = hash(bytes);
+        let last = self.index.entries.iter().filter(|e| e.instance.is_none() && e.rel == rel).max_by_key(|e| e.at);
+        if last.is_some_and(|e| e.sha == sha) {
+            return Ok(());
+        }
+        self.keep(rel, bytes)
+    }
+
     /// Records that `source` wrote the version of `rel` that is now shared.
     pub(super) fn wrote(&mut self, rel: &str, source: &Own) {
         self.index.current.insert(rel.to_owned(), Stamp { source: Source { id: source.id.clone(), name: source.name.clone() }, written: self.at });
@@ -141,19 +151,34 @@ impl History {
             *n += 1;
             *n <= self.keep
         });
+        let mut uses: BTreeMap<String, usize> = BTreeMap::new();
         let mut total = 0u64;
-        let mut counted = HashSet::new();
-        let mut cut = self.index.entries.len();
-        for (i, e) in self.index.entries.iter().enumerate() {
-            if counted.insert(e.file.clone()) {
+        for e in &self.index.entries {
+            let n = uses.entry(e.file.clone()).or_default();
+            if *n == 0 {
                 total += e.size;
             }
-            if total > self.cap {
-                cut = i;
+            *n += 1;
+        }
+        let mut order: Vec<usize> = (0..self.index.entries.len()).filter(|&i| self.index.entries[i].at != self.at).collect();
+        order.sort_by_key(|&i| (self.index.entries[i].instance.is_some(), self.index.entries[i].at));
+        let mut out = HashSet::new();
+        for i in order {
+            if total <= self.cap {
                 break;
             }
+            let e = &self.index.entries[i];
+            out.insert(i);
+            if let Some(n) = uses.get_mut(&e.file) {
+                *n -= 1;
+                if *n == 0 {
+                    total = total.saturating_sub(e.size);
+                }
+            }
         }
-        let dropped: Vec<Entry> = self.index.entries.split_off(cut);
+        let (dropped, left): (Vec<(usize, Entry)>, Vec<(usize, Entry)>) = std::mem::take(&mut self.index.entries).into_iter().enumerate().partition(|(i, _)| out.contains(i));
+        self.index.entries = left.into_iter().map(|(_, e)| e).collect();
+        let dropped: Vec<Entry> = dropped.into_iter().map(|(_, e)| e).collect();
         let kept: HashSet<&str> = self.index.entries.iter().map(|e| e.file.as_str()).collect();
         let mut gone: Vec<PathBuf> = Vec::new();
         for e in &dropped {

@@ -6,6 +6,7 @@ mod groups;
 pub mod layout;
 pub mod mass;
 mod moves;
+pub mod shots;
 pub use moves::{ask_move, leave};
 mod strips;
 pub use strips::{fix_of, run_fix};

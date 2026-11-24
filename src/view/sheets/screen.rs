@@ -148,7 +148,12 @@ impl Component for Screen {
         let ui = store.ui;
         let done = Primary { label: tr("Fertig"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) };
         let heading = if name.is_empty() { tr("Bildschirm") } else { trf("Bildschirm von %@", &[&name]) };
-        Card::new("screen", heading).body(scroll).secondary(done).secondary_id("screen.done").width(width)
+        let mut card = Card::new("screen", heading).body(scroll).secondary(done).secondary_id("screen.done").width(width);
+        if game.is_some_and(|g| g.headless) {
+            let shots = key.clone();
+            card = card.leading(Button::new("screen.shots", tr("Screenshots")).plain().glyph(Icon::Image).on_press(move |_| crate::view::grid::shots::open(store, &shots)));
+        }
+        card
     }
 }
 

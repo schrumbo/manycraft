@@ -184,8 +184,7 @@ fn take_at(instance_dir: &Path, made: &Instance, reason: Reason, at: i64, millis
 fn sources(instance_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
     let mut out = vec![(PathBuf::from(instance::FILE), instance_dir.join(instance::FILE))];
     for name in PARTS {
-        let from = instance_dir.join(name);
-        if std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_dir()) {
+        if let Some(from) = super::share::folder_in(instance_dir, name) {
             out.push((PathBuf::from(name), from));
         }
     }
@@ -300,7 +299,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
     if then.id != now.id {
         return Err(fail(anyhow::Error::new(Final(tr("Die Sicherung gehört zu einer anderen Instanz.")))));
     }
-    let mut swapped: Vec<PathBuf> = PARTS.iter().map(PathBuf::from).collect();
+    let mut swapped: Vec<PathBuf> = PARTS.iter().filter(|p| !super::share::linked(&dir, p)).map(PathBuf::from).collect();
     swapped.extend(staged_worlds(&staging));
     let mut trashed: Vec<(PathBuf, String)> = Vec::new();
     let mut placed: Vec<PathBuf> = Vec::new();
@@ -405,8 +404,37 @@ fn millis_of(id: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shared_config_link_is_read_through_to_the_shared_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("sync").join("config");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("a.toml"), b"shared").unwrap();
+        let instance = dir.path().join("instance");
+        std::fs::create_dir_all(&instance).unwrap();
+        crate::core::fleet::create_link(&shared, &instance.join("config")).unwrap();
+        let from = super::sources(&instance).into_iter().find(|(rel, _)| rel == std::path::Path::new("config")).map(|(_, from)| from).unwrap();
+        assert_eq!(std::fs::read(from.join("a.toml")).unwrap(), b"shared");
+    }
+
     use super::*;
     use crate::core::instance::{Loader, save_in};
+
+    #[test]
+    fn a_restore_leaves_a_shared_config_link_and_the_shared_folder_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let (made, dir, _) = setup(root.path());
+        let snap = take_at(&dir, &made, Reason::Version("26.4".into()), 10, 10, &Progress::default()).unwrap().unwrap();
+        let shared = root.path().join("sync").join("config");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("a.toml"), b"shared").unwrap();
+        std::fs::remove_dir_all(dir.join("config")).unwrap();
+        crate::core::fleet::create_link(&shared, &dir.join("config")).unwrap();
+        restore_in(root.path(), &made.id, &snap.id, 20).unwrap();
+        assert!(super::super::share::linked(&dir, "config"));
+        assert_eq!(std::fs::read(shared.join("a.toml")).unwrap(), b"shared");
+        assert_eq!(std::fs::read(dir.join("mods").join("a.jar")).unwrap(), b"a1");
+    }
 
     fn setup(root: &Path) -> (Instance, PathBuf, PathBuf) {
         let made = Instance::new("Farm", "26.3", Loader::Fabric(None));

@@ -30,6 +30,11 @@ pub(super) fn shared(text: &str) -> String {
     lines(map(text).into_iter().filter(|(k, _)| !excluded(k)))
 }
 
+/// The lines of `text` an instance keeps for itself when it shares its options: the data version and the pack lists.
+pub(super) fn apart(text: &str) -> String {
+    lines(map(text).into_iter().filter(|(k, _)| excluded(k) && !PER_INSTANCE_KEYS.contains(&k.as_str())))
+}
+
 /// `key:value` lines, one per entry.
 pub(super) fn lines(entries: impl IntoIterator<Item = (String, String)>) -> String {
     entries.into_iter().map(|(k, v)| format!("{k}:{v}\n")).collect()

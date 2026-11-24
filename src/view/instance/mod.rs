@@ -16,14 +16,14 @@ mod mods;
 mod packlist;
 mod play;
 mod shots;
-mod shots_parts;
-mod shots_thumbs;
-mod shots_view;
+pub(crate) mod shots_parts;
+pub(crate) mod shots_thumbs;
+pub(crate) mod shots_view;
 mod worlds;
 pub mod links;
 mod save;
 mod settings;
-mod sharing;
+pub(crate) mod sharing;
 pub(crate) mod snapshots;
 mod title;
 
