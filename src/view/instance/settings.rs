@@ -19,6 +19,7 @@ use crate::core::javas::{Java, mismatch};
 use crate::core::options::{self, Gpu, LaunchOptions, Renderer};
 use crate::core::snapshot::Reason;
 use crate::core::settings;
+use crate::core::vault;
 use crate::core::versions::{GameVersion, shown};
 use crate::ui::forms;
 use crate::ui::remote;
@@ -443,6 +444,7 @@ impl Component for Settings {
         col = col.child(group(&t, Some(tr("Version & Loader")), rows, (!footer.is_empty()).then(|| footer.join(" "))));
         col = col.child(Game { facts: f.clone() });
         col = col.child(super::sharing::Sharing { facts: f.clone() });
+        col = col.child(Protection { facts: f.clone() });
 
         let open = *nav.advanced.read();
         let mut adv = nav.advanced;
@@ -669,6 +671,40 @@ fn account_row(t: &Theme, store: Store, f: &Facts) -> Element {
     let reset_id = f.made.id.clone();
     let clear = own.map(|_| reset("account", label.clone(), move |_| store.dispatch(AppEvent::SetDefaultAccount { instance: reset_id.clone(), account: None })));
     row(t, "account", label, clear, select, hint, None).into_element()
+}
+
+/// The Schutz group: what the game and its mods are kept away from, each protection off until it is turned on.
+#[derive(PartialEq)]
+struct Protection {
+    facts: Facts,
+}
+
+impl Component for Protection {
+    fn render(&self) -> impl IntoElement {
+        let t = use_theme();
+        let store = use_store();
+        let made = &self.facts.made;
+        let on = save::pending_options(store, &made.id, &made.options).hide_login;
+        let able = vault::may_hide(&made.game_version);
+        let (hint, problem) = match (able, on) {
+            (true, _) => (Some(tr("Das Spiel bekommt nur einen Platzhalter, deine echte Anmeldung bleibt bei Manycraft. Realms und Mods, die deine Anmeldung selbst brauchen, funktionieren damit nicht.")), None),
+            (false, false) => (Some(trf("Geht erst ab Minecraft %@.", &[&vault::FIRST_VERSION])), None),
+            (false, true) => (None, Some(trf("Minecraft %@ kann die Anmeldung nicht verbergen. Die Instanz startet so nicht.", &[&made.game_version]))),
+        };
+        let usable = able || on;
+        let label = tr("Anmeldung vor Mods verbergen");
+        let (flip, press) = (made.id.clone(), made.id.clone());
+        let toggle = Toggle::new("instance.settings.hide_login", label.clone(), on).disabled(!usable).on_toggle(move |v| hide_login(store, &flip, v));
+        let mut line = row(&t, "hide_login", label, None, toggle, hint, problem).dim(!usable);
+        if usable {
+            line = line.on_press(move |_| hide_login(store, &press, !on));
+        }
+        group(&t, Some(tr("Schutz")), vec![line.into_element()], None)
+    }
+}
+
+fn hide_login(store: Store, id: &str, on: bool) {
+    save::enqueue(store, id, Job::Save(Change::Option(OptionChange::HideLogin(on))));
 }
 
 /// The Erweitert group: Java, start arguments and graphics, for the few who need them.

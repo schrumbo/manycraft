@@ -74,6 +74,7 @@ pub enum Command {
     AddAccount,
     SignInWaiting,
     RemoveAccounts,
+    SignOutAll,
     AccountsAsList,
     AccountsAsTable,
     ImportPrism,
@@ -196,7 +197,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 69] = [
+    pub const ALL: [Command; 70] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -253,6 +254,7 @@ impl Command {
         Command::AddAccount,
         Command::SignInWaiting,
         Command::RemoveAccounts,
+        Command::SignOutAll,
         Command::AccountsAsList,
         Command::AccountsAsTable,
         Command::ImportPrism,
@@ -926,6 +928,7 @@ impl Command {
             Command::AddAccount => "AddAccount",
             Command::SignInWaiting => "SignInWaiting",
             Command::RemoveAccounts => "RemoveAccounts",
+            Command::SignOutAll => "SignOutAll",
             Command::AccountsAsList => "AccountsAsList",
             Command::AccountsAsTable => "AccountsAsTable",
             Command::ImportPrism => "ImportPrismAccounts",
@@ -943,6 +946,7 @@ impl Command {
             Command::AddAccount => tr("Account hinzufügen"),
             Command::SignInWaiting => tr("Alle nacheinander anmelden"),
             Command::RemoveAccounts => tr("Ausgewählte Accounts entfernen…"),
+            Command::SignOutAll => tr("Alle Accounts abmelden…"),
             Command::AccountsAsList => tr("Accounts als Liste"),
             Command::AccountsAsTable => tr("Accounts als Tabelle"),
             Command::ImportPrism => tr("Accounts aus Prism übernehmen"),
@@ -960,6 +964,7 @@ impl Command {
             Command::AddAccount => Icon::UserPlus,
             Command::SignInWaiting => Icon::LogIn,
             Command::RemoveAccounts | Command::OpenTrash => Icon::Trash,
+            Command::SignOutAll => Icon::KeyRound,
             Command::AccountsAsList => Icon::Rows,
             Command::AccountsAsTable => Icon::Grid,
             Command::ImportPrism => Icon::Download,
@@ -994,6 +999,7 @@ impl Command {
             Command::AddAccount => can_want(&Want::AddAccount),
             Command::SignInWaiting => !super::accounts::waiting(&store.model.peek()).is_empty() && can_want(&Want::SignInAgain(Vec::new())),
             Command::RemoveAccounts => accounts && !super::accounts::targets(store).is_empty(),
+            Command::SignOutAll => store.model.peek().accounts.iter().any(|a| a.kind == crate::core::account::AccountKind::Microsoft),
             Command::AccountsAsList => accounts && any() && view() != super::accounts::View::List,
             Command::AccountsAsTable => accounts && any() && view() != super::accounts::View::Table,
             Command::ImportPrism => {
@@ -1019,6 +1025,7 @@ impl Command {
                 let ids = super::accounts::waiting(&store.model.peek());
                 super::accounts::sign_in(store, ids);
             }
+            Command::SignOutAll => super::settings::sign_out_all(store),
             Command::RemoveAccounts => super::accounts::ask_remove(store, super::accounts::targets(store)),
             Command::AccountsAsList => shared.view.set(Some(super::accounts::View::List)),
             Command::AccountsAsTable => shared.view.set(Some(super::accounts::View::Table)),
