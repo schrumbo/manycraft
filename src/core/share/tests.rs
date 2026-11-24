@@ -1113,7 +1113,7 @@ fn a_backup_bigger_than_the_cap_stays_in_the_history_it_was_kept_for() {
     let a = w.instance("A", Sharing::NONE);
     kept(&w.mother, |history| {
         history.cap = 4;
-        history.backup(&a, "config/big.json", b"0123456789")
+        history.backup(&a, "config/big.json", b"0123456789", false)
     })
     .unwrap();
     assert!(own_files(&w, Item::Config).contains(&b"0123456789".to_vec()));
@@ -1403,4 +1403,19 @@ fn undo_never_writes_an_own_copy_older_than_the_setup_over_newer_files() {
     setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&x]), &[x.id.clone()]).unwrap();
     undo_in(&w.mother, &w.roots.instances, &[x.id.clone()]).unwrap();
     assert_eq!(read(&x.dir.join("config").join("mod.json")), "v1");
+}
+
+#[test]
+fn trying_a_setup_and_undoing_it_twice_still_puts_every_byte_back() {
+    let w = world();
+    let (a, x) = (w.instance("A", Sharing::NONE), w.instance("X", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), Some("list A"), &[("mod.json", "A")]);
+    fill(&x, Some("version:3955\nfov:0.1\n"), Some("list X"), &[("mod.json", "X")]);
+    for _ in 0..2 {
+        setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&x]), &[]).unwrap();
+        undo_in(&w.mother, &w.roots.instances, &[]).unwrap();
+    }
+    assert_eq!(read(&x.dir.join("options.txt")), "version:3955\nfov:0.1\n");
+    assert_eq!(read(&x.dir.join("servers.dat")), "list X");
+    assert_eq!(read(&x.dir.join("config").join("mod.json")), "X");
 }
