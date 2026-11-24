@@ -124,7 +124,7 @@ mod tests {
         let s = settings();
         let (mut m, key) = solo_model();
         m.games.get_mut(&key).unwrap().phase = Phase::Starting { place: 1, total: 2 };
-        assert!(slims(&run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "x".into(), percent: 5 }]))).is_empty());
+        assert!(slims(&run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "x".into(), progress: crate::core::install::Progress { stage: crate::core::install::Stage::Libraries, done: 5, total: 100 } }]))).is_empty());
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
         g.phase = Phase::Menu;
         m.games.insert(g.key.clone(), g);
         m.batches.push(Batch::new("batch", "i"));
-        let fx = run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "batch".into(), percent: 1 }]));
+        let fx = run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "batch".into(), progress: crate::core::install::Progress { stage: crate::core::install::Stage::Libraries, done: 1, total: 100 } }]));
         assert!(comes_back(&fx));
     }
 
@@ -225,7 +225,7 @@ mod tests {
         let mut g = Game::new("b-1".into(), "batch".into(), "i".into(), Uuid::from_u128(9), "B".into());
         g.phase = Phase::Menu;
         m.games.insert(g.key.clone(), g);
-        let fx = run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "batch".into(), percent: 1 }]));
+        let fx = run(&mut m, &s, Instant::now(), Event::Reports(vec![Report::Preparing { batch: "batch".into(), progress: crate::core::install::Progress { stage: crate::core::install::Stage::Libraries, done: 1, total: 100 } }]));
         assert!(comes_back(&fx));
     }
 }
