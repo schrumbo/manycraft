@@ -105,6 +105,11 @@ pub enum Packs {
 impl Packs {
     pub const ALL: [Self; 3] = [Self::Ask, Self::Accept, Self::Decline];
 
+    /// What a game in `mode` answers: a headless game has no window to ask in, so asking becomes accepting.
+    pub fn for_mode(self, mode: RunMode) -> Self {
+        if mode == RunMode::Connection && self == Self::Ask { Self::Accept } else { self }
+    }
+
     fn is_ask(&self) -> bool {
         *self == Self::Ask
     }
@@ -267,7 +272,7 @@ impl Batch {
 
     /// A new, empty headless batch playing no instance: it speaks [`HEADLESS_VERSION`].
     pub fn headless(name: &str) -> Self {
-        Self { headless_version: HEADLESS_VERSION.to_owned(), mode: RunMode::Connection, ..Self::new(name, "") }
+        Self { headless_version: HEADLESS_VERSION.to_owned(), mode: RunMode::Connection, packs: Packs::Accept, ..Self::new(name, "") }
     }
 
     /// The instance every account plays; `None` for a headless batch that plays none.
@@ -301,14 +306,14 @@ impl Batch {
 
     /// Its unattended settings.
     pub fn unattended(&self) -> Unattended {
-        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs }
+        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs.for_mode(self.mode) }
     }
 
     /// Takes over `u`; an interval it does not offer reads as none.
     pub fn set_unattended(&mut self, u: Unattended) {
         self.mode = u.mode;
         self.screenshots = u.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m));
-        self.packs = u.packs;
+        self.packs = u.packs.for_mode(u.mode);
     }
 
     /// Whether the user accepted the code of conduct with `hash` on `server` for this batch.
@@ -898,5 +903,27 @@ mod tests {
         let mut b = Batch::new("x", "i1");
         b.id = "../evil".into();
         assert!(save_in(dir.path(), &b).is_err());
+    }
+
+    #[test]
+    fn a_headless_batch_never_asks_about_resource_packs() {
+        let mut b = Batch::headless("h");
+        assert_eq!(b.unattended().packs, Packs::Accept);
+        b.packs = Packs::Ask;
+        assert_eq!(b.unattended().packs, Packs::Accept);
+        let mut u = b.unattended();
+        u.packs = Packs::Ask;
+        b.set_unattended(u);
+        assert_eq!(b.packs, Packs::Accept);
+        let mut g = Batch::new("g", "i1");
+        let mut u = g.unattended();
+        u.mode = RunMode::Windows;
+        u.packs = Packs::Ask;
+        g.set_unattended(u);
+        assert_eq!(g.packs, Packs::Ask);
+        u.packs = Packs::Decline;
+        u.mode = RunMode::Connection;
+        g.set_unattended(u);
+        assert_eq!(g.packs, Packs::Decline);
     }
 }
