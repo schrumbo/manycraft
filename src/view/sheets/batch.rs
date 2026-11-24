@@ -13,10 +13,12 @@ use crate::core::batch::{Background, Batch, RunMode, Unattended};
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
+use crate::core::options::MEMORY_FLOOR_MB;
 use crate::ui::forms::{self, Problem};
 use crate::ui::remote::{self, BatchEdit, InstancePick};
 use crate::view::commands::{Want, want};
 use crate::view::drive::use_spot;
+use crate::view::instance::memory::{Memory, Steps};
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::check;
@@ -239,7 +241,7 @@ struct Seed {
     accounts: HashSet<Uuid>,
     /// How many accounts were free when fewer of them fit into memory and were picked.
     capped: Option<usize>,
-    memory: u32,
+    memory: String,
     inherit: bool,
     background: Background,
     launch_parallel: u32,
@@ -268,7 +270,7 @@ impl Seed {
             server: original.and_then(|b| b.server.clone()).unwrap_or_default(),
             accounts,
             capped,
-            memory: forms::memory_step(original.and_then(|b| b.memory_override).unwrap_or(own), 0, memory_max),
+            memory: original.and_then(|b| b.memory_override).unwrap_or(own).to_string(),
             inherit: original.is_none_or(|b| b.memory_override.is_none()),
             background: original.map_or_else(Background::default, |b| b.background),
             launch_parallel: original.map_or(0, |b| b.launch_parallel),
@@ -292,7 +294,7 @@ struct Flow {
     list: State<Vec<String>>,
     version: State<String>,
     inherit: State<bool>,
-    memory: State<u32>,
+    memory: State<String>,
     background: State<Background>,
     kept_custom: State<Option<Background>>,
     launch_parallel: State<u32>,
@@ -346,7 +348,22 @@ impl Flow {
     }
 
     fn each_memory(self) -> u32 {
-        if *self.inherit.peek() { self.instance_memory() } else { *self.memory.peek() }
+        if *self.inherit.peek() { self.instance_memory() } else { self.typed_memory().unwrap_or_else(|| self.instance_memory()) }
+    }
+
+    fn typed_memory(self) -> Option<u32> {
+        crate::core::options::parse_memory(&self.memory.peek()).ok().flatten()
+    }
+
+    fn memory_problem(self) -> Option<String> {
+        if *self.inherit.peek() {
+            return None;
+        }
+        match crate::core::options::parse_memory(&self.memory.peek()) {
+            Err(why) => Some(why),
+            Ok(None) => Some(tr("Gib den Arbeitsspeicher als Zahl in MB an, zum Beispiel 4096.")),
+            Ok(Some(mb)) => crate::core::options::check_memory_max(mb, None, self.total_ram).err(),
+        }
     }
 
     fn picked(self) -> usize {
@@ -438,15 +455,9 @@ impl Flow {
         let inherit = !*self.inherit.peek();
         self.inherit.set(inherit);
         if !inherit {
-            let own = forms::memory_step(self.instance_memory(), 0, self.memory_max);
+            let own = self.instance_memory().to_string();
             self.memory.set(own);
         }
-    }
-
-    fn set_memory(mut self, mb: u32) {
-        let next = mb.clamp(forms::MEMORY_MIN, self.memory_max.max(forms::MEMORY_MIN));
-        self.memory.set(next);
-        self.clear_error();
     }
 
     fn lower_memory(mut self, each: u32) {
@@ -454,7 +465,7 @@ impl Flow {
             return;
         }
         self.inherit.set(false);
-        self.memory.set(each);
+        self.memory.set(each.to_string());
     }
 
     fn pick_background(mut self, n: usize) {
@@ -501,7 +512,7 @@ impl Flow {
         self.tried.set(true);
         let start = primary && !self.editing() && self.picked() > 0;
         let (name, server, version) = self.problems();
-        if *self.saving.peek() || name.is_some() || server.is_some() || version.is_some() {
+        if *self.saving.peek() || name.is_some() || server.is_some() || version.is_some() || self.memory_problem().is_some() {
             return;
         }
         let chosen = self.accounts.peek().clone();
@@ -513,7 +524,7 @@ impl Flow {
                 None => InstancePick::New { game_version: self.version.peek().clone(), mods: Vec::new() },
             },
             server: Some(self.server.peek().trim().to_owned()).filter(|s| !s.is_empty()),
-            memory_override: (!*self.inherit.peek()).then(|| *self.memory.peek()),
+            memory_override: if *self.inherit.peek() { None } else { self.typed_memory() },
             accounts: self.store.model.peek().accounts.iter().map(|a| a.id).filter(|id| chosen.contains(id)).collect(),
             background: *self.background.peek(),
             launch_parallel: *self.launch_parallel.peek(),
@@ -627,6 +638,8 @@ impl Component for BatchSheet {
         });
         let name_text = flow.name.read().clone();
         use_side_effect_with_deps(&name_text, move |n| flow.name_typed(n));
+        let memory_typed = flow.memory.read().clone();
+        use_side_effect_with_deps(&memory_typed, move |_| flow.clear_error());
 
         let editing = self.original.is_some();
         let saving = *flow.saving.read();
@@ -636,7 +649,8 @@ impl Component for BatchSheet {
         let versions = flow.versions.read().clone();
         let version = flow.version.read().clone();
         let chosen = flow.accounts.read().clone();
-        let memory = *flow.memory.read();
+        let memory = flow.memory;
+        let memory_text = flow.memory.read().clone();
         let background = *flow.background.read();
         let pace = *flow.launch_parallel.read();
         let inherit = *flow.inherit.read();
@@ -723,7 +737,7 @@ impl Component for BatchSheet {
         form = form.children(preset).children(fit_line(&t, flow, picked));
 
         if !connection {
-            let mut tuning = memory_rows(flow, MemoryView { inherit, memory, instance_memory, picked }, &lock);
+            let mut tuning = memory_rows(flow, t.danger_text, MemoryView { inherit, memory, typed: flow.typed_memory(), problem: flow.memory_problem().filter(|_| !memory_text.trim().is_empty() || tried), instance_memory, picked }, &lock);
             tuning.push(speed_row(flow, full_speed, running, &lock).into_element());
             tuning.push(background_row(&t, flow, background, running, &lock).into_element());
             form = form.child(group(&t, Some(tr("Leistung")), tuning, None));
@@ -871,13 +885,15 @@ fn version_row(t: &Theme, flow: Flow, versions: &Load<()>, version: &str, proble
 
 struct MemoryView {
     inherit: bool,
-    memory: u32,
+    memory: State<String>,
+    typed: Option<u32>,
+    problem: Option<String>,
     instance_memory: u32,
     picked: usize,
 }
 
-fn memory_rows(flow: Flow, view: MemoryView, lock: &Option<String>) -> Vec<Element> {
-    let MemoryView { inherit, memory, instance_memory, picked } = view;
+fn memory_rows(flow: Flow, danger: Color, view: MemoryView, lock: &Option<String>) -> Vec<Element> {
+    let MemoryView { inherit, memory, typed, problem, instance_memory, picked } = view;
     let like = trf("Wie die Instanz (%@)", &[&forms::memory_label(instance_memory)]);
     let label = tr("Eigener Arbeitsspeicher");
     let mut own = Line::new("batch.memory.own.row", label.clone())
@@ -889,14 +905,19 @@ fn memory_rows(flow: Flow, view: MemoryView, lock: &Option<String>) -> Vec<Eleme
     let mut rows = vec![own.into_element()];
     if !inherit {
         let count = picked.max(1);
-        let total = u64::from(memory) * count as u64;
+        let total = u64::from(typed.unwrap_or(instance_memory)) * count as u64;
         let note = if count > 1 { trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]) } else { tr("Pro Account.") };
-        let stepper = Stepper::new("batch.memory", tr("Arbeitsspeicher"), i64::from(memory), i64::from(forms::MEMORY_MIN), i64::from(flow.memory_max.max(forms::MEMORY_MIN)))
-            .step(i64::from(forms::MEMORY_STEP))
-            .shown(forms::memory_label(memory))
-            .disabled(lock.clone())
-            .on_change(move |mb| flow.set_memory(u32::try_from(mb).unwrap_or(forms::MEMORY_MIN)));
-        rows.push(Line::new("batch.memory.row", tr("Arbeitsspeicher")).hint(note).control(stepper).into_element());
+        let ceiling = u32::try_from(flow.total_ram).unwrap_or(u32::MAX).max(MEMORY_FLOOR_MB);
+        let field = Memory::new("batch.memory", tr("Arbeitsspeicher"), memory)
+            .placeholder(instance_memory.to_string())
+            .steps(Steps { floor: MEMORY_FLOOR_MB, ceiling, from: instance_memory })
+            .disabled(lock.clone());
+        let mut row = Line::new("batch.memory.row", tr("Arbeitsspeicher")).control(field);
+        row = match problem {
+            Some(why) => row.hint(why).hint_tone(danger),
+            None => row.hint(note),
+        };
+        rows.push(row.into_element());
     }
     rows
 }
