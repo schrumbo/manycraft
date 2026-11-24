@@ -8,6 +8,8 @@
 mod anvil;
 mod assets;
 mod block;
+mod font;
+pub mod hud;
 mod light;
 mod model;
 mod random;
