@@ -14,7 +14,7 @@ use super::model::Source;
 
 const IDLE: Duration = Duration::from_secs(60);
 const SWEEP: Duration = Duration::from_secs(10);
-const RETRY: Duration = Duration::from_secs(60);
+const RETRY: Duration = Duration::from_secs(10);
 const MAX_ENTRY: u64 = 8 << 20;
 const VERSION: &str = "26.3";
 
@@ -231,7 +231,7 @@ impl Drop for Loading {
 
 /// The shared art, loaded from the 26.3 client jar on first use (fetching the jar into the shared versions folder if
 /// needed) and dropped after a minute without a picture. One caller loads while the others wait; after a failed load
-/// every caller gets that error for a minute instead of trying again.
+/// every caller gets that error for ten seconds instead of trying again.
 pub fn shared() -> Result<Arc<Assets>> {
     let mut guard = slot();
     loop {

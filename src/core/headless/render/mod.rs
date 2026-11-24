@@ -250,8 +250,6 @@ mod tests {
         assert!(took.as_secs_f32() < 2.0, "{took:?}");
     }
 
-    /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
-    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
     #[test]
     fn odd_input_draws_a_picture_instead_of_failing() {
         let Some(jar) = jar() else { return };
@@ -260,8 +258,11 @@ mod tests {
         let sky = Sky { time: Some(i64::MIN), rain: f32::NAN, thunder: f32::INFINITY };
         let image = render(&Flat, &[], &camera, &sky, 0, 100_000, &assets);
         assert_eq!(image.dimensions(), (1, MAX_SIDE));
+        assert!(image.pixels().any(|p| p.0[..3] != [0, 0, 0]), "a camera put back on the map still sees something");
     }
 
+    /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
+    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
     #[test]
     #[ignore]
     fn shots() {
