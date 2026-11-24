@@ -16,7 +16,7 @@ use super::wire::{self, varint_prefix};
 const MAX_FRAME: usize = (1 << 21) - 1;
 /// The largest packet the client inflates in full; servers send at most 8 MiB.
 const MAX_PACKET: usize = 8 << 20;
-const KEEP_SCRATCH: usize = 256 << 10;
+const KEEP_SCRATCH: usize = 32 << 10;
 const ID_STEP: usize = 64;
 
 /// The reading half.
@@ -62,6 +62,9 @@ impl<R: Read> Reader<R> {
         ensure!(len <= MAX_FRAME, "frame of {len} bytes");
         if self.frame.capacity() > KEEP_SCRATCH && len <= KEEP_SCRATCH {
             self.frame = Vec::new();
+        }
+        if self.body.capacity() > KEEP_SCRATCH && len <= KEEP_SCRATCH {
+            self.body = Vec::new();
         }
         self.frame.resize(len, 0);
         self.input.read_exact(&mut self.frame)?;

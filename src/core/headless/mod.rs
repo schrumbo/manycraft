@@ -14,11 +14,13 @@ mod client;
 mod conn;
 mod crypto;
 mod item;
+mod render;
 pub mod resume;
 mod screen;
 mod text;
 mod v777;
 mod wire;
+mod world;
 
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -55,6 +57,8 @@ pub struct Spec {
     /// Hashes of the Codes of Conduct this batch already accepted on this server (see [`conduct`]); the same text is
     /// accepted again without asking.
     pub conduct: Vec<String>,
+    /// The folder its pictures are saved to; `None` keeps them on the tile only.
+    pub shots: Option<std::path::PathBuf>,
 }
 
 /// Why [`start`] refused an account.

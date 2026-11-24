@@ -1,6 +1,7 @@
 """Regenerates src/core/headless/v777.rs from a Minecraft server jar: packet ids from the data generator's packets.json,
 the protocol number from version.json, the English texts the connection-only client shows for chat, deaths and kicks,
-and from the game code itself (GameData.java) the map colours, items, menu types and data component types.
+and from the game code itself (GameData.java) the map colours, items, menu types, data component types and how each
+block state looks in a picture.
 
 headless-packets [server.jar]   default: the test server's 26.3 jar
 """
@@ -27,7 +28,7 @@ PACKETS = {
         "serverbound": ["client_information", "cookie_response", "custom_payload", "finish_configuration", "keep_alive", "pong", "resource_pack", "select_known_packs", "accept_code_of_conduct"],
     },
     "play": {
-        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles"],
+        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update"],
         "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close"],
     },
 }
@@ -42,7 +43,7 @@ def game_data(work, inner):
     out = Path(work) / "gamedata.tsv"
     classpath = __import__("os").pathsep.join([str(inner), *libraries])
     subprocess.run(["java", "-cp", classpath, str(GAME_DATA), str(out)], cwd=work, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    rows = {"color": [], "item": [], "menu": [], "component": [], "consume_effect": []}
+    rows = {"color": [], "item": [], "menu": [], "component": [], "consume_effect": [], "block": []}
     for line in out.read_text(encoding="utf-8").splitlines():
         kind, *fields = line.split("\t")
         rows[kind].append(fields)
@@ -106,6 +107,20 @@ def main():
         shown = lang.get(key, name.replace("_", " ").title())
         rgb = f"Some(0x{int(color):06X})" if int(color) > 0 else "None"
         lines.append(f"    ({rust_str(name)}, {rust_str(shown)}, {rgb}),")
+    lines.append("];")
+    lines.append("")
+    lines.append("/// How many block states the game has.")
+    lines.append(f"pub const BLOCK_STATES: usize = {len(data['block'])};")
+    lines.append("")
+    lines.append("/// How block states look in a picture, as runs from the first state of each: 0 for air, else the map colour in the low six")
+    lines.append("/// bits and 1 for a fluid or 2 for a plant above them.")
+    lines.append("pub static BLOCK_LOOKS: &[(u16, u8)] = &[")
+    previous = None
+    for state, color, kind in data["block"]:
+        look = 0 if kind == "0" else ({"2": 1, "4": 2}.get(kind, 0) << 6) | int(color)
+        if look != previous:
+            lines.append(f"    ({state}, {look}),")
+            previous = look
     lines.append("];")
     lines.append("")
     lines.append("/// Menu types by protocol id.")

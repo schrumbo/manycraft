@@ -109,6 +109,7 @@ impl Runtime {
                 Update::Ipc(Event::Message { instance, message }) => Report::Mod { key: instance, message },
                 Update::Ipc(Event::Disconnected { instance }) => Report::LinkLost { key: instance },
                 Update::Ipc(Event::Reopen) => Report::Reopen,
+                Update::Ipc(Event::Picture { .. }) => continue,
                 Update::Ipc(Event::Play { instance, account }) => Report::PlayRequest { instance, account },
             });
         }

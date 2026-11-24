@@ -525,7 +525,7 @@ impl Command {
             Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
-            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && !g.connection && g.phase.server().is_some() && !g.stopping),
+            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
             Command::AcceptPacks if selected.is_empty() => m.games.values().any(|g| g.phase.needs_pack_answer()),
             Command::AcceptPacks | Command::DeclinePacks => grid && picked().any(|g| g.phase.needs_pack_answer()),
             Command::AcceptRules if selected.is_empty() => m.games.values().any(|g| g.phase.needs_rules_answer()),
