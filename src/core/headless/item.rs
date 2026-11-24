@@ -19,6 +19,7 @@ pub struct Stack {
     pub lore: Vec<Line>,
     pub glint: bool,
     pub map: Option<i32>,
+    pub dye: Option<u32>,
 }
 
 #[derive(Default)]
@@ -29,6 +30,7 @@ struct View {
     enchanted: bool,
     glint: Option<bool>,
     map: Option<i32>,
+    dye: Option<u32>,
 }
 
 /// Reads an optional item stack; `None` for an empty slot.
@@ -39,7 +41,7 @@ pub fn stack(r: &mut In) -> Result<Option<Stack>> {
     }
     let item = r.varint()?;
     let view = patch(r, 0)?;
-    Ok(Some(Stack { item, count, name: view.name.or(view.item_name), lore: view.lore, glint: view.glint.unwrap_or(view.enchanted), map: view.map }))
+    Ok(Some(Stack { item, count, name: view.name.or(view.item_name), lore: view.lore, glint: view.glint.unwrap_or(view.enchanted), map: view.map, dye: view.dye }))
 }
 
 /// Reads a list of optional item stacks (VarInt length), at most `max` of them.
@@ -83,6 +85,7 @@ fn read(r: &mut In, id: i32, depth: usize, view: &mut View) -> Result<()> {
         component::ENCHANTMENTS => view.enchanted = enchantments(r)? > 0,
         component::ENCHANTMENT_GLINT_OVERRIDE => view.glint = Some(r.bool()?),
         component::MAP_ID => view.map = Some(r.varint()?),
+        component::DYED_COLOR => view.dye = Some(r.i32()? as u32),
         _ => {
             if !plain(r, id)? {
                 structured(r, id, depth)?;
@@ -565,7 +568,8 @@ fn firework_explosion(r: &mut In) -> Result<()> {
     flag(r)
 }
 
-fn profile(r: &mut In) -> Result<()> {
+/// Reads past a resolvable profile.
+pub fn profile(r: &mut In) -> Result<()> {
     either(
         r,
         |r| {
@@ -746,7 +750,7 @@ mod tests {
             }),
         ];
         let s = decode(&item(2, 9, &comps, &[]));
-        assert_eq!(s, Stack { item: 9, count: 2, name: Some(line("Hi")), lore: vec![line("a"), line("b")], glint: true, map: Some(12) });
+        assert_eq!(s, Stack { item: 9, count: 2, name: Some(line("Hi")), lore: vec![line("a"), line("b")], glint: true, map: Some(12), dye: None });
     }
 
     #[test]
