@@ -16,6 +16,7 @@ use crate::core::i18n::tr;
 use crate::core::ipc::{ChatKind, DisconnectCause, FromMod, HotkeyAction, StateKind, ToMod};
 use crate::core::phone::{Incident, What};
 use crate::core::reconnect::{self, Decision, Reaction};
+use crate::core::settings::Reconnect;
 
 const STABLE: Duration = Duration::from_secs(60);
 const OFFSCREEN_PREVIEW: Duration = Duration::from_secs(30);
@@ -447,7 +448,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
         StateKind::Dead => Phase::Dead { server, reason: reason_text },
         StateKind::Offer => return,
         StateKind::Disconnected => {
-            s.joined.remove(&key);
+            let was_joined = s.joined.remove(&key);
             s.held_joins.remove(&key);
             let woken = s.woken.remove(&key);
             if let Phase::Playing { since, .. } = i.phase
@@ -459,7 +460,9 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
             let generation = s.reconnects.entry(key.clone()).or_default();
             *generation += 1;
             fx.suspect_offline |= direct && !nearby && matches!(cause, DisconnectCause::ServerDown | DisconnectCause::Unknown);
-            let reaction = match reconnect::react(cause, i.reconnect_attempts, policy, env.unit(), cut_off) {
+            let reaction = reconnect::react(cause, i.reconnect_attempts, policy, env.unit(), cut_off);
+            let reaction = if i.connection { unattended(reaction, cause, i.reconnect_attempts, policy, env.unit(), was_joined) } else { reaction };
+            let reaction = match reaction {
                 Reaction::Retry(_) | Reaction::WaitForNetwork if server.is_none() => Reaction::GiveUp,
                 Reaction::SignInAgain if offline => Reaction::NotAllowed,
                 other => other,
@@ -476,7 +479,7 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                     let what = if cause == DisconnectCause::Kicked { What::Kicked } else { What::Dropped };
                     let said = if reason_text.trim().is_empty() { notify::cause_text(cause) } else { reason_text.clone() };
                     fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, what, &said, server.as_deref())));
-                    i.reconnect_attempts += 1;
+                    i.reconnect_attempts = if i.connection { (i.reconnect_attempts + 1).min(policy.max_attempts) } else { i.reconnect_attempts + 1 };
                     fx.later.push(Later::After(delay, Event::ReconnectDue { key: key.clone(), generation: *generation }));
                     Phase::Connecting { server: server_text }
                 }
@@ -510,6 +513,22 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
     }
     if hold {
         hold_outage(m, fx, &key);
+    }
+}
+
+/// What a connection-only game does about `reaction`: it has nobody to ask, so only a ban, a dead sign-in, a declined pack
+/// or being replaced by the player's own session after it had joined (dead or alive) ends it. Every other drop retries without a cap, on the schedule that
+/// cause already follows; a missing whitelist entry or a session that is still closing waits on the patient one.
+fn unattended(reaction: Reaction, cause: DisconnectCause, attempt: u32, policy: &Reconnect, unit: f64, was_joined: bool) -> Reaction {
+    let patient = || Reaction::Retry(reconnect::wait(&policy.patient_secs, attempt, policy.jitter_percent, unit));
+    match (reaction, cause) {
+        (Reaction::NotAllowed, DisconnectCause::Whitelist) if policy.enabled => patient(),
+        (Reaction::NotAllowed, DisconnectCause::Duplicate) if policy.enabled && !was_joined => patient(),
+        (Reaction::GiveUp, DisconnectCause::ServerFull | DisconnectCause::Kicked) if policy.enabled => patient(),
+        (Reaction::GiveUp, DisconnectCause::ServerDown | DisconnectCause::Unknown) if policy.enabled => {
+            Reaction::Retry(reconnect::wait(&policy.backoff_secs, attempt, policy.jitter_percent, unit))
+        }
+        (other, _) => other,
     }
 }
 
@@ -1026,6 +1045,48 @@ mod tests {
         let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerDown));
         assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }) && timers(&fx).is_empty());
         assert_eq!(m.history[&key].len(), 6);
+    }
+
+    #[test]
+    fn a_connection_only_game_comes_back_from_every_drop_but_a_ban_a_dead_sign_in_or_a_declined_pack() {
+        use DisconnectCause::*;
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        m.games.get_mut(&key).unwrap().connection = true;
+        for cause in [ServerDown, Unknown, ServerFull, Kicked, Whitelist, Duplicate] {
+            for round in 1..=12 {
+                let fx = send_state(&mut m, &s, &key, StateKind::Disconnected, Some(cause));
+                assert!(matches!(m.games[&key].phase, Phase::Connecting { .. }), "{cause:?} round {round}");
+                let Some((delay, Event::ReconnectDue { .. })) = timers(&fx).pop() else { panic!("{cause:?} round {round}: no reconnect scheduled") };
+                assert!(delay.as_secs() >= 7 && delay.as_secs() <= 2300, "{cause:?} {delay:?}");
+                assert!(m.games[&key].reconnect_attempts <= s.reconnect.max_attempts);
+            }
+            m.games.get_mut(&key).unwrap().reconnect_attempts = 0;
+        }
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(Duplicate));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }), "replaced by the player's own session while playing");
+        send_state(&mut m, &s, &key, StateKind::Menu, None);
+        send_state(&mut m, &s, &key, StateKind::Playing, None);
+        send_state(&mut m, &s, &key, StateKind::Dead, None);
+        send_state(&mut m, &s, &key, StateKind::Disconnected, Some(Duplicate));
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }), "a dead account is still on the server, so the player's own session replaced it");
+        for (cause, ends_in) in [(Banned, "banned"), (PackDeclined, "disconnected")] {
+            send_state(&mut m, &s, &key, StateKind::Menu, None);
+            send_state(&mut m, &s, &key, StateKind::Disconnected, Some(cause));
+            let phase = &m.games[&key].phase;
+            assert!(!matches!(phase, Phase::Connecting { .. }), "{cause:?} stops, not {ends_in}: {phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_game_with_a_window_still_gives_up_after_its_tries() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        for _ in 0..=s.reconnect.max_attempts {
+            send_state(&mut m, &s, &key, StateKind::Disconnected, Some(DisconnectCause::ServerFull));
+        }
+        assert!(matches!(m.games[&key].phase, Phase::Disconnected { .. }));
     }
 
     #[test]

@@ -802,6 +802,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Im Hauptmenü"),
+        Phase::Connecting { .. } if i.connection && i.reconnect_attempts > 0 => tr("Verbindet neu…"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &crate::core::settings::active().reconnect.max_attempts]),
         Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
         Phase::Connecting { server } => trf("Verbindet mit %@…", &[server]),

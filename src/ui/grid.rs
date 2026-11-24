@@ -465,6 +465,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::Restarting { .. } => tr("Startet neu…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Hauptmenü"),
+        Phase::Connecting { .. } if i.connection && i.reconnect_attempts > 0 => tr("Verbindet neu…"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Versuch %lld/%lld", &[&i.reconnect_attempts, &tries]),
         Phase::Connecting { .. } => tr("Verbindet…"),
         Phase::Queue { .. } => tr("Warteschlange"),
