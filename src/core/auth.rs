@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::account::{self, Account, AccountKind};
 use super::ratelimit::Cooldown;
-use super::{net, online, reconnect, webauth};
+use super::{net, online, reconnect, vault, webauth};
 
 const CLIENT_ID_VAR: &str = "MANYCRAFT_MSA_CLIENT_ID";
 pub(super) const LIVE_CLIENT_ID: &str = "00000000402b5328";
@@ -333,11 +333,18 @@ pub fn client_id() -> String {
 }
 
 /// Gets a fresh session for a saved account from the refresh token in the keychain, and keeps the rotated token
-/// and the session. Without a connection, the last session is used while it stays valid for a while.
+/// and the session. Without a connection, the last session is used while it stays valid for a while. The vaults of
+/// the account's running games get the session's login.
 pub fn session_for(account: &Account) -> Result<Session> {
     if account.kind == AccountKind::Offline {
         return Ok(offline_session(account, SystemTime::now()));
     }
+    let session = microsoft_session(account)?;
+    vault::publish(account.id, &session.access_token, session.expires_at);
+    Ok(session)
+}
+
+fn microsoft_session(account: &Account) -> Result<Session> {
     let saved = || account::read_session(account.id).ok().flatten().and_then(|text| restore_session(account, &text, SystemTime::now()));
     if online::offline()
         && let Some(session) = saved()
@@ -406,6 +413,13 @@ fn refresh_saved(flow: &Flow, account: &Account) -> Result<Tokens> {
         account::store_token(account.id, &next)?;
     }
     Ok(tokens)
+}
+
+/// Removes the saved sign-in and game session of every Microsoft account in `accounts` from the keychain; the accounts
+/// stay and need a new sign-in before they play. Running games keep their login until they exit. Returns the accounts
+/// whose sign-in could not be removed.
+pub fn sign_out_all(accounts: &[Account]) -> Vec<Uuid> {
+    accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).filter(|a| account::delete_token(a.id).is_err()).map(|a| a.id).collect()
 }
 
 /// Checks that the saved sign-in of `account` still works by refreshing it, and keeps the rotated token.

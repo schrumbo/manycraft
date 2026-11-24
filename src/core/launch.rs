@@ -48,6 +48,8 @@ pub struct LaunchSpec {
     pub game_dir: PathBuf,
     pub session: Option<Session>,
     pub offline_name: String,
+    /// What an offline game gets as its login instead of `0`: the stand-in of its vault.
+    pub offline_stand_in: Option<String>,
     pub memory_mb: u32,
     /// The memory the game starts with; Java decides while `None`.
     pub memory_min_mb: Option<u32>,
@@ -105,7 +107,7 @@ impl LaunchSpec {
         let installed = &self.installed;
         let (name, uuid, token, xuid, user_type) = match &self.session {
             Some(s) => (s.name.clone(), s.uuid.clone(), s.access_token.clone(), s.xuid.clone(), "msa"),
-            None => (self.offline_name.clone(), crate::core::account::offline_uuid(&self.offline_name).to_string(), "0".to_owned(), "0".to_owned(), "legacy"),
+            None => (self.offline_name.clone(), crate::core::account::offline_uuid(&self.offline_name).to_string(), self.offline_stand_in.clone().unwrap_or_else(|| "0".to_owned()), "0".to_owned(), "legacy"),
         };
         let classpath = installed.classpath.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(CLASSPATH_SEPARATOR);
         let version_type = installed.profile.kind.clone().unwrap_or_else(|| "release".to_owned());
@@ -311,6 +313,7 @@ fn run(args: &[String]) -> Result<i32> {
         game_dir: game_dir.clone(),
         session,
         offline_name,
+        offline_stand_in: None,
         memory_mb: 4096,
         memory_min_mb: None,
         server: options.server,
@@ -391,6 +394,7 @@ mod tests {
             game_dir: PathBuf::from("inst"),
             session,
             offline_name: "Dev".into(),
+            offline_stand_in: None,
             memory_mb: 3072,
             memory_min_mb: None,
             server: server.map(str::to_owned),
