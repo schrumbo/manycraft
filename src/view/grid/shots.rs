@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Context;
 use freya::prelude::*;
 
 use crate::core::i18n::{tr, trf};
@@ -22,6 +21,7 @@ use crate::view::kit::{off_ui, toast, use_theme};
 use crate::view::native;
 use crate::view::store::{Store, use_preview, use_store};
 use crate::view::theme::{frame, space};
+use crate::view::ui::Page;
 
 const ABOVE: &str = "_above";
 const WIDTH_MAX: f32 = 1760.;
@@ -45,9 +45,15 @@ pub fn target(store: Store) -> Option<String> {
     m.games.get(key).filter(|g| g.headless).map(|_| key.clone())
 }
 
-/// Whether Speichern unter … has a screenshot: the one a sheet shows, or else the newest of the selected account.
+/// Whether Speichern unter … has a screenshot: the one a sheet shows, or else on the grid the newest of the selected
+/// account, while no layer or text field has the keyboard.
 pub fn can_save(store: Store) -> bool {
-    SHOWN.with_borrow(Option::is_some) || (!store.ui.layered() && newest(store).is_some())
+    shown_saves() || (matches!(*store.ui.page.peek(), Page::Grid(_)) && !store.ui.layered() && !crate::view::kit::field::typing() && newest(store).is_some())
+}
+
+/// Whether a sheet shows a screenshot Speichern unter … saves.
+pub fn shown_saves() -> bool {
+    SHOWN.with_borrow(Option::is_some)
 }
 
 /// Saves a copy of the screenshot the sheet shows, or else the newest view from the eyes of the selected account, where the
@@ -105,7 +111,8 @@ fn save_png(store: Store, suggested: String, png: Arc<[u8]>) {
         let title = tr("Screenshot speichern");
         let saved = off_ui(move || {
             let path = native::save_file(&title, &suggested, &tr("PNG-Bild"), "png", dirs::picture_dir())?;
-            Some(std::fs::write(&path, &png).with_context(|| format!("cannot write {}", path.display())).map(|()| name_of(&path)))
+            let path = if path.extension().is_some() { path } else { path.with_extension("png") };
+            Some(crate::core::net::write_atomic(&path, &png).map(|()| name_of(&path)))
         })
         .await
         .flatten();

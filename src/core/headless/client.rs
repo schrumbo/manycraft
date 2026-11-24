@@ -45,6 +45,7 @@ const SEEN_RANGE: f64 = 48.0;
 const MIN_PICTURE: u32 = 16;
 const MAX_PICTURE: u32 = 1280;
 const SHOT_WIDTH: u32 = 1280;
+const TILE_WIDTH: u32 = 640;
 const SHOT_RADIUS: i32 = 2;
 const SHOT_WAIT: Duration = Duration::from_secs(10);
 const QUEUED_MAX: usize = 4;
@@ -230,7 +231,7 @@ impl Shared {
         if link.phase != Phase::Play || (own && QUEUED.load(Ordering::Acquire) >= QUEUED_MAX) || self.drawing.swap(true, Ordering::AcqRel) {
             return false;
         }
-        QUEUED.fetch_add(1, Ordering::AcqRel);
+        let drawing = Drawing::taken(Arc::clone(&self.drawing));
         let width = width.clamp(MIN_PICTURE, MAX_PICTURE);
         let height = (width * 9 / 16).max(1);
         let [x, _, z] = link.position;
@@ -239,7 +240,7 @@ impl Shared {
         let hud = link.status.hud(&link.screen);
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, hud, position: link.position, rotation: link.rotation, width, height };
         let taken = SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_secs()).ok()).unwrap_or(0);
-        let (key, events, drawing) = (self.key.clone(), self.events.clone(), Drawing(Arc::clone(&self.drawing)));
+        let (key, events) = (self.key.clone(), self.events.clone());
         picture::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
             let above = pictures.pop().unwrap_or_default();
             let eyes = pictures.pop().unwrap_or_default();
@@ -252,8 +253,9 @@ impl Shared {
                     return;
                 }
             };
+            let (width, height, rgba) = for_tile(eyes, width, height);
             let seq = PICTURES.fetch_add(2, Ordering::Relaxed).wrapping_add(2);
-            let _ = events.send(Event::Picture { instance: key, seq, width, height, rgba: eyes, moment });
+            let _ = events.send(Event::Picture { instance: key, seq, width, height, rgba, moment });
         });
         true
     }
@@ -909,7 +911,25 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
     Ok(())
 }
 
+/// The one picture an account has on the drawing thread, counted in `QUEUED` until it is drawn or given up.
 struct Drawing(Arc<AtomicBool>);
+
+impl Drawing {
+    fn taken(flag: Arc<AtomicBool>) -> Self {
+        QUEUED.fetch_add(1, Ordering::AcqRel);
+        Self(flag)
+    }
+}
+
+/// RGBA rows of `width` by `height` scaled down to at most `TILE_WIDTH` wide, as a tile shows them.
+fn for_tile(rgba: Vec<u8>, width: u32, height: u32) -> (u32, u32, Vec<u8>) {
+    if width <= TILE_WIDTH {
+        return (width, height, rgba);
+    }
+    let Some(picture) = image::RgbaImage::from_raw(width, height, rgba) else { return (0, 0, Vec::new()) };
+    let tall = (height * TILE_WIDTH / width).max(1);
+    (TILE_WIDTH, tall, image::imageops::resize(&picture, TILE_WIDTH, tall, image::imageops::FilterType::Triangle).into_raw())
+}
 
 impl Drop for Drawing {
     fn drop(&mut self) {
@@ -1184,7 +1204,9 @@ mod tests {
         assert!(link.due.is_none());
         drop(link);
         let Ok(Event::Picture { width, height, moment, .. }) = rx.recv_timeout(Duration::from_secs(120)) else { panic!("no screenshot") };
-        assert_eq!((width, height), (SHOT_WIDTH, SHOT_WIDTH * 9 / 16));
+        assert_eq!((width, height), (TILE_WIDTH, TILE_WIDTH * 9 / 16), "the tile gets a smaller picture");
+        let full = shots::decode_png(&moment.eyes).unwrap();
+        assert_eq!((full.width(), full.height()), (SHOT_WIDTH, SHOT_WIDTH * 9 / 16));
         assert!(moment.eyes.starts_with(b"\x89PNG") && moment.above.starts_with(b"\x89PNG"));
         assert!(moment.taken > 0);
     }

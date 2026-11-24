@@ -151,10 +151,10 @@ fn run(args: &[String]) -> Result<()> {
 
 /// Writes a screenshot to `dir` as two PNG files, the view from above with `_above`, named by when it was taken.
 fn keep(dir: &std::path::Path, moment: &crate::core::shots::Moment) {
-    let stamp = chrono::DateTime::from_timestamp(moment.taken, 0).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d_%H.%M.%S").to_string()).unwrap_or_default();
+    let stamp = chrono::DateTime::from_timestamp(moment.taken, 0).map_or_else(|| moment.taken.to_string(), |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d_%H.%M.%S").to_string());
     let name = |n: u32, suffix: &str| dir.join(if n == 0 { format!("{stamp}{suffix}.png") } else { format!("{stamp}_{n}{suffix}.png") });
-    let free = (0..1000).find(|n| !name(*n, "").exists()).unwrap_or(1000);
-    let written = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(name(free, ""), &moment.eyes)).and_then(|()| std::fs::write(name(free, "_above"), &moment.above));
+    let free = (0..1000).find(|n| !name(*n, "").exists() && !name(*n, "_above").exists()).unwrap_or(1000);
+    let written = crate::core::net::write_atomic(&name(free, ""), &moment.eyes).and_then(|()| crate::core::net::write_atomic(&name(free, "_above"), &moment.above));
     if let Err(e) = written {
         eprintln!("picture not written to {}: {e}", dir.display());
     }

@@ -458,6 +458,13 @@ impl<P: Pixels> Sim<P> {
             run.next_preview = now + run.every + run.every / 10 * (hash(key) % 10) as u32 / 10;
             let (w, h) = (run.width, (run.width * PREVIEW_H / PREVIEW_W).max(1));
             let preview = Preview { seq: run.seq, width: w, height: h, rgba: frame(hash(key), if self.still { 2 } else { run.seq }, w, h) };
+            if shot && self.bare.contains(key) {
+                let png = crate::core::shots::encode(&preview.rgba, w, h).unwrap_or_default();
+                let moment = crate::core::shots::Moment { taken: chrono::Utc::now().timestamp(), eyes: png.clone().into(), above: png.into() };
+                if self.out.send_blocking(Update::Moment { key: key.clone(), moment }).is_err() {
+                    return false;
+                }
+            }
             if !self.changes.changed(key, &preview) {
                 continue;
             }

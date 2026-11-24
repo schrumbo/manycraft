@@ -734,7 +734,7 @@ fn passes_layers(store: Store, command: Command) -> bool {
     match command {
         Command::Quit => true,
         Command::OpenPalette => store.ui.sheet.peek().is_none(),
-        Command::SaveShot => super::grid::shots::can_save(store),
+        Command::SaveShot => super::grid::shots::shown_saves(),
         _ => false,
     }
 }
