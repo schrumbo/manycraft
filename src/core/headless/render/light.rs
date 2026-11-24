@@ -116,6 +116,7 @@ pub fn ambient(face: Dir, samples: &Samples, shape: &[f32; 12]) -> [(f32, Packed
 /// The overworld lightmap at one moment: sky and block levels (0..15) to a colour.
 pub struct Lightmap {
     table: [[[f32; 3]; 16]; 16],
+    darken: u8,
 }
 
 const NIGHT: [f32; 3] = [122.0 / 255.0, 122.0 / 255.0, 1.0];
@@ -192,7 +193,12 @@ impl Lightmap {
                 *cell = lerp3(BRIGHTNESS, c, lifted);
             }
         }
-        Self { table }
+        Self { table, darken: (15.0 - sky_level(time, rain, thunder) + 1e-3).floor().clamp(0.0, 15.0) as u8 }
+    }
+
+    /// The light level the game counts at a block with `sky` and `block` light: sky light dimmed by the time of day and weather.
+    pub fn level(&self, sky: u8, block: u8) -> u8 {
+        block.max(sky.saturating_sub(self.darken))
     }
 
     /// The colour of packed light `p`, interpolating between levels like the game's lightmap texture.
@@ -223,6 +229,7 @@ mod tests {
         assert_eq!(rgb(day.color(pack(15, 0))), [255, 255, 255]);
         assert!(rgb(day.color(pack(0, 0)))[0].abs_diff(24) <= 1);
         let night = Lightmap::new(18000.0, 0.0, 0.0);
+        assert_eq!((day.level(15, 0), night.level(15, 0), night.level(15, 7)), (15, 4, 7));
         let n = rgb(night.color(pack(15, 0)));
         assert!(n[0].abs_diff(71) <= 1 && n[2].abs_diff(129) <= 1, "{n:?}");
         let torch = rgb(night.color(pack(0, 8)));

@@ -613,7 +613,7 @@ fn shadow_of(e: &Entity) -> f32 {
 
 /// Darkens the ground under an entity with the game's round shadow.
 #[allow(clippy::too_many_arguments)]
-fn shadow<W: Blocks>(painter: &mut Painter, scene: &Scene<'_, W>, sheet: &Sheet, e: &Entity, radius: f32, strength: f32) {
+fn shadow<W: Blocks>(painter: &mut Painter, scene: &Scene<'_, W>, lightmap: &Lightmap, sheet: &Sheet, e: &Entity, radius: f32, strength: f32) {
     if !radius.is_finite() || !strength.is_finite() {
         return;
     }
@@ -634,7 +634,7 @@ fn shadow<W: Blocks>(painter: &mut Painter, scene: &Scene<'_, W>, sheet: &Sheet,
                     continue;
                 }
                 let (sky, block) = scene.light(x, y, z);
-                let brightness = sky.max(block);
+                let brightness = lightmap.level(sky, block);
                 if brightness <= 3 {
                     continue;
                 }
@@ -750,7 +750,7 @@ pub fn draw<'e, W: Blocks>(entities: &'e impl Entities, scene: &Scene<'_, W>, as
         match kind {
             "item" => {
                 if dropped(&mut painter, assets, e, lit) && let Some(sheet) = &shadow_sheet {
-                    shadow(&mut painter, scene, sheet, e, 0.15, 0.75);
+                    shadow(&mut painter, scene, lightmap, sheet, e, 0.15, 0.75);
                 }
                 continue;
             }
@@ -761,7 +761,7 @@ pub fn draw<'e, W: Blocks>(entities: &'e impl Entities, scene: &Scene<'_, W>, as
             "block_display" | "item_display" | "text_display" => {
                 labels.extend(display(&mut painter, assets, e, lightmap, lit));
                 if let (Some(sheet), Data::Display { common, .. }) = (&shadow_sheet, &e.data) {
-                    shadow(&mut painter, scene, sheet, e, common.shadow_radius, common.shadow_strength);
+                    shadow(&mut painter, scene, lightmap, sheet, e, common.shadow_radius, common.shadow_strength);
                 }
                 continue;
             }
@@ -769,7 +769,7 @@ pub fn draw<'e, W: Blocks>(entities: &'e impl Entities, scene: &Scene<'_, W>, as
         }
         let Some(figure) = figure(e, assets, skin.as_ref()) else { continue };
         if !invisible && let Some(sheet) = &shadow_sheet {
-            shadow(&mut painter, scene, sheet, e, shadow_of(e), 1.0);
+            shadow(&mut painter, scene, lightmap, sheet, e, shadow_of(e), 1.0);
         }
         let at = placement(e, view.eye, figure.scale);
         for coat in figure.coats.iter().filter(|_| !invisible) {
