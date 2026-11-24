@@ -7,9 +7,14 @@
 #[cfg(test)]
 mod anvil;
 mod assets;
+mod actor;
 mod block;
+mod entity;
+mod figure;
 mod font;
 pub mod hud;
+mod item;
+mod skins;
 mod light;
 mod model;
 mod random;
@@ -21,6 +26,7 @@ mod states;
 use serde_json::Value;
 
 pub use self::assets::{Assets, shared};
+pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, Nobody, Pose, Skin, Span, Text, slot};
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
 use self::scene::{Scene, View};
@@ -142,7 +148,7 @@ const NOON: i64 = 6000;
 
 /// Draws what `camera` sees of `world` as an RGBA picture of `width` × `height`, rows top down.
 /// Sides are clamped to 1..=4096, the render distance to 1..=4; a camera off the map or not a number is moved onto it.
-pub fn render(world: &impl Blocks, biomes: &[Biome], camera: &Camera, sky: &Sky, width: u32, height: u32, assets: &Assets) -> image::RgbaImage {
+pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, camera: &Camera, sky: &Sky, width: u32, height: u32, assets: &Assets) -> image::RgbaImage {
     let (w, h) = (width.clamp(1, MAX_SIDE) as usize, height.clamp(1, MAX_SIDE) as usize);
     let camera = &sane_camera(camera, world);
     let sky = &Sky { time: sky.time, rain: unit(sky.rain), thunder: unit(sky.thunder) };
@@ -162,7 +168,9 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], camera: &Camera, sky: &Sky,
     let mut scene = Scene::new(world, assets, biomes, camera.pos, i32::from(distance));
     let mut later = Later::default();
     scene.draw(&view, &lightmap, &mut target, &mut later);
+    actor::draw(entities, &scene, assets, &lightmap, &view, &mut target, end + 16.0);
     later.draw(&mut target);
+    actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
     if let Some(texture) = &assets.vignette {
         let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
         target.vignette(texture, light::vignette(sky_light, block_light, light::sky_level(time, sky.rain, sky.thunder)));
@@ -242,7 +250,7 @@ mod tests {
         let assets = Assets::open(&jar).unwrap();
         let camera = Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 0.0, fov: 70.0, distance: 2 };
         let start = std::time::Instant::now();
-        let image = render(&Flat, &[Biome::default()], &camera, &Sky::default(), 320, 180, &assets);
+        let image = render(&Flat, &[Biome::default()], &Nobody, &camera, &Sky::default(), 320, 180, &assets);
         let took = start.elapsed();
         image.save(std::env::temp_dir().join("manycraft-render-flat.png")).ok();
         let top = image.get_pixel(160, 2).0;
@@ -252,18 +260,135 @@ mod tests {
         assert!(took.as_secs_f32() < 2.0, "{took:?}");
     }
 
-    /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
-    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
     #[test]
     fn odd_input_draws_a_picture_instead_of_failing() {
         let Some(jar) = jar() else { return };
         let assets = Assets::open(&jar).unwrap();
         let camera = Camera { pos: [f64::NAN, 1e12, f64::INFINITY], yaw: f32::NAN, pitch: 400.0, fov: f32::NAN, distance: 255 };
         let sky = Sky { time: Some(i64::MIN), rain: f32::NAN, thunder: f32::INFINITY };
-        let image = render(&Flat, &[], &camera, &sky, 0, 100_000, &assets);
+        let image = render(&Flat, &[], &Nobody, &camera, &sky, 0, 100_000, &assets);
         assert_eq!(image.dimensions(), (1, MAX_SIDE));
+        assert!(image.pixels().any(|p| p.0[..3] != [0, 0, 0]), "a camera put back on the map still sees something");
     }
 
+    struct Crowd(Vec<Entity>);
+
+    impl Entities for Crowd {
+        fn entities(&self) -> &[Entity] {
+            &self.0
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            None
+        }
+    }
+
+    struct Holding(Vec<Entity>, Hand);
+
+    impl Entities for Holding {
+        fn entities(&self) -> &[Entity] {
+            &self.0
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            Some(&self.1)
+        }
+    }
+
+    fn item(id: &str) -> Item {
+        Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None }
+    }
+
+    /// An entity from `kind x y z yaw [key=value …]`, the scene format the comparison shots share with the server
+    /// commands that place the real ones.
+    fn crowd_entity(line: &str) -> Option<Entity> {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let n = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok());
+        let kv = |k: &str| f.iter().skip(5).find_map(|p| p.strip_prefix(k).and_then(|r| r.strip_prefix('=')));
+        let flag = |k: &str| f.iter().skip(5).any(|p| *p == k);
+        let kind: &'static str = Box::leak(format!("minecraft:{}", f.first()?).into_boxed_str());
+        let yaw = n(4)? as f32;
+        let mut equipment: [Option<Item>; 6] = Default::default();
+        for (key, slot) in [("main", slot::MAIN_HAND), ("off", slot::OFF_HAND), ("feet", slot::FEET), ("legs", slot::LEGS), ("chest", slot::CHEST), ("head", slot::HEAD)] {
+            equipment[slot] = kv(key).map(item);
+        }
+        let uuid = kv("uuid").and_then(|u| uuid::Uuid::parse_str(u).ok()).unwrap_or_default();
+        let data = match f[0] {
+            "player" => Data::Player { skin: Skin { uuid, parts: 0x7F, ..Skin::default() }, main_left: false },
+            "villager" | "zombie_villager" => Data::Villager { kind: kv("type").unwrap_or("plains").into(), profession: kv("profession").unwrap_or("none").into(), level: kv("level").and_then(|v| v.parse().ok()).unwrap_or(1) },
+            "sheep" => Data::Sheep { color: kv("color").and_then(|v| v.parse().ok()).unwrap_or(0), sheared: flag("sheared") },
+            "horse" => Data::Horse { variant: kv("variant").and_then(|v| v.parse().ok()).unwrap_or(0) },
+            "wolf" => Data::Wolf { tame: flag("tame"), collar: 14, variant: kv("variant").unwrap_or("pale").into() },
+            "cat" => Data::Cat { variant: kv("variant").unwrap_or("tabby").into(), collar: 14 },
+            "slime" | "magma_cube" => Data::Slime { size: kv("size").and_then(|v| v.parse().ok()).unwrap_or(1) },
+            "item" => Data::Item { item: item(kv("item")?) },
+            "item_frame" | "glow_item_frame" => Data::Frame { item: kv("item").map(item), rotation: kv("rot").and_then(|v| v.parse().ok()).unwrap_or(0), facing: kv("facing").and_then(|v| v.parse().ok()).unwrap_or(3), glow: f[0] == "glow_item_frame", invisible: flag("invisible") },
+            "armor_stand" => Data::ArmorStand { small: flag("small"), arms: flag("arms"), no_plate: false, marker: false, poses: [[0.0; 3], [0.0; 3], [-10.0, 0.0, -10.0], [-15.0, 0.0, 10.0], [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0]] },
+            "block_display" | "item_display" => {
+                let scale = kv("scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                let common = Display { scale: [scale; 3], billboard: kv("billboard").and_then(|v| v.parse().ok()).unwrap_or(0), ..Display::default() };
+                let kind = if f[0] == "block_display" {
+                    DisplayKind::Block { state: block::encode(kv("block")?, &[])? }
+                } else {
+                    DisplayKind::Item { item: kv("item").map(item), transform: kv("transform").and_then(|v| v.parse().ok()).unwrap_or(0) }
+                };
+                Data::Display { common, kind }
+            }
+            _ => kv("variant").map(|v| Data::Variant(v.into())).unwrap_or_default(),
+        };
+        Some(Entity {
+            id: 0,
+            kind,
+            pos: [n(1)?, n(2)?, n(3)?],
+            yaw,
+            pitch: kv("pitch").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            head_yaw: kv("head").and_then(|v| v.parse().ok()).unwrap_or(yaw),
+            baby: flag("baby"),
+            pose: if flag("sneak") { Pose::Crouching } else { Pose::Standing },
+            flags: 0,
+            name: kv("name").map(|t| vec![Span { text: t.replace('_', " "), ..Span::default() }]),
+            equipment,
+            data,
+        })
+    }
+
+    #[test]
+    fn a_crowd_of_mobs_draws_inside_the_budget() {
+        let Some(jar) = jar() else { return };
+        let assets = Assets::open(&jar).unwrap();
+        let kinds = ["player main=diamond_sword off=shield head=iron_helmet chest=diamond_chestplate", "villager profession=farmer level=2", "zombie main=iron_shovel legs=golden_leggings feet=leather_boots", "skeleton main=bow", "creeper", "cow", "pig", "sheep color=14", "chicken", "horse variant=258", "wolf tame", "cat", "iron_golem", "enderman", "spider", "slime size=2", "armor_stand arms head=diamond_helmet chest=iron_chestplate main=apple", "item item=diamond", "item item=oak_log", "item_frame item=compass facing=2", "block_display block=glowstone scale=0.5", "item_display item=golden_apple billboard=1", "player sneak main=torch uuid=00000000-0000-0000-0000-00000000000f", "item_frame item=stone rot=1 facing=2"];
+        let row: Vec<Entity> = kinds.iter().enumerate().filter_map(|(i, k)| {
+            let (kind, rest) = k.split_once(' ').unwrap_or((k, ""));
+            crowd_entity(&format!("{kind} {} 63 {} 180 {rest}", (i % 8) as f64 * 2.0 - 7.0, 8.0 + (i / 8) as f64 * 3.0))
+        }).collect();
+        assert_eq!(row.len(), kinds.len());
+        let camera = Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 };
+        let bare = render(&Flat, &[Biome::default()], &Nobody, &camera, &Sky::default(), 640, 360, &assets);
+        let image = render(&Flat, &[Biome::default()], &Crowd(row.clone()), &camera, &Sky::default(), 640, 360, &assets);
+        let out = crate::core::paths::data_dir().join("..").join("render-crowd.png");
+        image.save(std::env::temp_dir().join("manycraft-render-crowd.png")).ok();
+        let _ = out;
+        let props: Vec<Entity> = row.iter().skip(16).enumerate().map(|(i, e)| { let mut e = e.clone(); e.pos = [i as f64 * 1.2 - 4.0, 63.0 + if matches!(e.data, Data::Frame { .. } | Data::Display { .. }) { 1.0 } else { 0.0 }, 4.0]; e }).collect();
+        render(&Flat, &[Biome::default()], &Crowd(props), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-props.png")).ok();
+        let solo = vec![crowd_entity("player 0.5 63 3.5 180 main=diamond_sword").unwrap()];
+        render(&Flat, &[Biome::default()], &Crowd(solo.clone()), &Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-front.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(solo), &Camera { pos: [3.5, 64.62, 3.5], yaw: 90.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-side.png")).ok();
+        for (name, main) in [("sword", Some(item("diamond_sword"))), ("empty", None), ("block", Some(item("oak_log")))] {
+            let hand = Hand { main, left_handed: false, skin: Skin { parts: 0x7F, ..Skin::default() } };
+            render(&Flat, &[Biome::default()], &Holding(row.clone(), hand), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join(format!("manycraft-render-hand-{name}.png"))).ok();
+        }
+        let changed = bare.pixels().zip(image.pixels()).filter(|(a, b)| a != b).count();
+        assert!(changed > 640 * 360 / 20, "the mobs cover part of the picture: {changed}");
+        let many: Vec<Entity> = (0..200).map(|i| { let mut e = row[i % row.len()].clone(); e.pos = [(i % 20) as f64 - 10.0, 63.0, 6.0 + (i / 20) as f64 * 2.0]; e }).collect();
+        let start = std::time::Instant::now();
+        render(&Flat, &[Biome::default()], &Crowd(many), &camera, &Sky::default(), 1280, 720, &assets);
+        let took = start.elapsed();
+        eprintln!("200 entities at 1280x720: {took:?}");
+        assert!(took.as_secs_f32() < if cfg!(debug_assertions) { 30.0 } else { 1.0 }, "{took:?}");
+    }
+
+    /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
+    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
     #[test]
     #[ignore]
     fn shots() {
@@ -292,7 +417,8 @@ mod tests {
             let camera = Camera { pos: [x, y, z], yaw: n(4) as f32, pitch: n(5) as f32, fov, distance: 2 };
             let sky = Sky { time: Some(n(6) as i64), rain: 0.0, thunder: 0.0 };
             let start = std::time::Instant::now();
-            let image = render(&world, &biomes, &camera, &sky, w, h, &assets);
+            let crowd = Crowd(std::env::var("RENDER_ENTITIES").ok().map(|p| std::fs::read_to_string(p).unwrap().lines().filter(|l| l.starts_with(f[0])).filter_map(|l| crowd_entity(l.split_once(' ')?.1)).collect()).unwrap_or_default());
+            let image = render(&world, &biomes, &crowd, &camera, &sky, w, h, &assets);
             eprintln!("{} eye {y:.2} {:?}", f[0], start.elapsed());
             image.save(out.join(format!("ours-{}.png", f[0]))).unwrap();
         }
