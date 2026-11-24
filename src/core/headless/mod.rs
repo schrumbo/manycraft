@@ -15,6 +15,7 @@ mod conn;
 mod crypto;
 mod item;
 mod picture;
+pub mod render;
 pub mod resume;
 mod screen;
 mod text;

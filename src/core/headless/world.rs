@@ -11,6 +11,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use serde_json::Value;
 
+use super::render::Biome;
 use super::v777::{BLOCK_LOOKS, BLOCK_STATES};
 use super::wire::In;
 
@@ -18,6 +19,7 @@ const MAX_CHUNKS: usize = 1024;
 const MAX_BYTES: usize = 512 << 10;
 const MAX_CHANGES: usize = 2048;
 const MAX_TYPES: usize = 256;
+const MAX_BIOMES: usize = 4096;
 /// The most sections a dimension may stack: 4064 blocks, the game's own limit.
 pub const MAX_SECTIONS: usize = 254;
 const MAX_INFLATED: usize = 4 << 20;
@@ -91,6 +93,7 @@ pub struct World {
     changes: HashMap<[i32; 3], u32>,
     types: Vec<Dimension>,
     dimension: Dimension,
+    biomes: Arc<[Biome]>,
 }
 
 /// One kept chunk: its position and its deflated block data.
@@ -102,6 +105,7 @@ pub struct Snapshot {
     pub dimension: Dimension,
     pub chunks: Vec<Kept>,
     pub changes: Vec<([i32; 3], u32)>,
+    pub biomes: Arc<[Biome]>,
 }
 
 impl World {
@@ -118,6 +122,21 @@ impl World {
                 self.types.push(found.unwrap_or_default());
             }
         }
+        Ok(())
+    }
+
+    /// Reads the server's `minecraft:worldgen/biome` registry, whose name is already read, in registry order; an entry
+    /// without data reads as plains, entries past the first 4096 are not kept.
+    pub fn biomes(&mut self, r: &mut In) -> Result<()> {
+        let mut biomes = Vec::new();
+        for _ in 0..r.list()? {
+            let _name = r.string()?;
+            let data = r.optional_nbt()?;
+            if biomes.len() < MAX_BIOMES {
+                biomes.push(data.as_ref().map(Biome::from_json).unwrap_or_default());
+            }
+        }
+        self.biomes = biomes.into();
         Ok(())
     }
 
@@ -212,6 +231,7 @@ impl World {
             dimension: self.dimension,
             chunks: self.chunks.iter().filter(|(at, _)| near(at)).map(|(at, data)| (*at, Arc::clone(data))).collect(),
             changes: self.changes.iter().filter(|(p, _)| near(&(p[0] >> 4, p[2] >> 4))).map(|(p, s)| (*p, *s)).collect(),
+            biomes: Arc::clone(&self.biomes),
         }
     }
 
@@ -228,6 +248,62 @@ pub type Section = Box<[Look; BLOCKS]>;
 
 /// The looks of the sections of one chunk's deflated block data, bottom up; `None` for a section of air only.
 pub fn sections(packed: &[u8], dimension: Dimension) -> Result<Vec<Option<Section>>> {
+    Ok(columns(packed, dimension)?.into_iter().map(|(blocks, _)| looks(blocks)).collect())
+}
+
+/// The global block states of one 16³ section, `y * 256 + z * 16 + x`.
+pub type States = Box<[u16; BLOCKS]>;
+
+/// The biome ids of one section's 4³ cells, `y * 16 + z * 4 + x`.
+pub type Biomes = [u16; BIOMES];
+
+/// The block states and biomes of the sections of one chunk's deflated block data, bottom up; no states for a section of
+/// air only.
+pub fn states(packed: &[u8], dimension: Dimension) -> Result<Vec<(Option<States>, Biomes)>> {
+    Ok(columns(packed, dimension)?.into_iter().map(|(blocks, biomes)| (block_states(blocks), biome_ids(biomes))).collect())
+}
+
+enum Values {
+    Single(u32),
+    Each(Box<[u32]>),
+}
+
+fn looks(values: Values) -> Option<Section> {
+    match values {
+        Values::Single(s) => (look(s) != 0).then(|| Box::new([look(s); BLOCKS])),
+        Values::Each(v) => {
+            let mut section = Box::new([0; BLOCKS]);
+            for (slot, s) in section.iter_mut().zip(v.iter()) {
+                *slot = look(*s);
+            }
+            section.iter().any(|l| *l != 0).then_some(section)
+        }
+    }
+}
+
+fn block_states(values: Values) -> Option<States> {
+    let state = |s: u32| if (s as usize) < BLOCK_STATES { s as u16 } else { 0 };
+    match values {
+        Values::Single(s) => (state(s) != 0).then(|| Box::new([state(s); BLOCKS])),
+        Values::Each(v) => {
+            let mut section = Box::new([0; BLOCKS]);
+            for (slot, s) in section.iter_mut().zip(v.iter()) {
+                *slot = state(*s);
+            }
+            section.iter().any(|s| *s != 0).then_some(section)
+        }
+    }
+}
+
+fn biome_ids(values: Values) -> Biomes {
+    let id = |b: u32| u16::try_from(b).unwrap_or(0);
+    match values {
+        Values::Single(b) => [id(b); BIOMES],
+        Values::Each(v) => std::array::from_fn(|i| v.get(i).copied().map_or(0, id)),
+    }
+}
+
+fn columns(packed: &[u8], dimension: Dimension) -> Result<Vec<(Values, Values)>> {
     let mut data = Vec::new();
     ZlibDecoder::new(packed).take(MAX_INFLATED as u64 + 1).read_to_end(&mut data)?;
     ensure!(data.len() <= MAX_INFLATED, "chunk data inflates past {MAX_INFLATED} bytes");
@@ -240,23 +316,22 @@ pub fn sections(packed: &[u8], dimension: Dimension) -> Result<Vec<Option<Sectio
         }
         let _blocks = r.i16()?;
         let _fluids = r.i16()?;
-        out.push(container(&mut r, BLOCKS, 4, 8)?);
-        container(&mut r, BIOMES, 1, 3)?;
+        let blocks = container(&mut r, BLOCKS, 4, 8)?;
+        out.push((blocks, container(&mut r, BIOMES, 1, 3)?));
     }
     Ok(out)
 }
 
-fn container(r: &mut In, entries: usize, least: u8, most_indirect: u8) -> Result<Option<Section>> {
+fn container(r: &mut In, entries: usize, least: u8, most_indirect: u8) -> Result<Values> {
     let bits = r.u8()?;
     if bits == 0 {
-        let single = look(r.varint()? as u32);
-        return Ok((entries == BLOCKS && single != 0).then(|| Box::new([single; BLOCKS])));
+        return Ok(Values::Single(r.varint()? as u32));
     }
-    let palette: Option<Vec<Look>> = if bits <= most_indirect {
+    let palette: Option<Vec<u32>> = if bits <= most_indirect {
         let n = r.list()?;
         let mut palette = Vec::with_capacity(n);
         for _ in 0..n {
-            palette.push(look(r.varint()? as u32));
+            palette.push(r.varint()? as u32);
         }
         Some(palette)
     } else {
@@ -266,22 +341,17 @@ fn container(r: &mut In, entries: usize, least: u8, most_indirect: u8) -> Result
     ensure!(bits <= 32, "{bits} bits per entry");
     let per = usize::from(64 / bits);
     let longs = r.take(entries.div_ceil(per) * 8)?;
-    if entries != BLOCKS {
-        return Ok(None);
-    }
     let mask = (1u64 << bits) - 1;
-    let mut section = Box::new([0; BLOCKS]);
-    let mut any = false;
-    for (i, slot) in section.iter_mut().enumerate() {
+    let mut values = vec![0u32; entries].into_boxed_slice();
+    for (i, slot) in values.iter_mut().enumerate() {
         let word = u64::from_be_bytes(longs[i / per * 8..i / per * 8 + 8].try_into()?);
         let value = (word >> (i % per * usize::from(bits))) & mask;
         *slot = match &palette {
             Some(p) => p.get(value as usize).copied().unwrap_or(0),
-            None => look(value as u32),
+            None => value as u32,
         };
-        any |= *slot != 0;
     }
-    Ok(any.then_some(section))
+    Ok(Values::Each(values))
 }
 
 #[cfg(test)]

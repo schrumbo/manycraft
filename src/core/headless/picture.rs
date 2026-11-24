@@ -5,8 +5,11 @@
 use std::sync::mpsc::{self, Sender};
 use std::sync::{LazyLock, Mutex};
 
+use std::collections::HashMap;
+
+use super::render::{self, Blocks, Camera, Sky};
 use super::v777::MAP_COLORS;
-use super::world::{self, Class, Dimension, Look, Section, Snapshot};
+use super::world::{self, Biomes, Class, Dimension, Look, Section, Snapshot, States};
 
 const EYE_HEIGHT: f64 = 1.62;
 const FOV_Y: f32 = 70.0;
@@ -20,6 +23,7 @@ const VOID: [f32; 3] = [0.08, 0.08, 0.1];
 const WATER_SURFACE: f32 = 0.45;
 const WATER_DEPTH: f32 = 0.12;
 const PLANT_STEM: f32 = 0.16;
+const DISTANCE: u8 = 2;
 
 /// Where a picture looks from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +55,7 @@ static QUEUE: LazyLock<Mutex<Option<Sender<Job>>>> = LazyLock::new(|| Mutex::new
 pub fn queue(request: Request, views: Vec<View>, done: impl FnOnce(Vec<Vec<u8>>) + Send + 'static) {
     let job: Job = Box::new(move || {
         let scene = Scene::new(&request.world);
-        done(views.into_iter().map(|view| paint(&scene, &request, view)).collect());
+        done(views.into_iter().map(|view| shoot(&scene, &request, view)).collect());
     });
     let mut queue = QUEUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let job = match queue.as_ref() {
@@ -74,6 +78,16 @@ pub fn queue(request: Request, views: Vec<View>, done: impl FnOnce(Vec<Vec<u8>>)
     }
 }
 
+fn shoot(scene: &Scene, request: &Request, view: View) -> Vec<u8> {
+    if view == View::Eyes {
+        match textured(request, request.width.max(1), request.height.max(1)) {
+            Ok(picture) => return picture,
+            Err(e) => eprintln!("textured picture not drawn, drawing the plain one: {e:#}"),
+        }
+    }
+    paint(scene, request, view)
+}
+
 #[cfg(test)]
 fn draw(request: &Request, view: View) -> Vec<u8> {
     paint(&Scene::new(&request.world), request, view)
@@ -87,6 +101,64 @@ fn paint(scene: &Scene, request: &Request, view: View) -> Vec<u8> {
         View::Above => above(scene, request, w, h, &mut rgba),
     }
     rgba
+}
+
+fn textured(request: &Request, w: u32, h: u32) -> anyhow::Result<Vec<u8>> {
+    let assets = render::shared()?;
+    let area = Area::new(&request.world);
+    let [x, y, z] = request.position;
+    let camera = Camera { pos: [x, y + EYE_HEIGHT, z], yaw: request.rotation[0], pitch: request.rotation[1], fov: FOV_Y, distance: DISTANCE };
+    Ok(render::render(&area, &request.world.biomes, &camera, &Sky::default(), w, h, &assets).into_raw())
+}
+
+struct Area {
+    dimension: Dimension,
+    chunks: HashMap<(i32, i32), Vec<(Option<States>, Biomes)>>,
+}
+
+impl Area {
+    fn new(world: &Snapshot) -> Self {
+        let mut chunks: HashMap<_, _> = world.chunks.iter().filter_map(|(at, packed)| Some((*at, world::states(packed, world.dimension).ok()?))).collect();
+        for (p, state) in &world.changes {
+            let Some(column) = chunks.get_mut(&(p[0] >> 4, p[2] >> 4)) else { continue };
+            let Ok(sy) = usize::try_from((p[1] - world.dimension.floor) >> 4) else { continue };
+            let Some((section, _)) = column.get_mut(sy) else { continue };
+            let section = section.get_or_insert_with(|| Box::new([0; 4096]));
+            section[at(p[0], p[1], p[2])] = u16::try_from(*state).unwrap_or(0);
+        }
+        Self { dimension: world.dimension, chunks }
+    }
+
+    fn section(&self, x: i32, y: i32, z: i32) -> Option<&(Option<States>, Biomes)> {
+        let sy = usize::try_from(y.checked_sub(self.dimension.floor)? >> 4).ok()?;
+        self.chunks.get(&(x >> 4, z >> 4))?.get(sy)
+    }
+}
+
+fn at(x: i32, y: i32, z: i32) -> usize {
+    ((y & 15) << 8 | (z & 15) << 4 | (x & 15)) as usize
+}
+
+impl Blocks for Area {
+    fn state(&self, x: i32, y: i32, z: i32) -> u32 {
+        self.section(x, y, z).and_then(|(s, _)| s.as_ref()).map_or(0, |s| u32::from(s[at(x, y, z)]))
+    }
+
+    fn biome(&self, x: i32, y: i32, z: i32) -> u16 {
+        self.section(x, y, z).map_or(0, |(_, b)| b[((y & 15) >> 2 << 4 | (z & 15) >> 2 << 2 | (x & 15) >> 2) as usize])
+    }
+
+    fn light(&self, _x: i32, _y: i32, _z: i32) -> Option<(u8, u8)> {
+        None
+    }
+
+    fn floor(&self) -> i32 {
+        self.dimension.floor
+    }
+
+    fn height(&self) -> i32 {
+        self.dimension.height
+    }
 }
 
 struct Scene {
@@ -423,8 +495,28 @@ mod tests {
     }
 
     #[test]
+    fn the_textured_view_reads_states_biomes_and_changes_from_the_kept_chunks() {
+        let stone = world::fixture::state(|l| l != 0 && world::class(l) == Class::Solid);
+        let mut w = world::World::default();
+        let mut sections = vec![0; 24];
+        sections[4] = stone;
+        w.chunk(&mut super::super::wire::In::new(&world::fixture::chunk(1, -1, &sections)), (0, 0)).unwrap();
+        let mut update = super::super::wire::Out::default();
+        update.i64(((17i64 & 0x3FF_FFFF) << 38) | ((-15i64 & 0x3FF_FFFF) << 12) | (-60 & 0xFFF)).varint(stone as i32);
+        w.block(&mut super::super::wire::In::new(&update.0)).unwrap();
+        let area = Area::new(&w.snapshot(16.0, -16.0, 1));
+        assert_eq!(area.state(20, 0, -10), stone);
+        assert_eq!(area.state(20, 16, -10), 0);
+        assert_eq!(area.state(17, -60, -15), stone, "a change shows in a section the chunk sent as air");
+        assert_eq!(area.state(100, 0, 100), 0, "a chunk not kept is air");
+        assert_eq!(area.state(20, -65, -10), 0);
+        assert_eq!(area.biome(20, 0, -10), 0);
+        assert_eq!((area.floor(), area.height()), (-64, 384));
+    }
+
+    #[test]
     fn nothing_known_draws_sky_and_void_without_failing() {
-        let empty = Snapshot { dimension: Dimension::default(), chunks: Vec::new(), changes: Vec::new() };
+        let empty = Snapshot::default();
         let rgba = draw(&request(empty.clone(), [45.0, -30.0]), View::Eyes);
         assert!(near(pixel(&rgba, 64, 32, 0), sky(1.0)) || pixel(&rgba, 64, 32, 0)[2] > 200);
         let rgba = draw(&request(empty, [0.0, 0.0]), View::Above);

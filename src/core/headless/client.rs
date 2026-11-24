@@ -607,6 +607,11 @@ fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &
         c::SELECT_KNOWN_PACKS => write(link, s::SELECT_KNOWN_PACKS, Out::default().varint(0))?,
         c::REGISTRY_DATA => match r.string()?.as_str() {
             "minecraft:chat_type" => *types = chat_types(r)?,
+            "minecraft:worldgen/biome" => {
+                if let Err(e) = link.world.biomes(r) {
+                    eprintln!("{}: biomes not read: {e:#}", shared.key);
+                }
+            }
             "minecraft:dimension_type" => {
                 if let Err(e) = link.world.dimension_types(r) {
                     eprintln!("{}: dimension types not read: {e:#}", shared.key);
