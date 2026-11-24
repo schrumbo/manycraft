@@ -125,7 +125,7 @@ fn describe(m: &Model, a: &Account, removing: &BTreeSet<Uuid>) -> Line {
     let with_owner = |g: &Game, text: String| if games.len() > 1 { format!("{text} · {}", owner(g)) } else { text };
     let preparing = |g: &Game| m.preparing.get(&g.batch_id).copied();
     let batches: Vec<String> = m.batches.iter().filter(|b| b.accounts.contains(&a.id)).map(|b| b.name.clone()).collect();
-    let attention = games.iter().filter(|g| g.phase.needs_attention()).min_by_key(|g| rank(&g.phase));
+    let attention = games.iter().filter(|g| g.needs_attention()).min_by_key(|g| rank(&g.phase));
     let active = games.iter().filter(|g| g.phase.is_active()).min_by_key(|g| rank(&g.phase));
     let banned = games.iter().find_map(|g| stopped_ban(g, m).map(|s| (*g, s)));
     let (status, tone) = if let Some(g) = attention {

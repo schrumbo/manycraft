@@ -34,7 +34,7 @@ enum PreviewJob {
 
 /// What the fleet reports back to the UI thread.
 pub enum Update<P> {
-    Preparing { batch: String, percent: u8 },
+    Preparing { batch: String, progress: install::Progress },
     /// The game is installed; the accounts of `batch` wait in line to start.
     Prepared { batch: String },
     Launched { key: String, plain: bool },
@@ -142,7 +142,14 @@ impl<P: Pixels> Real<P> {
                     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
                     drive::note(format!("chat {at} {instance} {text}"));
                 }
-                if forward.send_blocking(Update::Ipc(event)).is_err() {
+                let update = match event {
+                    Event::Picture { instance, seq, width, height, rgba } => match P::from_rgba(width, height, rgba) {
+                        Some(image) => Update::Preview { key: instance, seq, image },
+                        None => continue,
+                    },
+                    event => Update::Ipc(event),
+                };
+                if forward.send_blocking(update).is_err() {
                     return;
                 }
             }
@@ -237,13 +244,13 @@ impl<P: Pixels> Backend for Real<P> {
                     }
                 }
             };
-            let last = Mutex::new(u8::MAX);
+            let last = Mutex::new(None);
             let progress = |p: install::Progress| {
-                let percent = (p.done * 100).checked_div(p.total).unwrap_or(0).min(100) as u8;
+                let mark = (p.stage, p.percent());
                 let mut last = lock(&last);
-                if *last != percent {
-                    *last = percent;
-                    let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), percent });
+                if *last != Some(mark) {
+                    *last = Some(mark);
+                    let _ = out.send_blocking(Update::Preparing { batch: owner.clone(), progress: p });
                 }
             };
             let prepared = match fleet.prepare_launch(&target, &accounts, None, &progress) {
@@ -410,10 +417,11 @@ impl<P: Pixels> Backend for Real<P> {
         for _ in 0..3 {
             let keys = self.fleet.running_keys();
             if keys.is_empty() {
-                return;
+                break;
             }
             self.fleet.stop_all(&keys);
         }
+        self.fleet.settle_sharing();
     }
 
     fn leave(&self) {

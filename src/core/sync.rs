@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -14,6 +15,7 @@ use uuid::Uuid;
 
 use super::instance::{self, games_dir};
 use super::ipc::{self, Event, FromMod, ToMod};
+use super::share::{Mother, Start, Tracker};
 use super::{net, paths};
 
 /// Options every game keeps for itself: window, screen and session state.
@@ -24,6 +26,7 @@ pub const OPTIONS_FILE: &str = "options.txt";
 pub const SERVERS_FILE: &str = "servers.dat";
 
 static TEMPLATES: Mutex<()> = Mutex::new(());
+const TICK: Duration = Duration::from_secs(1);
 
 /// Runs `f` while no game writes an instance template.
 pub(super) fn with_templates<T>(f: impl FnOnce() -> T) -> T {
@@ -40,7 +43,7 @@ pub(super) fn register(games: &Games, key: &str, instance: &str, account: Uuid) 
     games.0.lock().unwrap_or_else(PoisonError::into_inner).insert(key.to_owned(), (instance.to_owned(), account.simple().to_string()));
 }
 
-trait Peers {
+pub(crate) trait Peers {
     fn connected(&self) -> Vec<String>;
     fn send(&self, key: &str, message: &ToMod);
     fn game(&self, key: &str) -> Option<(String, String)>;
@@ -65,8 +68,8 @@ impl Peers for Live {
     }
 }
 
-struct Roots {
-    instances: PathBuf,
+pub(crate) struct Roots {
+    pub(crate) instances: PathBuf,
 }
 
 impl Roots {
@@ -74,39 +77,87 @@ impl Roots {
         Self { instances: paths::instances_dir() }
     }
 
-    fn instance(&self, instance: &str) -> PathBuf {
+    pub(crate) fn instance(&self, instance: &str) -> PathBuf {
         super::instance::dir_in(&self.instances, instance)
     }
 
-    fn game(&self, instance: &str, account: &str) -> PathBuf {
+    pub(crate) fn game(&self, instance: &str, account: &str) -> PathBuf {
         games_dir(&self.instance(instance)).join(account)
     }
 }
 
-/// Takes the settings messages out of `raw` and passes every other event on, in order, on the returned receiver.
-pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> io::Result<(Receiver<Event>, Sender<Event>)> {
+/// What the fleet tells the settings thread about its games.
+pub(crate) enum Note {
+    Started(Start),
+    Ended { key: String, pid: u32 },
+    /// Answered once every note and message before it was handled.
+    Flush(Sender<()>),
+}
+
+enum Inbox {
+    Options { key: String, values: BTreeMap<String, String> },
+    Servers { key: String },
+    Loaded { key: String },
+    Note(Note),
+}
+
+/// Takes the settings messages out of `raw` and passes every other event on, in order, on the returned receiver. What a
+/// game saves before it loaded is dropped; after, it also reaches the sync folder when its instance shares it.
+pub(super) fn spawn(server: ipc::Server, games: Games, raw: Receiver<Event>) -> io::Result<(Receiver<Event>, Sender<Event>, Sender<Note>)> {
     let (tx, rx) = channel();
     let out = tx.clone();
-    std::thread::Builder::new().name("game-sync".into()).spawn(move || {
-        let roots = Roots::current();
-        let server = Live { server, games };
+    let (inbox, mail) = channel();
+    let (notes, noted) = channel::<Note>();
+    let events = inbox.clone();
+    std::thread::Builder::new().name("game-sync-in".into()).spawn(move || {
         for event in raw {
-            match event {
-                Event::Message { instance, message: FromMod::Options { values } } => {
-                    let _ = options_saved(&roots, &server, &instance, &values);
-                }
-                Event::Message { instance, message: FromMod::Servers } => {
-                    let _ = servers_saved(&roots, &server, &instance);
-                }
+            let passed = match event {
+                Event::Message { instance, message: FromMod::Options { values } } => events.send(Inbox::Options { key: instance, values }).is_ok(),
+                Event::Message { instance, message: FromMod::Servers } => events.send(Inbox::Servers { key: instance }).is_ok(),
                 event => {
-                    if tx.send(event).is_err() {
-                        break;
+                    if let Event::Message { instance, message: FromMod::State { .. } } = &event {
+                        let _ = events.send(Inbox::Loaded { key: instance.clone() });
                     }
+                    tx.send(event).is_ok()
                 }
+            };
+            if !passed {
+                return;
             }
         }
     })?;
-    Ok((rx, out))
+    std::thread::Builder::new().name("game-sync-notes".into()).spawn(move || {
+        for note in noted {
+            if inbox.send(Inbox::Note(note)).is_err() {
+                return;
+            }
+        }
+    })?;
+    std::thread::Builder::new().name("game-sync".into()).spawn(move || {
+        let roots = Roots::current();
+        let server = Live { server, games };
+        let mut tracker = Tracker::new(Mother::current(), super::game_window::shown);
+        let mut ticked = Instant::now();
+        loop {
+            match mail.recv_timeout(TICK) {
+                Ok(Inbox::Options { key, values }) => tracker.options(&roots, &server, &key, &values),
+                Ok(Inbox::Servers { key }) => tracker.servers(&roots, &server, &key),
+                Ok(Inbox::Loaded { key }) => tracker.loaded(&key),
+                Ok(Inbox::Note(Note::Started(start))) => tracker.started(&roots, &server, start),
+                Ok(Inbox::Note(Note::Ended { key, pid })) => tracker.ended(&roots, &server, &key, pid),
+                Ok(Inbox::Note(Note::Flush(done))) => {
+                    let _ = done.send(());
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if ticked.elapsed() >= TICK {
+                ticked = Instant::now();
+                tracker.tick(ticked);
+            }
+        }
+    })?;
+    Ok((rx, out, notes))
 }
 
 fn game_of(peers: &impl Peers, key: &str) -> Option<(String, String)> {
@@ -117,13 +168,20 @@ fn in_instance(peers: &impl Peers, instance: &str) -> Vec<String> {
     peers.connected().into_iter().filter(|k| game_of(peers, k).is_some_and(|(i, _)| i == instance)).collect()
 }
 
+#[cfg(test)]
 fn options_saved(roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap<String, String>) -> Result<()> {
     let Some((instance, _)) = game_of(peers, key) else { return Ok(()) };
+    instance_options(roots, peers, &instance, values).map(|_| ())
+}
+
+/// Sets the shared keys of `values` that differ in the template of `instance` and sends them to its running games;
+/// returns them.
+pub(crate) fn instance_options(roots: &Roots, peers: &impl Peers, instance: &str, values: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
     let changes = {
         let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
-        let template = roots.instance(&instance).join(OPTIONS_FILE);
-        if !roots.instance(&instance).is_dir() {
-            return Ok(());
+        let template = roots.instance(instance).join(OPTIONS_FILE);
+        if !roots.instance(instance).is_dir() {
+            return Ok(BTreeMap::new());
         }
         let (text, changes) = match fs::read_to_string(&template) {
             Ok(text) => {
@@ -134,32 +192,38 @@ fn options_saved(roots: &Roots, peers: &impl Peers, key: &str, values: &BTreeMap
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
         };
         if changes.is_empty() {
-            return Ok(());
+            return Ok(changes);
         }
         net::write_atomic(&template, apply(&text, &changes).as_bytes())?;
         changes
     };
-    let message = ToMod::Options { values: changes };
-    for game in in_instance(peers, &instance) {
+    let message = ToMod::Options { values: changes.clone() };
+    for game in in_instance(peers, instance) {
         peers.send(&game, &message);
     }
-    Ok(())
+    Ok(changes)
 }
 
+#[cfg(test)]
 fn servers_saved(roots: &Roots, peers: &impl Peers, key: &str) -> Result<()> {
     let Some((instance, account)) = game_of(peers, key) else { return Ok(()) };
     let source = roots.game(&instance, &account).join(SERVERS_FILE);
     let bytes = fs::read(&source).with_context(|| format!("cannot read {}", source.display()))?;
-    let targets: Vec<String> = in_instance(peers, &instance).into_iter().filter(|k| k != key).collect();
+    instance_servers(roots, peers, &instance, &bytes, Some(key))
+}
+
+/// Makes `bytes` the server list of `instance` and of its running games but `except`, and tells those games.
+pub(crate) fn instance_servers(roots: &Roots, peers: &impl Peers, instance: &str, bytes: &[u8], except: Option<&str>) -> Result<()> {
+    let targets: Vec<String> = in_instance(peers, instance).into_iter().filter(|k| Some(k.as_str()) != except).collect();
     {
         let _turn = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
-        if !roots.instance(&instance).is_dir() {
+        if !roots.instance(instance).is_dir() {
             return Ok(());
         }
-        net::write_atomic(&roots.instance(&instance).join(SERVERS_FILE), &bytes)?;
+        net::write_atomic(&roots.instance(instance).join(SERVERS_FILE), bytes)?;
         for other in &targets {
             if let Some((_, account)) = game_of(peers, other) {
-                let _ = net::write_atomic(&roots.game(&instance, &account).join(SERVERS_FILE), &bytes);
+                let _ = net::write_atomic(&roots.game(instance, &account).join(SERVERS_FILE), bytes);
             }
         }
     }
@@ -236,6 +300,7 @@ pub(super) fn copy_servers(template: &Path, dir: &Path, siblings: &[PathBuf]) ->
     if fs::read(&dest).ok().as_deref() == Some(bytes.as_slice()) {
         return Ok(());
     }
+    super::share::writable(&dest);
     net::write_atomic(&dest, &bytes)
 }
 

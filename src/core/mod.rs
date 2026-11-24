@@ -72,6 +72,7 @@ pub mod snapshot;
 pub mod stagger;
 #[allow(dead_code)]
 pub mod settings;
+pub mod share;
 pub mod shortcut;
 pub mod shots;
 #[cfg(any(windows, target_os = "macos"))]

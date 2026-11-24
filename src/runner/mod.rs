@@ -96,7 +96,7 @@ impl Runtime {
                     self.insets.remove(&key);
                     Report::Exited { key, code }
                 }
-                Update::Preparing { batch, percent } => Report::Preparing { batch, percent },
+                Update::Preparing { batch, progress } => Report::Preparing { batch, progress },
                 Update::Prepared { batch } => Report::Prepared { batch },
                 Update::Launched { key, plain } => Report::Launched { key, plain },
                 Update::Failed { key, reason, login, offline } => Report::Failed { key, reason, login, offline },
@@ -109,6 +109,7 @@ impl Runtime {
                 Update::Ipc(Event::Message { instance, message }) => Report::Mod { key: instance, message },
                 Update::Ipc(Event::Disconnected { instance }) => Report::LinkLost { key: instance },
                 Update::Ipc(Event::Reopen) => Report::Reopen,
+                Update::Ipc(Event::Picture { .. }) => continue,
                 Update::Ipc(Event::Play { instance, account }) => Report::PlayRequest { instance, account },
             });
         }

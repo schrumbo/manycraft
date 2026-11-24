@@ -8,7 +8,9 @@ mod notify;
 mod previews;
 pub mod usage;
 mod quit;
+mod screen;
 mod show;
+mod slim;
 
 use std::cell::Cell;
 use std::time::Instant;
@@ -56,8 +58,10 @@ impl<'a> Env<'a> {
 /// Applies `event` to `model` and returns what the front end has to do, in order.
 pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
     let mut out = Vec::new();
+    let mut launched = false;
     match event {
         Event::Reports(reports) => {
+            launched = reports.iter().any(|r| matches!(r, Report::Launched { key, .. } if model.games.get(key).is_some_and(Game::alone)));
             let freed = reports.iter().any(|r| matches!(r, Report::Exited { .. } | Report::Connected { .. }));
             games::reports(model, env, reports, &mut out);
             if freed && fleet::memory_waiting(model) {
@@ -159,6 +163,9 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
         Event::Reconnect(key) => fleet::reconnect(model, &key, &mut out),
         Event::ReconnectMany(keys) => fleet::reconnect_each(model, &keys, &mut out),
+        Event::ClickSlot { key, menu, slot, click } => screen::click(model, key, menu, slot, click, &mut out),
+        Event::CloseMenu { key, menu } => screen::close(model, key, menu, &mut out),
+        Event::LookAtScreen(key) => screen::look(model, key, &mut out),
         Event::Respawn(key) => {
             if model.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::Dead { .. })) {
                 out.push(Effect::Send { key, message: crate::core::ipc::ToMod::Respawn });
@@ -222,6 +229,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         }
     }
     fleet::finish_take_overs(model, env.now, &mut out);
+    slim::settle(model, env, launched, &mut out);
     if !model.session.runs.is_empty() {
         let games = &model.games;
         model.session.runs.retain(|_, keys| keys.iter().any(|k| games.get(k).is_some_and(|g| g.phase.waiting())));
@@ -262,6 +270,7 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
     for report in reports {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
+            Report::Mod { message: FromMod::Map { .. } | FromMod::Menu { .. } | FromMod::Titles { .. }, .. } => {}
             Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => {
                 if m.games.get(key).is_some_and(|g| g.connection) && m.session.visible.contains(key) {
                     return Redraw::All;

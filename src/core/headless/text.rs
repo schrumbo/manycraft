@@ -6,7 +6,8 @@ use serde_json::{Map, Value};
 use super::v777::TEXTS;
 use crate::core::chat_text::Run;
 
-const MAX_DEPTH: usize = 64;
+/// The game's NBT nests at most 512 containers; a component walks one level per container.
+const MAX_DEPTH: usize = 520;
 const MAX_CHARS: usize = 8192;
 const MAX_VISITS: usize = 4096;
 const MAX_KEYS: usize = 16;
@@ -32,8 +33,24 @@ struct Style {
 pub fn line(component: &Value) -> Line {
     let mut out = Line::default();
     let mut left = MAX_VISITS;
-    walk(component, Style::default(), &mut out, &mut left, 0);
+    let mut work = vec![Work::Value(component, Style::default(), 0)];
+    while let Some(item) = work.pop() {
+        if out.text.len() >= MAX_CHARS {
+            break;
+        }
+        match item {
+            Work::Text(text, style) => push(&mut out, text, style),
+            Work::Value(value, style, depth) => visit(value, style, depth, &mut out, &mut left, &mut work),
+        }
+    }
     out
+}
+
+/// What a component still has to show, in the order it shows it; a stack of these replaces recursion, so the deepest
+/// component the game accepts takes no more stack than a shallow one.
+enum Work<'a> {
+    Value(&'a Value, Style, usize),
+    Text(&'a str, Style),
 }
 
 /// The English text of translation `key` with `args` filled in, as the game would show it.
@@ -69,11 +86,12 @@ fn style_of(run: &Run) -> Style {
     Style { color: run.color, bold: run.bold, italic: run.italic, underline: run.underline, strike: run.strike }
 }
 
-fn walk(value: &Value, style: Style, out: &mut Line, left: &mut usize, depth: usize) {
-    if depth > MAX_DEPTH || *left == 0 || out.text.len() >= MAX_CHARS {
+fn visit<'a>(value: &'a Value, style: Style, depth: usize, out: &mut Line, left: &mut usize, work: &mut Vec<Work<'a>>) {
+    if depth > MAX_DEPTH || *left == 0 {
         return;
     }
     *left -= 1;
+    let mut next: Vec<Work<'a>> = Vec::new();
     match value {
         Value::String(s) => push(out, s, style),
         Value::Number(n) => push(out, &n.to_string(), style),
@@ -84,69 +102,66 @@ fn walk(value: &Value, style: Style, out: &mut Line, left: &mut usize, depth: us
                 Value::Object(map) => styled(map, style),
                 _ => style,
             };
-            walk(first, style, out, left, depth + 1);
-            for item in rest {
-                walk(item, inherited, out, left, depth + 1);
-            }
+            next.push(Work::Value(first, style, depth + 1));
+            next.extend(rest.iter().map(|item| Work::Value(item, inherited, depth + 1)));
         }
         Value::Object(map) => {
             if map.len() == 1
                 && let Some(inner) = map.get("")
             {
-                walk(inner, style, out, left, depth + 1);
+                work.push(Work::Value(inner, style, depth + 1));
                 return;
             }
             let style = styled(map, style);
             if let Some(text) = map.get("text") {
-                walk(text, style, out, left, depth + 1);
+                next.push(Work::Value(text, style, depth + 1));
             } else if let Some(Value::String(key)) = map.get("translate") {
                 if out.keys.len() < MAX_KEYS && !out.keys.contains(key) {
                     out.keys.push(key.clone());
                 }
                 let args = map.get("with").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
                 let format = english(key).or_else(|| map.get("fallback").and_then(Value::as_str)).unwrap_or(key);
-                format_into(format, args, style, out, left, depth);
+                format_into(format, args, style, depth, &mut next);
             } else if let Some(Value::String(selector)) = map.get("selector") {
                 push(out, selector, style);
             } else if let Some(Value::String(key)) = map.get("keybind") {
                 push(out, key, style);
             }
             if let Some(Value::Array(extra)) = map.get("extra") {
-                for item in extra {
-                    walk(item, style, out, left, depth + 1);
-                }
+                next.extend(extra.iter().map(|item| Work::Value(item, style, depth + 1)));
             }
         }
         Value::Null => {}
     }
+    work.extend(next.into_iter().rev());
 }
 
-fn format_into(format: &str, args: &[Value], style: Style, out: &mut Line, left: &mut usize, depth: usize) {
-    let mut next = 0;
+fn format_into<'a>(format: &'a str, args: &'a [Value], style: Style, depth: usize, next: &mut Vec<Work<'a>>) {
+    let mut at_arg = 0;
     let mut rest = format;
     while let Some(at) = rest.find('%') {
-        push(out, &rest[..at], style);
+        next.push(Work::Text(&rest[..at], style));
         let after = &rest[at + 1..];
         if let Some(tail) = after.strip_prefix('%') {
-            push(out, "%", style);
+            next.push(Work::Text("%", style));
             rest = tail;
         } else if let Some(tail) = after.strip_prefix('s') {
-            if let Some(arg) = args.get(next) {
-                walk(arg, style, out, left, depth + 1);
+            if let Some(arg) = args.get(at_arg) {
+                next.push(Work::Value(arg, style, depth + 1));
             }
-            next += 1;
+            at_arg += 1;
             rest = tail;
         } else if let Some((digits, tail)) = after.split_once("$s").filter(|(d, _)| !d.is_empty() && d.len() <= 2 && d.bytes().all(|b| b.is_ascii_digit())) {
             if let Some(arg) = digits.parse::<usize>().ok().and_then(|n| args.get(n.wrapping_sub(1))) {
-                walk(arg, style, out, left, depth + 1);
+                next.push(Work::Value(arg, style, depth + 1));
             }
             rest = tail;
         } else {
-            push(out, "%", style);
+            next.push(Work::Text("%", style));
             rest = after;
         }
     }
-    push(out, rest, style);
+    next.push(Work::Text(rest, style));
 }
 
 fn styled(map: &Map<String, Value>, mut style: Style) -> Style {
@@ -212,8 +227,17 @@ mod tests {
         assert_eq!(say.text, "[Server] hi");
         let positional = translate("x", &[]);
         assert_eq!(positional.text, "x", "an unknown key shows itself");
+        let args = [json!("a"), json!("b")];
+        let mut next = Vec::new();
+        format_into("%2$s then %1$s, 100%%", &args, Style::default(), 0, &mut next);
         let mut out = Line::default();
-        format_into("%2$s then %1$s, 100%%", &[json!("a"), json!("b")], Style::default(), &mut out, &mut MAX_VISITS.to_owned(), 0);
+        let mut work: Vec<Work> = next.into_iter().rev().collect();
+        while let Some(item) = work.pop() {
+            match item {
+                Work::Text(text, style) => push(&mut out, text, style),
+                Work::Value(value, style, depth) => visit(value, style, depth, &mut out, &mut MAX_VISITS.to_owned(), &mut work),
+            }
+        }
         assert_eq!(out.text, "b then a, 100%");
     }
 
@@ -229,12 +253,44 @@ mod tests {
     }
 
     #[test]
+    fn the_deepest_component_the_game_accepts_is_read_on_a_connection_thread() {
+        use super::super::wire::In;
+        let levels = 512;
+        let mut nbt = vec![10u8];
+        for _ in 1..levels {
+            nbt.push(10);
+            nbt.extend(0u16.to_be_bytes());
+        }
+        nbt.push(8);
+        nbt.extend(0u16.to_be_bytes());
+        nbt.extend(2u16.to_be_bytes());
+        nbt.extend(b"ok");
+        nbt.extend(std::iter::repeat_n(0u8, levels));
+        let line = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let value = In::new(&nbt).nbt().unwrap();
+                let line = line(&value);
+                drop(value);
+                line
+            })
+            .unwrap()
+            .join()
+            .expect("a 512 KB stack holds the deepest component");
+        assert_eq!(line.text, "ok");
+    }
+
+    #[test]
     fn deep_or_huge_components_stay_bounded() {
         let mut deep = json!("x");
         for _ in 0..500 {
             deep = json!({"text": "", "extra": [deep]});
         }
-        assert_eq!(line(&deep).text, "");
+        assert_eq!(line(&deep).text, "x", "as deep as the game nests");
+        for _ in 0..100 {
+            deep = json!({"text": "", "extra": [deep]});
+        }
+        assert_eq!(line(&deep).text, "", "past the limit nothing is walked");
         let huge = line(&json!({"text": "é".repeat(10_000)}));
         assert!(huge.text.len() <= MAX_CHARS);
     }

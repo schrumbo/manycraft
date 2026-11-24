@@ -937,7 +937,7 @@ impl InstanceSheet {
         self.browser.error = None;
         cx.notify();
         let title = hit.title.clone();
-        let task = cx.background_executor().spawn(async move { catalog::fetch_modpack(&id, &title, &filter) });
+        let task = cx.background_executor().spawn(async move { catalog::fetch_modpack(&id, &title, &filter, &|_, _| {}) });
         let id = hit.project_id.clone();
         cx.spawn(async move |this, cx| {
             let result = task.await;

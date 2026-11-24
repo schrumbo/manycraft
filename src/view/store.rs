@@ -58,6 +58,8 @@ pub struct Store {
     pub faces: State<HashMap<Uuid, ImageHandle>>,
     /// Counts chat changes, for the pages that show chat.
     pub chat: State<u64>,
+    /// Bumped when only what servers show connection-only accounts changed.
+    pub screen: State<u64>,
     /// Counts how often the connection came back, for pages that retry what failed offline.
     pub back: State<u64>,
     pub ui: Ui,
@@ -87,7 +89,7 @@ impl Store {
     pub fn create(ui: Ui) -> Self {
         let (tray, picks) = Tray::new();
         let side = Side { tray: Some(tray), picks: Some(picks), clicks: Some(async_channel::unbounded()), ..Side::default() };
-        Self { model: State::create(Model::default()), previews: State::create(HashMap::new()), faces: State::create(HashMap::new()), chat: State::create(0), back: State::create(0), ui, runtime: State::create(None), side: State::create(Rc::new(RefCell::new(side))) }
+        Self { model: State::create(Model::default()), previews: State::create(HashMap::new()), faces: State::create(HashMap::new()), chat: State::create(0), screen: State::create(0), back: State::create(0), ui, runtime: State::create(None), side: State::create(Rc::new(RefCell::new(side))) }
     }
 
     /// Starts the fleet and reads the saved data; fleet updates arrive in the window's task loop.
@@ -283,6 +285,9 @@ impl Store {
         if effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::Chat))) {
             *self.chat.write() += 1;
         }
+        if effects.iter().any(|e| matches!(e, Effect::Redraw(Redraw::Screen))) {
+            *self.screen.write() += 1;
+        }
         for effect in effects {
             self.run(effect, &mut images);
         }
@@ -363,6 +368,25 @@ impl Store {
                 }
             }
             Effect::HideManager => native::hide(),
+            Effect::Slim { tray } => {
+                let away = {
+                    let side = self.side();
+                    let side = side.borrow();
+                    side.hidden || side.tray.as_ref().is_some_and(Tray::shown)
+                };
+                if !away {
+                    let stowed = tray && self.side().borrow_mut().tray.as_mut().is_some_and(Tray::show);
+                    native::hide();
+                    if stowed {
+                        self.set_away();
+                        native::stow();
+                    }
+                    spawn_in_window(async move {
+                        after(std::time::Duration::from_millis(2000)).await;
+                        native::trim_memory();
+                    });
+                }
+            }
             Effect::ShowManager => {
                 self.unstow();
                 native::show();
@@ -527,7 +551,7 @@ impl Store {
                 ui.cursor.set(Some(key));
             }
             Route::Tile { batch, .. } | Route::Attention(batch) => {
-                let needs: BTreeSet<_> = self.model.peek().games.values().filter(|g| g.batch_id == batch && g.phase.needs_attention()).filter_map(|g| g.phase.need()).collect();
+                let needs: BTreeSet<_> = self.model.peek().games.values().filter(|g| g.batch_id == batch && g.needs_attention()).filter_map(|g| g.need()).collect();
                 match (needs.len(), needs.first()) {
                     (1, Some(need)) => {
                         ui.page.set(Page::Grid(Filter::Batch(batch)));

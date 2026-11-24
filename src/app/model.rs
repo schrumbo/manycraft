@@ -14,7 +14,7 @@ use crate::core::fleet::{self, Target};
 use crate::core::history::{self, Entry};
 use crate::core::instance::Instance;
 use crate::core::i18n::{tr, trf};
-use crate::core::ipc::Offer;
+use crate::core::ipc::{MapPicture, Menu, Offer, Titles};
 use crate::core::proxy::Fault;
 
 use super::session::{Frame, Session};
@@ -155,6 +155,8 @@ pub enum Need {
     Offer,
     /// A server asks for its code of conduct to be accepted; only the user may.
     Conduct,
+    /// A server showed a connection-only account a map or a menu the user has not looked at yet.
+    Screen,
     Disconnected,
     Dead,
     Crashed,
@@ -163,7 +165,7 @@ pub enum Need {
 }
 
 impl Need {
-    pub const ALL: [Need; 8] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
+    pub const ALL: [Need; 9] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Screen, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
 }
 
 /// How many of a set of games each selection action acts on.
@@ -228,6 +230,40 @@ pub struct Game {
     pub connection: bool,
     /// The last public chat line it heard, for its tile.
     pub last_chat: Option<String>,
+    /// What its server shows it besides the world, for a connection-only account.
+    pub shows: Shows,
+}
+
+/// Whether a connection-only account holds a map or has a menu open, and whether the user has looked since it changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shows {
+    pub map: bool,
+    pub menu: bool,
+    pub unseen: bool,
+    /// The map the user last looked at, so taking it back in hand asks for nothing.
+    pub seen_map: Option<i32>,
+}
+
+impl Shows {
+    pub fn any(self) -> bool {
+        self.map || self.menu
+    }
+}
+
+/// What a server shows a connection-only account besides the world, kept while it shows any of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Screen {
+    pub map: Option<MapPicture>,
+    /// Changes whenever the map changes and never repeats, so the view rebuilds its picture only then.
+    pub map_seq: u64,
+    pub menu: Option<Menu>,
+    pub titles: Titles,
+}
+
+impl Screen {
+    pub fn is_empty(&self) -> bool {
+        self.map.is_none() && self.menu.is_none() && self.titles.title.is_none() && self.titles.subtitle.is_none() && self.titles.actionbar.is_none()
+    }
 }
 
 impl Game {
@@ -238,7 +274,22 @@ impl Game {
 
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None, shows: Shows::default() }
+    }
+
+    /// The work it needs: what its phase needs, else a map or menu the user has not looked at.
+    pub fn need(&self) -> Option<Need> {
+        self.phase.need().or_else(|| (self.shows.unseen && self.shows.any() && self.phase.is_running()).then_some(Need::Screen))
+    }
+
+    /// Whether it needs the user, by its phase or by what its server shows it.
+    pub fn needs_attention(&self) -> bool {
+        self.phase.needs_attention() || self.need() == Some(Need::Screen)
+    }
+
+    /// Whether it counts as running in every count of running games: its phase does and no screen waits for the user.
+    pub fn counts_as_running(&self) -> bool {
+        self.phase.counts_as_running() && self.need() != Some(Need::Screen)
     }
 
     /// Whether its window can be swapped in: a game with the mod past its start that has a window.
@@ -250,6 +301,7 @@ impl Game {
     /// screenshot where another game would be played.
     pub fn action(&self, busy: bool) -> Option<Primary> {
         match main_action(&self.phase, Stopping::of(self.stopping, self.overdue), busy) {
+            Some(Primary::Play) if self.connection && (self.shows.menu || self.shows.unseen && self.shows.any()) => Some(Primary::Screen),
             Some(Primary::Play) if self.connection => Some(Primary::Chat),
             Some(Primary::Play) if self.headless => Some(Primary::Screenshot),
             other => other,
@@ -278,6 +330,13 @@ pub struct ChatLine {
     pub runs: Vec<chat_text::Run>,
 }
 
+impl ChatLine {
+    /// Whether the game `key` received this line, first or as one of the copies joined to it.
+    pub fn reached(&self, key: &str) -> bool {
+        self.instance == key || self.also.iter().any(|(k, ..)| k == key)
+    }
+}
+
 /// Everything the views read. Only the reducer and the shell that runs its effects change it.
 #[derive(Default)]
 pub struct Model {
@@ -296,6 +355,8 @@ pub struct Model {
     pub error: Option<String>,
     /// Batches whose game is being installed, with the percent done.
     pub preparing: HashMap<String, u8>,
+    /// The same installs with the step they are on and their pace, by batch.
+    pub meters: HashMap<String, super::meter::Meter>,
     /// Changes whenever an instance changes place in the sort order, so views know when to sort again.
     pub order_seq: u64,
     /// Last events of every instance by key, oldest first, at most `history::KEPT` each.
@@ -316,6 +377,8 @@ pub struct Model {
     pub measured: HashMap<String, u32>,
     /// The account chosen to play instances alone that name none, as the settings keep it.
     pub active_account: Option<Uuid>,
+    /// What servers show connection-only accounts besides the world, by game key, only while they show any.
+    pub screens: HashMap<String, Screen>,
     pub session: Session,
 }
 
@@ -395,13 +458,13 @@ impl Model {
 
     /// How many instances of `batch_id` (all when `None`) need attention.
     pub fn attention_count(&self, batch_id: Option<&str>) -> usize {
-        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone() && i.phase.needs_attention()).count()
+        self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone() && i.needs_attention()).count()
     }
 
     /// How many instances of `batch_id` (all when `None`) need each kind of work, in the grid's order, leaving out kinds nobody needs.
     pub fn needs(&self, batch_id: Option<&str>) -> Vec<(Need, usize)> {
         let mut counts: HashMap<Need, usize> = HashMap::new();
-        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone()).filter_map(|i| i.phase.need()) {
+        for need in self.games.values().filter(|i| batch_id.is_none_or(|b| i.batch_id == b) && !i.alone()).filter_map(Game::need) {
             *counts.entry(need).or_default() += 1;
         }
         Need::ALL.into_iter().filter_map(|n| counts.get(&n).map(|c| (n, *c))).collect()
@@ -491,13 +554,16 @@ impl Model {
 
     /// The instance batch `id` plays.
     pub fn instance_of(&self, batch_id: &str) -> Option<&Instance> {
-        self.batch(batch_id).and_then(|b| self.instance(&b.instance_id))
+        self.batch(batch_id).and_then(|b| self.instance(b.instance()?))
     }
 
     /// What `owner` plays: a batch with its instance, or an instance played alone by the games it owns.
     pub fn target(&self, owner: &str) -> Option<Target> {
         if let Some(batch) = self.batch(owner) {
-            return Some(Target::of_batch(batch, self.instance(&batch.instance_id)?));
+            return Some(match batch.instance() {
+                Some(id) => Target::of_batch(batch, self.instance(id)?),
+                None => Target::connection(batch),
+            });
         }
         let game = self.games.values().find(|g| g.batch_id == owner)?;
         Some(Target::solo(self.instance(&game.instance_id)?))
@@ -505,6 +571,9 @@ impl Model {
 
     /// Where `account` already plays `instance` other than in game `key`: the batch name, or the instance's when alone.
     pub fn playing_elsewhere(&self, instance: &str, account: Uuid, key: &str) -> Option<String> {
+        if instance.is_empty() {
+            return None;
+        }
         let other = self.games.values().find(|g| g.key != key && g.account_id == account && g.instance_id == instance && g.phase.is_active())?;
         match self.batch(&other.batch_id) {
             Some(batch) => Some(batch.name.clone()),
@@ -636,6 +705,8 @@ pub enum Primary {
     AcceptRules,
     /// Opens the chat of an account that only has a connection.
     Chat,
+    /// Opens the screen of a connection-only account whose server shows it a map or a menu.
+    Screen,
 }
 
 /// How far a stop has come: not stopping, stopping, or stopping for long enough to end the game at once.
@@ -702,6 +773,7 @@ impl Primary {
             Self::AcceptPack => tr("Paket annehmen"),
             Self::AcceptRules => tr("Regeln annehmen"),
             Self::Chat => tr("Chat"),
+            Self::Screen => tr("Bildschirm"),
         }
     }
 }
@@ -738,6 +810,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Im Hauptmenü"),
+        Phase::Connecting { .. } if i.connection && i.reconnect_attempts > 0 => tr("Verbindet neu…"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &crate::core::settings::active().reconnect.max_attempts]),
         Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
         Phase::Connecting { server } => trf("Verbindet mit %@…", &[server]),

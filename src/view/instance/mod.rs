@@ -11,6 +11,7 @@ mod logs;
 mod logs_lines;
 mod logs_select;
 mod logs_viewer;
+pub(crate) mod memory;
 mod mods;
 mod packlist;
 mod play;
@@ -22,6 +23,7 @@ mod worlds;
 pub mod links;
 mod save;
 mod settings;
+mod sharing;
 pub(crate) mod snapshots;
 mod title;
 

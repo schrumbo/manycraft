@@ -35,6 +35,7 @@ pub enum Command {
     ShowAccounts,
     SwitchAccount,
     OpenChat,
+    ShowScreen,
     OpenSettings,
     NextInstance,
     PreviousInstance,
@@ -194,7 +195,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 67] = [
+    pub const ALL: [Command; 68] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -238,6 +239,7 @@ impl Command {
         Command::ShowAccounts,
         Command::SwitchAccount,
         Command::OpenChat,
+        Command::ShowScreen,
         Command::Larger,
         Command::Smaller,
         Command::Fit,
@@ -284,6 +286,7 @@ impl Command {
             Command::ShowAccounts => "ShowAccounts",
             Command::SwitchAccount => "SwitchAccount",
             Command::OpenChat => "OpenChat",
+            Command::ShowScreen => "ShowScreen",
             Command::OpenSettings => "OpenSettings",
             Command::NextInstance => "NextInstance",
             Command::PreviousInstance => "PreviousInstance",
@@ -353,6 +356,7 @@ impl Command {
             Command::ShowAccounts => tr("Accounts"),
             Command::SwitchAccount => tr("Account wechseln…"),
             Command::OpenChat => tr("Chat"),
+            Command::ShowScreen => tr("Bildschirm zeigen"),
             Command::OpenSettings => tr("Einstellungen"),
             Command::NextInstance => tr("Nächsten Account spielen"),
             Command::PreviousInstance => tr("Vorherigen Account spielen"),
@@ -426,6 +430,7 @@ impl Command {
             Command::ShowAccounts => Icon::Users,
             Command::SwitchAccount => Icon::ChevronsUpDown,
             Command::OpenChat => Icon::Message,
+            Command::ShowScreen => Icon::Image,
             Command::OpenSettings => Icon::Settings,
             Command::Larger => Icon::Plus,
             Command::Smaller => Icon::Minus,
@@ -461,6 +466,7 @@ impl Command {
             Command::ShowAccounts => ks(Code::KeyU),
             Command::SwitchAccount => ks(Code::KeyA),
             Command::OpenChat => ks(Code::KeyC),
+            Command::ShowScreen => k(Code::KeyB),
             Command::OpenSettings => k(Code::Comma),
             Command::NextInstance => ca(Code::ArrowRight),
             Command::PreviousInstance => ca(Code::ArrowLeft),
@@ -519,7 +525,7 @@ impl Command {
             Command::StopSelected => grid && picked().any(|g| g.phase.is_active()),
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
-            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && !g.connection && g.phase.server().is_some() && !g.stopping),
+            Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
             Command::AcceptPacks if selected.is_empty() => m.games.values().any(|g| g.phase.needs_pack_answer()),
             Command::AcceptPacks | Command::DeclinePacks => grid && picked().any(|g| g.phase.needs_pack_answer()),
             Command::AcceptRules if selected.is_empty() => m.games.values().any(|g| g.phase.needs_rules_answer()),
@@ -553,6 +559,7 @@ impl Command {
             Command::Import => can_want(&Want::Import),
             Command::QuickPlay => !m.instances.is_empty(),
             c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks | Command::AddMods) => c.page_available(store),
+            Command::ShowScreen => super::sheets::screen::target(store).is_some(),
             _ => true,
         }
     }
@@ -618,6 +625,11 @@ impl Command {
             Command::ShowAccounts => ui.page.set(Page::ACCOUNTS),
             Command::SwitchAccount => super::shell::account::open_from_keys(store),
             Command::OpenChat => super::chat::focus(store),
+            Command::ShowScreen => {
+                if let Some(key) = super::sheets::screen::target(store) {
+                    super::sheets::screen::open(store, &key);
+                }
+            }
             Command::OpenSettings => ui.page.set(Page::Settings(Default::default())),
             Command::NextInstance => store.dispatch(Event::Step(HotkeyAction::Next)),
             Command::PreviousInstance => store.dispatch(Event::Step(HotkeyAction::Prev)),

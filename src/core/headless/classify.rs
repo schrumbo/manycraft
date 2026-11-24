@@ -3,7 +3,7 @@
 use crate::core::ipc::DisconnectCause;
 
 const WHITELIST: [&str; 3] = ["whitelist", "white-list", "white list"];
-const FULL: [&str; 3] = ["server is full", "server full", "is full"];
+const FULL: [&str; 6] = ["server is full", "server full", "is full", "throttl", "too fast", "wait before reconnecting"];
 const AUTH: [&str; 6] = ["failed to verify username", "invalid session", "failed to log in", "login failed", "session expired", "public key"];
 const KICKED: [&str; 5] = ["kicked", "idle", "afk", "flying", "spam"];
 const DUPLICATE: [&str; 5] = ["another location", "already online", "already connected", "already logged in", "logged in from"];
@@ -73,6 +73,12 @@ mod tests {
 
     fn keys(k: &[&str]) -> Vec<String> {
         k.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_throttle_waits_like_a_full_server() {
+        assert_eq!(classify(&[], "Connection throttled! Please wait before reconnecting."), ServerFull);
+        assert_eq!(classify(&[], "You are logging in too fast, try again later."), ServerFull);
     }
 
     #[test]

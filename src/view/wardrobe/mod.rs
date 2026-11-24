@@ -2,10 +2,14 @@
 
 mod card;
 mod ctl;
+mod desk;
+mod lane;
 mod library;
 mod rename;
 mod stage;
 mod text;
+
+use std::collections::HashMap;
 
 use freya::prelude::*;
 use uuid::Uuid;
@@ -14,19 +18,27 @@ use crate::view::kit::{page, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::frame;
 use crate::view::ui::Page;
-use ctl::{Ctl, Phase};
+use ctl::Ctl;
+use desk::{Drawn, Hung, Views};
+use lane::Lane;
 
 const STAGE: f32 = 340.;
 
-/// The page's state that outlives a visit: the account the Wardrobe dresses.
+/// The page's state that outlives a visit: the account the Wardrobe dresses, the work in line for every account and the
+/// library, so changes go on while the page is left and a return shows them at once.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Shared {
     pub chosen: State<Option<Uuid>>,
+    pub lanes: State<HashMap<Uuid, Lane>>,
+    pub shelf: State<Vec<Hung>>,
+    pub views: State<Views>,
+    pub drawn: State<Option<Drawn>>,
+    pub adds: State<Vec<(u64, String)>>,
 }
 
 impl Shared {
     pub fn create() -> Self {
-        Self { chosen: State::create(None) }
+        Self { chosen: State::create(None), lanes: State::create(HashMap::new()), shelf: State::create(Vec::new()), views: State::create(None), drawn: State::create(None), adds: State::create(Vec::new()) }
     }
 }
 
@@ -49,17 +61,11 @@ impl Component for WardrobePage {
         let scroll = use_scroll_controller(ScrollConfig::default);
         let ctl = Ctl {
             store,
-            chosen: store.ui.wardrobe.chosen,
-            shelf: use_state(Vec::new),
-            look: use_state(|| None),
-            phase: use_state(|| Phase::Idle),
-            views: use_state(|| None),
-            busy: use_state(|| None),
+            shared: store.ui.wardrobe,
             text: use_state(String::new),
-            adding: use_state(|| false),
+            choosing: use_state(|| false),
             add_problem: use_state(|| None),
             add_details: use_state(|| false),
-            error: use_state(|| None),
             anchor: use_state(|| None),
             details: use_state(|| false),
             grid: use_state(|| 0.),

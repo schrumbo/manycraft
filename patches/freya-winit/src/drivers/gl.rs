@@ -94,6 +94,11 @@ impl Drop for OpenGLDriver {
 }
 
 impl OpenGLDriver {
+    /// Hands the GPU resources nothing is drawing with back to the driver.
+    pub fn release_caches(&mut self) {
+        self.gr_context.free_gpu_resources();
+    }
+
     pub fn resource_cache_usage(&self) -> (usize, usize) {
         let usage = self.gr_context.resource_cache_usage();
         (usage.resource_bytes, self.gr_context.resource_cache_limit())

@@ -152,7 +152,21 @@ struct Slot {
 
 type Lookup<'a> = &'a dyn Fn(&[String]) -> Result<HashMap<String, ModRef>>;
 type Fetch<'a> = &'a (dyn Fn(&str, &Path, &str) -> Result<()> + Sync);
-type Progress<'a> = &'a (dyn Fn(usize, usize) + Sync);
+/// What an import is busy with, for the words beside its bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// Opening the pack and reading what it names.
+    Reading,
+    /// Asking Modrinth which mods the files are.
+    Matching,
+    /// Fetching the mods the pack names.
+    Downloading,
+    /// Writing files into the new instance.
+    Copying,
+}
+
+/// Reports the phase an import is in and how many of its steps are done; `(Phase, 0, 0)` while nothing can be counted.
+pub type Progress<'a> = &'a (dyn Fn(Phase, usize, usize) + Sync);
 
 /// Whether `url` may be downloaded from: HTTPS on one of the hosts the `.mrpack` format allows.
 pub fn allowed(url: &str) -> bool {
@@ -202,7 +216,7 @@ pub fn free_name(base: &str, taken: &[String]) -> String {
 }
 
 /// Imports `path` as a new instance with a free name: a `.mrpack`, a Prism instance export (`.zip`) or a Prism
-/// instance folder. Reports `(done, total)` steps while it works and stops with [`Refused::Cancelled`] once
+/// instance folder. Reports its [`Phase`] and `(done, total)` steps while it works and stops with [`Refused::Cancelled`] once
 /// `cancel` is set. Nothing is left behind when it fails; the source is only read.
 pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<Instance> {
     let taken: Vec<String> = instance::load_all()?.into_iter().map(|b| b.name).collect();
@@ -217,7 +231,7 @@ pub fn import(path: &Path, cancel: &AtomicBool, progress: Progress) -> Result<In
         } else {
             let Some(prefix) = prism::export_prefix(&zip) else { bail!(Refused::Unknown) };
             let staging = tempfile::tempdir().context("cannot create a temporary folder")?;
-            let dir = prism::unpack_export(&mut zip, &prefix, staging.path(), cancel, progress)?;
+            let dir = prism::unpack_export(&mut zip, &prefix, staging.path(), cancel, &|done, total| progress(Phase::Reading, done, total))?;
             import_prism_dir(&dir, &root, &taken, &modrinth::match_hashes, cancel)?
         }
     };
@@ -457,6 +471,7 @@ fn import_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, root: &Path, taken: &[St
     if cancel.load(Ordering::SeqCst) {
         bail!(Refused::Cancelled);
     }
+    progress(Phase::Matching, 0, 0);
     let matched = lookup(&hashes).context("cannot look the mods up on Modrinth")?;
 
     let mut slots = Vec::new();
@@ -507,9 +522,10 @@ fn write_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, pack: &Pack, placements: 
             Source::Entry(_) => None,
         })
         .collect();
-    let steps = downloads.len() + 1;
+    let copies = placements.iter().filter(|p| matches!(p.source, Source::Entry(_))).count();
+    let steps = downloads.len() + copies;
     let done = AtomicUsize::new(0);
-    progress(0, steps);
+    progress(Phase::Downloading, 0, steps);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(THREADS).build().context("cannot start download threads")?;
     pool.install(|| {
         downloads.par_iter().try_for_each(|(wanted, path)| -> Result<()> {
@@ -521,11 +537,12 @@ fn write_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, pack: &Pack, placements: 
             if !net::file_sha1(path)?.eq_ignore_ascii_case(&wanted.sha1) || !file_sha512(path)?.eq_ignore_ascii_case(&wanted.sha512) {
                 bail!(Refused::Hash(shown));
             }
-            progress(done.fetch_add(1, Ordering::SeqCst) + 1, steps);
+            progress(Phase::Downloading, done.fetch_add(1, Ordering::SeqCst) + 1, steps);
             Ok(())
         })
     })?;
     let mut total = 0;
+    let mut copied = 0;
     for p in placements {
         let Source::Entry(index) = p.source else { continue };
         if cancel.load(Ordering::SeqCst) {
@@ -538,8 +555,10 @@ fn write_pack<R: Read + Seek>(zip: &mut ZipArchive<R>, pack: &Pack, placements: 
         let entry = zip.by_index(index).context("cannot read the pack")?;
         let mut out = File::create(&path).with_context(|| format!("cannot write {}", path.display()))?;
         copy_limited(entry, &mut out, &mut total)?;
+        copied += 1;
+        progress(Phase::Copying, downloads.len() + copied, steps);
     }
-    progress(steps, steps);
+    progress(Phase::Copying, steps, steps);
     Ok(())
 }
 
@@ -661,7 +680,7 @@ fn run(args: &[String]) -> Result<i32> {
     match words.as_slice() {
         ["import", path] => {
             let last = std::sync::Mutex::new(usize::MAX);
-            let report = |done: usize, total: usize| {
+            let report = |_: Phase, done: usize, total: usize| {
                 let percent = (done * 100).checked_div(total).unwrap_or(0);
                 let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
                 if *last != percent {
@@ -745,8 +764,8 @@ mod tests {
         }
     }
 
-    fn quiet() -> impl Fn(usize, usize) + Sync {
-        |_, _| {}
+    fn quiet() -> impl Fn(Phase, usize, usize) + Sync {
+        |_, _, _| {}
     }
 
     fn names(dir: &Path) -> Vec<String> {
@@ -929,7 +948,7 @@ mod tests {
         let known = vec![modref(b"sodium", "sodium-fabric.jar", "Sodium")];
         let fetch = served(vec![("https://cdn.modrinth.com/sodium.jar", b"sodium".to_vec()), ("https://github.com/o/r/releases/download/1/gh.jar", b"github mod".to_vec()), ("https://cdn.modrinth.com/rp.zip", b"rp".to_vec())]);
         let steps = std::sync::Mutex::new(Vec::new());
-        let progress = |done: usize, total: usize| steps.lock().unwrap().push((done, total));
+        let progress = |phase: Phase, done: usize, total: usize| steps.lock().unwrap().push((phase, done, total));
 
         let made = import_pack(&mut zip, out.path(), &["Other".into()], &lookup_of(known.clone()), &fetch, &AtomicBool::new(false), &progress).unwrap();
 
@@ -949,7 +968,11 @@ mod tests {
         let saved: Instance = serde_json::from_slice(&fs::read(dest.join("instance.json")).unwrap()).unwrap();
         assert_eq!(saved, made);
         let steps = steps.into_inner().unwrap();
-        assert_eq!((steps.first(), steps.last()), (Some(&(0, 4)), Some(&(4, 4))));
+        let total = steps.last().map_or(0, |s| s.2);
+        assert!(total >= 4);
+        assert_eq!((steps.first(), steps.last()), (Some(&(Phase::Matching, 0, 0)), Some(&(Phase::Copying, total, total))));
+        assert!(steps.iter().any(|s| s.0 == Phase::Downloading && s.1 == 3), "every download is counted");
+        assert!(steps.iter().all(|s| s.1 <= s.2));
     }
 
     #[test]

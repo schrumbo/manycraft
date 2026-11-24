@@ -9,33 +9,36 @@ use uuid::Uuid;
 use crate::app::event::Event as AppEvent;
 use crate::app::model::Model;
 use crate::core::account::AccountKind;
-use crate::core::batch::{Background, Batch, Unattended};
+use crate::core::batch::{Background, Batch, RunMode, Unattended};
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::core::instance::{Instance, Loader};
+use crate::core::options::MEMORY_FLOOR_MB;
 use crate::ui::forms::{self, Problem};
 use crate::ui::remote::{self, BatchEdit, InstancePick};
 use crate::view::commands::{Want, want};
 use crate::view::drive::use_spot;
+use crate::view::instance::memory::{Memory, Steps};
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::Button;
 use crate::view::kit::check;
+use crate::view::kit::group::{Line, group};
 use crate::view::kit::field::{Field, typing};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
+use crate::view::kit::stepper::Stepper;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
-use crate::view::kit::text::{caption, figure, line, para, strong};
+use crate::view::kit::text::{caption, figure, line, para};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::{at_least, off_ui, ring, toast, use_arrows, use_theme};
-use crate::view::sheets::instance::{Load, problem_view};
+use crate::view::kit::{off_ui, ring, toast, use_arrows, use_theme};
+use crate::view::sheets::instance::{Load, WIDE, problem_view};
 use crate::view::sheets::unattended;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page, SessionUndo, Show, remember};
 
-pub(super) const FIELD_W: f32 = frame::SHEET - space::XL * 2. - frame::RING * 2.;
 const FILTER_FROM: usize = 12;
 const CHROME: f32 = 280.;
 const BODY_MIN: f32 = 160.;
@@ -47,7 +50,6 @@ const PICK_ROW: f32 = control::M + space::XS;
 const BOX_EDGES: f32 = frame::HAIRLINE * 2.;
 const FACE: f32 = iconsize::L;
 const FACE_INSET: f32 = FACE / 12.;
-const HINT_LINES: f32 = 2.;
 const LAUNCH_CHOICES: [u32; 5] = [0, 1, 2, 4, 8];
 const BACKGROUND_NAMES: [&str; 4] = ["saving", "balanced", "full", "custom"];
 
@@ -216,7 +218,7 @@ fn list_max(store: Store) -> f32 {
     (body_max(store) * LIST_SHARE).clamp(LIST_MIN, LIST_MAX)
 }
 
-pub(super) fn title_text(t: &Theme, text: String) -> Label {
+fn title_text(t: &Theme, text: String) -> Label {
     line(t, text, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)
 }
 
@@ -231,20 +233,6 @@ fn notice(t: &Theme, glyph: Icon, color: Color, text: String) -> Element {
         .into_element()
 }
 
-pub(super) fn hint(t: &Theme, text: String) -> Element {
-    at_least(font::CAPTION * frame::PARA_LINE * HINT_LINES, para(t, text, font::CAPTION, t.text3)).width(Size::fill()).into_element()
-}
-
-fn field(t: &Theme, title: String, control: impl IntoElement, note: Option<String>, error: Option<String>) -> Element {
-    let mut column = rect().width(Size::fill()).spacing(space::XS).child(title_text(t, title)).child(control);
-    if let Some(e) = error {
-        column = column.child(line(t, e, font::CAPTION, t.danger_text));
-    } else if let Some(n) = note {
-        column = column.child(para(t, n, font::CAPTION, t.text3));
-    }
-    column.into_element()
-}
-
 #[derive(Clone)]
 struct Seed {
     instance: Option<String>,
@@ -253,7 +241,7 @@ struct Seed {
     accounts: HashSet<Uuid>,
     /// How many accounts were free when fewer of them fit into memory and were picked.
     capped: Option<usize>,
-    memory: u32,
+    memory: String,
     inherit: bool,
     background: Background,
     launch_parallel: u32,
@@ -265,7 +253,7 @@ impl Seed {
     fn new(store: Store, original: Option<&Batch>, preselect: Option<&String>, picked: Option<&HashSet<Uuid>>, memory_max: u32) -> Self {
         let model = store.model.peek();
         let instance = match (original, preselect) {
-            (Some(b), _) => Some(b.instance_id.clone()),
+            (Some(b), _) => b.instance().map(str::to_owned).or_else(|| recent(&model)),
             (None, Some(id)) => Some(id.clone()).filter(|id| model.instance(id).is_some()).or_else(|| recent(&model)),
             (None, None) => recent(&model),
         };
@@ -282,7 +270,7 @@ impl Seed {
             server: original.and_then(|b| b.server.clone()).unwrap_or_default(),
             accounts,
             capped,
-            memory: forms::memory_step(original.and_then(|b| b.memory_override).unwrap_or(own), 0, memory_max),
+            memory: original.and_then(|b| b.memory_override).unwrap_or(own).to_string(),
             inherit: original.is_none_or(|b| b.memory_override.is_none()),
             background: original.map_or_else(Background::default, |b| b.background),
             launch_parallel: original.map_or(0, |b| b.launch_parallel),
@@ -306,13 +294,12 @@ struct Flow {
     list: State<Vec<String>>,
     version: State<String>,
     inherit: State<bool>,
-    memory: State<u32>,
+    memory: State<String>,
     background: State<Background>,
     kept_custom: State<Option<Background>>,
     launch_parallel: State<u32>,
     full_speed: State<bool>,
     unattended: State<Unattended>,
-    advanced: State<bool>,
     free: State<Option<u64>>,
     accounts: State<HashSet<Uuid>>,
     cursor: State<Option<Uuid>>,
@@ -341,6 +328,14 @@ impl Flow {
         self.original.peek().is_some()
     }
 
+    fn connection(self) -> bool {
+        self.unattended.peek().mode == RunMode::Connection
+    }
+
+    fn played(self) -> Option<String> {
+        self.instance.peek().clone().filter(|_| !self.connection())
+    }
+
     fn clear_error(mut self) {
         if self.save_error.peek().is_some() {
             self.save_error.set(None);
@@ -353,7 +348,22 @@ impl Flow {
     }
 
     fn each_memory(self) -> u32 {
-        if *self.inherit.peek() { self.instance_memory() } else { *self.memory.peek() }
+        if *self.inherit.peek() { self.instance_memory() } else { self.typed_memory().unwrap_or_else(|| self.instance_memory()) }
+    }
+
+    fn typed_memory(self) -> Option<u32> {
+        crate::core::options::parse_memory(&self.memory.peek()).ok().flatten()
+    }
+
+    fn memory_problem(self) -> Option<String> {
+        if *self.inherit.peek() {
+            return None;
+        }
+        match crate::core::options::parse_memory(&self.memory.peek()) {
+            Err(why) => Some(why),
+            Ok(None) => Some(tr("Gib den Arbeitsspeicher als Zahl in MB an, zum Beispiel 4096.")),
+            Ok(Some(mb)) => crate::core::options::check_memory_max(mb, None, self.total_ram).err(),
+        }
     }
 
     fn picked(self) -> usize {
@@ -364,7 +374,7 @@ impl Flow {
     fn problems(self) -> (Option<String>, Option<String>, Option<String>) {
         let name = forms::batch_name_problem(&self.name.peek());
         let server = forms::server_problem(self.server.peek().trim());
-        let version = (self.instance.peek().is_none() && self.version.peek().is_empty()).then(|| tr("Wähle eine Version."));
+        let version = (!self.connection() && self.instance.peek().is_none() && self.version.peek().is_empty()).then(|| tr("Wähle eine Version."));
         (name, server, version)
     }
 
@@ -372,7 +382,7 @@ impl Flow {
         if self.name_auto.peek().is_none() {
             return;
         }
-        let next = name_for(&self.store.model.peek(), self.instance.peek().as_deref(), &self.server.peek());
+        let next = name_for(&self.store.model.peek(), self.played().as_deref(), &self.server.peek());
         self.name_auto.set(Some(next.clone()));
         if *self.name.peek() != next {
             self.name.set(next);
@@ -445,15 +455,9 @@ impl Flow {
         let inherit = !*self.inherit.peek();
         self.inherit.set(inherit);
         if !inherit {
-            let own = forms::memory_step(self.instance_memory(), 0, self.memory_max);
+            let own = self.instance_memory().to_string();
             self.memory.set(own);
         }
-    }
-
-    fn step_memory(mut self, delta: i32) {
-        let next = forms::memory_step(*self.memory.peek(), delta, self.memory_max);
-        self.memory.set(next);
-        self.clear_error();
     }
 
     fn lower_memory(mut self, each: u32) {
@@ -461,7 +465,7 @@ impl Flow {
             return;
         }
         self.inherit.set(false);
-        self.memory.set(each);
+        self.memory.set(each.to_string());
     }
 
     fn pick_background(mut self, n: usize) {
@@ -493,7 +497,6 @@ impl Flow {
         }
         let on = !*self.full_speed.peek();
         self.full_speed.set(on);
-        self.advanced.set(true);
         self.clear_error();
     }
 
@@ -509,18 +512,19 @@ impl Flow {
         self.tried.set(true);
         let start = primary && !self.editing() && self.picked() > 0;
         let (name, server, version) = self.problems();
-        if *self.saving.peek() || name.is_some() || server.is_some() || version.is_some() {
+        if *self.saving.peek() || name.is_some() || server.is_some() || version.is_some() || self.memory_problem().is_some() {
             return;
         }
         let chosen = self.accounts.peek().clone();
         let edit = BatchEdit {
             name: self.name.peek().trim().to_owned(),
-            instance: match self.instance.peek().clone() {
+            instance: match self.played() {
+                _ if self.connection() => self.original.peek().as_ref().and_then(|b| b.instance().map(str::to_owned)).map_or(InstancePick::None, InstancePick::Existing),
                 Some(id) => InstancePick::Existing(id),
                 None => InstancePick::New { game_version: self.version.peek().clone(), mods: Vec::new() },
             },
             server: Some(self.server.peek().trim().to_owned()).filter(|s| !s.is_empty()),
-            memory_override: (!*self.inherit.peek()).then(|| *self.memory.peek()),
+            memory_override: if *self.inherit.peek() { None } else { self.typed_memory() },
             accounts: self.store.model.peek().accounts.iter().map(|a| a.id).filter(|id| chosen.contains(id)).collect(),
             background: *self.background.peek(),
             launch_parallel: *self.launch_parallel.peek(),
@@ -605,7 +609,6 @@ impl Component for BatchSheet {
             launch_parallel: use_state(|| seed.launch_parallel),
             full_speed: use_state(|| seed.full_speed),
             unattended: use_state(|| seed.unattended),
-            advanced: use_state(|| false),
             free: use_state(|| None),
             accounts: use_state(|| seed.accounts.clone()),
             cursor: use_state(|| None),
@@ -618,11 +621,13 @@ impl Component for BatchSheet {
             total_ram,
             memory_max,
         };
-        use_hook(move || {
-            if flow.instance.peek().is_none() {
+        use_hook(move || flow.read_memory());
+        let mode = flow.unattended.read().mode;
+        use_side_effect_with_deps(&mode, move |mode| {
+            if *mode != RunMode::Connection && flow.instance.peek().is_none() && !*flow.asked.peek() {
                 flow.load_versions(false);
             }
-            flow.read_memory();
+            flow.follow();
         });
         let back = *store.back.read();
         use_side_effect_with_deps(&back, move |_| flow.retry_failed());
@@ -633,6 +638,8 @@ impl Component for BatchSheet {
         });
         let name_text = flow.name.read().clone();
         use_side_effect_with_deps(&name_text, move |n| flow.name_typed(n));
+        let memory_typed = flow.memory.read().clone();
+        use_side_effect_with_deps(&memory_typed, move |_| flow.clear_error());
 
         let editing = self.original.is_some();
         let saving = *flow.saving.read();
@@ -642,14 +649,15 @@ impl Component for BatchSheet {
         let versions = flow.versions.read().clone();
         let version = flow.version.read().clone();
         let chosen = flow.accounts.read().clone();
-        let memory = *flow.memory.read();
+        let memory = flow.memory;
+        let memory_text = flow.memory.read().clone();
         let background = *flow.background.read();
         let pace = *flow.launch_parallel.read();
         let inherit = *flow.inherit.read();
         let full_speed = *flow.full_speed.read();
-        let open = *flow.advanced.read() || !inherit || pace != 0 || full_speed || unattended::set(*flow.unattended.read());
+        let connection = mode == RunMode::Connection;
 
-        let (choices, candidates, running, picked, instance_memory, caption_text, own_game) = {
+        let (choices, candidates, running, picked, instance_memory, moved, own_game) = {
             let model = store.model.read();
             let running = self.original.as_ref().is_some_and(|b| is_running(&model, &b.id));
             let choices: Vec<(Option<String>, String)> = sorted(&model).into_iter().map(|i| (Some(i.id.clone()), i.name.clone())).chain([(None, tr("Neue Instanz…"))]).collect();
@@ -666,7 +674,7 @@ impl Component for BatchSheet {
                 .collect();
             let picked = candidates.iter().filter(|c| chosen.contains(&c.id)).count();
             let own = instance.as_deref().and_then(|id| model.instance(id));
-            let moved = self.original.as_ref().filter(|b| instance.as_ref() != Some(&b.instance_id)).and_then(|b| model.instance(&b.instance_id)).map(|i| trf("Welten und Screenshots bleiben bei %@.", &[&i.name]));
+            let moved = self.original.as_ref().and_then(|b| b.instance()).filter(|id| connection || instance.as_deref() != Some(*id)).and_then(|id| model.instance(id)).map(|i| trf("Welten und Screenshots bleiben bei %@.", &[&i.name]));
             (choices, candidates, running, picked, own.map_or_else(|| crate::core::settings::active().game.memory_mb, |i| i.memory()), moved, own.and_then(|i| companion_hint(&i.game_version)))
         };
 
@@ -682,68 +690,65 @@ impl Component for BatchSheet {
             }
         }
 
-        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::M);
-        if running {
-            form = form.child(notice(&t, Icon::Info, t.text2, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
-        }
-
         let instance_lock = if running { Some(tr("Stoppe zuerst die laufenden Spiele.")) } else { lock.clone() };
-        let at = choices.iter().position(|(id, _)| *id == instance).unwrap_or(0);
-        let ids: Vec<Option<String>> = choices.iter().map(|(id, _)| id.clone()).collect();
-        let labels: Vec<String> = choices.into_iter().map(|(_, l)| l).collect();
-        let picker = Select::new("batch.instance", tr("Instanz"), labels, at).width(FIELD_W).disabled(instance_lock).on_choose(move |i| {
-            if let Some(id) = ids.get(i) {
-                flow.pick_instance(id.clone());
-            }
-        });
-        let instance_note = match (caption_text, own_game) {
-            (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
-            (a, b) => a.or(b),
-        };
-        form = form.child(field(&t, tr("Instanz"), picker, instance_note, None));
-        if instance.is_none() {
-            let control: Element = match &versions {
-                Load::Failed(why) if flow.list.read().is_empty() => rect()
-                    .width(Size::fill())
-                    .spacing(space::XS)
-                    .child(problem_view(&t, "batch.versions", Icon::CircleAlert, why, flow.details))
-                    .child(rect().horizontal().child(Button::new("batch.versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.load_versions(true))))
-                    .into_element(),
-                Load::Loading if flow.list.read().is_empty() => rect().height(Size::px(control::M)).main_align(Alignment::Center).child(spinner::waiting(&t, tr("Versionen werden geladen …"))).into_element(),
-                _ => {
-                    let list = flow.list.read().clone();
-                    let at = list.iter().position(|v| *v == version).unwrap_or(0);
-                    let pick = list.clone();
-                    let mut chosen_version = flow.version;
-                    Select::new("batch.version", tr("Minecraft-Version"), list, at).width(FIELD_W).disabled(lock.clone()).on_choose(move |i| {
-                        if let Some(v) = pick.get(i) {
-                            chosen_version.set(v.clone());
-                            flow.clear_error();
-                        }
-                    }).into_element()
+        let mut rows = vec![unattended::mode_line(&t, flow.unattended, &game, &instance_lock, proxied).into_element()];
+        if !connection {
+            let at = choices.iter().position(|(id, _)| *id == instance).unwrap_or(0);
+            let ids: Vec<Option<String>> = choices.iter().map(|(id, _)| id.clone()).collect();
+            let labels: Vec<String> = choices.into_iter().map(|(_, l)| l).collect();
+            let picker = Select::new("batch.instance", tr("Instanz"), labels, at).width(frame::PICK_W).disabled(instance_lock.clone()).on_choose(move |i| {
+                if let Some(id) = ids.get(i) {
+                    flow.pick_instance(id.clone());
                 }
-            };
-            form = form.child(field(&t, tr("Minecraft-Version"), control, companion_hint(&version), version_problem.clone().filter(|_| tried)));
+            });
+            let mut instance_row = Line::new("batch.instance.row", tr("Instanz")).control(picker);
+            if let Some(note) = own_game {
+                instance_row = instance_row.hint(note);
+            }
+            rows.push(instance_row.into_element());
+            if instance.is_none() {
+                rows.push(version_row(&t, flow, &versions, &version, tried.then_some(version_problem.clone()).flatten(), &lock).into_element());
+            }
         }
-
-        let mut server_field = Field::new("batch.server", flow.server).label(tr("Server")).placeholder(tr("z. B. play.example.net")).hint(tr("Optional. Adresse mit oder ohne Port.")).error(server_problem.clone()).disabled(lock.clone());
-        let mut name_field = Field::new("batch.name", flow.name).label(tr("Name")).placeholder(tr("z. B. Farm")).error(name_shown).disabled(lock.clone());
+        let mut server_field = Field::new("batch.server", flow.server).placeholder(tr("z. B. play.example.net")).error(server_problem.clone()).disabled(lock.clone());
+        let mut name_field = Field::new("batch.name", flow.name).placeholder(tr("z. B. Farm")).error(name_shown).disabled(lock.clone());
         if editing {
             name_field = name_field.auto_focus();
         } else {
             server_field = server_field.auto_focus();
         }
-        let connection = flow.unattended.read().mode == crate::core::batch::RunMode::Connection;
-        form = form.child(server_field).child(accounts_section(&t, flow, candidates, picked, &lock, !connection));
+        rows.push(Line::new("batch.server.row", tr("Server")).hint(tr("Optional. Adresse mit oder ohne Port.")).below(server_field).into_element());
+        rows.push(Line::new("batch.name.row", tr("Name")).below(name_field).into_element());
+        let footer = connection.then(|| {
+            let speaks = trf("Headless spricht Minecraft %@ und braucht keine Instanz.", &[&crate::core::batch::HEADLESS_VERSION]);
+            match &moved {
+                Some(kept) => format!("{speaks} {kept}"),
+                None => speaks,
+            }
+        });
+        let mut form = rect().width(Size::fill()).padding(frame::RING).spacing(space::L);
+        if running {
+            form = form.child(notice(&t, Icon::Info, t.text2, tr("Server und Accounts gelten beim nächsten Start. Die Instanz wechselt nur ein gestoppter Batch.")));
+        }
+        form = form.child(group(&t, None, rows, footer));
+        form = form.child(accounts_section(&t, flow, candidates, picked, &lock, !connection));
 
         let preset = seed.capped.filter(|_| !editing && chosen == seed.accounts).map(|free| preset_line(&t, flow, picked, free, &lock));
-        form = form
-            .children(preset)
-            .children(fit_line(&t, flow, picked))
-            .child(name_field)
-            .children((!connection).then(|| background_section(&t, flow, background, running, &lock)))
-            .child(advanced_section(&t, flow, AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection }, &lock))
-            .children(open.then(|| unattended::section(&t, flow.unattended, flow.advanced, &game, running, &lock, proxied)));
+        form = form.children(preset).children(fit_line(&t, flow, picked));
+
+        if !connection {
+            let mut tuning = memory_rows(flow, t.danger_text, MemoryView { inherit, memory, typed: flow.typed_memory(), problem: flow.memory_problem().filter(|_| !memory_text.trim().is_empty() || tried), instance_memory, picked }, &lock);
+            tuning.push(speed_row(flow, full_speed, running, &lock).into_element());
+            tuning.push(background_row(&t, flow, background, running, &lock).into_element());
+            form = form.child(group(&t, Some(tr("Leistung")), tuning, None));
+        }
+        let u = *flow.unattended.read();
+        let mut flowing = vec![pace_row(flow, pace, running, &lock).into_element()];
+        if u.mode == RunMode::Hidden {
+            flowing.push(unattended::screenshots_line(flow.unattended, &lock).into_element());
+        }
+        flowing.push(unattended::packs_line(flow.unattended, running, &lock).into_element());
+        form = form.child(group(&t, Some(tr("Ablauf")), flowing, None));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));
         if let Some(problem) = flow.save_error.read().clone() {
@@ -758,10 +763,14 @@ impl Component for BatchSheet {
                 Load::Ready(()) => p,
             })
         });
-        let (title, subtitle) = if editing { (tr("Batch bearbeiten"), None) } else { (tr("Batch erstellen"), Some(tr("Ein Batch schickt mehrere Accounts mit derselben Instanz los."))) };
+        let (title, subtitle) = if editing {
+            (tr("Batch bearbeiten"), None)
+        } else {
+            (tr("Batch erstellen"), Some(tr("Ein Batch schickt mehrere Accounts gemeinsam los.")))
+        };
         let action = if editing { tr("Sichern") } else if starts { tr("Erstellen und starten") } else { tr("Erstellen") };
         let primary = Primary { label: action, disabled: invalid.clone(), danger: false, busy: saving && by_primary, run: EventHandler::new(move |_| flow.save(true)) };
-        let mut card = Card::new("batch", title).width(frame::SHEET).body(body).primary(primary).primary_id("batch.save").locked(lock.clone()).on_enter(move |_| {
+        let mut card = Card::new("batch", title).width(WIDE).body(body).primary(primary).primary_id("batch.save").locked(lock.clone()).on_enter(move |_| {
             if typing() {
                 flow.save(true);
             }
@@ -845,7 +854,75 @@ fn fit_line(t: &Theme, flow: Flow, count: usize) -> Option<Element> {
     Some(column.into_element())
 }
 
-fn background_section(t: &Theme, flow: Flow, background: Background, running: bool, lock: &Option<String>) -> Element {
+fn version_row(t: &Theme, flow: Flow, versions: &Load<()>, version: &str, problem: Option<String>, lock: &Option<String>) -> Line {
+    let row = Line::new("batch.version.row", tr("Minecraft-Version"));
+    match versions {
+        Load::Failed(why) if flow.list.read().is_empty() => row
+            .hint(why.text.clone())
+            .hint_tone(t.danger_text)
+            .control(Button::new("batch.versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.load_versions(true))),
+        Load::Loading if flow.list.read().is_empty() => row.control(spinner::waiting(t, tr("Versionen werden geladen …"))),
+        _ => {
+            let list = flow.list.read().clone();
+            let at = list.iter().position(|v| v == version).unwrap_or(0);
+            let pick = list.clone();
+            let mut chosen_version = flow.version;
+            let select = Select::new("batch.version", tr("Minecraft-Version"), list, at).width(frame::PICK_W).disabled(lock.clone()).on_choose(move |i| {
+                if let Some(v) = pick.get(i) {
+                    chosen_version.set(v.clone());
+                    flow.clear_error();
+                }
+            });
+            let row = row.control(select);
+            match (problem, companion_hint(version)) {
+                (Some(p), _) => row.hint(p).hint_tone(t.danger_text),
+                (None, Some(h)) => row.hint(h),
+                (None, None) => row,
+            }
+        }
+    }
+}
+
+struct MemoryView {
+    inherit: bool,
+    memory: State<String>,
+    typed: Option<u32>,
+    problem: Option<String>,
+    instance_memory: u32,
+    picked: usize,
+}
+
+fn memory_rows(flow: Flow, danger: Color, view: MemoryView, lock: &Option<String>) -> Vec<Element> {
+    let MemoryView { inherit, memory, typed, problem, instance_memory, picked } = view;
+    let like = trf("Wie die Instanz (%@)", &[&forms::memory_label(instance_memory)]);
+    let label = tr("Eigener Arbeitsspeicher");
+    let mut own = Line::new("batch.memory.own.row", label.clone())
+        .hint(if inherit { like } else { tr("Pro Account, statt dem Wert der Instanz.") })
+        .control(Switch::new("batch.memory.own", label, !inherit).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_inherit()));
+    if lock.is_none() {
+        own = own.on_press(move |_| flow.toggle_inherit());
+    }
+    let mut rows = vec![own.into_element()];
+    if !inherit {
+        let count = picked.max(1);
+        let total = u64::from(typed.unwrap_or(instance_memory)) * count as u64;
+        let note = if count > 1 { trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]) } else { tr("Pro Account.") };
+        let ceiling = u32::try_from(flow.total_ram).unwrap_or(u32::MAX).max(MEMORY_FLOOR_MB);
+        let field = Memory::new("batch.memory", tr("Arbeitsspeicher"), memory)
+            .placeholder(instance_memory.to_string())
+            .steps(Steps { floor: MEMORY_FLOOR_MB, ceiling, from: instance_memory })
+            .disabled(lock.clone());
+        let mut row = Line::new("batch.memory.row", tr("Arbeitsspeicher")).control(field);
+        row = match problem {
+            Some(why) => row.hint(why).hint_tone(danger),
+            None => row.hint(note),
+        };
+        rows.push(row.into_element());
+    }
+    rows
+}
+
+fn background_row(t: &Theme, flow: Flow, background: Background, running: bool, lock: &Option<String>) -> Line {
     let name = |level: Background| match level {
         Background::Saving => tr("Sparsam"),
         Background::Balanced => tr("Ausgewogen"),
@@ -870,18 +947,11 @@ fn background_section(t: &Theme, flow: Flow, background: Background, running: bo
     let segments = levels.iter().zip(BACKGROUND_NAMES).map(|(level, id)| Segment { id: format!("batch.background.{id}"), label: name(*level), tip: None }).collect();
     let control = Segmented::new(tr("Im Hintergrund"), segments, chosen).disabled(lock.clone()).on_choose(move |n| flow.pick_background(n));
     let text = if running { format!("{cost} {}", tr("Gilt sofort, auch für die laufenden Spiele.")) } else { cost };
-    let mut column = rect().width(Size::fill()).spacing(space::XS).child(title_text(t, tr("Im Hintergrund"))).child(rect().horizontal().child(control));
+    let mut row = Line::new("batch.background.row", tr("Im Hintergrund")).hint(text).control(control);
     if let Background::Custom { fps, sight } = background {
-        column = column.child(
-            rect()
-                .padding((space::XS, 0., 0., 0.))
-                .horizontal()
-                .spacing(space::XL)
-                .child(dial(t, flow, Dial::Fps, fps, lock))
-                .child(dial(t, flow, Dial::Sight, sight, lock)),
-        );
+        row = row.below(rect().horizontal().spacing(space::XL).child(dial(t, flow, Dial::Fps, fps, lock)).child(dial(t, flow, Dial::Sight, sight, lock)));
     }
-    column.child(hint(t, text)).into_element()
+    row
 }
 
 fn dial(t: &Theme, flow: Flow, which: Dial, value: u8, lock: &Option<String>) -> Element {
@@ -913,91 +983,18 @@ fn dial(t: &Theme, flow: Flow, which: Dial, value: u8, lock: &Option<String>) ->
     rect().spacing(space::XS).child(line(t, title, font::CALLOUT, t.text2).font_weight(FontWeight::MEDIUM)).child(stepper).into_element()
 }
 
-struct AdvancedView {
-    open: bool,
-    inherit: bool,
-    memory: u32,
-    pace: u32,
-    full_speed: bool,
-    running: bool,
-    picked: usize,
-    instance_memory: u32,
-    connection: bool,
-}
-
-fn advanced_section(t: &Theme, flow: Flow, view: AdvancedView, lock: &Option<String>) -> Element {
-    let AdvancedView { open, inherit, memory, pace, full_speed, running, picked, instance_memory, connection } = view;
-    let each = if inherit { instance_memory } else { memory };
-    let title = if open || connection { tr("Erweitert") } else { trf("Erweitert · %@ Arbeitsspeicher pro Account", &[&forms::memory_label(each)]) };
-    let mut advanced = flow.advanced;
-    let disclosure = Button::new("batch.advanced", title).plain().glyph(if open { Icon::ChevronDown } else { Icon::ChevronRight }).on_press(move |_| advanced.set(!open));
-    let mut column = rect().width(Size::fill()).spacing(space::S).child(rect().horizontal().child(disclosure));
-    if !open {
-        return column.into_element();
-    }
-    if connection {
-        return column.child(pace_section(t, flow, pace, running, lock)).into_element();
-    }
-    let count = picked.max(1);
-    let total = u64::from(each) * count as u64;
-    let like = trf("Wie die Instanz (%@)", &[&forms::memory_label(instance_memory)]);
-    let inherit_row = rect()
-        .width(Size::fill())
-        .horizontal()
-        .cross_align(Alignment::Center)
-        .spacing(space::S)
-        .cursor(if lock.is_some() { CursorIcon::NotAllowed } else { CursorIcon::Pointer })
-        .on_pointer_press(move |e: Event<PointerEventData>| {
-            if let PointerEventData::Mouse(m) = &*e
-                && m.button == Some(MouseButton::Left)
-            {
-                flow.toggle_inherit();
-            }
-        })
-        .child(rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation()).child(Switch::new("batch.memory.inherit", like.clone(), inherit).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_inherit())))
-        .child(line(t, like, font::CALLOUT, t.text2));
-    let inherit_row = WithTip::new(lock.clone(), inherit_row).fill();
-    let mut block = rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::XS).child(inherit_row);
-    if !inherit {
-        let less = lock.clone().or_else(|| (memory <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
-        let more = lock.clone().or_else(|| (memory >= flow.memory_max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(flow.memory_max)])));
-        let stepper = rect()
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::XS)
-            .child(Button::icon("batch.memory.less", Icon::Minus, tr("Weniger Arbeitsspeicher")).disabled(less).on_press(move |_| flow.step_memory(-1)))
-            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(t, forms::memory_label(memory), font::BODY, t.text1)))
-            .child(Button::icon("batch.memory.more", Icon::Plus, tr("Mehr Arbeitsspeicher")).disabled(more).on_press(move |_| flow.step_memory(1)));
-        block = block.child(title_text(t, tr("Arbeitsspeicher"))).child(stepper);
-    }
-    let note = if count > 1 { trf("Pro Account. %lld Accounts brauchen zusammen bis zu %@.", &[&count, &forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))]) } else { tr("Pro Account.") };
-    column = column.child(block.child(hint(t, note)));
-    column.child(speed_section(t, flow, full_speed, running, lock)).child(pace_section(t, flow, pace, running, lock)).into_element()
-}
-
-fn speed_section(t: &Theme, flow: Flow, on: bool, running: bool, lock: &Option<String>) -> Element {
-    let label = tr("Schneller beim Spielen (mehr Arbeitsspeicher)");
+fn speed_row(flow: Flow, on: bool, running: bool, lock: &Option<String>) -> Line {
+    let label = tr("Schneller beim Spielen");
     let text = tr("Spiele im Hintergrund brauchen dann mehr Arbeitsspeicher.");
     let text = if running { format!("{text} {}", tr("Gilt beim nächsten Start.")) } else { text };
-    let row = rect()
-        .width(Size::fill())
-        .horizontal()
-        .cross_align(Alignment::Center)
-        .spacing(space::S)
-        .cursor(if lock.is_some() { CursorIcon::NotAllowed } else { CursorIcon::Pointer })
-        .on_pointer_press(move |e: Event<PointerEventData>| {
-            if let PointerEventData::Mouse(m) = &*e
-                && m.button == Some(MouseButton::Left)
-            {
-                flow.toggle_full_speed();
-            }
-        })
-        .child(rect().on_pointer_press(|e: Event<PointerEventData>| e.stop_propagation()).child(Switch::new("batch.speed", label.clone(), on).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_full_speed())))
-        .child(line(t, label, font::CALLOUT, t.text2));
-    rect().width(Size::fill()).padding((0., 0., 0., space::L)).spacing(space::XS).child(WithTip::new(lock.clone(), row).fill()).child(hint(t, text)).into_element()
+    let mut row = Line::new("batch.speed.row", label.clone()).hint(text).control(Switch::new("batch.speed", label, on).disabled(lock.is_some()).on_toggle(move |_| flow.toggle_full_speed()));
+    if lock.is_none() {
+        row = row.on_press(move |_| flow.toggle_full_speed());
+    }
+    row
 }
 
-fn pace_section(t: &Theme, flow: Flow, pace: u32, running: bool, lock: &Option<String>) -> Element {
+fn pace_row(flow: Flow, pace: u32, running: bool, lock: &Option<String>) -> Line {
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     let auto = crate::core::stagger::auto_parallel(cores, *flow.free.read());
     let text = match pace {
@@ -1020,14 +1017,7 @@ fn pace_section(t: &Theme, flow: Flow, pace: u32, running: bool, lock: &Option<S
         .collect();
     let chosen = LAUNCH_CHOICES.iter().position(|n| *n == pace).unwrap_or(0);
     let control = Segmented::new(tr("Gleichzeitig starten"), segments, chosen).disabled(lock.clone()).on_choose(move |n| flow.pick_pace(n));
-    rect()
-        .width(Size::fill())
-        .padding((0., 0., 0., space::L))
-        .spacing(space::XS)
-        .child(title_text(t, tr("Gleichzeitig starten")))
-        .child(rect().horizontal().child(control))
-        .child(hint(t, text))
-        .into_element()
+    Line::new("batch.parallel.row", tr("Gleichzeitig starten")).hint(text).control(control)
 }
 
 #[derive(Clone, PartialEq)]

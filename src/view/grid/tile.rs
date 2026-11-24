@@ -51,6 +51,7 @@ fn run(store: Store, key: &str, p: Primary) {
         Primary::AcceptPack => store.dispatch(AppEvent::AnswerPack { keys: vec![key], accept: true }),
         Primary::AcceptRules => store.dispatch(AppEvent::AnswerRules { keys: vec![key], accept: true }),
         Primary::Chat => open_chat(store, &key),
+        Primary::Screen => crate::view::sheets::screen::open(store, &key),
         Primary::SignIn => {
             let mut page = store.ui.page;
             page.set(Page::ACCOUNTS);
@@ -68,6 +69,7 @@ fn glyph(p: Primary) -> Icon {
         Primary::AcceptPack => Icon::Package,
         Primary::AcceptRules => Icon::CircleCheck,
         Primary::Chat => Icon::Message,
+        Primary::Screen => Icon::Image,
     }
 }
 
@@ -149,8 +151,16 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
         }
         items.push(item);
     }
+    if !many && primary != Some(Primary::Screen) && m.games.get(key).is_some_and(|g| g.connection && g.phase.is_running() && g.shows.any()) {
+        let k = key.to_owned();
+        let mut item = Item::new(format!("menu.{key}.screen"), tr("Bildschirm"), move |_| crate::view::sheets::screen::open(store, &k));
+        if let Some(s) = Command::ShowScreen.shortcut() {
+            item = item.shortcut(s.label());
+        }
+        items.push(item);
+    }
     if !many && m.games.get(key).is_some_and(|g| g.connection) {
-        items.push(Item::new(format!("menu.{key}.play"), tr("Spielen"), |_| {}).disabled(true).detail(tr("Läuft ohne Spiel – kein Bild")));
+        items.push(Item::new(format!("menu.{key}.play"), tr("Spielen"), |_| {}).disabled(true).detail(tr("Läuft ohne Spiel")));
     }
     let offered = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_pack_answer()));
     let ruled = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_rules_answer()));
@@ -263,10 +273,10 @@ impl Component for Tile {
         let Some(game) = m.games.get(&self.key) else {
             return rect().into_element();
         };
-        let preview = preview.filter(|_| !game.connection);
+        let preview = preview.filter(|_| !game.connection || m.frames.get(&self.key).is_some_and(|f| f.live));
         let selected = store.ui.selection.read().contains(&self.key);
         let face = store.faces.read().get(&game.account_id).cloned();
-        let attention = game.phase.needs_attention();
+        let attention = game.needs_attention();
         let severe = matches!(game.phase, Phase::LoginNeeded | Phase::Banned { .. });
         let detail = stopped_ban(game, &m).unwrap_or_else(|| status(game, m.preparing.get(&game.batch_id).copied()));
         let reason = words::reason(game, &m);
@@ -306,8 +316,18 @@ impl Component for Tile {
             }
         }
         if game.connection {
-            pic = pic.child(bare(&t, game, &m, m.account(game.account_id), face.clone(), w, h));
-            pic = pic.child(rect().position(Position::new_absolute().left(space::S).top(space::S)).child(WithTip::new(Some(tr("Läuft ohne Spiel – kein Bild")), badge(&t, tr("ohne Bild"), Tone::Quiet))));
+            if preview.is_none() {
+                pic = pic.child(bare(&t, game, &m, m.account(game.account_id), face.clone(), w, h));
+            }
+            let (mark, tip, tone) = match (game.shows.menu, game.shows.map, preview.is_some()) {
+                (true, ..) => (tr("Menü offen"), tr("Der Server hat ein Menü geöffnet. Klick zeigt es."), Tone::Attention),
+                (false, true, _) => (tr("Karte"), tr("Eine Karte in der Hand. Klick zeigt sie."), Tone::Attention),
+                (false, false, true) => (tr("gezeichnet"), tr("Aus den Blöcken gezeichnet, die der Server schickt – kein echtes Spielbild."), Tone::Quiet),
+                _ if game.phase.server().is_some() => (tr("ohne Bild"), tr("Nur Verbindung, kein Spiel. Screenshot zeichnet ein Bild aus den Blöcken."), Tone::Quiet),
+                _ => (tr("ohne Bild"), tr("Nur Verbindung, kein Spiel."), Tone::Quiet),
+            };
+            let tone = if tone == Tone::Attention && !game.shows.unseen { Tone::Accent } else { tone };
+            pic = pic.child(rect().position(Position::new_absolute().left(space::S).top(space::S)).child(WithTip::new(Some(tip), badge(&t, mark, tone))));
         } else if let Some(mark) = placeholder(&t, &game.phase, if preview.is_none() { face.clone() } else { None }) {
             pic = pic.child(rect().position(Position::new_absolute().left(0.).top(0.)).width(Size::px(w)).height(Size::px(h)).center().child(mark));
         }

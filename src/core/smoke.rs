@@ -156,22 +156,16 @@ fn run(args: &[String]) -> Result<i32> {
     let loader = flags.get("--loader").map_or(Ok(Loader::Vanilla), |l| fleet::parse_loader(l))?;
     let timeout = flags.get("--timeout").map_or(Ok(DEFAULT_TIMEOUT), |t| t.parse().context("--timeout is a number of seconds"))?;
     let companion = flags.get("--companion").map(Path::new);
-    let mut instance = smoke_instance(version, loader)?;
-    instance.companion = true;
+    let instance = smoke_instance(version, loader)?;
     quiet(&instance.options_template())?;
     let relay = if proxy { Some(Relay::start()?) } else { None };
     let mut account = Account::offline(NAME)?;
     account.proxy = relay.as_ref().map(|r| format!("socks5://{}", r.address));
     let game_dir = instance.game_dir(account.id);
-    let target = match server {
-        Some(server) => {
-            let mut batch = Batch::new(&format!("{NAME} {version}"), &instance.id);
-            batch.server = Some(server.to_owned());
-            batch.accounts = vec![account.id];
-            Target::of_batch(&batch, &instance)
-        }
-        None => Target::solo(&instance),
-    };
+    let mut batch = Batch::new(&format!("{NAME} {version}"), &instance.id);
+    batch.server = server.map(str::to_owned);
+    batch.accounts = vec![account.id];
+    let target = Target::of_batch(&batch, &instance);
     let (fleet, events) = Fleet::new()?;
     let report = |p: super::install::Progress| {
         if p.total > 0 && p.done == p.total {

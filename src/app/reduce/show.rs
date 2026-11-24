@@ -93,8 +93,8 @@ pub(super) fn step(m: &mut Model, action: HotkeyAction, out: &mut Vec<Effect>) {
             (_, _) if n == 0 => None,
             (HotkeyAction::Next, Some(at)) => pick(at, true, &|_| true),
             (HotkeyAction::Prev, Some(at)) => pick(at, false, &|_| true),
-            (HotkeyAction::NextAttention, Some(at)) => pick(at, true, &|i| i.phase.needs_attention()),
-            (HotkeyAction::NextAttention, None) => order.iter().find(|i| i.phase.needs_attention()).map(|i| i.key.clone()),
+            (HotkeyAction::NextAttention, Some(at)) => pick(at, true, &|i| i.needs_attention()),
+            (HotkeyAction::NextAttention, None) => order.iter().find(|i| i.needs_attention()).map(|i| i.key.clone()),
             (_, None) => Some(order[0].key.clone()),
             _ => None,
         }

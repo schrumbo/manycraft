@@ -27,12 +27,13 @@ fn shot(key: &str) -> Effect {
 }
 
 fn capturable(m: &Model, key: &str) -> bool {
-    m.session.pids.contains_key(key) && m.games.get(key).is_some_and(|i| i.headless && !i.connection && !i.stopping && !i.hint.link_lost && phase::mod_reports(&i.phase) && !matches!(i.phase, Phase::Starting { .. }))
+    m.session.pids.contains_key(key) && m.games.get(key).is_some_and(|i| i.headless && !i.stopping && !i.hint.link_lost && phase::mod_reports(&i.phase) && !matches!(i.phase, Phase::Starting { .. }))
 }
 
-/// The game `key` got onto its server: a game without a window shows where it is with one screenshot.
+/// The game `key` got onto its server: a game without a window shows where it is with one screenshot. A connection-only
+/// account draws its picture only when asked, once its chunks have arrived.
 pub(super) fn joined(m: &Model, key: &str, out: &mut Vec<Effect>) {
-    if capturable(m, key) {
+    if capturable(m, key) && m.games.get(key).is_some_and(|i| !i.connection) {
         out.push(shot(key));
     }
 }
@@ -216,12 +217,12 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_only_game_chats_instead_of_playing_and_takes_no_screenshot() {
+    fn a_connection_only_game_chats_instead_of_playing_and_draws_a_picture_only_when_asked() {
         let (mut m, key, s) = connection_only();
         connected(&mut m, &s, &key);
         report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
         assert_eq!(m.games[&key].action(false), Some(Primary::Chat));
-        assert_eq!(shots(&run(&mut m, &s, Instant::now(), Event::Capture(vec![key.clone()]))), 0);
+        assert_eq!(shots(&run(&mut m, &s, Instant::now(), Event::Capture(vec![key.clone()]))), 1);
         let fx = run(&mut m, &s, Instant::now(), Event::Play(key.clone()));
         assert!(!fx.iter().any(|e| matches!(e, Effect::Show { .. } | Effect::HideManager)), "{fx:?}");
         assert_eq!(m.playing, None);

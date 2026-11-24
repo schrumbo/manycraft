@@ -2,10 +2,11 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::ErrorKind;
-use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Shutdown, TcpStream};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,6 +15,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::picture::{self, Request, View};
+use super::screen::Screen;
 use super::Spec;
 use super::classify::classify;
 use super::conn::{Reader, Writer};
@@ -21,8 +24,10 @@ use super::crypto;
 use super::text::{self, Line};
 use super::v777::{PROTOCOL, configuration as cfg, login, play};
 use super::wire::{In, Out};
+use super::world::World;
 use crate::core::auth::Session;
 use crate::core::batch::Packs;
+use crate::core::fleet::Resolved;
 use crate::core::ipc::{ChatKind, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,7 +35,13 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_TICK: Duration = Duration::from_millis(50);
 const BRAND: &str = "vanilla";
+const INTENTION_LOGIN: i32 = 2;
 const VIEW_DISTANCE: u8 = 2;
+const PICTURE_RADIUS: i32 = VIEW_DISTANCE as i32 + 1;
+const MIN_PICTURE: u32 = 16;
+const MAX_PICTURE: u32 = 1280;
+
+static PICTURES: AtomicU32 = AtomicU32::new(0);
 const CHUNKS_PER_TICK: f32 = 10.0;
 const ACK_AFTER: i32 = 64;
 const MAX_CHAT: usize = 256;
@@ -42,6 +53,7 @@ pub const CONDUCT: &str = "conduct-";
 const PACK_LOADED: i32 = 0;
 const PACK_DECLINED: i32 = 1;
 const PACK_ACCEPTED: i32 = 3;
+const PACK_DOWNLOADED: i32 = 4;
 const PERFORM_RESPAWN: i32 = 0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,6 +107,8 @@ struct Link {
     chat_clock: i64,
     unacked: i32,
     shown: Option<Shown>,
+    screen: Screen,
+    world: World,
 }
 
 /// What the connection's thread and its handle share.
@@ -104,6 +118,8 @@ pub struct Shared {
     link: Mutex<Link>,
     wake: Condvar,
     running: AtomicBool,
+    shots: Option<PathBuf>,
+    drawing: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -124,8 +140,10 @@ impl Shared {
             chat_clock: 0,
             unacked: 0,
             shown: None,
+            screen: Screen::default(),
+            world: World::default(),
         };
-        Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true) }
+        Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), shots: spec.shots.clone(), drawing: Arc::default() }
     }
 
     pub fn is_running(&self) -> bool {
@@ -164,9 +182,55 @@ impl Shared {
             ToMod::ChatSend { text } => chat(&mut link, text)?,
             ToMod::Packs { policy } => link.packs = *policy,
             ToMod::Answer { id, accept } => self.answer(&mut link, id, *accept)?,
+            ToMod::Click { menu, slot, click } => {
+                if link.phase == Phase::Play
+                    && let Some(mut out) = link.screen.click(*menu, *slot, *click)
+                {
+                    write(&mut link, play::serverbound::CONTAINER_CLICK, &mut out)?;
+                }
+            }
+            ToMod::CloseMenu { menu } => {
+                if let Some(mut out) = link.screen.close(*menu) {
+                    self.show_screen(&mut link);
+                    if link.phase == Phase::Play {
+                        write(&mut link, play::serverbound::CONTAINER_CLOSE, &mut out)?;
+                    }
+                }
+            }
+            ToMod::Capture { width } => self.picture(&link, *width),
             _ => {}
         }
         Ok(())
+    }
+
+    /// Draws what the account sees, from its eyes and from above, on the drawing thread. Both are saved to its screenshots
+    /// folder; the view from its eyes goes to its tile. While one is being drawn, more asks are ignored.
+    fn picture(&self, link: &Link, width: u32) {
+        if link.phase != Phase::Play || self.drawing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let width = width.clamp(MIN_PICTURE, MAX_PICTURE);
+        let height = (width * 9 / 16).max(1);
+        let [x, _, z] = link.position;
+        let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), position: link.position, rotation: link.rotation, width, height };
+        let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
+        let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Drawing(Arc::clone(&self.drawing)));
+        picture::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
+            let above = pictures.pop().unwrap_or_default();
+            let eyes = pictures.pop().unwrap_or_default();
+            if let Some(dir) = shots {
+                save(&dir, &stamp, &[("", &eyes), ("_above", &above)], width, height);
+            }
+            drop(drawing);
+            let seq = PICTURES.fetch_add(2, Ordering::Relaxed).wrapping_add(2);
+            let _ = events.send(Event::Picture { instance: key, seq, width, height, rgba: eyes });
+        });
+    }
+
+    fn show_screen(&self, link: &mut Link) {
+        for message in link.screen.changes() {
+            self.emit(message);
+        }
     }
 
     fn answer(&self, link: &mut Link, id: &str, accept: bool) -> Result<()> {
@@ -225,7 +289,7 @@ fn write(link: &mut Link, id: i32, body: &mut Out) -> Result<()> {
 
 fn answer_pack(link: &mut Link, id: Uuid, accept: bool) -> Result<()> {
     let packet = if link.phase == Phase::Play { play::serverbound::RESOURCE_PACK } else { cfg::serverbound::RESOURCE_PACK };
-    let actions: &[i32] = if accept { &[PACK_ACCEPTED, PACK_LOADED] } else { &[PACK_DECLINED] };
+    let actions: &[i32] = if accept { &[PACK_ACCEPTED, PACK_DOWNLOADED, PACK_LOADED] } else { &[PACK_DECLINED] };
     for action in actions {
         write(link, packet, Out::default().uuid(id).varint(*action))?;
     }
@@ -270,6 +334,7 @@ pub fn run(shared: &Shared, spec: &Spec) {
                     let mut link = shared.lock();
                     link.held.clear();
                     link.dead = None;
+                    link.world.clear();
                     shared.report(&mut link, StateKind::Disconnected, Some(reason.text), Some(cause), None);
                 }
                 let mut link = shared.lock();
@@ -312,6 +377,8 @@ fn session(shared: &Shared, spec: &Spec) -> End {
     link.writer = None;
     link.phase = Phase::Login;
     link.held.clear();
+    link.screen.reset();
+    shared.show_screen(&mut link);
     match link.control.take() {
         Some(Control::Quit) => End::Quit,
         Some(Control::Reconnect) => End::Reconnect,
@@ -342,23 +409,25 @@ fn failure(e: &anyhow::Error) -> Line {
 }
 
 fn connect(shared: &Shared, address: &str) -> Result<(TcpStream, String, u16)> {
-    let (host, _) = crate::core::fleet::split_server(address)?;
-    let addrs = crate::core::fleet::resolve_all(address).map_err(|e| anyhow::anyhow!("Unknown host: {e}"))?;
+    let Resolved { host, port, addrs } = crate::core::fleet::resolve_server(address).map_err(|e| anyhow::anyhow!("Unknown host: {e}"))?;
     let mut last = None;
     for addr in addrs {
         if shared.lock().control.is_some() {
             bail!("stopped");
         }
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(stream) => return Ok((stream, host, port(addr))),
+            Ok(stream) => return Ok((stream, host, port)),
             Err(e) => last = Some(e),
         }
     }
     Err(last.map_or_else(|| anyhow::anyhow!("Unknown host"), anyhow::Error::from))
 }
 
-fn port(addr: SocketAddr) -> u16 {
-    addr.port()
+/// The handshake that starts a login, as the game sends it: the protocol, the host and port it connected to, the login intention.
+fn handshake(host: &str, port: u16) -> Out {
+    let mut out = Out::default();
+    out.varint(PROTOCOL).string(host).u16(port).varint(INTENTION_LOGIN);
+    out
 }
 
 /// One TCP connection from handshake to its end. Returns the server's reason when it ends the connection.
@@ -374,28 +443,51 @@ fn join(shared: &Shared, spec: &Spec) -> Result<(Line, DisconnectCause)> {
             bail!("stopped");
         }
         link.writer = Some(Writer::new(stream));
-        write(&mut link, 0, Out::default().varint(PROTOCOL).string(&host).u16(port).varint(2))?;
+        write(&mut link, 0, &mut handshake(&host, port))?;
         write(&mut link, login::serverbound::HELLO, Out::default().string(&spec.name).uuid(spec.uuid))?;
     }
     if let Some(end) = log_in(shared, spec, &mut reader)? {
         return Ok(end);
     }
     let mut chat_types = Vec::new();
+    let mut skipped: HashSet<(bool, i32)> = HashSet::new();
     loop {
         let phase = shared.lock().phase;
         let packet = reader.next(|id| wanted(phase, id))?;
         if phase == Phase::Play && packet.id == play::clientbound::PLAYER_POSITION {
             thread::sleep(CLIENT_TICK);
         }
+        let id = packet.id;
         let mut r = In::new(packet.body);
         let mut link = shared.lock();
-        let end = match phase {
-            Phase::Configuration => configuration(shared, &mut link, packet.id, &mut r, &mut chat_types)?,
-            _ => playing(shared, &mut link, packet.id, &mut r, &chat_types)?,
+        let handled = match phase {
+            Phase::Configuration => configuration(shared, &mut link, id, &mut r, &mut chat_types),
+            _ => playing(shared, &mut link, id, &mut r, &chat_types),
+        };
+        let end = match handled {
+            Ok(end) => end,
+            Err(e) if !essential(phase, id) => {
+                if skipped.insert((phase == Phase::Configuration, id)) {
+                    eprintln!("headless {}: skipped packet {id} it could not read: {e:#}", spec.name);
+                }
+                None
+            }
+            Err(e) => return Err(e),
         };
         if let Some(end) = end {
             return Ok(end);
         }
+    }
+}
+
+/// The packets whose loss the game itself does not survive: answers the server waits for, and its own goodbye. Anything
+/// else the client reads for the manager's sake, so one it cannot read is skipped and the connection stays.
+fn essential(phase: Phase, id: i32) -> bool {
+    use cfg::clientbound as c;
+    use play::clientbound as p;
+    match phase {
+        Phase::Configuration => [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER, c::COOKIE_REQUEST, c::CODE_OF_CONDUCT, c::RESOURCE_PACK_PUSH, c::SELECT_KNOWN_PACKS].contains(&id),
+        _ => [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER, p::COOKIE_REQUEST].contains(&id),
     }
 }
 
@@ -404,13 +496,14 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::CHUNK_BATCH_FINISHED, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id),
+        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id),
     }
 }
 
 fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(Line, DisconnectCause)>> {
     use login::clientbound as c;
     use login::serverbound as s;
+    let mut verified = false;
     loop {
         let packet = reader.next(|_| true)?;
         let mut r = In::new(packet.body);
@@ -418,7 +511,9 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
             c::LOGIN_DISCONNECT => {
                 let json = r.string()?;
                 let value = serde_json::from_str(&json).unwrap_or(Value::String(json));
-                return Ok(Some(dropped(text::line(&value))));
+                let (reason, cause) = dropped(text::line(&value));
+                let cause = if verified && cause == DisconnectCause::Auth { DisconnectCause::ServerDown } else { cause };
+                return Ok(Some((reason, cause)));
             }
             c::HELLO => {
                 let server_id = r.string()?;
@@ -436,6 +531,7 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
                         let cause = classify(&reason.keys, &reason.text);
                         return Ok(Some((reason, cause)));
                     }
+                    verified = true;
                 }
                 let sealed_secret = crypto::rsa_encrypt(&key, &secret)?;
                 let sealed_token = crypto::rsa_encrypt(&key, &token)?;
@@ -508,10 +604,7 @@ struct ChatType {
     parameters: Vec<String>,
 }
 
-fn chat_types(r: &mut In) -> Result<Option<Vec<ChatType>>> {
-    if r.string()? != "minecraft:chat_type" {
-        return Ok(None);
-    }
+fn chat_types(r: &mut In) -> Result<Vec<ChatType>> {
     let count = r.varint()?;
     let mut types = Vec::new();
     for _ in 0..count {
@@ -522,7 +615,7 @@ fn chat_types(r: &mut In) -> Result<Option<Vec<ChatType>>> {
         let parameters = chat.and_then(|c| c.get("parameters")).and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_else(|| vec!["sender".into(), "content".into()]);
         types.push(ChatType { name, key, parameters });
     }
-    Ok(Some(types))
+    Ok(types)
 }
 
 fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &mut Vec<ChatType>) -> Result<Option<(Line, DisconnectCause)>> {
@@ -544,11 +637,24 @@ fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &
             link.loaded = false;
         }
         c::SELECT_KNOWN_PACKS => write(link, s::SELECT_KNOWN_PACKS, Out::default().varint(0))?,
-        c::REGISTRY_DATA => {
-            if let Some(found) = chat_types(r)? {
-                *types = found;
+        c::REGISTRY_DATA => match r.string()?.as_str() {
+            "minecraft:chat_type" => {
+                if let Ok(found) = chat_types(r) {
+                    *types = found;
+                }
             }
-        }
+            "minecraft:worldgen/biome" => {
+                if let Err(e) = link.world.biomes(r) {
+                    eprintln!("{}: biomes not read: {e:#}", shared.key);
+                }
+            }
+            "minecraft:dimension_type" => {
+                if let Err(e) = link.world.dimension_types(r) {
+                    eprintln!("{}: dimension types not read: {e:#}", shared.key);
+                }
+            }
+            _ => {}
+        },
         c::RESOURCE_PACK_PUSH => pushed(shared, link, r)?,
         c::RESOURCE_PACK_POP => popped(shared, link, r)?,
         c::CODE_OF_CONDUCT => {
@@ -573,10 +679,10 @@ fn configuration(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &
 
 fn pushed(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     let id = r.uuid()?;
-    let _url = r.string()?;
-    let _hash = r.string()?;
-    let required = r.bool()?;
-    let text = r.optional_nbt()?.map(|p| text::line(&p).text);
+    let _url = r.string().unwrap_or_default();
+    let _hash = r.string().unwrap_or_default();
+    let required = r.bool().unwrap_or(false);
+    let text = r.optional_nbt().ok().flatten().map(|p| text::line(&p).text);
     match link.packs {
         Packs::Accept => answer_pack(link, id, true),
         Packs::Decline => answer_pack(link, id, false),
@@ -599,6 +705,13 @@ fn popped(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
 fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatType]) -> Result<Option<(Line, DisconnectCause)>> {
     use play::clientbound as c;
     use play::serverbound as s;
+    if Screen::reads(id) {
+        if let Err(e) = link.screen.read(id, r) {
+            eprintln!("{}: screen packet {id} not read: {e:#}", shared.key);
+        }
+        shared.show_screen(link);
+        return Ok(None);
+    }
     match id {
         c::KEEP_ALIVE => {
             let token = r.i64()?;
@@ -610,7 +723,16 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::DISCONNECT => return Ok(Some(dropped(text::line(&r.nbt()?)))),
         c::PLAYER_POSITION => teleported(shared, link, r)?,
+        c::LOGIN | c::LEVEL_CHUNK_WITH_LIGHT | c::FORGET_LEVEL_CHUNK | c::BLOCK_UPDATE | c::SECTION_BLOCKS_UPDATE => {
+            if let Err(e) = seen(link, id, r) {
+                eprintln!("{}: world packet {id} not read: {e:#}", shared.key);
+            }
+        }
         c::RESPAWN => {
+            link.world.clear();
+            if let Ok(kind) = r.varint() {
+                link.world.enter(kind);
+            }
             link.loaded = false;
             if link.dead.take().is_some() {
                 shared.settle(link);
@@ -627,27 +749,19 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::PLAYER_COMBAT_KILL => {
             let _player = r.varint()?;
-            let message = text::line(&r.nbt()?).text;
+            let message = r.nbt().map(|m| text::line(&m).text).unwrap_or_default();
             link.dead = Some(if message.is_empty() { died() } else { message });
             shared.settle(link);
         }
-        c::SYSTEM_CHAT => {
-            let line = text::line(&r.nbt()?);
-            if !r.bool()? && !line.text.is_empty() {
-                shared.emit(FromMod::Chat { kind: ChatKind::System, from: None, text: line.text, runs: line.runs });
-            }
-        }
+        c::SYSTEM_CHAT => system_chat(shared, r)?,
         c::PLAYER_CHAT => player_chat(shared, link, r, types)?,
-        c::DISGUISED_CHAT => {
-            let message = r.nbt()?;
-            let text = text::line(&message).text;
-            if let Some(message) = bound(r, types, &message, text)? {
-                shared.emit(message);
-            }
-        }
+        c::DISGUISED_CHAT => disguised_chat(shared, r, types)?,
         c::CHUNK_BATCH_FINISHED => write(link, s::CHUNK_BATCH_RECEIVED, Out::default().f32(CHUNKS_PER_TICK))?,
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
+            link.screen.reset();
+            link.world.clear();
+            shared.show_screen(link);
             link.phase = Phase::Configuration;
             link.unacked = 0;
         }
@@ -661,6 +775,62 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         _ => {}
     }
     Ok(None)
+}
+
+/// Keeps what the world packet `id` shows, for pictures.
+fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
+    use play::clientbound as c;
+    match id {
+        c::LOGIN => {
+            link.world.clear();
+            let _entity = r.i32()?;
+            let _hardcore = r.bool()?;
+            for _ in 0..r.list()? {
+                r.string()?;
+            }
+            for _ in 0..3 {
+                r.varint()?;
+            }
+            for _ in 0..3 {
+                r.bool()?;
+            }
+            link.world.enter(r.varint()?);
+        }
+        c::LEVEL_CHUNK_WITH_LIGHT => {
+            let [x, _, z] = link.position;
+            link.world.chunk(r, ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4))?;
+        }
+        c::FORGET_LEVEL_CHUNK => link.world.forget(r)?,
+        c::BLOCK_UPDATE => link.world.block(r)?,
+        c::SECTION_BLOCKS_UPDATE => link.world.section(r)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+struct Drawing(Arc<AtomicBool>);
+
+impl Drop for Drawing {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn save(dir: &std::path::Path, stamp: &str, pictures: &[(&str, &[u8])], width: u32, height: u32) {
+    let name = |n: u32, suffix: &str| dir.join(if n == 0 { format!("{stamp}{suffix}.png") } else { format!("{stamp}_{n}{suffix}.png") });
+    let free = (0..1000).find(|n| pictures.iter().all(|(suffix, _)| !name(*n, suffix).exists())).unwrap_or(1000);
+    for (suffix, rgba) in pictures {
+        let path = name(free, suffix);
+        let part = path.with_extension("png.part");
+        let saved = std::fs::create_dir_all(dir)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| image::save_buffer_with_format(&part, rgba, width, height, image::ExtendedColorType::Rgba8, image::ImageFormat::Png).map_err(anyhow::Error::from))
+            .and_then(|()| std::fs::rename(&part, &path).map_err(anyhow::Error::from));
+        if let Err(e) = saved {
+            let _ = std::fs::remove_file(&part);
+            eprintln!("picture not saved to {}: {e:#}", path.display());
+        }
+    }
 }
 
 /// Confirms a teleport with the position it leads to, and once per spawn tells the server the world is loaded.
@@ -689,12 +859,34 @@ fn teleported(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     Ok(())
 }
 
+fn system_chat(shared: &Shared, r: &mut In) -> Result<()> {
+    let line = text::line(&r.nbt()?);
+    if !r.bool()? && !line.text.is_empty() {
+        shared.emit(FromMod::Chat { kind: ChatKind::System, from: None, text: line.text, runs: line.runs });
+    }
+    Ok(())
+}
+
+fn disguised_chat(shared: &Shared, r: &mut In, types: &[ChatType]) -> Result<()> {
+    let message = r.nbt()?;
+    let text = text::line(&message).text;
+    if let Some(message) = bound(r, types, &message, text)? {
+        shared.emit(message);
+    }
+    Ok(())
+}
+
 fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType]) -> Result<()> {
     let _global = r.varint()?;
     let _sender = r.uuid()?;
     let _index = r.varint()?;
     let signed = r.bool()?;
     if signed {
+        link.unacked += 1;
+        if link.unacked > ACK_AFTER {
+            write(link, play::serverbound::CHAT_ACK, Out::default().varint(link.unacked))?;
+            link.unacked = 0;
+        }
         r.take(256)?;
     }
     let content = r.string()?;
@@ -710,13 +902,6 @@ fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType])
     if mask == 2 {
         let words = usize::try_from(r.varint()?)?;
         r.take(words.checked_mul(8).context("filter mask too long")?)?;
-    }
-    if signed {
-        link.unacked += 1;
-        if link.unacked > ACK_AFTER {
-            write(link, play::serverbound::CHAT_ACK, Out::default().varint(link.unacked))?;
-            link.unacked = 0;
-        }
     }
     if mask == 1 {
         return Ok(());
@@ -753,4 +938,93 @@ fn bound(r: &mut In, types: &[ChatType], content: &Value, text: String) -> Resul
     }).collect();
     let from = Some(text::line(&name).text).filter(|n| !n.is_empty());
     Ok(Some(FromMod::Chat { kind: ChatKind::Player, from, text, runs: text::translate(key, &args).runs }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared() -> Shared {
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new(), shots: None };
+        Shared::new(&spec, std::sync::mpsc::channel().0)
+    }
+
+    fn noise(seed: &mut u64, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                *seed ^= *seed << 13;
+                *seed ^= *seed >> 7;
+                *seed ^= *seed << 17;
+                if *seed % 5 == 0 { 0xff } else { (*seed >> 24) as u8 }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_packet_body_panics_or_overflows_the_stack_however_it_is_cut_or_made_up() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let shared = shared();
+                let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+                for phase in [Phase::Configuration, Phase::Play] {
+                    for id in (0..0x100).filter(|id| wanted(phase, *id)) {
+                        for round in 0..300 {
+                            let body = noise(&mut seed, round % 90);
+                            let mut link = shared.lock();
+                            link.phase = phase;
+                            let mut r = In::new(&body);
+                            let _ = match phase {
+                                Phase::Configuration => configuration(&shared, &mut link, id, &mut r, &mut Vec::new()),
+                                _ => playing(&shared, &mut link, id, &mut r, &[]),
+                            };
+                        }
+                    }
+                }
+            })
+            .unwrap()
+            .join()
+            .expect("a packet body made the client panic");
+    }
+
+    #[test]
+    fn only_what_the_game_itself_cannot_survive_ends_a_connection_on_a_bad_packet() {
+        use cfg::clientbound as c;
+        use play::clientbound as p;
+        for id in [c::KEEP_ALIVE, c::PING, c::DISCONNECT, c::FINISH_CONFIGURATION, c::TRANSFER, c::COOKIE_REQUEST, c::CODE_OF_CONDUCT, c::RESOURCE_PACK_PUSH, c::SELECT_KNOWN_PACKS] {
+            assert!(essential(Phase::Configuration, id), "the server waits for an answer to {id}");
+        }
+        for id in [c::REGISTRY_DATA, c::RESOURCE_PACK_POP] {
+            assert!(!essential(Phase::Configuration, id));
+        }
+        for id in [p::KEEP_ALIVE, p::PING, p::DISCONNECT, p::PLAYER_POSITION, p::START_CONFIGURATION, p::TRANSFER, p::COOKIE_REQUEST] {
+            assert!(essential(Phase::Play, id));
+        }
+        for id in [p::SYSTEM_CHAT, p::PLAYER_CHAT, p::DISGUISED_CHAT, p::SET_HEALTH, p::RESPAWN, p::PLAYER_COMBAT_KILL, p::RESOURCE_PACK_PUSH, p::RESOURCE_PACK_POP, p::CHUNK_BATCH_FINISHED] {
+            assert!(!essential(Phase::Play, id));
+        }
+    }
+
+    fn body(host: &str, port: u16) -> Vec<u8> {
+        handshake(host, port).0
+    }
+
+    fn expected(host: &str, port: u16) -> Vec<u8> {
+        let mut bytes = vec![0x89, 0x06, host.len() as u8];
+        bytes.extend_from_slice(host.as_bytes());
+        bytes.extend_from_slice(&port.to_be_bytes());
+        bytes.push(2);
+        bytes
+    }
+
+    #[test]
+    fn the_handshake_carries_the_protocol_host_port_and_login_intention_and_nothing_else() {
+        assert_eq!(PROTOCOL, 777, "the bytes below are for protocol 777");
+        assert_eq!(body("mc.example.org", 25565), [&[0x89u8, 0x06, 14][..], b"mc.example.org", &[0x63, 0xdd], &[2]].concat());
+        assert_eq!(body("localhost", 25570), expected("localhost", 25570));
+        assert_eq!(body("mc.example.org.net.", 25570), expected("mc.example.org.net.", 25570), "an SRV target keeps its closing dot, as in the game");
+        for host in ["mc.example.org", "10.0.0.1", "mc.example.org.net."] {
+            assert!(!body(host, 25565).contains(&0), "no \\0FML or forwarding marker after {host}");
+        }
+    }
 }

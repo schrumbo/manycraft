@@ -5,18 +5,23 @@
 //! pong, teleport and chunk batch confirmations, the loaded world, client settings with view distance 2, configuration
 //! answers) plus what the user wrote. It speaks Minecraft 26.3 (protocol 777). Packet ids and the English texts it
 //! shows come from the game's own data generator: `.claude/bin/headless-packets` regenerates `v777.rs` from a server jar.
-//! Chat goes out unsigned; proxies and server transfers are not supported yet.
+//! Chat goes out unsigned; proxies and server transfers are not supported yet. What the server shows the player (the map in
+//! hand, an open menu, titles) is reported for the manager's screen view; menu clicks go out only when the user clicks.
 
 mod classify;
 mod cli;
 mod client;
 mod conn;
 mod crypto;
+mod item;
+mod picture;
 pub mod render;
 pub mod resume;
+mod screen;
 mod text;
 mod v777;
 mod wire;
+mod world;
 
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -30,6 +35,7 @@ use super::ipc;
 use super::proxy::Proxy;
 
 pub use cli::cli;
+pub use screen::{SIDE as MAP_SIDE, rgba as map_rgba};
 
 const STACK: usize = 512 << 10;
 
@@ -52,6 +58,8 @@ pub struct Spec {
     /// Hashes of the Codes of Conduct this batch already accepted on this server (see [`conduct`]); the same text is
     /// accepted again without asking.
     pub conduct: Vec<String>,
+    /// The folder its pictures are saved to; `None` keeps them on the tile only.
+    pub shots: Option<std::path::PathBuf>,
 }
 
 /// Why [`start`] refused an account.

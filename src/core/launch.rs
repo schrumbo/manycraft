@@ -49,6 +49,8 @@ pub struct LaunchSpec {
     pub session: Option<Session>,
     pub offline_name: String,
     pub memory_mb: u32,
+    /// The memory the game starts with; Java decides while `None`.
+    pub memory_min_mb: Option<u32>,
     pub server: Option<String>,
     /// The folder of a world in `saves` the game opens right away.
     pub world: Option<String>,
@@ -166,7 +168,8 @@ impl LaunchSpec {
         let mut list: Vec<String> = jvm.iter().chain(&game).map(|a| substitute(a, &vars)).collect();
         let game_start = jvm.len();
         list.insert(game_start, main_class.to_owned());
-        let mut extra = vec![format!("-Xmx{}M", self.memory_mb), format!("-XX:ErrorFile={}", self.game_dir.join("logs").join("hs_err_pid%p.log").display())];
+        let mut extra: Vec<String> = self.memory_min_mb.map(|min| format!("-Xms{min}M")).into_iter().collect();
+        extra.extend([format!("-Xmx{}M", self.memory_mb), format!("-XX:ErrorFile={}", self.game_dir.join("logs").join("hs_err_pid%p.log").display())]);
         extra.extend(self.extra_jvm.iter().cloned());
         list.splice(game_start..game_start, extra);
         let secret = self.session.as_ref().map(|s| s.access_token.clone()).filter(|t| !t.is_empty());
@@ -309,6 +312,7 @@ fn run(args: &[String]) -> Result<i32> {
         session,
         offline_name,
         memory_mb: 4096,
+        memory_min_mb: None,
         server: options.server,
         world: None,
         extra_jvm: Vec::new(),
@@ -388,6 +392,7 @@ mod tests {
             session,
             offline_name: "Dev".into(),
             memory_mb: 3072,
+            memory_min_mb: None,
             server: server.map(str::to_owned),
             world: None,
             extra_jvm: vec!["-Dextra=1".into()],
@@ -413,6 +418,17 @@ mod tests {
     fn after<'a>(args: &'a [String], flag: &str) -> &'a str {
         let i = args.iter().position(|a| a == flag).unwrap();
         &args[i + 1]
+    }
+
+    #[test]
+    fn the_starting_memory_is_asked_for_only_when_one_is_chosen() {
+        let plain = spec(None, None).arguments().unwrap();
+        assert!(!plain.as_slice().iter().any(|a| a.starts_with("-Xms")));
+        let mut chosen = spec(None, None);
+        chosen.memory_min_mb = Some(1024);
+        let chosen = chosen.arguments().unwrap();
+        let at = |arg: &str| chosen.as_slice().iter().position(|a| a == arg).unwrap();
+        assert!(at("-Xms1024M") < at("-Xmx3072M"));
     }
 
     #[test]

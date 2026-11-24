@@ -14,13 +14,13 @@ use crate::core::fit::Memory;
 use crate::core::fleet::{Adoption, Quick};
 use crate::core::history::Log;
 use crate::core::instance::Instance;
-use crate::core::ipc::{FromMod, HotkeyAction};
+use crate::core::ipc::{Click, FromMod, HotkeyAction};
 use crate::core::proxy::Fault;
 
 /// One report of the fleet, a game's mod or a frame reader.
 #[derive(Clone, Debug)]
 pub enum Report {
-    Preparing { batch: String, percent: u8 },
+    Preparing { batch: String, progress: crate::core::install::Progress },
     /// The game is installed; the accounts of `batch` wait in line to start.
     Prepared { batch: String },
     Launched { key: String, plain: bool },
@@ -149,6 +149,12 @@ pub enum Event {
     /// Reconnects these games one after another, leaving out banned ones and those without a process.
     ReconnectMany(Vec<String>),
     Respawn(String),
+    /// The user's `click` on `slot` of the menu `menu` that connection-only account `key` has open.
+    ClickSlot { key: String, menu: i32, slot: i16, click: Click },
+    /// Closes the menu `menu` that connection-only account `key` has open.
+    CloseMenu { key: String, menu: i32 },
+    /// The screen of this connection-only account is in view, or none.
+    LookAtScreen(Option<String>),
     /// Takes a screenshot of each of these games that runs without a window.
     Capture(Vec<String>),
     /// Answers the resource pack each of these games holds.

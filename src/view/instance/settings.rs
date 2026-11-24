@@ -8,6 +8,7 @@ use freya::prelude::*;
 use uuid::Uuid;
 
 use super::save::{self, Change, Job, OptionChange, Switch};
+use super::memory::{Memory, Steps};
 use super::{Facts, snapshots, version_text};
 use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
@@ -281,6 +282,44 @@ fn save_args(store: Store, id: &str, text: &str) -> Option<String> {
     None
 }
 
+fn save_memory_max(store: Store, id: &str, text: &str) -> Option<String> {
+    let typed = match options::parse_memory(text) {
+        Ok(typed) => typed,
+        Err(why) => return Some(why),
+    };
+    let made = store.model.peek().instance(id).cloned()?;
+    if typed == save::pending_memory(store, id).unwrap_or_else(|| made.own_memory()) {
+        return None;
+    }
+    if let Some(max) = typed {
+        let min = save::pending_memory_min(store, id).unwrap_or_else(|| made.own_memory_min()).or(settings::active().game.memory_min_mb);
+        if let Err(why) = options::check_memory_max(max, min, forms::total_ram_mb()) {
+            return Some(why);
+        }
+    }
+    save::enqueue(store, id, Job::Save(Change::Memory(typed)));
+    None
+}
+
+fn save_memory_min(store: Store, id: &str, text: &str) -> Option<String> {
+    let typed = match options::parse_memory(text) {
+        Ok(typed) => typed,
+        Err(why) => return Some(why),
+    };
+    let made = store.model.peek().instance(id).cloned()?;
+    if typed == save::pending_memory_min(store, id).unwrap_or_else(|| made.own_memory_min()) {
+        return None;
+    }
+    if let Some(min) = typed {
+        let max = save::pending_memory(store, id).unwrap_or_else(|| made.own_memory()).unwrap_or(settings::active().game.memory_mb);
+        if let Err(why) = options::check_memory_min(min, max) {
+            return Some(why);
+        }
+    }
+    save::enqueue(store, id, Job::Save(Change::MemoryMin(typed)));
+    None
+}
+
 fn save_window(store: Store, id: &str, width: &str, height: &str) -> Option<String> {
     let size = match options::parse_window(width, height) {
         Ok(size) => size,
@@ -403,6 +442,7 @@ impl Component for Settings {
         footer.extend(nav.notes.read().get(&id).into_iter().flatten().cloned());
         col = col.child(group(&t, Some(tr("Version & Loader")), rows, (!footer.is_empty()).then(|| footer.join(" "))));
         col = col.child(Game { facts: f.clone() });
+        col = col.child(super::sharing::Sharing { facts: f.clone() });
 
         let open = *nav.advanced.read();
         let mut adv = nav.advanced;
@@ -531,39 +571,45 @@ impl Component for Game {
 
         let mut rows = vec![account_row(&t, store, f)];
 
-        let max = forms::memory_max(forms::total_ram_mb());
+        let ceiling = u32::try_from(forms::total_ram_mb()).unwrap_or(u32::MAX).max(options::MEMORY_FLOOR_MB);
         let own_mb = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory());
-        let shown_mb = own_mb.unwrap_or(standard.memory_mb);
+        let own_min = save::pending_memory_min(store, &id).unwrap_or_else(|| made.own_memory_min());
         let wait = || busy.then(|| tr("Warte, bis die Umstellung fertig ist."));
-        let less = wait().or_else(|| (shown_mb <= forms::MEMORY_MIN).then(|| trf("Weniger geht nicht: mindestens %@.", &[&forms::memory_label(forms::MEMORY_MIN)])));
-        let more = wait().or_else(|| (shown_mb >= max).then(|| trf("Mehr geht nicht: höchstens %@.", &[&forms::memory_label(max)])));
-        let step = move |delta: i32, id: String| {
-            move |_| {
-                let Some(made) = store.model.peek().instance(&id).cloned() else { return };
-                let now = save::pending_memory(store, &id).unwrap_or_else(|| made.own_memory()).unwrap_or_else(|| settings::active().game.memory_mb);
-                let next = forms::memory_step(now, delta, max);
-                if next != now {
-                    let own = (next != settings::active().game.memory_mb).then_some(next);
-                    save::enqueue(store, &id, Job::Save(Change::Memory(own)));
-                }
-            }
-        };
-        let stepper = rect()
-            .horizontal()
-            .cross_align(Alignment::Center)
-            .spacing(space::XS)
-            .child(Button::icon("instance.settings.memory.less", Icon::Minus, tr("Weniger Arbeitsspeicher")).disabled(less).on_press(step(-1, id.clone())))
-            .child(rect().width(Size::px(control::STEPPER_VALUE)).center().child(strong(&t, forms::memory_label(shown_mb), font::BODY, if own_mb.is_some() { t.text1 } else { t.text2 })))
-            .child(Button::icon("instance.settings.memory.more", Icon::Plus, tr("Mehr Arbeitsspeicher")).disabled(more).on_press(step(1, id.clone())));
+
+        let max_text = use_state(String::new);
+        let max_problem = use_state(|| None::<String>);
+        let max_submit = use_typed(max_text, own_mb.map(|mb| mb.to_string()).unwrap_or_default(), id.clone(), max_problem, use_hook(Draft::default), move |id, text| save_memory_max(store, id, text));
+        let min_text = use_state(String::new);
+        let min_problem = use_state(|| None::<String>);
+        let min_submit = use_typed(min_text, own_min.map(|mb| mb.to_string()).unwrap_or_default(), id.clone(), min_problem, use_hook(Draft::default), move |id, text| save_memory_min(store, id, text));
+
+        let max_field = Memory::new("instance.settings.memory", tr("Maximaler Arbeitsspeicher"), max_text)
+            .placeholder(standard.memory_mb.to_string())
+            .steps(Steps { floor: options::MEMORY_FLOOR_MB, ceiling, from: own_mb.unwrap_or(standard.memory_mb) })
+            .disabled(wait())
+            .on_submit(move |text| max_submit.call(text));
+        let min_field = Memory::new("instance.settings.memory_min", tr("Minimaler Arbeitsspeicher"), min_text)
+            .placeholder(standard.memory_min_mb.map(|mb| mb.to_string()).unwrap_or_else(|| tr("Automatisch")))
+            .steps(Steps { floor: options::MEMORY_MIN_FLOOR_MB, ceiling: own_mb.unwrap_or(standard.memory_mb), from: own_mb.unwrap_or(standard.memory_mb).min(1024) })
+            .disabled(wait())
+            .on_submit(move |text| min_submit.call(text));
+
         let mem_id = id.clone();
-        let memory_reset = own_mb.filter(|mb| *mb != standard.memory_mb).map(|_| reset("memory", tr("Arbeitsspeicher"), move |_| save::enqueue(store, &mem_id, Job::Save(Change::Memory(None)))));
+        let memory_reset = own_mb.map(|_| reset("memory", tr("Maximaler Arbeitsspeicher"), move |_| save::enqueue(store, &mem_id, Job::Save(Change::Memory(None)))));
+        let min_id = id.clone();
+        let min_reset = own_min.map(|_| reset("memory_min", tr("Minimaler Arbeitsspeicher"), move |_| save::enqueue(store, &min_id, Job::Save(Change::MemoryMin(None)))));
         let memory_hint = match (own_mb, f.batches.is_empty()) {
             (None, true) => Some(as_standard(forms::memory_label(standard.memory_mb))),
             (None, false) => Some(format!("{} · {}", as_standard(forms::memory_label(standard.memory_mb)), tr("Pro Account in jedem Batch."))),
             (Some(_), false) => Some(tr("Pro Account in jedem Batch.")),
             (Some(_), true) => None,
         };
-        rows.push(row(&t, "memory", tr("Arbeitsspeicher"), memory_reset, stepper, memory_hint, None).into_element());
+        let min_hint = match own_min {
+            None => Some(as_standard(standard.memory_min_mb.map(forms::memory_label).unwrap_or_else(|| tr("Automatisch")))),
+            Some(_) => None,
+        };
+        rows.push(row(&t, "memory", tr("Maximaler Arbeitsspeicher"), memory_reset, max_field, memory_hint, max_problem.read().clone()).into_element());
+        rows.push(row(&t, "memory_min", tr("Minimaler Arbeitsspeicher"), min_reset, min_field, min_hint, min_problem.read().clone()).into_element());
 
         let wr = id.clone();
         let window_reset = now.window.filter(|w| Some(*w) != standard.window).map(|_| {
@@ -586,40 +632,12 @@ impl Component for Game {
         };
         rows.push(row(&t, "window", tr("Fenstergröße beim Start"), window_reset, size, Some(window_hint), window_problem.read().clone()).into_element());
 
-        rows.push(companion_row(store, f, busy));
-
         let mut footer: Vec<String> = f.running.then(|| tr("Änderungen wirken beim nächsten Start.")).into_iter().collect();
         if !f.batches.is_empty() {
             footer.push(tr("Batches mit dieser Instanz teilen Tastenbelegung und Serverliste."));
         }
         group(&t, Some(tr("Spiel")), rows, (!footer.is_empty()).then(|| footer.join(" ")))
     }
-}
-
-/// "Companion verwenden": the agent behind status and chat for games played alone; a proxied account forces it on.
-fn companion_row(store: Store, f: &Facts, busy: bool) -> Element {
-    let label = tr("Companion verwenden");
-    let id = f.made.id.clone();
-    let proxied = {
-        let m = store.model.read();
-        f.pick.and_then(|a| m.account(a)).filter(|a| a.proxy.is_some()).map(|a| a.name.clone())
-    };
-    let saved = save::pending_companion(store, &f.made.id).unwrap_or(f.made.companion);
-    let game = &f.made.game_version;
-    let unavailable = !game.is_empty() && !companion::available(game);
-    let (on, why, dim, hint) = match (&proxied, unavailable, busy) {
-        (Some(_), true, _) => (false, true, false, trf("Der Proxy braucht Minecraft %@ oder neuer. Entferne ihn oder wähle eine neuere Version.", &[&companion::first()])),
-        (None, true, _) => (false, true, true, trf("Gibt es erst ab Minecraft %@.", &[&companion::first()])),
-        (Some(name), _, _) => (true, true, false, trf("Der Proxy von %@ braucht ihn, er startet hier immer mit.", &[name])),
-        (None, _, true) => (saved, true, false, tr("Warte, bis die Umstellung fertig ist.")),
-        (None, _, false) => (saved, false, false, tr("Zeigt Status und Chat im Manager. Batches nutzen ihn immer.")),
-    };
-    let flip = move |on: bool| save::enqueue(store, &id, Job::Save(Change::Companion(on)));
-    let mut line = Line::new("instance.settings.companion.row", label.clone()).hint(hint).dim(dim).control(Toggle::new("instance.settings.companion", label, on).disabled(why).on_toggle(flip.clone()));
-    if !why {
-        line = line.on_press(move |_| flip(!on));
-    }
-    line.into_element()
 }
 
 /// "Spielen als": always there so the group never jumps; a menu from two accounts on.

@@ -109,6 +109,9 @@ pub struct Instance {
     /// Whether `memory_mb` is the instance's own choice even where it equals the old default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub memory_own: bool,
+    /// The memory the game starts with (`-Xms`) that this instance chose itself; `None` follows the launcher default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_min_mb: Option<u32>,
     #[serde(default)]
     pub jvm_args: Vec<String>,
     #[serde(default, skip_serializing_if = "LaunchOptions::is_default")]
@@ -122,12 +125,12 @@ pub struct Instance {
     /// The Modrinth project of the modpack this instance was installed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pack: Option<String>,
-    /// Whether a game played alone starts with the companion agent; batches always do.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub companion: bool,
     /// The library group this instance is listed under; ungrouped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// What this instance shares with the other sharing instances; nothing when the file predates sharing.
+    #[serde(default, skip_serializing_if = "super::share::Sharing::is_none")]
+    pub sync: super::share::Sharing,
     /// Fields a newer version wrote that this one does not know, written back unchanged.
     #[serde(flatten)]
     pub kept: serde_json::Map<String, serde_json::Value>,
@@ -154,6 +157,22 @@ impl Instance {
         self.memory_own = mb.is_some();
     }
 
+    /// The starting memory this instance chose itself; `None` follows the launcher default.
+    pub fn own_memory_min(&self) -> Option<u32> {
+        self.memory_min_mb
+    }
+
+    /// The memory each game of this instance starts with, never above [`Instance::memory`]: its own, else the launcher
+    /// default; `None` leaves the start to Java.
+    pub fn memory_min(&self) -> Option<u32> {
+        self.memory_min_mb.or_else(|| super::settings::active().game.memory_min_mb).map(|min| min.min(self.memory()))
+    }
+
+    /// Makes `mb` the instance's own starting memory, or with `None` lets it follow the launcher default.
+    pub fn set_memory_min(&mut self, mb: Option<u32>) {
+        self.memory_min_mb = mb;
+    }
+
     /// A new instance for `game_version` with `loader`, a fresh id and no mods.
     pub fn new(name: &str, game_version: &str, loader: Loader) -> Self {
         Self {
@@ -166,14 +185,15 @@ impl Instance {
             local_mods: Vec::new(),
             disabled: Vec::new(),
             memory_mb: DEFAULT_MEMORY_MB,
+            memory_min_mb: None,
             memory_own: false,
             jvm_args: Vec::new(),
             options: LaunchOptions::default(),
             last_account: None,
             default_account: None,
             pack: None,
-            companion: false,
             group: None,
+            sync: super::share::Sharing::ALL,
             kept: serde_json::Map::new(),
         }
     }
@@ -758,6 +778,22 @@ mod tests {
     }
 
     #[test]
+    fn the_starting_memory_is_the_instances_own_or_the_launchers_and_never_above_the_most() {
+        let mut i = Instance::new("A", "26.3", Loader::Vanilla);
+        assert_eq!(i.own_memory_min(), None);
+        assert!(!serde_json::to_string(&i).unwrap().contains("memory_min_mb"));
+        i.set_memory(Some(2048));
+        i.set_memory_min(Some(1024));
+        assert_eq!((i.own_memory_min(), i.memory_min()), (Some(1024), Some(1024)));
+        let back: Instance = serde_json::from_str(&serde_json::to_string(&i).unwrap()).unwrap();
+        assert_eq!(back.own_memory_min(), Some(1024));
+        i.set_memory(Some(512));
+        assert_eq!(i.memory_min(), Some(512), "the start never asks for more than the game may grow to");
+        let old: Instance = serde_json::from_str(r#"{"id":"a1","name":"A","game_version":"26.3","memory_mb":3072}"#).unwrap();
+        assert_eq!(old.own_memory_min(), None);
+    }
+
+    #[test]
     fn loaders_serialize_compactly_and_old_files_get_defaults() {
         let json = |l: &Loader| serde_json::to_string(l).unwrap();
         assert_eq!(json(&Loader::Vanilla), r#""vanilla""#);
@@ -1062,15 +1098,10 @@ mod tests {
     }
 
     #[test]
-    fn the_companion_setting_is_a_top_level_field_that_old_files_lack_and_old_versions_keep() {
-        let old = r#"{"id":"a","name":"A","game_version":"26.3"}"#;
-        let mut made: Instance = serde_json::from_str(old).unwrap();
-        assert!(!made.companion);
-        assert!(!serde_json::to_string(&made).unwrap().contains("companion"));
-        made.companion = true;
-        let text = serde_json::to_string(&made).unwrap();
-        assert!(text.contains(r#""companion":true"#));
-        assert!(serde_json::from_str::<Instance>(&text).unwrap().companion);
+    fn a_companion_flag_of_an_older_build_is_ignored_and_kept_for_old_versions() {
+        let old = r#"{"id":"a","name":"A","game_version":"26.3","companion":true}"#;
+        let made: Instance = serde_json::from_str(old).unwrap();
+        assert!(serde_json::to_string(&made).unwrap().contains(r#""companion":true"#));
     }
 
     #[test]
