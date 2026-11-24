@@ -266,7 +266,7 @@ impl Target {
                 let iw = at(7);
                 let z = 1.0 / iw;
                 let i = row + x;
-                if test && z >= self.depth[i] {
+                if test && z > self.depth[i] {
                     continue;
                 }
                 let texel = texture.sample(at(0) * z, at(1) * z, level);
@@ -326,6 +326,15 @@ mod tests {
         later.draw(&mut t);
         let c = t.color[16 * 32 + 16];
         assert!((c[0] - 0.498).abs() < 0.01 && (c[2] - 0.502).abs() < 0.01, "{c:?}");
+    }
+
+    #[test]
+    fn a_layer_drawn_on_the_same_geometry_covers_the_one_below() {
+        let mut t = target();
+        let tex = white();
+        t.quad(&square(5.0, [1.0, 0.0, 0.0]), &tex, Transparency::Opaque);
+        t.quad(&square(5.0, [0.0, 1.0, 0.0]), &tex, Transparency::Cutout);
+        assert_eq!(t.color[16 * 32 + 16], [0.0, 1.0, 0.0]);
     }
 
     #[test]
