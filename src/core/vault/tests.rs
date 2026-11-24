@@ -242,12 +242,29 @@ fn debug_output_never_shows_the_stand_in() {
     assert!(!shown.contains(vault.stand_in().as_str()), "{shown}");
 }
 
-fn socks_connect(relay: SocketAddr, atyp: u8, address: &[u8], port: u16) -> (TcpStream, u8) {
+fn socks_sign_in(relay: SocketAddr, password: &str) -> (TcpStream, u8) {
     let mut s = TcpStream::connect(relay).unwrap();
     s.write_all(&[5, 2, 0, 2]).unwrap();
     let mut chosen = [0u8; 2];
     s.read_exact(&mut chosen).unwrap();
-    assert_eq!(chosen, [5, 0]);
+    assert_eq!(chosen, [5, 2]);
+    let mut auth = vec![1, u8::try_from(relay::USER.len()).unwrap()];
+    auth.extend_from_slice(relay::USER.as_bytes());
+    auth.push(u8::try_from(password.len()).unwrap());
+    auth.extend_from_slice(password.as_bytes());
+    s.write_all(&auth).unwrap();
+    let mut status = [0u8; 2];
+    s.read_exact(&mut status).unwrap();
+    (s, status[1])
+}
+
+fn password(vault: &Vault) -> String {
+    vault.relay.as_ref().unwrap().1.as_str().to_owned()
+}
+
+fn socks_connect(vault: &Vault, atyp: u8, address: &[u8], port: u16) -> (TcpStream, u8) {
+    let (mut s, status) = socks_sign_in(vault.relay().unwrap(), &password(vault));
+    assert_eq!(status, 0);
     let mut request = vec![5, 1, 0, atyp];
     if atyp == 3 {
         request.push(u8::try_from(address.len()).unwrap());
@@ -269,10 +286,9 @@ fn relayed(dial: impl Fn(&proxy::Destination) -> Option<TcpStream> + Send + Sync
 #[test]
 fn the_relay_serves_the_vault_locally() {
     let (vault, _) = relayed(|_| panic!("the vault must not go through the account's proxy"));
-    let relay = vault.relay().unwrap();
     let port = vault.http.address().port();
     for (atyp, address) in [(1, vec![127, 0, 0, 1]), (3, b"localhost".to_vec()), (3, b"127.0.0.1".to_vec())] {
-        let (mut s, code) = socks_connect(relay, atyp, &address, port);
+        let (mut s, code) = socks_connect(&vault, atyp, &address, port);
         assert_eq!(code, 0);
         s.write_all(b"GET /minecraft/client HTTP/1.1\r\n\r\n").unwrap();
         assert_eq!(read_reply(&mut s).0, 200);
@@ -294,13 +310,12 @@ fn the_relay_sends_everything_else_through_the_account_proxy() {
         log.lock().unwrap().push(to.clone());
         TcpStream::connect(("127.0.0.1", target_port)).ok()
     });
-    let relay = vault.relay().unwrap();
-    let (mut s, code) = socks_connect(relay, 3, b"mc.example.net", 25565);
+    let (mut s, code) = socks_connect(&vault, 3, b"mc.example.net", 25565);
     assert_eq!(code, 0);
     let mut greeting = String::new();
     s.read_to_string(&mut greeting).unwrap();
     assert_eq!(greeting, "hello from the server");
-    let (_, code) = socks_connect(relay, 1, &[127, 0, 0, 1], target_port);
+    let (_, code) = socks_connect(&vault, 1, &[127, 0, 0, 1], target_port);
     assert_eq!(code, 0);
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0], proxy::Destination::Name("mc.example.net".into(), 25565));
@@ -310,23 +325,78 @@ fn the_relay_sends_everything_else_through_the_account_proxy() {
 #[test]
 fn the_relay_never_connects_directly_when_the_proxy_fails() {
     let (vault, _) = relayed(|_| None);
-    let (_, code) = socks_connect(vault.relay().unwrap(), 1, &[1, 2, 3, 4], 25565);
+    let (_, code) = socks_connect(&vault, 1, &[1, 2, 3, 4], 25565);
     assert_eq!(code, 5);
 }
 
 #[test]
 fn the_relay_refuses_what_is_not_a_plain_connect() {
     let (vault, _) = relayed(|_| None);
+    let (mut s, status) = socks_sign_in(vault.relay().unwrap(), &password(&vault));
+    assert_eq!(status, 0);
+    s.write_all(&[5, 2, 0, 1, 1, 2, 3, 4, 0, 80]).unwrap();
+    let mut reply = [0u8; 10];
+    s.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[..2], [5, 7]);
+}
+
+#[test]
+fn the_relay_lets_in_only_the_game_that_knows_its_password() {
+    let (vault, _) = relayed(|_| panic!("a stranger must not reach the account's proxy"));
     let mut s = TcpStream::connect(vault.relay().unwrap()).unwrap();
-    s.write_all(&[5, 1, 2]).unwrap();
+    s.write_all(&[5, 1, 0]).unwrap();
     let mut chosen = [0u8; 2];
     s.read_exact(&mut chosen).unwrap();
     assert_eq!(chosen, [5, 0xff]);
-    let mut s = TcpStream::connect(vault.relay().unwrap()).unwrap();
-    s.write_all(&[5, 1, 0, 5, 2, 0, 1, 1, 2, 3, 4, 0, 80]).unwrap();
-    let mut reply = [0u8; 12];
-    s.read_exact(&mut reply).unwrap();
-    assert_eq!(reply[2..4], [5, 7]);
+    let wrong = "0".repeat(password(&vault).len());
+    assert_eq!(socks_sign_in(vault.relay().unwrap(), &wrong).1, 1);
+    assert!(vault.relay_url().unwrap().contains(&password(&vault)));
+}
+
+#[test]
+fn a_renewal_that_fails_waits_before_it_is_tried_again() {
+    let fake = Arc::new(Fake::default());
+    let account = Uuid::new_v4();
+    let tried = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&tried);
+    let vault = open(&fake, account, Some(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        bail!("Microsoft is down")
+    })));
+    publish(account, REAL, SystemTime::now() + Duration::from_secs(10));
+    for _ in 0..3 {
+        assert_eq!(get(&vault, "/player/attributes", Some(vault.stand_in().as_str())).0, 200);
+    }
+    assert_eq!(tried.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_login_that_needs_a_new_sign_in_is_not_renewed_again_until_one_arrives() {
+    let fake = Arc::new(Fake::default());
+    fake.refuse.lock().unwrap().push(REAL.into());
+    let account = Uuid::new_v4();
+    let tried = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&tried);
+    let vault = open(&fake, account, Some(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        Err(crate::core::auth::AuthError::SignInAgain.into())
+    })));
+    publish(account, REAL, SystemTime::now() + Duration::from_secs(3600));
+    let body = format!(r#"{{"accessToken":"{}"}}"#, vault.stand_in().as_str());
+    for _ in 0..3 {
+        assert_eq!(post(&vault, "/session/minecraft/join", &body).0, 401);
+    }
+    assert_eq!(tried.load(Ordering::SeqCst), 1);
+    publish(account, "RENEWED", SystemTime::now() + Duration::from_secs(3600));
+    assert_eq!(post(&vault, "/session/minecraft/join", &body).0, 200);
+}
+
+#[test]
+fn a_huge_chunk_is_refused_without_a_panic() {
+    let fake = Arc::new(Fake::default());
+    let (vault, _) = signed_in(&fake);
+    let (status, _) = exchange(vault.http.address(), "POST /session/minecraft/join HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nA\r\nffffffffffffffff\r\n");
+    assert_eq!(status, 400);
 }
 
 #[test]

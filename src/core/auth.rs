@@ -353,7 +353,7 @@ fn microsoft_session(account: &Account) -> Result<Session> {
     }
     match fresh_session(account) {
         Ok(session) => {
-            let _ = account::store_session(account.id, &save_session(&session));
+            keep_session(account, &session);
             Ok(session)
         }
         Err(e) if net::no_connection(&e) => saved().ok_or(e),
@@ -369,6 +369,15 @@ fn fresh_session(account: &Account) -> Result<Session> {
         bail!("the saved sign-in belongs to {}, not to {}", session.name, account.name);
     }
     Ok(session)
+}
+
+/// Saves `session` for offline starts, unless the account was signed out while it was fetched.
+fn keep_session(account: &Account, session: &Session) {
+    let lock = refresh_lock(account.id);
+    let _turn = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    if matches!(account::read_token(account.id), Ok(Some(_))) {
+        let _ = account::store_session(account.id, &save_session(session));
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -419,7 +428,16 @@ fn refresh_saved(flow: &Flow, account: &Account) -> Result<Tokens> {
 /// stay and need a new sign-in before they play. Running games keep their login until they exit. Returns the accounts
 /// whose sign-in could not be removed.
 pub fn sign_out_all(accounts: &[Account]) -> Vec<Uuid> {
-    accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).filter(|a| account::delete_token(a.id).is_err()).map(|a| a.id).collect()
+    accounts
+        .iter()
+        .filter(|a| a.kind == AccountKind::Microsoft)
+        .filter(|a| {
+            let lock = refresh_lock(a.id);
+            let _turn = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            account::delete_token(a.id).is_err()
+        })
+        .map(|a| a.id)
+        .collect()
 }
 
 /// Checks that the saved sign-in of `account` still works by refreshing it, and keeps the rotated token.

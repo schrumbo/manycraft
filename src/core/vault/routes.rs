@@ -2,7 +2,7 @@
 //! for the stand-in, and a refusal for everything else.
 
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
@@ -114,13 +114,19 @@ fn discovery(base: &str) -> Vec<u8> {
     doc.to_string().into_bytes()
 }
 
-/// One forwarded request to Mojang.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One forwarded request to Mojang. Debug output leaves out the headers and the body, which carry the login.
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct Call {
     pub method: String,
     pub url: String,
     pub headers: Vec<(&'static str, String)>,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Call").field("method", &self.method).field("url", &self.url).finish_non_exhaustive()
+    }
 }
 
 /// Mojang's answer.
@@ -167,12 +173,11 @@ pub(super) struct Vaulted {
     key: Arc<Cell>,
     upstream: Arc<dyn Upstream>,
     refresh: Option<Refresh>,
-    renewing: Mutex<()>,
 }
 
 impl Vaulted {
     pub(super) fn new(stand_in: StandIn, base: String, key: Arc<Cell>, upstream: Arc<dyn Upstream>, refresh: Option<Refresh>) -> Self {
-        Self { stand_in, base, key, upstream, refresh, renewing: Mutex::new(()) }
+        Self { stand_in, base, key, upstream, refresh }
     }
 
     /// The answer to `request`.
@@ -216,9 +221,7 @@ impl Vaulted {
     }
 
     fn is_stand_in(&self, presented: &str) -> bool {
-        let want = self.stand_in.as_str().as_bytes();
-        let got = presented.as_bytes();
-        got.len() == want.len() && got.iter().zip(want).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+        self.stand_in.matches(presented.as_bytes())
     }
 
     fn with_login(&self, request: &Request, mut call: impl FnMut(&str) -> Call) -> Response {
@@ -239,13 +242,8 @@ impl Vaulted {
         if let Some(token) = fresh(SystemTime::now() + RENEW_AHEAD) {
             return Some(token);
         }
-        let refresh = self.refresh.as_ref()?;
-        let _turn = self.renewing.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(token) = fresh(SystemTime::now() + RENEW_AHEAD) {
-            return Some(token);
-        }
-        if let Err(e) = refresh() {
-            eprintln!("vault: cannot renew the login: {e:#}");
+        if let Some(refresh) = &self.refresh {
+            self.key.renew(refresh, || fresh(SystemTime::now() + RENEW_AHEAD).is_some());
         }
         fresh(SystemTime::now())
     }

@@ -41,6 +41,12 @@ impl StandIn {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Whether `presented` is this stand-in, compared in constant time.
+    fn matches(&self, presented: &[u8]) -> bool {
+        let want = self.0.as_bytes();
+        presented.len() == want.len() && presented.iter().zip(want).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    }
 }
 
 impl fmt::Debug for StandIn {
@@ -54,12 +60,12 @@ pub struct Vault {
     stand_in: StandIn,
     login: Login,
     http: Server,
-    relay: Option<Server>,
+    relay: Option<(Server, StandIn)>,
 }
 
 impl fmt::Debug for Vault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Vault").field("login", &self.login).field("address", &self.http.address()).field("relay", &self.relay.as_ref().map(Server::address)).finish()
+        f.debug_struct("Vault").field("login", &self.login).field("address", &self.http.address()).field("relay", &self.relay()).finish()
     }
 }
 
@@ -79,7 +85,13 @@ impl Vault {
         let bound = Bound::new()?;
         let vaulted = Vaulted::new(stand_in.clone(), base(bound.address()), keys::hold(account), upstream, refresh);
         let http = bound.serve("vault", routes::handler(vaulted))?;
-        let relay = dial.map(|dial| relay::start(http.address(), dial)).transpose()?;
+        let relay = match dial {
+            Some(dial) => {
+                let password = StandIn::new()?;
+                Some((relay::start(http.address(), dial, password.clone())?, password))
+            }
+            None => None,
+        };
         Ok(Self { stand_in, login, http, relay })
     }
 
@@ -95,7 +107,12 @@ impl Vault {
 
     /// The SOCKS relay the game must use as its only way out; only for accounts with a proxy.
     pub fn relay(&self) -> Option<SocketAddr> {
-        self.relay.as_ref().map(Server::address)
+        self.relay.as_ref().map(|(server, _)| server.address())
+    }
+
+    /// The relay as the companion takes it, with the password only this game knows; a secret like the proxy itself.
+    pub fn relay_url(&self) -> Option<String> {
+        self.relay.as_ref().map(|(server, password)| format!("socks5://{}:{}@{}", relay::USER, password.as_str(), server.address()))
     }
 }
 

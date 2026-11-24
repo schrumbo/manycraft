@@ -104,7 +104,7 @@ fn chunked(reader: &mut impl BufRead) -> Result<Vec<u8>> {
                 }
             }
         }
-        if body.len() + size > MAX_BODY {
+        if size > MAX_BODY - body.len() {
             bail!("the request body is too large");
         }
         let start = body.len();

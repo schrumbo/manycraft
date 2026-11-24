@@ -8,8 +8,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use super::StandIn;
 use super::server::{Bound, Server};
 use crate::core::proxy::Destination;
+
+/// The user name the game signs in to the relay with; the password is the relay's own stand-in.
+pub(super) const USER: &str = "manycraft";
 
 /// Opens a connection through the account's proxy; none when the proxy refuses or cannot reach the destination.
 pub(super) type Dial = Arc<dyn Fn(&Destination) -> Option<TcpStream> + Send + Sync>;
@@ -20,14 +24,14 @@ const FAILED: u8 = 1;
 const REFUSED: u8 = 5;
 const UNSUPPORTED: u8 = 7;
 
-/// Starts the relay in front of the vault at `vault`.
-pub(super) fn start(vault: SocketAddr, dial: Dial) -> Result<Server> {
-    Bound::new()?.serve("vault-relay", Arc::new(move |stream| relay(stream, vault, &dial)))
+/// Starts the relay in front of the vault at `vault`; only a client that signs in with `password` gets through.
+pub(super) fn start(vault: SocketAddr, dial: Dial, password: StandIn) -> Result<Server> {
+    Bound::new()?.serve("vault-relay", Arc::new(move |stream| relay(stream, vault, &dial, &password)))
 }
 
-fn relay(mut client: TcpStream, vault: SocketAddr, dial: &Dial) {
+fn relay(mut client: TcpStream, vault: SocketAddr, dial: &Dial, password: &StandIn) {
     let _ = client.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
-    let Ok(Some(to)) = handshake(&mut client) else { return };
+    let Ok(Some(to)) = handshake(&mut client, password) else { return };
     let upstream = if is_vault(&to, vault) { TcpStream::connect_timeout(&vault, HANDSHAKE_TIMEOUT).ok() } else { dial(&to) };
     let Some(upstream) = upstream else {
         let _ = answer(&mut client, REFUSED);
@@ -42,17 +46,28 @@ fn relay(mut client: TcpStream, vault: SocketAddr, dial: &Dial) {
     pump(client, upstream);
 }
 
-/// Reads the greeting and the CONNECT request; `None` after answering a request the relay does not serve.
-fn handshake(client: &mut TcpStream) -> io::Result<Option<Destination>> {
+/// Reads the greeting, the sign-in and the CONNECT request; `None` after answering a request the relay does not serve.
+fn handshake(client: &mut TcpStream, password: &StandIn) -> io::Result<Option<Destination>> {
     let mut head = [0u8; 2];
     client.read_exact(&mut head)?;
     let mut methods = vec![0u8; usize::from(head[1])];
     client.read_exact(&mut methods)?;
-    if head[0] != 5 || !methods.contains(&0) {
+    if head[0] != 5 || !methods.contains(&2) {
         client.write_all(&[5, 0xff])?;
         return Ok(None);
     }
-    client.write_all(&[5, 0])?;
+    client.write_all(&[5, 2])?;
+    let [version, user_len] = read_array::<2>(client)?;
+    let mut user = vec![0u8; usize::from(user_len)];
+    client.read_exact(&mut user)?;
+    let [password_len] = read_array::<1>(client)?;
+    let mut presented = vec![0u8; usize::from(password_len)];
+    client.read_exact(&mut presented)?;
+    let signed_in = version == 1 && user == USER.as_bytes() && password.matches(&presented);
+    client.write_all(&[1, if signed_in { 0 } else { 1 }])?;
+    if !signed_in {
+        return Ok(None);
+    }
     let mut request = [0u8; 4];
     client.read_exact(&mut request)?;
     let host = match request[3] {

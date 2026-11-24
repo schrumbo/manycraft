@@ -649,8 +649,8 @@ fn extra_arguments(target: &Target, account: &Account, game_dir: &Path, ipc_addr
         let proxy = proxy::parse(url).with_context(|| format!("the proxy of {} is invalid", account.name))?;
         match vault {
             Some(vault) => {
-                let relay = vault.relay().with_context(|| format!("the vault of {} has no relay for its proxy", account.name))?;
-                secrets.push((PROXY_VAR.to_owned(), format!("socks5://{relay}")));
+                let (Some(relay), Some(url)) = (vault.relay(), vault.relay_url()) else { bail!("the vault of {} has no relay for its proxy", account.name) };
+                secrets.push((PROXY_VAR.to_owned(), url));
                 game.extend(["--proxyHost".to_owned(), relay.ip().to_string(), "--proxyPort".to_owned(), relay.port().to_string()]);
             }
             None => {
@@ -3018,7 +3018,8 @@ mod tests {
         assert!(args.iter().any(|a| a.starts_with("-Dminecraft.api.discovery.host=http://127.0.0.1:")));
         let relay = vault.relay().unwrap();
         assert_eq!(extra.game, ["--proxyHost".to_owned(), "127.0.0.1".to_owned(), "--proxyPort".to_owned(), relay.port().to_string()]);
-        assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), format!("socks5://{relay}"))));
+        assert!(extra.secrets.contains(&("MANYCRAFT_PROXY".to_owned(), vault.relay_url().unwrap())));
+        assert!(vault.relay_url().unwrap().starts_with("socks5://manycraft:"));
     }
 
     #[test]
