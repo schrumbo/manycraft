@@ -2296,7 +2296,6 @@
   "Was Manycraft tut, solange ein Spiel läuft, das du allein spielst. Läuft ein Batch, bleibt es offen.": "What Manycraft does while a game you play alone is running. While a batch runs, it stays open.",
   "Die Spiel-Optionen dieses Accounts ließen sich nicht vorbereiten. Prüf, ob die Datei „options.txt“ im Spielordner beschreibbar ist.": "The game options for this account could not be prepared. Check that “options.txt” in the game folder can be written.",
   "Früherer Stand": "Earlier state",
-  "Früherer Stand von %@": "Earlier state from %@",
   "Wird umgestellt …": "Switching …",
   "Spiel-Optionen": "Game options",
   "Mod-Einstellungen": "Mod settings",
@@ -2332,7 +2331,7 @@
   "Noch nicht vorhanden.": "Doesn't exist yet.",
   "Basis ändern …": "Change base …",
   "Was synchronisiert wird": "What is synced",
-  "Es gibt jede Datei nur einmal. Synchronisierende Instanzen lesen und ändern dieselbe. Vor jedem Start hebt Manycraft den Stand auf und holt ihn zurück, wenn der Start ihn zurücksetzt. Frühere Stände bleiben in der Liste.": "Each file exists once. Syncing instances read and change the same one. Before every start Manycraft keeps the state and brings it back if the start resets it. Earlier states stay in the list.",
+  "Es gibt jede Datei nur einmal. Synchronisierende Instanzen lesen und ändern dieselbe. Vor jedem Start hebt Manycraft den Stand auf und holt ihn zurück, wenn der Start ihn zurücksetzt. Frühere Stände bleiben im Verlauf.": "Each file exists once. Syncing instances read and change the same one. Before every start Manycraft keeps the state and brings it back if the start resets it. Earlier states stay in the history.",
   "%lld von %lld Instanzen synchronisieren.": "%lld of %lld instances sync.",
   "Noch leer: der Stand entsteht bei der Einrichtung oder wenn eine Instanz speichert.": "Still empty: the state is created during setup or when an instance saves.",
   "Übernommen aus „%@“, %@.": "Taken from “%@”, %@.",
@@ -2383,5 +2382,6 @@
   "Synchronisiert %@.": "Syncs %@.",
   "Synchronisiert %@. Eigene Dateien: %@.": "Syncs %@. Own files: %@.",
   "Spiel-Optionen erst ab Minecraft 1.13.": "Game options only from Minecraft 1.13.",
-  "Ein Spiel läuft: Umstellungen gelten ab dem nächsten Start.": "A game is running: changes apply from the next start."
+  "Ein Spiel läuft: Umstellungen gelten ab dem nächsten Start.": "A game is running: changes apply from the next start.",
+  "%@, zurückgeholt": "%@, restored"
 }

@@ -17,7 +17,6 @@ use crate::view::kit::{off_ui, toast, use_theme};
 use crate::view::library::{self, Sort};
 use crate::view::theme::{control, space};
 
-/// The three steps in one card: what, from whom, and for whom.
 #[derive(PartialEq)]
 pub(super) struct SetupPanel {
     pub ctx: Ctx,
@@ -153,7 +152,6 @@ impl Component for SetupPanel {
 fn run(ctx: Ctx, request: Setup, running: Vec<String>, mut busy: State<bool>, done: EventHandler<()>) {
     busy.set(true);
     let store = ctx.store;
-    let back = running.clone();
     spawn_in_window(async move {
         let base = store.model.peek().instance(&request.base).map(|i| i.name.clone()).unwrap_or_default();
         match off_ui(move || share::setup(&request, &running)).await {
@@ -166,7 +164,7 @@ fn run(ctx: Ctx, request: Setup, running: Vec<String>, mut busy: State<bool>, do
                 if !result.nothing.is_empty() {
                     text = format!("{text} {}", trf("Davon hatte sie nichts: %@.", &[&names(&result.nothing)]));
                 }
-                let undo = EventHandler::new(move |_| undo_with(ctx, back.clone()));
+                let undo = EventHandler::new(move |_| undo(ctx));
                 let _ = toast::show_kept(store.ui, text, undo);
                 done.call(());
             }
@@ -180,14 +178,9 @@ fn run(ctx: Ctx, request: Setup, running: Vec<String>, mut busy: State<bool>, do
     });
 }
 
-/// Takes back the last setup.
 pub(super) fn undo(ctx: Ctx) {
-    let running: Vec<String> = super::whos(&ctx.store.model.peek()).into_iter().filter(|w| w.running).map(|w| w.id).collect();
-    undo_with(ctx, running);
-}
-
-fn undo_with(ctx: Ctx, running: Vec<String>) {
     let store = ctx.store;
+    let running: Vec<String> = super::whos(&store.model.peek()).into_iter().filter(|w| w.running).map(|w| w.id).collect();
     spawn_in_window(async move {
         match off_ui(move || share::undo_setup(&running)).await {
             Some(Ok(made)) => {

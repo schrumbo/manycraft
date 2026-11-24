@@ -14,7 +14,6 @@ use crate::view::kit::switch::Switch;
 use crate::view::kit::use_theme;
 use crate::view::theme::space;
 
-/// Every instance with its switch.
 #[derive(PartialEq)]
 pub(super) struct InstancesBlock {
     pub ctx: Ctx,
@@ -61,7 +60,25 @@ impl Component for InstancesBlock {
                 let chips = ITEMS.into_iter().filter(|i| *i != share::Item::Options || share::options_travel(&w.version)).map(|item| {
                     let (id, before, running) = (w.id.clone(), w.sync, w.running);
                     let next = w.sync.with(item, !w.sync.get(item));
-                    Chip::new(format!("sync.instance.{}.{}", w.id, label(item)), label(item)).on(w.sync.get(item)).on_press(move |_| switch(ctx, id.clone(), before, next, running, |_| {})).into_element()
+                    Chip::new(format!("sync.instance.{}.{}", w.id, label(item)), label(item))
+                        .on(w.sync.get(item))
+                        .on_press(move |_| {
+                            if working.peek().contains(&id) {
+                                return;
+                            }
+                            let mut now = working.peek().clone();
+                            now.push(id.clone());
+                            working.set(now);
+                            let done = id.clone();
+                            switch(ctx, id.clone(), before, next, running, move |_| {
+                                if working.try_peek().is_some() {
+                                    let mut left = working.peek().clone();
+                                    left.retain(|i| *i != done);
+                                    working.set(left);
+                                }
+                            });
+                        })
+                        .into_element()
                 });
                 line = line.below(rect().horizontal().spacing(space::S).children(chips));
             }

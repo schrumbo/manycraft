@@ -605,7 +605,7 @@ pub fn restore(version: &Version) -> Result<()> {
 
 pub(crate) fn restore_in(mother: &Mother, version: &Version) -> Result<()> {
     let files = history::files(mother, version)?;
-    let source = Own { id: String::new(), name: version.source.clone().map_or_else(|| tr("Früherer Stand"), |s| trf("Früherer Stand von %@", &[&s])), dir: PathBuf::new() };
+    let source = Own { id: String::new(), name: version.source.clone().map_or_else(|| tr("Früherer Stand"), |s| trf("%@, zurückgeholt", &[&s])), dir: PathBuf::new() };
     super::sync::with_templates(|| {
         let _held = mother.lock()?;
         kept(mother, |history| put_locked(mother, history, &source, files).map(|_| ()))

@@ -13,7 +13,6 @@ use crate::view::kit::{off_ui, use_theme};
 use crate::view::native;
 use crate::view::theme::{control, space};
 
-/// What each item stands on, with its history.
 #[derive(PartialEq)]
 pub(super) struct KindsBlock {
     pub ctx: Ctx,
@@ -52,7 +51,7 @@ impl Component for KindsBlock {
                 let at = picked.read()[n].min(found.len() - 1);
                 let labels: Vec<String> = found.iter().map(describe).collect();
                 let restore_one = found[at].clone();
-                let select = Select::new(format!("sync.history.{key}"), tr("Früherer Stand"), labels, at).width(control::VERSION_MENU).on_choose(move |i| {
+                let select = Select::new(format!("sync.history.{key}"), tr("Verlauf"), labels, at).width(control::VERSION_MENU).on_choose(move |i| {
                     let mut next = *picked.peek();
                     next[n] = i;
                     picked.set(next);
@@ -66,10 +65,10 @@ impl Component for KindsBlock {
             }
             rows.push(line.into_element());
         }
-        if let Some(note) = notes.read().first() {
-            rows.push(note_line(&t, "sync.note", note, notes));
+        for (n, note) in notes.read().iter().enumerate() {
+            rows.push(note_line(&t, &format!("sync.note.{n}"), note, notes));
         }
-        group(&t, Some(tr("Was synchronisiert wird")), rows, Some(tr("Es gibt jede Datei nur einmal. Synchronisierende Instanzen lesen und ändern dieselbe. Vor jedem Start hebt Manycraft den Stand auf und holt ihn zurück, wenn der Start ihn zurücksetzt. Frühere Stände bleiben in der Liste.")))
+        group(&t, Some(tr("Was synchronisiert wird")), rows, Some(tr("Es gibt jede Datei nur einmal. Synchronisierende Instanzen lesen und ändern dieselbe. Vor jedem Start hebt Manycraft den Stand auf und holt ihn zurück, wenn der Start ihn zurücksetzt. Frühere Stände bleiben im Verlauf.")))
     }
 }
 
@@ -81,7 +80,6 @@ fn key(item: Item) -> &'static str {
     }
 }
 
-/// Where `item` stands, in a sentence.
 fn state(s: &Standing, sharers: usize, total: usize) -> String {
     let count = trf("%lld von %lld Instanzen synchronisieren.", &[&sharers, &total]);
     if !s.present {
@@ -127,7 +125,6 @@ fn restore(ctx: Ctx, version: Version, mut busy: State<bool>) {
     });
 }
 
-/// A row saying what sync restored on its own, with a way to say it was seen.
 fn note_line(t: &crate::view::theme::Theme, id: &str, note: &Note, mut notes: State<Vec<Note>>) -> Element {
     use crate::view::kit::group::Line as Row;
     let what = if note.files.len() == 1 { trf("„%@“", &[&note.files[0]]) } else { trf("%@ Mod-Einstellungen", &[&note.files.len()]) };

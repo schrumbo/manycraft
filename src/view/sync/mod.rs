@@ -23,7 +23,6 @@ use crate::view::kit::{off_ui, page, toast, use_theme};
 use crate::view::library;
 use crate::view::store::{Store, use_store};
 
-/// What the page reads from the sync folder.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Loaded {
     pub standing: Vec<Standing>,
@@ -38,7 +37,6 @@ impl Loaded {
     }
 }
 
-/// An instance as the page lists it.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Who {
     pub id: String,
@@ -64,7 +62,6 @@ pub fn count_line(m: &Model) -> String {
     trf("%lld von %lld Instanzen synchronisieren", &[&on, &all.len()])
 }
 
-/// What the parts of the page share: the store and a counter that makes the page read the sync folder again.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct Ctx {
     pub store: Store,
@@ -88,8 +85,6 @@ impl Ctx {
     }
 }
 
-/// Saves what instance `id` synchronizes and tells the page; `then` runs when it is done, with whether it worked. A
-/// toast takes it back.
 pub(crate) fn switch(ctx: Ctx, id: String, before: Sharing, next: Sharing, running: bool, then: impl FnOnce(bool) + 'static) {
     let store = ctx.store;
     spawn_in_window(async move {
@@ -205,7 +200,6 @@ fn auto_block(ctx: Ctx) -> Element {
     AutoBlock { ctx }.into_element()
 }
 
-/// The switch for instances made from now on.
 #[derive(PartialEq)]
 struct AutoBlock {
     ctx: Ctx,

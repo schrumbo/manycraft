@@ -288,12 +288,12 @@ pub(super) fn origin(mother: &Mother, item: Item) -> Result<(Option<(String, i64
     Ok((base, last))
 }
 
-/// The newest own copy of each file of `item` that the instance `id` kept, by path relative to the instance folder.
-pub(super) fn own_latest(mother: &Mother, id: &str, item: Item) -> Result<Vec<(String, Vec<u8>)>> {
+/// The newest own copy of each file of `item` that the instance `id` kept after `since`, by path relative to the instance folder.
+pub(super) fn own_latest(mother: &Mother, id: &str, item: Item, since: i64) -> Result<Vec<(String, Vec<u8>)>> {
     let root = mother.root.join(DIR);
     let index = read_index(&root)?;
     let mut newest: BTreeMap<&str, &Entry> = BTreeMap::new();
-    for e in index.entries.iter().filter(|e| e.instance.as_deref() == Some(id) && item.holds(&e.rel)) {
+    for e in index.entries.iter().filter(|e| e.instance.as_deref() == Some(id) && e.at > since && item.holds(&e.rel)) {
         if newest.get(e.rel.as_str()).is_none_or(|n| n.at < e.at) {
             newest.insert(e.rel.as_str(), e);
         }

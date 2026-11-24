@@ -133,8 +133,6 @@ pub(crate) fn setup_in(mother: &Mother, root: &Path, request: &Setup, running: &
     Ok(Done { instances: done, nothing })
 }
 
-/// Writes the state `own` has of `items` into the sync folder, each replaced version kept, and returns the items it had
-/// nothing of. An item `flags` says it shares is its state already.
 fn adopt(mother: &Mother, own: &Own, flags: Sharing, items: &[Item], history: &mut History) -> Result<Vec<Item>> {
     let mut nothing = Vec::new();
     for item in items {
@@ -194,7 +192,7 @@ pub(crate) fn undo_in(mother: &Mother, root: &Path, running: &[String]) -> Resul
             next = next.with(*item, false);
         }
         let saved = set_in(mother, root, &made.id, next, running.contains(&made.id))?;
-        give_back(mother, &own, &turned)?;
+        give_back(mother, &own, &turned, record.at)?;
         out.push(saved);
     }
     log[0].undone = true;
@@ -202,11 +200,9 @@ pub(crate) fn undo_in(mother: &Mother, root: &Path, running: &[String]) -> Resul
     Ok(out)
 }
 
-/// Writes the newest own copy of each of `items` the history kept for `own` back into its folder; a `config` folder
-/// that is still a link stays, since a write there would reach the shared files.
-fn give_back(mother: &Mother, own: &Own, items: &[Item]) -> Result<()> {
+fn give_back(mother: &Mother, own: &Own, items: &[Item], since: i64) -> Result<()> {
     for item in items {
-        let files = history::own_latest(mother, &own.id, *item)?;
+        let files = history::own_latest(mother, &own.id, *item, since)?;
         if *item == Item::Config && is_link(&own.file(CONFIG)) {
             continue;
         }

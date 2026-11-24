@@ -1390,3 +1390,17 @@ fn only_the_newest_setup_can_be_taken_back_and_the_log_stays_short() {
     assert_eq!(setup::records(&w.mother).len(), 5);
     assert_eq!(last_in(&w.mother).unwrap().base, "A");
 }
+
+#[test]
+fn undo_never_writes_an_own_copy_older_than_the_setup_over_newer_files() {
+    let w = world();
+    let (a, x) = (w.instance("A", Sharing::NONE), w.instance("X", Sharing::NONE));
+    fill(&a, Some("version:3955\nfov:0.5\n"), None, &[("mod.json", "A")]);
+    fill(&x, None, None, &[("mod.json", "v0")]);
+    set_in(&w.mother, &w.roots.instances, &x.id, Sharing::ALL, false).unwrap();
+    set_in(&w.mother, &w.roots.instances, &x.id, Sharing::NONE, false).unwrap();
+    fs::write(x.dir.join("config").join("mod.json"), "v1").unwrap();
+    setup_in(&w.mother, &w.roots.instances, &ask(&a, Sharing::ALL, &[&x]), &[x.id.clone()]).unwrap();
+    undo_in(&w.mother, &w.roots.instances, &[x.id.clone()]).unwrap();
+    assert_eq!(read(&x.dir.join("config").join("mod.json")), "v1");
+}
