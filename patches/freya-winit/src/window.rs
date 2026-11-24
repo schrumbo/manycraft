@@ -716,6 +716,9 @@ impl AppWindow {
             return false;
         };
         let Err(error) = self.driver.resize(size) else {
+            if size.width == 0 || size.height == 0 {
+                self.driver.release_caches();
+            }
             return false;
         };
         tracing::warn!(

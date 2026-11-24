@@ -40,10 +40,10 @@ impl OptionChange {
 pub enum Change {
     Name(String),
     Memory(Option<u32>),
+    MemoryMin(Option<u32>),
     JvmArgs(Vec<String>),
     LoaderVersion(Option<String>),
     Option(OptionChange),
-    Companion(bool),
 }
 
 impl Change {
@@ -51,10 +51,10 @@ impl Change {
         match self {
             Self::Name(name) => edit.name.clone_from(name),
             Self::Memory(mb) => edit.memory_mb = *mb,
+            Self::MemoryMin(_) => {}
             Self::JvmArgs(args) => edit.jvm_args.clone_from(args),
             Self::LoaderVersion(version) => edit.loader = edit.loader.with_version(version.clone()),
             Self::Option(change) => change.apply(&mut edit.options),
-            Self::Companion(_) => {}
         }
     }
 }
@@ -112,6 +112,17 @@ pub fn pending_memory(store: Store, id: &str) -> Option<Option<u32>> {
     })
 }
 
+/// The starting memory a queued or running save will set on instance `id`, `Some(None)` for the launcher default; a component that asks redraws when the queue moves.
+pub fn pending_memory_min(store: Store, id: &str) -> Option<Option<u32>> {
+    let nav = store.ui.instance;
+    let queue = nav.queue.read();
+    let saving = nav.saving.read();
+    queue.iter().rev().chain(saving.iter()).filter(|(i, _)| i == id).find_map(|(_, job)| match job {
+        Job::Save(Change::MemoryMin(mb)) => Some(*mb),
+        _ => None,
+    })
+}
+
 /// The JVM arguments of instance `id` once its queued and running changes are saved, when one of them sets them.
 pub fn pending_jvm(store: Store, id: &str) -> Option<Vec<String>> {
     let nav = store.ui.instance;
@@ -119,17 +130,6 @@ pub fn pending_jvm(store: Store, id: &str) -> Option<Vec<String>> {
     let saving = nav.saving.read();
     queue.iter().rev().chain(saving.iter()).filter(|(i, _)| i == id).find_map(|(_, job)| match job {
         Job::Save(Change::JvmArgs(args)) => Some(args.clone()),
-        _ => None,
-    })
-}
-
-/// Whether instance `id` starts its solo games with the companion once its queued and running changes are saved, when one of them sets it.
-pub fn pending_companion(store: Store, id: &str) -> Option<bool> {
-    let nav = store.ui.instance;
-    let queue = nav.queue.read();
-    let saving = nav.saving.read();
-    queue.iter().rev().chain(saving.iter()).filter(|(i, _)| i == id).find_map(|(_, job)| match job {
-        Job::Save(Change::Companion(on)) => Some(*on),
         _ => None,
     })
 }
@@ -186,8 +186,8 @@ async fn pump(store: Store) {
 }
 
 fn run(made: &Instance, job: &Job) -> anyhow::Result<(Instance, Vec<String>)> {
-    if let Job::Save(Change::Companion(on)) = job {
-        return Ok((remote::save_companion(&made.id, *on)?, Vec::new()));
+    if let Job::Save(Change::MemoryMin(min)) = job {
+        return Ok((remote::save_memory_min(&made.id, *min)?, Vec::new()));
     }
     let base = InstanceEdit::of(made);
     let mut edit = base.clone();
