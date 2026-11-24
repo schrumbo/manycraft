@@ -588,6 +588,21 @@ pub fn clear_notes() -> Result<()> {
     notes::clear(&Mother::current())
 }
 
+/// The folder `name` of the instance folder `dir` to read when copying the instance out, `None` without one. A shared
+/// `config` link reads as the shared folder it points at.
+pub fn folder_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    if fs::symlink_metadata(&path).ok()?.is_dir() {
+        return Some(path);
+    }
+    linked(dir, name).then(|| fs::canonicalize(&path).ok()).flatten().filter(|p| p.is_dir())
+}
+
+/// Whether `name` in the instance folder `dir` is a link to a shared folder, which belongs to every sharing instance.
+pub fn linked(dir: &Path, name: &str) -> bool {
+    name == CONFIG && is_link(&dir.join(name))
+}
+
 /// The sync folder, where the shared files live.
 pub fn folder() -> PathBuf {
     Mother::current().root

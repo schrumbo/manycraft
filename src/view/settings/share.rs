@@ -127,6 +127,9 @@ impl Component for ShareGroup {
                     }
                 });
             });
+            if count == 0 && !*busy.read() {
+                rows.push(Line::new("settings.share.turn_on.why", tr("Wähle zuerst Instanzen aus.")).hint(tr("Tippe auf die Instanzen, die ihre Einstellungen teilen sollen.")).dim(true).into_element());
+            }
             rows.push(rect().width(Size::fill()).padding((space::S, space::L)).horizontal().main_align(Alignment::End).spacing(space::S).child(pick_all).child(start).into_element());
         }
         let turn_on = group(&t, Some(tr("Einstellungen teilen")), rows, Some(tr("Die zuletzt gespielte Instanz gibt vor, was noch fehlt. Was die anderen vorher hatten, bleibt unter „Frühere Stände“.")));

@@ -25,6 +25,7 @@ impl Component for Sharing {
         let t = use_theme();
         let store = use_store();
         let pending = use_state(|| None::<Shared>);
+        let mut switched = use_state(Vec::<Item>::new);
         let mut notes = use_state(Vec::<Note>::new);
         use_side_effect(move || {
             spawn(async move {
@@ -41,7 +42,11 @@ impl Component for Sharing {
         let old = !share::options_travel(&made.game_version);
         let others = sharers(store, Some(&made.id));
         let running = self.facts.running;
-        let mut rows: Vec<Element> = ITEMS.into_iter().map(|item| item_row(store, pending, &made.id, now, made.sync, item, saving, old && item == Item::Options, others[index(item)].len(), running)).collect();
+        if !running && !switched.peek().is_empty() {
+            spawn(async move { switched.set(Vec::new()) });
+        }
+        let later = if running { switched.read().clone() } else { Vec::new() };
+        let mut rows: Vec<Element> = ITEMS.into_iter().map(|item| item_row(store, pending, switched, &made.id, now, made.sync, item, saving, old && item == Item::Options, others[index(item)].len(), running, later.contains(&item))).collect();
         if let Some(note) = notes.read().first() {
             rows.push(note_line(&t, "instance.settings.share.note", note, notes));
         }
@@ -91,7 +96,7 @@ pub(crate) fn folder_line(id: &str) -> Element {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn item_row(store: Store, pending: State<Option<Shared>>, id: &str, now: Shared, saved: Shared, item: Item, saving: bool, unreachable: bool, others: usize, running: bool) -> Element {
+fn item_row(store: Store, pending: State<Option<Shared>>, switched: State<Vec<Item>>, id: &str, now: Shared, saved: Shared, item: Item, saving: bool, unreachable: bool, others: usize, running: bool, later: bool) -> Element {
     let key = match item {
         Item::Options => "options",
         Item::Config => "config",
@@ -103,6 +108,10 @@ fn item_row(store: Store, pending: State<Option<Shared>>, id: &str, now: Shared,
         tr("Erst ab Minecraft 1.13. Ältere Versionen speichern Tasten anders und behalten ihre eigene Datei.")
     } else if saving && now.get(item) != saved.get(item) {
         tr("Wird umgestellt …")
+    } else if later && on {
+        tr("Geteilt ab dem nächsten Start.")
+    } else if later {
+        tr("Eigene Datei ab dem nächsten Start.")
     } else if on && others == 0 {
         tr("Gemeinsame Datei. Noch teilt keine andere Instanz.")
     } else if on && others == 1 {
@@ -121,7 +130,7 @@ fn item_row(store: Store, pending: State<Option<Shared>>, id: &str, now: Shared,
     let hint = if what.is_empty() { state } else { format!("{state} {what}") };
     let locked = saving || unreachable;
     let id = id.to_owned();
-    let flip = move |want: bool| set(store, pending, id.clone(), now, now.with(item, want), item, running);
+    let flip = move |want: bool| set(store, pending, switched, id.clone(), now, now.with(item, want), item, running);
     let mut line = Line::new(format!("instance.settings.share.{key}.row"), label.clone()).hint(hint).control(Toggle::new(format!("instance.settings.share.{key}"), label, on).disabled(locked).on_toggle(flip.clone()));
     if !locked {
         line = line.on_press(move |_| flip(!on));
@@ -143,7 +152,19 @@ fn outcome(item: Item, on: bool, running: bool) -> String {
     }
 }
 
-fn set(store: Store, mut pending: State<Option<Shared>>, id: String, before: Shared, next: Shared, item: Item, running: bool) {
+/// Marks `item` as switched while a game runs, or unmarks it when it is switched back.
+fn mark(mut switched: State<Vec<Item>>, item: Item) {
+    let mut next = switched.peek().clone();
+    if let Some(at) = next.iter().position(|i| *i == item) {
+        next.remove(at);
+    } else {
+        next.push(item);
+    }
+    switched.set(next);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn set(store: Store, mut pending: State<Option<Shared>>, switched: State<Vec<Item>>, id: String, before: Shared, next: Shared, item: Item, running: bool) {
     if pending.peek().is_some() {
         return;
     }
@@ -153,7 +174,10 @@ fn set(store: Store, mut pending: State<Option<Shared>>, id: String, before: Sha
         match off_ui(move || share::set(&target, next, running)).await {
             Some(Ok(saved)) => {
                 store.dispatch(AppEvent::InstanceChanged(saved));
-                let undo = EventHandler::new(move |_| take_back(store, id.clone(), before, running));
+                if running && switched.try_peek().is_some() {
+                    mark(switched, item);
+                }
+                let undo = EventHandler::new(move |_| take_back(store, switched, id.clone(), before, item, running));
                 let _ = toast::show(store.ui, outcome(item, next.get(item), running), Some(undo));
             }
             Some(Err(e)) => {
@@ -168,10 +192,15 @@ fn set(store: Store, mut pending: State<Option<Shared>>, id: String, before: Sha
         }
     });
 }
-fn take_back(store: Store, id: String, before: Shared, running: bool) {
+fn take_back(store: Store, switched: State<Vec<Item>>, id: String, before: Shared, item: Item, running: bool) {
     spawn(async move {
         match off_ui(move || share::set(&id, before, running)).await {
-            Some(Ok(saved)) => store.dispatch(AppEvent::InstanceChanged(saved)),
+            Some(Ok(saved)) => {
+                store.dispatch(AppEvent::InstanceChanged(saved));
+                if running && switched.try_peek().is_some() {
+                    mark(switched, item);
+                }
+            }
             Some(Err(e)) => {
                 let _ = toast::show(store.ui, forms::explain_as(tr("Nicht zurückgenommen."), &e).text, None);
             }
