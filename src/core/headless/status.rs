@@ -117,6 +117,11 @@ impl Status {
         }
     }
 
+    /// Takes the name the server gave the own player at login, which its team membership goes by.
+    pub fn profile(&mut self, name: String) {
+        self.name = name;
+    }
+
     /// Forgets everything the server said, as a new connection or configuration does.
     pub fn reset(&mut self) {
         *self = Self::new(std::mem::take(&mut self.name));
@@ -438,8 +443,9 @@ impl Status {
     }
 
     /// The name tag of `member` (a player name, or an entity's UUID) reading `name` as this player sees it: in its
-    /// team's prefix, suffix and colour, or none when the team hides it from this player.
-    pub fn tag(&self, member: &str, name: Text) -> Option<Text> {
+    /// team's prefix, suffix and colour, or none when the team hides it from this player and `hideable` says its kind
+    /// obeys that, as players and mobs do but armor stands and other entities do not.
+    pub fn tag(&self, member: &str, name: Text, hideable: bool) -> Option<Text> {
         let Some((team, squad)) = self.members.get(member).and_then(|t| Some((t, self.teams.get(t)?))) else {
             return Some(name);
         };
@@ -450,7 +456,7 @@ impl Status {
             TAGS_FOR_OTHER_TEAMS => own.is_none_or(|o| o != team),
             _ => true,
         };
-        shown.then(|| formatted(&squad.team, name))
+        (shown || !hideable).then(|| formatted(&squad.team, name))
     }
 
     fn sidebar(&self) -> Option<Sidebar> {
@@ -585,25 +591,28 @@ mod tests {
     fn name_tags_carry_their_team_and_obey_its_visibility() {
         let mut st = joined("Dev");
         let name = |s: &str| vec![chat_text::Run { text: s.into(), ..chat_text::Run::default() }];
-        assert_eq!(st.tag("Alex", name("Alex")), Some(name("Alex")));
+        assert_eq!(st.tag("Alex", name("Alex"), true), Some(name("Alex")));
         join(&mut st, "blue", 0, Some(9), &["Alex"]);
-        let tag = st.tag("Alex", name("Alex")).unwrap();
+        let tag = st.tag("Alex", name("Alex"), true).unwrap();
         assert_eq!(chat_text::plain(&tag), "[T] Alex!");
         assert!(tag.iter().all(|r| r.color == Some(0x5555FF)));
         join(&mut st, "ghosts", TAGS_NEVER, None, &["0000-uuid"]);
-        assert_eq!(st.tag("0000-uuid", name("Zombie")), None);
+        assert_eq!(st.tag("0000-uuid", name("Zombie"), true), None);
+        assert_eq!(chat_text::plain(&st.tag("0000-uuid", name("Hologram"), false).unwrap()), "[T] Hologram!");
         join(&mut st, "friends", TAGS_FOR_OWN_TEAM, None, &["Bob"]);
         join(&mut st, "rivals", TAGS_FOR_OTHER_TEAMS, None, &["Cleo"]);
-        assert!(st.tag("Bob", name("Bob")).is_some() && st.tag("Cleo", name("Cleo")).is_some());
+        assert!(st.tag("Bob", name("Bob"), true).is_some() && st.tag("Cleo", name("Cleo"), true).is_some());
         feed(&mut st, c::SET_PLAYER_TEAM, |o| {
             o.string("friends").u8(3).varint(1).string("Dev");
         });
-        assert!(st.tag("Bob", name("Bob")).is_some() && st.tag("Cleo", name("Cleo")).is_some());
+        assert!(st.tag("Bob", name("Bob"), true).is_some() && st.tag("Cleo", name("Cleo"), true).is_some());
         feed(&mut st, c::SET_PLAYER_TEAM, |o| {
             o.string("rivals").u8(3).varint(1).string("Dev");
         });
-        assert!(st.tag("Bob", name("Bob")).is_none() && st.tag("Cleo", name("Cleo")).is_none());
-        assert_eq!(chat_text::plain(&st.tag("Alex", name("Alex")).unwrap()), "[T] Alex!");
+        assert!(st.tag("Bob", name("Bob"), true).is_none() && st.tag("Cleo", name("Cleo"), true).is_none());
+        assert_eq!(chat_text::plain(&st.tag("Alex", name("Alex"), true).unwrap()), "[T] Alex!");
+        st.profile("Nobody".into());
+        assert!(st.tag("Bob", name("Bob"), true).is_some() && st.tag("Cleo", name("Cleo"), true).is_some());
     }
 
     #[test]

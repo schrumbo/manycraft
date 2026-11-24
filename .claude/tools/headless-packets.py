@@ -155,8 +155,15 @@ def main():
     lines.append("")
     lines.append("/// Entity types by protocol id.")
     lines.append("pub static ENTITY_TYPES: &[&str] = &[")
-    for _, name in data["entity"]:
+    for _, name, _ in data["entity"]:
         lines.append(f"    {rust_str(name)},")
+    lines.append("];")
+    lines.append("")
+    lines.append("/// The protocol ids of the entity types that are living entities: players, mobs and armor stands, sorted.")
+    lines.append("pub static LIVING_ENTITY_TYPES: &[u16] = &[")
+    for pid, _, living in data["entity"]:
+        if living == "1":
+            lines.append(f"    {pid},")
     lines.append("];")
     lines.append("")
     for kind, title in (("villager_type", "Villager types"), ("villager_profession", "Villager professions"), ("attribute", "Attributes"), ("mob_effect", "Mob effects")):
