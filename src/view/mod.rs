@@ -22,6 +22,7 @@ mod shell;
 mod signals;
 mod stills;
 mod store;
+mod sync;
 mod theme;
 mod tray;
 mod ui;

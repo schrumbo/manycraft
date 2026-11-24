@@ -329,6 +329,9 @@ impl Component for Sidebar {
             list = list.child(rect().key(&b.id).width(Size::fill()).padding((0., 0., 0., indent)).child(WithTip::new(Some(tip), r)));
         }
 
+        let (r, tip) = row("nav.sync", tr("Sync"), Icon::Refresh, now == Page::Sync, Some(Command::ShowSync));
+        let sync = WithTip::new(tip, r.on_press(go(Page::Sync)));
+
         let mut foot = rect().width(Size::fill()).spacing(1.);
         if !rail {
             if let Some(news) = news_line(&t, store, &m.updates) {
@@ -354,6 +357,7 @@ impl Component for Sidebar {
             .child(rect().width(Size::fill()).padding((space::XS, 0.)).child(hairline(&t)))
             .child(group)
             .child(list)
+            .child(sync)
             .content(Content::flex())
             .child(hairline(&t))
             .child(foot);

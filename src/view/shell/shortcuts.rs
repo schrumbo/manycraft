@@ -56,7 +56,7 @@ fn sections() -> Vec<Section> {
     switch.extend(more);
     vec![
         (tr("Fenster"), bound(&[OpenPalette, FocusSearch, ToggleSidebar, OpenSettings, ShowShortcuts, Undo, Quit])),
-        (tr("Seiten"), bound(&[ShowAll, ShowAccounts, OpenChat, SwitchAccount, AddAccount, NewInstance, NewBatch, Import, FindModpacks, OpenTrash])),
+        (tr("Seiten"), bound(&[ShowAll, ShowSync, ShowAccounts, OpenChat, SwitchAccount, AddAccount, NewInstance, NewBatch, Import, FindModpacks, OpenTrash])),
         (tr("Instanz"), instance),
         (tr("Batches"), bound(&[SelectAll, ClearSelection, StartSelected, StopSelected, RestartSelected, ReconnectSelected, StartAll, StopAll, ShowTiles, ShowTable, Larger, Smaller, Fit])),
         (tr("Spiele wechseln, auch im Spiel"), switch),

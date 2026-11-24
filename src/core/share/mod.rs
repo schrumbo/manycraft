@@ -5,6 +5,7 @@
 mod history;
 mod keys;
 mod notes;
+mod setup;
 mod track;
 
 use std::collections::BTreeMap;
@@ -24,6 +25,9 @@ use super::{lock, net, paths};
 use history::History;
 pub use history::Version;
 pub use notes::Note;
+pub use setup::{Setup, Standing, Summary, for_new, last_setup, setup, standing, undo_setup};
+#[cfg(test)]
+use setup::{last_in, setup_in, standing_in, undo_in};
 pub(crate) use track::{Start, Tracker};
 
 /// Folder in the data folder that holds what sharing instances share.
@@ -90,6 +94,18 @@ pub enum Item {
 pub const ITEMS: [Item; 3] = [Item::Options, Item::Config, Item::Servers];
 
 impl Item {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Options => "options",
+            Self::Config => "config",
+            Self::Servers => "servers",
+        }
+    }
+
+    fn of(rel: &str) -> Option<Self> {
+        ITEMS.into_iter().find(|i| i.holds(rel))
+    }
+
     fn rel(self) -> &'static str {
         match self {
             Self::Options => OPTIONS_FILE,
@@ -218,6 +234,12 @@ pub fn inbound(instance: &Instance, joining: bool) -> Result<()> {
 }
 
 pub(crate) fn inbound_in(mother: &Mother, own: &Own, joining: bool) -> Result<()> {
+    join_in(mother, own, joining, false)
+}
+
+/// As [`inbound`]; with `replace`, what the instance had never adds to an item the sync folder already holds, so the
+/// shared state wins whole and the own copy only stays in the history.
+pub(crate) fn join_in(mother: &Mother, own: &Own, joining: bool, replace: bool) -> Result<()> {
     if !own.dir.is_dir() {
         return Ok(());
     }
@@ -227,14 +249,14 @@ pub(crate) fn inbound_in(mother: &Mother, own: &Own, joining: bool) -> Result<()
         let plan = kept(mother, |history| {
             let mut plan = Plan::default();
             if flags.options {
-                plan.options = options_join(mother, own, history)?;
+                plan.options = options_join(mother, own, history, replace)?;
             }
             if flags.servers {
                 plan.servers = servers_join(mother, own, history)?;
             }
             if flags.config {
                 if !joining {
-                    config_join(mother, own, history)?;
+                    config_join(mother, own, history, replace)?;
                 }
                 snapshot(mother, history)?;
             }
@@ -296,7 +318,7 @@ fn remove(path: &Path) -> Result<()> {
 
 /// Keeps the own options of `own` when they hold shared keys and fills the sync folder from them when it has none;
 /// returns what the own file keeps: the keys that stay with the instance, or nothing.
-fn options_join(mother: &Mother, own: &Own, history: &mut History) -> Result<Option<Option<String>>> {
+fn options_join(mother: &Mother, own: &Own, history: &mut History, replace: bool) -> Result<Option<Option<String>>> {
     let Some(raw) = read_file(&own.file(OPTIONS_FILE))? else { return Ok(None) };
     let text = String::from_utf8_lossy(&raw).into_owned();
     let usable = keys::readable(&text) && !keys::legacy(&text);
@@ -308,7 +330,7 @@ fn options_join(mother: &Mother, own: &Own, history: &mut History) -> Result<Opt
     if usable {
         let theirs = read_text(&mother.path(OPTIONS_FILE))?.filter(|t| keys::readable(t));
         let filled = theirs.as_deref().map_or_else(|| shared.clone(), |t| keys::merge(&shared, t));
-        if theirs.as_deref().is_none_or(|t| keys::map(t) != keys::map(&filled)) {
+        if theirs.is_none() || (!replace && theirs.as_deref().is_some_and(|t| keys::map(t) != keys::map(&filled))) {
             put_locked(mother, history, own, vec![(OPTIONS_FILE.to_owned(), filled.into_bytes())])?;
         }
     }
@@ -326,7 +348,7 @@ fn servers_join(mother: &Mother, own: &Own, history: &mut History) -> Result<boo
 }
 
 /// Keeps every file of a real `config` folder of `own` and fills the empty shared one from it.
-fn config_join(mother: &Mother, own: &Own, history: &mut History) -> Result<()> {
+fn config_join(mother: &Mother, own: &Own, history: &mut History, replace: bool) -> Result<()> {
     let path = own.file(CONFIG);
     if is_link(&path) || fs::symlink_metadata(&path).is_err() {
         return Ok(());
@@ -336,8 +358,10 @@ fn config_join(mother: &Mother, own: &Own, history: &mut History) -> Result<()> 
         history.backup(own, rel, bytes)?;
     }
     let shared = mother.path(CONFIG);
+    let holds_any = replace && !files_in(&shared)?.is_empty();
     let missing: Vec<(String, Vec<u8>)> = mine
         .into_iter()
+        .filter(|_| !holds_any)
         .filter(|(rel, _)| {
             let path = mother.path(rel);
             fs::symlink_metadata(&path).is_err() && path.ancestors().skip(1).take_while(|p| p.starts_with(&shared)).all(|p| fs::metadata(p).map_or(true, |m| m.is_dir()))
@@ -512,47 +536,8 @@ fn leave(mother: &Mother, own: &Own, items: &[Item]) -> Result<()> {
     Ok(())
 }
 
-/// Turns sharing of every item on for the instances `ids`, the most recently played first, so that it fills what the
-/// sync folder lacks and the others keep their own copies in the history. The `config` folder of an instance in
-/// `running` changes at its next start.
-pub fn turn_on(ids: &[String], running: &[String]) -> Result<Vec<Instance>> {
-    turn_on_in(&Mother::current(), &instance::instances_dir(), ids, running)
-}
-
-pub(crate) fn turn_on_in(mother: &Mother, root: &Path, ids: &[String], running: &[String]) -> Result<Vec<Instance>> {
-    let mut chosen: Vec<(Instance, PathBuf, Option<std::time::SystemTime>)> = instance::load_all_in(root)?
-        .into_iter()
-        .filter(|i| ids.contains(&i.id))
-        .map(|i| {
-            let dir = instance::dir_in(root, &i.id);
-            let played = played(&dir);
-            (i, dir, played)
-        })
-        .collect();
-    chosen.sort_by(|a, b| b.2.cmp(&a.2));
-    let mut done = Vec::new();
-    let mut failed = false;
-    for (mut made, dir, _) in chosen {
-        let own = Own { id: made.id.clone(), name: made.name.clone(), dir };
-        made.sync = Sharing::ALL;
-        done.push(save(root, made)?);
-        if failed {
-            continue;
-        }
-        if let Err(e) = inbound_in(mother, &own, running.contains(&own.id)) {
-            eprintln!("{} switches its shared files at the next start: {e:#}", own.name);
-            failed = true;
-        }
-    }
-    Ok(done)
-}
-
 fn travels(made: &Instance, item: Item) -> bool {
     item != Item::Options || options_travel(&made.game_version)
-}
-
-fn played(dir: &Path) -> Option<std::time::SystemTime> {
-    fs::read_dir(instance::games_dir(dir)).ok()?.filter_map(Result::ok).filter_map(|e| fs::metadata(e.path().join("logs").join("latest.log")).and_then(|m| m.modified()).ok()).max()
 }
 
 fn find(root: &Path, id: &str) -> Result<Instance> {
@@ -659,6 +644,10 @@ fn put_locked(mother: &Mother, history: &mut History, source: &Own, files: Vec<(
         }
         if let Some(old) = &old {
             history.keep(&rel, old)?;
+        } else if !source.id.is_empty()
+            && let Some(item) = Item::of(&rel)
+        {
+            history.based(item, source, true);
         }
         net::write_atomic(&path, &bytes)?;
         history.wrote(&rel, source);

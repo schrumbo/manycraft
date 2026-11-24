@@ -54,6 +54,8 @@ struct Index {
     entries: Vec<Entry>,
     #[serde(default)]
     current: BTreeMap<String, Stamp>,
+    #[serde(default)]
+    bases: BTreeMap<String, Stamp>,
 }
 
 /// An earlier state of one shared item.
@@ -111,6 +113,20 @@ impl History {
     /// Records that `source` wrote the version of `rel` that is now shared.
     pub(super) fn wrote(&mut self, rel: &str, source: &Own) {
         self.index.current.insert(rel.to_owned(), Stamp { source: Source { id: source.id.clone(), name: source.name.clone() }, written: self.at });
+    }
+
+    /// The moment this history was opened, which names every version it keeps.
+    pub(super) fn stamp(&self) -> i64 {
+        self.at
+    }
+
+    /// Records that the shared state of `item` comes from `source`; with `only_first` an earlier base stays.
+    pub(super) fn based(&mut self, item: Item, source: &Own, only_first: bool) {
+        let key = item.key().to_owned();
+        if only_first && self.index.bases.contains_key(&key) {
+            return;
+        }
+        self.index.bases.insert(key, Stamp { source: Source { id: source.id.clone(), name: source.name.clone() }, written: self.at });
     }
 
     /// Keeps `bytes`, the own copy of `rel` of `own`, unless it is the copy kept last.
@@ -263,4 +279,35 @@ pub(super) fn files(mother: &Mother, version: &Version) -> Result<Vec<(String, V
     }
     out.sort();
     Ok(out)
+}
+/// Where the shared state of an item stands: the instance it was taken from and who wrote it last.
+pub(super) fn origin(mother: &Mother, item: Item) -> Result<(Option<(String, i64)>, Option<(String, i64)>)> {
+    let index = read_index(&mother.root.join(DIR))?;
+    let base = index.bases.get(item.key()).map(|s| (s.source.name.clone(), s.written));
+    let last = index.current.iter().filter(|(rel, _)| item.holds(rel)).map(|(_, s)| s).max_by_key(|s| s.written).map(|s| (s.source.name.clone(), s.written));
+    Ok((base, last))
+}
+
+/// The newest own copy of each file of `item` that the instance `id` kept, by path relative to the instance folder.
+pub(super) fn own_latest(mother: &Mother, id: &str, item: Item) -> Result<Vec<(String, Vec<u8>)>> {
+    let root = mother.root.join(DIR);
+    let index = read_index(&root)?;
+    let mut newest: BTreeMap<&str, &Entry> = BTreeMap::new();
+    for e in index.entries.iter().filter(|e| e.instance.as_deref() == Some(id) && item.holds(&e.rel)) {
+        if newest.get(e.rel.as_str()).is_none_or(|n| n.at < e.at) {
+            newest.insert(e.rel.as_str(), e);
+        }
+    }
+    let mut out = Vec::new();
+    for (rel, e) in newest {
+        let path = e.file.split('/').fold(root.clone(), |p, part| p.join(part));
+        let bytes = fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        out.push((rel.to_owned(), bytes));
+    }
+    Ok(out)
+}
+
+/// The versions the history kept in the open at `at`, which are the shared states one write replaced.
+pub(super) fn replaced_at(mother: &Mother, item: Item, at: i64) -> Result<Vec<Version>> {
+    Ok(versions(mother, item)?.into_iter().filter(|v| v.at == at && !v.own).collect())
 }
