@@ -10,6 +10,7 @@ import platform
 import subprocess
 import sys
 
+DRIVER = "python3 .claude/bin/merge-i18n %O %A %B"
 MACHINES = {"Darwin": "Mac (ssh mac)", "Windows": "Windows PC (ssh windows)"}
 
 
@@ -44,6 +45,9 @@ def main():
     os.chdir(top)
     if out("config", "--get", "core.hooksPath") != ".claude/githooks" and os.path.isdir(".claude/githooks"):
         git("config", "core.hooksPath", ".claude/githooks")
+    if os.path.exists(".claude/bin/merge-i18n") and out("config", "--get", "merge.i18n.driver") != DRIVER:
+        git("config", "merge.i18n.name", "three-way merge of i18n catalogs by key")
+        git("config", "merge.i18n.driver", DRIVER)
     here = MACHINES.get(platform.system(), platform.system())
     notes = [f"sync on {here}. The owner also works on this repo on the other machine; origin is the only link and the owner pushes."]
 

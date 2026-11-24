@@ -12,6 +12,8 @@ helpers() { git -C "$ROOT" worktree list | grep -c ' \[herd/'; }
 remove() {
   name="$1"
   wt="$ROOT/.claude/worktrees/$name"
+  branch=$(git -C "$wt" branch --show-current 2>/dev/null)
+  branch="${branch:-herd/$name}"
   hc kill "$name" >/dev/null 2>&1
   if command -v powershell.exe >/dev/null; then
     powershell.exe -NoProfile -NonInteractive -Command "\$w='$wt'; \$b=\$w -replace '/','\\'; Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -and (\$_.CommandLine.Contains(\$w + '/') -or \$_.CommandLine.Contains(\$b + '\\')) } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1
@@ -27,7 +29,7 @@ remove() {
   rm -rf "$ROOT/target/herd-$name" "$ROOT/target/herd-$name"-* 2>/dev/null
   rm -f "$ROOT/.git/herd-lanes/$name"
   [ -d "$wt" ] && { echo "could not delete $wt; a process still holds it" >&2; exit 1; }
-  git -C "$HERE" branch -d "herd/$name"
+  git -C "$HERE" branch -d "$branch"
 }
 
 case "$cmd" in

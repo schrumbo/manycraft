@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Git merge driver for assets/i18n/*.json: three-way merge by key.
+
+A key removed on one side stays removed, a key added on one side stays added,
+and only a key both sides changed differently is a conflict. Writes the result
+over the "ours" file in the canonical layout (one entry per line). On a key
+both sides changed it keeps ours, names the key and exits 1 so git keeps the
+file unmerged.
+
+Usage: merge-i18n <base> <ours> <theirs>
+"""
+import json
+import sys
+
+MISSING = object()
+
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}
+    return json.loads(text) if text.strip() else {}
+
+
+def dump(entries):
+    lines = [f"  {json.dumps(k, ensure_ascii=False)}: {json.dumps(v, ensure_ascii=False)}" for k, v in entries.items()]
+    return "{\n" + ",\n".join(lines) + "\n}\n"
+
+
+def merge(base, ours, theirs):
+    result, conflicts = {}, []
+    keys = list(ours) + [k for k in theirs if k not in ours]
+    for key in keys:
+        b, o, t = base.get(key, MISSING), ours.get(key, MISSING), theirs.get(key, MISSING)
+        if o == t:
+            pick = o
+        elif o == b:
+            pick = t
+        elif t == b:
+            pick = o
+        else:
+            conflicts.append(key)
+            pick = o if o is not MISSING else t
+        if pick is not MISSING:
+            result[key] = pick
+    return result, conflicts
+
+
+def main():
+    if len(sys.argv) != 4:
+        print(__doc__.strip())
+        return 2
+    base, ours, theirs = (load(p) for p in sys.argv[1:])
+    result, conflicts = merge(base, ours, theirs)
+    with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as f:
+        f.write(dump(result))
+    for key in conflicts:
+        print(f"merge-i18n: both sides changed {key!r}; kept ours", file=sys.stderr)
+    return 1 if conflicts else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

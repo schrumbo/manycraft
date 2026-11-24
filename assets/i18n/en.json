@@ -356,10 +356,7 @@
   "%lld Accounts brauchen %@, dein PC hat %@ frei": "%lld accounts need %@, your PC has %@ free",
   "%lld ausgewählt": "%lld selected",
   "Alles auswählen": "Select all",
-  "An %lld Accounts gesendet · noch eine Nachricht…": {
-    "one": "Sent to 1 account · another message…",
-    "other": "Sent to %lld accounts · another message…"
-  },
+  "An %lld Accounts gesendet · noch eine Nachricht…": {"one": "Sent to 1 account · another message…", "other": "Sent to %lld accounts · another message…"},
   "Ausgewählte neu starten": "Restart selected",
   "Ausgewählte neu verbinden": "Reconnect selected",
   "Ausgewählte starten": "Start selected",
@@ -377,10 +374,7 @@
   "Filter": "Filter",
   "Leertaste": "Space",
   "Microsoft-Account hinzufügen": "Add Microsoft account",
-  "Nachricht an %lld Accounts…": {
-    "one": "Message 1 account…",
-    "other": "Message %lld accounts…"
-  },
+  "Nachricht an %lld Accounts…": {"one": "Message 1 account…", "other": "Message %lld accounts…"},
   "Nachricht schließen": "Close message",
   "Nachricht senden…": "Send message…",
   "Name, Batch, Server, Status": "Name, batch, server, status",
@@ -388,10 +382,7 @@
   "Nächsten Account spielen": "Play next account",
   "Nächsten, der dich braucht": "Next one that needs you",
   "Oder Accounts aus Prism übernehmen": "Or import accounts from Prism",
-  "%lld brauchen dich": {
-    "one": "1 needs you",
-    "other": "%lld need you"
-  },
+  "%lld brauchen dich": {"one": "1 needs you", "other": "%lld need you"},
   "Punkt": "Period",
   "Komma": "Comma",
   "Plus": "Plus",
@@ -492,10 +483,7 @@
   "Auch installiert: %@.": "Also installed: %@.",
   "%@ Tsd.": "%@K",
   "%@ Mio.": "%@M",
-  "%lld Treffer": {
-    "one": "1 result",
-    "other": "%lld results"
-  },
+  "%lld Treffer": {"one": "1 result", "other": "%lld results"},
   "Proxy-Fehler": "Proxy error",
   "Kein Kontakt": "No contact",
   "Startet neu…": "Restarting…",
@@ -2182,14 +2170,8 @@
   "Jedes Paket wird abgelehnt. Verlangt der Server eins, trennt er die Verbindung.": "Every pack is declined. If the server requires one, it disconnects.",
   "Gilt sofort.": "Applies right away.",
   "Geht erst ab Minecraft %@.": "Needs Minecraft %@ or newer.",
-  "%lld Ressourcenpaket": {
-    "one": "1 resource pack",
-    "other": "%lld resource packs"
-  },
-  "Alle %lld Minuten": {
-    "one": "Every minute",
-    "other": "Every %lld minutes"
-  },
+  "%lld Ressourcenpaket": {"one": "1 resource pack", "other": "%lld resource packs"},
+  "Alle %lld Minuten": {"one": "Every minute", "other": "Every %lld minutes"},
   "Zurück · %@": "Back · %@",
   "Wähle einen Mod, um Details zu sehen.": "Pick a mod to see its details.",
   "Wähle einen Eintrag, um Details zu sehen.": "Pick an entry to see its details.",
