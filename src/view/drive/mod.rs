@@ -394,6 +394,9 @@ async fn pointer(cmd: &str, b: &Value) -> Result<Value, String> {
         }
         "drop" => {
             let file_paths: Vec<PathBuf> = b["paths"].as_array().map(|p| p.iter().filter_map(|p| p.as_str()).map(PathBuf::from).collect()).unwrap_or_default();
+            if file_paths.is_empty() {
+                return Err("app drop needs at least one path".into());
+            }
             send(PlatformEvent::File { name: FileEventName::FileHover, cursor, file_paths: file_paths.clone() })?;
             settle().await;
             send(PlatformEvent::File { name: FileEventName::FileDrop, cursor, file_paths })?;
