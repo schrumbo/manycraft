@@ -5,7 +5,7 @@ use freya::prelude::*;
 use super::text::{line, para};
 use super::use_theme;
 use crate::view::drive::use_spot;
-use crate::view::theme::{Theme, control, font, space};
+use crate::view::theme::{Theme, control, font, frame, space};
 
 /// A group of `rows` under `title`, with `footer` below the card.
 pub fn group(t: &Theme, title: Option<String>, rows: Vec<Element>, footer: Option<String>) -> Element {
@@ -32,7 +32,7 @@ pub fn titled(t: &Theme, title: Option<String>, subhead: Option<String>, rows: V
     }
     column = column.child(card);
     if let Some(f) = footer {
-        column = column.child(rect().width(Size::fill()).padding((0., space::XS)).child(para(t, f, font::CAPTION, t.text3)));
+        column = column.child(rect().width(Size::fill()).max_width(Size::px(frame::READING)).padding((0., space::XS)).child(para(t, f, font::CAPTION, t.text3)));
     }
     column.into_element()
 }

@@ -286,10 +286,7 @@ fn is_rule(line: &str) -> bool {
 }
 
 fn fence_of(line: &str) -> Option<(char, usize)> {
-    let t = line.trim_start();
-    let first = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
-    let run = t.chars().take_while(|c| *c == first).count();
-    (run >= 3).then_some((first, run))
+    html::fence(line).map(|(mark, run, _)| (mark, run))
 }
 
 fn heading_of(line: &str) -> Option<(u8, &str)> {
@@ -537,6 +534,46 @@ fn resolve(text: &str, defs: &HashMap<String, String>, depth: usize) -> String {
     out
 }
 
+/// The text after the closing parenthesis of the picture `s` starts with, `s` being `![alt](url)...`.
+fn after_image(s: &str) -> Option<&str> {
+    let alt = s.strip_prefix("![")?;
+    let url = &alt[alt.find("](")? + 2..];
+    Some(&url[url.find(')')? + 1..])
+}
+
+fn lone_image(s: &str) -> bool {
+    match after_image(s) {
+        Some(rest) => rest.is_empty() || (rest.starts_with('{') && rest.ends_with('}') && !rest.contains(')')),
+        None => s.strip_prefix('[').and_then(after_image).and_then(|rest| rest.strip_prefix("](")).is_some_and(|url| url.strip_suffix(')').is_some_and(|u| !u.contains(')'))),
+    }
+}
+
+/// `text` with a heading that holds nothing but a picture, with or without a size like `{width=550}`, shown as the picture.
+fn image_lines(text: &str) -> Cow<'_, str> {
+    if !text.contains("![") {
+        return Cow::Borrowed(text);
+    }
+    let mut fence: Option<(char, usize)> = None;
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let marker = html::fence(line);
+        if let Some((mark, run)) = fence {
+            if matches!(marker, Some((m, r, true)) if m == mark && r >= run) {
+                fence = None;
+            }
+            out.push_str(line);
+        } else if let Some((mark, run, _)) = marker {
+            fence = Some((mark, run));
+            out.push_str(line);
+        } else {
+            let picture = heading_of(line).map(|(_, rest)| rest.trim()).filter(|rest| lone_image(rest));
+            out.push_str(picture.unwrap_or(line));
+        }
+        out.push('\n');
+    }
+    Cow::Owned(out)
+}
+
 fn references(text: &str) -> Cow<'_, str> {
     let mut defs = HashMap::new();
     let mut fence: Option<(char, usize)> = None;
@@ -571,6 +608,7 @@ fn references(text: &str) -> Cow<'_, str> {
 /// Reference links (`[text][ref]`, `[ref]`) are resolved against their `[ref]: url` lines, which are not shown.
 pub fn blocks(text: &str) -> Vec<Block> {
     let text = html::normalize(text);
+    let text = image_lines(&text);
     let text = references(&text);
     let lines: Vec<&str> = text.lines().collect();
     parse(&lines, 0)
@@ -747,6 +785,21 @@ pub fn view(t: &Theme, blocks: &[Block], color: Color) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_heading_that_is_only_a_sized_picture_is_the_picture() {
+        let found = blocks("# ![A](https://x.org/a.png){width=550}\n\ntext\n\n# ![B](https://x.org/b.png) Title");
+        assert!(matches!(found[0], Block::Images(_)), "first block is not the picture");
+        assert!(matches!(found.last(), Some(Block::Heading { .. })));
+    }
+
+    #[test]
+    fn a_readme_with_a_one_line_backtick_span_and_html_has_one_code_block() {
+        let src = "<center>\n\n```Early access```<br>\n[<img src=\"https://x.org/a.png\" alt=\"A\"/>](https://x.org)\n\n</center>\n\n<details>\n<summary>list</summary>\n\n```\nA, B\n```\n</details>\n\n<b>after</b>";
+        let found = blocks(src);
+        let codes: Vec<&String> = found.iter().filter_map(|b| if let Block::Code(c) = b { Some(c) } else { None }).collect();
+        assert_eq!(codes, vec!["A, B"], "{} blocks", found.len());
+    }
 
     fn plain(text: &str) -> Run {
         Run { text: text.to_owned(), ..Run::default() }

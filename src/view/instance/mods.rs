@@ -430,6 +430,7 @@ fn drop_zone(t: &Theme, mut dropping: State<bool>, ctx: &Ctx, inner: Element) ->
         .on_global_pointer_move(move |_| dropping.set_if_modified(false))
         .on_file_drop(move |e: Event<FileEventData>| {
             dropping.set_if_modified(false);
+            crate::view::kit::drop::claim(&e);
             match ctx.locked() {
                 Some(why) => ctx.note(why),
                 None => ctx.dropped(e.file_paths.clone()),

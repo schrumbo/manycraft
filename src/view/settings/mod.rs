@@ -28,10 +28,10 @@ use crate::view::kit::text::line;
 use crate::view::kit::{off_thread, open_external, use_theme};
 use crate::view::sheets;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, level, space};
+use crate::view::theme::{Theme, control, font, space};
 use crate::view::updates;
 
-const PAGE: f32 = 600.;
+const WIDE: f32 = 960.;
 const JUMPS: f32 = 180.;
 const SECTIONS: usize = 11;
 const SPY: f32 = space::XL * 2.;
@@ -241,16 +241,16 @@ impl Component for SettingsPage {
             None,
         );
         let sections: [Element; SECTIONS] = [LookGroup.into_element(), GameGroup.into_element(), ingame, connection, AccountsGroup.into_element(), notices, PhoneGroup.into_element(), chat, hotkeys, UpdatesGroup.into_element(), advanced];
-        let wide = *width.read() >= PAGE + (JUMPS + space::XL) * 2.;
-        let mut column = rect().width(Size::fill()).max_width(Size::px(PAGE)).spacing(space::XL);
+        let wide = *width.read() >= WIDE;
+        let mut column = rect().width(Size::fill()).spacing(space::XL);
         for (i, section) in sections.into_iter().enumerate() {
             column = column.child(rect().width(Size::fill()).on_sized(move |e| measure(heights, i, Bounds::of(&e).h)).child(section));
         }
-        let mut page = rect().width(Size::fill()).height(Size::fill()).on_sized(move |e| width.set_if_modified(Bounds::of(&e).w));
+        let mut page = rect().width(Size::fill()).height(Size::fill()).horizontal().content(Content::flex()).on_sized(move |e| width.set_if_modified(Bounds::of(&e).w));
         if wide {
-            page = page.child(rect().position(Position::new_absolute().left(space::XL).top(space::XL)).layer(Layer::Relative(level::FLOAT)).width(Size::px(JUMPS)).child(Jumps { scroll, heights, picked }));
+            page = page.child(rect().width(Size::px(JUMPS + space::XL)).height(Size::fill()).padding((space::XL, 0., 0., space::XL)).child(Jumps { scroll, heights, picked }));
         }
-        page.child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).cross_align(Alignment::Center).child(column)))
+        page.child(ScrollView::new_controlled(scroll).width(Size::flex(1.)).height(Size::fill()).child(rect().width(Size::fill()).padding(space::XL).child(column)))
     }
 }
 

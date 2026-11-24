@@ -3,6 +3,7 @@
 pub mod account;
 pub mod batch;
 pub mod browser;
+pub mod dropped;
 pub mod import;
 pub mod instance;
 pub mod screen;

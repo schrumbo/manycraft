@@ -43,6 +43,7 @@ impl Component for Shell {
         let page = ui.page.read().clone();
         let mut seen = use_state(|| None::<Page>);
         let mut booted = use_state(|| false);
+        let dropping = use_state(|| false);
         let found = {
             let m = store.model.read();
             m.loaded.then(|| match &page {
@@ -100,7 +101,7 @@ impl Component for Shell {
             column = column.child(notice(&t, store, text));
         }
         row = row.child(column.child(rect().width(Size::fill()).height(Size::flex(1.)).child(content)).content(Content::flex())).content(Content::flex());
-        rect()
+        super::kit::drop::window(rect(), dropping, move |paths| super::sheets::dropped::ask(store, paths))
             .width(Size::fill())
             .height(Size::fill())
             .background(t.surface)
@@ -133,6 +134,7 @@ impl Component for Shell {
             .child(menu::Host)
             .child(toast::Host)
             .child(tooltip::host(ui))
+            .maybe_child(super::kit::drop::outline(&t, dropping, ui.layered()))
     }
 }
 

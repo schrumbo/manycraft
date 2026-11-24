@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use freya::engine::prelude::{AlphaType as SkAlpha, ColorType, IPoint, ISize, ImageInfo};
 use freya::prelude::*;
-use freya_core::integration::{KeyboardEventName, MouseEventName, PlatformEvent, WheelEventName};
+use freya_core::integration::{FileEventName, KeyboardEventName, MouseEventName, PlatformEvent, WheelEventName};
 use freya_core::prelude::NavigationMode;
 use freya_winit::plugins::{FreyaPlugin, PluginEvent, PluginHandle};
 use serde_json::{Value, json};
@@ -143,7 +143,7 @@ async fn run(store: Store, b: &Value) -> Result<Value, String> {
             Ok(spot_json(&find(b, "")?))
         }
         "wait" => wait(b).await,
-        "click" | "move" | "down" | "up" | "wheel" => pointer(cmd, b).await,
+        "click" | "move" | "down" | "up" | "wheel" | "drop" => pointer(cmd, b).await,
         "key" => {
             let names: Vec<String> = b["keys"].as_array().map(|k| k.iter().filter_map(|k| k.as_str()).map(str::to_owned).collect()).unwrap_or_default();
             let mut keys = Vec::new();
@@ -391,6 +391,12 @@ async fn pointer(cmd: &str, b: &Value) -> Result<Value, String> {
                 send(PlatformEvent::Mouse { name: MouseEventName::MouseDown, cursor, button: Some(button) })?;
                 send(PlatformEvent::Mouse { name: MouseEventName::MouseUp, cursor, button: Some(button) })?;
             }
+        }
+        "drop" => {
+            let file_paths: Vec<PathBuf> = b["paths"].as_array().map(|p| p.iter().filter_map(|p| p.as_str()).map(PathBuf::from).collect()).unwrap_or_default();
+            send(PlatformEvent::File { name: FileEventName::FileHover, cursor, file_paths: file_paths.clone() })?;
+            settle().await;
+            send(PlatformEvent::File { name: FileEventName::FileDrop, cursor, file_paths })?;
         }
         "down" => send(PlatformEvent::Mouse { name: MouseEventName::MouseDown, cursor, button: Some(button) })?,
         "up" => send(PlatformEvent::Mouse { name: MouseEventName::MouseUp, cursor, button: Some(button) })?,

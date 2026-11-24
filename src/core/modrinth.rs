@@ -379,6 +379,9 @@ pub struct Shot {
     pub featured: bool,
     #[serde(default)]
     pub ordering: i64,
+    /// The picture at full size; `url` is a small copy.
+    #[serde(default)]
+    pub raw_url: Option<String>,
 }
 
 trait Source: Sync {
@@ -1171,7 +1174,7 @@ fn sha1_hex(bytes: &[u8]) -> String {
     Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn prune(dir: &Path, kept: usize) {
+pub(crate) fn prune(dir: &Path, kept: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<(SystemTime, std::path::PathBuf)> = entries.filter_map(Result::ok).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
     if files.len() <= kept {

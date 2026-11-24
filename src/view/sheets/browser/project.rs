@@ -8,6 +8,7 @@ use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
+use super::gallery;
 use super::{Face, Facts, Flow, act_of, fit_name, run_hint, saved_when, status_line, stepped, trail_of, trail_view, version_blocked};
 use crate::core::i18n::{date, tr, trf};
 use crate::core::modrinth::{self, Hit, Kind, Version};
@@ -27,8 +28,6 @@ use crate::view::readme::{self, Body, loading, problem_of, quiet};
 use crate::view::sheets::instance::{Load, problem_view};
 use crate::view::theme::{Theme, faces, font, frame, iconsize, space};
 
-const SHOT_BOX: (u32, u32) = (1024, 576);
-const SHOTS_AT_ONCE: usize = 2;
 const MAX_VERSIONS: usize = 60;
 const GAME_VERSIONS_SHOWN: usize = 4;
 const SKELETON_LINES: usize = 4;
@@ -176,40 +175,6 @@ fn day(iso: &str) -> String {
 }
 
 #[derive(Clone)]
-enum Pic {
-    Loading,
-    Ready(ImageHandle),
-    Failed,
-}
-
-static SHOT_GATE: LazyLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> = LazyLock::new(|| async_channel::bounded(SHOTS_AT_ONCE));
-
-struct ShotSlot;
-
-impl ShotSlot {
-    async fn take() -> Self {
-        let _ = SHOT_GATE.0.send(()).await;
-        Self
-    }
-}
-
-impl Drop for ShotSlot {
-    fn drop(&mut self) {
-        let _ = SHOT_GATE.1.try_recv();
-    }
-}
-
-fn decode_shot(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
-    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
-    let img = fitted(img).to_rgba8();
-    Some((img.width(), img.height(), img.into_raw()))
-}
-
-fn fitted(img: image::DynamicImage) -> image::DynamicImage {
-    if img.width() > SHOT_BOX.0 || img.height() > SHOT_BOX.1 { img.thumbnail(SHOT_BOX.0, SHOT_BOX.1) } else { img }
-}
-
-#[derive(Clone)]
 struct Pg {
     hit: Hit,
     kind: Kind,
@@ -217,7 +182,8 @@ struct Pg {
     details: State<Load<Rc<Body>>>,
     versions: State<Load<Rc<Vec<Version>>>>,
     titles: State<Rc<HashMap<String, String>>>,
-    shots: State<HashMap<String, Pic>>,
+    room: State<f32>,
+    thumbs: gallery::Thumbs,
     section: State<Section>,
     epoch: State<u64>,
 }
@@ -253,9 +219,6 @@ impl Pg {
             };
             let mut details = page.details;
             details.set(loaded);
-            if *page.section.peek() == Section::Gallery {
-                page.shots();
-            }
         });
     }
 
@@ -295,10 +258,9 @@ impl Pg {
 
     fn retry(&self) {
         let generation = *self.epoch.peek();
-        let (mut details, mut versions, mut titles, mut shots) = (self.details, self.versions, self.titles, self.shots);
+        let (mut details, mut versions, mut titles) = (self.details, self.versions, self.titles);
         if matches!(*details.peek(), Load::Failed(_)) {
             details.set(Load::Loading);
-            shots.set(HashMap::new());
             self.load_details(generation);
         }
         if matches!(*versions.peek(), Load::Failed(_)) {
@@ -313,59 +275,9 @@ impl Pg {
         state.set(section);
         let mut body = self.flow.body;
         body.scroll_to_y(0);
-        if section == Section::Gallery {
-            self.shots();
-        }
     }
 
-    fn shots(&self) {
-        let urls: Vec<String> = match &*self.details.peek() {
-            Load::Ready(body) => body.details.gallery.iter().map(|s| s.url.clone()).collect(),
-            _ => return,
-        };
-        let mut shots = self.shots;
-        let mut fresh: Vec<String> = Vec::new();
-        {
-            let known = shots.peek();
-            for url in urls {
-                if !known.contains_key(&url) && !fresh.contains(&url) {
-                    fresh.push(url);
-                }
-            }
-        }
-        if fresh.is_empty() {
-            return;
-        }
-        {
-            let mut map = shots.write();
-            for url in &fresh {
-                map.insert(url.clone(), Pic::Loading);
-            }
-        }
-        let generation = *self.epoch.peek();
-        for url in fresh {
-            let page = self.clone();
-            spawn_in_window(async move {
-                let slot = ShotSlot::take().await;
-                if !page.current(generation) {
-                    return;
-                }
-                let asked = url.clone();
-                let decoded = off_ui(move || {
-                    let _slot = slot;
-                    catalog::shot(&asked).ok().and_then(|path| decode_shot(&path))
-                })
-                .await
-                .flatten();
-                if !page.current(generation) {
-                    return;
-                }
-                let pic = decoded.and_then(|(w, h, rgba)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul)).map_or(Pic::Failed, Pic::Ready);
-                let mut shots = page.shots;
-                shots.write().insert(url, pic);
-            });
-        }
-    }
+
 }
 
 /// The page of `hit` over the results of the browser: what it is, what is in the gallery, which versions there are and what it needs.
@@ -393,7 +305,8 @@ impl Component for ProjectPage {
             details: use_state(|| Load::Loading),
             versions: use_state(|| Load::Loading),
             titles: use_state(|| Rc::new(HashMap::new())),
-            shots: use_state(HashMap::new),
+            room: use_state(|| 520.),
+            thumbs: use_state(HashMap::new),
             section: use_state(|| Section::About),
             epoch: use_state(|| 0),
         };
@@ -465,7 +378,7 @@ impl Component for ProjectPage {
         let mut content_top = use_state(|| 0f32);
         let content = match current {
             Section::About => about(&t, &pg),
-            Section::Gallery => gallery(&t, &pg),
+            Section::Gallery => gallery_view(&t, &pg),
             Section::Versions => versions(&t, self, &pg, content_top),
             Section::Needs => needs(&t, self, &pg),
         };
@@ -525,7 +438,7 @@ fn about(t: &Theme, pg: &Pg) -> Element {
 }
 
 
-fn gallery(t: &Theme, pg: &Pg) -> Element {
+fn gallery_view(t: &Theme, pg: &Pg) -> Element {
     let loaded = pg.details.read().clone();
     let body = match loaded {
         Load::Loading => return loading(t),
@@ -537,24 +450,10 @@ fn gallery(t: &Theme, pg: &Pg) -> Element {
     }
     let mut shots = body.details.gallery.clone();
     shots.sort_by_key(|s| (!s.featured, s.ordering));
-    let pics = pg.shots.read();
-    rect()
-        .width(Size::fill())
-        .spacing(space::L)
-        .children(shots.into_iter().map(|shot| {
-            let frame = rect().width(Size::fill()).height(Size::px(frame::SHOT_HEIGHT)).corner_radius(t.shape.control).overflow(Overflow::Clip).center();
-            let frame = match pics.get(&shot.url) {
-                Some(Pic::Ready(handle)) => frame.background(t.well).child(image(handle.clone()).width(Size::fill()).height(Size::px(frame::SHOT_HEIGHT)).aspect_ratio(AspectRatio::Min).image_cover(ImageCover::Center)).into_element(),
-                Some(Pic::Failed) => WithTip::new(Some(tr("Bild ließ sich nicht laden.")), frame.background(t.well).child(icon(t, Icon::ImageOff, iconsize::L, t.text3))).fill().into_element(),
-                _ => frame.background(t.hover).into_element(),
-            };
-            let mut column = rect().key(shot.url.clone()).width(Size::fill()).spacing(space::XS).child(frame);
-            if let Some(text) = shot.title.filter(|c| !c.trim().is_empty()) {
-                column = column.child(para(t, text, font::CALLOUT, t.text2));
-            }
-            column
-        }))
-        .into_element()
+    let items: Vec<gallery::Item> = shots.into_iter().map(|s| gallery::Item { title: s.title, large: s.raw_url.unwrap_or_else(|| s.url.clone()), thumb: s.url }).collect();
+    let (ui, project) = (pg.flow.store.ui, pg.hit.title.clone());
+    let shown = items.clone();
+    gallery::grid(t, &items, pg.room, pg.thumbs, EventHandler::new(move |at: usize| gallery::open(ui, project.clone(), shown.clone(), at)))
 }
 
 fn mark_view(t: &Theme, mark: Mark) -> Element {
@@ -1012,16 +911,6 @@ mod tests {
         assert_eq!(need_of(false, "incompatible", true), Need::Conflict);
         assert_eq!(need_of(false, "optional", true), Need::Optional);
         assert_eq!(need_of(false, "anything", false), Need::Optional);
-    }
-
-    #[test]
-    fn a_big_shot_shrinks_into_the_box_and_a_small_one_stays() {
-        let wide = fitted(image::DynamicImage::new_rgba8(4000, 1000));
-        assert_eq!((wide.width(), wide.height()), (1024, 256));
-        let tall = fitted(image::DynamicImage::new_rgba8(1000, 4000));
-        assert_eq!((tall.width(), tall.height()), (144, 576));
-        let small = fitted(image::DynamicImage::new_rgba8(300, 200));
-        assert_eq!((small.width(), small.height()), (300, 200));
     }
 
     #[test]

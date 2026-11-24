@@ -357,6 +357,14 @@ pub fn shot(url: &str) -> Result<PathBuf> {
     packs::shot_file(url)
 }
 
+/// A gallery picture as a local file, large enough to look at.
+pub fn shot_large(url: &str) -> Result<PathBuf> {
+    if canned() {
+        return canned_shot(url);
+    }
+    packs::shot_file_large(url)
+}
+
 fn canned_search(search: &Search, offset: usize) -> Result<Page> {
     let q = search.query.trim().to_lowercase();
     let many = q == "viele" || q == "many";
@@ -478,7 +486,7 @@ fn canned_details(hit: &Hit) -> Details {
         downloads: hit.downloads,
         followers: hit.downloads / 300,
         updated: "2026-11-02T10:15:00Z".into(),
-        gallery: (1..=3).map(|n| Shot { url: format!("https://cdn.modrinth.com/canned/{}-{n}.png", hit.slug), title: Some(format!("Bild {n}")), featured: n == 1, ordering: n }).collect(),
+        gallery: (1..=3).map(|n| Shot { url: format!("https://cdn.modrinth.com/canned/{}-{n}.png", hit.slug), title: Some(format!("Bild {n}")), featured: n == 1, ordering: n, raw_url: None }).collect(),
         icon_url: None,
         source_url: Some(format!("https://github.com/example/{}", hit.slug)),
         wiki_url: Some("https://example.org/wiki".into()),
