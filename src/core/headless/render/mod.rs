@@ -17,6 +17,7 @@ mod item;
 mod label;
 mod skins;
 mod light;
+mod map;
 mod model;
 mod random;
 mod raster;
@@ -27,7 +28,7 @@ mod states;
 use serde_json::Value;
 
 pub use self::assets::{Assets, shared};
-pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, Nobody, Pose, Skin, Text, slot};
+pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, MapPicture, Nobody, Pose, Skin, Text, slot};
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
 use self::scene::{Scene, View};
@@ -299,8 +300,66 @@ mod tests {
         }
     }
 
+    struct Shot {
+        entities: Vec<Entity>,
+        hand: Option<Hand>,
+        map: Option<MapPicture>,
+    }
+
+    impl Entities for Shot {
+        fn entities(&self) -> &[Entity] {
+            &self.entities
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            self.hand.as_ref()
+        }
+
+        fn map(&self, id: i32) -> Option<&MapPicture> {
+            self.map.as_ref().filter(|_| id == 0)
+        }
+    }
+
+    struct Mapped(Vec<Entity>, MapPicture);
+
+    impl Entities for Mapped {
+        fn entities(&self) -> &[Entity] {
+            &self.0
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            None
+        }
+
+        fn map(&self, id: i32) -> Option<&MapPicture> {
+            (id == 7).then_some(&self.1)
+        }
+    }
+
+    #[test]
+    fn a_filled_map_in_a_frame_shows_its_picture() {
+        let Some(jar) = jar() else { return };
+        let assets = Assets::open(&jar).unwrap();
+        let mut frame = crowd_entity("item_frame 0.5 64.5 2.5 180 item=filled_map facing=2").unwrap();
+        if let Data::Frame { item: Some(item), .. } = &mut frame.data {
+            item.map = Some(7);
+        }
+        let mut colors = [12 * 4 + 2; 128 * 128];
+        for z in 0..64 {
+            colors[z * 128..z * 128 + 64].fill(28 * 4 + 2);
+        }
+        let quarter = MapPicture { colors: std::sync::Arc::new(colors) };
+        let camera = Camera { pos: [0.5, 64.5, 0.5], yaw: 0.0, pitch: 0.0, fov: 70.0, distance: 2 };
+        let shown = render(&Flat, &[Biome::default()], &Mapped(vec![frame.clone()], quarter), &camera, &Sky::default(), 64, 64, &assets);
+        let unknown = render(&Flat, &[Biome::default()], &Crowd(vec![frame]), &camera, &Sky::default(), 64, 64, &assets);
+        let (north_west, south_east) = (shown.get_pixel(28, 28).0, shown.get_pixel(36, 36).0);
+        assert!(north_west[0] > north_west[1] * 2 && north_west[0] > north_west[2] * 2, "north-west quarter is red: {north_west:?}");
+        assert!(south_east[2] > south_east[0] * 2, "the rest is water blue: {south_east:?}");
+        assert_ne!(shown.get_pixel(36, 36), unknown.get_pixel(36, 36));
+    }
+
     fn item(id: &str) -> Item {
-        Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None }
+        Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None, map: None }
     }
 
     /// An entity from `kind x y z yaw [key=value …]`, the scene format the comparison shots share with the server
@@ -326,7 +385,7 @@ mod tests {
             "cat" => Data::Cat { variant: kv("variant").unwrap_or("tabby").into(), collar: 14 },
             "slime" | "magma_cube" => Data::Slime { size: kv("size").and_then(|v| v.parse().ok()).unwrap_or(1) },
             "item" => Data::Item { item: item(kv("item")?) },
-            "item_frame" | "glow_item_frame" => Data::Frame { item: kv("item").map(item), rotation: kv("rot").and_then(|v| v.parse().ok()).unwrap_or(0), facing: kv("facing").and_then(|v| v.parse().ok()).unwrap_or(3), glow: f[0] == "glow_item_frame", invisible: flag("invisible") },
+            "item_frame" | "glow_item_frame" => Data::Frame { item: kv("item").map(|i| Item { map: kv("map").and_then(|v| v.parse().ok()), ..item(i) }), rotation: kv("rot").and_then(|v| v.parse().ok()).unwrap_or(0), facing: kv("facing").and_then(|v| v.parse().ok()).unwrap_or(3), glow: f[0] == "glow_item_frame", invisible: flag("invisible") },
             "armor_stand" => Data::ArmorStand { small: flag("small"), arms: flag("arms"), no_plate: false, marker: false, poses: [[0.0; 3], [0.0; 3], [-10.0, 0.0, -10.0], [-15.0, 0.0, 10.0], [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0]] },
             "block_display" | "item_display" | "text_display" => {
                 let scale = kv("scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
@@ -401,7 +460,8 @@ mod tests {
     }
 
     /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
-    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
+    /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`), holding the item in `RENDER_HAND` (`<item|-> [uuid]`, `-` the bare arm of `uuid`'s default skin) when set, with the raw map
+    /// colours in the file `RENDER_MAP` as map 0.
     #[test]
     #[ignore]
     fn shots() {
@@ -430,8 +490,14 @@ mod tests {
             let camera = Camera { pos: [x, y, z], yaw: n(4) as f32, pitch: n(5) as f32, fov, distance: 2 };
             let sky = Sky { time: Some(n(6) as i64), rain: 0.0, thunder: 0.0 };
             let start = std::time::Instant::now();
-            let crowd = Crowd(std::env::var("RENDER_ENTITIES").ok().map(|p| std::fs::read_to_string(p).unwrap().lines().filter(|l| l.starts_with(f[0])).filter_map(|l| crowd_entity(l.split_once(' ')?.1)).collect()).unwrap_or_default());
-            let image = render(&world, &biomes, &crowd, &camera, &sky, w, h, &assets);
+            let crowd: Vec<Entity> = std::env::var("RENDER_ENTITIES").ok().map(|p| std::fs::read_to_string(p).unwrap().lines().filter(|l| l.starts_with(f[0])).filter_map(|l| crowd_entity(l.split_once(' ')?.1)).collect()).unwrap_or_default();
+            let hand = std::env::var("RENDER_HAND").ok().map(|held| {
+                let (held, uuid) = held.split_once(' ').unwrap_or((&held, ""));
+                let skin = Skin { uuid: uuid::Uuid::parse_str(uuid).unwrap_or_default(), parts: 0x7F, ..Skin::default() };
+                Hand { main: (held != "-").then(|| item(held)), left_handed: false, skin }
+            });
+            let map = std::env::var("RENDER_MAP").ok().map(|p| MapPicture { colors: std::sync::Arc::new(std::fs::read(p).unwrap().try_into().expect("128 × 128 colour bytes")) });
+            let image = render(&world, &biomes, &Shot { entities: crowd, hand, map }, &camera, &sky, w, h, &assets);
             eprintln!("{} eye {y:.2} {:?}", f[0], start.elapsed());
             image.save(out.join(format!("ours-{}.png", f[0]))).unwrap();
         }

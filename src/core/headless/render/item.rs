@@ -270,7 +270,7 @@ mod tests {
         let select: Value = serde_json::json!({"type": "minecraft:select", "cases": [], "fallback": {"type": "minecraft:model", "model": "minecraft:item/leather_chestplate", "tints": [{"type": "minecraft:dye", "default": -6265536}]}});
         let (path, tints) = pick(&select, 0).unwrap();
         assert_eq!(path, "minecraft:item/leather_chestplate");
-        let item = Item { id: "leather_chestplate", count: 1, glint: false, dye: None, trim: None, profile: None };
+        let item = Item { id: "leather_chestplate", count: 1, glint: false, dye: None, trim: None, profile: None, map: None };
         assert_eq!(tint(&tints.unwrap()[0], &item), rgb(-6265536));
         assert_eq!(Context::from_id(8), Context::Fixed);
     }

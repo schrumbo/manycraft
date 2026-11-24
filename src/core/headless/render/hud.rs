@@ -290,7 +290,7 @@ mod tests {
         }
         let hotbar = image.get_pixel(640, 720 - 10).0;
         assert_ne!(hotbar, [90, 140, 200, 255], "the hotbar is drawn");
-        assert!(took.as_millis() < 50, "{took:?}");
+        assert!(took.as_millis() < if cfg!(debug_assertions) { 500 } else { 50 }, "{took:?}");
     }
 
     #[test]
