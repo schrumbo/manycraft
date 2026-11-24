@@ -55,12 +55,14 @@ struct Base {
     servers: Option<Vec<u8>>,
     seen: Option<(u64, Option<SystemTime>)>,
     at: Instant,
+    settled: bool,
 }
 
 impl Base {
-    /// Whether what the game writes now is still its own first-start setup rather than a choice.
+    /// Whether what the game writes now is still its own first-start setup rather than a choice: only its first save
+    /// after loading, and only within a minute.
     fn settling(&self, start: &Start, now: Instant) -> bool {
-        start.fresh && now.saturating_duration_since(self.at) < FRESH_GRACE
+        start.fresh && !self.settled && now.saturating_duration_since(self.at) < FRESH_GRACE
     }
 }
 
@@ -114,7 +116,7 @@ impl Tracker {
         let seen = file_stamp(&path);
         let options = read_text(&path).ok().flatten().map(|t| keys::map(&t)).unwrap_or_default();
         let servers = read_file(&game.start.game.join(SERVERS_FILE)).ok().flatten();
-        game.base = Some(Base { options, servers, seen, at: Instant::now() });
+        game.base = Some(Base { options, servers, seen, at: Instant::now(), settled: false });
         let instance = game.start.instance.clone();
         let dir = game.start.dir.clone();
         let waiting = self.games.values().any(|g| g.start.instance == instance && g.base.is_none());
@@ -131,7 +133,9 @@ impl Tracker {
         if let Err(e) = sync::instance_options(roots, peers, &start.instance, values) {
             eprintln!("the options of {} were not kept: {e:#}", start.name);
         }
-        let mine = if base.settling(&game.start, Instant::now()) { BTreeMap::new() } else { keys::changed(&base.options, values) };
+        let settling = base.settling(&game.start, Instant::now());
+        base.settled |= settling;
+        let mine = if settling { BTreeMap::new() } else { keys::changed(&base.options, values) };
         base.options.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
         if mine.is_empty() || !flags_in(&start.dir).options {
             return;
@@ -306,6 +310,7 @@ fn learn_defaults(path: &Path, base: &mut Base, settling: bool) {
     }
     base.seen = now;
     let Ok(Some(text)) = read_text(path) else { return };
+    base.settled |= settling;
     for (k, v) in keys::map(&text) {
         if settling {
             base.options.insert(k, v);
