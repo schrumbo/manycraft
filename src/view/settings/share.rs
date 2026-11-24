@@ -31,7 +31,7 @@ impl Component for ShareGroup {
         let mut asked = use_state(|| 0u32);
         use_side_effect(move || {
             let _ = asked.read();
-            spawn(async move {
+            spawn_in_window(async move {
                 let found = off_ui(|| ITEMS.into_iter().map(|i| (i, share::versions(i).ok())).collect::<Vec<_>>()).await;
                 if versions.try_peek().is_some() {
                     versions.set(found);
@@ -40,9 +40,9 @@ impl Component for ShareGroup {
             });
         });
 
-        let (any, apart): (bool, Vec<(String, String)>) = {
+        let (any, apart): (bool, Vec<(String, String, Sharing)>) = {
             let model = store.model.read();
-            (!model.instances.is_empty(), model.instances.iter().filter(|i| i.sync != Sharing::ALL).map(|i| (i.id.clone(), i.name.clone())).collect())
+            (!model.instances.is_empty(), model.instances.iter().filter(|i| i.sync != Sharing::ALL).map(|i| (i.id.clone(), i.name.clone(), i.sync)).collect())
         };
         let mut rows: Vec<Element> = Vec::new();
         if !any {
@@ -50,7 +50,7 @@ impl Component for ShareGroup {
         } else if apart.is_empty() {
             rows.push(Line::new("settings.share.all", tr("Alle Instanzen teilen ihre Einstellungen.")).into_element());
         }
-        for (id, name) in &apart {
+        for (id, name, sync) in &apart {
             let on = chosen.read().contains(id);
             let pick = id.clone();
             let mut flip = move |want: bool| {
@@ -62,29 +62,38 @@ impl Component for ShareGroup {
                 }
                 chosen.set(next);
             };
-            rows.push(Line::new(format!("settings.share.pick.{id}.row"), name.clone()).control(Switch::new(format!("settings.share.pick.{id}"), name.clone(), on).disabled(*busy.read()).on_toggle(flip.clone())).on_press(move |_| {
+            rows.push(Line::new(format!("settings.share.pick.{id}.row"), name.clone()).hint(missing(*sync)).control(Switch::new(format!("settings.share.pick.{id}"), name.clone(), on).disabled(*busy.read()).on_toggle(flip.clone())).on_press(move |_| {
                 if !*busy.peek() {
                     flip(!on);
                 }
             }).into_element());
         }
-        let count = chosen.read().iter().filter(|id| apart.iter().any(|(a, _)| a == *id)).count();
+        let count = chosen.read().iter().filter(|id| apart.iter().any(|(a, _, _)| a == *id)).count();
         if !apart.is_empty() {
             let why = if *busy.read() { Some(tr("Wird umgestellt …")) } else if count == 0 { Some(tr("Wähle zuerst Instanzen aus.")) } else { None };
-            let all: Vec<String> = apart.iter().map(|(id, _)| id.clone()).collect();
+            let all: Vec<String> = apart.iter().map(|(id, _, _)| id.clone()).collect();
+            let every = all.clone();
+            let before: Vec<(String, Sharing)> = apart.iter().map(|(id, _, sync)| (id.clone(), *sync)).collect();
+            let pick_all = Button::new("settings.share.pick_all", tr("Alle auswählen")).disabled(if *busy.read() { Some(tr("Wird umgestellt …")) } else if count == all.len() { Some(tr("Alle sind ausgewählt.")) } else { None }).on_press(move |_| {
+                chosen.set(every.iter().cloned().collect());
+            });
             let label = if count > 1 { trf("Für %@ Instanzen einschalten", &[&count]) } else { tr("Teilen einschalten") };
             let start = Button::new("settings.share.turn_on", label).disabled(why).on_press(move |_| {
                 let ids: Vec<String> = chosen.peek().iter().filter(|id| all.contains(id)).cloned().collect();
                 if ids.is_empty() || *busy.peek() {
                     return;
                 }
+                let earlier: Vec<(String, Sharing)> = before.iter().filter(|(id, _)| ids.contains(id)).cloned().collect();
                 busy.set(true);
-                spawn(async move {
+                spawn_in_window(async move {
                     match off_ui(move || share::turn_on(&ids)).await {
                         Some(Ok(done)) => {
+                            let note = if done.len() > 1 { trf("Teilen ist an für %@ Instanzen.", &[&done.len()]) } else { tr("Teilen ist an.") };
                             for made in done {
                                 store.dispatch(Event::InstanceChanged(made));
                             }
+                            let undo = EventHandler::new(move |_| take_back(store, earlier.clone()));
+                            let _ = toast::show(store.ui, note, Some(undo));
                         }
                         Some(Err(e)) => {
                             let _ = toast::show(store.ui, forms::explain_as(tr("Nicht eingeschaltet."), &e).text, None);
@@ -101,12 +110,16 @@ impl Component for ShareGroup {
                     }
                 });
             });
-            rows.push(rect().width(Size::fill()).padding((space::S, space::L)).horizontal().main_align(Alignment::End).child(start).into_element());
+            rows.push(rect().width(Size::fill()).padding((space::S, space::L)).horizontal().main_align(Alignment::End).spacing(space::S).child(pick_all).child(start).into_element());
         }
         let turn_on = group(&t, Some(tr("Einstellungen teilen")), rows, Some(tr("Die zuletzt gespielte Instanz gibt vor, was noch fehlt. Was die anderen vorher hatten, bleibt unter „Frühere Stände“.")));
 
         let list = versions.read().clone();
-        let history_rows: Vec<Element> = ITEMS
+        let nothing_yet = list.as_ref().is_some_and(|l| l.iter().all(|(_, v)| v.as_ref().is_some_and(Vec::is_empty)));
+        let history_rows: Vec<Element> = if nothing_yet {
+            vec![Line::new("settings.share.history.none", tr("Noch keine früheren Stände.")).dim(true).into_element()]
+        } else {
+            ITEMS
             .into_iter()
             .enumerate()
             .map(|(n, item)| {
@@ -140,10 +153,45 @@ impl Component for ShareGroup {
                 line = line.control(rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(select).child(back));
                 line.into_element()
             })
-            .collect();
+            .collect()
+        };
         let history = group(&t, Some(tr("Frühere Stände")), history_rows, Some(tr("Zurückholen macht einen Stand wieder zum geteilten; der jetzige bleibt hier. Instanzen bekommen ihn beim nächsten Start.")));
         rect().width(Size::fill()).spacing(space::XL).child(turn_on).child(history)
     }
+}
+
+fn take_back(store: Store, earlier: Vec<(String, Sharing)>) {
+    spawn_in_window(async move {
+        match off_ui(move || earlier.iter().map(|(id, sync)| share::set(id, *sync)).collect::<anyhow::Result<Vec<_>>>()).await {
+            Some(Ok(made)) => {
+                for one in made {
+                    store.dispatch(Event::InstanceChanged(one));
+                }
+            }
+            Some(Err(e)) => {
+                let _ = toast::show(store.ui, forms::explain_as(tr("Nicht zurückgenommen."), &e).text, None);
+            }
+            None => {
+                let _ = toast::show(store.ui, forms::unexplained(), None);
+            }
+        }
+    });
+}
+
+fn missing(sync: Sharing) -> String {
+    if sync == Sharing::NONE {
+        return tr("Teilt noch nichts");
+    }
+    let off: Vec<String> = ITEMS
+        .into_iter()
+        .filter(|i| !sync.get(*i))
+        .map(|i| match i {
+            Item::Options => tr("Spiel-Optionen"),
+            Item::Config => tr("Mod-Einstellungen"),
+            Item::Servers => tr("Serverliste"),
+        })
+        .collect();
+    trf("Ohne %@", &[&off.join(", ")])
 }
 
 fn describe(v: &Version) -> String {
@@ -158,7 +206,7 @@ fn describe(v: &Version) -> String {
 
 fn restore(store: Store, version: Version, mut asked: State<u32>, mut busy: State<bool>) {
     busy.set(true);
-    spawn(async move {
+    spawn_in_window(async move {
         match off_ui(move || share::restore(&version)).await {
             Some(Ok(())) => {
                 let _ = toast::show(store.ui, tr("Zurückgeholt. Instanzen bekommen den Stand beim nächsten Start."), None);
