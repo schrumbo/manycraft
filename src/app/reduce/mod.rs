@@ -25,6 +25,7 @@ use crate::core::settings::Settings;
 pub use notify::attention_batch;
 #[cfg(test)]
 pub use notify::attention_tag;
+pub use quit::{Protected, protected};
 pub use show::{active_account, solo_account, solo_pick};
 
 /// What an event needs from outside the model: the time, chance and the settings.

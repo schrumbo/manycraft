@@ -7,6 +7,27 @@ fn running(m: &Model) -> usize {
     m.games.values().filter(|i| i.phase.is_running()).count()
 }
 
+/// Running games whose login lives in Manycraft's vault, which ends when Manycraft does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Protected {
+    /// Games that lose their login when Manycraft quits without ending them.
+    pub games: usize,
+    /// Those of them whose account has a proxy: their connection runs through Manycraft and drops at once.
+    pub proxied: usize,
+}
+
+/// The running games that would lose their login if Manycraft quit and left them running.
+pub fn protected(m: &Model) -> Protected {
+    let mut found = Protected::default();
+    for game in m.games.values().filter(|g| g.phase.is_running() && !g.connection && m.instance(&g.instance_id).is_some_and(|i| i.options.hide_login)) {
+        found.games += 1;
+        if m.account(game.account_id).is_some_and(|a| a.proxy.is_some()) {
+            found.proxied += 1;
+        }
+    }
+    found
+}
+
 /// Closing the window quits when no game runs; otherwise the manager goes to the notification area, with the hint the first time.
 /// Before the data loaded, games found from the last run are not counted yet, so the quit keeps them.
 pub(super) fn close_window(m: &Model, explained: bool, out: &mut Vec<Effect>) {
@@ -98,6 +119,23 @@ mod tests {
         let s = settings();
         let mut m = with(Phase::Stopped);
         assert_eq!(quits(&run(&mut m, &s, Instant::now(), Event::TrayExplained)), ["RememberTrayExplained", "Quit { keep: false }"]);
+    }
+
+    #[test]
+    fn games_behind_a_vault_are_counted_with_those_that_have_a_proxy() {
+        let mut m = with(Phase::Playing { server: "a".into(), since: Instant::now() });
+        assert_eq!(super::protected(&m), super::Protected::default());
+        m.instances[0].options.hide_login = true;
+        assert_eq!(super::protected(&m), super::Protected { games: 1, proxied: 0 });
+        m.accounts[0].proxy = Some("socks5://127.0.0.1:1080".into());
+        assert_eq!(super::protected(&m), super::Protected { games: 1, proxied: 1 });
+        for g in m.games.values_mut() {
+            g.connection = true;
+        }
+        assert_eq!(super::protected(&m).games, 0, "connection-only games have no vault");
+        let mut stopped = with(Phase::Stopped);
+        stopped.instances[0].options.hide_login = true;
+        assert_eq!(super::protected(&stopped).games, 0);
     }
 
     #[test]

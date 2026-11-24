@@ -758,6 +758,11 @@ impl Store {
             (true, true) => tr("Beim nächsten Start findet Manycraft es wieder."),
             (true, false) => tr("Beim nächsten Start findet Manycraft sie wieder."),
         };
+        let lost = crate::app::reduce::protected(&self.model.peek());
+        let message = match crate::view::updates::protected_line(lost) {
+            Some(line) => format!("{message} {line}"),
+            None => message,
+        };
         let end = sheet::Primary { label: tr("Alle beenden"), disabled: None, danger: true, busy: false, run: EventHandler::new(move |_| {
             sheet::close(self.ui);
             self.dispatch(Event::QuitChosen { keep: false });

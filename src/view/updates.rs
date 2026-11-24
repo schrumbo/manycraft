@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use freya::prelude::*;
 
-use super::kit::{after, off_thread};
+use super::kit::{after, off_thread, sheet};
 use super::store::Store;
 use crate::app::event::Event;
 use crate::app::model::{Phase, UpdateStatus, Updates};
@@ -300,8 +300,41 @@ pub fn blocked(store: Store) -> Option<String> {
     (counts(store).0 > 0).then(launching_line)
 }
 
-/// Quits the way `how` says, unless a game is still starting.
+/// What quitting and leaving the games running costs the games behind a vault, if any run.
+pub fn protected_line(lost: crate::app::reduce::Protected) -> Option<String> {
+    let lost_line = match lost.games {
+        0 => return None,
+        1 => tr("Beim geschützten Spiel endet dabei die Anmeldung: Es kann keinem Server mehr beitreten."),
+        games => trf("Bei %lld geschützten Spielen endet dabei die Anmeldung: Sie können keinem Server mehr beitreten.", &[&games]),
+    };
+    let proxied_line = match (lost.games, lost.proxied) {
+        (_, 0) => None,
+        (1, _) => Some(tr("Es hat einen Proxy und wird sofort getrennt.")),
+        (games, proxied) if proxied == games => Some(tr("Sie haben einen Proxy und werden sofort getrennt.")),
+        (_, 1) => Some(tr("Eins davon hat einen Proxy und wird sofort getrennt.")),
+        (_, proxied) => Some(trf("%lld davon haben einen Proxy und werden sofort getrennt.", &[&proxied])),
+    };
+    Some(proxied_line.map_or_else(|| lost_line.clone(), |p| format!("{lost_line} {p}")))
+}
+
+/// Quits the way `how` says, unless a game is still starting. Before an update restart that leaves games behind a vault
+/// without their login, it asks.
 pub fn quit(store: Store, how: Quit) {
+    if counts(store).0 > 0 {
+        return;
+    }
+    let lost = crate::app::reduce::protected(&store.model.peek());
+    if how == Quit::Install
+        && let Some(line) = protected_line(lost)
+    {
+        let message = format!("{line} {}", tr("Beende sie vorher, wenn du das nicht willst."));
+        sheet::confirm(store.ui, "update.protected", tr("Geschützte Spiele verlieren ihre Anmeldung"), message, tr("Trotzdem neu starten"), true, move |_| go(store, how));
+        return;
+    }
+    go(store, how);
+}
+
+fn go(store: Store, how: Quit) {
     if counts(store).0 > 0 {
         return;
     }

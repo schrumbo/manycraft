@@ -2377,5 +2377,14 @@
   "Microsoft-Kontoseite öffnen": "Open Microsoft Account Page",
   "%@ Accounts konnten nicht abgemeldet werden.": "%@ accounts couldn't be signed out.",
   "Wird abgemeldet …": "Signing out…",
-  "Kein Account ist angemeldet.": "No account is signed in."
+  "Kein Account ist angemeldet.": "No account is signed in.",
+  "Beim geschützten Spiel endet dabei die Anmeldung: Es kann keinem Server mehr beitreten.": "The protected game loses its login: it can't join a server anymore.",
+  "Es hat einen Proxy und wird sofort getrennt.": "It has a proxy and disconnects at once.",
+  "Sie haben einen Proxy und werden sofort getrennt.": "They have a proxy and disconnect at once.",
+  "Eins davon hat einen Proxy und wird sofort getrennt.": "One of them has a proxy and disconnects at once.",
+  "%lld davon haben einen Proxy und werden sofort getrennt.": "%lld of them have a proxy and disconnect at once.",
+  "Bei %lld geschützten Spielen endet dabei die Anmeldung: Sie können keinem Server mehr beitreten.": "%lld protected games lose their login: they can't join a server anymore.",
+  "Beende sie vorher, wenn du das nicht willst.": "Quit them first if you don't want that.",
+  "Geschützte Spiele verlieren ihre Anmeldung": "Protected games lose their login",
+  "Trotzdem neu starten": "Restart Anyway"
 }
