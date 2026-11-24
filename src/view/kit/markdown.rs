@@ -534,20 +534,6 @@ fn resolve(text: &str, defs: &HashMap<String, String>, depth: usize) -> String {
     out
 }
 
-/// The text after the closing parenthesis of the picture `s` starts with, `s` being `![alt](url)...`.
-fn after_image(s: &str) -> Option<&str> {
-    let alt = s.strip_prefix("![")?;
-    let url = &alt[alt.find("](")? + 2..];
-    Some(&url[url.find(')')? + 1..])
-}
-
-fn lone_image(s: &str) -> bool {
-    match after_image(s) {
-        Some(rest) => rest.is_empty() || (rest.starts_with('{') && rest.ends_with('}') && !rest.contains(')')),
-        None => s.strip_prefix('[').and_then(after_image).and_then(|rest| rest.strip_prefix("](")).is_some_and(|url| url.strip_suffix(')').is_some_and(|u| !u.contains(')'))),
-    }
-}
-
 /// `text` with a heading that holds nothing but a picture, with or without a size like `{width=550}`, shown as the picture.
 fn image_lines(text: &str) -> Cow<'_, str> {
     if !text.contains("![") {
@@ -566,7 +552,7 @@ fn image_lines(text: &str) -> Cow<'_, str> {
             fence = Some((mark, run));
             out.push_str(line);
         } else {
-            let picture = heading_of(line).map(|(_, rest)| rest.trim()).filter(|rest| lone_image(rest));
+            let picture = heading_of(line).map(|(_, rest)| rest.trim()).filter(|rest| picture::only_pictures(rest).is_some());
             out.push_str(picture.unwrap_or(line));
         }
         out.push('\n');
@@ -785,6 +771,12 @@ pub fn view(t: &Theme, blocks: &[Block], color: Color) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_indented_fence_under_a_list_item_is_still_code() {
+        let found = blocks("1. Build:\n\n    ```\n    # make sure\n    ./gradlew build\n    ```\n");
+        assert!(!found.iter().any(|b| matches!(b, Block::Heading { .. })), "an indented comment became a heading");
+    }
 
     #[test]
     fn a_heading_that_is_only_a_sized_picture_is_the_picture() {

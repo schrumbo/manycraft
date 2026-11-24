@@ -80,6 +80,7 @@ impl Component for Ask {
         let body = rect().width(Size::fill()).spacing(space::XXS).children(rows);
         if good.is_empty() {
             return Card::new("dropped", tr("Das lässt sich nicht importieren"))
+                .message(tr("Ziehe eine .mrpack- oder .zip-Datei oder einen Instanz-Ordner auf das Fenster."))
                 .body(body)
                 .primary(Primary { label: tr("OK"), disabled: None, danger: false, busy: false, run: EventHandler::new(close) })
                 .primary_id("dropped.ok")

@@ -412,11 +412,7 @@ fn convert(s: &str, depth: usize) -> String {
 
 /// The marker of a code fence on `line`: its character, its length and whether nothing but an info string follows.
 pub(super) fn fence(line: &str) -> Option<(char, usize, bool)> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let t = &line[indent..];
+    let t = line.trim_start();
     let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let run = t.chars().take_while(|x| *x == c).count();
     if run < 3 {
