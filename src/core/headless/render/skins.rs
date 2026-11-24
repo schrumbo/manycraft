@@ -48,13 +48,14 @@ impl Skins {
         }
         slots.insert(hash.clone(), Slot::Fetching);
         drop(slots);
+        let key = hash.clone();
         let slots = self.slots.clone();
         let spawned = std::thread::Builder::new().name("skin".into()).spawn(move || {
             let slot = fetch(&hash).map_or(Slot::Failed, |s| Slot::Ready(Arc::new(s)));
             slots.lock().unwrap_or_else(|e| e.into_inner()).insert(hash, slot);
         });
         if spawned.is_err() {
-            return None;
+            self.slots.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
         }
         None
     }

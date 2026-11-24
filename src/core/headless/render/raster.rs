@@ -104,7 +104,9 @@ impl Target {
 
     /// Blends a quad over the picture with its texture's alpha times `opacity`, without writing depth.
     pub fn blend(&mut self, v: &[Vertex; 4], texture: &Texture, opacity: f32) {
-        self.clipped(v, texture, Transparency::Translucent, opacity.clamp(0.0, 1.0));
+        if opacity > 0.0 {
+            self.clipped(v, texture, Transparency::Translucent, opacity.min(1.0));
+        }
     }
 
     fn clipped(&mut self, v: &[Vertex; 4], texture: &Texture, mode: Transparency, opacity: f32) {
