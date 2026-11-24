@@ -181,7 +181,6 @@ impl Component for DiscoverPage {
         let at = KINDS.iter().position(|k| *k == kind).unwrap_or(0);
         let mut bar = rect()
             .width(Size::fill())
-            .max_width(Size::px(frame::CONTENT_MAX))
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
@@ -222,7 +221,7 @@ impl Component for DiscoverPage {
             .width(Size::fill())
             .height(Size::fill())
             .content(Content::flex())
-            .child(rect().width(Size::fill()).cross_align(Alignment::Center).padding((space::M, space::L, 0., space::L)).child(bar))
+            .child(rect().width(Size::fill()).padding((space::M, frame::GUTTER, 0., frame::GUTTER)).child(bar))
             .child(rect().width(Size::fill()).height(Size::flex(1.)).child(body))
     }
 }

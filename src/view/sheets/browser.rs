@@ -67,7 +67,6 @@ const PACK_TRAIL_W: f32 = 184.;
 const VERSION_W: f32 = 132.;
 use crate::view::kit::page::SPLIT_AT;
 const PANE_LIST: f32 = 0.8;
-const PANE_MAX: f32 = 1240.;
 const OTHERS: f32 = control::M * 4. + space::XS * 7. + font::CAPTION * font::LINE + font::BODY * font::LINE;
 
 /// Shows the Mods page of instance `id`: on Mods, or on Ressourcenpakete when the loader takes no mods.
@@ -2187,8 +2186,7 @@ impl Component for Browser {
             return rect()
                 .width(Size::fill())
                 .height(Size::fill())
-                .cross_align(Alignment::Center)
-                .padding((space::S, space::L, space::M, space::L))
+                .padding((space::S, frame::GUTTER, space::M, frame::GUTTER))
                 .on_global_key_down(move |e: Event<KeyboardEventData>| {
                     if enter.store.ui.layered() {
                         return;
@@ -2213,7 +2211,6 @@ impl Component for Browser {
                 .child(match aside {
                     Some(aside) => rect()
                         .width(Size::fill())
-                        .max_width(Size::px(PANE_MAX))
                         .height(Size::fill())
                         .horizontal()
                         .spacing(space::M)
@@ -2221,7 +2218,7 @@ impl Component for Browser {
                         .child(column.width(Size::flex(PANE_LIST)).height(Size::fill()).content(Content::flex()))
                         .child(aside)
                         .into_element(),
-                    None => column.max_width(Size::px(frame::CONTENT_MAX)).height(Size::fill()).content(Content::flex()).into_element(),
+                    None => column.height(Size::fill()).content(Content::flex()).into_element(),
                 })
                 .into_element();
         }

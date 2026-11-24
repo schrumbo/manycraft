@@ -159,6 +159,14 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
         }
         items.push(item);
     }
+    if !many && m.games.get(key).is_some_and(|g| g.headless) {
+        let k = key.to_owned();
+        let mut item = Item::new(format!("menu.{key}.shots"), tr("Screenshots ansehen"), move |_| super::shots::open(store, &k));
+        if let Some(s) = Command::ShowShots.shortcut() {
+            item = item.shortcut(s.label());
+        }
+        items.push(item);
+    }
     if !many && m.games.get(key).is_some_and(|g| g.connection) {
         items.push(Item::new(format!("menu.{key}.play"), tr("Spielen"), |_| {}).disabled(true).detail(tr("Läuft ohne Spiel")));
     }
@@ -426,7 +434,7 @@ impl Component for Tile {
                 if let PressEventData::Keyboard(k) = &*e {
                     keyed(store, &enter_key, k);
                 } else if track.write().double(Instant::now()) {
-                    primary(store, &enter_key);
+                    double_press(store, &enter_key);
                 } else {
                     pick(store, &enter_key, index);
                 }
@@ -459,6 +467,19 @@ impl Component for Tile {
 pub(super) fn primary(store: Store, key: &str) {
     if let Some(p) = primary_of(store, key) {
         run(store, key, p);
+    }
+}
+
+/// What a double press on game `key` does: its main action, except that a connection-only account takes a screenshot where
+/// the main action would switch the chat.
+pub(super) fn double_press(store: Store, key: &str) {
+    let m = store.model.peek();
+    let chat = m.games.get(key).is_some_and(|g| g.connection && !g.stopping && !g.hint.link_lost && m.session.pids.contains_key(key) && action_of(g, &m) == Some(Primary::Chat));
+    drop(m);
+    if chat {
+        store.dispatch(AppEvent::Capture(vec![key.to_owned()]));
+    } else {
+        primary(store, key);
     }
 }
 
