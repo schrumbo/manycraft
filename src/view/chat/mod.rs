@@ -1093,6 +1093,7 @@ impl Component for Composer {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
+        let _ = store.chat.read();
         let mut shared = store.ui.chat;
         let mut lift = store.ui.toast_lift;
         use_drop(move || lift.set(0.));
