@@ -168,7 +168,7 @@ impl World {
             Err(_) => &[],
         };
         ensure!(data.len() + light.len() <= MAX_INFLATED - 4, "chunk data of {} bytes", data.len() + light.len());
-        let mut packed = ZlibEncoder::new(Vec::new(), Compression::fast());
+        let mut packed = ZlibEncoder::new(Vec::new(), Compression::default());
         packed.write_all(&(data.len() as u32).to_le_bytes())?;
         packed.write_all(data)?;
         packed.write_all(light)?;
