@@ -109,6 +109,7 @@ fn rebuild(m: &mut Model) {
     let games = &m.games;
     m.history.retain(|k, _| games.contains_key(k));
     m.frames.retain(|k, _| games.contains_key(k));
+    m.moments.retain(|k, _| games.contains_key(k));
     m.order_seq += 1;
 }
 
@@ -121,6 +122,7 @@ pub(super) fn drop_left(m: &mut Model) {
         let games = &m.games;
         m.history.retain(|k, _| games.contains_key(k));
         m.frames.retain(|k, _| games.contains_key(k));
+        m.moments.retain(|k, _| games.contains_key(k));
         m.order_seq += 1;
     }
 }

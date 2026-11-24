@@ -157,7 +157,7 @@ pub(crate) fn export(store: Store, id: &str) {
     let (id, title, suggested) = (made.id.clone(), tr("Exportieren"), transfer::file_name(&made.name));
     drop(m);
     spawn_in_window(async move {
-        let Some(Some(path)) = off_ui(move || native::save_file(&title, &suggested, "Modrinth", mrpack::EXTENSION)).await else { return };
+        let Some(Some(path)) = off_ui(move || native::save_file(&title, &suggested, "Modrinth", mrpack::EXTENSION, None)).await else { return };
         let path = transfer::with_extension(path);
         let Some(made) = store.model.peek().instance(&id).cloned() else { return };
         let (id, name, out) = (made.id.clone(), made.name.clone(), path.clone());

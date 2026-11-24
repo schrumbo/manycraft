@@ -60,8 +60,6 @@ pub struct Spec {
     /// Hashes of the Codes of Conduct this batch already accepted on this server (see [`conduct`]); the same text is
     /// accepted again without asking.
     pub conduct: Vec<String>,
-    /// The folder its pictures are saved to; `None` keeps them on the tile only.
-    pub shots: Option<std::path::PathBuf>,
 }
 
 /// Why [`start`] refused an account.

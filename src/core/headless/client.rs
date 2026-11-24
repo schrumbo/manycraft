@@ -3,8 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{Shutdown, TcpStream};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -33,6 +32,7 @@ use crate::core::chat_pace::{Next, Queue};
 use crate::core::chat_text::Run;
 use crate::core::fleet::Resolved;
 use crate::core::ipc::{ChatKind, ChatOutcome, ChatRefusal, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
+use crate::core::shots::{self, Moment};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -45,8 +45,14 @@ const PICTURE_RADIUS: i32 = VIEW_DISTANCE as i32 + 1;
 const SEEN_RANGE: f64 = 48.0;
 const MIN_PICTURE: u32 = 16;
 const MAX_PICTURE: u32 = 1280;
+const SHOT_WIDTH: u32 = 1280;
+const TILE_WIDTH: u32 = 640;
+const SHOT_RADIUS: i32 = 2;
+const SHOT_WAIT: Duration = Duration::from_secs(10);
+const QUEUED_MAX: usize = 4;
 
 static PICTURES: AtomicU32 = AtomicU32::new(0);
+static QUEUED: AtomicUsize = AtomicUsize::new(0);
 const CHUNKS_PER_TICK: f32 = 10.0;
 const ACK_AFTER: i32 = 64;
 const MAX_CHAT: usize = 256;
@@ -119,6 +125,8 @@ struct Link {
     crowd: Crowd,
     status: Status,
     me: Uuid,
+    dimension: String,
+    due: Option<Instant>,
 }
 
 /// What the connection's thread and its handle share.
@@ -128,7 +136,6 @@ pub struct Shared {
     link: Mutex<Link>,
     wake: Condvar,
     running: AtomicBool,
-    shots: Option<PathBuf>,
     drawing: Arc<AtomicBool>,
 }
 
@@ -157,8 +164,10 @@ impl Shared {
             crowd: Crowd::default(),
             status: Status::new(spec.name.clone()),
             me: spec.uuid,
+            dimension: String::new(),
+            due: None,
         };
-        Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), shots: spec.shots.clone(), drawing: Arc::default() }
+        Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), drawing: Arc::default() }
     }
 
     pub fn is_running(&self) -> bool {
@@ -268,18 +277,22 @@ impl Shared {
                     }
                 }
             }
-            ToMod::Capture { width } => self.picture(&link, *width),
+            ToMod::Capture { width } => {
+                self.picture(&link, *width, false);
+            }
             _ => {}
         }
         Ok(())
     }
 
-    /// Draws what the account sees, from its eyes and from above, on the drawing thread. Both are saved to its screenshots
-    /// folder; the view from its eyes goes to its tile. While one is being drawn, more asks are ignored.
-    fn picture(&self, link: &Link, width: u32) {
-        if link.phase != Phase::Play || self.drawing.swap(true, Ordering::AcqRel) {
-            return;
+    /// Draws what the account sees, from its eyes and from above, on the drawing thread, and reports both as a screenshot
+    /// held in memory; the view from its eyes also goes to its tile. Whether it started: while one is being drawn, more
+    /// asks are ignored, and one the account takes on its own waits while `QUEUED_MAX` pictures of all accounts are drawn.
+    fn picture(&self, link: &Link, width: u32, own: bool) -> bool {
+        if link.phase != Phase::Play || (own && QUEUED.load(Ordering::Acquire) >= QUEUED_MAX) || self.drawing.swap(true, Ordering::AcqRel) {
+            return false;
         }
+        let drawing = Drawing::taken(Arc::clone(&self.drawing));
         let width = width.clamp(MIN_PICTURE, MAX_PICTURE);
         let height = (width * 9 / 16).max(1);
         let [x, _, z] = link.position;
@@ -287,18 +300,35 @@ impl Shared {
         let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed(), |member, name, hideable| link.status.tag(member, name, hideable));
         let hud = link.status.hud(&link.screen);
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, hud, position: link.position, rotation: link.rotation, width, height };
-        let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
-        let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Drawing(Arc::clone(&self.drawing)));
+        let taken = SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_secs()).ok()).unwrap_or(0);
+        let (key, events) = (self.key.clone(), self.events.clone());
         picture::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
             let above = pictures.pop().unwrap_or_default();
             let eyes = pictures.pop().unwrap_or_default();
-            if let Some(dir) = shots {
-                save(&dir, &stamp, &[("", &eyes), ("_above", &above)], width, height);
-            }
+            let moment = shots::encode(&eyes, width, height).and_then(|e| Ok(Moment { taken, eyes: e.into(), above: shots::encode(&above, width, height)?.into() }));
             drop(drawing);
+            let moment = match moment {
+                Ok(moment) => moment,
+                Err(e) => {
+                    eprintln!("picture not kept: {e:#}");
+                    return;
+                }
+            };
+            let (width, height, rgba) = for_tile(eyes, width, height);
             let seq = PICTURES.fetch_add(2, Ordering::Relaxed).wrapping_add(2);
-            let _ = events.send(Event::Picture { instance: key, seq, width, height, rgba: eyes });
+            let _ = events.send(Event::Picture { instance: key, seq, width, height, rgba, moment });
         });
+        true
+    }
+
+    /// Takes the screenshot a change of world asked for once the account stands in the new world and the chunks around it
+    /// arrived, or once it waited `SHOT_WAIT` for them.
+    fn world_shot(&self, link: &mut Link) {
+        let Some(since) = link.due else { return };
+        let [x, _, z] = link.position;
+        if link.loaded && (link.world.around(x, z, SHOT_RADIUS) || since.elapsed() >= SHOT_WAIT) && self.picture(link, SHOT_WIDTH, true) {
+            link.due = None;
+        }
     }
 
     fn show_screen(&self, link: &mut Link) {
@@ -587,6 +617,7 @@ fn join(shared: &Shared, spec: &Spec) -> Result<(Line, DisconnectCause)> {
         if let Some(end) = end {
             return Ok(end);
         }
+        shared.world_shot(&mut link);
     }
 }
 
@@ -873,9 +904,13 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             let mut keep = 0;
             if let Ok(kind) = r.varint() {
                 link.world.enter(kind);
-                if let Ok(mode) = spawn_mode(r) {
+                if let Ok((dimension, mode)) = spawn_info(r) {
                     link.status.game_mode(mode);
                     keep = respawn_keep(r).unwrap_or(0);
+                    if dimension != link.dimension {
+                        link.dimension = dimension;
+                        link.due = Some(Instant::now());
+                    }
                 }
             }
             link.status.respawned(keep);
@@ -953,7 +988,10 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
                 r.bool()?;
             }
             link.world.enter(r.varint()?);
-            link.status.game_mode(spawn_mode(r)?);
+            let (dimension, mode) = spawn_info(r)?;
+            link.status.game_mode(mode);
+            link.dimension = dimension;
+            link.due = Some(Instant::now());
         }
         c::LEVEL_CHUNK_WITH_LIGHT => {
             let [x, _, z] = link.position;
@@ -968,28 +1006,30 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
     Ok(())
 }
 
+/// The one picture an account has on the drawing thread, counted in `QUEUED` until it is drawn or given up.
 struct Drawing(Arc<AtomicBool>);
+
+impl Drawing {
+    fn taken(flag: Arc<AtomicBool>) -> Self {
+        QUEUED.fetch_add(1, Ordering::AcqRel);
+        Self(flag)
+    }
+}
+
+/// RGBA rows of `width` by `height` scaled down to at most `TILE_WIDTH` wide, as a tile shows them.
+fn for_tile(rgba: Vec<u8>, width: u32, height: u32) -> (u32, u32, Vec<u8>) {
+    if width <= TILE_WIDTH {
+        return (width, height, rgba);
+    }
+    let Some(picture) = image::RgbaImage::from_raw(width, height, rgba) else { return (0, 0, Vec::new()) };
+    let tall = (height * TILE_WIDTH / width).max(1);
+    (TILE_WIDTH, tall, image::imageops::resize(&picture, TILE_WIDTH, tall, image::imageops::FilterType::Triangle).into_raw())
+}
 
 impl Drop for Drawing {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
-    }
-}
-
-fn save(dir: &std::path::Path, stamp: &str, pictures: &[(&str, &[u8])], width: u32, height: u32) {
-    let name = |n: u32, suffix: &str| dir.join(if n == 0 { format!("{stamp}{suffix}.png") } else { format!("{stamp}_{n}{suffix}.png") });
-    let free = (0..1000).find(|n| pictures.iter().all(|(suffix, _)| !name(*n, suffix).exists())).unwrap_or(1000);
-    for (suffix, rgba) in pictures {
-        let path = name(free, suffix);
-        let part = path.with_extension("png.part");
-        let saved = std::fs::create_dir_all(dir)
-            .map_err(anyhow::Error::from)
-            .and_then(|()| image::save_buffer_with_format(&part, rgba, width, height, image::ExtendedColorType::Rgba8, image::ImageFormat::Png).map_err(anyhow::Error::from))
-            .and_then(|()| std::fs::rename(&part, &path).map_err(anyhow::Error::from));
-        if let Err(e) = saved {
-            let _ = std::fs::remove_file(&part);
-            eprintln!("picture not saved to {}: {e:#}", path.display());
-        }
+        QUEUED.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -1019,11 +1059,11 @@ fn teleported(shared: &Shared, link: &mut Link, r: &mut In) -> Result<()> {
     Ok(())
 }
 
-/// The game mode from the rest of a spawn info, after its dimension type.
-fn spawn_mode(r: &mut In) -> Result<i32> {
-    r.string()?;
+/// The dimension and the game mode from the rest of a spawn info, after its dimension type.
+fn spawn_info(r: &mut In) -> Result<(String, i32)> {
+    let dimension = r.string()?;
     r.i64()?;
-    r.varint()
+    Ok((dimension, r.varint()?))
 }
 
 /// What a respawn keeps (1 attribute modifiers, 2 entity data), from the rest of its spawn info after the game mode.
@@ -1137,7 +1177,7 @@ mod tests {
     use super::*;
 
     fn shared() -> Shared {
-        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new(), shots: None };
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
         Shared::new(&spec, std::sync::mpsc::channel().0)
     }
 
@@ -1226,5 +1266,43 @@ mod tests {
         for host in ["mc.example.org", "10.0.0.1", "mc.example.org.net."] {
             assert!(!body(host, 25565).contains(&0), "no \\0FML or forwarding marker after {host}");
         }
+    }
+
+    fn respawn(dimension: &str) -> Vec<u8> {
+        let mut out = Out::default();
+        out.varint(0).string(dimension).i64(0).varint(0).varint(0).bool(false).bool(false).bool(false).varint(0).varint(0).u8(0);
+        out.0
+    }
+
+    #[test]
+    fn a_change_of_world_takes_one_screenshot_once_the_player_stands_in_it() {
+        use play::clientbound as p;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
+        let shared = Shared::new(&spec, tx);
+        let mut link = shared.lock();
+        link.phase = Phase::Play;
+        link.dimension = "minecraft:overworld".into();
+        playing(&shared, &mut link, p::RESPAWN, &mut In::new(&respawn("minecraft:overworld")), &[]).unwrap();
+        assert!(link.due.is_none(), "a respawn in the same world is no change of world");
+        playing(&shared, &mut link, p::RESPAWN, &mut In::new(&respawn("minecraft:the_nether")), &[]).unwrap();
+        assert!(link.due.is_some());
+        link.due = Some(Instant::now() - SHOT_WAIT);
+        shared.world_shot(&mut link);
+        assert!(link.due.is_some(), "not before the player stands in the new world");
+        link.loaded = true;
+        link.due = Some(Instant::now());
+        shared.world_shot(&mut link);
+        assert!(link.due.is_some(), "not while the chunks around it are missing and it waited less than SHOT_WAIT");
+        link.due = Some(Instant::now() - SHOT_WAIT);
+        shared.world_shot(&mut link);
+        assert!(link.due.is_none());
+        drop(link);
+        let Ok(Event::Picture { width, height, moment, .. }) = rx.recv_timeout(Duration::from_secs(120)) else { panic!("no screenshot") };
+        assert_eq!((width, height), (TILE_WIDTH, TILE_WIDTH * 9 / 16), "the tile gets a smaller picture");
+        let full = shots::decode_png(&moment.eyes).unwrap();
+        assert_eq!((full.width(), full.height()), (SHOT_WIDTH, SHOT_WIDTH * 9 / 16));
+        assert!(moment.eyes.starts_with(b"\x89PNG") && moment.above.starts_with(b"\x89PNG"));
+        assert!(moment.taken > 0);
     }
 }

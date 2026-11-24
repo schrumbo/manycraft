@@ -281,7 +281,8 @@ impl Component for Tile {
         let Some(game) = m.games.get(&self.key) else {
             return rect().into_element();
         };
-        let preview = preview.filter(|_| !game.connection || m.frames.get(&self.key).is_some_and(|f| f.live));
+        let preview = preview.filter(|_| !game.connection || m.moments.contains_key(&self.key) || m.frames.get(&self.key).is_some_and(|f| f.live));
+        let as_of = super::shots::as_of(&self.key, &m);
         let selected = store.ui.selection.read().contains(&self.key);
         let face = store.faces.read().get(&game.account_id).cloned();
         let attention = game.needs_attention();
@@ -330,6 +331,7 @@ impl Component for Tile {
             let (mark, tip, tone) = match (game.shows.menu, game.shows.map, preview.is_some()) {
                 (true, ..) => (tr("Menü offen"), tr("Der Server hat ein Menü geöffnet. Klick zeigt es."), Tone::Attention),
                 (false, true, _) => (tr("Karte"), tr("Eine Karte in der Hand. Klick zeigt sie."), Tone::Attention),
+                (false, false, true) if as_of.is_some() => (as_of.clone().unwrap_or_default(), tr("Der letzte Screenshot. Er bleibt nur, solange Manycraft läuft."), Tone::Quiet),
                 (false, false, true) => (tr("gezeichnet"), tr("Aus den Blöcken gezeichnet, die der Server schickt – kein echtes Spielbild."), Tone::Quiet),
                 _ if game.phase.server().is_some() => (tr("ohne Bild"), tr("Nur Verbindung, kein Spiel. Screenshot zeichnet ein Bild aus den Blöcken."), Tone::Quiet),
                 _ => (tr("ohne Bild"), tr("Nur Verbindung, kein Spiel."), Tone::Quiet),

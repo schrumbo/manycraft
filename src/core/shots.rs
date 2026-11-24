@@ -1,6 +1,7 @@
-//! Screenshots in the game folders of an instance.
+//! Screenshots: the files in the game folders of an instance, and those connection-only accounts hold in memory.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
@@ -14,6 +15,29 @@ pub struct Shot {
     pub path: PathBuf,
     /// Unix seconds.
     pub taken: i64,
+}
+
+/// A screenshot of a connection-only account, held only while Manycraft runs: PNG files of its view from the eyes and
+/// from above.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Moment {
+    /// Unix seconds.
+    pub taken: i64,
+    pub eyes: Arc<[u8]>,
+    pub above: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for Moment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Moment").field("taken", &self.taken).field("eyes", &self.eyes.len()).field("above", &self.above.len()).finish()
+    }
+}
+
+/// RGBA rows of `width` by `height`, top down, as a PNG file.
+pub fn encode(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    image::write_buffer_with_format(&mut std::io::Cursor::new(&mut out), rgba, width, height, image::ExtendedColorType::Rgba8, image::ImageFormat::Png).context("cannot encode the picture")?;
+    Ok(out)
 }
 
 /// Every screenshot in every game folder of the instance in `instance_dir`, newest first.
@@ -48,12 +72,25 @@ pub fn decode(path: &Path) -> Result<image::RgbaImage> {
 /// The picture at `path` scaled down to fit `width` by `height` as RGBA, with the size of the file's own picture; one that
 /// is smaller keeps its size.
 pub fn fitted(path: &Path, width: u32, height: u32) -> Result<(image::RgbaImage, (u32, u32))> {
-    let picture = open(path)?;
+    Ok(fit(open(path)?, width, height))
+}
+
+/// The PNG file in `png` scaled down like [`fitted`].
+pub fn fitted_png(png: &[u8], width: u32, height: u32) -> Result<(image::RgbaImage, (u32, u32))> {
+    Ok(fit(image::load_from_memory_with_format(png, image::ImageFormat::Png).context("cannot decode the picture")?, width, height))
+}
+
+/// The PNG file in `png` in full size, as RGBA.
+pub fn decode_png(png: &[u8]) -> Result<image::RgbaImage> {
+    Ok(image::load_from_memory_with_format(png, image::ImageFormat::Png).context("cannot decode the picture")?.into_rgba8())
+}
+
+fn fit(picture: image::DynamicImage, width: u32, height: u32) -> (image::RgbaImage, (u32, u32)) {
     let original = (picture.width(), picture.height());
     if original.0 <= width && original.1 <= height {
-        return Ok((picture.into_rgba8(), original));
+        return (picture.into_rgba8(), original);
     }
-    Ok((picture.resize(width, height, image::imageops::FilterType::Triangle).into_rgba8(), original))
+    (picture.resize(width, height, image::imageops::FilterType::Triangle).into_rgba8(), original)
 }
 
 /// The picture at `path` scaled to fit `width` by `height`, as RGBA.
@@ -96,5 +133,17 @@ mod tests {
         let thumb = thumbnail(&found[0].path, 32, 32).unwrap();
         assert_eq!((thumb.width(), thumb.height()), (32, 18));
         assert!(png(&found[0].path).unwrap().starts_with(b"\x89PNG"));
+    }
+
+    #[test]
+    fn a_held_picture_round_trips_as_png_and_its_debug_shows_only_sizes() {
+        let rgba: Vec<u8> = (0..4 * 3 * 2).map(|i| i as u8).collect();
+        let png = encode(&rgba, 3, 2).unwrap();
+        assert_eq!(decode_png(&png).unwrap().into_raw(), rgba);
+        let (fitted, original) = fitted_png(&png, 2, 2).unwrap();
+        assert_eq!(original, (3, 2));
+        assert!(fitted.width() <= 2);
+        let moment = Moment { taken: 1, eyes: png.clone().into(), above: png.into() };
+        assert!(!format!("{moment:?}").contains('['), "PNG bytes in Debug");
     }
 }

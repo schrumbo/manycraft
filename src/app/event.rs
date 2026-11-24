@@ -16,6 +16,7 @@ use crate::core::history::Log;
 use crate::core::instance::Instance;
 use crate::core::ipc::{Click, FromMod, HotkeyAction};
 use crate::core::proxy::Fault;
+use crate::core::shots::Moment;
 
 /// One report of the fleet, a game's mod or a frame reader.
 #[derive(Clone, Debug)]
@@ -48,6 +49,8 @@ pub enum Report {
     Frame { key: String, seq: u32, image: usize },
     /// The saved still of an earlier run, the `image`-th of its batch.
     Still { key: String, image: usize },
+    /// A screenshot a connection-only account took.
+    Moment { key: String, moment: Moment },
 }
 
 impl Report {
@@ -55,7 +58,7 @@ impl Report {
     pub fn key(&self) -> Option<&str> {
         match self {
             Report::Launched { key, .. } | Report::Failed { key, .. } | Report::Exited { key, .. } | Report::Seed { key, .. } | Report::ProxyChecked { key, .. } => Some(key),
-            Report::Connected { key, .. } | Report::LinkLost { key } | Report::Mod { key, .. } | Report::Frame { key, .. } | Report::Still { key, .. } => Some(key),
+            Report::Connected { key, .. } | Report::LinkLost { key } | Report::Mod { key, .. } | Report::Frame { key, .. } | Report::Still { key, .. } | Report::Moment { key, .. } => Some(key),
             Report::Preparing { .. } | Report::Prepared { .. } | Report::Reach { .. } | Report::ServerProbed { .. } | Report::SignIn { .. } | Report::Reopen | Report::PlayRequest { .. } => None,
         }
     }
